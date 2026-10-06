@@ -402,25 +402,19 @@ export async function portalCallBookingView(viewer: PortalViewer, monthId: strin
 }
 
 /**
- * What the portal's "Book the call" links point at, and the month view.
- *   v1 (today's layout, every real client until portal_layout_v2): the mapped
- *      page itself, from the mapping row — no token, no prefill. With no
- *      mapping it keeps the old public link, exactly as the reminder emails do
- *      (programReminders' bookCallLink), so v1 stays today's page in every
- *      state (UI-01). The in-portal booking below never uses that constant.
- *   v2: the guided plan's call step (`<planHref>#step-call`), where the booking
- *      happens inside the portal — except on the written route, whose only
- *      call link is "book one anyway" and has no call step to land on: there
- *      the mapped page with the token, in a new tab.
+ * What the portal's "Book the call" links point at, and the month view: the
+ * guided plan's call step (`<planHref>#step-call`), where the booking happens
+ * inside the portal — except on the written route, whose only call link is
+ * "book one anyway" and has no call step to land on: there the mapped page
+ * with the token, in a new tab.
  * bookingUrl null = no monthly page is set up (the caller shows the office).
+ *
+ * One layout (Jordan, Oct 6 2026): the `layout` option, and the old layout's
+ * answer (the mapped page itself, or the public link with no mapping), are
+ * gone with that layout.
  */
-export async function portalBookingLinks(viewer: PortalViewer, opts: { layout: "v1" | "v2"; planHref: string | null; monthId?: string | null; now?: Date }): Promise<{ bookingUrl: string | null; view: PortalCallBookingView | null }> {
+export async function portalBookingLinks(viewer: PortalViewer, opts: { planHref: string | null; monthId?: string | null; now?: Date }): Promise<{ bookingUrl: string | null; view: PortalCallBookingView | null }> {
   const now = opts.now ?? new Date();
-  const mapping = await monthlyStrategyMapping();
-  if (opts.layout === "v1") {
-    const { STRATEGY_CALL_BOOKING_URL } = await import("@/lib/integrations/calendly");
-    return { bookingUrl: mapping?.publicUrl ?? STRATEGY_CALL_BOOKING_URL, view: null };
-  }
   const month = await prisma.contentMonth.findFirst({
     where: { enrollmentId: viewer.enrollment.id, ...(opts.monthId ? { id: opts.monthId } : {}), historical: false, monthKey: { gte: etMonthKey(now) } },
     orderBy: { monthKey: "asc" },

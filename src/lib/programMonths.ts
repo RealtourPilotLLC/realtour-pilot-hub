@@ -1640,9 +1640,87 @@ export async function setPreparationException(monthId: string, reason: string, b
  * apart from the call mode's default, which the column alone could not do.
  */
 export async function setPlanningMode(monthId: string, mode: "CALL" | "WRITTEN", by: string | null = null): Promise<DerivedMonthState | null> {
-  await prisma.contentMonth.update({ where: { id: monthId }, data: { planningMode: mode, planningChosenAt: new Date(), planningChosenBy: by } });
+  return (await choosePlanningMode(monthId, mode, by))?.after ?? null;
+}
+
+/**
+ * What a month's route choice looked like at one moment — the three columns
+ * the choice owns, plus the call status the written route stamps (see
+ * `leavingWrittenData`). Undo (Oct 6 2026) puts these back exactly.
+ */
+export type PlanningChoiceSnapshot = {
+  mode: "CALL" | "WRITTEN" | null;
+  chosenAt: Date | null;
+  chosenBy: string | null;
+  strategyCallStatus: string;
+};
+
+const asMode = (m: string | null): "CALL" | "WRITTEN" | null => (m === "CALL" || m === "WRITTEN" ? m : null);
+
+/**
+ * Leaving the written route clears the SKIPPED it stamped.
+ *
+ * Choosing WRITTEN makes the derivation answer strategyCallStatus SKIPPED
+ * ("client chose to plan without a call"), and recalcProgramMonth persists
+ * it. The derivation reads a STORED SKIPPED as legacy truth ahead of the
+ * route, so on the next pass — route switched back to the call, or the
+ * choice undone — the month still read "No strategy call this month": the
+ * call reminders stayed closed and the Schedule card offered no booking.
+ * A SKIPPED stored while the month sits on the written route is the route's
+ * own stamp, so the writer that moves the month OFF that route takes it
+ * back; the recalculation then derives the call status from the records.
+ */
+function leavingWrittenData(from: { planningMode: string | null; strategyCallStatus: string }, to: "CALL" | "WRITTEN" | null) {
+  return from.planningMode === "WRITTEN" && to !== "WRITTEN" && from.strategyCallStatus === "SKIPPED" ? { strategyCallStatus: "NOT_SCHEDULED" } : {};
+}
+
+/**
+ * setPlanningMode, also handing back what the choice replaced and the exact
+ * stamp it wrote — the two things an "Undo" needs to put the month back
+ * (portalPlanUndecided). Same promise as setPlanningMode: no booking, call
+ * record, session request, selection, interview or script is touched.
+ */
+export async function choosePlanningMode(monthId: string, mode: "CALL" | "WRITTEN", by: string | null = null): Promise<{ before: PlanningChoiceSnapshot; at: Date; after: DerivedMonthState | null } | null> {
+  const row = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { planningMode: true, planningChosenAt: true, planningChosenBy: true, strategyCallStatus: true } });
+  if (!row) return null;
+  const at = new Date();
+  await prisma.contentMonth.update({ where: { id: monthId }, data: { planningMode: mode, planningChosenAt: at, planningChosenBy: by, ...leavingWrittenData(row, mode) } });
   const r = await recalcProgramMonth(monthId);
-  return r?.after ?? null;
+  return {
+    before: { mode: asMode(row.planningMode), chosenAt: row.planningChosenAt, chosenBy: row.planningChosenBy, strategyCallStatus: row.strategyCallStatus },
+    at, after: r?.after ?? null,
+  };
+}
+
+/**
+ * Undo a route choice (Oct 6 2026). `to` is what the month goes back to:
+ * the snapshot taken before the tap (the Undo right after choosing), or no
+ * choice at all — `{ mode: null }`, the two equal cards again.
+ *
+ * Compare-and-set on the stamp the caller saw (`expectChosenAt`): if anyone
+ * chose again in between, nothing is written and `restored` is false. A
+ * restored snapshot brings its call status back only where the written
+ * route's own SKIPPED is being taken off (the same rule as a switch);
+ * anything else about the call is the records' to say. Like the choice
+ * itself, this never touches a booking, a call record, a session request,
+ * a selection, an interview or a script.
+ */
+export async function restorePlanningMode(
+  monthId: string,
+  to: { mode: "CALL" | "WRITTEN" | null; chosenAt?: Date | null; chosenBy?: string | null; strategyCallStatus?: string | null },
+  expectChosenAt: Date | null,
+): Promise<{ restored: boolean; after: DerivedMonthState | null }> {
+  const row = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { planningMode: true, planningChosenAt: true, strategyCallStatus: true } });
+  if (!row) return { restored: false, after: null };
+  const leaving = leavingWrittenData(row, to.mode);
+  const callData = "strategyCallStatus" in leaving && to.strategyCallStatus && to.strategyCallStatus !== "SKIPPED" ? { strategyCallStatus: to.strategyCallStatus } : leaving;
+  const w = await prisma.contentMonth.updateMany({
+    where: { id: monthId, planningChosenAt: expectChosenAt },
+    data: { planningMode: to.mode, planningChosenAt: to.chosenAt ?? null, planningChosenBy: to.chosenBy ?? null, ...callData },
+  });
+  if (w.count === 0) return { restored: false, after: null };
+  const r = await recalcProgramMonth(monthId);
+  return { restored: true, after: r?.after ?? null };
 }
 
 /**

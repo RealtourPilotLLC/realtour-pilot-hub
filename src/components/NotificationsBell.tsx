@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   AtSign,
   Bell,
+  Bug,
   CalendarClock,
   CalendarPlus,
   CalendarX,
@@ -83,6 +84,7 @@ const KIND_ICON: Record<string, LucideIcon> = {
   review_feedback: MessageSquareHeart, // capture/edit feedback from the owner's review
   mention: AtSign,
   system: AlertTriangle,
+  error_report: Bug, // the error tracker (Oct 6 2026) — /settings/errors
 };
 
 // Compact relative time for the rows: "3m" / "2h" / "Mon" (older than a week

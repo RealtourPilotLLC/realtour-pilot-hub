@@ -190,6 +190,17 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
         const msg = e instanceof Error ? e.message : String(e);
         out[`${name}Error`] = msg;
         if (!firstError) firstError = `${name}: ${msg}`.slice(0, 500);
+        // Into the error tracker too (Oct 6 2026), grouped per job+step so a
+        // step that fails every tick is one row with a count, and a new
+        // failure alerts the owner. Capped at 3 s; recordError never throws.
+        try {
+          const { recordError } = await import("@/lib/errorTracker");
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([
+            recordError({ error: e, source: "cron", route: `cron:${job ?? "unnamed"}/${name}`, path: job ? `/api/cron/${job}` : null, context: { job: job ?? null, step: name } }),
+            new Promise((resolve) => { timer = setTimeout(resolve, 3000); }),
+          ]).finally(() => clearTimeout(timer));
+        } catch { /* the cron's own record above is the truth */ }
       }
       timings[name] = Date.now() - t0;
       await checkpoint();

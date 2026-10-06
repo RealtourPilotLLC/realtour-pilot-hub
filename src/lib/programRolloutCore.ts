@@ -187,7 +187,9 @@ export const PROGRAM_REACH_OPS = [
   "portal_invites",
   "portal_login_email",
   "portal_sign_in",
-  "portal_layout_v2",
+  // "portal_layout_v2" RETIRED Oct 6 2026 (one portal layout for everyone).
+  // A stored rollout that still lists it reads fine: parseProgramRollout
+  // drops operation names it does not know (narrowing only).
   "program_message_notice",
   // Oct 5 2026 review fix: the messages Jordan composes and sends himself from
   // Settings → Client onboarding (step 5). No switch: only his press sends.
@@ -205,7 +207,7 @@ export function isProgramReachOp(x: unknown): x is ProgramReachOp {
   return typeof x === "string" && (PROGRAM_REACH_OPS as readonly string[]).includes(x);
 }
 
-export type ProgramPilotGroupKey = "accounts" | "layout" | "emails" | "messages" | "portal_changes" | "bookings";
+export type ProgramPilotGroupKey = "accounts" | "emails" | "messages" | "portal_changes" | "bookings";
 
 /**
  * How the owner approves operations: plain-word groups, all ticked by default
@@ -215,7 +217,6 @@ export type ProgramPilotGroupKey = "accounts" | "layout" | "emails" | "messages"
  */
 export const PROGRAM_PILOT_GROUPS: readonly { key: ProgramPilotGroupKey; label: string; ops: readonly ProgramReachOp[] }[] = [
   { key: "accounts", label: "Portal accounts — invitations, sign-in emails and signing in", ops: ["portal_invites", "portal_login_email", "portal_sign_in"] },
-  { key: "layout", label: "The new portal layout", ops: ["portal_layout_v2"] },
   { key: "emails", label: "Program emails — reminders, scripts-ready and office-replied notices", ops: ["reminders", "script_share_email", "program_message_notice"] },
   { key: "messages", label: "Messages you send yourself from Client onboarding (only when you press Send)", ops: ["manual_messages"] },
   {
@@ -565,10 +566,9 @@ export function clientTier(rollout: ProgramRollout, client: { id: string; name: 
   return "REAL";
 }
 
-/** Each group in a few words, for a client's line ("in the pilot — program emails, the new layout"). */
+/** Each group in a few words, for a client's line ("in the pilot — portal accounts, program emails"). */
 export const PROGRAM_PILOT_GROUP_SHORT: Record<ProgramPilotGroupKey, string> = {
   accounts: "portal accounts",
-  layout: "the new layout",
   emails: "program emails",
   messages: "messages you send",
   portal_changes: "automatic portal changes",

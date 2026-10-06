@@ -162,7 +162,9 @@ export async function saveCalendlyMapping(input: { eventTypeUri: string; purpose
     if (!live) throw new Error("That event type is not on the connected Calendly account.");
     // One enabled type per program purpose: two "monthly" types would make
     // the target-month rule and the panel ambiguous.
-    if (input.enabled && purpose !== "IGNORED") {
+    // A STRATEGY_CANDIDATE type is exempt: several generic types may be read
+    // that way, and none of them decides a month without a verified client.
+    if (input.enabled && purpose !== "IGNORED" && purpose !== "STRATEGY_CANDIDATE") {
       const clash = await prisma.programCalendlyEventMapping.findFirst({ where: { purpose, enabled: true, eventTypeUri: { not: input.eventTypeUri } }, select: { eventName: true } });
       if (clash) throw new Error(`"${clash.eventName}" is already the ${purpose === "MONTHLY_STRATEGY" ? "monthly strategy" : "brand discovery"} type — disable it first.`);
     }
@@ -176,7 +178,9 @@ export async function saveCalendlyMapping(input: { eventTypeUri: string; purpose
       update: { eventName: live.name, publicUrl: live.schedulingUrl, purpose, enabled: input.enabled, hostUri: live.ownerUri, validationStatus: live.active ? "VALID" : "MISSING", validatedAt: now, lastError: live.active ? null : "event type is inactive in Calendly" },
     });
     revalidatePath("/settings");
-    return { ok: true, message: input.enabled ? `Mapped "${live.name}" — bookings on it are classified by its URI from the next hourly run.` : `Saved "${live.name}" (disabled).` };
+    return { ok: true, message: !input.enabled ? `Saved "${live.name}" (disabled).`
+      : purpose === "STRATEGY_CANDIDATE" ? `Mapped "${live.name}" as a possible strategy call — known clients are filed by email, everyone else waits on Content → Strategy calls (from the next hourly run, or "Re-read Calendly" there).`
+      : `Mapped "${live.name}" — bookings on it are classified by its URI from the next hourly run.` };
   } catch (e) { return fail(e); }
 }
 

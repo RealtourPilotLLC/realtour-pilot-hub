@@ -10,7 +10,7 @@ import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameO
 import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDENTIAL_PHRASE_RE, type FactCategory } from "@/lib/clientFacts";
 import { CONTENT_RULES } from "@/lib/contentPipeline";
 import {
-  buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection,
+  buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
   GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument,
 } from "@/lib/contentPolicy";
@@ -867,7 +867,8 @@ export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?
   const headingOf = (targetKey: string | null) => (targetKey?.startsWith("strategy.section:") ? stored.sections.find((x) => x.id === targetKey.slice("strategy.section:".length))?.heading ?? null : null);
   const toOf = (diffJson: string | null) => { try { return ((JSON.parse(diffJson ?? "[]") as { to?: string }[])[0]?.to ?? null) || null; } catch { return null; } };
   const built = await buildClientContext(base.enrollmentId);
-  const bundle = buildStrategyRevisionPrompt(built.ctx, { label: `v${base.versionNo}`, sections: stored.sections.map((x) => ({ id: x.id, heading: x.heading, text: x.text })) }, {
+  // Oct 6 2026: the model sees the house framework in section 4, never the imported document's own.
+  const bundle = buildStrategyRevisionPrompt(built.ctx, { label: `v${base.versionNo}`, sections: stored.sections.map((x) => ({ id: x.id, heading: x.heading, text: isFrameworkSection(x) ? canonicalFrameworkSectionText(x.text) : x.text })) }, {
     notes: notes || null,
     clientSuggestions: proposals.map((p) => ({ summary: p.summary, sectionHeading: headingOf(p.targetKey), proposedText: toOf(p.diffJson) })),
   });

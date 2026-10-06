@@ -1,8 +1,3 @@
-import Link from "next/link";
-import { BrandWordmark } from "@/components/Brand";
-import {
-  BookOpen, CalendarClock, Clapperboard, Compass, Eye, Home, KeyRound, Lightbulb, LogOut, MessageSquare, MoreHorizontal, PauseCircle, ScrollText, Settings, UserRound,
-} from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { portalBookingLinks, type PortalCallBookingView } from "@/lib/callBooking";
@@ -12,32 +7,27 @@ import {
 } from "@/lib/portal";
 import { can } from "@/lib/portalAccess";
 import { withMediaToken, mediaScopeOf, mediaToken } from "@/lib/portalMedia";
-import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, libraryAttention, videoState, type VideoListPage } from "@/lib/contentVideos";
+import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, libraryAttention, videoState } from "@/lib/contentVideos";
 import { cutHistory, type CutVersion } from "@/lib/clientDecisions";
 import { postingKitFor, type PostingKit } from "@/lib/postingKit";
 import { publishedResources, type ResourceGroupView } from "@/lib/portalResources";
 import { PortalProfile } from "@/components/portal/PortalProfile";
 import { SettingsTab, type SettingsData } from "@/components/portal/tabs/SettingsTab";
 import { LoadFailed } from "@/components/portal/ui";
-import { signOutPortal } from "@/app/portal/login/actions";
-import { HomeTab, type HomeData } from "@/components/portal/tabs/HomeTab";
-import { VideosList, VideoDetail, type VideoDetailData } from "@/components/portal/tabs/VideosTab";
-import { TopicsTab } from "@/components/portal/tabs/TopicsTab";
-import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
+import { HomeV2, type HomeData } from "@/components/portal/tabs/HomeTab";
+import { LibraryV2, VideoDetailV2, type LibraryV2Data, type VideoDetailData } from "@/components/portal/tabs/VideosTab";
 import { ScheduleTab } from "@/components/portal/tabs/ScheduleTab";
 import { ResourcesTab } from "@/components/portal/tabs/ResourcesTab";
 import { MessagesTab, type MessagesTabData } from "@/components/portal/tabs/MessagesTab";
 import { ContactTeam } from "@/components/portal/ContactTeam";
-import { cn } from "@/lib/utils";
-// UI-01 — the v2 layout (lib/portalLayout.ts decides who gets it).
 import { resolvePortalRoute, portalHref, v2HrefFor, baseQueryPairs, portalNav, firstQueryValues, type PlanView } from "@/lib/portalNav";
 import { portalMonthKey, portalSessionIndex, selectedPortalMonth } from "@/lib/portalScheduling";
-import { portalLayoutDecision, libraryRows, reviewDeadlines } from "@/lib/portalLayout";
+import { libraryRows, reviewDeadlines } from "@/lib/portalLayout";
 import { homeActions, planModel, libraryView, type HomeAction } from "@/lib/portalHome";
 import { isLibraryFilter } from "@/lib/portalWords";
+import Link from "next/link";
 import { PortalShell } from "@/components/portal/PortalShell";
-import { HomeV2 } from "@/components/portal/tabs/HomeTab";
-import { LibraryV2, VideoDetailV2, type LibraryV2Data } from "@/components/portal/tabs/VideosTab";
+import { PORTAL_MIGRATION_NOTICE, PORTAL_FEEDBACK_QUERY } from "@/lib/portalNotice";
 import { PlanTab, type PlanTabData } from "@/components/portal/tabs/PlanTab";
 import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 
@@ -46,12 +36,12 @@ import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 // link) and /portal/me (a signed-in person) both resolve a PortalViewer and
 // hand it here; the page never looks at a cookie or a token itself.
 //
-// Navigation (spec §1, Sep 17): Home · My Videos · Video Topics · My Strategy
-// · Schedule · Resources on a wide screen; Home · Videos · Topics · Strategy ·
-// More on a phone, where More holds Schedule, Resources and the account
-// (My Brand Profile, Terms, sign in/out). Every tab has a real page behind
-// it. Each tab loads ONLY its own data, and every load is wrapped so a
-// failure renders as "couldn't load", never as an empty program.
+// Navigation (UI-01, Sep 24 2026): Home · Your Month · Content Library ·
+// Schedule · More (Brand Profile, Messages, Resources, Settings & Team,
+// Terms), in PortalShell — a bottom bar on a phone, a rail on a wide screen.
+// Every page has a real page behind it. Each page loads ONLY its own data,
+// and every load is wrapped so a failure renders as "couldn't load", never
+// as an empty program.
 //
 // Strict rules hold: released content only, never money, never internal
 // notes. Nothing in this HTML carries the enrollment token — tab links are
@@ -59,35 +49,22 @@ import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 // bound to that one cut/video and this viewer's seat/link, and the client
 // components read the address bar when they call an action.
 //
-// TWO LAYOUTS (UI-01, Sep 24 2026; R04, Sep 28 2026). The layout above is
-// "v1" and is what every real client sees until the rollout reaches them; its
-// render below is deliberately left exactly as it was. "v2" — Home · My Plan ·
-// Content Library · Schedule · More, in PortalShell — is served to TEST
-// clients, to the pilot clients the rollout names with the layout ticked
-// while `portal_layout_v2` is on, to everyone once the rollout is set to every
-// client, and to staff who add ?layout=v2 (lib/portalLayout decides, from the
-// client, never the viewer). Both read the same address
-// (lib/portalNav.resolvePortalRoute: old ?tab= links land in either layout)
-// and load their data through the same per-tab blocks below.
+// ONE LAYOUT (Jordan, Oct 6 2026: "I want to just be fully transitioned to
+// the new layout"). Until then this page had two: the old six tabs ("v1"),
+// which every real client saw, and the navigation above ("v2"), which
+// lib/portalLayout handed to TEST clients, rollout pilots and staff who
+// added ?layout=v2. The old tabs, the `portal_layout_v2` switch and the
+// staff preview link are gone; `?layout=v2` in an old address is ignored,
+// and every old ?tab= key lands on its page (lib/portalNav.resolvePortalRoute).
 // ---------------------------------------------------------------------------
 
-export type PortalTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms";
-const MAIN_TABS: { key: PortalTab; label: string; short: string; icon: typeof Home }[] = [
-  { key: "home", label: "Home", short: "Home", icon: Home },
-  { key: "videos", label: "My Videos", short: "Videos", icon: Clapperboard },
-  { key: "topics", label: "Video Topics", short: "Topics", icon: Lightbulb },
-  { key: "strategy", label: "My Strategy", short: "Strategy", icon: Compass },
-  { key: "schedule", label: "Schedule", short: "Schedule", icon: CalendarClock },
-  { key: "resources", label: "Resources", short: "Resources", icon: BookOpen },
-];
-const PHONE_BAR: PortalTab[] = ["home", "videos", "topics", "strategy"];
-// Old links (`?tab=library`, `?tab=ideas`) keep landing somewhere sensible, and
-// the v2 keys (plan, brand, team, more) degrade to the nearest v1 tab — one
-// map for both layouts, in lib/portalNav.ts.
-export const portalTabOf = (raw: string | undefined): PortalTab => resolvePortalRoute({ tab: raw }).v1Tab;
-
-/** Everything the address bar may carry besides the tab. `pv` is My Plan's subview, `q`/`st` the Library's search and status filter, `layout=v2` a staff preview (all v2). */
-export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string; page?: string; filter?: string; r?: string; pv?: string; q?: string; st?: string; layout?: string; month?: string; session?: string };
+/**
+ * Everything the address bar may carry besides the tab. `pv` is Your Month's
+ * subview, `q`/`st` the Library's search and status filter, `about=portal`
+ * the portal notice's "Tell us" (Messages opens prefilled as portal feedback). (`year`, and
+ * `layout` from an old staff-preview link, may still arrive; both are ignored.)
+ */
+export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string; page?: string; filter?: string; r?: string; pv?: string; q?: string; st?: string; layout?: string; month?: string; session?: string; about?: string };
 
 // Client-facing program terms. The AppSetting `portal-terms` overrides this
 // default wholesale (blank lines split paragraphs; "## " starts a heading) —
@@ -127,13 +104,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   await recordPortalVisit(viewer, path);
 
   const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { name: true, brandColors: true, portalVideoStyle: true, portalPreferences: true } });
-  // Where this address lands, and in which layout.
+  // Where this address lands, and which block of data it loads.
   const route = resolvePortalRoute({ tab: query.tab, pv: query.pv });
-  const tab: PortalTab = route.v1Tab;
-  const { layout, why } = await portalLayoutDecision(viewer, client?.name, query);
-  const v2 = layout === "v2";
-  /** What this visit loads: v1's tab, or nothing tab-specific for v2's More page. */
-  const dataTab: PortalTab | "more" = v2 && route.dest === "more" ? "more" : tab;
+  const dataTab = route.dataTab;
   const readOnly = access !== "FULL";
   const perms = {
     request: can(viewer, "requestChanges"),
@@ -157,21 +130,17 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // Cara's program was opened with "Hi Cara" — the account's name, not theirs
   // (review, Sep 17). The link seat has no person, so it keeps the account's.
   const first = ((actor.kind === "CLIENT" ? actor.name : null) || client?.name || "there").split(/\s+/)[0];
+  // The query every link keeps: `e=` on /portal/me, the selected month and
+  // session. `tabHref` answers the old tab-key signature with current
+  // addresses (portalNav.v2HrefFor) for the components written against it.
   const contextBase = [baseQuery, selectedMonth ? `month=${selectedMonth.monthKey}` : "", selectedSession ? `session=${selectedSession}` : ""].filter(Boolean).join("&");
-  const href = (t: string, extra?: string) => `?${contextBase ? `${contextBase}&` : ""}tab=${t}${extra ? `&${extra}` : ""}`;
-  // v2 links carry `layout=v2` only on a staff preview — a TEST client and the
-  // switch need nothing in the address. `tabHref` is the one the shared data
-  // below builds links with: v1's href in v1 (unchanged), v2 addresses in v2.
-  const v2Base = [contextBase, why === "STAFF_PREVIEW" ? "layout=v2" : ""].filter(Boolean).join("&");
-  const v2Href = v2HrefFor(v2Base);
-  const tabHref = v2 ? v2Href : href;
-  // W03: "Book the call" goes to the enabled MONTHLY_STRATEGY mapping's page
-  // (v1, unchanged otherwise) or to the booking inside Your Month (v2) —
-  // lib/callBooking.portalBookingLinks. Loaded once, only by the tabs that
-  // show it; in v2 with no mapping the link is the office conversation.
+  const tabHref = v2HrefFor(contextBase);
+  // W03: "Book the call" goes to the booking inside Your Month —
+  // lib/callBooking.portalBookingLinks. Loaded once, only by the pages that
+  // show it; with no mapping the link is the office conversation.
   const noCallLinks: { bookingUrl: string | null; view: PortalCallBookingView | null } = { bookingUrl: null, view: null };
-  const callLinksP = dataTab === "home" || dataTab === "schedule" || (v2 && route.dest === "plan")
-    ? portalBookingLinks(viewer, { layout: v2 ? "v2" : "v1", planHref: v2 ? portalHref(v2Base, "plan") : null, monthId: selectedMonth?.id })
+  const callLinksP = dataTab === "home" || dataTab === "schedule" || route.dest === "plan"
+    ? portalBookingLinks(viewer, { planHref: portalHref(contextBase, "plan"), monthId: selectedMonth?.id })
       .catch((e) => { console.error("[portal] call booking links failed", e); return noCallLinks; })
     : Promise.resolve(noCallLinks);
   const loadCallLinks = () => callLinksP;
@@ -191,7 +160,6 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
 
   // ---- per-tab data --------------------------------------------------------
   let home: HomeData | null = null;
-  let videosPage: { ok: true; data: VideoListPage } | { ok: false } | null = null;
   let detail: VideoDetailData | null = null;
   let videoStatusFailed = false;
   let topicsRes: { ok: true; data: PortalTopicsData } | { ok: false } | null = null;
@@ -298,12 +266,6 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         else videoStatusFailed = true;
       }
     }
-    if (!detail && !v2) {
-      const year = query.year && /^\d{4}$/.test(query.year) ? Number(query.year) : null;
-      const page = query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1;
-      // CP-12: `filter=previous` is the flat "Previous content" section.
-      videosPage = videoStatusFailed ? { ok: false } : await attempt("videos", () => portalVideoList(enrollment, { year, page, section: query.filter === "previous" ? "previous" : null }));
-    }
   }
   if (dataTab === "topics") {
     const ivId = query.iv && ID_RE.test(query.iv) ? query.iv : null;
@@ -362,6 +324,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         messages: t.messages, unreadBefore: t.unread,
         ownerFirst: t.owner.label && t.owner.label !== "unassigned" ? t.owner.label.split(/\s+/)[0] : contact.name,
         canMessage, refusal: canMessage ? null : refusalMessage(viewer, "message"), contact, hint: pm.VIDEO_CHANGES_HINT,
+        // Oct 6 2026: from the portal notice's "Tell us" — the box starts "Portal feedback: ".
+        ...(query.about === "portal" && PORTAL_MIGRATION_NOTICE.on ? { prefill: PORTAL_MIGRATION_NOTICE.prefill } : {}),
       };
     });
   }
@@ -401,377 +365,179 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       teamFailed: !!team && (!team.ok || !team.data.ok),
       signInEmailOn: emailSignInLive,
       profileHref: tabHref("profile"),
-      // v2 names the page as its nav does, and the office line comes from the
-      // owner-editable contact. v1 passes neither (its element tree stays
-      // HEAD's) and SettingsTab falls back to its own words and Kyle's line.
-      ...(v2 ? { profileLabel: "Brand Profile", contactLine: `call or text ${contact.name} at ${contact.display}` } : {}),
+      // The page named as the nav names it; the office line from the
+      // owner-editable contact.
+      profileLabel: "Brand Profile", contactLine: `call or text ${contact.name} at ${contact.display}`,
     };
   }
   const termsSetting = dataTab === "terms" ? await prisma.appSetting.findUnique({ where: { key: "portal-terms" } }).catch(() => null) : null;
   const terms = (termsSetting?.value?.trim() || DEFAULT_TERMS).split(/\n\s*\n/);
 
-  if (v2) {
-    // ---- v2: what the navigation counts, from the readers the tabs use ----
-    // Loaded on every page so a badge never appears on one tab and vanishes on
-    // the next; each is wrapped, and an unreadable count is no badge, not zero.
-    const [attn, topicsAll, guides, setupMore] = await Promise.all([
-      home?.attention ? Promise.resolve({ ok: true as const, data: home.attention }) : attempt("attention", () => libraryAttention(enrollment)),
-      topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : attempt("topics", () => portalTopics(enrollment)),
-      resourcesRes ?? attempt("resources", () => publishedResources()),
-      dataTab === "more" && !readOnly && perms.profile
-        ? attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer, { folder: false }))
-        : Promise.resolve(null),
-    ]);
-    const plan = topicsAll.ok ? planModel(topicsAll.data, monthKey) : null;
-    const published = guides.ok ? guides.data.reduce((n, g) => n + g.resources.length, 0) : 0;
-    const nav = portalNav({ publishedResources: published, badges: { plan: plan?.scripts.length, library: attn.ok ? attn.data.needReview : 0, messages: messagesUnread } });
-    const linked = { primary: nav.primary.map((i) => ({ ...i, href: portalHref(v2Base, i.dest) })), more: nav.more.map((i) => ({ ...i, href: portalHref(v2Base, i.dest) })) };
+  // ---- what the navigation counts, from the readers the pages use ----
+  // Loaded on every page so a badge never appears on one tab and vanishes on
+  // the next; each is wrapped, and an unreadable count is no badge, not zero.
+  const [attn, topicsAll, guides, setupMore] = await Promise.all([
+    home?.attention ? Promise.resolve({ ok: true as const, data: home.attention }) : attempt("attention", () => libraryAttention(enrollment)),
+    topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : attempt("topics", () => portalTopics(enrollment)),
+    resourcesRes ?? attempt("resources", () => publishedResources()),
+    dataTab === "more" && !readOnly && perms.profile
+      ? attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer, { folder: false }))
+      : Promise.resolve(null),
+  ]);
+  const plan = topicsAll.ok ? planModel(topicsAll.data, monthKey) : null;
+  const published = guides.ok ? guides.data.reduce((n, g) => n + g.resources.length, 0) : 0;
+  const nav = portalNav({ publishedResources: published, badges: { plan: plan?.scripts.length, library: attn.ok ? attn.data.needReview : 0, messages: messagesUnread } });
+  const linked = { primary: nav.primary.map((i) => ({ ...i, href: portalHref(contextBase, i.dest) })), more: nav.more.map((i) => ({ ...i, href: portalHref(contextBase, i.dest) })) };
 
-    // ---- Home: the one next step ----
-    let actions: { primary: HomeAction | null; more: HomeAction[] } = { primary: null, more: [] };
-    if (home) {
-      const pageRows = home.videos?.rows ?? [];
-      let waiting = pageRows.filter((r) => r.state === "FOR_REVIEW");
-      // The count is library-wide; page one may not hold every one of them.
-      if ((home.attention?.needReview ?? 0) > waiting.length) {
-        const all = await attempt("library", () => libraryRows(enrollment));
-        if (all.ok) waiting = all.data.rows.filter((r) => r.state === "FOR_REVIEW");
-      }
-      const deadlines = await reviewDeadlines(viewer, waiting).catch(() => new Map<string, { iso: string; label: string }>());
-      const soonest = [...deadlines.values()].sort((a, b) => a.iso.localeCompare(b.iso))[0] ?? null;
-      const reviewCount = home.attention?.needReview ?? waiting.length;
-      const readyPage = pageRows.filter((r) => (r.state === "APPROVED" || r.state === "DELIVERED") && r.downloadable);
-      const readyCount = home.attention?.readyToUse ?? readyPage.length;
-      const sv = homeSessionView(home.progress, home.schedule, { canBook: perms.session, readOnly });
-      const hp = home.topics ? planModel(home.topics, monthKey) : plan;
-      const filmedWork = !!home.progress && (home.progress.sessions.cards.some((s) => s.state === "FILMED") || home.progress.production.delivered > 0 || home.progress.production.approved > 0 || home.progress.production.awaitingYou > 0);
-      const visibleSelected = home.topics && hp?.month
-        ? home.topics.groups.flatMap((g) => g.topics).filter((t) => !t.declined && t.selection?.monthId === hp.month?.id).length
-        : 0;
-      const topicHistoryNeedsReview = filmedWork && !!hp?.month && (
-        hp.month.selected === 0 || visibleSelected < hp.month.selected
-      );
-      actions = homeActions({
-        status: enrollment.status, readOnly, perms,
-        review: { count: reviewCount, single: reviewCount === 1 && waiting.length === 1 ? { id: waiting[0].id, title: waiting[0].title } : null, soonestDeadlineLabel: soonest?.label ?? null },
-        scripts: (hp?.scripts ?? []).map((t) => ({ topicId: t.id, title: t.title })),
-        unread: messagesUnread,
-        planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
-        month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
-        filmingStarted: filmedWork, topicHistoryNeedsReview,
-        toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
-        session: {
-          offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing,
-          // A21/A20: the next session's "Schedule later" and its gate's earliest start.
-          deferred: !!home.schedule?.deferredAtISO,
-          earliestLabel: home.schedule?.earliestISO ? new Date(home.schedule.earliestISO).toLocaleDateString("en-US", { timeZone: home.planning?.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null,
-        },
-        addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
-        setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
-        ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
-      }, v2Base);
-    }
-
-    // ---- Content Library: search + filters over the whole library ----
-    let library: LibraryV2Data | null = null;
-    let libraryFailed = videoStatusFailed;
-    if (route.dest === "library" && !detail && !videoStatusFailed) {
+  // ---- Home: the one next step ----
+  let actions: { primary: HomeAction | null; more: HomeAction[] } = { primary: null, more: [] };
+  if (home) {
+    const pageRows = home.videos?.rows ?? [];
+    let waiting = pageRows.filter((r) => r.state === "FOR_REVIEW");
+    // The count is library-wide; page one may not hold every one of them.
+    if ((home.attention?.needReview ?? 0) > waiting.length) {
       const all = await attempt("library", () => libraryRows(enrollment));
-      if (all.ok) {
-        const view = libraryView(all.data.rows, { q: query.q, st: isLibraryFilter(query.st) ? query.st : "all", page: query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1 });
-        const deadlines = await reviewDeadlines(viewer, view.review).catch(() => new Map<string, { iso: string; label: string }>());
-        library = { view, deadlines: Object.fromEntries([...deadlines].map(([id, d]) => [id, d.label])), hidden: baseQueryPairs(v2Base), incomplete: !all.data.complete };
-      } else libraryFailed = true;
+      if (all.ok) waiting = all.data.rows.filter((r) => r.state === "FOR_REVIEW");
     }
-
-    const planHrefs: Record<PlanView, string> = {
-      month: portalHref(v2Base, "plan"), scripts: portalHref(v2Base, "plan", "pv=scripts"), bank: portalHref(v2Base, "plan", "pv=bank"), strategy: portalHref(v2Base, "plan", "pv=strategy"),
-    };
-
-    // ---- Your Month: the guided plan needs the month's planning, its
-    // scheduling card and (to book) the live slots — the same loads the
-    // Schedule page makes, each wrapped so a failure reads "couldn't load".
-    let yourMonth: PlanTabData["yourMonth"] = null;
-    if (route.dest === "plan" && route.planView === "month" && !interviewRes) {
-      const [p, sm] = await Promise.all([
-        attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
-        attempt("schedule months", () => portalScheduleMonths(enrollment)),
-      ]);
-      const thisMonth = p.ok && p.data && sm.ok ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? null : null;
-      let days: PortalSlotDay[] = [];
-      if (thisMonth && perms.session && !readOnly && !thisMonth.locked && (thisMonth.capacity.remaining > 0 || thisMonth.requests.some((r) => r.canChange))) {
-        const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
-        days = await companySlotDays({ package: pkg }).catch(() => []);
-      }
-      yourMonth = {
-        planning: p.ok ? p.data : null, planningFailed: !p.ok,
-        schedule: thisMonth, scheduleFailed: !sm.ok,
-        slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
-        can: { suggest: perms.suggest, session: perms.session },
-        scheduleHref: portalHref(v2Base, "schedule"),
-        selectedSessionIndex: selectedSession,
-      };
-    }
-    const setupLeft = setupMore?.ok && !setupMore.data.complete ? Math.max(0, setupMore.data.total - setupMore.data.done) : null;
-    return (
-      <PortalShell
-        clientName={client?.name ?? null}
-        dest={route.dest}
-        nav={linked}
-        notices={{
-          readOnly: readOnly ? readOnlyNotice(enrollment.status) : null,
-          staff: actor.kind === "STAFF" ? { who: who ?? "Staff", clientName: client?.name ?? "", exitHref: why === "STAFF_PREVIEW" ? href(tab) : null } : null,
-          offerSignIn,
-          viewOnlySeat: actor.kind === "CLIENT" && actor.membershipRole === "VIEWER" && !readOnly,
-        }}
-        // CP-13: the conversation when this viewer may use it, the office line always.
-        footer={route.dest !== "messages" ? <ContactTeam contact={contact} messagesHref={canMessage ? v2Href("messages") : null} className="mt-8" /> : null}
-      >
-        {query.month && !selectedMonth && (route.dest === "plan" || route.dest === "schedule") && <p role="status" className="mt-4 rounded-xl border border-border bg-surface-2 p-3 text-sm text-muted">That planning month is not available here. Your open months are shown below.</p>}
-        {route.dest === "home" && home && <HomeV2 d={home} actions={actions} href={v2Href} />}
-        {route.dest === "plan" && route.planView && (
-          <PlanTab d={{
-            view: route.planView,
-            topics: topicsAll.ok ? topicsAll.data : null, topicsFailed: !topicsAll.ok,
-            interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
-            strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
-            monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
-          }} />
-        )}
-        {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={v2Href} /> : <LibraryV2 d={library} failed={libraryFailed} href={v2Href} />)}
-        {route.dest === "schedule" && (
-          <ScheduleTab
-            key={`${selectedMonth?.id ?? "default"}:${selectedSession ?? "next"}`}
-            selectedMonthId={selectedMonth?.id} selectedSessionIndex={selectedSession}
-            planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
-            months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
-            slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
-            topicsHref={planHrefs.month} topicsLabel="Your Month" routeHref={`${planHrefs.month}#step-route`}
-          />
-        )}
-        {route.dest === "more" && (
-          <MoreTab d={{
-            items: linked.more, setupLeft, who, staff: actor.kind === "STAFF", clientFirst: (client?.name || "the client").split(/\s+/)[0],
-            canSignOut: actor.kind === "CLIENT", offerSignIn,
-          }} />
-        )}
-        {route.dest === "brand" && (
-          <div className="mt-6 space-y-4">
-            <h1 className="text-xl font-semibold tracking-tight">Brand Profile</h1>
-            {brand ? <PortalProfile view={brand} suggested={suggested} readOnly={!perms.profile} /> : brandFailed ? <LoadFailed what="your brand profile" /> : null}
-          </div>
-        )}
-        {route.dest === "messages" && <MessagesTab d={messagesRes?.ok ? messagesRes.data : null} failed={!!messagesRes && !messagesRes.ok} />}
-        {route.dest === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} contact={contact} messagesHref={canMessage ? v2Href("messages") : null} />}
-        {route.dest === "team" && settings && <SettingsTab d={settings} />}
-        {route.dest === "terms" && <TermsCard blocks={terms} />}
-      </PortalShell>
+    const deadlines = await reviewDeadlines(viewer, waiting).catch(() => new Map<string, { iso: string; label: string }>());
+    const soonest = [...deadlines.values()].sort((a, b) => a.iso.localeCompare(b.iso))[0] ?? null;
+    const reviewCount = home.attention?.needReview ?? waiting.length;
+    const readyPage = pageRows.filter((r) => (r.state === "APPROVED" || r.state === "DELIVERED") && r.downloadable);
+    const readyCount = home.attention?.readyToUse ?? readyPage.length;
+    const sv = homeSessionView(home.progress, home.schedule, { canBook: perms.session, readOnly });
+    const hp = home.topics ? planModel(home.topics, monthKey) : plan;
+    const filmedWork = !!home.progress && (home.progress.sessions.cards.some((s) => s.state === "FILMED") || home.progress.production.delivered > 0 || home.progress.production.approved > 0 || home.progress.production.awaitingYou > 0);
+    const visibleSelected = home.topics && hp?.month
+      ? home.topics.groups.flatMap((g) => g.topics).filter((t) => !t.declined && t.selection?.monthId === hp.month?.id).length
+      : 0;
+    const topicHistoryNeedsReview = filmedWork && !!hp?.month && (
+      hp.month.selected === 0 || visibleSelected < hp.month.selected
     );
+    actions = homeActions({
+      status: enrollment.status, readOnly, perms,
+      review: { count: reviewCount, single: reviewCount === 1 && waiting.length === 1 ? { id: waiting[0].id, title: waiting[0].title } : null, soonestDeadlineLabel: soonest?.label ?? null },
+      scripts: (hp?.scripts ?? []).map((t) => ({ topicId: t.id, title: t.title })),
+      unread: messagesUnread,
+      planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
+      month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
+      filmingStarted: filmedWork, topicHistoryNeedsReview,
+      toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
+      session: {
+        offerBooking: sv.offerBooking, required: sv.required, missing: sv.missing,
+        // A21/A20: the next session's "Schedule later" and its gate's earliest start.
+        deferred: !!home.schedule?.deferredAtISO,
+        earliestLabel: home.schedule?.earliestISO ? new Date(home.schedule.earliestISO).toLocaleDateString("en-US", { timeZone: home.planning?.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null,
+      },
+      addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
+      setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
+      ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
+    }, contextBase);
   }
 
-  // ======================== v1 — today's page, unchanged ========================
-  const account = { who, staff: actor.kind === "STAFF", first, profileHref: href("profile"), settingsHref: href("settings"), termsHref: href("terms"), messagesHref: href("messages"), unread: messagesUnread, tab, canSignOut: actor.kind === "CLIENT", offerSignIn };
+  // ---- Content Library: search + filters over the whole library ----
+  let library: LibraryV2Data | null = null;
+  let libraryFailed = videoStatusFailed;
+  if (route.dest === "library" && !detail && !videoStatusFailed) {
+    const all = await attempt("library", () => libraryRows(enrollment));
+    if (all.ok) {
+      const view = libraryView(all.data.rows, { q: query.q, st: isLibraryFilter(query.st) ? query.st : "all", page: query.page && /^\d{1,4}$/.test(query.page) ? Number(query.page) : 1 });
+      const deadlines = await reviewDeadlines(viewer, view.review).catch(() => new Map<string, { iso: string; label: string }>());
+      library = { view, deadlines: Object.fromEntries([...deadlines].map(([id, d]) => [id, d.label])), hidden: baseQueryPairs(contextBase), incomplete: !all.data.complete };
+    } else libraryFailed = true;
+  }
 
+  const planHrefs: Record<PlanView, string> = {
+    month: portalHref(contextBase, "plan"), scripts: portalHref(contextBase, "plan", "pv=scripts"), bank: portalHref(contextBase, "plan", "pv=bank"), strategy: portalHref(contextBase, "plan", "pv=strategy"),
+  };
+
+  // ---- Your Month: the guided plan needs the month's planning, its
+  // scheduling card and (to book) the live slots — the same loads the
+  // Schedule page makes, each wrapped so a failure reads "couldn't load".
+  let yourMonth: PlanTabData["yourMonth"] = null;
+  if (route.dest === "plan" && route.planView === "month" && !interviewRes) {
+    const [p, sm] = await Promise.all([
+      attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
+      attempt("schedule months", () => portalScheduleMonths(enrollment)),
+    ]);
+    const thisMonth = p.ok && p.data && sm.ok ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? null : null;
+    let days: PortalSlotDay[] = [];
+    if (thisMonth && perms.session && !readOnly && !thisMonth.locked && (thisMonth.capacity.remaining > 0 || thisMonth.requests.some((r) => r.canChange))) {
+      const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
+      days = await companySlotDays({ package: pkg }).catch(() => []);
+    }
+    yourMonth = {
+      planning: p.ok ? p.data : null, planningFailed: !p.ok,
+      schedule: thisMonth, scheduleFailed: !sm.ok,
+      slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
+      can: { suggest: perms.suggest, session: perms.session },
+      scheduleHref: portalHref(contextBase, "schedule"),
+      selectedSessionIndex: selectedSession,
+    };
+  }
+  // Oct 6 2026: the portal notice's "Tell us" and the footer's "Report a
+  // problem" — the existing conversation, opened prefilled as portal feedback.
+  const feedbackHref = `${portalHref(contextBase, "messages", PORTAL_FEEDBACK_QUERY)}#program-message`;
+  const setupLeft = setupMore?.ok && !setupMore.data.complete ? Math.max(0, setupMore.data.total - setupMore.data.done) : null;
   return (
-    // The Shell renders /portal bare (isBare in src/components/Shell.tsx); this
-    // full-viewport layer is the portal's own scroll surface.
-    <div className="portal-light fixed inset-0 z-50 overflow-y-auto bg-background text-foreground">
-      <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 h-72" style={{ background: "radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, var(--brand) 14%, transparent), transparent 70%)" }} />
-      <div className="relative mx-auto max-w-3xl p-4 pb-28 sm:p-6 sm:pb-24">
-        {/* BRAND + NAME + ACCOUNT MENU */}
-        <div className="flex items-center gap-3 pt-4">
-          <BrandWordmark variant="onLight" className="h-5 sm:h-6" />
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-            <div className="min-w-0 text-right">
-              <div className="truncate text-sm font-semibold leading-tight">{client?.name}</div>
-              <div className="text-[11px] text-muted-2">Content Program</div>
-            </div>
-            <details className="relative">
-              <summary className="relative flex size-11 shrink-0 cursor-pointer list-none items-center justify-center rounded-full border border-border bg-surface/80 text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden" aria-label="Account menu">
-                <UserRound className="size-4" />
-                {messagesUnread > 0 && <span className="absolute right-0 top-0 size-2.5 rounded-full bg-brand ring-2 ring-background" aria-label={`${messagesUnread} new message${messagesUnread === 1 ? "" : "s"}`} />}
-              </summary>
-              <div className="absolute right-0 z-10 mt-2 w-60 rounded-2xl border border-border bg-surface p-1.5 shadow-lg"><AccountItems a={account} /></div>
-            </details>
-          </div>
-        </div>
-
-        {/* TABS — segmented pill on wider screens; the phone gets the bottom bar. */}
-        <nav aria-label="Portal sections" className="mt-5 hidden gap-1 rounded-2xl border border-border bg-surface/70 p-1 backdrop-blur sm:flex">
-          {MAIN_TABS.map((t) => (
-            <Link key={t.key} href={href(t.key)} aria-current={tab === t.key ? "page" : undefined}
-              className={cn("flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 py-2 text-[13px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tab === t.key ? "bg-brand-action text-white shadow" : "text-muted hover:text-foreground")}>
-              <t.icon className="size-4" /> {t.label}
-            </Link>
-          ))}
-        </nav>
-
-        {/* NOTICES */}
-        {readOnly && (() => {
-          // CP-12: one wording of the paused/ended state, with the way back.
-          const n = readOnlyNotice(enrollment.status);
-          return (
-            <div className="mt-5 flex flex-wrap items-start gap-2 rounded-2xl border border-border bg-surface/80 p-3.5 text-sm">
-              <PauseCircle className="mt-0.5 size-4 shrink-0 text-muted" />
-              <div className="min-w-0 flex-1 basis-56">
-                <div className="font-semibold">{n.title}</div>
-                <div className="text-xs text-muted">{n.body}</div>
-              </div>
-              <a href={n.cta.href} target="_blank" rel="noopener noreferrer" className="shrink-0 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{n.cta.label}</a>
-            </div>
-          );
-        })()}
-        {actor.kind === "STAFF" && (
-          <div className="mt-5 flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
-            <Eye className="mt-0.5 size-4 shrink-0 text-warning" />
-            <div className="text-xs">You&rsquo;re viewing this as <span className="font-semibold">{who}</span>, on {client?.name}&rsquo;s behalf. Anything you submit here is recorded as <span className="font-semibold">you, on their behalf</span> — never as them.
-              {/* UI-01: staff only. The client keeps this layout until portal_layout_v2 is on. */}
-              {" "}<Link href={`${href(tab)}&layout=v2`} className="font-semibold text-brand hover:underline">Preview the new layout</Link></div>
-          </div>
-        )}
-        {offerSignIn && (
-          <div className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-3.5 text-sm">
-            <KeyRound className="size-4 shrink-0 text-brand" />
-            <span className="min-w-0 flex-1 text-xs">Set up your sign-in — a personal link by email, so this page is yours wherever you open it. This link keeps working too.</span>
-            <Link href="/portal/login" className="rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white">Sign in with email</Link>
-          </div>
-        )}
-        {actor.kind === "CLIENT" && actor.membershipRole === "VIEWER" && !readOnly && (
-          <div className="mt-5 flex items-start gap-2 rounded-2xl border border-border bg-surface/80 p-3.5 text-xs text-muted">
-            <Eye className="mt-0.5 size-4 shrink-0" /> You have view-only access to this program. The program owner can make changes.
-          </div>
-        )}
-
-        {/* ---------------- TABS ---------------- */}
-        {tab === "home" && home && <HomeTab d={home} href={href} />}
-        {tab === "videos" && (detail ? <VideoDetail d={detail} href={href} /> : <VideosList page={videosPage?.ok ? videosPage.data : null} failed={!!videosPage && !videosPage.ok} href={href} />)}
-        {tab === "topics" && (
-          <TopicsTab
-            topics={topicsRes?.ok ? topicsRes.data : null} failed={!!topicsRes && !topicsRes.ok}
-            interview={interviewRes?.ok ? interviewRes.data : null} interviewFailed={!!interviewRes && !interviewRes.ok}
-            href={href} canAct={perms.suggest} readOnly={readOnly} filter={query.filter}
-          />
-        )}
-        {tab === "strategy" && <StrategyTab strategy={strategyRes?.ok ? strategyRes.data : null} failed={!!strategyRes && !strategyRes.ok} priorities={priorities} monthKey={monthKey} canSuggest={perms.suggest} readOnly={readOnly} />}
-        {tab === "schedule" && (
-          <ScheduleTab
-            key={`${selectedMonth?.id ?? "default"}:${selectedSession ?? "next"}`}
-            selectedMonthId={selectedMonth?.id} selectedSessionIndex={selectedSession}
-            planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
-            months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
-            slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
-            topicsHref={href("topics")}
-          />
-        )}
-        {tab === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} contact={contact} messagesHref={canMessage ? href("messages") : null} />}
-        {tab === "messages" && <MessagesTab d={messagesRes?.ok ? messagesRes.data : null} failed={!!messagesRes && !messagesRes.ok} />}
-
-        {/* ---------------- MY BRAND PROFILE ---------------- */}
-        {tab === "profile" && (
-          <div className="mt-6 space-y-4">
-            <h1 className="text-xl font-semibold tracking-tight">My Brand Profile</h1>
-            {brand ? (
-              <PortalProfile view={brand} suggested={suggested} readOnly={!perms.profile} />
-            ) : brandFailed ? (
-              <LoadFailed what="your brand profile" />
-            ) : null}
-          </div>
-        )}
-
-        {/* ---------------- SETTINGS & TEAM (CP-06) ---------------- */}
-        {tab === "settings" && settings && <SettingsTab d={settings} />}
-
-        {/* ---------------- TERMS ---------------- */}
-        {tab === "terms" && (
-          <div className="panel-shadow mt-6 rounded-2xl border border-border bg-surface/70 p-5 backdrop-blur">
-            <div className="flex items-center gap-2 text-sm font-semibold"><ScrollText className="size-4 text-brand" /> Terms of Service</div>
-            <div className="mt-3 space-y-3">
-              {terms.map((block, i) => {
-                if (block.startsWith("## ")) {
-                  const [head, ...rest] = block.split("\n");
-                  const body = rest.join("\n").trim();
-                  return (
-                    <div key={i}>
-                      <h3 className="pt-3 text-sm font-bold text-foreground">{head.replace(/^## /, "")}</h3>
-                      {body && (rest.every((l) => !l.trim() || l.trim().startsWith("- ")) ? (
-                        <ul className="mt-2 space-y-1 pl-1">{rest.filter((l) => l.trim().startsWith("- ")).map((l, j) => <li key={j} className="flex gap-2 text-sm leading-relaxed text-foreground/85"><span className="text-brand">·</span><span>{l.trim().replace(/^- /, "")}</span></li>)}</ul>
-                      ) : (
-                        <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/85">{body}</p>
-                      ))}
-                    </div>
-                  );
-                }
-                const lines = block.split("\n");
-                if (lines.every((l) => l.trim().startsWith("- "))) {
-                  return <ul key={i} className="space-y-1 pl-1">{lines.map((l, j) => <li key={j} className="flex gap-2 text-sm leading-relaxed text-foreground/85"><span className="text-brand">·</span><span>{l.trim().replace(/^- /, "")}</span></li>)}</ul>;
-                }
-                return <p key={i} className="whitespace-pre-line text-sm leading-relaxed text-foreground/85">{block}</p>;
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* CP-13: the footer used to tell clients to text us, with nothing to
-            text. The conversation when this viewer may use it, the office line always. */}
-        {tab !== "messages" && <ContactTeam contact={contact} messagesHref={canMessage ? href("messages") : null} className="mt-8" />}
-      </div>
-
-      {/* PHONE BAR — Home · Videos · Topics · Strategy · More. */}
-      <nav aria-label="Portal sections" className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 backdrop-blur sm:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-        <div className="mx-auto grid max-w-3xl grid-cols-5">
-          {MAIN_TABS.filter((t) => PHONE_BAR.includes(t.key)).map((t) => (
-            <Link key={t.key} href={href(t.key)} aria-current={tab === t.key ? "page" : undefined} className={cn("flex min-h-12 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tab === t.key ? "text-brand" : "text-muted")}>
-              <t.icon className="size-5" /> {t.short}
-            </Link>
-          ))}
-          <details className="group relative">
-            <summary className={cn("flex min-h-12 cursor-pointer list-none flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden", ["schedule", "resources", "messages", "profile", "settings", "terms"].includes(tab) ? "text-brand" : "text-muted")}>
-              <span className="relative"><MoreHorizontal className="size-5" />{messagesUnread > 0 && <span className="absolute -right-1 -top-0.5 size-2 rounded-full bg-brand" aria-hidden />}</span> More
-            </summary>
-            <div className="absolute bottom-full right-2 mb-2 w-60 rounded-2xl border border-border bg-surface p-1.5 shadow-lg">
-              <MenuLink href={href("schedule")} icon={CalendarClock} active={tab === "schedule"}>Schedule</MenuLink>
-              <MenuLink href={href("resources")} icon={BookOpen} active={tab === "resources"}>Resources</MenuLink>
-              <div className="my-1 border-t border-border" />
-              <div className="px-3 pt-1 text-[10px] font-semibold uppercase tracking-widest text-muted-2">Account</div>
-              <AccountItems a={account} />
-            </div>
-          </details>
-        </div>
-      </nav>
-    </div>
-  );
-}
-
-function MenuLink({ href, icon: Icon, active = false, children }: { href: string; icon: typeof Home; active?: boolean; children: React.ReactNode }) {
-  return (
-    <Link href={href} className={cn("flex items-center gap-2 rounded-xl px-3 py-2 text-sm hover:bg-surface-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", active ? "font-semibold text-brand" : "text-muted")}>
-      <Icon className="size-4" /> {children}
-    </Link>
-  );
-}
-
-type AccountMenu = { who: string | null; staff: boolean; first: string; profileHref: string; settingsHref: string; termsHref: string; messagesHref: string; unread: number; tab: PortalTab; canSignOut: boolean; offerSignIn: boolean };
-/** The account menu's items — shared by the top-right menu and the phone bar's More sheet. */
-function AccountItems({ a }: { a: AccountMenu }) {
-  return (
-    <>
-      {a.who && (
-        <div className="px-3 py-2 text-xs text-muted-2">
-          {a.staff ? <>Viewing as <span className="font-semibold text-foreground">{a.who}</span> on {a.first}&rsquo;s behalf</> : <>Signed in as <span className="font-semibold text-foreground">{a.who}</span></>}
+    <PortalShell
+      clientName={client?.name ?? null}
+      dest={route.dest}
+      nav={linked}
+      notices={{
+        readOnly: readOnly ? readOnlyNotice(enrollment.status) : null,
+        staff: actor.kind === "STAFF" ? { who: who ?? "Staff", clientName: client?.name ?? "" } : null,
+        offerSignIn,
+        viewOnlySeat: actor.kind === "CLIENT" && actor.membershipRole === "VIEWER" && !readOnly,
+        // Oct 6 2026: "we're still moving things over" — every viewer, every page, until retired in lib/portalNotice.ts.
+        migrating: PORTAL_MIGRATION_NOTICE.on ? { tellUsHref: feedbackHref } : null,
+      }}
+      // CP-13: the conversation when this viewer may use it, the office line always.
+      footer={route.dest !== "messages" ? (
+        <>
+          <ContactTeam contact={contact} messagesHref={canMessage ? tabHref("messages") : null} className="mt-8" />
+          {/* Oct 6 2026: still reachable after the notice's "Got it". */}
+          {PORTAL_MIGRATION_NOTICE.on && <p className="mt-3 text-center text-xs"><Link href={feedbackHref} data-report-problem className="inline-flex min-h-11 items-center font-medium text-muted underline-offset-2 hover:text-foreground hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{PORTAL_MIGRATION_NOTICE.report}</Link></p>}
+        </>
+      ) : null}
+    >
+      {query.month && !selectedMonth && (route.dest === "plan" || route.dest === "schedule") && <p role="status" className="mt-4 rounded-xl border border-border bg-surface-2 p-3 text-sm text-muted">That planning month is not available here. Your open months are shown below.</p>}
+      {route.dest === "home" && home && <HomeV2 d={home} actions={actions} href={tabHref} />}
+      {route.dest === "plan" && route.planView && (
+        <PlanTab d={{
+          view: route.planView,
+          topics: topicsAll.ok ? topicsAll.data : null, topicsFailed: !topicsAll.ok,
+          interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
+          strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
+          monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
+        }} />
+      )}
+      {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={tabHref} /> : <LibraryV2 d={library} failed={libraryFailed} href={tabHref} />)}
+      {route.dest === "schedule" && (
+        <ScheduleTab
+          key={`${selectedMonth?.id ?? "default"}:${selectedSession ?? "next"}`}
+          selectedMonthId={selectedMonth?.id} selectedSessionIndex={selectedSession}
+          planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
+          months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
+          slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
+          topicsHref={planHrefs.month} topicsLabel="Your Month" routeHref={`${planHrefs.month}#step-route`}
+        />
+      )}
+      {route.dest === "more" && (
+        <MoreTab d={{
+          items: linked.more, setupLeft, who, staff: actor.kind === "STAFF", clientFirst: (client?.name || "the client").split(/\s+/)[0],
+          canSignOut: actor.kind === "CLIENT", offerSignIn,
+        }} />
+      )}
+      {route.dest === "brand" && (
+        <div className="mt-6 space-y-4">
+          <h1 className="text-xl font-semibold tracking-tight">Brand Profile</h1>
+          {brand ? <PortalProfile view={brand} suggested={suggested} readOnly={!perms.profile} /> : brandFailed ? <LoadFailed what="your brand profile" /> : null}
         </div>
       )}
-      <MenuLink href={a.messagesHref} icon={MessageSquare} active={a.tab === "messages"}>
-        Messages{a.unread > 0 && <span className="ml-auto rounded-full bg-brand-action px-1.5 text-[11px] font-semibold text-white">{a.unread}</span>}
-      </MenuLink>
-      <MenuLink href={a.profileHref} icon={UserRound} active={a.tab === "profile"}>My Brand Profile</MenuLink>
-      <MenuLink href={a.settingsHref} icon={Settings} active={a.tab === "settings"}>Settings &amp; team</MenuLink>
-      <MenuLink href={a.termsHref} icon={ScrollText} active={a.tab === "terms"}>Terms</MenuLink>
-      {a.canSignOut && (
-        <form action={signOutPortal}>
-          <button type="submit" className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><LogOut className="size-4" /> Sign out</button>
-        </form>
-      )}
-      {a.offerSignIn && <MenuLink href="/portal/login" icon={KeyRound}>Sign in with email</MenuLink>}
-    </>
+      {route.dest === "messages" && <MessagesTab d={messagesRes?.ok ? messagesRes.data : null} failed={!!messagesRes && !messagesRes.ok} />}
+      {route.dest === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} contact={contact} messagesHref={canMessage ? tabHref("messages") : null} />}
+      {route.dest === "team" && settings && <SettingsTab d={settings} />}
+      {route.dest === "terms" && <TermsCard blocks={terms} />}
+    </PortalShell>
   );
 }

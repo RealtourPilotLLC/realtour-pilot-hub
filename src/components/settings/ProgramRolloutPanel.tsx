@@ -18,8 +18,8 @@ import { SaveStatus } from "@/components/ui/SaveStatus";
 // WHO THE PROGRAM MAY REACH (R03, Sep 28 2026) — the one list.
 //
 // Every client-facing program feature (reminders, the scripts-ready and
-// office-replied emails, portal invitations and sign-in, the new layout,
-// automatic sharing, review deadlines, automatic approval, carry-over) AND the
+// office-replied emails, portal invitations and sign-in, automatic sharing,
+// review deadlines, automatic approval, carry-over) AND the
 // hub's Aryeo/Calendly bookings for real clients read this: only your TEST
 // clients (the default), your TEST clients plus the named pilot clients (up
 // to PROGRAM_PILOT_MAX — 30 since Oct 5 2026, when each client got their own

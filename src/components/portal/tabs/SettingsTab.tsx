@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { KeyRound, Palette, UserRound, Users } from "lucide-react";
 import { Card, CardTitle, LoadFailed, RowLink } from "@/components/portal/ui";
-import { contactLine } from "@/components/portal/ContactTeam";
 import { TeamSettings } from "@/components/portal/TeamSettings";
 import type { TeamSeat } from "@/lib/portalTeam";
 
@@ -28,10 +27,10 @@ export type SettingsData = {
   teamFailed: boolean;
   signInEmailOn: boolean;
   profileHref: string;
-  /** The Brand Profile page's name in this layout: v1 "My Brand Profile", v2 "Brand Profile" (Sep 24). */
-  profileLabel?: string;
+  /** The Brand Profile page's name, as the nav names it ("Brand Profile"). */
+  profileLabel: string;
   /** "call or text Kyle at (215) 645-4889" — the office line (programMessages.portalContact), never a bare "text us". */
-  contactLine?: string;
+  contactLine: string;
 };
 
 const ROLE_WORDS: Record<string, string> = {
@@ -76,7 +75,7 @@ export function SettingsTab({ d }: { d: SettingsData }) {
                 <Link href="/portal/login" className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white"><KeyRound className="size-3.5" /> Sign in with email</Link>
               </div>
             ) : (
-              <p className="mt-2 text-sm text-muted">Adding teammates opens when email sign-in is switched on for your account. Until then, {d.contactLine ?? contactLine()} with their name and email and we&rsquo;ll add them for you.</p>
+              <p className="mt-2 text-sm text-muted">Adding teammates opens when email sign-in is switched on for your account. Until then, {d.contactLine} with their name and email and we&rsquo;ll add them for you.</p>
             )
           ) : (
             <p className="mt-2 text-sm text-muted">Only the program owner can add or remove people on this account.</p>
@@ -84,7 +83,7 @@ export function SettingsTab({ d }: { d: SettingsData }) {
         </Card>
       </section>
 
-      <RowLink href={d.profileHref} icon={Palette}>{d.profileLabel ?? "My Brand Profile"} — colors, logo, fonts, links, music</RowLink>
+      <RowLink href={d.profileHref} icon={Palette}>{d.profileLabel} — colors, logo, fonts, links, music</RowLink>
     </div>
   );
 }

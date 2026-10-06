@@ -41,7 +41,7 @@ import { PROGRAM_PILOT_GROUPS, type ProgramReachOp } from "@/lib/programRolloutC
 
 /** Every toggle on step 3, plus bookings (step 6). */
 export type OnboardingToggleKey =
-  | "accounts" | "messages" | "layout" | "emails"
+  | "accounts" | "messages" | "emails"
   | "revision_policy" | "review_auto_approve" | "topic_carryover" | "script_auto_share" | "caption_assistant"
   | "bookings";
 
@@ -61,7 +61,7 @@ const groupOps = (key: string): ProgramReachOp[] => [...(PROGRAM_PILOT_GROUPS.fi
 
 /**
  * The toggles, derived from PROGRAM_PILOT_GROUPS so they cannot drift from
- * the rollout's own groups: accounts, layout and emails as one toggle each,
+ * the rollout's own groups: accounts and emails as one toggle each,
  * the automatic portal changes one per feature, bookings last (step 6).
  */
 export const ONBOARDING_TOGGLES: readonly OnboardingToggle[] = [
@@ -73,10 +73,8 @@ export const ONBOARDING_TOGGLES: readonly OnboardingToggle[] = [
     key: "messages", label: "Messages I send myself", ops: groupOps("messages"), switches: [],
     words: "You can send them the messages in step 5. Nothing about this is automatic: a message goes only when you press Send now.",
   },
-  {
-    key: "layout", label: "New portal layout", ops: groupOps("layout"), switches: ["portal_layout_v2"],
-    words: "Their portal opens on the new layout: Home, My Plan, Content Library, Schedule.",
-  },
+  // "New portal layout" (layout) RETIRED Oct 6 2026: every client has the
+  // new layout, so there is nothing to allow per client.
   {
     key: "emails", label: "Automatic program emails", ops: groupOps("emails"), switches: ["reminders", "script_share_email", "program_message_notice"],
     words: "The hub may email them on its own: reminders, \"your scripts are ready\" and \"the office replied\". The messages you send yourself are the separate toggle above.",
@@ -117,7 +115,6 @@ export const ONBOARDING_TOGGLES: readonly OnboardingToggle[] = [
 export const SWITCH_WOULD: Partial<Record<AutomationKey, string>> = {
   portal_invites: "would email a welcome on its own when they pay, and an invitation when someone is invited to their portal",
   portal_login_email: "would email them a one-time sign-in link when they ask for one on the sign-in page",
-  portal_layout_v2: "would show them the new layout on their next visit (no message)",
   reminders: "would email them reminders on its own: book a call, finish their answers, approve scripts, review videos",
   script_share_email: "would email them on its own when you approve a script or release their strategy",
   program_message_notice: "would email them on its own when the office replies to them on their portal",

@@ -143,6 +143,7 @@ export async function loadFieldProposals(clientId: string): Promise<FieldProposa
 
 export async function loadStrategyTargets(enrollmentId: string): Promise<{ targets: Record<string, ProposalTargetUi>; sections: { id: string; heading: string }[] }> {
   const { approvedStrategy } = await import("@/lib/contentStrategy");
+  const { isFrameworkSection, canonicalFrameworkSectionText } = await import("@/lib/contentPolicy");
   const [rows, approved] = await Promise.all([
     prisma.contentStrategyProposal.findMany({ where: { enrollmentId, status: "PROPOSED", targetKey: { startsWith: "strategy.section:" } }, select: { id: true, targetKey: true, diffJson: true, baseVersionId: true } }),
     approvedStrategy(enrollmentId),
@@ -154,7 +155,8 @@ export async function loadStrategyTargets(enrollmentId: string): Promise<{ targe
     try { diff = (JSON.parse(r.diffJson ?? "[]") as { from: string | null; to: string }[])[0] ?? null; } catch { diff = null; }
     const section = approved?.stored.sections.find((s) => s.id === sectionId) ?? null;
     out[r.id] = {
-      heading: section?.heading ?? null, current: section?.text ?? null, proposed: diff?.to ?? "",
+      // The framework section reads as the house framework (Oct 6 2026), as it does in the version view.
+      heading: section?.heading ?? null, current: section ? (isFrameworkSection(section) ? canonicalFrameworkSectionText(section.text) : section.text) : null, proposed: diff?.to ?? "",
       stale: !section || (approved?.versionId !== r.baseVersionId && (section.text ?? "").replace(/\s+/g, " ").trim() !== (diff?.from ?? "").replace(/\s+/g, " ").trim()),
     };
   }

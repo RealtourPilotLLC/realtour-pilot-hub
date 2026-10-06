@@ -6,10 +6,11 @@ import {
 import type { ReadOnlyNotice } from "@/lib/portal";
 import { primaryDestOf, type NavItem, type PortalDest } from "@/lib/portalNav";
 import { CountBadge } from "@/components/portal/ui";
+import { PortalMigrationNotice } from "@/components/portal/PortalMigrationNotice";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
-// THE v2 PORTAL FRAME (UI-01, Sep 24 2026): header, notices and navigation
+// THE PORTAL FRAME (UI-01, Sep 24 2026; the only layout since Oct 6 2026): header, notices and navigation
 // around whichever destination PortalPage renders. Server-only markup — no
 // client state, so nothing can be left "open" and nothing needs JS to work.
 //
@@ -33,10 +34,12 @@ type Linked = NavItem & { href: string };
 
 export type ShellNotices = {
   readOnly: ReadOnlyNotice | null;
-  /** Staff looking through the owner iframe; `exitHref` when this is a ?layout=v2 preview. */
-  staff: { who: string; clientName: string; exitHref: string | null } | null;
+  /** Staff looking through the owner iframe. (Its "preview of the new layout" exit went with the old layout, Oct 6 2026.) */
+  staff: { who: string; clientName: string } | null;
   offerSignIn: boolean;
   viewOnlySeat: boolean;
+  /** Oct 6 2026: "we're still moving things over" (lib/portalNotice.ts); null when retired. `tellUsHref` opens Messages prefilled. */
+  migrating: { tellUsHref: string } | null;
 };
 
 export function PortalShell({ clientName, dest, nav, notices, footer, children }: {
@@ -133,10 +136,11 @@ function RailLink({ i, active, small = false }: { i: Linked; active: boolean; sm
   );
 }
 
-/** The same four notices as v1, in the same words. */
+/** The four notices, in the same words the old layout used. */
 function Notices({ n, clientName }: { n: ShellNotices; clientName: string | null }) {
   return (
     <>
+      {n.migrating && <PortalMigrationNotice tellUsHref={n.migrating.tellUsHref} />}
       {n.readOnly && (
         <div className="mt-5 flex flex-wrap items-start gap-2 rounded-2xl border border-border bg-surface/80 p-3.5 text-sm">
           <PauseCircle className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
@@ -152,9 +156,7 @@ function Notices({ n, clientName }: { n: ShellNotices; clientName: string | null
           <Eye className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
           <div className="min-w-0 flex-1 basis-56 text-xs">
             You&rsquo;re viewing this as <span className="font-semibold">{n.staff.who}</span>, on {clientName ?? n.staff.clientName}&rsquo;s behalf. Anything you submit here is recorded as <span className="font-semibold">you, on their behalf</span> — never as them.
-            {n.staff.exitHref && <> This is a <span className="font-semibold">preview of the new layout</span>; the client still sees the current one.</>}
           </div>
-          {n.staff.exitHref && <Link href={n.staff.exitHref} className={cn("inline-flex min-h-11 shrink-0 items-center rounded-lg border border-border bg-surface px-3 text-xs font-semibold", focus)}>Back to the current layout</Link>}
         </div>
       )}
       {n.offerSignIn && (

@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { reportError } from "@/lib/errorTracker";
 // TYPES ONLY (R03, Sep 28 2026): the gate module is imported lazily, below, and
 // only for the six rollout kinds — a confirmation or a staff text never loads it.
 import type { GateCode, GateVerdict } from "@/lib/programRolloutGate";
@@ -645,6 +646,9 @@ export function createOutbox(deps: {
       // a stuck message a person can see beats a second text to a client.
       const ambiguous = e instanceof OutboxSendError ? e.ambiguous : true;
       const message = e instanceof Error ? e.message : "send failed";
+      // A failed client/staff send is a bug or a provider outage someone must
+      // see (Oct 6 2026). Grouped per channel; never the recipient or body.
+      reportError(e, { area: `outbox:send/${row.channel}`, ambiguous, status: e instanceof OutboxSendError ? e.status ?? null : null });
       if (ambiguous) {
         await markUnknown(id, message, { leaseBy: workerId });
         return { outcome: "unknown", id, error: message };

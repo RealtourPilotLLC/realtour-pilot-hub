@@ -4,6 +4,7 @@ import { useEffect, useRef, useTransition } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { ActionLink, Button } from "@/components/ui/Action";
 import { usePathname } from "next/navigation";
+import { sendClientError } from "@/lib/clientErrorReport";
 
 // Something broke on a page. Before this existed, a failure showed the browser's
 // own blank error screen: the person had nothing to read, nothing to press and
@@ -20,6 +21,10 @@ export default function ErrorScreen({ error, unstable_retry }: {
   useEffect(() => {
     // The digest is what ties this to the server log — always print it.
     console.error("Page error", error.digest ?? "", error);
+    // Into the error tracker (/settings/errors). A server error (it has a
+    // digest) was already recorded by onRequestError; this sends only errors
+    // thrown in the browser. Never throws.
+    sendClientError(error, { digest: error.digest, boundary: "page" });
   }, [error]);
   useEffect(() => {
     // The framework retry returns void. Release only after a committed render

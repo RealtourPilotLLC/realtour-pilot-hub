@@ -5481,3 +5481,45 @@ model ReworkCost {
   @@unique([evidenceRef, kind])
   @@index([projectId])
 }
+
+// ---------------------------------------------------------------------------
+// ERROR TRACKER (Oct 6 2026). Jordan: "I also want to make sure we are tracking
+// any errors that arise so we can get the reports of them and fix them
+// quickly." One row per BUG, not per occurrence: `fingerprint` is a hash of the
+// normalised message + top stack frame + route, so the same failure on a
+// thousand page loads is one row with count = 1000. Written by
+// src/lib/errorTracker.ts (instrumentation onRequestError, the /api/errors
+// client beacon, the cron step wrapper, and reportError() in a few swallowed
+// catches); read by the owner's /settings/errors page. Everything stored is
+// SCRUBBED first (portal/upload tokens, emails, phone numbers, bearer/JWT and
+// long secret-shaped strings) and no request body, cookie or header is ever
+// kept. Status OPEN | FIXED | IGNORED; a FIXED row that recurs is reopened.
+// ---------------------------------------------------------------------------
+model ErrorEvent {
+  id            String    @id @default(cuid())
+  fingerprint   String    @unique
+  status        String    @default("OPEN") // OPEN | FIXED | IGNORED
+  source        String // server-request | server-action | route-handler | cron | client | client-portal | background
+  errorName     String? // e.g. TypeError, PrismaClientKnownRequestError
+  message       String // scrubbed sample message (first seen), <= 1000 chars
+  stack         String? // scrubbed, truncated to 8000 chars
+  route         String? // normalised route (ids → [id], tokens → [token]) — part of the fingerprint
+  lastPath      String? // scrubbed concrete path of the latest occurrence
+  recentPaths   String? // JSON string[] — up to 5 distinct scrubbed paths
+  digest        String? // latest Next.js digest (matches the server log / the error screen's reference)
+  context       String? // small scrubbed JSON: routeType, method, step, area…
+  count         Int       @default(1)
+  firstSeenAt   DateTime  @default(now())
+  lastSeenAt    DateTime  @default(now())
+  lastUserId    String? // AppUser id of the signed-in person, when known
+  lastUserRole  String?
+  reopenedAt    DateTime?
+  reopenCount   Int       @default(0)
+  resolvedAt    DateTime?
+  resolvedBy    String?
+  lastAlertedAt DateTime? // per-fingerprint alert dedupe (6 h) + the hourly global cap
+
+  @@index([status, lastSeenAt])
+  @@index([lastSeenAt])
+  @@index([lastAlertedAt])
+}

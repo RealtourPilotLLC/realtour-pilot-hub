@@ -10,9 +10,13 @@ import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 // conversation with the office, not a form. The server answers with a
 // sentence, and when the words read like a change to a video it repeats where
 // those go — the message is still sent and kept, never re-routed.
-export function MessageComposer({ replyToId, ownerFirst, hint }: { replyToId: string | null; ownerFirst: string; hint: string }) {
+export function MessageComposer({ replyToId, ownerFirst, hint, initialBody = "" }: {
+  replyToId: string | null; ownerFirst: string; hint: string;
+  /** Oct 6 2026: what the box starts with (the portal notice's "Tell us" → "Portal feedback: "). The client still writes and sends it. */
+  initialBody?: string;
+}) {
   const router = useRouter();
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(initialBody);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, start] = useTransition();
   const box = useRef<HTMLTextAreaElement>(null);

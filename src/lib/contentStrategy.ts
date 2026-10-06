@@ -4,7 +4,7 @@ import { sha256 } from "@/lib/aiRuns";
 import { createPillar, listPillars } from "@/lib/contentPillars";
 import { CONFIDENTIAL_RE, confidentialFilter } from "@/lib/clientFacts";
 import {
-  parseStrategyDocument, normalizeStrategyLines, validateStrategyStructure, detectStructureVersion,
+  parseStrategyDocument, normalizeStrategyLines, validateStrategyStructure, detectStructureVersion, isFrameworkSection, withCanonicalFramework,
   type ParsedStrategy, type StrategyDocument, type StrategyStructureVersion,
 } from "@/lib/contentPolicy";
 
@@ -168,7 +168,7 @@ export async function importStrategyVersion(opts: { enrollmentId: string; text: 
   const r = await createStrategyVersion({
     enrollmentId: opts.enrollmentId, stored, rawText: opts.text.slice(0, 200_000), sourceKind: "import", sourceRef: opts.fileName, createdBy: opts.createdBy,
     importItemId: opts.importItemId ?? null, status: "INTERNAL_REVIEW",
-    changeSummary: `Imported from ${opts.fileName} (${parsed.structureVersion} structure; ${validation.pillarCount} pillars; framework: ${validation.frameworkSource})`,
+    changeSummary: `Imported from ${opts.fileName} (${parsed.structureVersion} structure; ${validation.pillarCount} pillars; framework: the house framework${validation.documentFramework === "own wording" ? " (the document’s own is not used)" : ""})`,
   });
   return { ...r, validation, structureVersion: parsed.structureVersion, pillarCount: validation.pillarCount };
 }
@@ -371,7 +371,13 @@ export async function approvedStrategy(enrollmentId: string): Promise<{ versionI
   if (!v) return null;
   const stored = parseStoredSections(v.sectionsJson);
   if (!stored) return null;
-  return { versionId: v.id, versionNo: v.versionNo, label: `v${v.versionNo}`, document: stored.document, stored, releasedAt: v.releasedAt };
+  // Oct 6 2026: every prompt built from this document gets the house Video
+  // Structure Framework, never the imported document's own (read-time swap —
+  // the stored version is not touched). The style note is read from the
+  // section's verbatim text, which an older parse could have split badly.
+  const fwSection = stored.sections.find((x) => isFrameworkSection(x));
+  const document = stored.document ? withCanonicalFramework(stored.document, fwSection?.text ?? null) : null;
+  return { versionId: v.id, versionNo: v.versionNo, label: `v${v.versionNo}`, document, stored, releasedAt: v.releasedAt };
 }
 
 export async function strategyVersions(enrollmentId: string) {

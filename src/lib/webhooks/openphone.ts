@@ -104,6 +104,9 @@ export async function POST(req: NextRequest) {
       where: { id: log.id },
       data: { status: "ERROR", error: e instanceof Error ? e.message : String(e) },
     });
+    // Visible to the owner in the error tracker (Oct 6 2026).
+    const { reportError } = await import("@/lib/errorTracker");
+    reportError(e, { area: `webhook:openphone/${String(type).slice(0, 60)}`, source: "route-handler", path: "/api/webhooks/openphone" });
   }
   return NextResponse.json({ ok: true });
 }

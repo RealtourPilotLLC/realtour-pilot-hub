@@ -28,7 +28,8 @@ export type StrategyBlock =
   | { kind: "paragraph"; text: string }
   | { kind: "card"; title: string; blocks: StrategyBlock[] };
 
-export type StrategyDocSection = { id: string; heading: string; text: string };
+/** `canonical`: shown by the hub but not stored in this version (the house Video Structure Framework on a document that had none) — nothing to edit. */
+export type StrategyDocSection = { id: string; heading: string; text: string; canonical?: boolean };
 
 const BULLET_RE = /^\s*(?:[-•*·▪◦●]|(\d{1,2})[.)])\s+/;
 const PILLAR_RE = /^pillar\s*\d+\b/i;

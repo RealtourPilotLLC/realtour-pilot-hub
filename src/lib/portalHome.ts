@@ -176,7 +176,8 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       add({
         kind: "ANSWER_QUESTIONS", count: i.toAnswer.length,
         title: one ? (one.missing === 1 ? `One more question on “${one.title}”` : `Answer the questions for “${one.title}”`) : `Answer the questions for ${plural(i.toAnswer.length, "topic")}`,
-        detail: "We write each script from your answers.", cta: one ? answerCta(one.missing ?? 0) : CTA_WORDS.ANSWER, dest: "plan", step: "answers",
+        // The call route has no answers step: its gaps are asked in the call step (yourMonth).
+        detail: "We write each script from your answers.", cta: one ? answerCta(one.missing ?? 0) : CTA_WORDS.ANSWER, dest: "plan", step: i.planning?.planningMode === "CALL" ? "call" : "answers",
       });
     }
     const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;

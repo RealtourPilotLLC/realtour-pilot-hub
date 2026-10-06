@@ -14,7 +14,7 @@ import { programRevenue, billingLabel, agreementValue, type RevenueRow } from "@
 import { signupsNeedingReview } from "@/lib/stripeSignups";
 import { dismissSignupReview, setRosterView } from "@/app/content/actions";
 import { SweepButton } from "@/components/content/SweepButton";
-import { BadgeDollarSign, BookOpen, ChevronDown, Activity, LayoutGrid, ListChecks, Rows3, Settings2 } from "lucide-react";
+import { BadgeDollarSign, BookOpen, ChevronDown, Activity, LayoutGrid, ListChecks, Phone, Rows3, Settings2 } from "lucide-react";
 import { programOverview, ALL_OPEN, OVERVIEW_FILTERS, type OverviewFilterKey, type OverviewRow as Row } from "@/lib/programOverview";
 import { OverviewRow } from "@/components/content/OverviewRow";
 import { ClientMonthCard, PkgChip } from "@/components/content/ClientMonthCard";
@@ -123,6 +123,9 @@ export default async function ContentProgramPage({
             </form>
             <Link href="/content/resources" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
               <BookOpen className="size-3.5" /> <span className="hidden sm:inline">Resources</span>
+            </Link>
+            <Link href="/content/calls" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+              <Phone className="size-3.5" /> <span className="hidden sm:inline">Strategy calls</span>
             </Link>
             <Link href="/content/monitoring" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
               <Activity className="size-3.5" /> <span className="hidden sm:inline">Monitoring</span>

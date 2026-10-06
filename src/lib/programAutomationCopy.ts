@@ -359,17 +359,4 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     cadence: "hourly",
     launchGate: "programScope",
   },
-  portal_layout_v2: {
-    // R04 (Sep 28 2026): the switch alone used to mean every client. Now it
-    // is the switch AND the rollout scope (portalLayout.portalLayoutDecision):
-    // pilot clients get it with the pilot, everyone only in the rollout's
-    // "every client" mode, and a client taken out of the pilot is back on
-    // today's layout on their next page load.
-    title: "New portal layout for the clients the rollout reaches",
-    onEffect: "THE PORTAL OF EVERY CLIENT THE ROLLOUT REACHES (your TEST clients, the pilot clients you named with the layout ticked, or everyone once the rollout is set to every client) switches to the new layout on their next page load: Home with one next step, My Plan (this month, scripts to approve, topic bank, strategy), Content Library (videos to review first, search and filters), Schedule, and More (Brand Profile, Messages, Resources, Settings & Team, Terms), with a bottom bar on phones. Everyone else keeps today's layout. Nothing is sent and no data changes; old links keep working. TEST clients already see it, and staff can preview any client with ?layout=v2. Turning it off, or taking a client out of the pilot, puts them back on today's layout.",
-    reaches: "clients",
-    recipients: "The clients the rollout reaches, on their next portal visit. Nothing is sent",
-    cadence: "on-action",
-    launchGate: "programScope",
-  },
 };

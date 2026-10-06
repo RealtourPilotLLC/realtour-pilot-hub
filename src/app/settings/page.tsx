@@ -22,7 +22,7 @@ import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck, Zap, EyeOff, type LucideIcon } from "lucide-react";
+import { CalendarCheck, Zap, EyeOff, Bug, type LucideIcon } from "lucide-react";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
 import { loadAutomations } from "@/app/settings/programActions";
 import { RemindersPanel } from "@/components/settings/RemindersPanel";
@@ -372,9 +372,26 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </Section>
     ),
     integrations: (
-      <Suspense key="integrations-readiness" fallback={<ProviderCardSkeleton icon={Plug} title="Connections" note="reading the connections…" />}>
-        <IntegrationsReadiness report={readiness} isOwner={isOwner} />
-      </Suspense>
+      <>
+        <Suspense key="integrations-readiness" fallback={<ProviderCardSkeleton icon={Plug} title="Connections" note="reading the connections…" />}>
+          <IntegrationsReadiness report={readiness} isOwner={isOwner} />
+        </Suspense>
+        {/* THE ERROR TRACKER (Oct 6 2026) — owner-only: stacks and routes are
+            the inside of the system. */}
+        {isOwner && (
+          <Section key="error-reports" icon={Bug} title="Errors">
+            <div className="-mx-2 space-y-0.5">
+              <Link href="/settings/errors" className={linkRow}>
+                <span className="min-w-0 flex-1">
+                  <span className="font-medium">Error reports</span>
+                  <span className="block text-[12px] text-muted">Every error the hub has hit, grouped with counts. Mark fixed, ignore, or copy a report for Claude.</span>
+                </span>
+                <ArrowRight className="size-4 shrink-0 text-muted-2" aria-hidden />
+              </Link>
+            </div>
+          </Section>
+        )}
+      </>
     ),
     financial: (
       <Section key="money-links" icon={Wallet} title="Payroll & bank feeds">

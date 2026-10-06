@@ -373,7 +373,9 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
     const strategyVars = n.action === "STRATEGY_READY" ? await strategyReadyVars(e.id, e.clientId, now, readStrategyVersionId(n.evaluatedStateJson)) : {};
     // A token link can open straight on the strategy; a sign-in link lands on
     // their home (the sign-in route honours no other destination).
-    const portalLink = n.action === "STRATEGY_READY" && link.kind === "token" ? `${link.url}?tab=strategy` : link.url;
+    // One portal layout (Oct 6 2026): the strategy lives in Your Month ›
+    // Strategy; an old ?tab=strategy in a sent email still lands there too.
+    const portalLink = n.action === "STRATEGY_READY" && link.kind === "token" ? `${link.url}?tab=plan&pv=strategy` : link.url;
     const vars: TemplateVars = {
       firstName: firstNameOf(client.name), month: n.monthKey ? monthName(n.monthKey) : "this month", portalLink, bookCallLink: null, noCallEligible: false, answersStarted: false,
       sessionNote: null, earliestSession: null, itemCount: titles.length, titles, updatedTitles: updated, deadline: null, ...strategyVars,

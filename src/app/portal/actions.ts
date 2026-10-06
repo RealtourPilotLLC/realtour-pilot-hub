@@ -939,7 +939,7 @@ export async function portalProposeStrategyCorrection(auth: PortalAuth, input: {
  * off for this client). Sets the written path and nothing else: a booked call
  * is NOT cancelled here (that is a separate, explicit act on Calendly).
  */
-export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): Promise<R> {
+export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): Promise<RUndo> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
   const month = await openMonthForEnrollment(v.enrollment.id, monthId);
@@ -949,13 +949,15 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
   if (!p) return fail("Pick one of your open program months.");
   if (!p.noCallEligible) return fail("Your program plans each month on a strategy call — book it and we'll take it from there.");
   if (p.planningMode === "WRITTEN") return { ok: true, message: "You're already planning this month in writing." };
-  const { setPlanningMode } = await import("@/lib/programMonths");
+  // Oct 6: a switch that would orphan work is refused (portal.planningSwitchRefusal).
+  if (p.switchBlocked.WRITTEN) return fail(p.switchBlocked.WRITTEN);
+  const { choosePlanningMode } = await import("@/lib/programMonths");
   // §6.4: the explicit choice is stamped (planningChosenAt/By). Nothing else
   // moves — no call record, no session request, no selection or script.
-  await setPlanningMode(month.id, "WRITTEN", choiceBy(v));
-  await ownerBell("portal_planning", `Planning in writing — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} chose to plan ${month.monthKey} without a call.${p.callStatus === "SCHEDULED" ? " A call is still booked — cancel it on Calendly if it is no longer needed." : ""}`, `/content/${v.enrollment.id}`, `portal-planning-${month.id}`);
+  const chose = await choosePlanningMode(month.id, "WRITTEN", choiceBy(v));
+  await ownerBell("portal_planning", `Planning in writing — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} chose to plan ${month.monthKey} without a call.${p.callStatus === "SCHEDULED" ? " A call is still booked — cancel it on Calendly if it is no longer needed." : ""}`, `/content/${v.enrollment.id}`, planBellKey("portal-planning", month.id));
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — you're choosing your topics here. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — you're choosing your topics here. Pick your topics and answer the questions; filming opens once your answers are in." };
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — you're choosing your topics here. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — you're choosing your topics here. Pick your topics and answer the questions; filming opens once your answers are in.", undo: chose ? await sealPlanUndo(v, month.id, chose) : undefined };
 }
 
 /**
@@ -965,7 +967,7 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
  * texting us (review, Sep 17). Same permission and same eligibility check as
  * the outward choice; it only flips the month's planning mode, never a booking.
  */
-export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Promise<R> {
+export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Promise<RUndo> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
   const month = await openMonthForEnrollment(v.enrollment.id, monthId);
@@ -977,12 +979,120 @@ export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Pro
   // An UNDECIDED month is a real choice too (§6.4's opening prompt), so it is
   // stamped like one; only a month already chosen for the call is a no-op.
   if (p.planningMode === "CALL" && p.chosenAtISO) return { ok: true, message: "This month is already on the strategy-call path." };
-  const { setPlanningMode } = await import("@/lib/programMonths");
-  await setPlanningMode(month.id, "CALL", choiceBy(v));
+  if (p.switchBlocked.CALL) return fail(p.switchBlocked.CALL);
+  const { choosePlanningMode } = await import("@/lib/programMonths");
+  const chose = await choosePlanningMode(month.id, "CALL", choiceBy(v));
   const back = p.planningMode === "WRITTEN";
-  await ownerBell("portal_planning", `${back ? "Back to a strategy call" : "Planning on a call"} — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} ${back ? "moved" : "chose to plan"} ${month.monthKey} ${back ? "back to the strategy-call path" : "on a strategy call"}.`, `/content/${v.enrollment.id}`, `portal-planning-back-${month.id}`);
+  await ownerBell("portal_planning", `${back ? "Back to a strategy call" : "Planning on a call"} — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} ${back ? "moved" : "chose to plan"} ${month.monthKey} ${back ? "back to the strategy-call path" : "on a strategy call"}.`, `/content/${v.enrollment.id}`, planBellKey("portal-planning-back", month.id));
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — we'll talk your topics through on the call you've booked." : "Done — book your strategy call and we'll plan the month on it. You can book filming as soon as the call is booked." };
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — we'll talk your topics through on the call you've booked." : "Done — book your strategy call and we'll plan the month on it. You can book filming as soon as the call is booked.", undo: chose ? await sealPlanUndo(v, month.id, chose) : undefined };
+}
+
+// ---------------------------------------------------------------------------
+// UNDO A ROUTE CHOICE (Oct 6 2026). Jordan: "I want the agent to be able to
+// undo selecting choose 4 video topics vs scheduling a call."
+//
+// Two doors, one action:
+//   · the "Undo" beside the confirmation right after a tap — it carries the
+//     sealed token the choice handed back, and puts the month back EXACTLY as
+//     it was (the previous route, "not chosen" included, and the previous
+//     planningChosenAt/By);
+//   · "Undo my choice" under "Change how you plan this month" — no token; the
+//     month goes back to no choice (the two equal cards, or the booked call's
+//     route when one is booked).
+// The token is AES-GCM sealed with the app secret (lib/integrations/crypto):
+// the client cannot read or forge what it restores, it names this enrollment
+// and month, and it lapses after PLAN_UNDO_TTL_MS. The write is a
+// compare-and-set on the stamp the choice wrote, so an undo can never land on
+// top of a later choice (another tab, staff). Same gates as the choice:
+// requestSession, an open month of this enrollment, noCallEligible. Nothing
+// is cancelled — a booked call stays booked; topics, answers and scripts stay.
+// ---------------------------------------------------------------------------
+/** Planning bells dedupe per month per ET day (Oct 6): one ping a day per kind, so the latest state still reaches the owner the next day. */
+const planBellKey = (prefix: string, monthId: string) => `${prefix}-${monthId}-${new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })}`;
+
+type RUndo = R & { /** Sealed: hand back to portalPlanUndecided to put the month back as it was. */ undo?: string };
+const PLAN_UNDO_KIND = "plan-undo:1";
+const PLAN_UNDO_TTL_MS = 30 * 60_000;
+
+async function sealPlanUndo(v: PortalViewer, monthId: string, chose: { before: import("@/lib/programMonths").PlanningChoiceSnapshot; at: Date }): Promise<string | undefined> {
+  try {
+    const { encryptSecret } = await import("@/lib/integrations/crypto");
+    const b = chose.before;
+    return encryptSecret(JSON.stringify({
+      k: PLAN_UNDO_KIND, e: v.enrollment.id, m: monthId, a: chose.at.getTime(), x: Date.now() + PLAN_UNDO_TTL_MS,
+      p: { mode: b.mode, at: b.chosenAt?.getTime() ?? null, by: b.chosenBy, cs: b.strategyCallStatus },
+    }));
+  } catch {
+    return undefined; // no undo offered beats a broken one
+  }
+}
+
+type PlanUndoSeal = { at: Date; to: { mode: "CALL" | "WRITTEN" | null; chosenAt: Date | null; chosenBy: string | null; strategyCallStatus: string | null } };
+async function openPlanUndo(token: string, enrollmentId: string, monthId: string): Promise<PlanUndoSeal | "expired" | null> {
+  try {
+    const { decryptSecret } = await import("@/lib/integrations/crypto");
+    const o = JSON.parse(decryptSecret(String(token).slice(0, 2000))) as { k?: string; e?: string; m?: string; a?: number; x?: number; p?: { mode?: string | null; at?: number | null; by?: string | null; cs?: string | null } };
+    if (o.k !== PLAN_UNDO_KIND || o.e !== enrollmentId || o.m !== monthId || typeof o.a !== "number" || typeof o.x !== "number" || !o.p) return null;
+    if (o.x < Date.now()) return "expired";
+    const mode = o.p.mode === "CALL" || o.p.mode === "WRITTEN" ? o.p.mode : null;
+    return { at: new Date(o.a), to: { mode, chosenAt: typeof o.p.at === "number" ? new Date(o.p.at) : null, chosenBy: typeof o.p.by === "string" ? o.p.by : null, strategyCallStatus: typeof o.p.cs === "string" ? o.p.cs : null } };
+  } catch {
+    return null;
+  }
+}
+
+const shortMonth = (monthKey: string) => {
+  const [y, m] = monthKey.split("-").map(Number);
+  return y && m ? new Date(Date.UTC(y, m - 1, 15)).toLocaleString("en-US", { month: "short", timeZone: "UTC" }) : monthKey;
+};
+
+export async function portalPlanUndecided(auth: PortalAuth, monthId: string, restore?: string | null): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const month = await openMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
+  if (!month) return fail("Pick one of your open program months.");
+  const { portalPlanning } = await import("@/lib/portal");
+  const p = await portalPlanning(v.enrollment, month.id);
+  if (!p) return fail("Pick one of your open program months.");
+  if (!p.noCallEligible) return fail("Your program plans each month on a strategy call, so there's no choice to undo.");
+  const { restorePlanningMode } = await import("@/lib/programMonths");
+
+  let to: PlanUndoSeal["to"];
+  let expect: Date | null;
+  if (restore) {
+    const seal = await openPlanUndo(restore, v.enrollment.id, month.id);
+    if (seal === "expired") return fail("That undo has timed out. Use \u201cChange how you plan this month\u201d instead.");
+    if (!seal) return fail("That undo didn't work. Refresh the page and try again.");
+    to = seal.to;
+    expect = seal.at;
+  } else {
+    const raw = await prisma.contentMonth.findUnique({ where: { id: month.id }, select: { planningMode: true, planningChosenAt: true } });
+    if (!raw?.planningMode) return { ok: true, message: "There's no choice to undo for this month." };
+    to = { mode: null, chosenAt: null, chosenBy: null, strategyCallStatus: null };
+    expect = raw.planningChosenAt;
+  }
+  // The cutoffs: a return to NO choice reads portal.planningUndoRefusal;
+  // putting back a route chosen a moment ago is a switch, and reads the
+  // switch rule (planningSwitchRefusal) like the switch actions do.
+  if (to.mode === null && p.undoBlocked) return fail(p.undoBlocked);
+  if (to.mode !== null && p.switchBlocked[to.mode]) return fail(p.switchBlocked[to.mode]!);
+
+  const r = await restorePlanningMode(month.id, to, expect);
+  if (!r.restored) return fail("This month's plan changed since then. Refresh the page to see where it stands.");
+  const now = r.after?.planningMode ?? "UNDECIDED";
+  const callBooked = r.after?.strategyCallStatus === "SCHEDULED";
+  const outcome = now === "WRITTEN" ? "Back to choosing topics in writing." : now === "CALL" ? (callBooked ? "Back on the strategy call they booked." : "Back on the strategy-call path.") : "Not chosen yet.";
+  // One bell per month per ET day (notifyInApp keeps a dedupe key for good):
+  // an undo, a re-choice and another undo the same day are one ping.
+  await ownerBell("portal_planning", `Planning choice undone — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} undid their choice for ${shortMonth(month.monthKey)}. ${outcome}`, `/content/${v.enrollment.id}`, planBellKey("portal-planning-undo", month.id));
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return {
+    ok: true,
+    message: now === "WRITTEN" ? "Undone. You're back to choosing your topics here."
+      : now === "CALL" ? (callBooked ? "Undone. Your strategy call is still booked, so we'll plan this month on it." : "Undone. You're back to talking your topics through on a call.")
+      : "Undone. Choose how you'd like to plan this month whenever you're ready. Nothing you've done is lost.",
+  };
 }
 
 /**

@@ -100,7 +100,8 @@ export async function manifestEntries(dir: string): Promise<{ entries: ManifestE
       subheadings: subheadingsOf(doc),
       fieldLabels: labelsOf(doc),
       pillarCount: v.pillarCount,
-      framework: v.frameworkSource,
+      // Whether the DOCUMENT defines its own (structure fact). Every client is shown and prompted with the house framework either way (Oct 6 2026).
+      framework: v.documentFramework === "own wording" ? "document" : "policy default",
       missingFromTemplate: v.missing,
     });
   }

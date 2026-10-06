@@ -30,6 +30,9 @@ const PURPOSES = [
   { value: "", label: "Not part of the program" },
   { value: "MONTHLY_STRATEGY", label: "Monthly strategy call" },
   { value: "BRAND_DISCOVERY", label: "Brand discovery (onboarding)" },
+  // Oct 6 2026: a generic type clients ALSO book ("30 Minute Strategy Call"):
+  // recorded, filed only for a verified client, the rest wait on Content → Strategy calls.
+  { value: "STRATEGY_CANDIDATE", label: "Possible strategy call (shared type)" },
   { value: "IGNORED", label: "Explicitly ignore" },
 ];
 const fmt = (d: Date | string | null | undefined) =>

@@ -449,6 +449,10 @@ export async function POST(req: NextRequest) {
       where: { id: log.id },
       data: { status: "ERROR", error: e instanceof Error ? e.message : String(e) },
     });
+    // The hourly retry sweep re-runs the row; the error tracker makes the bug
+    // visible to the owner (Oct 6 2026).
+    const { reportError } = await import("@/lib/errorTracker");
+    reportError(e, { area: `webhook:aryeo/${String(eventType).slice(0, 60)}`, source: "route-handler", path: "/api/webhooks/aryeo" });
     // Still 200 so Aryeo doesn't hammer retries for a processing bug we'll fix.
   }
 
@@ -913,6 +917,8 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
       // Never fail the webhook over the new-client path: the daily roster sweep
       // is still the backstop that creates whoever this missed.
       console.warn("[webhook] aryeo: new-client path failed", e);
+      const { reportError } = await import("@/lib/errorTracker");
+      reportError(e, { area: "webhook:aryeo/new-client", source: "route-handler", path: "/api/webhooks/aryeo" });
     }
     try { await syncAryeoCustomers(); } catch { /* non-fatal */ }
     try { await syncClientSegments(); } catch { /* non-fatal */ }

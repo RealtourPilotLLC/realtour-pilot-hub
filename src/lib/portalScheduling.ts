@@ -16,7 +16,7 @@ export function portalMonthHref(href: string, monthKey: string, sessionIndex?: n
   const source = new URLSearchParams(query);
   const params = new URLSearchParams();
   const allowed: Record<string, RegExp> = {
-    e: /^[a-z0-9]{10,40}$/i, layout: /^v[12]$/,
+    e: /^[a-z0-9]{10,40}$/i,
     tab: /^(home|plan|library|schedule|more|brand|messages|resources|team|terms|videos|topics|ideas|strategy|profile|settings)$/,
     pv: /^(month|scripts|bank|strategy)$/, filter: /^(ALL|SUGGESTED|SELECTED|PREPARING|FILMED)$/,
   };

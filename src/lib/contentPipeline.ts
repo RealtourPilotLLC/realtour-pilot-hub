@@ -260,7 +260,9 @@ export async function buildAgentProfileFromHistory(clientId: string, opts?: Pipe
   if (strategy?.sectionsJson) {
     try {
       const sec = JSON.parse(strategy.sectionsJson) as Record<string, string>;
-      material.push("CONTENT STRATEGY:\n" + Object.entries(sec).map(([k, v]) => `## ${k}\n${v}`).join("\n"));
+      // Oct 6 2026: the house Video Structure Framework, never the imported document's own.
+      const { isFrameworkSection, canonicalFrameworkSectionText } = await import("@/lib/contentPolicy");
+      material.push("CONTENT STRATEGY:\n" + Object.entries(sec).map(([k, v]) => `## ${k}\n${isFrameworkSection({ heading: k }) ? canonicalFrameworkSectionText(String(v ?? "")) : v}`).join("\n"));
     } catch { /* skip */ }
   }
   if (intelNotes.length) material.push("FACTS LEARNED ON STRATEGY & DISCOVERY CALLS:\n" + intelNotes.map((n) => `- ${n.body}`).join("\n"));

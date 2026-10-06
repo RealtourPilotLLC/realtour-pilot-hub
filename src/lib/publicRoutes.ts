@@ -31,6 +31,10 @@ export const PUBLIC_PREFIXES = [
   "/api/cron",
   "/api/health",
   "/api/activity",
+  // The browser error beacon (Oct 6 2026): portal visitors have no session and
+  // their errors are the ones that matter most. Same-origin, size-capped and
+  // rate-limited inside the route; stores no client data.
+  "/api/errors",
 ] as const;
 
 /** The client-facing feedback form is /feedback/<projectId> — ONE segment. The

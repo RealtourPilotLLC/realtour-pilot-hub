@@ -62,7 +62,31 @@ export type YourMonthInput = {
   readOnly: boolean;
   hrefs: { bank: string; month: string; scripts: string; bookingUrl: string };
   timezone?: string;
+  /** The clock "today"/"tomorrow" is read against (default: now). */
+  now?: Date;
 };
+
+/** A zone's short label — "ET" for New York (the office's own words), else what Intl calls it. */
+function zoneLabel(tz: string, at: Date): string {
+  if (tz === "America/New_York") return "ET";
+  return new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(at).find((p) => p.type === "timeZoneName")?.value ?? tz;
+}
+
+/**
+ * A booked call's time in the client's own words (Oct 6): "today at 4:00 PM
+ * ET", "tomorrow at 9:30 AM ET", else "Thursday, October 9 at 4:00 PM ET" —
+ * the day read in the client's zone, never the server's.
+ */
+export function callWhenWords(iso: string, tz: string = "America/New_York", now: Date = new Date()): string {
+  const at = new Date(iso);
+  const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: tz });
+  const time = at.toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+  const today = dayKey(now);
+  const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10); // calendar arithmetic on the key, no zone involved
+  const day = dayKey(at) === today ? "today" : dayKey(at) === tomorrow ? "tomorrow"
+    : at.toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" });
+  return `${day} at ${time} ${zoneLabel(tz, at)}`;
+}
 
 type Raw = Omit<YourMonthStep, "state"> & { status: "done" | "action" | "deferred" | "waiting" | "todo" };
 
@@ -71,7 +95,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
   const m = i.month;
   const tz = i.timezone ?? "America/New_York";
-  const day = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const now = i.now ?? new Date();
   const dayOnly = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" });
   const route = i.planning.planningMode === "WRITTEN" ? "WRITTEN" : i.planning.planningMode === "CALL" ? "CALL" : "UNDECIDED";
   const actSuggest = i.can.suggest && !i.readOnly;
@@ -85,10 +109,14 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     steps.push({ key: "route", status: actSession ? "action" : "waiting", title: "How would you like to plan this month's videos?", detail: "Choose your topics here, or talk them through on a call. You can switch later — nothing you've done is lost.", cta: null });
   } else {
     const first = i.planning.callMode === "REQUIRED" && route === "CALL";
+    const held = route === "CALL" && i.month.call === "HELD";
+    // A switch is refused once the call was held or filming is booked
+    // (portal.planningSwitchRefusal), so the step stops promising one.
+    const filmingBooked = !!i.schedule && (i.schedule.pendingRequest || (i.schedule.sessionsRequired > 0 && i.schedule.sessionsMissing < i.schedule.sessionsRequired));
     steps.push({
       key: "route", status: "done",
-      title: route === "WRITTEN" ? "You're choosing your topics here" : first ? "This month is planned on a strategy call" : "You're talking your topics through on a call",
-      detail: i.planning.noCallEligible && actSession ? "You can switch any time — nothing you've done is lost." : null,
+      title: route === "WRITTEN" ? "You're choosing your topics here" : held ? "You planned this month on your strategy call" : first ? "This month is planned on a strategy call" : "You're talking your topics through on a call",
+      detail: i.planning.noCallEligible && actSession && !held && !filmingBooked ? "You can switch any time — nothing you've done is lost." : null,
       cta: null,
     });
   }
@@ -118,12 +146,19 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
   const owedAnswers = m.answersOwed;
   const oneGap = m.counts.NEEDS_ANSWERS === 0 && m.counts.NEEDS_MORE === 1 ? m.missingAnswers : 0;
   if (route === "CALL") {
+    const bookedWords = i.planning.callAtISO ? `Your call is booked for ${callWhenWords(i.planning.callAtISO, tz, now)}` : "Your call is booked";
+    // Answers owed are asked HERE on the call route (there is no answers
+    // step), before the booked-call branch — so the headline that asks for
+    // answers always has a step that does too (Oct 6). Home links here.
+    const answersAsk = { key: "call" as const, status: actSuggest ? "action" as const : "waiting" as const, title: oneGap === 1 ? "We need one more answer" : `We need a little more on ${plural(owedAnswers, "topic")}`, cta: actSuggest ? { label: answerCta(oneGap), href: i.hrefs.month } : null };
     if (m.call === "HELD") {
       steps.push(owedAnswers > 0
-        ? { key: "call", status: actSuggest ? "action" : "waiting", title: oneGap === 1 ? "We need one more answer" : `We need a little more on ${plural(owedAnswers, "topic")}`, detail: "Just the questions your call didn't cover.", cta: actSuggest ? { label: answerCta(oneGap), href: i.hrefs.month } : null }
+        ? { ...answersAsk, detail: "Just the questions your call didn't cover." }
         : { key: "call", status: "done", title: "Strategy call held", detail: "Your month is planned.", cta: null });
+    } else if (owedAnswers > 0) {
+      steps.push({ ...answersAsk, detail: m.call === "BOOKED" ? `${bookedWords}. These are the questions still open.` : "These are the questions still open." });
     } else if (m.call === "BOOKED") {
-      steps.push({ key: "call", status: "waiting", title: i.planning.callAtISO ? `Your call is booked for ${day(i.planning.callAtISO)}` : "Your call is booked", detail: "Filming can be booked now — you don't need to wait for the call.", cta: null });
+      steps.push({ key: "call", status: "waiting", title: bookedWords, detail: "Filming can be booked now — you don't need to wait for the call.", cta: null });
     } else {
       // W03: "#step-call" when the booking sits inside this page; a Calendly
       // address opens in a new tab only when that is all there is.

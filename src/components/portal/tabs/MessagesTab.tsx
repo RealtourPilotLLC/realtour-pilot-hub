@@ -21,6 +21,8 @@ export type MessagesTabData = {
   refusal: string | null;
   contact: PortalContact;
   hint: string;
+  /** Oct 6 2026: the box's starting words when the visit came from the portal notice's "Tell us" (?about=portal). */
+  prefill?: string;
 };
 
 const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -63,7 +65,7 @@ export function MessagesTab({ d, failed }: { d: MessagesTabData | null; failed: 
       </Card>
       {d.canMessage ? (
         <Card>
-          <MessageComposer replyToId={lastStaff?.id ?? null} ownerFirst={d.ownerFirst} hint={d.hint} />
+          <MessageComposer replyToId={lastStaff?.id ?? null} ownerFirst={d.ownerFirst} hint={d.hint} initialBody={d.prefill} />
         </Card>
       ) : (
         <ContactTeam contact={d.contact} messagesHref={null} note={d.refusal} />

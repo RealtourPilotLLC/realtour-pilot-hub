@@ -103,7 +103,7 @@ export const OPERATIONAL_CORE = [
   "Resource", "Sop", "TrainingLesson", "KnowledgeItem", "HubChat", "HubMessage", "HubDocument",
   "OwnerTodo", "OwnerMeeting", "Feedback", "PlatformFeedback",
   // Platform machinery: sign-in, settings, integrations, logs, messaging rails.
-  "AppUser", "AppSetting", "Connection", "WebhookEvent", "CronRun", "UsageEvent", "AuditLog",
+  "AppUser", "AppSetting", "Connection", "WebhookEvent", "CronRun", "UsageEvent", "AuditLog", "ErrorEvent",
   "Notification", "NotificationDelivery", "OutboxMessage", "PendingSms", "CommLog",
   // Oct 5 2026: the five tables the Sep 30–Oct 4 audit fixes added. All are
   // operational evidence, not program content, so they sit with the core

@@ -22,10 +22,11 @@ import type { ProgramReachOp, ReachRefusalCode, ReachTier } from "@/lib/programR
 //   · programMessages.sweepProgramMessageNotices({ dryRun: true });
 //   · portalAccess.previewHeldAccessRelease() — the classifier Release runs;
 //   · scriptAutoShare.sweepAutoShare({ dryRun: true });
-//   · and, per client with a program, the portal layout
-//     (portalLayout.layoutForClient — what their page will show), review
-//     deadlines (reviewWindows.revisionPolicyFor) and topic carry-over
-//     (programRollout.programAudience, the switch's own audience).
+//   · and, per client with a program, review deadlines
+//     (reviewWindows.revisionPolicyFor) and topic carry-over
+//     (programRollout.programAudience, the switch's own audience). (The
+//     portal-layout lane went with the old layout, Oct 6 2026: every client
+//     has the one layout, so there is nothing to preview.)
 // Every recipient is masked and was computed BEFORE the scope said no, so an
 // excluded client's row still shows who would have been reached. So what this
 // marks "send", what readiness names, and what dispatch lets through are the
@@ -49,7 +50,7 @@ export type AudienceLane =
   | "PLANNING" | "REVIEW" | "ADDRESS" | "APPROVE_SCRIPTS"
   | "SCRIPTS_READY" | "STRATEGY_READY" | "OFFICE_REPLIED"
   | "HELD_ACCESS" | "AUTO_SHARE"
-  | "LAYOUT" | "REVIEW_DEADLINES" | "TOPIC_CARRYOVER";
+  | "REVIEW_DEADLINES" | "TOPIC_CARRYOVER";
 
 export type AudiencePreviewRow = {
   lane: AudienceLane;
@@ -203,23 +204,12 @@ export async function previewProgramAudience(opts: { now?: Date } = {}): Promise
   try {
     const { programAudience } = await import("@/lib/programRollout");
     const { isAutomationEnabled } = await import("@/lib/programAutomation");
-    const { layoutForClient } = await import("@/lib/portalLayout");
     const { revisionPolicyFor } = await import("@/lib/reviewWindows");
-    const [layoutAud, revAud, carryAud, layoutOn, carryOn] = await Promise.all([
-      programAudience("portal_layout_v2", { now }),
+    const [revAud, carryAud, carryOn] = await Promise.all([
       programAudience("revision_policy", { now }),
       programAudience("topic_carryover", { now }),
-      isAutomationEnabled("portal_layout_v2").catch(() => false),
       isAutomationEnabled("topic_carryover").catch(() => false),
     ]);
-    for (const c of layoutAud.clients) {
-      const l = await layoutForClient({ id: c.clientId, name: c.name });
-      rows.push({
-        lane: "LAYOUT", op: "portal_layout_v2", clientId: c.clientId, clientName: c.name, tier: c.tier, code: c.decision.ok ? null : c.decision.code, to: null,
-        decision: l.layout === "v2" ? "send" : "no", detail: `${l.layout} · ${l.why}`,
-        reason: l.layout === "v2" ? (l.why === "TEST_CLIENT" ? "a TEST client always sees the new layout" : "the new layout, on their next page load") : !layoutOn ? "today's layout: the new-layout switch is off" : `today's layout: ${c.decision.reason}`,
-      });
-    }
     for (const c of revAud.clients) {
       const pol = await revisionPolicyFor(c.clientId, now);
       rows.push({
@@ -235,7 +225,7 @@ export async function previewProgramAudience(opts: { now?: Date } = {}): Promise
         reason: !carryOn ? "carry-over is switched off" : c.decision.ok ? "unfilmed scripted topics carry into the new month on the 1st (only those scripted after they joined)" : c.decision.reason,
       });
     }
-  } catch (e) { rows.push(failedLane("LAYOUT", "portal_layout_v2", e)); }
+  } catch (e) { rows.push(failedLane("REVIEW_DEADLINES", "revision_policy", e)); }
 
   const rank = (r: AudiencePreviewRow) => (r.decision === "send" ? 0 : r.decision === "on_release" ? 1 : r.decision === "wait" ? 2 : 3);
   return rows.sort((a, b) => rank(a) - rank(b) || a.clientName.localeCompare(b.clientName) || a.lane.localeCompare(b.lane));

@@ -308,7 +308,7 @@ export async function previewStrategyBackfill(form: FormData): Promise<StrategyP
   for (const sec of stored.sections) sections[sec.heading.slice(0, 120)] = sec.text.slice(0, 12_000);
   return {
     ok: true,
-    message: `${parsed.structureVersion === "unknown" ? "No numbered sections found — kept as one block" : `${parsed.structureVersion} structure · ${stored.sections.length} sections`} · ${v.pillarCount} pillar${v.pillarCount === 1 ? "" : "s"} · framework: ${v.frameworkSource}${v.missing.length ? ` · missing: ${v.missing.slice(0, 4).join(", ")}${v.missing.length > 4 ? "…" : ""}` : ""}`,
+    message: `${parsed.structureVersion === "unknown" ? "No numbered sections found — kept as one block" : `${parsed.structureVersion} structure · ${stored.sections.length} sections`} · ${v.pillarCount} pillar${v.pillarCount === 1 ? "" : "s"} · framework: the house framework${v.documentFramework === "own wording" ? " (the document’s own is not used)" : ""}${v.missing.length ? ` · missing: ${v.missing.slice(0, 4).join(", ")}${v.missing.length > 4 ? "…" : ""}` : ""}`,
     sections, rawText: text.slice(0, 200_000), sourceFile: name,
   };
 }

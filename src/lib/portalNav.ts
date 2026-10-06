@@ -2,20 +2,21 @@
 // THE PORTAL'S ADDRESSES (UI-01, Sep 24 2026) — pure, so the pages, the client
 // components and the drill all read the same map.
 //
-// The audit's client IA is five destinations — Home · My Plan (named "Your
-// Month" since Sep 25) · Content Library · Schedule · More (Brand Profile, Messages, Resources, Settings &
-// Team, Terms) — served as the "v2" layout behind `portal_layout_v2`
-// (lib/portalLayout.ts). Today's six tabs are "v1" and stay exactly as they
-// are for every real client until Jordan flips the switch.
+// The client IA is five destinations — Home · Your Month (key "plan") ·
+// Content Library · Schedule · More (Brand Profile, Messages, Resources,
+// Settings & Team, Terms). Until Oct 6 2026 that was the "v2" layout behind
+// `portal_layout_v2`, beside the old six tabs ("v1"); since Jordan's "I want
+// to just be fully transitioned to the new layout" (Oct 6 2026) it is the
+// only layout, for everyone.
 //
 // Two rules this file exists to keep:
 //   · LINKS STAY QUERY-ONLY. Every href starts with "?" and never carries a
 //     path segment, so the enrollment token in /portal/<token> is never
 //     written into the page (PortalPage.tsx's header explains why).
 //   · EVERY OLD LINK STILL LANDS. Reminder emails, notifications and bookmarks
-//     carry ?tab=videos, topics, ideas, strategy, profile, settings… In v2
-//     each resolves to its new home; in v1 the new keys (plan, library,
-//     brand, team, more) degrade to the nearest old tab. Unknown → Home.
+//     carry the old tab keys — ?tab=videos, topics, ideas, strategy, profile,
+//     settings, library… Each resolves to its page here; unknown → Home. A
+//     stray `layout=v2` from an old staff-preview link is simply ignored.
 // ---------------------------------------------------------------------------
 
 export const PORTAL_DESTS = ["home", "plan", "library", "schedule", "more", "brand", "messages", "resources", "team", "terms"] as const;
@@ -25,21 +26,23 @@ export type PortalDest = (typeof PORTAL_DESTS)[number];
 export const PLAN_VIEWS = ["month", "scripts", "bank", "strategy"] as const;
 export type PlanView = (typeof PLAN_VIEWS)[number];
 
-export type PortalLayout = "v1" | "v2";
-
-/** Today's tabs — must stay identical to PortalPage's PortalTab union. */
-export type V1Tab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms";
+/**
+ * Which block of per-page data PortalPage loads for an address. The names are
+ * the old tab keys (the loaders were written against them); "more" loads
+ * nothing page-specific. Internal only — never written into a link.
+ */
+export type PortalDataTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms" | "more";
 
 export type PortalRoute = {
-  /** Where the v2 layout renders this address. */
+  /** The page this address renders. */
   dest: PortalDest;
   /** Set only when dest is "plan". */
   planView: PlanView | null;
-  /** What the v1 layout renders for the same address (and the data it loads). */
-  v1Tab: V1Tab;
+  /** The data block PortalPage loads for it. */
+  dataTab: PortalDataTab;
 };
 
-/** Every key the address bar has ever carried, and the new keys, → the v2 destination. */
+/** Every key the address bar has ever carried, and the current keys, → the destination. */
 const DEST_OF: Record<string, { dest: PortalDest; planView?: PlanView }> = {
   home: { dest: "home" },
   videos: { dest: "library" },
@@ -59,25 +62,20 @@ const DEST_OF: Record<string, { dest: PortalDest; planView?: PlanView }> = {
   more: { dest: "more" },
 };
 
-/** A v2 destination as v1 shows it: More has no page there, so it lands on Home. */
-const V1_OF: Record<PortalDest, V1Tab> = {
+/** A destination's data block. */
+const DATA_OF: Record<PortalDest, PortalDataTab> = {
   home: "home", library: "videos", schedule: "schedule", resources: "resources", messages: "messages",
-  brand: "profile", team: "settings", terms: "terms", more: "home",
+  brand: "profile", team: "settings", terms: "terms", more: "more",
   plan: "topics", // pv=strategy → "strategy", below
 };
 
 const isPlanView = (v: unknown): v is PlanView => typeof v === "string" && (PLAN_VIEWS as readonly string[]).includes(v);
 
 /**
- * One address → where each layout renders it. `pv` picks the Plan subview for
- * `?tab=plan`; an old key that names a subview (topics → bank, strategy →
- * strategy) wins over a stray `pv`.
- */
-/**
  * The address's query as plain strings (Sep 24). Next hands a REPEATED search
  * param over as string[] (`?q=a&q=b` → { q: ["a","b"] }) whatever the page's
  * type says, and a reader that calls a string method on it throws in render —
- * `?tab=library&q=a&q=b` errored the v2 Content Library. The first value
+ * `?tab=library&q=a&q=b` errored the Content Library. The first value
  * wins; anything that is not a string (or an array starting with one) is
  * dropped. Every portal entry point passes its searchParams through this.
  */
@@ -90,11 +88,16 @@ export function firstQueryValues<T extends Record<string, string | undefined>>(r
   return out as T;
 }
 
+/**
+ * One address → the page it renders. `pv` picks the Plan subview for
+ * `?tab=plan`; an old key that names a subview (topics → bank, strategy →
+ * strategy) wins over a stray `pv`.
+ */
 export function resolvePortalRoute(q: { tab?: string | null; pv?: string | null }): PortalRoute {
   const hit = DEST_OF[q.tab ?? ""] ?? { dest: "home" as const };
   const planView: PlanView | null = hit.dest !== "plan" ? null : hit.planView ?? (isPlanView(q.pv) ? q.pv : "month");
-  const v1Tab: V1Tab = hit.dest === "plan" ? (planView === "strategy" ? "strategy" : "topics") : V1_OF[hit.dest];
-  return { dest: hit.dest, planView, v1Tab };
+  const dataTab: PortalDataTab = hit.dest === "plan" ? (planView === "strategy" ? "strategy" : "topics") : DATA_OF[hit.dest];
+  return { dest: hit.dest, planView, dataTab };
 }
 
 /** Destinations that live under More — the bottom bar lights "More" for them. */
@@ -103,7 +106,7 @@ export const primaryDestOf = (dest: PortalDest): PortalDest => (MORE_DESTS.inclu
 
 /**
  * A query-only link. `base` is the query that must survive every click
- * (`e=<enrollmentId>` on /portal/me, `layout=v2` on a staff preview); `extra`
+ * (`e=<enrollmentId>` on /portal/me, the selected month/session); `extra`
  * is appended as-is ("pv=scripts", "v=<id>", "q=kitchen&st=review").
  */
 export function portalHref(base: string, dest: PortalDest, extra?: string | null): string {
@@ -113,10 +116,10 @@ export function portalHref(base: string, dest: PortalDest, extra?: string | null
 }
 
 /**
- * The v1 tab-key href signature (`href("topics", "iv=…")`) answered with v2
- * addresses — so the components both layouts share (VideoDetail, ScheduleTab,
- * the appointment cards, SetupCard's links) link to the right v2 page without
- * knowing which layout they are in.
+ * The tab-key href signature (`href("topics", "iv=…")`) answered with the
+ * current addresses — so the components written against the old tab keys
+ * (ScheduleTab, the appointment cards, SetupCard's links) link to the right
+ * page. The name is historical (it was the "v2" answer beside v1's).
  */
 export function v2HrefFor(base: string): (tab: string, extra?: string) => string {
   return (tab, extra) => {
@@ -127,7 +130,7 @@ export function v2HrefFor(base: string): (tab: string, extra?: string) => string
   };
 }
 
-/** The query pairs a GET form must repeat as hidden fields to stay on this page (e=, layout=). */
+/** The query pairs a GET form must repeat as hidden fields to stay on this page (e=, month=, session=). */
 export function baseQueryPairs(base: string): [string, string][] {
   return [...new URLSearchParams(base.replace(/^\?/, "")).entries()].filter(([k]) => k !== "tab");
 }
@@ -138,7 +141,7 @@ export type NavItem = { dest: PortalDest; label: string; short: string; badge: n
 export type NavBadges = { plan?: number; library?: number; messages?: number; brand?: number };
 
 /**
- * The v2 navigation. Resources is listed ONLY when at least one guide is
+ * The navigation. Resources is listed ONLY when at least one guide is
  * published — an empty Resources page is not a launch feature (audit §6).
  * Messages is always listed: CP-13's conversation exists, and a paused or
  * view-only seat still reads it (the page says why it cannot write).

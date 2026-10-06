@@ -17,7 +17,10 @@
 // ---------------------------------------------------------------------------
 
 /** Bump on any change to the policy content below. Date-stamped, dot-serial. */
-export const GENERATION_POLICY_VERSION = "2026-09-16.2";
+// 2026-10-06.1: the Video Structure Framework is one definition for every
+// client (Jordan, Oct 6 2026) — "bold statement" added to the Hook, and the
+// framework itself is now part of the rules text every prompt carries.
+export const GENERATION_POLICY_VERSION = "2026-10-06.1";
 
 /** The three roles, in order. Stored as roles; the label style is a rendering choice (C-A3). */
 export type TalkingPointRole = "re-hook" | "build-up" | "payoff";
@@ -62,6 +65,35 @@ export const TALKING_POINT_ROLE_SPECS: readonly TalkingPointRoleSpec[] = [
     importAliases: ["PAYOFF", "PAY OFF", "PAY-OFF"],
   },
 ];
+
+/**
+ * THE VIDEO STRUCTURE FRAMEWORK — one definition, the same for every client
+ * (Jordan, Oct 6 2026, verbatim). The three talking points are
+ * TALKING_POINT_ROLE_SPECS above; these are the opening, the Hook and the
+ * Close. strategyTemplate.ts builds POLICY_DEFAULT_FRAMEWORK from these, and
+ * policyRulesText prints them for every prompt — nothing else defines them.
+ */
+export const FRAMEWORK_PREAMBLE =
+  "Each reel follows a connected five-part flow, built around one clear idea. The hook creates curiosity, the talking points develop the story, and the payoff delivers on the opening promise.";
+export const FRAMEWORK_HOOK = {
+  heading: "Hook",
+  definition:
+    "Open with a specific concern, misconception, bold statement, or surprising observation that feels immediately relevant to a buyer or seller. Give viewers a reason to keep watching.",
+} as const;
+export const FRAMEWORK_CLOSE = {
+  heading: "Close / Call to Action",
+  definition:
+    "Finish with a memorable takeaway or a relevant invitation to connect. Keep the close natural and concise, with the primary contact CTA in the caption when appropriate.",
+} as const;
+
+/** The framework's five parts as "Heading — definition" lines, in order. */
+export function videoStructureFrameworkLines(): string[] {
+  return [
+    `${FRAMEWORK_HOOK.heading} — ${FRAMEWORK_HOOK.definition}`,
+    ...TALKING_POINT_ROLE_SPECS.map((s) => `${s.frameworkHeading} — ${s.definition}`),
+    `${FRAMEWORK_CLOSE.heading} — ${FRAMEWORK_CLOSE.definition}`,
+  ];
+}
 
 /** Map a delivered label (any case, any punctuation) onto a role, or null. */
 export function roleFromLabel(label: string | null | undefined): TalkingPointRole | null {
@@ -228,8 +260,8 @@ export const HOOK_TYPES: readonly { name: string; source: string; note: string }
   { name: "Surprising truth", source: "GPT", note: "A fact or consequence the viewer did not expect." },
   { name: "Emotional or status-driven framing", source: "GPT", note: "Frame the stakes in identity, money, or pride." },
   {
-    name: "Specific concern, misconception, or surprising observation",
-    source: "Arielle §4",
+    name: "Specific concern, misconception, bold statement, or surprising observation",
+    source: "Video Structure Framework (Jordan, Oct 6 2026)",
     note: "Immediately relevant to a buyer or seller; give viewers a reason to keep watching.",
   },
   { name: "Comparative positioning", source: "spec §27 / Scripting Success §4", note: "Why this over that — used only when authentic." },
@@ -374,7 +406,11 @@ export function policyRulesText(policy: GenerationPolicy = GENERATION_POLICY): s
     "=== CURRENT POLICY OVERRIDES (these win over the base text above) ===",
     ...policy.overrides.map((o) => `- ${o}`),
     "",
-    "=== TALKING POINT ROLES (Arielle §4, verbatim) ===",
+    "=== VIDEO STRUCTURE FRAMEWORK (the same for every client; a client document's own framework never replaces it) ===",
+    FRAMEWORK_PREAMBLE,
+    ...videoStructureFrameworkLines(),
+    "",
+    "=== TALKING POINT ROLES (the framework's three talking points, verbatim) ===",
     roles,
     "",
     "=== TIMING ===",

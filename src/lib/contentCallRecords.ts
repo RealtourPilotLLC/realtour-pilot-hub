@@ -8,7 +8,7 @@ import {
   enabledCallMappings, listScheduledEvents, type CallMapping, type CallPurpose, type Invitee, type ScheduledEvent,
 } from "@/lib/integrations/calendly";
 import { enqueueTranscriptJob, cancelTranscriptJobs } from "@/lib/transcriptJobs";
-import { recalcProgramMonth } from "@/lib/programMonths";
+import { recalcProgramMonth, choosePlanningMode, restorePlanningMode } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,20 @@ type Raw = {
   analysis?: { skipped: string; at: string };
   /** W03: the booking came from the portal and its token verified — whose, for which month, and how it was read. */
   portal?: { monthId: string; monthKey: string; via: string; at: string };
+  /** Oct 6 2026: staff took this call OFF a client/month on Content → Strategy calls — the sync must not re-file it by email. */
+  staff?: { unassignedBy: string | null; unassignedAt: string; from?: { clientId: string | null; monthId: string | null } };
+  /**
+   * Oct 6 2026: what assigning this call on the Strategy calls page CHANGED on
+   * its month, so Unassign / Not-a-program-call can put the month back exactly:
+   * the route choice it replaced (choosePlanningMode's snapshot + the stamp it
+   * wrote) and the call status/time the month carried before.
+   */
+  assignment?: {
+    monthId: string; by: string | null; at: string;
+    before: { strategyCallStatus: string; strategyCallAt: string | null; planning: { mode: "CALL" | "WRITTEN" | null; chosenAt: string | null; chosenBy: string | null; strategyCallStatus: string } | null };
+    /** planningChosenAt the assignment wrote (null = the route was already CALL, nothing written). */
+    chosenAt: string | null;
+  };
 };
 const readRaw = (s: string | null | undefined): Raw => {
   if (!s) return {};
@@ -479,8 +493,16 @@ async function syncOneBooking(
       where: { calendlyEventUri: event.uri },
       select: { id: true, matchState: true, clientId: true, enrollmentId: true, inviteeEmail: true, status: true, monthId: true, rawJson: true, transcriptState: true, callType: true, portalToken: true, bookingSource: true },
     });
-    const staffOwned = existing?.matchState === "CONFIRMED_BY_STAFF" || existing?.matchState === "IGNORED";
-    const raw: Raw = { ...readRaw(existing?.rawJson), calendly: { event, invitee } };
+    const prevRaw = readRaw(existing?.rawJson);
+    // A person's decision stands over the sweep: confirmed, ignored, or (Oct 6)
+    // taken back off a client on the Strategy calls page — that last one must
+    // not be re-filed by email on the next hourly pass.
+    const staffOwned = existing?.matchState === "CONFIRMED_BY_STAFF" || existing?.matchState === "IGNORED"
+      || (existing?.matchState === "CANDIDATE" && !!prevRaw.staff?.unassignedAt);
+    // Oct 6 2026: a GENERIC type mapped as a possible strategy call. Filed on a
+    // month only for a verified enrolled client; anyone else is a CANDIDATE.
+    const candidateType = mapping.purpose === "STRATEGY_CANDIDATE";
+    const raw: Raw = { ...prevRaw, calendly: { event, invitee } };
     // W03: a verified portal booking token IS the identity and the month — for
     // a monthly call a person has not already settled. It is re-read from the
     // invitee on every pass, so the hourly sweep keeps (never un-matches) what
@@ -497,7 +519,9 @@ async function syncOneBooking(
     }
 
     const provider = {
-      callType: staffOwned ? undefined : (mapping.purpose as CallPurpose),
+      // A candidate type's call type follows its identity (set below): MONTHLY
+      // only once a verified client is behind it, UNCLASSIFIED otherwise.
+      callType: staffOwned ? undefined : candidateType ? ("UNCLASSIFIED" as string) : (mapping.purpose as CallPurpose as string),
       mappingId: mapping.id,
       calendlyInviteeUri: invitee?.uri ?? null,
       calendlyEventTypeUri: event.event_type ?? null,
@@ -535,8 +559,20 @@ async function syncOneBooking(
       // — unless staff has since retargeted it: a person still wins.
       if (raw.target?.rule !== "staff") raw.target = { rule: "portal", reason: `booked in the portal for ${portal.monthKey}`, monthKey: portal.monthKey };
     } else if (!staffOwned) {
-      const idn = await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
+      let idn = await resolveInviteeIdentity(provider.inviteeEmail, provider.inviteeName);
       const wasVerified = existing?.matchState === "MATCHED" && !!existing.clientId;
+      // A generic-type call that would plan a month ALREADY OVER is not filed
+      // by the sweep, verified address or not: reading September's 30-minute
+      // calls into September would rewrite closed months and flip later
+      // months' call mode (a held call elsewhere makes the next one optional).
+      // It waits on the Strategy calls page with the client named.
+      if (candidateType && idn.state === "MATCHED" && !wasVerified && start) {
+        const planned = targetMonthFor(start, event.event_type ?? null, rules).monthKey;
+        if (planned < etMonthKey(now)) {
+          const who = await prisma.client.findUnique({ where: { id: idn.clientId }, select: { name: true } });
+          idn = { state: "UNMATCHED_INVITEE", candidates: [{ clientId: idn.clientId, enrollmentId: idn.enrollmentId, name: who?.name ?? "?", reason: `address on file, but the call would plan ${planned}, a month already over — a person decides`, onFile: true, active: true }] };
+        }
+      }
       if (idn.state === "MATCHED") {
         if (wasVerified && existing!.clientId !== idn.clientId) {
           identity = { matchState: "AMBIGUOUS_CLIENT", clientId: existing!.clientId, enrollmentId: existing!.enrollmentId, note: `identity changed: was ${existing!.clientId}, now resolves to ${idn.clientId}`, candidates: [] };
@@ -545,6 +581,11 @@ async function syncOneBooking(
         }
       } else if (wasVerified) {
         identity = { matchState: "AMBIGUOUS_CLIENT", clientId: existing!.clientId, enrollmentId: existing!.enrollmentId, note: `was matched to ${existing!.clientId}; ${provider.inviteeEmail ?? "the invitee address"} no longer resolves to any enrolled client — kept, needs a look`, candidates: idn.candidates.map((c) => ({ clientId: c.clientId, name: c.name, reason: c.reason })) };
+      } else if (candidateType) {
+        // The generic type is mostly NOT program work (family, prospects,
+        // vendors book it too): no review task, no alias proposal — the
+        // record waits on Content → Strategy calls with its candidates.
+        identity = { matchState: "CANDIDATE", clientId: null, enrollmentId: null, note: idn.candidates.length ? `possible strategy call — ${idn.candidates.length} enrolled client(s) with this full name, not a match` : "possible strategy call — no enrolled client has this address", candidates: idn.candidates.map((c) => ({ clientId: c.clientId, name: c.name, reason: c.reason })) };
       } else {
         identity = { matchState: idn.state, clientId: null, enrollmentId: null, note: idn.candidates.length ? `${idn.candidates.length} candidate(s) by full name — not a match` : "no client has this address", candidates: idn.candidates.map((c) => ({ clientId: c.clientId, name: c.name, reason: c.reason })) };
         // Propose (never verify) an alias for a full-name candidate — only one
@@ -561,6 +602,7 @@ async function syncOneBooking(
       raw.identity = { note: identity.note ?? "", candidates: identity.candidates };
     }
 
+    if (candidateType && identity && identity.clientId) provider.callType = "MONTHLY_STRATEGY";
     const data = {
       ...provider,
       ...(identity ? { matchState: identity.matchState, clientId: identity.clientId, enrollmentId: identity.enrollmentId, matchNote: identity.note } : {}),
@@ -1350,4 +1392,172 @@ export async function callReviewQueue(): Promise<{
     aliases: aliases.map((a) => ({ id: a.id, clientId: a.clientId, clientName: nameOf.get(a.clientId) ?? "?", email: a.email, source: a.source, createdAt: a.createdAt })),
     unlinkedTranscripts: sources.map((s) => ({ id: s.id, title: s.title, sourceUrl: s.sourceUrl, recordedAt: s.recordedAt, legacyMonthId: s.legacyMonthId, candidates: ((): { callRecordId: string; score: number; note: string }[] => { try { return JSON.parse(s.candidateCallIdsJson ?? "[]"); } catch { return []; } })() })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// STRATEGY CALLS PAGE (Oct 6 2026) — a person files a call on a client's month.
+//
+// Jordan: "an option to look through the strategy calls over the past 30 days
+// to manually assign to a client's month". Most October calls were booked on
+// the generic "30 Minute Strategy Call", which the hub never ingested; those
+// are now recorded (STRATEGY_CANDIDATE mapping) and this is where a person
+// decides. Every write here is a staff decision the hourly sync then keeps:
+//
+//   assign    → record: client + ACTIVE enrollment, callType MONTHLY_STRATEGY,
+//               CONFIRMED_BY_STAFF (confirmedBy/At), monthId + targetMonthKey
+//               (rule "staff", so no day-of-month rule ever moves it);
+//               month: callRecordId → this call (unless another live call
+//               already holds it), route → CALL through choosePlanningMode
+//               (= setPlanningMode; topics, answers, scripts, bookings
+//               untouched), then the recalculation derives strategyCallStatus
+//               SCHEDULED (future) / COMPLETED (held) and strategyCallAt.
+//   unassign  → the month gets back exactly what it had (route choice and
+//               call status/time, compare-and-set), the record goes back to
+//               CANDIDATE with no client, flagged so the sync won't re-file it.
+//   ignore    → unassign's release, then ignoreCallRecord (IGNORED/UNRELATED).
+//
+// Nothing here messages anyone, writes to Calendly or touches a booking.
+// ---------------------------------------------------------------------------
+const LIVE_STATUS = (s: string) => s !== "CANCELLED" && s !== "RESCHEDULED";
+
+/** Take a call off the month it is on and give the month back what it had before (or release its stamp). */
+async function releaseCallFromMonth(recordId: string): Promise<string | null> {
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, monthId: true, scheduledStart: true, rawJson: true } });
+  if (!r?.monthId) return null;
+  const monthId = r.monthId;
+  const raw = readRaw(r.rawJson);
+  await prisma.programCallRecord.update({ where: { id: r.id }, data: { monthId: null, targetMonthKey: null } });
+  await prisma.contentMonth.updateMany({ where: { id: monthId, callRecordId: r.id }, data: { callRecordId: null } });
+  const a = raw.assignment?.monthId === monthId ? raw.assignment : null;
+  if (a) {
+    // The stamp the assignment's recalculation wrote is this call's start; only
+    // that one is put back (a later, different call on the month keeps its own).
+    const before = a.before;
+    if (r.scheduledStart) {
+      await prisma.contentMonth.updateMany({
+        where: { id: monthId, OR: [{ strategyCallAt: r.scheduledStart }, { strategyCallAt: null }] },
+        data: { strategyCallStatus: before.strategyCallStatus, strategyCallAt: before.strategyCallAt ? new Date(before.strategyCallAt) : null },
+      });
+    }
+    if (a.chosenAt && before.planning) {
+      await restorePlanningMode(monthId, {
+        mode: before.planning.mode, chosenAt: before.planning.chosenAt ? new Date(before.planning.chosenAt) : null,
+        chosenBy: before.planning.chosenBy, strategyCallStatus: before.planning.strategyCallStatus,
+      }, new Date(a.chosenAt));
+    }
+  } else {
+    await releaseMonthStamp(monthId, r.scheduledStart);
+  }
+  delete raw.assignment;
+  await prisma.programCallRecord.update({ where: { id: r.id }, data: { rawJson: JSON.stringify(raw) } });
+  return monthId;
+}
+
+export type AssignStrategyCallResult = { recordId: string; monthId: string; monthKey: string; clientId: string; strategyCallStatus: string | null; planningMode: string | null };
+
+export async function assignStrategyCall(recordId: string, input: { clientId: string; monthKey: string }, by: string | null): Promise<AssignStrategyCallResult> {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.monthKey)) throw new Error("Pick a month.");
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, callType: true, status: true, scheduledStart: true, monthId: true, rawJson: true, clientId: true } });
+  if (!r) throw new Error("That call is no longer on file.");
+  if (r.callType === "BRAND_DISCOVERY") throw new Error("That is a brand discovery call — it belongs to onboarding, not a month.");
+  if (!r.scheduledStart) throw new Error("That call has no time on file.");
+  if (!LIVE_STATUS(r.status)) throw new Error("That booking was cancelled or moved — assign the booking that replaced it.");
+  const enrollment = await prisma.contentEnrollment.findFirst({ where: { clientId: input.clientId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, select: { id: true } });
+  if (!enrollment) throw new Error("That client has no active content program.");
+  const month = await ensureMonth(enrollment.id, input.clientId, input.monthKey);
+  const now = new Date();
+
+  // Moving to a different month (or client): the old month gets its own state back first.
+  const releasedFrom = r.monthId && r.monthId !== month.id ? await releaseCallFromMonth(r.id) : null;
+  const raw = readRaw((await prisma.programCallRecord.findUnique({ where: { id: r.id }, select: { rawJson: true } }))?.rawJson);
+  delete raw.staff;
+  raw.target = { rule: "staff", reason: `assigned to ${input.monthKey} by ${by ?? "staff"} on the Strategy calls page`, monthKey: input.monthKey };
+
+  const m = await prisma.contentMonth.findUnique({ where: { id: month.id }, select: { strategyCallStatus: true, strategyCallAt: true, planningMode: true, callRecordId: true } });
+  const stampIsThisCall = r.monthId === month.id && !!m?.strategyCallAt && m.strategyCallAt.getTime() === r.scheduledStart.getTime();
+  // Snapshot only when the call is newly arriving on this month — re-assigning
+  // to the same month keeps the ORIGINAL snapshot, so Unassign still restores
+  // what the month had before anyone touched it.
+  const keepSnapshot = raw.assignment?.monthId === month.id ? raw.assignment : null;
+  await prisma.programCallRecord.update({
+    where: { id: r.id },
+    data: {
+      clientId: input.clientId, enrollmentId: enrollment.id, callType: "MONTHLY_STRATEGY", matchState: "CONFIRMED_BY_STAFF",
+      confirmedBy: by, confirmedAt: now, matchNote: `assigned to ${input.monthKey} by ${by ?? "staff"}`,
+      monthId: month.id, targetMonthKey: input.monthKey, onboardingId: null,
+      rawJson: JSON.stringify(raw),
+    },
+  });
+  // The month's pointer: this call, unless another LIVE monthly call already holds it.
+  const holder = m?.callRecordId && m.callRecordId !== r.id
+    ? await prisma.programCallRecord.findUnique({ where: { id: m.callRecordId }, select: { monthId: true, status: true, callType: true, matchState: true } })
+    : null;
+  const holderLive = !!holder && holder.monthId === month.id && holder.callType === "MONTHLY_STRATEGY" && LIVE_STATUS(holder.status) && holder.matchState !== "IGNORED";
+  if (!holderLive) await prisma.contentMonth.update({ where: { id: month.id }, data: { callRecordId: r.id } });
+
+  // The route: CALL (setPlanningMode's own path — nothing else on the month is touched).
+  let chosenAt: string | null = keepSnapshot?.chosenAt ?? null;
+  let planningBefore: NonNullable<Raw["assignment"]>["before"]["planning"] = keepSnapshot?.before.planning ?? null;
+  if (m?.planningMode !== "CALL") {
+    const c = await choosePlanningMode(month.id, "CALL", by);
+    if (c) {
+      chosenAt = c.at.toISOString();
+      if (!keepSnapshot) planningBefore = { mode: c.before.mode, chosenAt: c.before.chosenAt?.toISOString() ?? null, chosenBy: c.before.chosenBy, strategyCallStatus: c.before.strategyCallStatus };
+    }
+  } else {
+    await recalcProgramMonth(month.id);
+  }
+  raw.assignment = keepSnapshot
+    ? { ...keepSnapshot, chosenAt, by, at: now.toISOString() }
+    : {
+      monthId: month.id, by, at: now.toISOString(), chosenAt,
+      // Already on this month (the sweep filed it by email): the stamp the
+      // month carries IS this call's, so "before" is the month without it.
+      before: stampIsThisCall
+        ? { strategyCallStatus: "NOT_SCHEDULED", strategyCallAt: null, planning: planningBefore }
+        : { strategyCallStatus: m?.strategyCallStatus ?? "NOT_SCHEDULED", strategyCallAt: m?.strategyCallAt?.toISOString() ?? null, planning: planningBefore },
+    };
+  await prisma.programCallRecord.update({ where: { id: r.id }, data: { rawJson: JSON.stringify(raw) } });
+
+  if (releasedFrom) await recalcProgramMonth(releasedFrom);
+  // Transcript jobs held while the client was in question run on the next tick (as confirmCallRecordClient).
+  await prisma.programTranscriptJob.updateMany({ where: { callRecordId: r.id, state: "QUEUED" }, data: { nextAttemptAt: null } });
+  await reconcileCallReviewTasks().catch(() => {});
+  const after = await prisma.contentMonth.findUnique({ where: { id: month.id }, select: { strategyCallStatus: true, planningMode: true } });
+  return { recordId: r.id, monthId: month.id, monthKey: input.monthKey, clientId: input.clientId, strategyCallStatus: after?.strategyCallStatus ?? null, planningMode: after?.planningMode ?? null };
+}
+
+/** Back to "Not assigned": the month is restored, the record keeps its booking facts but no client. */
+export async function unassignStrategyCall(recordId: string, by: string | null): Promise<void> {
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, callType: true, clientId: true, monthId: true } });
+  if (!r) throw new Error("That call is no longer on file.");
+  if (r.callType === "BRAND_DISCOVERY") throw new Error("That is a brand discovery call — manage it on Settings → Calendly & calls.");
+  const from = { clientId: r.clientId, monthId: r.monthId };
+  const monthId = await releaseCallFromMonth(r.id);
+  const raw = readRaw((await prisma.programCallRecord.findUnique({ where: { id: r.id }, select: { rawJson: true } }))?.rawJson);
+  delete raw.target;
+  raw.staff = { unassignedBy: by, unassignedAt: new Date().toISOString(), from };
+  await prisma.programCallRecord.update({
+    where: { id: r.id },
+    data: {
+      clientId: null, enrollmentId: null, callType: "UNCLASSIFIED", matchState: "CANDIDATE", monthId: null, targetMonthKey: null, onboardingId: null,
+      confirmedBy: by, confirmedAt: new Date(), matchNote: `unassigned by ${by ?? "staff"}`, rawJson: JSON.stringify(raw),
+    },
+  });
+  await cancelTranscriptJobs(r.id, "call unassigned by staff");
+  if (monthId) await recalcProgramMonth(monthId);
+  await reconcileCallReviewTasks().catch(() => {});
+}
+
+/** "Not a program call": the month is restored exactly as unassign does, then the record is IGNORED. */
+export async function ignoreStrategyCall(recordId: string, by: string | null, note?: string): Promise<void> {
+  const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { id: true, callType: true } });
+  if (!r) throw new Error("That call is no longer on file.");
+  if (r.callType === "BRAND_DISCOVERY") throw new Error("That is a brand discovery call — manage it on Settings → Calendly & calls.");
+  const monthId = await releaseCallFromMonth(r.id);
+  const raw = readRaw((await prisma.programCallRecord.findUnique({ where: { id: r.id }, select: { rawJson: true } }))?.rawJson);
+  delete raw.staff; delete raw.target;
+  await prisma.programCallRecord.update({ where: { id: r.id }, data: { clientId: null, enrollmentId: null, targetMonthKey: null, rawJson: JSON.stringify(raw) } });
+  await ignoreCallRecord(r.id, by, note?.trim() || `not a program call (${by ?? "staff"}, Strategy calls page)`);
+  if (monthId) await recalcProgramMonth(monthId);
 }

@@ -61,7 +61,7 @@ export const INTERVIEW_QUESTION_PLAN: readonly InterviewQuestion[] = [
     id: "audienceProblem",
     order: 1,
     rule: "Establish the audience's problem, misconception, or opportunity.",
-    captures: "The hook's premise: the specific concern, misconception or surprising observation the viewer recognises.",
+    captures: "The hook's premise: the specific concern, misconception, bold statement or surprising observation the viewer recognises.",
     template: "For “{{topic}}” — what do {{audience}} usually get wrong, worry about, or miss here?",
     substantive: true,
     skippable: true,

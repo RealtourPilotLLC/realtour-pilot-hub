@@ -1374,7 +1374,7 @@ export async function autoRankMonth(monthId: string, opts: { requestedBy?: strin
  * missing row is off). Re-ranks each ACTIVE enrollment's open months whose
  * allowance or bank has changed. Pure ranking only: nothing here spends AI
  * credit, writes a topic or reaches a client — the client sees the result on
- * their Your Month page (portal_layout_v2), nothing is sent.
+ * their Your Month page, nothing is sent.
  */
 export async function sweepRecommendations(opts: { max?: number; now?: Date } = {}): Promise<{ skipped: string } | { checked: number; ranked: number; unchanged: number; errors: number }> {
   if (!(await isAutomationEnabled("topic_refresh"))) return { skipped: "topic_refresh is off" };

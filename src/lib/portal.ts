@@ -1679,10 +1679,74 @@ export type PortalPlanning = {
   deferredAtISO: string | null;
   /** R01: the month through the one planning reader, or null when it could not be read. */
   planning: MonthPlanning | null;
+  /** Oct 6: filming is booked (asked for or confirmed) or already filmed on this month. */
+  filmingBooked: boolean;
+  /** Oct 6: "Undo my choice" — null when the month can go back to no choice; otherwise the plain reason it can't (planningUndoRefusal). */
+  undoBlocked: string | null;
+  /** Oct 6: switching TO each route — null when allowed, else the plain reason it isn't (planningSwitchRefusal). */
+  switchBlocked: { CALL: string | null; WRITTEN: string | null };
 };
 
 /** Steps past the answers stage: the material is in, or the script is. */
 const PAST_ANSWERS: ReadonlySet<PlanStep> = new Set<PlanStep>(["WRITING", "TEAM_REVIEW", "READY_FOR_YOU", "CHANGES_REQUESTED", "APPROVED", "FILMED"]);
+/** Steps where a script exists (or the video is filmed) — the month's plan is already being built on. */
+const SCRIPT_STARTED: ReadonlySet<PlanStep> = new Set<PlanStep>(["TEAM_REVIEW", "READY_FOR_YOU", "CHANGES_REQUESTED", "APPROVED", "FILMED"]);
+/** Session requests that hold a filming time (or the ask for one). */
+const LIVE_SESSION_REQUEST = ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"];
+
+/**
+ * The route a month reads with NO explicit choice (the derivation's default
+ * for an OPTIONAL_WRITTEN month): a booked or held call puts it on the call;
+ * otherwise it is undecided — the two equal cards.
+ */
+export function routeWithoutChoice(callStatus: string): "CALL" | "UNDECIDED" {
+  return callStatus === "SCHEDULED" || callStatus === "COMPLETED" ? "CALL" : "UNDECIDED";
+}
+
+/**
+ * WHEN A ROUTE CHOICE CAN NO LONGER BE UNDONE (Oct 6 2026) — the one rule,
+ * read by the portal (to hide the button and say why) and by
+ * portalPlanUndecided (to refuse). Applies to sending a month back to "not
+ * chosen"; putting back a route that was chosen a moment ago is a switch,
+ * which the switch actions already allow. Returns the client's sentence, or
+ * null when the undo is honest:
+ *   · the strategy call was held — the month WAS planned on it, and with the
+ *     choice gone it would read "on the call" anyway;
+ *   · a script exists (or a video is filmed) for one of the month's topics —
+ *     the team is already building on this plan;
+ *   · filming is booked and the undo would move the month to another route —
+ *     the booking was made through this route's gate (the written answers, or
+ *     the booked call) and would be left behind a different one. When the
+ *     route stays the same (a call is booked, so "no choice" still reads as
+ *     the call route) nothing about the booking changes and the undo stands.
+ * Never cancels anything: a booked call stays booked either way.
+ */
+/**
+ * WHEN A ROUTE SWITCH WOULD ORPHAN WORK (Oct 6 2026, from the strategy-call
+ * desk review) — the switch actions, the undo and the cards read this one
+ * rule. Returns the client's sentence, or null when the switch is fine:
+ *   · to the written route after the strategy call was held — the month WAS
+ *     planned on that call (the call's material, not answers, carries it);
+ *   · filming is booked (asked for or confirmed) through one route's gate and
+ *     the switch is to the other — the booking would sit behind a gate it was
+ *     never opened by. An undecided month's booking opened on its answers, so
+ *     it counts as the written route's.
+ * Choosing the route the month is already on is never refused here.
+ */
+export function planningSwitchRefusal(i: { to: "CALL" | "WRITTEN"; callStatus: string; planningMode: string; filmingBooked: boolean }): string | null {
+  if (i.planningMode === i.to) return null;
+  if (i.to === "WRITTEN" && i.callStatus === "COMPLETED") return "Your strategy call for this month has already happened, so this month stays planned on it.";
+  const gate = i.planningMode === "UNDECIDED" ? "WRITTEN" : i.planningMode;
+  if (i.filmingBooked && gate !== i.to) return `Your filming is already booked from how you planned this month, so that can't change now. To change it, ${TEXT_KYLE}.`;
+  return null;
+}
+
+export function planningUndoRefusal(i: { callStatus: string; planningMode: string; scriptsStarted: boolean; filmingBooked: boolean }): string | null {
+  if (i.callStatus === "COMPLETED") return "Your strategy call for this month has already happened, so this month's plan stays as it is.";
+  if (i.scriptsStarted) return "We've already started writing your scripts for this month, so this choice can't be undone now.";
+  if (i.filmingBooked && routeWithoutChoice(i.callStatus) !== i.planningMode) return `Your filming is already booked for this month, so this choice can't be undone now. To change it, ${TEXT_KYLE}.`;
+  return null;
+}
 
 export async function portalPlanning(enrollment: { id: string; clientId: string }, monthId?: string | null): Promise<PortalPlanning | null> {
   const month = monthId
@@ -1691,7 +1755,7 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
   if (!month) return null;
   const { recalcProgramMonth } = await import("@/lib/programMonths");
   const { planningForMonth } = await import("@/lib/planningFacts");
-  const [r, e, record, interviews, pf] = await Promise.all([
+  const [r, e, record, interviews, pf, liveRequests, scriptRows] = await Promise.all([
     recalcProgramMonth(month.id, { dryRun: true }),
     prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { callMode: true, strategyCallRequired: true, noCallEligible: true, timezone: true } }),
     prisma.programCallRecord.findFirst({
@@ -1700,6 +1764,8 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
     }),
     prisma.contentInterview.findMany({ where: { enrollmentId: enrollment.id, monthId: month.id }, select: { status: true, submittedAt: true } }),
     planningForMonth(month.id).catch(() => null),
+    prisma.programSessionRequest.count({ where: { monthId: month.id, enrollmentId: enrollment.id, status: { in: LIVE_SESSION_REQUEST } } }),
+    prisma.contentScript.count({ where: { monthId: month.id } }),
   ]);
   if (!r || !e) return null;
   const d = r.after;
@@ -1708,6 +1774,10 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
   const mode = d.callMode;
   const planning = pf?.planning ?? null;
   const inAllowance = planning?.topics.filter((t) => t.inAllowance) ?? [];
+  const filmingBooked = liveRequests > 0 || d.sessionsAccountedFor > 0;
+  // The planning reader knows which scripts belong to the allowance (an
+  // extra's draft is not the month's); without it, any script on the month.
+  const scriptsStarted = planning ? inAllowance.some((t) => SCRIPT_STARTED.has(t.step)) : scriptRows > 0;
   return {
     monthId: month.id, monthKey: month.monthKey, callMode: mode, callStatus: d.strategyCallStatus,
     callAtISO: (record?.scheduledStart ?? d.strategyCallAt)?.toISOString() ?? null, callEndISO: record?.scheduledEnd?.toISOString() ?? null,
@@ -1722,6 +1792,12 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
     chosenAtISO: pf?.chosenAt?.toISOString() ?? null,
     deferredAtISO: pf?.deferredAt?.toISOString() ?? null,
     planning,
+    filmingBooked,
+    undoBlocked: planningUndoRefusal({ callStatus: d.strategyCallStatus, planningMode: d.planningMode, scriptsStarted, filmingBooked }),
+    switchBlocked: {
+      CALL: planningSwitchRefusal({ to: "CALL", callStatus: d.strategyCallStatus, planningMode: d.planningMode, filmingBooked }),
+      WRITTEN: planningSwitchRefusal({ to: "WRITTEN", callStatus: d.strategyCallStatus, planningMode: d.planningMode, filmingBooked }),
+    },
   };
 }
 

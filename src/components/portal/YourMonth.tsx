@@ -122,15 +122,15 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                 {step.state === "done" && step.key === "scripts" && <Link href={d.hrefs.scripts} className={cn("inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>View scripts <ChevronRight className="size-4" aria-hidden /></Link>}
 
                 {/* The opening prompt: two equal cards while the month is
-                    undecided; afterwards, folded, for a change of mind. */}
-                {step.key === "route" && canChoose && (route === "UNDECIDED" && step.state === "current" ? (
-                  <div className="mt-3"><RouteChoice monthId={p.monthId} current={route} /></div>
-                ) : route !== "UNDECIDED" ? (
-                  <details className="mt-2">
-                    <summary className={cn("flex min-h-11 cursor-pointer items-center text-sm font-medium text-brand hover:underline", focusRing)}>Change how you plan this month</summary>
-                    <div className="mt-2"><RouteChoice monthId={p.monthId} current={route} /></div>
-                  </details>
-                ) : null)}
+                    undecided; afterwards, folded under "Change how you plan
+                    this month", with "Undo my choice". ONE element in one
+                    place for both, so it stays mounted across the refresh a
+                    choice makes and its Undo stays on screen (Oct 6). */}
+                {step.key === "route" && canChoose && (route !== "UNDECIDED" || step.state === "current") && (
+                  <div className={route === "UNDECIDED" ? "mt-3" : "mt-2"}>
+                    <RouteChoice monthId={p.monthId} current={route} chosen={!!p.chosenAtISO} callBooked={p.callStatus === "SCHEDULED"} undoBlocked={p.undoBlocked} blocked={p.switchBlocked} />
+                  </div>
+                )}
 
                 {/* W03: book (or change) the strategy call right here — never
                     once the call has been held. */}

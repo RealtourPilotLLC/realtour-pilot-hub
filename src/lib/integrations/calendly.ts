@@ -23,6 +23,9 @@ import { prisma } from "@/lib/prisma";
 //     "30 Minute Strategy Call" — the generic type every unrelated business
 //     call is booked on — look like program work. A missing mapping is a
 //     configuration exception surfaced on Settings, never permission to ingest.
+//     (Oct 6 2026: that generic type CAN now be mapped — as a
+//     STRATEGY_CANDIDATE, which records its bookings but files one on a month
+//     only for a verified enrolled client; see CallPurpose below.)
 // ---------------------------------------------------------------------------
 
 export const STRATEGY_CALL_BOOKING_URL = "https://calendly.com/realtourpilot-info/content-program-strategy-call";
@@ -264,8 +267,16 @@ export async function listStrategyCalls(minStartIso: string, maxStartIso: string
 // ---------------------------------------------------------------------------
 // Program classification — the mapping table is the ONLY classifier.
 // ---------------------------------------------------------------------------
-export type CallPurpose = "BRAND_DISCOVERY" | "MONTHLY_STRATEGY" | "IGNORED";
-export const CALL_PURPOSES: CallPurpose[] = ["BRAND_DISCOVERY", "MONTHLY_STRATEGY", "IGNORED"];
+// STRATEGY_CANDIDATE (Oct 6 2026): a GENERIC type that program clients ALSO
+// book their monthly call on ("30 Minute Strategy Call" — most October calls
+// were booked there, so the hub never saw them) next to unrelated business
+// calls. A booking on it is recorded, and filed on a month ONLY when the
+// invitee resolves to an enrolled client by the same verified identity rule
+// as the dedicated type (email / backup email / verified alias — never a
+// name). Anyone else stays a CANDIDATE on Content → Strategy calls for a
+// person to assign or set aside — no review task, no alias proposal, no guess.
+export type CallPurpose = "BRAND_DISCOVERY" | "MONTHLY_STRATEGY" | "STRATEGY_CANDIDATE" | "IGNORED";
+export const CALL_PURPOSES: CallPurpose[] = ["BRAND_DISCOVERY", "MONTHLY_STRATEGY", "STRATEGY_CANDIDATE", "IGNORED"];
 export const isCallPurpose = (v: unknown): v is CallPurpose => typeof v === "string" && (CALL_PURPOSES as string[]).includes(v);
 
 export type CallMapping = {

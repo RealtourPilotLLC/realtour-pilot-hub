@@ -7,14 +7,23 @@
 //                                  (spec §3: never force an abbreviated template);
 //   renderStrategy(doc)          — writes a strategy in the template's numbering;
 //   validateStrategyStructure()  — reports present / missing template sections.
-//                                  Never blocks: a strategy with no framework
-//                                  (Rick, S2) is flagged "framework: policy
-//                                  default" (C-B6), not rejected.
+//                                  Never blocks (C-B6).
+//
+// ONE FRAMEWORK FOR EVERY CLIENT (Jordan, Oct 6 2026): "the video structure
+// framework should be the same for each client". POLICY_DEFAULT_FRAMEWORK is
+// the only Video Structure Framework the hub shows or feeds to a model. An
+// imported document keeps its own section 4 in the stored version (versions
+// are immutable), but every reader swaps it for the canonical one at read
+// time — renderStrategy, canonicalFrameworkSectionText (the staff view) and
+// withCanonicalFramework (the document a prompt is built from). The only
+// thing kept from a document's own framework is a genuinely client-specific
+// delivery note ("Style: …", Janice's "Visual and Delivery Style" block),
+// shown apart as one "Client style notes" line, never as a framework part.
 //
 // Pure. No DB, no AI.
 // ---------------------------------------------------------------------------
 
-import { type Finding, type TalkingPointRole, TALKING_POINT_ROLE_SPECS, QUALITY_DIMENSIONS } from "./policy";
+import { type Finding, type TalkingPointRole, TALKING_POINT_ROLE_SPECS, QUALITY_DIMENSIONS, FRAMEWORK_PREAMBLE, FRAMEWORK_HOOK, FRAMEWORK_CLOSE } from "./policy";
 
 // ---------------------------------------------------------------------------
 // The template
@@ -88,28 +97,20 @@ export type FrameworkPart = {
   role: TalkingPointRole | null;
 };
 
-/** Arielle §4 verbatim — injected when a client strategy has no framework (C-B6). */
+/**
+ * THE Video Structure Framework — the same for every client (Jordan, Oct 6
+ * 2026, wording verbatim; Arielle §4 plus "bold statement" in the Hook). Every
+ * strategy shows and prompts with this, whatever an imported document's own
+ * section 4 says. The name is historical (it was once only the fallback).
+ */
 export const POLICY_DEFAULT_FRAMEWORK: { preamble: string; parts: FrameworkPart[] } = {
-  preamble:
-    "Each reel follows a connected five-part flow, built around one clear idea. The hook creates curiosity, the talking points develop the story, and the payoff delivers on the opening promise.",
+  preamble: FRAMEWORK_PREAMBLE,
   parts: [
-    {
-      key: "hook",
-      heading: "Hook",
-      timing: null,
-      role: null,
-      text: "Open with a specific concern, misconception, or surprising observation that feels immediately relevant to a buyer or seller. Give viewers a reason to keep watching.",
-    },
+    { key: "hook", heading: FRAMEWORK_HOOK.heading, timing: null, role: null, text: FRAMEWORK_HOOK.definition },
     { key: "tp1", heading: TALKING_POINT_ROLE_SPECS[0].frameworkHeading, timing: null, role: "re-hook", text: TALKING_POINT_ROLE_SPECS[0].definition },
     { key: "tp2", heading: TALKING_POINT_ROLE_SPECS[1].frameworkHeading, timing: null, role: "build-up", text: TALKING_POINT_ROLE_SPECS[1].definition },
     { key: "tp3", heading: TALKING_POINT_ROLE_SPECS[2].frameworkHeading, timing: null, role: "payoff", text: TALKING_POINT_ROLE_SPECS[2].definition },
-    {
-      key: "close",
-      heading: "Close / Call to Action",
-      timing: null,
-      role: null,
-      text: "Finish with a memorable takeaway or a relevant invitation to connect. Keep the close natural and concise, with the primary contact CTA in the caption when appropriate.",
-    },
+    { key: "close", heading: FRAMEWORK_CLOSE.heading, timing: null, role: null, text: FRAMEWORK_CLOSE.definition },
   ],
 };
 
@@ -130,6 +131,130 @@ export function policyFrameworkSection(): NonNullable<StrategyDocument["framewor
     style: null,
     otherFields: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// The canonical framework at READ time (Oct 6 2026). Stored versions are never
+// rewritten; these swap a document's own section 4 for the house framework
+// wherever a strategy is shown or handed to a model.
+// ---------------------------------------------------------------------------
+
+/** The one label a document's own delivery notes are shown under. */
+export const CLIENT_STYLE_NOTES_LABEL = "Client style notes";
+
+/** "Caption CTA Examples" / "Strategic Direction" (or "Strategic Note") — the client-specific tail of section 4, kept verbatim. */
+const FRAMEWORK_TAIL_RE = /^(?:caption cta examples?|strategic (?:direction|note)s?)\b\s*:?/i;
+/** Where a document's own delivery note starts: "Style: …" (Mike), a "Visual and Delivery Style" heading (Janice), or our own label. */
+const STYLE_START_RE = /^(?:client style notes|(?:visual|delivery)(?:\s+(?:and|&)\s+(?:visual|delivery))?\s+style|style)\s*(?::\s*(.*))?$/i;
+
+/** True for a stored / parsed section that holds the Video Structure Framework ("4. Video Structure Framework", "4 Video Structure Framework", a legacy key). */
+export function isFrameworkSection(s: { id?: string | null; heading: string }): boolean {
+  if (s.id === "video-structure-framework") return true;
+  const h = s.heading.trim().replace(/^\d{1,2}[.)]?\s+/, "").replace(/:$/, "").trim();
+  return /^(video )?(structure )?framework$|^video structure$/i.test(h);
+}
+
+/** The canonical framework as section text: preamble, then each part's heading and definition. */
+export function canonicalFrameworkText(): string {
+  const out: string[] = [POLICY_DEFAULT_FRAMEWORK.preamble];
+  for (const p of POLICY_DEFAULT_FRAMEWORK.parts) out.push("", p.heading, p.text);
+  return out.join("\n");
+}
+
+const tidyNote = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/**
+ * The client-specific delivery note inside a framework section's TEXT, or
+ * null: a "Style: …" line or a "… Style" heading and the lines after it, up
+ * to the next framework part or the Caption CTA / Strategic Direction tail.
+ * Framework parts, timings ("Hook (0–3s)") and the document's own preamble are
+ * not notes — they are replaced by the house framework.
+ */
+export function frameworkStyleNotesFromText(text: string): string | null {
+  const notes: string[] = [];
+  let on = false;
+  for (const raw of text.replace(/\r/g, "").split("\n")) {
+    const t = raw.trim();
+    if (FRAMEWORK_TAIL_RE.test(t)) break;
+    const m = STYLE_START_RE.exec(t);
+    if (m) {
+      on = true;
+      if (m[1]?.trim()) notes.push(m[1].trim());
+      continue;
+    }
+    if (!on) continue;
+    if (FRAMEWORK_PART_RE.test(t)) { on = false; continue; }
+    if (t) notes.push(t);
+  }
+  const joined = tidyNote(notes.join(" "));
+  return joined || null;
+}
+
+/** The same note from a PARSED framework (its Style field and any other labelled field). */
+export function frameworkStyleNotesFromDocument(fw: StrategyDocument["framework"]): string | null {
+  if (!fw) return null;
+  const parts: string[] = [];
+  if (fw.style?.trim()) parts.push(fw.style.trim());
+  for (const f of fw.otherFields) {
+    const v = f.value.trim();
+    if (!v) continue;
+    parts.push(!f.label || STYLE_START_RE.test(`${f.label}:`) ? v : `${f.label}: ${v}`);
+  }
+  const joined = tidyNote(parts.join(" "));
+  return joined || null;
+}
+
+/**
+ * A framework section's text with the house framework in place of the
+ * document's own: canonical preamble + five parts, then the document's
+ * delivery note (if any) as one "Client style notes:" line, then its Caption
+ * CTA Examples / Strategic Direction verbatim. Idempotent — the output read
+ * again gives itself, so saving an edit of this text stores the same thing.
+ */
+export function canonicalFrameworkSectionText(text: string): string {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const tailAt = lines.findIndex((l) => FRAMEWORK_TAIL_RE.test(l.trim()));
+  const tail = tailAt >= 0 ? lines.slice(tailAt).join("\n").trim() : "";
+  const notes = frameworkStyleNotesFromText(text);
+  const out = [canonicalFrameworkText()];
+  if (notes) out.push("", `${CLIENT_STYLE_NOTES_LABEL}: ${notes}`);
+  if (tail) out.push("", tail);
+  return out.join("\n");
+}
+
+/**
+ * Stored sections with the house framework in place (the staff Strategy view,
+ * the revision prompt). A strategy whose document has no framework section
+ * (Rick, S2) gets one, after Content Pillars, marked `canonical: true` so the
+ * view can show it without offering to edit a section that is not stored.
+ */
+export function withCanonicalFrameworkSections<T extends { id: string; heading: string; text: string }>(sections: T[]): (T & { canonical?: boolean })[] {
+  if (!sections.length) return sections;
+  let found = false;
+  const out: (T & { canonical?: boolean })[] = sections.map((s) => {
+    if (!isFrameworkSection(s)) return s;
+    found = true;
+    return { ...s, text: canonicalFrameworkSectionText(s.text) };
+  });
+  if (found) return out;
+  // Only a strategy document gets one — a single "Document" block (no numbered sections) is left alone.
+  if (!sections.some((s) => /content pillars?$/i.test(s.heading.trim()) || s.id === "content-pillars")) return out;
+  const after = out.findIndex((s) => /content pillars?$/i.test(s.heading.trim()) || s.id === "content-pillars");
+  const numbered = /^\d/.test(out[after]?.heading.trim() ?? "");
+  const synthetic = { ...out[after], id: "video-structure-framework", heading: `${numbered ? "4. " : ""}${STRATEGY_TEMPLATE.sections[3].heading}`, text: canonicalFrameworkText(), canonical: true } as T & { canonical?: boolean };
+  out.splice(after + 1, 0, synthetic);
+  return out;
+}
+
+/**
+ * A parsed strategy with the house framework in place of its own. Its style
+ * note comes from the framework section's verbatim TEXT when the caller has it
+ * (an older parse could glue a "Style:" note's later lines onto the Close), or
+ * else from the parsed framework.
+ */
+export function withCanonicalFramework<D extends StrategyDocument>(doc: D, frameworkSectionText?: string | null): D {
+  const style = frameworkSectionText != null ? frameworkStyleNotesFromText(frameworkSectionText) : frameworkStyleNotesFromDocument(doc.framework);
+  return { ...doc, framework: { ...policyFrameworkSection(), heading: doc.framework?.heading ?? STRATEGY_TEMPLATE.sections[3].heading, style } };
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +359,8 @@ const FIELD_ALIASES: { key: FieldKey; test: RegExp }[] = [
   { key: "purpose", test: /^purpose$/i },
   { key: "focusAreas", test: /^focus areas?$/i },
   { key: "contentApproach", test: /^content approach$/i },
-  { key: "style", test: /^style$/i },
+  // "Style" (Mike), "Visual and Delivery Style" (Janice), and our own "Client style notes" label.
+  { key: "style", test: /^(?:client style notes|(?:visual|delivery)(?:\s+(?:and|&)\s+(?:visual|delivery))?\s+style|style)$/i },
   { key: "captionCtaExamples", test: /^caption cta examples?$/i },
   { key: "strategicDirection", test: /^strategic (direction|note)s?$/i },
 ];
@@ -378,6 +504,10 @@ export function parseStrategyDocument(text: string): ParsedStrategy {
     }
     if (inFramework) {
       cur.fieldOwner = "framework";
+      // A labelled line ends the open part: "Style: …" and the lines after it
+      // are the style note, not more of the Close's definition.
+      cur.part = null;
+      cur.sub = null;
       if (key === "style") doc.framework!.style = field.value;
       else doc.framework!.otherFields.push(field);
       return;
@@ -490,7 +620,8 @@ export function parseStrategyDocument(text: string): ParsedStrategy {
     if (!t) {
       // A blank line ends a running field value so the next paragraph is not glued
       // on — unless the label is still empty (Matthew: "Core Values:" / blank / value).
-      if (cur.field && cur.field.value && cur.fieldOwner !== "audience") cur.field = null;
+      // A framework style note (Janice's "Visual and Delivery Style" block) runs over paragraphs.
+      if (cur.field && cur.field.value && cur.fieldOwner !== "audience" && !(cur.fieldOwner === "framework" && cur.field.key === "style")) cur.field = null;
       continue;
     }
 
@@ -558,7 +689,7 @@ export function parseStrategyDocument(text: string): ParsedStrategy {
     const lab = LABEL_RE.exec(t);
     if (lab && handleLabelLine(lab[1], lab[2], i)) continue;
     const bareKey = fieldKeyFor(t);
-    if (bareKey && ["targetAudience", "captionCtaExamples", "strategicDirection", "shortBrandStatement"].includes(bareKey)) {
+    if (bareKey && (["targetAudience", "captionCtaExamples", "strategicDirection", "shortBrandStatement"].includes(bareKey) || (bareKey === "style" && cur.section === "video-structure-framework"))) {
       handleLabelLine(t, "", i);
       continue;
     }
@@ -671,13 +802,16 @@ export function detectStructureVersion(doc: StrategyDocument): StrategyStructure
 export type RenderStrategyOptions = {
   /** Keep the document's own section / pillar / framework headings (an import); default = template wording (a new doc). */
   preserveSourceHeadings?: boolean;
-  /** When the document has no framework, print the policy default and say so (default true). */
+  /**
+   * Ignored since Oct 6 2026: section 4 is ALWAYS the house framework, the
+   * same for every client, whatever the document's own says (Jordan).
+   * @deprecated
+   */
   injectPolicyFramework?: boolean;
 };
 
 export function renderStrategy(doc: StrategyDocument, opts: RenderStrategyOptions = {}): string {
   const keep = opts.preserveSourceHeadings === true;
-  const inject = opts.injectPolicyFramework !== false;
   const out: string[] = [];
   const [s1, s2, s3, s4] = STRATEGY_TEMPLATE.sections;
 
@@ -723,19 +857,13 @@ export function renderStrategy(doc: StrategyDocument, opts: RenderStrategyOption
     for (const f of p.otherFields) out.push(f.label ? `${f.label}: ${f.value}` : f.value);
   });
 
-  // 4. Video Structure Framework
-  const fw = doc.framework ?? (inject ? { heading: null, preamble: [POLICY_DEFAULT_FRAMEWORK.preamble], parts: POLICY_DEFAULT_FRAMEWORK.parts, style: null, otherFields: [] } : null);
-  if (fw) {
-    out.push("", `4. ${s4.heading}`);
-    if (!doc.framework) out.push("(framework: policy default — the client document defines none)");
-    out.push(...fw.preamble);
-    for (const part of fw.parts) {
-      const heading = keep ? `${part.heading}${part.timing ? ` ${part.timing}` : ""}` : templateHeadingFor(part);
-      out.push("", heading, part.text);
-    }
-    if (fw.style) out.push("", `Style: ${fw.style}`);
-    for (const f of fw.otherFields) out.push(f.label ? `${f.label}: ${f.value}` : f.value);
-  }
+  // 4. Video Structure Framework — the house framework for EVERY client
+  // (Jordan, Oct 6 2026). A document's own parts, timings and preamble are not
+  // printed; only its delivery note survives, on one separate line.
+  out.push("", `4. ${s4.heading}`, POLICY_DEFAULT_FRAMEWORK.preamble);
+  for (const part of POLICY_DEFAULT_FRAMEWORK.parts) out.push("", part.heading, part.text);
+  const styleNotes = frameworkStyleNotesFromDocument(doc.framework);
+  if (styleNotes) out.push("", `${CLIENT_STYLE_NOTES_LABEL}: ${styleNotes}`);
 
   if (doc.captionCtaExamples?.items.length) {
     out.push("", keep ? doc.captionCtaExamples.heading.replace(/:$/, "") : s4.subsections[0]);
@@ -751,23 +879,6 @@ export function renderStrategy(doc: StrategyDocument, opts: RenderStrategyOption
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
 }
 
-function templateHeadingFor(part: FrameworkPart): string {
-  switch (part.key) {
-    case "hook":
-      return "Hook";
-    case "tp1":
-      return TALKING_POINT_ROLE_SPECS[0].frameworkHeading;
-    case "tp2":
-      return TALKING_POINT_ROLE_SPECS[1].frameworkHeading;
-    case "tp3":
-      return TALKING_POINT_ROLE_SPECS[2].frameworkHeading;
-    case "close":
-      return "Close / Call to Action";
-    default:
-      return `${part.heading}${part.timing ? ` ${part.timing}` : ""}`;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Validator — presence report. Severities are "warn" / "info" only (C-B6:
 // never block an approved client document; never auto-rewrite it).
@@ -777,7 +888,14 @@ export type StrategyValidation = {
   structureVersion: StrategyStructureVersion;
   present: string[];
   missing: string[];
-  frameworkSource: "document" | "policy default";
+  /**
+   * The framework this strategy is shown and prompted with: always the house
+   * framework, the same for every client (Oct 6 2026). A document's own
+   * section 4 is never authoritative.
+   */
+  frameworkSource: "house";
+  /** What the DOCUMENT itself carries (a presence fact for the import report and the reference manifest). */
+  documentFramework: "own wording" | "none";
   pillarCount: number;
   findings: Finding[];
 };
@@ -817,16 +935,22 @@ export function validateStrategyStructure(doc: StrategyDocument & { structureVer
   });
 
   const fw = doc.framework;
-  const frameworkSource: StrategyValidation["frameworkSource"] = fw ? "document" : "policy default";
+  const documentFramework: StrategyValidation["documentFramework"] = fw ? "own wording" : "none";
   if (!fw) {
     missing.push("Video Structure Framework");
     findings.push({
-      code: "strategy.framework.policy-default",
+      code: "strategy.framework.house",
       severity: "info",
-      message: "framework: policy default — this strategy defines no Video Structure Framework; the policy's Hook / Re-hook / Build up / Payoff / Close flow applies. The approved document is not rewritten.",
+      message: "This document defines no Video Structure Framework; the house framework (Hook / Rehook / Build Up / Payoff / Close) applies, as it does for every client. The stored document is not rewritten.",
       path: "framework",
     });
   } else {
+    findings.push({
+      code: "strategy.framework.replaced",
+      severity: "info",
+      message: "The document's own Video Structure Framework is not used: every client's strategy is shown and prompted with the house framework (Jordan, Oct 6 2026). The stored document is not rewritten.",
+      path: "framework",
+    });
     present.push("Video Structure Framework");
     const keys = new Set(fw.parts.map((p) => p.key));
     for (const [key, name] of [
@@ -843,7 +967,7 @@ export function validateStrategyStructure(doc: StrategyDocument & { structureVer
       findings.push({
         code: "strategy.framework.s1-four-part",
         severity: "info",
-        message: "framework: S1 four-part timed flow (Hook / Context / Payoff / Close) with no talking-point concept — superseded by policy format for NEW scripts (Jordan, Sep 16). Re-version onto the S3 template with a note rather than overriding silently.",
+        message: "The document's framework is the S1 four-part timed flow (Hook / Context / Payoff / Close) with no talking points — the house five-part framework replaces it wherever the strategy is shown or used.",
         path: "framework",
       });
     }
@@ -851,7 +975,7 @@ export function validateStrategyStructure(doc: StrategyDocument & { structureVer
       findings.push({
         code: "strategy.framework.style-note",
         severity: "info",
-        message: `The document states a delivery style (“${fw.style}”). Recorded as source text only; the policy's 20–30 s target is not overridden by it.`,
+        message: `The document states a delivery style (“${fw.style}”). Kept as a separate "${CLIENT_STYLE_NOTES_LABEL}" line, not as part of the framework; the policy's 20–30 s target is not overridden by it.`,
         path: "framework.style",
       });
     }
@@ -863,7 +987,8 @@ export function validateStrategyStructure(doc: StrategyDocument & { structureVer
     structureVersion: doc.structureVersion ?? detectStructureVersion(doc),
     present,
     missing,
-    frameworkSource,
+    frameworkSource: "house",
+    documentFramework,
     pillarCount: doc.contentPillars.pillars.length,
     findings,
   };

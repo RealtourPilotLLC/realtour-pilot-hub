@@ -104,6 +104,14 @@ export async function GET(req: NextRequest) {
       return 0; // table not pushed yet — never degrade the run over housekeeping
     }
   });
+  // THE ERROR TRACKER'S DAILY REPORT (Oct 6 2026): every OPEN error with its
+  // count, to Jordan (bell + Slack DM; his Saturday quiet window holds the DM
+  // until 7:30 PM like every other notice). Once per ET day; nothing is sent
+  // when nothing is open. A missing table is a no-op, never a failed step.
+  await step("errorDigest", async () => {
+    const { errorDigest } = await import("@/lib/errorTracker");
+    return errorDigest();
+  });
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

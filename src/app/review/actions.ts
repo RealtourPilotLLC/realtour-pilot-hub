@@ -11,6 +11,7 @@ import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorK
 import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
+import { reportError } from "@/lib/errorTracker";
 import { advisoryKeyPair } from "@/lib/dbLocks";
 import { editorHoldsAssignedWork } from "@/lib/editorWork";
 // Who wrote / ruled, in one vocabulary (Review Room attribution, Sep 28).
@@ -134,6 +135,8 @@ async function runFollowUps(what: { verdict: string; submissionId: string; proje
       const error = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 300) || "unknown error";
       failed.push({ step: s.step, repairedBy: s.repairedBy, error });
       console.error(`[review] ${what.verdict}: "${s.step}" failed for cut ${what.submissionId} — ${s.repairedBy}.`, error);
+      // And the error tracker (Oct 6 2026), grouped per verdict+step.
+      reportError(e, { area: `review:${what.verdict}/${s.step}`, repairedBy: s.repairedBy });
     }
   }
   if (failed.length === 0) return;

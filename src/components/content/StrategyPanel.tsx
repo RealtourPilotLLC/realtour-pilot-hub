@@ -148,9 +148,15 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                     collapsible
                     openFirst
                     size="xs"
-                    actions={EDITABLE.includes(v.status) ? (s) => <SectionEdit key={`${v.id}:${s.id}`} section={s} approved={v.status === "APPROVED"} last={v.sections.length === 1} busy={busy}
-                      onSave={(text) => run(() => editStrategySection(v.id, s.id, text))}
-                      onRemove={() => run(() => editStrategySection(v.id, s.id, null))} /> : undefined}
+                    actions={(s) => !(EDITABLE.includes(v.status) && !s.canonical) && !isFrameworkView(s) ? null : (
+                      <>
+                        {/* Oct 6 2026: one Video Structure Framework for every client. */}
+                        {isFrameworkView(s) && <p className="mb-1.5 text-[11px] text-muted-2">The house framework — the same for every client, whatever the uploaded document said. Caption CTA examples, strategic direction and any client style notes are this client&apos;s own.</p>}
+                        {EDITABLE.includes(v.status) && !s.canonical && <SectionEdit key={`${v.id}:${s.id}`} section={s} approved={v.status === "APPROVED"} last={v.sections.filter((x) => !x.canonical).length === 1} busy={busy}
+                          onSave={(text) => run(() => editStrategySection(v.id, s.id, text))}
+                          onRemove={() => run(() => editStrategySection(v.id, s.id, null))} />}
+                      </>
+                    )}
                   />
                   {EDITABLE.includes(v.status) && <ReviseBox versionNo={v.versionNo} approved={v.status === "APPROVED"} suggestions={clientSuggestions} busy={busy}
                     onRevise={(notes, ids) => run(() => reviseStrategy(v.id, notes, ids))} />}
@@ -213,6 +219,9 @@ function StatusChip({ status, released, everApproved }: { status: string; releas
     : status.toLowerCase();
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
 }
+
+/** The Video Structure Framework section (stored, or shown by the hub on a document that had none). */
+const isFrameworkView = (s: StrategyDocSection) => !!s.canonical || s.id === "video-structure-framework" || /video structure framework$/i.test(s.heading.trim());
 
 /** Versions a person may still change (a new version each time; the one edited is kept). */
 const EDITABLE = ["DRAFT", "INTERNAL_REVIEW", "APPROVED"];

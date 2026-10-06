@@ -180,7 +180,6 @@ const HUB_WRITE_KEYS = new Set(["session_booking", "address_sync", "call_booking
  */
 function whenItStarts(s: { key: string; cadence: string }): string {
   switch (s.key) {
-    case "portal_layout_v2": return "on their next visit";
     case "portal_invites": return "when you invite someone, or press Release for held access";
     case "portal_login_email": return "when they ask for a sign-in link";
     case "caption_assistant": return "when they press Draft a caption";
@@ -438,7 +437,7 @@ export async function removeProgramPilotClientAction(input: { clientId: string }
     if (was.tier !== "PILOT") {
       return done(`${name} is out of the pilot. Nothing changes for them now: they were not being reached (${was.reason}).`);
     }
-    return done(`${name} is out of the pilot. Nothing further goes out to them (anything already queued is stopped at sending), their people go back to the shared portal link and lose program sign-in (their seats are kept), they are back on today's portal layout, and the hub no longer books for them in Aryeo or Calendly.${r.to.pilot ? "" : " The pilot is now empty, so no real client is reached."}`);
+    return done(`${name} is out of the pilot. Nothing further goes out to them (anything already queued is stopped at sending), their people go back to the shared portal link and lose program sign-in (their seats are kept), and the hub no longer books for them in Aryeo or Calendly.${r.to.pilot ? "" : " The pilot is now empty, so no real client is reached."}`);
   } catch (e) { return fail(e); }
 }
 

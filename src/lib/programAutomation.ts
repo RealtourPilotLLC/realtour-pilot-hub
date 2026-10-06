@@ -75,10 +75,10 @@ export const AUTOMATION_KEYS = [
   // task are internal and always on; this only decides whether a CLIENT is
   // emailed that the office replied (lib/programMessages.ts).
   "program_message_notice", // §13 "Kyle replied to your message" email to the client's seats, once per unread run, client hours only
-  // UI-01 (Sep 24 2026). TEST clients and a staff preview (?layout=v2) always
-  // get the new layout; this only decides whether REAL clients do
-  // (lib/portalLayout.ts). Nothing is sent — it is what their page looks like.
-  "portal_layout_v2", // §6 the portal's new navigation: Home · My Plan · Content Library · Schedule · More
+  // "portal_layout_v2" (UI-01, Sep 24 2026) RETIRED Oct 6 2026: the new
+  // portal layout is the only layout (Jordan: "I want to just be fully
+  // transitioned to the new layout"), so there is nothing left to switch. A
+  // row still stored under that key is simply never read.
 ] as const;
 export type AutomationKey = (typeof AUTOMATION_KEYS)[number];
 

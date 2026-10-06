@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { monthLabel, ownersFor } from "@/lib/contentProgram";
+import { withCanonicalFrameworkSections } from "@/lib/contentPolicy";
 import { parseStoredSections, openStrategyProposals, strategyVersions, monthPriorities } from "@/lib/contentStrategy";
 import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
 import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions } from "@/lib/contentTopics";
@@ -35,7 +36,9 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
       id: v.id, versionNo: v.versionNo, status: v.status, structureTemplate: v.structureTemplate, sourceKind: v.sourceKind, sourceRef: v.sourceRef, createdBy: v.createdBy, createdAt: v.createdAt.toISOString(),
       approvedBy: v.approvedBy, approvedAt: iso(v.approvedAt), releasedAt: iso(v.releasedAt), changeSummary: v.changeSummary,
       // A08: section ids ride along — a hand edit names the ONE section it changes.
-      sections: (stored?.sections ?? []).map((s) => ({ id: s.id, heading: s.heading, text: s.text })), pillarNames: stored?.document?.contentPillars.pillars.map((p) => p.name) ?? [],
+      // Oct 6 2026: the Video Structure Framework reads as the house framework
+      // for every client (read-time swap; the stored version is untouched).
+      sections: withCanonicalFrameworkSections((stored?.sections ?? []).map((s) => ({ id: s.id, heading: s.heading, text: s.text }))), pillarNames: stored?.document?.contentPillars.pillars.map((p) => p.name) ?? [],
     };
   });
   const discovery = await loadDiscoveryUi(enrollmentId, versions).catch(() => null);
