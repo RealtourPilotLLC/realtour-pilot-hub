@@ -378,8 +378,9 @@ async function main() {
     const clientCopy = /DEFAULT_PORTAL_CONTACT: PortalContact = \{ name: "([^"]+)", display: "([^"]+)", e164: "([^"]+)" \}/.exec(card);
     c.ok("the client-safe copy of the default says exactly what the server's says", !!clientCopy && clientCopy[1] === pm.DEFAULT_OFFICE_CONTACT.name && clientCopy[2] === pm.DEFAULT_OFFICE_CONTACT.display && clientCopy[3] === pm.DEFAULT_OFFICE_CONTACT.e164, clientCopy?.slice(1).join(" / "));
     c.ok("the card dials: tel: and sms: links, and Message <name> to the thread", card.includes("href={`tel:${contact.e164}`}") && card.includes("href={`sms:${contact.e164}`}") && card.includes("Message {contact.name}"));
-    const pageTabs = page.match(/export type PortalTab = [^;]+;/)?.[0] ?? "";
-    c.ok("the portal has a Messages tab, in the account menu and the phone's More sheet", pageTabs.includes('"messages"') && page.includes("Messages{a.unread > 0"));
+    // One portal layout since Oct 6 2026: Messages lives under More (a badge on More carries the unread count).
+    const navSrc = read("src/lib/portalNav.ts");
+    c.ok("the portal has a Messages page, listed under More with its unread badge", page.includes('route.dest === "messages" && <MessagesTab') && /dest: "messages", label: "Messages"/.test(navSrc) && /dest: "more", label: "More", short: "More", badge: n\(b\.messages\)/.test(navSrc));
   }
 
   // =========================================================================

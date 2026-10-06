@@ -45,6 +45,7 @@ async function main() {
       create: refuseWrite,
     },
     client: { findMany: async (query: unknown) => { candidateQuery = query; return candidates; }, update: refuseWrite },
+    contentMonth: { findFirst: async () => null },
     smartTask: { findFirst: async ({ where }: { where: { clientId: string } }) => waiting.has(where.clientId) ? { id: "waiting-fixture" } : null },
     commLog: { findFirst: async ({ where }: { where: { direction: string } }) => ({ occurredAt: new Date(PINNED - (where.direction === "in" ? 1_000 : 10_000)) }) },
     programCalendlyEventMapping: {
@@ -132,9 +133,14 @@ async function main() {
 
     c.ok("monthly strategy constant remains the dedicated content-program URL", calendly.STRATEGY_CALL_BOOKING_URL === MONTHLY);
     const viewer = { enrollment: { id: "enrollment-fixture" } } as unknown as PortalViewer;
-    c.ok("portal v1 monthly mapped booking still uses the dedicated URL", (await portalBookingLinks(viewer, { layout: "v1", planHref: null })).bookingUrl === MONTHLY);
+    // One portal layout (Oct 6 2026): the old layout's "mapped page or the
+    // public constant" answer is gone; the portal books inside Your Month and,
+    // with no open month, points at the office — never the general welcome URL.
+    const noMonth = await portalBookingLinks(viewer, { planHref: "?tab=plan" });
+    c.ok("portal booking never hands out the general welcome URL (no open month → the office)", noMonth.bookingUrl === null && noMonth.view === null);
     mappings = [];
-    c.ok("portal v1 monthly fallback keeps the dedicated URL", (await portalBookingLinks(viewer, { layout: "v1", planHref: null })).bookingUrl === MONTHLY);
+    const noMonthNoMapping = await portalBookingLinks(viewer, { planHref: "?tab=plan" });
+    c.ok("…nor with no monthly mapping", noMonthNoMapping.bookingUrl === null && noMonthNoMapping.bookingUrl !== GENERAL);
     mappings = [mapping];
     c.ok("program classification still accepts only the mapped monthly event URI", await calendly.purposeForEventType(MONTHLY_URI) === "MONTHLY_STRATEGY" && await calendly.purposeForEventType(GENERAL_URI) === null);
     c.ok("legacy monthly classifier still resolves only the dedicated slug", await calendly.strategyCallEventType() === MONTHLY_URI);

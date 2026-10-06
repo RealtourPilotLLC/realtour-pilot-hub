@@ -100,8 +100,7 @@ async function main() {
     const signIn = await mintLoginLink(shell.membershipId, owner.userId);
     await prisma.client.update({ where: { id: shell.clientId }, data: { name: "Grove Acceptance Realty", email: "maya-grove@example.test", autoConfirmationText: false, autoDeliveryText: false } });
     const since = new Date(Date.now() - 60_000).toISOString();
-    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [shell.clientId], operations: ["portal_sign_in", "portal_layout_v2"], approvedBy: "declared isolated input", approvedAt: since, expiresAt: new Date(Date.now() + 864e5).toISOString(), joinedAt: { [shell.clientId]: since }, note: "Disposable role acceptance; no dispatchers or sends" } }) } });
-    await prisma.programAutomation.create({ data: { key: "portal_layout_v2", enabled: true, enabledBy: "declared isolated fixture", enabledAt: new Date() } });
+    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [shell.clientId], operations: ["portal_sign_in"], approvedBy: "declared isolated input", approvedAt: since, expiresAt: new Date(Date.now() + 864e5).toISOString(), joinedAt: { [shell.clientId]: since }, note: "Disposable role acceptance; no dispatchers or sends" } }) } });
     await prisma.appSetting.create({ data: { key: "review_room", value: JSON.stringify({ creativeApproverTeamMemberId: james.teamMemberId, backupReviewerTeamMemberId: kyle.teamMemberId }) } });
     await prisma.appSetting.create({ data: { key: "editor_routing", value: JSON.stringify({ personalBranding: "kim" }) } });
     await saveSecret("dropbox", "isolated-http-refresh");
@@ -204,7 +203,7 @@ async function main() {
     c.ok("Kim actual manual Start records only her own active work", start.returned?.ok === true && await prisma.editorWorkItem.count({ where: { projectId: ready.id, editorKey: "kim", state: "ACTIVE" } }) === 1);
     const pause = await action("/editing", "src/app/editing/actions.ts", "setQueueStatus", [ready.id, "Paused", randomUUID()], kim.cookie);
     c.ok("Kim actual manual Pause retains job stage and exact work event", pause.returned?.ok === true && await prisma.editorWorkItem.count({ where: { projectId: ready.id, editorKey: "kim", state: "PAUSED" } }) === 1 && (await prisma.project.findUniqueOrThrow({ where: { id: ready.id } })).status === "EDITING");
-    c.ok("no client sends/provider bookings/automation runner invoked", await prisma.outboxMessage.count() === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { not: "portal_layout_v2" } } }) === 0 && fence.blocked.length === 0);
+    c.ok("no client sends/provider bookings/automation runner invoked", await prisma.outboxMessage.count() === 0 && await prisma.programAutomation.count({ where: { enabled: true } }) === 0 && fence.blocked.length === 0);
     fs.writeFileSync(sessionsFile, JSON.stringify(privateManifest, null, 2), { mode: 0o600 });
     console.log(`HTTP evidence only; exact build ${privateManifest.buildId}; private fixture/session manifest ${sessionsFile}; no browser/provider/phone/full-watch claim.`);
     c.summary();

@@ -44,7 +44,7 @@ async function main() {
     const { POST } = await import("@/app/portal/auth/[token]/route"); // Oct 5: the press (POST) signs in; opening the link does not
     const { NextRequest } = await import("next/server");
     const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout } = await import("@/lib/programRolloutCore");
-    const { portalLayoutDecision } = await import("@/lib/portalLayout");
+    const portalLayoutLib = await import("@/lib/portalLayout");
     const { interviewState } = await import("@/lib/contentInterview");
     const { createScriptVersion } = await import("@/lib/contentScripts");
     const { setSession, clearSession } = await import("@/lib/auth/session");
@@ -61,12 +61,11 @@ async function main() {
     const since = new Date(now.getTime() - 86_400_000).toISOString();
     await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({
       mode: "PILOT", modeSince: since,
-      pilot: { clientIds: [f.clientId], operations: ["portal_sign_in", "portal_layout_v2"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), joinedAt: { [f.clientId]: since }, note: "Disposable signed-client test" },
+      pilot: { clientIds: [f.clientId], operations: ["portal_sign_in"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), joinedAt: { [f.clientId]: since }, note: "Disposable signed-client test" },
     }) } });
     // This only permits local token minting. No request-login-email or sender
     // is called, and the outbound fence has no provider fakes at all.
     await prisma.programAutomation.create({ data: { key: "portal_login_email", enabled: true, enabledBy: "isolated-fixture", enabledAt: now } });
-    await prisma.programAutomation.create({ data: { key: "portal_layout_v2", enabled: true, enabledBy: "isolated-fixture", enabledAt: now } });
     const link = await mintLoginLink(f.membershipId!, null);
     const raw = new URL(link.url).pathname.split("/").pop()!;
     const bare = await POST(new NextRequest(link.url, { method: "POST" }), { params: Promise.resolve({ token: raw }) });
@@ -80,8 +79,8 @@ async function main() {
     if (!resolved.ok) throw new Error(`signed client failed to resolve: ${resolved.reason}`);
     const viewer = resolved.viewer;
     c.ok("the real resolver attributes the normal owner seat", viewer.actor.kind === "CLIENT" && viewer.actor.clientUserId === f.clientUserId && viewer.via === "LOGIN");
-    const layout = await portalLayoutDecision(viewer, "Grove Realty", {});
-    c.ok("named pilot receives the guided layout", layout.layout === "v2" && layout.why === "PILOT");
+    // One layout (Oct 6 2026): there is no per-client layout decision left — every viewer gets the guided layout.
+    c.ok("one portal layout: no per-client layout decision is left to make", !("portalLayoutDecision" in portalLayoutLib) && !("layoutForClient" in portalLayoutLib));
     c.ok("first monthly call cannot be bypassed by the written action", !(await actions.portalPlanWithoutCall(auth, f.monthId)).ok);
     const previous = await prisma.contentMonth.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthKey: "2026-09", videosOwed: 1, status: "CLOSED" } });
     await prisma.programCallRecord.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthId: previous.id, callType: "MONTHLY_STRATEGY", status: "COMPLETED", matchState: "MATCHED", scheduledStart: new Date("2026-09-03T17:00:00Z"), scheduledEnd: new Date("2026-09-03T17:30:00Z"), transcriptState: "ANALYZED" } });

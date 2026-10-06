@@ -490,7 +490,10 @@ async function main() {
     const oldPrompt = modelCalls.slice(before).find((m) => m.kind === "strategy")?.prompt ?? "";
     const oldRaw = (await version(old.versionId)).rawText ?? "";
     c.ok("OLD: the raw transcript reached the client-facing strategy prompt (broker, split, another client)", /broker is leaving/.test(oldPrompt) && /80\/20/.test(oldPrompt) && /Harriet Vance/.test(oldPrompt));
-    c.ok("OLD: every AI draft said \"(framework: policy default …)\" and took the server's UTC year", /\(framework: policy default/.test(oldRaw) && oldRaw.includes(`${new Date().getUTCFullYear()} Social Content Strategy`));
+    // Oct 6 2026: the old drafter's "(framework: policy default …)" line came
+    // from renderStrategy itself, which now ALWAYS prints the house framework
+    // with no annotation — so even this old copy no longer writes it.
+    c.ok("OLD: every AI draft took the server's UTC year (its '(framework: policy default …)' line is gone with the Oct 6 renderer)", !/\(framework: policy default/.test(oldRaw) && oldRaw.includes(`${new Date().getUTCFullYear()} Social Content Strategy`));
 
     await setSwitch("strategy_generation", false);
     const mark = modelCalls.length;

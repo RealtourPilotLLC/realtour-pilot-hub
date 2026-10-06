@@ -224,7 +224,7 @@ async function main() {
       }
       c.ok(`mode ${mode} × pilot ${kind}: every op × in/out × lock × {T,P,X,N,N-named} matches the rules`, mismatches === 0, detail.join(" | "));
     }
-    c.ok(`the matrix covered 3 × 4 × ${PROGRAM_REACH_OPS.length} ops × 2 × 2 × 5 = ${60 * PROGRAM_REACH_OPS.length * 4} decisions (15 ops since manual_messages, Oct 5 2026)`, evaluated === 60 * PROGRAM_REACH_OPS.length * 4 && (PROGRAM_REACH_OPS.length as number) === 15, String(evaluated));
+    c.ok(`the matrix covered 3 × 4 × ${PROGRAM_REACH_OPS.length} ops × 2 × 2 × 5 = ${60 * PROGRAM_REACH_OPS.length * 4} decisions (14 ops: manual_messages joined Oct 5 2026, portal_layout_v2 retired Oct 6 2026)`, evaluated === 60 * PROGRAM_REACH_OPS.length * 4 && (PROGRAM_REACH_OPS.length as number) === 14, String(evaluated));
     c.ok("N (a never-synthetic row renamed TEST) is never tier TEST", MODES.every((mode) => {
       const d = rolloutDecision({ rollout: { mode, modeSince: null, pilot: pilotOf("active", [N.id], ALL_GROUP_OPS) }, client: N, op: "reminders", now: NOW });
       return !d.ok || d.tier !== "TEST";
@@ -239,8 +239,8 @@ async function main() {
     const dTest = rolloutDecision({ rollout: { ...CLOSED_ROLLOUT }, client: T, op: "publishing", now: NOW, featureTestOnly: true });
     c.ok("a TEST client is reached for every op, in TEST_ONLY, with the lock on", dTest.ok && dTest.tier === "TEST" && dTest.since === null);
     // Oct 5 2026 review fix: manual_messages ("Messages I send myself") joined them, in its own group.
-    c.ok("isProgramReachOp: the 15 ops and nothing else (caption_assistant, then manual_messages, joined them)", PROGRAM_REACH_OPS.every(isProgramReachOp) && !isProgramReachOp("session_booking") && !isProgramReachOp(null) && (PROGRAM_REACH_OPS.length as number) === 15 && isProgramReachOp("caption_assistant") && isProgramReachOp("manual_messages"));
-    c.ok("the six groups carry every op but publishing, each exactly once; manual_messages alone in 'messages'", JSON.stringify([...ALL_GROUP_OPS].sort()) === JSON.stringify(PROGRAM_REACH_OPS.filter((o) => o !== "publishing").sort()) && PROGRAM_PILOT_GROUPS.flatMap((g) => g.ops).length === 14 && core.pilotGroupOf("manual_messages")?.ops.join() === "manual_messages" && core.pilotGroupOf("manual_messages")?.key === "messages");
+    c.ok("isProgramReachOp: the 14 ops and nothing else (caption_assistant, then manual_messages, joined them; portal_layout_v2 retired Oct 6 2026)", PROGRAM_REACH_OPS.every(isProgramReachOp) && !isProgramReachOp("session_booking") && !isProgramReachOp("portal_layout_v2") && !isProgramReachOp(null) && (PROGRAM_REACH_OPS.length as number) === 14 && isProgramReachOp("caption_assistant") && isProgramReachOp("manual_messages"));
+    c.ok("the five groups carry every op but publishing, each exactly once; manual_messages alone in 'messages' (the 'layout' group retired Oct 6 2026)", JSON.stringify([...ALL_GROUP_OPS].sort()) === JSON.stringify(PROGRAM_REACH_OPS.filter((o) => o !== "publishing").sort()) && PROGRAM_PILOT_GROUPS.flatMap((g) => g.ops).length === 13 && PROGRAM_PILOT_GROUPS.length === 5 && !PROGRAM_PILOT_GROUPS.some((g) => (g.key as string) === "layout") && core.pilotGroupOf("manual_messages")?.ops.join() === "manual_messages" && core.pilotGroupOf("manual_messages")?.key === "messages");
     c.ok("REVIEW FIX: caption_assistant is an automatic portal change (a pilot without that group does not reach it)", core.pilotGroupOf("caption_assistant")?.key === "portal_changes" &&
       !rolloutDecision({ rollout: { mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("active", [P.id], opsForGroups(["emails"])) }, client: P, op: "caption_assistant", now: NOW }).ok &&
       rolloutDecision({ rollout: { mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("active", [P.id], opsForGroups(["portal_changes"])) }, client: P, op: "caption_assistant", now: NOW }).ok);
@@ -350,16 +350,21 @@ async function main() {
     // "since" forward for the groups the client ALREADY had.
     const wr = "rollout" in widened ? widened.rollout : null;
     c.ok("REVIEW FIX: widening keeps joinedAt; only the newly ticked groups start at the change (groupSince)",
-      !!wr && wr.pilot?.joinedAt[P.id] === iso(t0.getTime()) && wr.pilot?.groupSince?.emails === iso(t0.getTime()) && wr.pilot?.groupSince?.portal_changes === iso(t1.getTime()) && wr.pilot?.groupSince?.layout === iso(t1.getTime()),
+      !!wr && wr.pilot?.joinedAt[P.id] === iso(t0.getTime()) && wr.pilot?.groupSince?.emails === iso(t0.getTime()) && wr.pilot?.groupSince?.portal_changes === iso(t1.getTime()) && wr.pilot?.groupSince?.accounts === iso(t1.getTime()),
       JSON.stringify(wr?.pilot));
     const at = (op: Op) => { const d = rolloutDecision({ rollout: wr!, client: P, op, now: new Date(t1.getTime() + DAY) }); return d.ok ? d.since?.toISOString() ?? null : `refused ${d.code}`; };
     c.ok("REVIEW FIX: after the widening, reminders (emails, ticked from the start) keep since = the join; review deadlines (newly ticked) start at the widening",
       at("reminders") === iso(t0.getTime()) && at("revision_policy") === iso(t1.getTime()), `reminders ${at("reminders")} · revision_policy ${at("revision_policy")}`);
-    const narrowedAgain = settleRolloutChange(wr!, { ...wr!, pilot: { ...wr!.pilot!, operations: opsForGroups(["emails", "layout"]) } }, new Date(t1.getTime() + DAY));
-    c.ok("unticking a group drops its groupSince; the kept groups keep theirs", "rollout" in narrowedAgain && !narrowedAgain.rollout.pilot?.groupSince?.portal_changes && narrowedAgain.rollout.pilot?.groupSince?.layout === iso(t1.getTime()) && narrowedAgain.rollout.pilot?.joinedAt[P.id] === iso(t0.getTime()));
+    const narrowedAgain = settleRolloutChange(wr!, { ...wr!, pilot: { ...wr!.pilot!, operations: opsForGroups(["emails", "accounts"]) } }, new Date(t1.getTime() + DAY));
+    c.ok("unticking a group drops its groupSince; the kept groups keep theirs", "rollout" in narrowedAgain && !narrowedAgain.rollout.pilot?.groupSince?.portal_changes && narrowedAgain.rollout.pilot?.groupSince?.accounts === iso(t1.getTime()) && narrowedAgain.rollout.pilot?.joinedAt[P.id] === iso(t0.getTime()));
     const gsRound = parseProgramRollout(serializeProgramRollout(wr!));
     c.ok("groupSince round-trips (byte-stable) and is dropped for groups the pilot does not carry", gsRound.problem === null && serializeProgramRollout(gsRound.rollout) === serializeProgramRollout(wr!) &&
-      !parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id], operations: ["reminders"], groupSince: { emails: iso(t0.getTime()), layout: iso(t1.getTime()), bogus: iso(t1.getTime()) } } })).rollout.pilot?.groupSince?.layout);
+      !(parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id], operations: ["reminders"], groupSince: { emails: iso(t0.getTime()), accounts: iso(t1.getTime()), bogus: iso(t1.getTime()) } } })).rollout.pilot?.groupSince as Record<string, string> | undefined)?.accounts);
+    // Oct 6 2026: the retired portal_layout_v2 op and "layout" group in an OLD
+    // stored value still read — dropped, never a problem, never widening.
+    const oldLayout = parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id], operations: ["reminders", "portal_layout_v2"], groupSince: { emails: iso(t0.getTime()), layout: iso(t1.getTime()) }, clientOps: { [P.id]: ["portal_layout_v2", "reminders"] } } }));
+    c.ok("an old stored rollout naming portal_layout_v2 / the layout group reads fine: the op and group are dropped",
+      oldLayout.problem === null && oldLayout.rollout.pilot?.operations.join() === "reminders" && oldLayout.rollout.pilot?.clientOps?.[P.id]?.join() === "reminders" && !("layout" in (oldLayout.rollout.pilot?.groupSince ?? {})) && !serializeProgramRollout(oldLayout.rollout).includes("layout"), JSON.stringify(oldLayout));
     // REVIEW FIX: PILOT → ALL kept "since" for nobody — every client, the
     // pilot's included, read modeSince.
     const toAllFix = settleRolloutChange(r1!, { ...r1!, mode: "ALL" }, t1);
@@ -858,7 +863,7 @@ async function main() {
     const line = (rr: Rollout, op: Op) => describeProgramScope({ rollout: rr, op, featureTestOnly: false, testNames: ["Rollout TEST"], names, now: NOW });
     const lr = line(r, "reminders");
     c.ok("describeProgramScope: reminders names P and Q (shared), never X", lr.realClients && lr.line.includes(P.name) && lr.line.includes(Q.name) && !lr.line.includes(X.name) && lr.pilotNames.join() === `${P.name},${Q.name}`, lr.line);
-    const lnone = line(own({ [P.id]: ["reminders"], [X.id]: [] }, [P.id, X.id]), "portal_layout_v2");
+    const lnone = line(own({ [P.id]: ["reminders"], [X.id]: [] }, [P.id, X.id]), "caption_assistant");
     c.ok("…an op nobody has: TEST only, 'no named client has … turned on'", !lnone.realClients && lnone.line.includes("no named client has") && !/every client/i.test(lnone.line), lnone.line);
 
     // parse / serialize.
@@ -933,7 +938,7 @@ async function main() {
     const w1 = await R.updateProgramRollout((cur, now) => setClientOpsChange(cur, { client: P, ops: ["reminders", "portal_invites"], by, now }), by, "client_onboarding_toggle");
     c.ok("through updateProgramRollout: saved, audited, mode PILOT, P's own list stamped", w1.ok && w1.to.mode === "PILOT" && w1.to.pilot?.clientOps?.[P.id]?.join() === "reminders,portal_invites" && !!w1.to.pilot?.clientOpsSince?.[P.id]?.reminders &&
       (await db.auditLog.count({ where: { action: "client_onboarding_toggle", target: "program-rollout" } })) === 1);
-    c.ok("programReach: P reminders yes, P layout no, X nothing", (await R.programReach("reminders", P.id)).ok && !(await R.programReach("portal_layout_v2", P.id)).ok && !(await R.programReach("reminders", X.id)).ok);
+    c.ok("programReach: P reminders yes, P caption assistant no, X nothing", (await R.programReach("reminders", P.id)).ok && !(await R.programReach("caption_assistant", P.id)).ok && !(await R.programReach("reminders", X.id)).ok);
     const gRow = (key: string, clientId: string, toRef: string) => ({
       id: "g12", channel: "email", toRef, body: "b", state: "pending", attempts: 0, leaseUntil: null, leaseBy: null, providerId: null, providerError: null,
       dedupeKey: key, requestedBy: "drill", clientId, projectId: null, taskId: null, createdAt: new Date(), acceptedAt: null, resolvedAt: null, extraToRefsJson: null, mediaUrlsJson: null,

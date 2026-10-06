@@ -18,12 +18,14 @@
 //      lock-less switches and called strategy_generation effective and healthy
 //      with the processor off; a queued "drive-sweep" job ran ATTENDED with
 //      ai_runs off (the model was called) and never auto-accepted a fact.
-//   1. R04 layout, per REAL client-role session (a cookie from the sign-in
-//      link route, consumeLoginToken) and per token link: T v2 TEST_CLIENT, P
-//      v2 PILOT, X v1; navigation (PortalPage) and one portal action agree;
-//      Q's session opens P and never X; X's token page offers no email
-//      sign-in; P removed → v1 and old ?pv= links still land; ALL → X v2
-//      SWITCH_ON; staff ?layout=v2 → STAFF_PREVIEW.
+//   1. R04 sessions, per REAL client-role session (a cookie from the sign-in
+//      link route, consumeLoginToken) and per token link. Since Oct 6 2026
+//      there is ONE portal layout (Jordan: "I want to just be fully
+//      transitioned to the new layout"): T, P, X and N, signed in or by link,
+//      and staff (a stray ?layout=v2 ignored) all get PortalShell; one portal
+//      action agrees; Q's session opens P and never X; X's token page offers
+//      no email sign-in; P removed → the shared link, and old ?pv= links still
+//      land on Your Month.
 //   2. Readiness = audience preview = dispatch, for EVERY op: the readiness
 //      scope line, programAudience, programReach, the outbox dispatch gate and
 //      the preview rows name the same clients; the office-replied lane's dry
@@ -186,6 +188,7 @@ async function parentMain() {
   const oldCopyFile = baseFile("programAutomationCopy.base.ts", point(show("src/lib/programAutomationCopy.ts")));
   const oldReadinessFile = baseFile("readiness.base.ts", point(show("src/lib/readiness.ts"), { "lib/programAutomationCopy": oldCopyFile.replace(/\.ts$/, "") }));
   const oldLayoutFile = baseFile("portalLayout.base.ts", point(show("src/lib/portalLayout.ts")));
+  type OldLayoutDecision = (viewer: import("@/lib/portal").PortalViewer, clientName: string | null | undefined, query: { layout?: string | null }) => Promise<{ layout: "v1" | "v2"; why: string }>;
   const oldGenFile = baseFile("contentGeneration.base.ts", point(show("src/lib/contentGeneration.ts")));
 
   const { stop } = await bootDrillDb({ port: PORT });
@@ -195,7 +198,7 @@ async function parentMain() {
   const core = await import("@/lib/programRolloutCore");
   const rollout = await import("@/lib/programRollout");
   const { programDispatchGate } = await import("@/lib/programRolloutGate");
-  const { layoutForClient, portalLayoutDecision } = await import("@/lib/portalLayout");
+  const portalLayoutLib = await import("@/lib/portalLayout");
   const portal = await import("@/lib/portal");
   const pa = await import("@/lib/portalAccess");
   const { readinessReport } = await import("@/lib/readiness");
@@ -208,7 +211,7 @@ async function parentMain() {
   const { maskToRef } = await import("@/lib/outbox");
   type Rollout = import("@/lib/programRolloutCore").ProgramRollout;
   type Op = import("@/lib/programRolloutCore").ProgramReachOp;
-  const OldLayout = (await import(oldLayoutFile)) as { portalLayoutDecision: typeof portalLayoutDecision };
+  const OldLayout = (await import(oldLayoutFile)) as { portalLayoutDecision: OldLayoutDecision };
   const OldReadiness = (await import(oldReadinessFile)) as { readinessReport: (o?: { now?: Date }) => Promise<{ rows: { key: string; scope: string | null; realClients: boolean; effective: { ok: boolean; blockers: string[] }; healthy: { ok: boolean | null; detail: string } }[] }> };
   const OldGen = (await import(oldGenFile)) as { runTranscriptJob: typeof gen.runTranscriptJob };
   const { PortalPage } = await import("@/components/portal/PortalPage");
@@ -327,10 +330,9 @@ async function parentMain() {
     }
 
     // =========================================================================
-    c.head("1 · R04 — the layout, per real client-role session and per link");
+    c.head("1 · R04 sessions + ONE layout (Oct 6 2026), per real client-role session and per link");
     // =========================================================================
     await setSwitch("portal_login_email", true);
-    await setSwitch("portal_layout_v2", true);
     {
       // Real sessions, through the sign-in link route (consumeLoginToken).
       const pCookie = await sessionFor(P.membershipId!);
@@ -341,29 +343,27 @@ async function parentMain() {
       const pS = await portal.resolvePortalViewer({ cookies: cookieSrc(pCookie!), enrollmentId: P.enrollmentId });
       c.ok("P's cookie resolves to a CLIENT viewer on P", pS.ok && pS.viewer.actor.kind === "CLIENT" && pS.viewer.enrollment.clientId === P.clientId);
       if (!pS.ok) throw new Error("P session did not resolve");
-      const lP = await portalLayoutDecision(pS.viewer, P.name, {});
-      c.ok("P's session → v2, reason PILOT", lP.layout === "v2" && lP.why === "PILOT", JSON.stringify(lP));
-      const lPc = await layoutForClient({ id: P.clientId, name: P.name });
-      c.ok("…the same answer layoutForClient gives (keyed on the client, not the actor)", lPc.layout === lP.layout && lPc.why === lP.why);
+      c.ok("ONE layout: no per-client layout decision is left to make (OLD: TEST / PILOT / SWITCH_ON / STAFF_PREVIEW)", !("portalLayoutDecision" in portalLayoutLib) && !("layoutForClient" in portalLayoutLib));
+      const shellOf = (page: unknown) => isEl(page) && typeName(page.type) === "PortalShell";
+      const navOf = (page: unknown) => (isEl(page) ? ((page.props.nav?.primary ?? []) as { href: string }[]).map((i) => i.href) : []);
+
+      // Navigation: every viewer gets the same frame.
+      const pageP = await PortalPage({ viewer: pS.viewer, path: "/portal/me", baseQuery: `e=${P.enrollmentId}`, query: { tab: "home" } });
+      const navP = navOf(pageP);
+      c.ok("P's signed-in page is PortalShell with five links, none carrying layout=", shellOf(pageP) && navP.length === 5 && navP.every((h) => h.includes(`e=${P.enrollmentId}`) && !h.includes("layout")), navP.join(" "));
       const vT = await portal.resolvePortalViewer({ token: T.token });
-      c.ok("T → v2 TEST_CLIENT", vT.ok && (await portalLayoutDecision(vT.viewer, T.name, {})).why === "TEST_CLIENT");
+      c.ok("T's link page → PortalShell", vT.ok && shellOf(await PortalPage({ viewer: vT.viewer, path: "/portal/[token]", query: { tab: "home" } })));
       const vX = await portal.resolvePortalViewer({ token: X.token });
       if (!vX.ok) throw new Error("X link did not resolve");
-      const lX = await portalLayoutDecision(vX.viewer, X.name, {});
-      c.ok("X's link → v1 DEFAULT (the switch is on, the rollout does not reach X)", lX.layout === "v1" && lX.why === "DEFAULT", JSON.stringify(lX));
-      const xAsClient = { ...vX.viewer, actor: { kind: "CLIENT" as const, clientUserId: X.clientUserId!, email: X.seat!, name: X.name, membershipId: X.membershipId!, membershipRole: "OWNER" as const }, via: "LOGIN" as const };
-      c.ok("X seen by a client-role actor → still v1 (the actor never decides)", (await portalLayoutDecision(xAsClient, X.name, { layout: "v2" })).layout === "v1");
-      const vN = await portal.resolvePortalViewer({ token: N.token });
-      c.ok("N (a real row renamed TEST, not named) → v1 (OLD: v2)", vN.ok && (await portalLayoutDecision(vN.viewer, N.name, {})).layout === "v1");
-      const staffX = { ...vX.viewer, actor: { kind: "STAFF" as const, staffUserId: admin.id, staffName: "Kyle Drill", staffRole: "ADMIN" }, via: "STAFF" as const };
-      c.ok("staff ?layout=v2 on X → STAFF_PREVIEW", (await portalLayoutDecision(staffX, X.name, { layout: "v2" })).why === "STAFF_PREVIEW");
-
-      // Navigation: the page the same decision builds.
-      const pageP = await PortalPage({ viewer: pS.viewer, path: "/portal/me", baseQuery: `e=${P.enrollmentId}`, query: { tab: "home" } });
-      const navP = isEl(pageP) ? ((pageP.props.nav?.primary ?? []) as { href: string }[]).map((i) => i.href) : [];
-      c.ok("P's signed-in page is PortalShell (v2) with five links, none needing layout=v2", isEl(pageP) && typeName(pageP.type) === "PortalShell" && navP.length === 5 && navP.every((h) => h.includes(`e=${P.enrollmentId}`) && !h.includes("layout")), navP.join(" "));
       const pageX = await PortalPage({ viewer: vX.viewer, path: "/portal/[token]", query: { tab: "home" } });
-      c.ok("X's link page is the v1 frame (HomeTab, no PortalShell)", isEl(pageX) && find(pageX, "PortalShell").length === 0 && find(pageX, "HomeTab").length === 1);
+      c.ok("X (outside the rollout) → the same PortalShell (OLD: the v1 frame with HomeTab)", shellOf(pageX) && find(pageX, "HomeV2").length === 1 && find(pageX, "HomeTab").length === 0);
+      const vN = await portal.resolvePortalViewer({ token: N.token });
+      c.ok("N (a real row renamed TEST, not named) → PortalShell too", vN.ok && shellOf(await PortalPage({ viewer: vN.viewer, path: "/portal/[token]", query: { tab: "home" } })));
+      const staffX = { ...vX.viewer, actor: { kind: "STAFF" as const, staffUserId: admin.id, staffName: "Kyle Drill", staffRole: "ADMIN" }, via: "STAFF" as const };
+      const staffPage = await PortalPage({ viewer: staffX, path: "/portal/[token]", query: { tab: "home", layout: "v2" } });
+      const staffNav = navOf(staffPage);
+      c.ok("staff with an old ?layout=v2 → the same PortalShell; the stray layout= is ignored, never carried, and no 'preview' notice",
+        shellOf(staffPage) && staffNav.length === 5 && staffNav.every((h) => !h.includes("layout")) && !/preview of the new layout|Preview the new layout|Back to the current layout/.test(flat(staffPage)), staffNav.join(" "));
       // Email sign-in is offered on a link page only where it can be sent.
       const vPt = await portal.resolvePortalViewer({ token: P.token });
       const pageXText = flat(pageX);
@@ -400,20 +400,16 @@ async function parentMain() {
       // Removal reverts.
       const rm = await ra.removeProgramPilotClientAction({ clientId: P.clientId });
       c.ok("P taken out of the pilot (the owner's action)", rm.ok && /out of the pilot/.test(rm.message), rm.message);
-      c.ok("P → v1 on the next decision", (await layoutForClient({ id: P.clientId, name: P.name })).layout === "v1");
       const pAfter = await portal.resolvePortalViewer({ cookies: cookieSrc(pCookie!), enrollmentId: P.enrollmentId });
       c.ok("P's session → no_membership (back to the shared link)", !pAfter.ok && pAfter.reason === "no_membership");
       const vP2 = await portal.resolvePortalViewer({ token: P.token });
       const deep = vP2.ok ? await PortalPage({ viewer: vP2.viewer, path: "/portal/[token]", query: { tab: "plan", pv: "scripts" } }) : null;
-      c.ok("P's old v2 deep link (?tab=plan&pv=scripts) still lands, on the v1 Topics tab", !!deep && find(deep, "PortalShell").length === 0 && find(deep, "TopicsTab").length === 1);
+      const deepPlan = deep ? find(deep, "PlanTab")[0] : undefined;
+      c.ok("P's deep link (?tab=plan&pv=scripts) still lands, on Your Month › Scripts in the one layout", !!deep && isEl(deep) && typeName(deep.type) === "PortalShell" && deepPlan?.props.d?.view === "scripts");
+      const oldTab = vP2.ok ? await PortalPage({ viewer: vP2.viewer, path: "/portal/[token]", query: { tab: "topics" } }) : null;
+      c.ok("…and an old emailed ?tab=topics lands on Your Month › Topic bank", !!oldTab && find(oldTab, "PlanTab")[0]?.props.d?.view === "bank");
       c.ok("P's seat is kept (not revoked)", !!(await prisma.clientMembership.findFirst({ where: { id: P.membershipId!, revokedAt: null } })));
 
-      // Every client: ALL.
-      await writeRollout({ mode: "ALL", modeSince: new Date().toISOString(), pilot: null });
-      const lXall = await layoutForClient({ id: X.clientId, name: X.name });
-      c.ok("rollout ALL + the switch → X gets v2, reason SWITCH_ON", lXall.layout === "v2" && lXall.why === "SWITCH_ON");
-      await setSwitch("portal_layout_v2", false);
-      c.ok("…and the switch off → v1 for X again", (await layoutForClient({ id: X.clientId, name: X.name })).layout === "v1");
       await writeRollout(PILOT_P);
     }
 
@@ -422,8 +418,9 @@ async function parentMain() {
     // =========================================================================
     const programOps = Object.entries(AUTOMATION_EFFECTS).filter(([, e]) => e.launchGate === "programScope").map(([k]) => k);
     // Twelve since the Sep 28 review fix: caption_assistant (a client's own
-    // "Draft a caption" button) was labelled internal and gated by its switch alone.
-    c.ok("twelve client-reaching program switches read the rollout scope (caption_assistant included)", programOps.length === 12 && programOps.includes("caption_assistant") && programOps.every((k) => core.isProgramReachOp(k)), programOps.join(","));
+    // "Draft a caption" button) was labelled internal and gated by its switch
+    // alone. Eleven since Oct 6 2026: portal_layout_v2 retired (one layout).
+    c.ok("eleven client-reaching program switches read the rollout scope (caption_assistant included, portal_layout_v2 retired)", programOps.length === 11 && !programOps.includes("portal_layout_v2") && programOps.includes("caption_assistant") && programOps.every((k) => core.isProgramReachOp(k)), programOps.join(","));
     for (const k of programOps) await setSwitch(k, true);
     await setSwitch("reminders", true, JSON.stringify({ testClientsOnly: false }));
     await setSwitch("script_auto_share", true, JSON.stringify({ testClientsOnly: false }));
@@ -489,11 +486,11 @@ async function parentMain() {
       const rows = await previewProgramAudience();
       const lane = (l: string) => rows.filter((r) => r.lane === l);
       const laneDisagree: string[] = [];
-      for (const [l, op] of [["LAYOUT", "portal_layout_v2"], ["REVIEW_DEADLINES", "revision_policy"], ["TOPIC_CARRYOVER", "topic_carryover"]] as const) {
+      for (const [l, op] of [["REVIEW_DEADLINES", "revision_policy"], ["TOPIC_CARRYOVER", "topic_carryover"]] as const) {
         const A = new Set((await rollout.programAudience(op)).clients.filter((x) => x.decision.ok).map((x) => x.clientId));
         for (const r of lane(l)) if (!!r.tier !== A.has(r.clientId ?? "")) laneDisagree.push(`${l} ${r.clientName}`);
       }
-      c.ok("the preview's layout / review-deadline / carry-over rows agree with the audience for every program client", laneDisagree.length === 0 && lane("LAYOUT").length >= 5, laneDisagree.join(",") || `${lane("LAYOUT").length} layout rows`);
+      c.ok("the preview's review-deadline / carry-over rows agree with the audience for every program client (the layout lane retired Oct 6 2026)", laneDisagree.length === 0 && lane("REVIEW_DEADLINES").length >= 5 && lane("LAYOUT").length === 0, laneDisagree.join(",") || `${lane("REVIEW_DEADLINES").length} review-deadline rows`);
       c.ok("the preview names who each email would reach, masked, even for X (computed before the scope)", rows.every((r) => !r.to || /…@/.test(r.to)));
 
       // The office-replied lane, live: dry-run "send" == what Gmail received.
@@ -582,11 +579,11 @@ async function parentMain() {
       const afterRow = await prisma.appSetting.findUnique({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY } });
       c.ok("a forced audit failure inside the transaction → refused, and NEITHER the value nor an audit row landed", !forced.ok && afterRow?.value === beforeRow?.value && (await prisma.auditLog.count({ where: { target: core.PROGRAM_ROLLOUT_SETTING_KEY } })) === auditsBefore, forced.message);
       await setSwitch("reminders", true, JSON.stringify({ testClientsOnly: false }));
-      await setSwitch("portal_layout_v2", true);
+      await setSwitch("caption_assistant", true); // Oct 6 2026: stands in for the retired portal_layout_v2
       const okP = await add(P, "  pat pilot   realty ");
       c.ok("P added (typed name compared without case or extra spaces); the message says the rollout is still TEST only", okP.ok && /still set to "Only my TEST clients"/.test(okP.message), okP.message);
       const modeP = await ra.setProgramRolloutModeAction({ mode: "PILOT" });
-      c.ok("mode → PILOT: the message names the switches that are on and now reach P", modeP.ok && /Pat Pilot Realty/.test(modeP.message) && /Client reminders/.test(modeP.message) && /New portal layout/.test(modeP.message), modeP.message);
+      c.ok("mode → PILOT: the message names the switches that are on and now reach P", modeP.ok && /Pat Pilot Realty/.test(modeP.message) && /Client reminders/.test(modeP.message) && /Caption assistant/.test(modeP.message) && !/New portal layout/.test(modeP.message), modeP.message);
       const audit = (await prisma.auditLog.findMany({ where: { target: core.PROGRAM_ROLLOUT_SETTING_KEY }, orderBy: { createdAt: "asc" } })).slice(auditsBefore);
       c.ok("each change is one AuditLog row with before → after, by the owner", audit.length === 2 && audit.every((a) => a.actor === owner.email && / -> /.test(a.detail ?? "")) && audit[0].action === "program_pilot_add" && audit[1].action === "program_rollout_mode", audit.map((a) => `${a.action}:${a.actor}`).join(","));
       const stored = core.parseProgramRollout((await prisma.appSetting.findUnique({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY } }))!.value).rollout;
@@ -612,7 +609,7 @@ async function parentMain() {
       await clearSession();
       delete process.env.AUTH_ENFORCE;
       await setSwitch("reminders", false, null);
-      await setSwitch("portal_layout_v2", false);
+      await setSwitch("caption_assistant", false);
       await writeRollout(PILOT_P);
     }
 

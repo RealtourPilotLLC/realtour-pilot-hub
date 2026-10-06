@@ -202,10 +202,12 @@ async function main() {
         t1.ok && /Nothing was sent/.test(t1.message) && /Client reminders \(off\)/.test(t1.message) && /TEST clients only/.test(t1.message), t1.message);
       c.ok("…the rollout is now named clients (PILOT), A's OWN list is exactly the email ops, approved by the owner", st.mode === "PILOT" && st.pilot?.clientIds.join() === A.id && st.pilot.clientOps?.[A.id]?.join() === "reminders,script_share_email,program_message_notice" && st.pilot.approvedBy === owner.email);
       const reach = async (op: import("@/lib/programRolloutCore").ProgramReachOp, id: string) => (await R.programReach(op, id)).ok;
-      c.ok("A is reached for the email ops — and for nothing else", (await reach("reminders", A.id)) && (await reach("program_message_notice", A.id)) && !(await reach("portal_sign_in", A.id)) && !(await reach("portal_layout_v2", A.id)) && !(await reach("revision_policy", A.id)));
+      c.ok("A is reached for the email ops — and for nothing else", (await reach("reminders", A.id)) && (await reach("program_message_notice", A.id)) && !(await reach("portal_sign_in", A.id)) && !(await reach("caption_assistant", A.id)) && !(await reach("revision_policy", A.id)));
       c.ok("B, the trial client and the paused client: still nothing", !(await reach("reminders", B.id)) && !(await reach("reminders", Tr.id)) && !(await reach("reminders", Pz.id)));
-      const t2 = await A_.setOnboardingToggleAction({ clientId: B.id, toggle: "layout", on: true });
-      c.ok("B gets ONLY the new layout; A keeps only emails", t2.ok && (await reach("portal_layout_v2", B.id)) && !(await reach("reminders", B.id)) && !(await reach("portal_layout_v2", A.id)) && (await reach("reminders", A.id)), t2.message);
+      // Oct 6 2026: the "New portal layout" toggle is gone (one layout for everyone); B gets one other feature instead.
+      const t2 = await A_.setOnboardingToggleAction({ clientId: B.id, toggle: "caption_assistant", on: true });
+      c.ok("B gets ONLY the caption assistant; A keeps only emails", t2.ok && (await reach("caption_assistant", B.id)) && !(await reach("reminders", B.id)) && !(await reach("caption_assistant", A.id)) && (await reach("reminders", A.id)), t2.message);
+      c.ok("there is no per-client layout toggle any more (Oct 6 2026)", !core.isProgramReachOp("portal_layout_v2") && !(await A_.setOnboardingToggleAction({ clientId: B.id, toggle: "layout", on: true })).ok);
       const t3 = await A_.setOnboardingToggleAction({ clientId: A.id, toggle: "accounts", on: true });
       c.ok("A + Portal account: sign-in ops on for A only", t3.ok && (await reach("portal_sign_in", A.id)) && (await reach("portal_invites", A.id)) && !(await reach("portal_sign_in", B.id)));
       const auto = await A_.setOnboardingToggleAction({ clientId: A.id, toggle: "bookings", on: true });
@@ -356,17 +358,17 @@ async function main() {
       const adminTree = await page({ searchParams: Promise.resolve({ client: A.id }) });
       const adminProps = elements(adminTree, "ClientOnboardingPanel")[0];
       const Ad = renderToStaticMarkup(createElement(ClientOnboardingPanel, adminProps as Parameters<typeof ClientOnboardingPanel>[0])).replace(/<!-- -->/g, "");
-      c.ok("owner: the seven steps, the client list with the TEST client marked, the nine feature switches and the send controls",
-        (O.match(/data-step="/g) ?? []).length === 7 && O.includes(`data-onboarding-client="${T.id}"`) && />TEST</.test(O) && (O.match(/role="switch"/g) ?? []).length === 9 &&
+      c.ok("owner: the seven steps, the client list with the TEST client marked, the eight feature switches (the layout toggle retired Oct 6 2026) and the send controls",
+        (O.match(/data-step="/g) ?? []).length === 7 && O.includes(`data-onboarding-client="${T.id}"`) && />TEST</.test(O) && (O.match(/role="switch"/g) ?? []).length === 8 &&
         O.includes("Send now") && O.includes("Mark as sent by me") && O.includes("Copy portal link") && O.includes("Erica Example"));
       c.ok("owner: the toggles show their state (emails and accounts on, the rest off) and the switches they need",
-        O.includes('data-toggle="emails" data-toggle-on="1"') && O.includes('data-toggle="accounts" data-toggle-on="1"') && O.includes('data-toggle="layout" data-toggle-on="0"') && /Client reminders/.test(O) && /Content program automations/.test(O));
+        O.includes('data-toggle="emails" data-toggle-on="1"') && O.includes('data-toggle="accounts" data-toggle-on="1"') && O.includes('data-toggle="caption_assistant" data-toggle-on="0"') && !O.includes('data-toggle="layout"') && /Client reminders/.test(O) && /Content program automations/.test(O));
       c.ok("owner: 'only allows … never sends anything by itself' is said on the page; automatic approval and auto-share say they are off by default",
         /only <strong>allows<\/strong> it for Erica Example\. It never sends anything by itself/.test(O) && (O.match(/Off by default/g) ?? []).length === 2);
       c.ok("owner: the history lists the send and the mark", /History \(/.test(O) && /Marked sent/.test(O));
       c.ok("admin: the same steps, READ-ONLY — no send, no mark, no copy link, every switch disabled",
         (Ad.match(/data-step="/g) ?? []).length === 7 && !/Send now<\/button>/.test(Ad) && !/Mark as sent by me<\/button>/.test(Ad) && !Ad.includes("Copy portal link") && /Send now<\/button>/.test(O) && /Mark as sent by me<\/button>/.test(O) &&
-        (Ad.match(/role="switch"/g) ?? []).length === 9 && (Ad.match(/<button[^>]*role="switch"[^>]*>/g) ?? []).every((tag) => /\sdisabled=""/.test(tag)),
+        (Ad.match(/role="switch"/g) ?? []).length === 8 && (Ad.match(/<button[^>]*role="switch"[^>]*>/g) ?? []).every((tag) => /\sdisabled=""/.test(tag)),
         [...new Set((Ad.match(/<button[^>]*role="switch"[^>]*>/g) ?? []))].slice(0, 2).join(" ") + ` · Send now ${/Send now<\/button>/.test(Ad)} · Mark ${/Mark as sent by me<\/button>/.test(Ad)} · Copy ${Ad.includes("Copy portal link")}`);
       const leak = ["erica@example.test", "6105550101"].map((x) => { const i = Ad.indexOf(x); return i < 0 ? "" : `${x} at …${Ad.slice(Math.max(0, i - 120), i + 40)}…`; }).filter(Boolean).join(" | ");
       c.ok("admin: addresses are masked (no full email or phone anywhere)", !leak && Ad.includes("er…@example.test"), leak);

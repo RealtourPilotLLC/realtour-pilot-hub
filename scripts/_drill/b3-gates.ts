@@ -629,7 +629,11 @@ async function main() {
     const sw2 = await actions.portalPlanWithCall({ token: Sm.portalToken }, Sm.monthId);
     const sw3 = await actions.portalPlanWithoutCall({ token: Sm.portalToken }, Sm.monthId);
     const sw4 = await actions.portalPlanWithCall({ token: Sm.portalToken }, Sm.monthId);
-    c.ok("switching route twice (CALL → WRITTEN → CALL → WRITTEN → CALL) creates and cancels nothing", [sw1, sw2, sw3, sw4].every((x) => x.ok) && (await counts()) === before, `${[sw1, sw2, sw3, sw4].map((x) => x.ok).join(",")} ${before} → ${await counts()}`);
+    // Oct 6 2026 (portal.planningSwitchRefusal): session 1 is booked through
+    // the call route's gate, so the switch to the written route is now
+    // REFUSED in plain words; staying on the call is a no-op. Either way the
+    // switch attempts create and cancel nothing.
+    c.ok("switching route twice (CALL → WRITTEN → CALL → WRITTEN → CALL) creates and cancels nothing — the written switch is refused while filming is booked", !sw1.ok && !sw3.ok && /filming is already booked/.test(sw1.message) && sw2.ok && sw4.ok && (await counts()) === before, `${[sw1, sw2, sw3, sw4].map((x) => x.ok).join(",")} ${before} → ${await counts()}`);
 
     // =======================================================================
     c.head("9 · §6.6 — inside 24 hours is Kyle's number (ALREADY_FIXED, confirmed at HEAD)");

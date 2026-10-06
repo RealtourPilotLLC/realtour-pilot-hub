@@ -290,7 +290,7 @@ async function main(): Promise<void> {
     c.ok("NEW: a click on the excluded client's portal drafts nothing and calls no model", !dx.ok && /switched off/.test(dx.message) && modelCalls === m0, dx.message);
     const dp = await pk.draftCaptionForVideo(capP.viewer, capP.video.id);
     c.ok("NEW: the pilot client's click drafts (one model call)", dp.ok && modelCalls === m0 + 1, dp.message);
-    await writeRollout(pilotOf([P.clientId, capP.fx.clientId], core.opsForGroups(["accounts", "layout", "emails", "bookings"])));
+    await writeRollout(pilotOf([P.clientId, capP.fx.clientId], core.opsForGroups(["accounts", "emails", "bookings"])));
     const dpNo = await pk.draftCaptionForVideo(capP.viewer, capP.video.id);
     c.ok("NEW: a pilot WITHOUT 'Automatic portal changes' → the pilot client gets no drafter either", !dpNo.ok && !(await kit(capP)) && modelCalls === m0 + 1, dpNo.message);
     await writeRollout(pilotOf([P.clientId, capP.fx.clientId]));
@@ -466,7 +466,7 @@ async function main(): Promise<void> {
     const oldAnswer = (id: string) => [F.clientId].includes(id);
     c.ok("OLD (the fixture list alone): P — whose address the hub now writes to Aryeo — was 'not asked'", !oldAnswer(P.clientId));
     c.ok("NEW: P (program pilot, bookings) → Aryeo is asked; X no; the TEST fixture still yes", (await sa.aryeoWillBeAsked(P.clientId)) && !(await sa.aryeoWillBeAsked(X.clientId)) && (await sa.aryeoWillBeAsked(F.clientId)));
-    await writeRollout(pilotOf([P.clientId], core.opsForGroups(["accounts", "layout", "emails", "portal_changes"])));
+    await writeRollout(pilotOf([P.clientId], core.opsForGroups(["accounts", "emails", "portal_changes"])));
     c.ok("NEW: bookings not ticked → P not asked (the write guard refuses it too)", !(await sa.aryeoWillBeAsked(P.clientId)));
     await writeRollout(pilotOf([P.clientId]));
     await setSwitch("address_sync", false, { authorizedFixtureClientIds: [F.clientId] });
@@ -521,15 +521,17 @@ async function main(): Promise<void> {
     // "Every client": locked switches are named as locked, and each says when.
     await writeRollout(pilotOf([P.clientId]));
     await setSwitch("reminders", true, null); // no stored policy → its lock reads ON
-    await setSwitch("portal_layout_v2", true);
+    // Oct 6 2026: the portal-layout switch is retired (one layout); the
+    // caption assistant stands in as the unlocked switch that reaches everyone.
+    await setSwitch("caption_assistant", true);
     const all = await ra.setProgramRolloutModeAction({ mode: "ALL", typedConfirm: "EVERY CLIENT" });
     const reaching = /Switched on now, and reaching every client with a program: ([^]*?)\.( Still|$)/.exec(all.message)?.[1] ?? "";
     const locked = /Still TEST clients only because[^:]*: ([^]*?)\.$/.exec(all.message)?.[1] ?? "";
-    c.ok("NEW: 'every client' lists the layout as reaching everyone (on their next visit) and reminders as STILL TEST-only (its lock)",
-      all.ok && /New portal layout/.test(reaching) && /on their next visit/.test(reaching) && !/Client reminders/.test(reaching) && /Client reminders/.test(locked), all.message);
+    c.ok("NEW: 'every client' lists the caption assistant as reaching everyone (when they press it) and reminders as STILL TEST-only (its lock)",
+      all.ok && /Caption assistant/.test(reaching) && /when they press Draft a caption/.test(reaching) && !/Client reminders/.test(reaching) && /Client reminders/.test(locked), all.message);
     c.ok("NEW: the panel's 'every client' words mention the feature locks", fs.readFileSync(path.join(REPO, "src/components/settings/ProgramRolloutPanel.tsx"), "utf8").includes("unless a feature's own lock holds it to TEST clients"));
     await setSwitch("reminders", false, null);
-    await setSwitch("portal_layout_v2", false);
+    await setSwitch("caption_assistant", false);
 
     // The per-client list: per group, not through one op.
     await writeRollout(pilotOf([P.clientId], core.opsForGroups(["emails"])));

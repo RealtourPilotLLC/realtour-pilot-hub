@@ -120,8 +120,8 @@ async function main() {
     await prisma.appSetting.create({ data: { key: "editor_routing", value: JSON.stringify({ personalBranding: "kim" }) } });
     await prisma.appSetting.create({ data: { key: "review_room", value: JSON.stringify({ creativeApproverTeamMemberId: jamesTm.id, backupReviewerTeamMemberId: kyleTm.id }) } });
     const since = new Date(clock - 864e5).toISOString();
-    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [f.clientId], operations: ["portal_sign_in", "portal_layout_v2"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: "2026-11-30T23:59:59Z", joinedAt: { [f.clientId]: since }, note: "One disposable normal-client journey" } }) } });
-    for (const key of ["portal_login_email", "portal_layout_v2"]) await prisma.programAutomation.create({ data: { key, enabled: true, enabledBy: "isolated-fixture", enabledAt: new Date() } });
+    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [f.clientId], operations: ["portal_sign_in"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: "2026-11-30T23:59:59Z", joinedAt: { [f.clientId]: since }, note: "One disposable normal-client journey" } }) } });
+    for (const key of ["portal_login_email"]) await prisma.programAutomation.create({ data: { key, enabled: true, enabledBy: "isolated-fixture", enabledAt: new Date() } });
 
     c.head("Signed normal client and attributable onboarding");
     const link = await mintLoginLink(f.membershipId!, null);
@@ -326,7 +326,7 @@ async function main() {
     const revokedWrite = await pa.portalMarkPosted(auth, firstVideo.id, true);
     c.ok("foreign and revoked memberships cannot download or mutate this client's final", foreign.status === 403 && revoked.status === 403 && !revokedWrite.ok && mediaPaths.length === 1);
     const finalScripts = await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } } });
-    c.ok("the journey keeps agreed script versions and creates no client sends or provider bookings", finalScripts.length === 2 && finalScripts.every((s) => s.body.includes("Your first weekend sets the tone.")) && await prisma.outboxMessage.count() === 0 && await prisma.programBookingAttempt.count() === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { notIn: ["portal_login_email", "portal_layout_v2"] } } }) === 0 && fence.blocked.length === 0, fence.blocked.join(", "));
+    c.ok("the journey keeps agreed script versions and creates no client sends or provider bookings", finalScripts.length === 2 && finalScripts.every((s) => s.body.includes("Your first weekend sets the tone.")) && await prisma.outboxMessage.count() === 0 && await prisma.programBookingAttempt.count() === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { notIn: ["portal_login_email"] } } }) === 0 && fence.blocked.length === 0, fence.blocked.join(", "));
     console.log("Boundary evidence: signed action coupling, provider input fixtures, fake final bytes. Normal browser, phone/raw upload, real booking, real AI output, real rendition/watch and production enablement remain unverified.");
     c.summary();
   } finally { fence.restore(); await db.stop(); }

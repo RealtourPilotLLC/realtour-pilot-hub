@@ -1,27 +1,28 @@
 // ---------------------------------------------------------------------------
 // DRILL: UI-01 — the client portal's information architecture (completion
-// audit §6, Sep 24 2026): Home · My Plan · Content Library · Schedule · More,
-// served as "v2" behind `portal_layout_v2`, with today's page ("v1") left as
-// it was for every real client.
+// audit §6, Sep 24 2026): Home · My Plan · Content Library · Schedule · More.
+// Served as "v2" behind `portal_layout_v2` until Oct 6 2026, when Jordan
+// asked to be "fully transitioned to the new layout": since then it is the
+// ONLY layout, and this drill asserts that (sections 2 and 3).
 //
 //   NODE_OPTIONS=--conditions=react-server npx tsx \
 //     --require ./scripts/_drill/_drill-preload.cjs \
 //     scripts/_drill/ui01-portal-ia.ts
 //
 // OLD behaviour first, wherever it can be observed: the HEAD PortalPage.tsx
-// (the commit this batch starts from) is loaded for real, its `@/` imports
-// pointed at this tree, and rendered side by side with the new one.
+// (the commit this batch starts from) is read as source. (Until Oct 6 it was
+// also RENDERED beside the new page to prove v1 untouched; v1 is gone, and
+// its old components with it, so that copy can no longer load.)
 //
-//   1. The address map (pure): every old ?tab= key lands on its v2 home; every
-//      v2 key degrades to a v1 tab; every link is query-only and token-free.
-//   2. Layout selection: no switch row → a real client's link, a real
-//      client's person and staff without ?layout=v2 all get v1; a TEST client
-//      and a staff ?layout=v2 preview get v2; a client asking for v2 does not;
-//      the switch on → the clients the ROLLOUT reaches (R04, Sep 28 2026:
-//      TEST only by default, so a real client stays on v1; the rollout set to
-//      every client → everyone, SWITCH_ON; a named pilot client → PILOT).
-//   3. v1 untouched: for a real client, the new page's element tree is the
-//      HEAD page's element tree on every old tab (and old aliases).
+//   1. The address map (pure): every old ?tab= key lands on its page; every
+//      link is query-only and token-free.
+//   2. One layout (Oct 6 2026): a real client's link, a real client's person
+//      (even asking ?layout=v2), staff with or without an old ?layout=v2 and a
+//      TEST client all get PortalShell; no switch or rollout decides it; no
+//      link carries layout=; no staff "preview" link exists.
+//   3. Every old tab key a real client might carry (emails already sent) lands
+//      on its page in the one layout; the old v1 components are gone; the
+//      "still moving things over" notice is on every page.
 //   4. Home: ONE primary action — reviews first, the waiting script second;
 //      approving the script (the shipped path, with the version the page
 //      rendered) removes it; an ENDED program gets no action at all.
@@ -38,7 +39,6 @@
 // never opened; every outbound call is fenced and counted; nothing is sent.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import Module from "node:module";
 import { execFileSync } from "node:child_process";
@@ -106,61 +106,8 @@ function walk(n: any, visit: (e: El) => void, expand: Set<string> = new Set()) {
   for (const v of Object.values(n.props)) if (v && typeof v === "object") walk(v, visit, expand);
 }
 const find = (tree: any, name: string, expand?: Set<string>) => { const out: El[] = []; walk(tree, (e) => { if (typeName(e.type) === name) out.push(e); }, expand); return out; };
-/** Where two pictures first differ — so a failure names the prop, not just "different". */
-function firstDiff(a: any, b: any, at = "root"): string | null {
-  if (JSON.stringify(a) === JSON.stringify(b)) return null;
-  if (a && b && typeof a === "object" && typeof b === "object") {
-    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) { const d = firstDiff(a[k], b[k], `${at}.${k}`); if (d) return d; }
-  }
-  return `${at}: ${JSON.stringify(a)?.slice(0, 140)} ≠ ${JSON.stringify(b)?.slice(0, 140)}`;
-}
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-/** The terms' "## Scheduling" paragraph in a PortalPage.tsx source. */
-const schedulingOf = (s: string) => /\n## Scheduling\n([^\n]+)\n/.exec(s)?.[1] ?? null;
-
-/** HEAD's PortalPage.tsx, runnable: its `@/` imports pointed at this tree. */
-/** 9f9213f's token swap: a filled white-text action's bg-brand → bg-brand-action. */
-const WHITE_TEXT_BRAND = /\bbg-brand(?=\s[^"]*\btext-white\b)/g;
-const brandActionSwap = (s: string) => s.replace(WHITE_TEXT_BRAND, "bg-brand-action");
-
-/** The account-menu button's class list in a PortalPage.tsx source. */
-const accountMenuOf = (s: string) => /<summary className="([^"]+)" aria-label="Account menu">/.exec(s)?.[1] ?? null;
-
-function writeBasePage(): { dir: string; file: string; src: string; oldScheduling: string | null; newScheduling: string | null; oldAccountMenu: string | null; newAccountMenu: string | null } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ui01-base-"));
-  fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
-  const src = execFileSync("git", ["show", `${BASE}:src/components/portal/PortalPage.tsx`], { cwd: REPO, encoding: "utf8" });
-  const file = path.join(dir, "PortalPage.base.tsx");
-  // Batch 3 (§3) reworded the Scheduling terms for the 72-weekday-hour window,
-  // on v1 too — the ONE intended v1 difference from HEAD's page. The runnable
-  // copy carries today's paragraph so the tree comparison stays exact for
-  // everything else; section 3 asserts that old → new swap explicitly. `src`
-  // stays HEAD's own text for the OLD source checks.
-  const oldScheduling = schedulingOf(src);
-  const newScheduling = schedulingOf(fs.readFileSync(path.join(REPO, "src/components/portal/PortalPage.tsx"), "utf8"));
-  const withTerms = oldScheduling && newScheduling ? src.replace(oldScheduling, () => newScheduling) : src;
-  // Oct 5 2026 — the SECOND intended v1 difference: 8754c91 (Oct 2, "keep
-  // mobile navigation and shared controls usable") made the account-menu
-  // button a 44px tap target on every portal page, v1 included (size-9 →
-  // size-11). Carried into the runnable copy the same way, exact string for
-  // exact string, so the tree comparison stays exact for everything else;
-  // section 3 asserts that swap explicitly too.
-  const oldAccountMenu = accountMenuOf(src);
-  const newAccountMenu = accountMenuOf(fs.readFileSync(path.join(REPO, "src/components/portal/PortalPage.tsx"), "utf8"));
-  const withMenu = oldAccountMenu && newAccountMenu ? withTerms.replace(oldAccountMenu, () => newAccountMenu) : withTerms;
-  // …and the THIRD: 9f9213f (Sep 30, "Improve action and secondary text
-  // contrast") moved every filled white-text action from the brand colour to
-  // the darker action token (bg-brand → bg-brand-action) across the hub,
-  // v1's tab bar, banner button, sign-in button and unread badge included.
-  // Swapped token for token in the copy — only where the same class list also
-  // says text-white — and asserted in section 3.
-  const runnable = brandActionSwap(withMenu);
-  // Outside the repo tsconfig's "jsx": "react-jsx" does not reach the copy; the
-  // pragma gives it the same automatic runtime, so the two trees are comparable.
-  fs.writeFileSync(file, `/** @jsxRuntime automatic */\n/** @jsxImportSource react */\n${runnable.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)}`);
-  return { dir, file, src, oldScheduling, newScheduling, oldAccountMenu, newAccountMenu };
-}
 const show = (f: string) => execFileSync("git", ["show", `${BASE}:${f}`], { cwd: REPO, encoding: "utf8" });
 const read = (f: string) => fs.readFileSync(path.join(REPO, f), "utf8");
 
@@ -168,17 +115,16 @@ async function main() {
   const { stop } = await bootDrillDb({ port: PORT });
   const quiet = quietPrismaErrors();
   const c = makeChecker();
-  const base = writeBasePage();
+  const base = { src: show("src/components/portal/PortalPage.tsx") };
   const { prisma } = await import("@/lib/prisma");
   const nav = await import("@/lib/portalNav");
   const home = await import("@/lib/portalHome");
-  const { portalLayoutDecision } = await import("@/lib/portalLayout");
+  const portalLayoutLib = await import("@/lib/portalLayout");
   const portal = await import("@/lib/portal");
   const { etMonthKey } = await import("@/lib/contentProgram");
   const { portalVideoList } = await import("@/lib/contentVideos");
   const { libraryRows } = await import("@/lib/portalLayout");
   const { PortalPage } = await import("@/components/portal/PortalPage");
-  const OldPage = (await import(base.file)) as { PortalPage: (p: Record<string, unknown>) => Promise<unknown> };
   const monthKey = etMonthKey();
 
   try {
@@ -187,7 +133,6 @@ async function main() {
     // =======================================================================
     const legacySrc = /const LEGACY_TABS: Record<string, PortalTab> = (\{[^}]+\});/.exec(base.src)?.[1] ?? "{}";
     const HEAD_LEGACY = JSON.parse(legacySrc.replace(/(\w+):/g, '"$1":')) as Record<string, string>;
-    const headTabOf = (raw: string | undefined) => HEAD_LEGACY[raw ?? ""] ?? "home";
     c.ok("OLD: the address map knew no plan, library-as-destination, brand or more", !("plan" in HEAD_LEGACY) && !("brand" in HEAD_LEGACY) && !("more" in HEAD_LEGACY), Object.keys(HEAD_LEGACY).join(","));
     c.ok("OLD: the phone bar had no Schedule (booking hid behind More)", /const PHONE_BAR: PortalTab\[\] = \["home", "videos", "topics", "strategy"\];/.test(base.src));
     c.ok("OLD: Resources was a primary tab whether or not a guide existed", /\{ key: "resources", label: "Resources"/.test(base.src));
@@ -207,21 +152,19 @@ async function main() {
     const wrong = Object.entries(expect).filter(([k, [d, pv]]) => { const r = nav.resolvePortalRoute({ tab: k || undefined }); return r.dest !== d || r.planView !== pv; });
     c.ok("every old and new ?tab= key lands on its v2 destination (unknown → Home)", wrong.length === 0, wrong.map(([k]) => k).join(",") || `${Object.keys(expect).length} keys`);
     c.ok("undefined → Home", nav.resolvePortalRoute({}).dest === "home");
-    c.ok("?tab=plan&pv=scripts / bank / strategy pick the subview; a bad pv is the month", nav.resolvePortalRoute({ tab: "plan", pv: "scripts" }).planView === "scripts" && nav.resolvePortalRoute({ tab: "plan", pv: "strategy" }).v1Tab === "strategy" && nav.resolvePortalRoute({ tab: "plan", pv: "../x" }).planView === "month");
+    c.ok("?tab=plan&pv=scripts / bank / strategy pick the subview; a bad pv is the month", nav.resolvePortalRoute({ tab: "plan", pv: "scripts" }).planView === "scripts" && nav.resolvePortalRoute({ tab: "plan", pv: "strategy" }).dataTab === "strategy" && nav.resolvePortalRoute({ tab: "plan", pv: "../x" }).planView === "month");
     const oldKeys = [...Object.keys(HEAD_LEGACY), "garbage", undefined];
-    const v1Drift = oldKeys.filter((k) => nav.resolvePortalRoute({ tab: k }).v1Tab !== headTabOf(k));
-    c.ok("v1: every key HEAD knew still opens the SAME v1 tab (and garbage still Home)", v1Drift.length === 0, v1Drift.join(",") || `${oldKeys.length} keys`);
-    const v1Tabs = new Set(["home", "videos", "topics", "strategy", "schedule", "resources", "messages", "profile", "settings", "terms"]);
-    const degrade = { plan: "topics", library: "videos", brand: "profile", team: "settings", more: "home", messages: "messages" } as Record<string, string>;
-    c.ok("v1: the new keys degrade to the nearest old tab (plan→topics, brand→profile, more→home …)", Object.entries(degrade).every(([k, t]) => nav.resolvePortalRoute({ tab: k }).v1Tab === t) && nav.resolvePortalRoute({ tab: "plan", pv: "strategy" }).v1Tab === "strategy");
-    c.ok("every v2 destination has a valid v1 tab", nav.PORTAL_DESTS.every((d) => v1Tabs.has(nav.resolvePortalRoute({ tab: d }).v1Tab)));
+    const lost = oldKeys.filter((k) => !nav.PORTAL_DESTS.includes(nav.resolvePortalRoute({ tab: k }).dest));
+    c.ok("every key HEAD knew (the ones already in sent emails) lands on a page of the one layout (garbage → Home)", lost.length === 0 && nav.resolvePortalRoute({ tab: "garbage" }).dest === "home", lost.join(",") || `${oldKeys.length} keys`);
+    const dataTabs = new Set(["home", "videos", "topics", "strategy", "schedule", "resources", "messages", "profile", "settings", "terms", "more"]);
+    c.ok("every destination loads a known data block (More loads nothing page-specific)", nav.PORTAL_DESTS.every((d) => dataTabs.has(nav.resolvePortalRoute({ tab: d }).dataTab)) && nav.resolvePortalRoute({ tab: "more" }).dataTab === "more");
     const hrefs = [
-      ...nav.PORTAL_DESTS.flatMap((d) => [nav.portalHref("", d), nav.portalHref("e=ckenroll0001", d), nav.portalHref("e=ckenroll0001&layout=v2", d, "v=abc")]),
+      ...nav.PORTAL_DESTS.flatMap((d) => [nav.portalHref("", d), nav.portalHref("e=ckenroll0001", d), nav.portalHref("e=ckenroll0001&month=2026-10", d, "v=abc")]),
       ...["topics", "videos", "strategy", "profile", "settings", "home"].flatMap((t) => [nav.v2HrefFor("")(t), nav.v2HrefFor("e=ckenroll0001")(t, "iv=ivabc123456")]),
     ];
     c.ok("every href is query-only: starts with '?', no path segment", hrefs.every((h) => h.startsWith("?") && !h.includes("/")), hrefs.find((h) => !h.startsWith("?") || h.includes("/")) ?? `${hrefs.length} hrefs`);
     c.ok("extras survive: v2HrefFor('topics','iv=…') keeps the interview id and names the bank", nav.v2HrefFor("e=x1")("topics", "iv=ivabc123456") === "?e=x1&tab=plan&pv=bank&iv=ivabc123456");
-    c.ok("the search form repeats e= and layout=, never tab", JSON.stringify(nav.baseQueryPairs("e=x1&layout=v2&tab=home")) === JSON.stringify([["e", "x1"], ["layout", "v2"]]));
+    c.ok("the search form repeats e= and month=, never tab", JSON.stringify(nav.baseQueryPairs("e=x1&month=2026-10&tab=home")) === JSON.stringify([["e", "x1"], ["month", "2026-10"]]));
 
     // ---- fixtures ----------------------------------------------------------
     // A REAL-named client (the fixture builder refuses names without TEST,
@@ -245,117 +188,62 @@ async function main() {
     const testOwner: PortalViewer = { ...testTokenViewer, actor: { kind: "CLIENT", clientUserId: T.clientUserId!, email: "owner@example.com", name: "Ada Vance", membershipId: T.membershipId!, membershipRole: "OWNER" }, via: "LOGIN" };
 
     // =======================================================================
-    c.head("2 · which layout a visit gets (no switch row = OFF)");
+    c.head("2 · one layout for every visit (Oct 6 2026)");
     // =======================================================================
-    c.ok("no portal_layout_v2 row exists (nothing seeded it)", (await prisma.programAutomation.count({ where: { key: "portal_layout_v2" } })) === 0);
-    const L = (v: PortalViewer, name: string, layout?: string) => portalLayoutDecision(v, name, { layout });
-    c.ok("a real client's link → v1", (await L(realTokenViewer, "Harper Lane Realty")).layout === "v1");
-    c.ok("a real client's signed-in person asking ?layout=v2 → still v1 (clients cannot opt in)", (await L(clientOf(realTokenViewer), "Harper Lane Realty", "v2")).layout === "v1");
-    c.ok("staff looking at a real client without ?layout=v2 → v1 (they see what the client sees)", (await L(staffOf(realTokenViewer), "Harper Lane Realty")).layout === "v1");
-    const pv = await L(staffOf(realTokenViewer), "Harper Lane Realty", "v2");
-    c.ok("staff with ?layout=v2 → v2, as a preview", pv.layout === "v2" && pv.why === "STAFF_PREVIEW");
-    const tv = await L(testTokenViewer, "Ada Vance TEST");
-    c.ok("a TEST client → v2 always", tv.layout === "v2" && tv.why === "TEST_CLIENT");
-
-    // =======================================================================
-    c.head("3 · v1 untouched: a real client's page is HEAD's page, tab for tab");
-    // =======================================================================
-    const tabs = ["home", "videos", "topics", "strategy", "schedule", "resources", "messages", "profile", "settings", "terms", "library", "ideas", "team", "garbage"];
-    const drift: string[] = [];
-    // Oct 5 2026 — the FOURTH intended v1 difference: 7b401ef (Sep 30,
-    // "preserve month and session scheduling context") hands v1's Schedule tab
-    // the month and session the address asked for (its key, selectedMonthId,
-    // selectedSessionIndex), and its call link now comes from the call-booking
-    // settings (callBookingUrl) rather than a constant. Those four are set
-    // aside in the comparison and asserted on their own below; every other
-    // prop and element must still match exactly.
-    /* eslint-disable @typescript-eslint/no-explicit-any */
-    const scheduleTabs: any[] = [];
-    const v1Normal = (n: any): any => {
-      if (Array.isArray(n)) return n.map(v1Normal);
-      if (n && typeof n === "object") {
-        if (n.type === "ScheduleTab" && n.props) {
-          const rest = { ...n.props };
-          delete rest.selectedMonthId;
-          delete rest.selectedSessionIndex;
-          delete rest.bookingUrl;
-          return { ...n, key: null, props: v1Normal(rest) };
-        }
-        return Object.fromEntries(Object.entries(n).map(([k, v]) => [k, v1Normal(v)]));
-      }
-      return n;
-    };
-    const findType = (n: any, type: string, out: any[]): any[] => {
-      if (Array.isArray(n)) n.forEach((x) => findType(x, type, out));
-      else if (n && typeof n === "object") { if (n.type === type) out.push(n); Object.values(n).forEach((x) => findType(x, type, out)); }
-      return out;
-    };
-    /* eslint-enable @typescript-eslint/no-explicit-any */
-    for (const t of tabs) {
-      const query = { tab: t };
-      const oldTree = await OldPage.PortalPage({ viewer: realTokenViewer, tab: headTabOf(t), path: "/portal/[token]", query });
-      const newTree = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query });
-      const newSer = ser(newTree);
-      findType(newSer, "ScheduleTab", scheduleTabs);
-      const d = firstDiff(v1Normal(ser(oldTree)), v1Normal(newSer));
-      if (d) drift.push(`${t} → ${d}`);
+    c.ok("no per-client layout decision is left (OLD: TEST_CLIENT / PILOT / SWITCH_ON / STAFF_PREVIEW / DEFAULT)", !("portalLayoutDecision" in portalLayoutLib) && !("layoutForClient" in portalLayoutLib) && !("portalLayoutFor" in portalLayoutLib));
+    const shellNav = (t: unknown) => (isEl(t) && typeName(t.type) === "PortalShell" ? (t.props.nav.primary as { href: string }[]).map((i) => i.href) : null);
+    const visits: [string, PortalViewer, Record<string, string>][] = [
+      ["a real client's link", realTokenViewer, { tab: "home" }],
+      ["a real client's signed-in person asking ?layout=v2", clientOf(realTokenViewer), { tab: "home", layout: "v2" }],
+      ["staff looking at a real client", staffOf(realTokenViewer), { tab: "home" }],
+      ["staff with an old ?layout=v2 preview link", staffOf(realTokenViewer), { tab: "library", layout: "v2" }],
+      ["a TEST client", testTokenViewer, { tab: "home" }],
+    ];
+    for (const [who, v, q] of visits) {
+      const navHrefs = shellNav(await PortalPage({ viewer: v, path: "/portal/[token]", query: q }));
+      c.ok(`${who} → PortalShell, five links, none carrying layout=`, !!navHrefs && navHrefs.length === 5 && navHrefs.every((h) => !h.includes("layout")), navHrefs?.join(" ") ?? "not PortalShell");
     }
-    c.ok(`the element tree is identical to HEAD on all ${tabs.length} tabs and aliases`, drift.length === 0, drift[0] ?? "");
-    const schedTab = scheduleTabs[0];
-    c.ok("…v1's Schedule tab carries the address's scheduling context (none asked → the default month, the next session) and a call link (7b401ef, Sep 30)",
-      scheduleTabs.length >= 1 && scheduleTabs.every((x) => x.key === "default:next" && x.props.selectedMonthId === null && x.props.selectedSessionIndex === null) &&
-      typeof schedTab?.props.bookingUrl === "string" && schedTab.props.bookingUrl.length > 0,
-      JSON.stringify(schedTab ? { key: schedTab.key, m: schedTab.props.selectedMonthId, s: schedTab.props.selectedSessionIndex, url: schedTab.props.bookingUrl } : null));
-    c.ok("…an intended v1 change: the account menu became a 44px tap target (8754c91, Oct 2) — size-9 then, size-11 now, nothing else on the button",
-      !!base.oldAccountMenu && !!base.newAccountMenu && /\bsize-9\b/.test(base.oldAccountMenu) && /\bsize-11\b/.test(base.newAccountMenu) &&
-      base.newAccountMenu.replace(/\bsize-11 shrink-0\b/, "size-9").replace("focus-visible:outline-2 focus-visible:outline-offset-2", "focus-visible:outline focus-visible:outline-2") === base.oldAccountMenu,
-      `${base.oldAccountMenu?.slice(0, 40)} → ${base.newAccountMenu?.slice(0, 50)}`);
-    const oldWhite = (base.src.match(WHITE_TEXT_BRAND) ?? []).length;
-    const nowSrc = read("src/components/portal/PortalPage.tsx");
-    c.ok("…and the contrast token swap (9f9213f, Sep 30): every filled white-text action that was bg-brand is bg-brand-action now, none left behind",
-      oldWhite >= 4 && (nowSrc.match(WHITE_TEXT_BRAND) ?? []).length === 0 && (nowSrc.match(/\bbg-brand-action(?=\s[^"]*\btext-white\b)/g) ?? []).length >= oldWhite,
-      `${oldWhite} then · ${(nowSrc.match(/\bbg-brand-action(?=\s[^"]*\btext-white\b)/g) ?? []).length} now`);
-    for (const extra of drift.slice(1, 4)) console.log(`     also: ${extra}`);
-    // The one v1 change that is meant (batch 3, §3): HEAD's Scheduling terms
-    // promised "a few business days"; they now state the 72-weekday-hour window.
-    c.ok("…but for the Scheduling terms, reworded on purpose in batch 3 (§3): 'a few business days' → '72 weekday hours'", !!base.oldScheduling && /a few business days/.test(base.oldScheduling) && !!base.newScheduling && /72 weekday hours/.test(base.newScheduling) && !/a few business days/.test(base.newScheduling), base.newScheduling?.slice(0, 140) ?? "no Scheduling paragraph found");
-    const v1Home = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "home" } });
-    c.ok("…and it is the v1 frame, not PortalShell", isEl(v1Home) && v1Home.type === "div" && find(v1Home, "PortalShell").length === 0 && find(v1Home, "HomeTab").length === 1);
-    // v2 keys on v1 open the nearest old tab.
-    const v1Plan = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "plan", pv: "strategy" } });
-    const v1Lib = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "library" } });
-    const v1Brand = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "brand" } });
-    c.ok("v1: ?tab=plan&pv=strategy → My Strategy, ?tab=library → My Videos, ?tab=brand → the brand profile", find(v1Plan, "StrategyTab").length === 1 && find(v1Lib, "VideosList").length === 1 && find(v1Brand, "PortalProfile").length === 1);
-    const staffV1 = await PortalPage({ viewer: staffOf(realTokenViewer), path: "/portal/[token]", query: { tab: "home" } });
-    const previewLinks: string[] = [];
-    walk(staffV1, (e) => { if (typeName(e.type) === "Link" && typeof e.props.href === "string" && e.props.href.includes("layout=v2")) previewLinks.push(e.props.href); });
-    c.ok("staff on v1 get one way into the preview (…&layout=v2); the client's own page has none", previewLinks.length === 1 && previewLinks[0] === "?tab=home&layout=v2" && JSON.stringify(ser(v1Home)).indexOf("layout=v2") === -1, previewLinks.join(" "));
-    const staffV2 = await PortalPage({ viewer: staffOf(realTokenViewer), path: "/portal/[token]", query: { tab: "library", layout: "v2" } });
-    const navHrefs = isEl(staffV2) ? (staffV2.props.nav.primary as { href: string }[]).map((i) => i.href) : [];
-    c.ok("a staff preview is PortalShell and its links keep layout=v2", isEl(staffV2) && typeName(staffV2.type) === "PortalShell" && navHrefs.length === 5 && navHrefs.every((h) => h.includes("layout=v2")), navHrefs[1]);
-
-    // The switch, then back off (update, never a second create: 23505 would end the socket).
+    // A stored switch row from before Oct 6 changes nothing.
     await prisma.programAutomation.create({ data: { key: "portal_layout_v2", enabled: true, enabledBy: "drill", enabledAt: new Date() } });
-    // MOVED TO R04's LAW (Sep 28 2026): the switch alone used to mean EVERY
-    // client. It is now the switch AND the rollout scope; the default rollout
-    // is TEST clients only, so a real client keeps today's page.
-    const onDefault = await L(realTokenViewer, "Harper Lane Realty");
-    c.ok("switch ON, rollout at its default (TEST only) → the real client's link stays v1", onDefault.layout === "v1" && onDefault.why === "DEFAULT", JSON.stringify(onDefault));
-    const core = await import("@/lib/programRolloutCore");
-    const setRollout = (r: import("@/lib/programRolloutCore").ProgramRollout) =>
-      prisma.appSetting.upsert({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, create: { key: core.PROGRAM_ROLLOUT_SETTING_KEY, value: core.serializeProgramRollout(r), updatedBy: "drill" }, update: { value: core.serializeProgramRollout(r) } });
-    await setRollout({ mode: "PILOT", modeSince: new Date().toISOString(), pilot: { clientIds: [realClient.id], operations: core.opsForGroups(["layout"]), approvedBy: "jordan@drill", approvedAt: new Date().toISOString(), expiresAt: null, note: null, joinedAt: {} } });
-    const piloted = await L(realTokenViewer, "Harper Lane Realty");
-    c.ok("…the real client named in the pilot with the layout ticked → v2, reason PILOT", piloted.layout === "v2" && piloted.why === "PILOT", JSON.stringify(piloted));
-    await setRollout({ mode: "ALL", modeSince: new Date().toISOString(), pilot: null });
-    const on = await L(realTokenViewer, "Harper Lane Realty");
-    c.ok("switch ON + the rollout set to every client → the real client's link gets v2", on.layout === "v2" && on.why === "SWITCH_ON");
-    const onPage = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "home" } });
-    const onNav = isEl(onPage) ? (onPage.props.nav.primary as { href: string }[]).map((i) => i.href) : [];
-    c.ok("…and its links carry no layout=v2 (nothing in the address is needed)", onNav.length === 5 && onNav.every((h) => !h.includes("layout")), onNav.join(" "));
+    c.ok("an old portal_layout_v2 row left ON changes nothing (and is no longer a switch)", !!shellNav(await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "home" } })) && !(await import("@/lib/programAutomation")).isAutomationKey("portal_layout_v2"));
     await prisma.programAutomation.update({ where: { key: "portal_layout_v2" }, data: { enabled: false } });
-    c.ok("switch OFF (enabled=false) → v1 again", (await L(realTokenViewer, "Harper Lane Realty")).layout === "v1");
-    await setRollout({ ...core.CLOSED_ROLLOUT });
+    const staffPage = await PortalPage({ viewer: staffOf(realTokenViewer), path: "/portal/[token]", query: { tab: "home" } });
+    const staffNotice = isEl(staffPage) ? staffPage.props.notices.staff : null;
+    c.ok("staff see the on-their-behalf notice, with no 'preview the new layout' way in or out", !!staffNotice && !("exitHref" in staffNotice) && !JSON.stringify(ser(staffPage)).includes("layout=v2") && !read("src/components/portal/PortalPage.tsx").includes("Preview the new layout") && !read("src/components/portal/PortalShell.tsx").includes("Back to the current layout"));
+
+    // =======================================================================
+    c.head("3 · every old tab key lands, in the one layout; the old tabs are gone");
+    // =======================================================================
+    const landing: Record<string, string> = {
+      home: "HomeV2", videos: "LibraryV2", library: "LibraryV2", topics: "PlanTab", ideas: "PlanTab", strategy: "PlanTab", schedule: "ScheduleTab",
+      messages: "MessagesTab", profile: "PortalProfile", brand: "PortalProfile", settings: "SettingsTab", team: "SettingsTab", terms: "TermsCard", more: "MoreTab", garbage: "HomeV2",
+    };
+    const missed: string[] = [];
+    for (const [t, comp] of Object.entries(landing)) {
+      const tree = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: t } });
+      if (!shellNav(tree) || find(tree, comp).length !== 1) missed.push(`${t}→${comp}`);
+    }
+    c.ok(`a real client's ${Object.keys(landing).length} old and new tab keys each land on their page inside PortalShell`, missed.length === 0, missed.join(", "));
+    const strat = find(await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "strategy" } }), "PlanTab")[0];
+    const oldTopicsReal = find(await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "topics" } }), "PlanTab")[0];
+    c.ok("…?tab=strategy → Your Month › Strategy; ?tab=topics → Your Month › Topic bank", strat?.props.d.view === "strategy" && oldTopicsReal?.props.d.view === "bank");
+    const gone = ["src/components/portal/tabs/TopicsTab.tsx"].filter((f) => fs.existsSync(path.join(REPO, f)));
+    const vt = read("src/components/portal/tabs/VideosTab.tsx"), ht = read("src/components/portal/tabs/HomeTab.tsx");
+    c.ok("the old layout's components are gone: TopicsTab, VideosList / VideoDetail, the old HomeTab, the account menu", gone.length === 0 && !/export function (VideosList|VideoDetail)\(/.test(vt) && !/export function HomeTab\(/.test(ht) && !read("src/components/portal/PortalPage.tsx").includes("function AccountItems"), gone.join(","));
+    const notice = isEl(staffPage) ? staffPage.props.notices.migrating : undefined;
+    const realHome = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
+    c.ok("the 'still moving things over' notice is on every portal page (client and staff), with the way to tell us", !!notice && isEl(realHome) && !!realHome.props.notices.migrating && /^\?/.test(realHome.props.notices.migrating.tellUsHref) && realHome.props.notices.migrating.tellUsHref.includes("tab=messages"), JSON.stringify(notice));
+    const reportLinks: string[] = [];
+    walk(realHome, (e) => { if (e.props["data-report-problem"] !== undefined) reportLinks.push(String(e.props.href)); });
+    c.ok("…and the footer keeps a 'Report a problem' link to the same place (reachable after 'Got it')", reportLinks.length === 1 && reportLinks[0] === realHome.props.notices.migrating.tellUsHref, reportLinks.join(" "));
+    const fb = find(await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "messages", about: "portal" } }), "MessagesTab")[0]?.props.d;
+    const plainMsgs = find(await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "messages" } }), "MessagesTab")[0]?.props.d;
+    const pn = await import("@/lib/portalNotice");
+    c.ok("'Tell us' opens the EXISTING Messages box prefilled 'Portal feedback: ' (no new send path); a plain visit is not prefilled", fb?.prefill === pn.PORTAL_MIGRATION_NOTICE.prefill && fb.prefill === "Portal feedback: " && plainMsgs?.prefill === undefined && !/portalPostMessage|sendThroughOutbox/.test(read("src/components/portal/PortalMigrationNotice.tsx")));
+    const pmn = read("src/components/portal/PortalMigrationNotice.tsx");
+    c.ok("'Got it' is per browser: localStorage, every read and write in try/catch; the server render always shows it", /try \{ return window\.localStorage\.getItem\(N\.id\) === "1"; \} catch \{ return false; \}/.test(pmn) && /try \{ window\.localStorage\.setItem\(N\.id, "1"\); \} catch/.test(pmn) && /useSyncExternalStore\(subscribe, readDismissed, \(\) => false\)/.test(pmn));
+    c.ok("calm, not alarming: no red or amber tokens on the notice", !/danger|warning|red-|amber-/.test(pmn));
+    c.ok("one line retires it: PORTAL_MIGRATION_NOTICE.on gates the notice and the footer link", pn.PORTAL_MIGRATION_NOTICE.on === true && (read("src/components/portal/PortalPage.tsx").match(/PORTAL_MIGRATION_NOTICE\.on/g) ?? []).length >= 3);
 
     // =======================================================================
     c.head("4 · Home: one next step, in priority order");
@@ -536,7 +424,7 @@ async function main() {
 
     // Finding 10 — the card the client just acted on stays; a just-answered script stays a card.
     const tb = read("src/components/portal/TopicBank.tsx");
-    c.ok("TopicBank keeps the card the client just acted on (v2), until the filter or month changes", /const justActed = \(t: PortalTopic\) => v2 && !!msg\?\.topicId && msg\.topicId === t\.id;/.test(tb) && /!t\.scriptedNotFilmed && \(justActed\(t\) \|\|/.test(tb) && /setFilterTouched\(true\); setMsg\(null\);/.test(tb));
+    c.ok("TopicBank keeps the card the client just acted on (v2), until the filter or month changes", /const justActed = \(t: PortalTopic\) => !!msg\?\.topicId && msg\.topicId === t\.id;/.test(tb) && /!t\.scriptedNotFilmed && \(justActed\(t\) \|\|/.test(tb) && /setFilterTouched\(true\); setMsg\(null\);/.test(tb));
     const tNow = await portal.portalTopics(testOwner.enrollment);
     const pmNow = home.planModel(tNow, monthKey);
     const pmLater = home.planModel(tNow, monthKey, new Date(Date.now() + home.JUST_DECIDED_MS + 60_000));
@@ -551,10 +439,10 @@ async function main() {
     // Batch 2 (Sep 25): the plan is "Your Month", and the route choice lives
     // there — Schedule links to its route step instead of carrying the buttons.
     c.ok("v2 Schedule names 'Your Month', not a 'Video Topics' page that is not in the nav, and routes the choice there", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "Your Month" && find(sched, "ScheduleTab")[0]?.props.routeHref === "?tab=plan#step-route");
-    const oldSchedV1 = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
-    c.ok("…while v1's Schedule still says Video Topics (no prop passed, its tree is HEAD's)", find(oldSchedV1, "ScheduleTab")[0]?.props.topicsLabel === undefined);
+    const schedReal = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
+    c.ok("…and a real client's Schedule says the same (the old 'Video Topics' wording went with the old layout)", find(schedReal, "ScheduleTab")[0]?.props.topicsLabel === "Your Month");
     const hv2 = find((await homeOf(testOwner)).tree, "AppointmentCards", new Set(["HomeV2"]))[0];
-    c.ok("v2 Home's appointment cards are quiet (links, not two more orange buttons) and point at Your Month", hv2?.props.quiet === true && hv2.props.plan?.label === "Open Your Month" && hv2.props.plan?.href === "?tab=plan");
+    c.ok("Home's appointment cards are quiet (links, not two more orange buttons) and point at Your Month", hv2?.props.plan?.label === "Open Your Month" && hv2.props.plan?.href === "?tab=plan" && !/bookCls = quiet/.test(read("src/components/portal/tabs/HomeTab.tsx")) && /const bookCls = "mt-1\.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline/.test(read("src/components/portal/tabs/HomeTab.tsx")));
     c.ok("the video-change hint names no page (v1 'My Videos' / v2 'Content Library')", !/My Videos|Content Library/.test((await import("@/lib/programMessages")).VIDEO_CHANGES_HINT));
     const team = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "team" } });
     const st = find(team, "SettingsTab")[0]?.props.d;
@@ -584,7 +472,6 @@ async function main() {
     c.ok("no outbound call left the machine", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));
     c.ok("no email or text was queued", (await prisma.outboxMessage.count()) === 0);
   } finally {
-    fs.rmSync(base.dir, { recursive: true, force: true });
     quiet.restore();
     c.summary();
     await stop();

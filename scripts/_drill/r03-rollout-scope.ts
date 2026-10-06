@@ -936,7 +936,7 @@ async function main(): Promise<void> {
     const cfgRow = await prisma.programAutomation.findUniqueOrThrow({ where: { key: "session_booking" } });
     c.ok("…the stored fixture list is untouched", JSON.stringify((JSON.parse(cfgRow.configJson ?? "{}") as { authorizedFixtureClientIds?: string[] }).authorizedFixtureClientIds) === JSON.stringify([F.clientId]));
     // bookings NOT ticked for the pilot → nothing written for P
-    await writeRollout(core.serializeProgramRollout(pilotWith([P.clientId], core.opsForGroups(["accounts", "layout", "emails", "portal_changes"]))));
+    await writeRollout(core.serializeProgramRollout(pilotWith([P.clientId], core.opsForGroups(["accounts", "emails", "portal_changes"]))));
     const noBook = await ask("session_booking", P, "orders.create");
     c.ok("P with 'bookings' not ticked → refused ('does not include bookings')", noBook.startsWith("refused") && /does not include bookings/.test(noBook), noBook);
     await writeRollout(core.serializeProgramRollout(pilotWith([P.clientId])));

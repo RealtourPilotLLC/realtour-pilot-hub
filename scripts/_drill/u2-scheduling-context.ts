@@ -51,9 +51,9 @@ async function main() {
     const link = portalMonthHref(`?e=${f.enrollmentId}&tab=plan&pv=month&iv=oldinterview&page=7&q=private+draft&token=private-token`, "2026-11", 2);
     c.ok("context link is query-only and retains client/month/session without private search or bearer material", link.startsWith("?") && link.includes(`e=${f.enrollmentId}`) && link.includes("month=2026-11&session=2") && !/iv=|page=|q=|token=|private|\/portal/.test(link));
     c.ok("changing month clears the old session unless explicitly selected", !portalMonthHref(link, "2026-10").includes("session="));
-    const call = await portalBookingLinks(viewer, { layout: "v2", planHref: link, monthId: november.id });
+    const call = await portalBookingLinks(viewer, { planHref: link, monthId: november.id });
     c.ok("call booking context uses the selected month even without provider setup", call.view?.monthId === november.id && call.view.monthKey === "2026-11");
-    c.ok("selected call context refuses another enrollment's month", (await portalBookingLinks(viewer, { layout: "v2", planHref: link, monthId: other.monthId })).view === null);
+    c.ok("selected call context refuses another enrollment's month", (await portalBookingLinks(viewer, { planHref: link, monthId: other.monthId })).view === null);
 
     const exact = (street: string) => ({ street, city: "West Chester", state: "PA", zip: "19382" });
     const firstAddress = await actions.portalSaveSessionPlanAddress(auth, f.monthId, 1, exact("117 First Lane"));
@@ -94,7 +94,7 @@ async function main() {
     const { PortalPage } = await import("@/components/portal/PortalPage");
     const { PortalScheduler, SlotTimes } = await import("@/components/portal/PortalScheduler");
     const { PortalCallPicker } = await import("@/components/portal/PortalCallPicker");
-    const octoberCall = await portalBookingLinks(viewer, { layout: "v2", planHref: link, monthId: f.monthId });
+    const octoberCall = await portalBookingLinks(viewer, { planHref: link, monthId: f.monthId });
     c.ok("actual call picker has a distinct React identity for each program month", !!call.view && !!octoberCall.view && PortalCallPicker({ view: call.view }).key !== PortalCallPicker({ view: octoberCall.view }).key);
     const scheduleHtml = renderToStaticMarkup(await PortalPage({ viewer, path: "/portal/me", baseQuery: `e=${f.enrollmentId}`, query: { tab: "schedule", month: "2026-11", session: "2" } }));
     c.ok("actual Schedule page keeps selected month/session in Plan, Library and Schedule links", ["plan", "library", "schedule"].every((tab) => scheduleHtml.includes(`month=2026-11&amp;session=2&amp;tab=${tab}`)) && scheduleHtml.includes("November 2026") && scheduleHtml.includes("Sessions · all program months"));

@@ -117,15 +117,15 @@ async function main() {
       refuses(() => libraryAttention(pair)),
       refuses(() => videoState(pair.id, staleCache)),
     ]);
-    for (const layout of ["v1", "v2"] as const) {
-      // Actual layout selection: the ordinary name keeps v1; a synthetic
-      // TEST client gets v2. Only this disposable fixture row is renamed.
-      await prisma.client.update({ where: { id: pair.clientId }, data: { name: layout === "v1" ? "Monthly approval fixture" : "Monthly approval fixture TEST" } });
+    for (const layout of ["ordinary", "TEST"] as const) {
+      // One portal layout since Oct 6 2026: an ordinary client and a synthetic
+      // TEST client both get the Content Library. Only this disposable fixture row is renamed.
+      await prisma.client.update({ where: { id: pair.clientId }, data: { name: layout === "ordinary" ? "Monthly approval fixture" : "Monthly approval fixture TEST" } });
       const tree = await PortalPage({ viewer, path: "/portal/me", query: { tab: "videos", v: v.id } });
-      const list = elementsNamed(tree, layout === "v1" ? "VideosList" : "LibraryV2");
-      const detail = elementsNamed(tree, layout === "v1" ? "VideoDetail" : "VideoDetailV2");
+      const list = elementsNamed(tree, "LibraryV2");
+      const detail = elementsNamed(tree, "VideoDetailV2");
       const html = renderToStaticMarkup(tree);
-      c.ok(`${layout}: actual detail page shows failed library instead of a cached release`, list.length === 1 && list[0].props.failed === true && detail.length === 0 && html.includes('role="alert"') && html.includes(layout === "v1" ? "load your video library" : "load your content library") && !html.includes("/api/portal/download/"));
+      c.ok(`${layout}: actual detail page shows failed library instead of a cached release`, list.length === 1 && list[0].props.failed === true && detail.length === 0 && html.includes('role="alert"') && html.includes("load your content library") && !html.includes("/api/portal/download/"));
     }
     failMarkerRead = false;
     c.ok("no-job cut: unreadable marker holds failed sync and every cached library reader", noJobReadFailures.every(Boolean) && await prisma.topazJob.count({ where: { submissionId: v1 } }) === 0 && (await video(v1)).finalSubmissionId === v1);
@@ -138,10 +138,10 @@ async function main() {
     await syncEnrollmentVideos(pair);
     const repairedCache = await video(v1), repairedList = await libraryRow(v.id);
     c.ok("successful sync repairs an existing false delivered cache and removes its final file", repairedCache.status === "CLIENT_REVIEW" && repairedCache.finalSubmissionId === null && repairedCache.finalFileRef === null && repairedCache.finalVersionLabel === null && repairedCache.deliveredAt === null && repairedList?.state === "FOR_REVIEW" && !repairedList.downloadable && (await libraryAttention(pair)).readyToUse === 0 && await videoState(pair.id, repairedCache) === "FOR_REVIEW");
-    for (const layout of ["v1", "v2"] as const) {
-      await prisma.client.update({ where: { id: pair.clientId }, data: { name: layout === "v1" ? "Monthly approval fixture" : "Monthly approval fixture TEST" } });
+    for (const layout of ["ordinary", "TEST"] as const) {
+      await prisma.client.update({ where: { id: pair.clientId }, data: { name: layout === "ordinary" ? "Monthly approval fixture" : "Monthly approval fixture TEST" } });
       const tree = await PortalPage({ viewer, path: "/portal/me", query: { tab: "videos", v: v.id } });
-      const detail = elementsNamed(tree, layout === "v1" ? "VideoDetail" : "VideoDetailV2");
+      const detail = elementsNamed(tree, "VideoDetailV2");
       const data = detail[0]?.props.d as { video?: { state: string }; downloadHref?: string | null } | undefined;
       c.ok(`${layout}: successful refresh restores exact review detail without a download`, detail.length === 1 && data?.video?.state === "FOR_REVIEW" && data.downloadHref === null);
     }

@@ -146,7 +146,7 @@ async function main() {
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { enrollmentId: enrollment.id } });
     await prisma.client.update({ where: { id: client.id }, data: { name: "Normal client outside pilot" } });
     c.ok("real client outside stored TEST_ONLY rollout cannot certify access", !(await monthlyOwnerAccess([month.id])).get(month.id)?.ok);
-    const pilotValue = serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [client.id], operations: ["portal_sign_in", "portal_layout_v2"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), joinedAt: { [client.id]: since }, note: "Disposable monthly destination fixture" } });
+    const pilotValue = serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [client.id], operations: ["portal_sign_in"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), joinedAt: { [client.id]: since }, note: "Disposable monthly destination fixture" } });
     await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: pilotValue } });
     c.ok("normal named-pilot owner access certifies exact monthly program under existing rollout policy", (await monthlyFinalSnapshot(original.id)).ok && (await monthlyOwnerAccess([month.id])).get(month.id)?.ok === true);
     await prisma.appSetting.delete({ where: { key: PROGRAM_ROLLOUT_SETTING_KEY } });

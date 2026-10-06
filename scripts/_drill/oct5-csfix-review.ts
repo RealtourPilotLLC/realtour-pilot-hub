@@ -129,8 +129,8 @@ async function main() {
     {
       await signIn(owner);
       const a1 = await A_.setOnboardingToggleAction({ clientId: A.id, toggle: "accounts", on: true });
-      const b1 = await A_.setOnboardingToggleAction({ clientId: B.id, toggle: "layout", on: true });
-      c.ok("(setup) A gets portal accounts, B the new layout, each their own list; the rollout is named clients", a1.ok && b1.ok && (await stored()).mode === "PILOT" && (await reach("portal_sign_in", A.id)) && (await reach("portal_layout_v2", B.id)), `${a1.message} | ${b1.message}`);
+      const b1 = await A_.setOnboardingToggleAction({ clientId: B.id, toggle: "caption_assistant", on: true }); // Oct 6 2026: the layout toggle is gone
+      c.ok("(setup) A gets portal accounts, B the caption assistant, each their own list; the rollout is named clients", a1.ok && b1.ok && (await stored()).mode === "PILOT" && (await reach("portal_sign_in", A.id)) && (await reach("caption_assistant", B.id)), `${a1.message} | ${b1.message}`);
       const testOnly = await ra.setProgramRolloutModeAction({ mode: "TEST_ONLY" });
       c.ok("(setup) Jordan sets Who the program may reach back to 'Only my TEST clients': A and B are reached for nothing", testOnly.ok && !(await reachedAny(A.id)) && !(await reachedAny(B.id)), testOnly.message);
       const before = await rolloutRow();
@@ -186,8 +186,8 @@ async function main() {
       c.ok("'Take out of the pilot' (a stop) keeps everyone else's own choices exactly", out.ok && JSON.stringify((await stored()).pilot?.clientOps?.[A.id]) + JSON.stringify((await stored()).pilot?.clientOps?.[B.id]) === kept && !(await reachedAny(C.id)), out.message);
       // A pilot made on this card before Oct 5 (no per-client choices) still works as it did.
       await ra.endProgramPilotAction();
-      const legacy = await ra.addProgramPilotClientAction({ clientId: D.id, typedName: D.name, groups: ["layout"] });
-      c.ok("(unchanged) with no per-client choices on file, the old card still adds a client the old way", legacy.ok && (await reach("portal_layout_v2", D.id)) && !(await reach("reminders", D.id)), legacy.message);
+      const legacy = await ra.addProgramPilotClientAction({ clientId: D.id, typedName: D.name, groups: ["portal_changes"] });
+      c.ok("(unchanged) with no per-client choices on file, the old card still adds a client the old way", legacy.ok && (await reach("caption_assistant", D.id)) && !(await reach("reminders", D.id)), legacy.message);
       await ra.endProgramPilotAction();
     }
 
@@ -237,8 +237,8 @@ async function main() {
       const { ClientOnboardingPanel } = await import("@/components/settings/ClientOnboardingPanel");
       const tree = await page({ searchParams: Promise.resolve({ client: E.id }) });
       const O = renderToStaticMarkup(createElement(ClientOnboardingPanel, elements(tree, "ClientOnboardingPanel")[0] as Parameters<typeof ClientOnboardingPanel>[0])).replace(/<!-- -->/g, "");
-      c.ok("the page: nine switches, 'Messages I send myself' with no switch line, each automatic switch with what it would do — no 'Also needs'",
-        (O.match(/role="switch"/g) ?? []).length === 9 && O.includes("Messages I send myself") && O.includes("Automatic program emails") && O.includes("would email them reminders on its own") &&
+      c.ok("the page: eight switches (the layout toggle retired Oct 6 2026), 'Messages I send myself' with no switch line, each automatic switch with what it would do — no 'Also needs'",
+        (O.match(/role="switch"/g) ?? []).length === 8 && O.includes("Messages I send myself") && O.includes("Automatic program emails") && O.includes("would email them reminders on its own") &&
         O.includes("would email a welcome on its own when they pay") && !O.includes("Also needs"), (O.match(/role="switch"/g) ?? []).length + " switches");
       await setSwitch("reminders", false, null);
       await setSwitch("script_share_email", false);

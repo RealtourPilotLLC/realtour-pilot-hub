@@ -582,7 +582,7 @@ async function main() {
     clearFake();
     const nov2 = est(11, 2, 14);
     fake.openSlots(MONTHLY.uri, [nov2, est(11, 3, 9)]);
-    const links = await cb.portalBookingLinks(vK, { layout: "v2", planHref: "?tab=plan", now: now() });
+    const links = await cb.portalBookingLinks(vK, { planHref: "?tab=plan", now: now() });
     c.ok("on Oct 29 the portal's call step is OCTOBER's, in API mode", links.view?.monthId === K.monthId && links.view.mode === "API", `${links.view?.monthKey} ${links.view?.mode}`);
     const page = await cb.callSlots(vK, K.monthId, null, { now: now() });
     c.ok("October's picker offers Mon Nov 2, 2:00 pm", page.ok && page.slots.some((s) => s.startISO === nov2.toISOString()), page.ok ? page.slots.map((s) => s.startISO).join(",") : page.message);
@@ -631,18 +631,17 @@ async function main() {
     const outside = yourMonthSteps({ ...base, hrefs: { bank: "?tab=plan&pv=bank", month: "?tab=plan", scripts: "?tab=plan&pv=scripts", bookingUrl: MONTHLY.scheduling_url } }).find((s) => s.key === "call");
     c.ok("Your Month's 'Book the call' stays in the page when booking is in the portal", inPortal?.cta?.href.endsWith("#step-call") === true && inPortal.cta.external === false);
     c.ok("…and opens a new tab only for a Calendly address", outside?.cta?.external === true);
-    const v1 = await cb.portalBookingLinks(vA, { layout: "v1", planHref: null });
-    c.ok("v1 (every real client today): the mapping's page — same URL as the old constant, no token", v1.bookingUrl === MONTHLY.scheduling_url && v1.view === null);
+    // One portal layout (Oct 6 2026): the old layout's answer (the mapped page
+    // with no token, or the public constant) is gone with that layout.
     await prisma.programCalendlyEventMapping.updateMany({ where: { purpose: "MONTHLY_STRATEGY" }, data: { enabled: false } });
-    const v1none = await cb.portalBookingLinks(vA, { layout: "v1", planHref: null });
-    const v2none = await cb.portalBookingLinks(vA, { layout: "v2", planHref: "?tab=plan" });
-    c.ok("with no mapping: v1 keeps the old public link (as the reminder emails do); v2 offers no Calendly at all (Kyle)", v1none.bookingUrl === cal.STRATEGY_CALL_BOOKING_URL && v2none.view?.mode === "NONE" && v2none.bookingUrl === "?tab=plan#step-call" && v2none.view.embedUrl === null);
+    const none = await cb.portalBookingLinks(vA, { planHref: "?tab=plan" });
+    c.ok("with no mapping: the portal offers no Calendly at all (Kyle) — never the old public link", none.view?.mode === "NONE" && none.bookingUrl === "?tab=plan#step-call" && none.view.embedUrl === null);
     await prisma.programCalendlyEventMapping.updateMany({ where: { purpose: "MONTHLY_STRATEGY" }, data: { enabled: true } });
-    const v2 = await cb.portalBookingLinks(vA, { layout: "v2", planHref: "?tab=plan" });
-    c.ok("v2: 'Book the call' lands on Your Month's call step, with the month's view", v2.bookingUrl === "?tab=plan#step-call" && v2.view?.monthId === A.monthId);
+    const mapped = await cb.portalBookingLinks(vA, { planHref: "?tab=plan" });
+    c.ok("'Book the call' lands on Your Month's call step, with the month's view", mapped.bookingUrl === "?tab=plan#step-call" && mapped.view?.monthId === A.monthId);
     await prisma.contentMonth.update({ where: { id: A.monthId }, data: { planningMode: "WRITTEN" } });
-    const v2w = await cb.portalBookingLinks(vA, { layout: "v2", planHref: "?tab=plan" });
-    c.ok("v2 on the written route ('book one anyway'): the mapped page with the token", !!v2w.bookingUrl && new URL(v2w.bookingUrl).searchParams.get("utm_content") === tokA);
+    const written = await cb.portalBookingLinks(vA, { planHref: "?tab=plan" });
+    c.ok("on the written route ('book one anyway'): the mapped page with the token", !!written.bookingUrl && new URL(written.bookingUrl).searchParams.get("utm_content") === tokA);
     await prisma.contentMonth.update({ where: { id: A.monthId }, data: { planningMode: null } });
     const page = code(read("src/components/portal/PortalPage.tsx"));
     c.ok("PortalPage no longer names the hard-coded URL (it asks portalBookingLinks)", !/STRATEGY_CALL_BOOKING_URL/.test(page) && /portalBookingLinks/.test(page));

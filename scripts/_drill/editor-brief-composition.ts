@@ -133,8 +133,7 @@ async function main() {
     await prisma.client.update({ where: { id: shell.clientId }, data: { name: "Grove Realty", email: "grove-visual@example.test", autoConfirmationText: false, autoDeliveryText: false, generalNotes: "Keep the client's tone calm and specific. The client paid a $500 rush fee." } });
     const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout } = await import("@/lib/programRolloutCore");
     const since = new Date(Date.now() - 60_000).toISOString();
-    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [shell.clientId], operations: ["portal_sign_in", "portal_layout_v2"], approvedBy: "declared isolated visual input", approvedAt: since, expiresAt: new Date(Date.now() + 6 * 864e5).toISOString(), joinedAt: { [shell.clientId]: since }, note: "Disposable visual fixture; no send/worker operations" } }) } });
-    await prisma.programAutomation.create({ data: { key: "portal_layout_v2", enabled: true, enabledBy: "declared isolated fixture", enabledAt: new Date() } });
+    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [shell.clientId], operations: ["portal_sign_in"], approvedBy: "declared isolated visual input", approvedAt: since, expiresAt: new Date(Date.now() + 6 * 864e5).toISOString(), joinedAt: { [shell.clientId]: since }, note: "Disposable visual fixture; no send/worker operations" } }) } });
     await prisma.appSetting.createMany({ data: [
       { key: "review_room", value: JSON.stringify({ creativeApproverTeamMemberId: james.teamMemberId, backupReviewerTeamMemberId: kyle.teamMemberId }) },
       { key: "editor_routing", value: JSON.stringify({ personalBranding: "kim", standardVideo: "kim", premiumVideo: "john" }) },
@@ -269,7 +268,7 @@ async function main() {
     await signIn(kyle);
     const office = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
     c.ok("office brief forms remain mounted inside native disclosures with exact expected versions", outputs.filter((o) => office.some((e) => e.props.id === `brief-${o.id}`)).every((o) => office.some((e) => e.name === "form" && e.ancestors.some((a) => a.name === "details") && elements(e.props.children).some((x) => x.props.name === "outputId" && x.props.value === o.id) && elements(e.props.children).some((x) => x.props.name === "expectedVersion" && x.props.value === 1))));
-    c.ok("all providers remained declared fakes and workers/sends stayed off", fence.blocked.length === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { not: "portal_layout_v2" } } }) === 0 && await prisma.outboxMessage.count() === 0);
+    c.ok("all providers remained declared fakes and workers/sends stayed off", fence.blocked.length === 0 && await prisma.programAutomation.count({ where: { enabled: true } }) === 0 && await prisma.outboxMessage.count() === 0);
     c.ok("social brief never shows the music chooser and directs trending audio", !office.some((e) => e.name === "MusicCard") && words(office.map((e) => e.props.children)).includes("trending audio"));
     // Oct 5: the Brand section is section 5 of the brief itself, so it needs no
     // jump pill; the client's asset shelf (and its upload) sits inside it.

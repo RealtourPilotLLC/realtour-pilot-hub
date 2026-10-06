@@ -91,10 +91,9 @@ async function main() {
     const kyle = await prisma.appUser.create({ data: { name: "Kyle", email: "kyle-call@example.test", role: "ADMIN", status: "ACTIVE" } });
     const as = (u: typeof jordan) => setSession({ uid: u.id, email: u.email, role: u.role });
     const since = new Date(now.getTime() - 86_400_000).toISOString();
-    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [f.clientId], operations: ["portal_sign_in", "portal_layout_v2"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), joinedAt: { [f.clientId]: since }, note: "Disposable first-call journey" } }) } });
+    await prisma.appSetting.create({ data: { key: PROGRAM_ROLLOUT_SETTING_KEY, value: serializeProgramRollout({ mode: "PILOT", modeSince: since, pilot: { clientIds: [f.clientId], operations: ["portal_sign_in"], approvedBy: "isolated-fixture", approvedAt: since, expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), joinedAt: { [f.clientId]: since }, note: "Disposable first-call journey" } }) } });
     const setSwitch = (key: string, enabled: boolean) => prisma.programAutomation.upsert({ where: { key }, create: { key, enabled, enabledAt: now, enabledBy: "isolated-fixture", ...(key === "transcript_jobs" ? { configJson: JSON.stringify({ onlyQueuedAfter: "ALL" }) } : {}) }, update: { enabled } });
     await setSwitch("portal_login_email", true);
-    await setSwitch("portal_layout_v2", true);
     const link = await mintLoginLink(f.membershipId!, null);
     const login = await POST(new NextRequest(link.url, { method: "POST", headers: SAME_SITE_PRESS }), { params: Promise.resolve({ token: new URL(link.url).pathname.split("/").pop()! }) });
     clientCookie = login.cookies.get("rtp_client")?.value ?? null;

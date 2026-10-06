@@ -280,7 +280,10 @@ async function main() {
       /1080p/.test(r1.message) && /Kyle gets the upload-and-send prompt/.test(r1.message) && !/pinged to deliver/i.test(r1.message), r1.message);
     const ran1 = await flush();
     const b1 = await bells(`review-approved-${cut1}`);
-    c.ok("after() runs: the bells land", ran1 === 1 && b1.length > 0, `${ran1} task(s), ${b1.length} bell row(s)`);
+    // 2 tasks since Oct 6: the verdict's follow-ons, plus the error tracker's
+    // own after() keep-alive for the (faked) Dropbox refusal it records
+    // (lib/errorTracker.ts reportError, from runFollowUps).
+    c.ok("after() runs: the bells land", ran1 === 2 && b1.length > 0, `${ran1} task(s), ${b1.length} bell row(s)`);
     c.ok("…the per-video row is refreshed to this approval", (await prisma.deliverableOutput.count({ where: { approvedSubmissionId: cut1 } })) === 1);
     const f1 = (await failures(cut1)).flatMap((f) => (JSON.parse(f.detail) as { failed: { step: string; repairedBy: string; error: string }[] }).failed);
     c.ok("…the Final-folder copy was attempted, Dropbox (faked) refused it, and the failure is recorded with its sweep",
