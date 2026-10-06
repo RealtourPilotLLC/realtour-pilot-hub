@@ -788,9 +788,37 @@ async function main() {
     setClock(new RealDate(RealDate.UTC(2026, 10, 9, 5, 1))); // Mon Nov 9 00:01 EST
     await notify.releaseHeldStaffDms();
     c.ok("Monday 00:01: the held ping reaches him, once", dmsTo(john, s0).length === 1 && /90 Quiet Ct/.test(dmsTo(john, s0)[0]?.text ?? ""));
-    setClock(new RealDate(RealDate.UTC(2026, 10, 9, 15))); // Mon 10:00 EST
+    // Oct 5 2026 — TWO RULES NOW, both asserted. (1) John SAVED a schedule
+    // of his own (Sundays off), and an editor's own saved schedule is the only
+    // clock he is timed by (notify.ts, review Oct 5 night: "their own word on
+    // when they may be reached beats the house guess") — so Monday 10:00 EST,
+    // 11 PM in Manila, is still a DM at once, as this always said. (2) With NO
+    // saved schedule, an editor's DM now keeps their own night (10 PM–7 AM
+    // where they are, localNightEnd) exactly as their texts always did — the
+    // 3 AM buzz for an ET-daytime event was the bug Jordan reported — and goes
+    // once at 7 AM their time.
+    setClock(new RealDate(RealDate.UTC(2026, 10, 9, 15))); // Mon 10:00 EST = Mon 23:00 in Manila
     const mon = await raws("b5-john-mon");
-    c.ok("Monday 10:00: a DM at once, and the bridge says 'slack'", mon.bridged.find((b) => b.userKey === "editor:john")?.channel === "slack" && dmsTo(john, s0).length === 2, JSON.stringify(mon.bridged));
+    c.ok("Monday 10:00 EST (11 PM Manila), John's OWN saved schedule says he is reachable: a DM at once, and the bridge says 'slack'", mon.bridged.find((b) => b.userKey === "editor:john")?.channel === "slack" && dmsTo(john, s0).length === 2, JSON.stringify(mon.bridged));
+    await sched.saveSchedule(john.id, null, "drill"); // no schedule of his own: the house default applies
+    setClock(new RealDate(RealDate.UTC(2026, 10, 9, 16))); // Mon 11:00 EST = Tue 00:00 in Manila
+    const s1 = slack.length;
+    const night = await raws("b5-john-night");
+    const nightCh = night.bridged.find((b) => b.userKey === "editor:john")?.channel;
+    const johnHeld = async () => (await heldDmRows()).map((r) => JSON.parse(r.value) as { teamMemberId: string; until: string }).filter((v) => v.teamMemberId === john.id);
+    const nightRows = await johnHeld();
+    c.ok("no saved schedule, midnight in Manila (Mon 11:00 EST): no DM now, the bridge answers 'quiet' (never 'slack')", nightCh === "quiet" && dmsTo(john, s1).length === 0, `${nightCh} · ${dmsTo(john, s1).length} DM(s)`);
+    c.ok("…one DM held for him, dated 7 AM Manila (Tue Nov 10 07:00 PHT = 2026-11-09T23:00Z)", nightRows.length === 1 && nightRows[0].until === "2026-11-09T23:00:00.000Z", JSON.stringify(nightRows));
+    setClock(new RealDate(RealDate.UTC(2026, 10, 9, 22, 59))); // 06:59 in Manila
+    await notify.releaseHeldStaffDms();
+    c.ok("06:59 Manila: still held", dmsTo(john, s1).length === 0 && (await johnHeld()).length === 1);
+    setClock(new RealDate(RealDate.UTC(2026, 10, 9, 23, 1))); // Tue 07:01 in Manila (Mon 18:01 EST)
+    await notify.releaseHeldStaffDms();
+    await notify.releaseHeldStaffDms(); // a second tick sends nothing more
+    c.ok("07:01 Manila: the held ping reaches him, once", dmsTo(john, s1).length === 1 && /90 Quiet Ct/.test(dmsTo(john, s1)[0]?.text ?? "") && (await johnHeld()).length === 0, `${dmsTo(john, s1).length} DM(s)`);
+    setClock(new RealDate(RealDate.UTC(2026, 10, 10, 1))); // Mon 20:00 EST = Tue 09:00 in Manila — his working day
+    const day = await raws("b5-john-tue");
+    c.ok("Tue 09:00 Manila (Mon 20:00 EST), still no saved schedule: a DM at once, and the bridge says 'slack'", day.bridged.find((b) => b.userKey === "editor:john")?.channel === "slack" && dmsTo(john, s1).length === 2, JSON.stringify(day.bridged));
     await resetQueues();
   }
 

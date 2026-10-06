@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 import { bootDrillDb, fenceFetch, installNextStubs, interceptModule, makeChecker, quietPrismaErrors } from "./_harness";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -152,9 +153,13 @@ interceptModule(
             FS.set(p, 40_000_000);
             return { ".tag": "complete" };
           case "files/save_url/check_job_status": return { ".tag": "complete" };
-          case "files/get_metadata":
+          case "files/get_metadata": {
             if (!FS.has(p)) throw new DErr("path/not_found/", 409);
-            return { size: FS.get(p) };
+            // Dropbox's own answer for a file (Oct 2: a portal publication
+            // proves the exact Final-folder bytes off id/rev/content_hash).
+            const hash = createHash("sha256").update(`${p}:${FS.get(p)}`).digest("hex");
+            return { ".tag": "file", id: `id:${hash.slice(0, 16)}`, rev: hash.slice(0, 12), content_hash: hash, size: FS.get(p), path_display: p };
+          }
           case "files/get_temporary_link":
             if (!FS.has(p)) throw new DErr("path/not_found/", 409);
             return { link: `${DBX_TMP}${p}` };
@@ -254,7 +259,21 @@ async function main() {
       select: { id: true },
     });
     await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: streamUrlFor(row.id), ...(o.blob === false ? {} : { blobUrl: BLOB(row.id), blobPathname: `review-cuts/${row.id}.mp4` }) } });
+    // Every real video slot has its per-video row (sweepOutputUnits mints it),
+    // and since Oct 2 a delivery claim checks this exact version against it.
+    if (o.deliverableId) await ensureOutput(o.projectId, o.deliverableId, o.slot ?? 1);
     return row.id;
+  }
+  async function ensureOutput(projectId: string, deliverableId: string, slot: number) {
+    await prisma.deliverableOutput.upsert({ where: { deliverableId_slot: { deliverableId, slot } }, update: {}, create: { projectId, deliverableId, slot, category: "VIDEO" } });
+  }
+  /** Kyle's two presses since Oct 2: Mark as Uploaded for this exact file, then Mark as sent. */
+  async function kyleSends(id: string, by: string, opts?: Parameters<typeof rts.markVideoSent>[2]) {
+    const { recordUploaded } = await import("@/lib/deliveryUploads");
+    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    const up = await recordUploaded(id, { id: null, name: by }, sourceFingerprint((await loadCut(id))!)!);
+    if (!up.ok) throw new Error(`fixture upload refused: ${up.message}`);
+    return rts.markVideoSent(id, by, opts);
   }
   const route = (r: typeof streamRoute, id: string, q: string) => r.GET(new NextRequest(`http://127.0.0.1${streamUrlFor(id)}?${q}`), { params: Promise.resolve({ id }) });
   const asClient = (id: string, scope: MediaScope, dl = false) => `m=${encodeURIComponent(mediaToken(id, scope))}${dl ? "&dl=1" : ""}`;
@@ -477,6 +496,7 @@ async function main() {
   // =========================================================================
   c.head("S2a · a program render finishing: OLD made an Aryeo-upload card; NEW makes none");
   let portalReel = "";
+  let oldReel = "";
   const deliverTasks = (jobId: string) => prisma.smartTask.count({ where: { dedupeKey: `topaz-deliver-${jobId}` } });
   let renderN = 0;
   async function programRender(label: string): Promise<{ jobId: string; subId: string; original: string }> {
@@ -493,6 +513,7 @@ async function main() {
       },
       select: { id: true },
     });
+    await ensureOutput(ada.projectId!, ada.deliverableId!, 2 + renderN);
     const requestId = `req-b4-${renderN}`;
     PROBE.set(topazOut(requestId), meta());
     const job = await mkJob(ada.projectId!, sub.id, {
@@ -504,6 +525,7 @@ async function main() {
   }
   {
     const O = await programRender("Old Card Reel");
+    oldReel = O.subId;
     for (let i = 0; i < 3; i++) await oldTopaz.advanceTopazJob(O.jobId);
     const ro = await prisma.topazJob.findUniqueOrThrow({ where: { id: O.jobId } });
     c.ok("OLD: the program render went done and Kyle got 'Upload the 1080p video to Aryeo'", ro.state === "done" && (await deliverTasks(O.jobId)) === 1, `${ro.state}`);
@@ -515,7 +537,9 @@ async function main() {
     c.ok("NEW: done and verified", rn.state === "done" && rn.outputCheck === "verified" && !!rn.finalPath, `${rn.state}/${rn.outputCheck}`);
     c.ok("NEW: no upload card", (await deliverTasks(N.jobId)) === 0 && rn.taskId === null);
     c.ok("NEW: no topaz_ready ping and no Slack DM", (await prisma.notification.count({ where: { dedupeKey: { startsWith: `topaz-ready-${N.jobId}` } } })) === 0 && slackPosts.slice(slackBefore).every((b) => !b.includes("ready to upload")), `${slackPosts.length - slackBefore} posts`);
-    c.ok("NEW: a line on the job says where the file goes", (await prisma.activity.count({ where: { projectId: ada.projectId!, body: { contains: "A program video: the client's portal gives them this file" } } })) >= 1);
+    // Since Oct 5 (6f84e51) the line points at the cut's chosen destination
+    // (portal by default, or an explicit Aryeo branding override).
+    c.ok("NEW: a line on the job says where the file goes", (await prisma.activity.count({ where: { projectId: ada.projectId!, body: { contains: "Follow this cut’s selected destination" } } })) >= 1);
     c.ok("the editor's original is kept (moved to superseded/, never deleted)", [...FS.keys()].some((k) => k.includes("superseded/") && k.includes("New Portal Reel")));
 
     c.head("S2b · the stale cards the old code left are closed with the reason — listing cards untouched");
@@ -533,7 +557,12 @@ async function main() {
     // Ada holds an OWNER seat on an ACTIVE program — the portal can hand her the render.
     const now = await rts.readyToSend({ projectId: ada.projectId! });
     const oldBoard = await oldReady.readyToSend({ projectId: ada.projectId! });
-    c.ok("OLD: a finished program render sat on the ready card for Kyle to 'send'", oldBoard.ready.some((r) => r.submissionId === portalReel), oldBoard.ready.map((r) => r.cutLabel).join(", "));
+    // OLD is the render the old lane finished: nothing published it, so it sat
+    // on the card. NEW publishes the checked render the moment it is filed
+    // (Oct 2: the portal handoff is a recorded publication of the exact
+    // Final-folder bytes), so it leaves on its own.
+    c.ok("OLD: a program render the old lane finished was never published — it stayed unsent for Kyle to 'send'", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: oldReel } })).sentToClientAt === null && oldBoard.ready.length > 0, oldBoard.ready.map((r) => r.cutLabel).join(", "));
+    c.ok("NEW: the checked render is published to the portal by itself", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: portalReel } })).sentToClientBy === "Automatic portal publication");
     c.ok("NEW: it leaves — the portal delivers the render", !now.ready.some((r) => r.submissionId === portalReel) && !now.rendering.some((r) => r.submissionId === portalReel));
     c.ok("a v2 still in its pass stays, as a rendering row (the card owns it)", now.rendering.some((r) => r.submissionId === a2));
     // A program client with no way in: the render is Kyle's to send by hand.
@@ -545,7 +574,7 @@ async function main() {
     c.ok("a client who cannot sign in: the render is a ready row with the 1080p file", bb.ready.some((r) => r.submissionId === b1 && r.file.source === "topaz-1080p"));
     c.ok("monthly ready row names the linked month without inventing a topic", bb.ready.some((r) => r.submissionId === b1 && r.monthKey === "2026-09" && r.topicTitle === null));
     const topic = await prisma.contentTopic.create({ data: { enrollmentId: bo.enrollmentId, clientId: bo.clientId, monthId: bo.monthId, title: "Bo's market update" }, select: { id: true } });
-    const output = await prisma.deliverableOutput.create({ data: { deliverableId: bo.deliverableId!, projectId: bo.projectId!, slot: 1, category: "VIDEO", topicId: topic.id }, select: { id: true } });
+    const output = await prisma.deliverableOutput.update({ where: { deliverableId_slot: { deliverableId: bo.deliverableId!, slot: 1 } }, data: { topicId: topic.id }, select: { id: true } });
     await prisma.reviewSubmission.update({ where: { id: b1 }, data: { outputId: output.id } });
     const linked = await rts.readyToSend({ projectId: bo.projectId! });
     c.ok("monthly ready row resolves the cut's own linked topic", linked.ready.some((r) => r.submissionId === b1 && r.monthKey === "2026-09" && r.topicTitle === "Bo's market update"));
@@ -571,7 +600,7 @@ async function main() {
     const n = await noticeCut("2 New Notice Rd", 2);
     const bad = await rts.markVideoSent(n.id, "Kyle", { notice: "carrier pigeon" as never });
     c.ok("an unknown answer is refused before anything is written", !bad.ok && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: n.id } })).sentToClientAt, bad.message);
-    const r = await rts.markVideoSent(n.id, "Kyle", { notice: "aryeo-email" });
+    const r = await kyleSends(n.id, "Kyle", { notice: "aryeo-email" });
     const nr = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: n.id } });
     c.ok("NEW: sent AND told — Aryeo's email, by Kyle, stamped now", r.ok && !!nr.sentToClientAt && nr.clientNoticeVia === "aryeo-email" && nr.clientNoticeBy === "Kyle" && nr.clientNoticeAt?.getTime() === SIM, `${nr.clientNoticeVia}/${nr.clientNoticeBy}`);
     advanceMinutes(5);
@@ -580,8 +609,10 @@ async function main() {
     c.ok("a second press keeps the first notice and the first send", again.ok && again.already === true && nr2.clientNoticeVia === "aryeo-email" && nr2.clientNoticeBy === "Kyle" && nr2.sentToClientAt?.getTime() === nr.sentToClientAt?.getTime());
     const rows = await dout.outputsForProject(n.projectId);
     c.ok("the project's video row says how they were told", /Sent to the client.*told by Aryeo's delivery email/.test(rows[0]?.detail ?? ""), rows[0]?.detail);
+    // The proof pass since Oct 5: Aryeo's signed delivery, no upload receipt.
     const proof = await noticeCut("3 Proof Pass Rd", 3);
-    await rts.markVideoSent(proof.id, "Aryeo — “Tour”, 60s on the listing");
+    await prisma.auditLog.create({ data: { target: "lst-b4-n3", actor: "Aryeo authenticated webhook", action: "aryeo_listing_delivery_event", detail: JSON.stringify({ listingId: "lst-b4-n3", occurredAt: new Date().toISOString() }) } });
+    await rts.markVideoSent(proof.id, "Aryeo (delivery confirmed) — “Tour”, 60s on the listing", { providerConfirmed: true });
     const pr = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: proof.id } });
     c.ok("the Aryeo proof pass records the send and leaves the notice open (it cannot see the email)", !!pr.sentToClientAt && pr.clientNoticeVia === null);
     const prow = (await dout.outputsForProject(proof.projectId))[0];
@@ -591,7 +622,7 @@ async function main() {
   c.head("S3b · 'not told yet' keeps a row on the card until it is recorded");
   {
     const n = await noticeCut("4 Not Yet Way", 4);
-    await rts.markVideoSent(n.id, "Kyle", { notice: "not-yet" });
+    await kyleSends(n.id, "Kyle", { notice: "not-yet" });
     const nr = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: n.id } });
     c.ok("sent, notice marked not-yet with no time", !!nr.sentToClientAt && nr.clientNoticeVia === "not-yet" && nr.clientNoticeAt === null);
     const board = await rts.readyToSend({ projectId: n.projectId });
@@ -609,16 +640,17 @@ async function main() {
   c.head("S3c · the hub's own delivery text is evidence — only when the provider accepted it");
   {
     const t = await noticeCut("6 Texted Terrace", 6);
-    await rts.markVideoSent(t.id, "Kyle");
+    await kyleSends(t.id, "Kyle");
     const later = await noticeCut("7 Failed Text Rd", 7);
-    await rts.markVideoSent(later.id, "Kyle");
+    await kyleSends(later.id, "Kyle");
     advanceMinutes(30);
     const ok = await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5555550100", projectId: t.projectId, body: "wrapped up", state: "accepted", acceptedAt: new Date(), dedupeKey: `delivery:${t.projectId}` }, select: { id: true } });
     await prisma.outboxMessage.create({ data: { channel: "sms", toRef: "5555550101", projectId: later.projectId, body: "wrapped up", state: "failed", dedupeKey: `delivery:${later.projectId}` } });
     // A cut on the texted job sent AFTER the text: the text says nothing about it.
-    const late = await mkCut({ projectId: t.projectId, deliverableId: null, round: 2, fileName: "6 Texted Terrace extra.mp4" });
+    const late = await mkCut({ projectId: t.projectId, deliverableId: null, round: 2, fileName: "6 Texted Terrace extra.mp4", assetPath: "/x/6 Texted Terrace extra.mp4" });
     advanceMinutes(10);
-    await rts.markVideoSent(late, "Kyle");
+    await kyleSends(late, "Kyle");
+    c.ok("(the late cut really was sent after the text)", !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: late } })).sentToClientAt);
     const s1 = await rts.stampNoticesFromDeliveryTexts();
     const tr = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: t.id } });
     c.ok("an ACCEPTED delivery text stamps the cut sent before it: hub-text, ref = the outbox row", tr.clientNoticeVia === "hub-text" && tr.clientNoticeRef === ok.id && tr.clientNoticeBy === "Delivery text", `${tr.clientNoticeVia}/${tr.clientNoticeRef}`);
@@ -633,7 +665,9 @@ async function main() {
     const lad = await rts.deliveryEvidenceFor([a1, a2]);
     const one = lad.get(a1)!;
     c.ok("v1: approved → processed done → validated as the VERIFIED render", !!one.approved && one.processed?.state === "done" && one.validated?.how === "verified-render");
-    c.ok("v1: not sent, not told; opened = the client's own download start at S1c's door", one.sent === null && one.told === null && one.opened?.how === "download-started", JSON.stringify({ sent: one.sent, told: one.told, opened: one.opened }));
+    // Since Oct 2 the verified render is published to the portal by itself, and
+    // that recorded handoff IS the "sent" rung (by the publication, never a person).
+    c.ok("v1: sent = the portal publication's own record, not told; opened = the client's own download start at S1c's door", one.sent?.by === "Automatic portal publication" && one.told === null && one.opened?.how === "download-started", JSON.stringify({ sent: one.sent, told: one.told, opened: one.opened }));
     const two = lad.get(a2)!;
     c.ok("v2: processing → NOT validated (nothing trusted while the pass runs)", two.processed?.state === "processing" && two.validated === null);
     const w = await prisma.contentReviewWindow.create({ data: { submissionId: a1, videoKey: `x:${a1}`, projectId: ada.projectId!, enrollmentId: ada.enrollmentId, clientId: ada.clientId, round: 1, openedAt: new Date(), deadlineAt: new Date(Date.now() + 4 * 86_400_000), clientNotifiedAt: new Date(), firstViewedAt: new Date() } });
@@ -656,6 +690,12 @@ async function main() {
   const calSourceFor = (id: string) => prisma.contentVideoSource.findUnique({ where: { kind_ref: { kind: "REVIEW_CUT", ref: id } } });
   {
     const c1 = await mkCut({ projectId: cal.projectId!, deliverableId: cal.deliverableId!, round: 1, fileName: "Cal kitchen v1.mp4" });
+    // Since Oct 2 publication proves the exact client file in the job's Final
+    // folder: a checked 1080p render filed there, as every portal video has.
+    await prisma.project.update({ where: { id: cal.projectId! }, data: { dropboxFolder: "/Content/Drill/Cal" } });
+    const calFinal = actualFolderPaths({ dropboxFolder: "/Content/Drill/Cal" } as Parameters<typeof actualFolderPaths>[0]).finalVideo;
+    FS.set(`${calFinal}/Cal kitchen - FINAL (Topaz).mp4`, 40_000_000);
+    await mkJob(cal.projectId!, c1, { state: "done", finalPath: `${calFinal}/Cal kitchen - FINAL (Topaz).mp4`, savedAt: new Date(), finishedAt: new Date(), outputCheck: "verified" });
     const { addApprovedCutToLibrary } = await import("@/lib/portalLibrary");
     await addApprovedCutToLibrary(c1);
     c.ok("OLD path: the secondary sub: row exists, the client's library does not have the cut", !!(await prisma.portalVideo.findUnique({ where: { externalKey: `sub:${c1}` } })) && !(await calSourceFor(c1)));

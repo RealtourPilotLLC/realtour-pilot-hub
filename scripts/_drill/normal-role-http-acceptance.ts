@@ -174,10 +174,10 @@ async function main() {
     c.ok("photographer contextual foreign shoot redirects to own list before reading private job", (shootRedirect || streamedShootRedirect) && !foreignShootHtml.includes("900 Private Lane"), `HTTP${foreignShoot.status};streamedOwnRedirect=${streamedShootRedirect}`);
 
     c.head("Actual one-use named OWNER session and exact action/media journey");
-    const clientLogin = await get(signIn.url);
+    const clientLogin = await fetch(new URL(signIn.url, BASE), { method: "POST", redirect: "manual", headers: { origin: BASE } }); // Oct 5: opening the link shows a button; its POST (from our own page: same-origin Origin) signs in
     privateManifest.clientCookie = cookieFrom(clientLogin, "rtp_client");
     c.ok("normal named-pilot owner actual one-use auth route stamps acceptance and sets separate Secure cookie", clientLogin.status === 303 && !!clientLogin.headers.get("location")?.endsWith("/portal/me") && !!privateManifest.clientCookie && !!(await prisma.clientUser.findUniqueOrThrow({ where: { id: shell.clientUserId } })).lastLoginAt);
-    c.ok("same consumed link cannot sign in again", !!(await get(signIn.url)).headers.get("location")?.includes("/portal/login?reason=invalid"));
+    c.ok("same consumed link cannot sign in again", !!(await fetch(new URL(signIn.url, BASE), { method: "POST", redirect: "manual", headers: { origin: BASE } })).headers.get("location")?.includes("/portal/login?reason=invalid"));
     c.ok("client session cannot open staff office", !!(await get("/content", privateManifest.clientCookie)).headers.get("location")?.includes("/login"));
     for (const tab of ["dashboard", "strategy", "topics", "scripts", "filming", "library", "messages"]) { const r = await get(`/portal/me?tab=${tab}`, privateManifest.clientCookie); const html = await r.text(); c.ok(`normal signed client ${tab} HTTP route resolves its exact enrollment without render error`, r.status === 200 && html.includes("Grove Acceptance Realty") && !html.includes('"digest":"')); }
     const anonApprove = await action("/portal/me?tab=scripts", "src/app/portal/actions.ts", "portalApproveScript", [{ enrollmentId: shell.enrollmentId }, rep.scripts.E, pendingScript.sharedVersionId]);

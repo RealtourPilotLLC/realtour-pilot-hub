@@ -294,6 +294,27 @@ async function main() {
     const r = await api.approveCut(id);
     if (!r.ok) throw new Error(`approve ${id}: ${r.message}`);
   };
+  // Oct 5 2026 — THE PORTAL PUBLICATION GATE (a60424b, Oct 2). The office's
+  // approval of a MONTHLY cut is no longer its release: the client sees the
+  // version once its checked 1080p file is published to the portal
+  // (contentVideos.publishApprovedCutToLibrary → the monthly handoff), and
+  // until then the portal answers "That video isn't on your page." — which is
+  // what §0(d), §1, §4 and §13 read, since their clients act on a cut the
+  // office approved. That path needs Topaz and Dropbox (fenced here), so this
+  // records the part these sections are about, exactly as the shared review
+  // fixture does (scripts/_fixtures/reviewWorld.ts publish): the release to
+  // the client, its review window, and the round answered. Attribution is what
+  // is asserted; the gate itself is drilled in monthly-portal-approval-gate.
+  const publish = async (id: string) => {
+    await prisma.reviewSubmission.update({ where: { id }, data: { clientReleasedAt: new Date(), clientReleasedBy: "Portal publication" } });
+    const { openReviewWindow } = await import("@/lib/reviewWindows");
+    await openReviewWindow(id, { by: "Portal publication" });
+    const row = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id } });
+    const { correctedCutApproved } = await import("@/lib/reviewCuts");
+    await correctedCutApproved(row.projectId, { cutCreatedAt: row.createdAt, round: row.round, cut: { id: row.id, deliverableId: row.deliverableId, slot: row.slot, assetPath: row.assetPath } });
+  };
+  /** The office approves a monthly cut, then it is published to the client's portal. */
+  const approveAndPublish = async (v: Viewer, id: string) => { await approveAs(v, id); await publish(id); };
 
   try {
     // =========================================================================
@@ -354,7 +375,7 @@ async function main() {
       const casey = await prisma.clientUser.create({ data: { email: "casey-old@example.com", name: "Casey Old", status: "ACTIVE" }, select: { id: true } });
       await prisma.clientMembership.create({ data: { clientUserId: casey.id, enrollmentId: P.f.enrollmentId, clientId: P.f.clientId, role: "COLLABORATOR", acceptedAt: new Date() } });
       const pc = await P.cut(1);
-      await approveAs(V.james, pc);
+      await approveAndPublish(V.james, pc);
       await P.note(pc, "Swap the song", { clientUserId: casey.id }, 3);
       await P.note(pc, "Crop the logo", { clientUserId: P.f.clientUserId }, 9);
       viewer = null;
@@ -399,14 +420,14 @@ async function main() {
     {
       const W = await contentWorld("Nora New", "Nora New");
       const cut = await W.cut(1);
-      await approveAs(V.james, cut);
+      await approveAndPublish(V.james, cut);
       const approvedAt = (await sub(cut)).decidedAt!;
       advance(120);
       await W.note(cut, "Brighten the kitchen", { clientUserId: W.f.clientUserId });
       viewer = null;
       const req = await cd.requestChangesOnCut(W.owner, cut, "");
       const row = await sub(cut);
-      c.ok("the request lands; the office's approval is still on the row as its QC record", req.ok && row.status === "CHANGES_REQUESTED" && row.decidedBy === "James Rivera" && row.decidedAt?.getTime() === approvedAt.getTime(), `${row.decidedBy} @ ${row.decidedAt?.toISOString()}`);
+      c.ok("the request lands; the office's approval is still on the row as its QC record", req.ok && row.status === "CHANGES_REQUESTED" && row.decidedBy === "James Rivera" && row.decidedAt?.getTime() === approvedAt.getTime(), `${req.ok ? "" : `refused: ${req.message} · `}${row.status} · ${row.decidedBy} @ ${row.decidedAt?.toISOString()}`);
       const v = at.verdictOf(row);
       c.ok("the verdict is the CLIENT's, at the client's time", v?.source === "client" && v.by === "Nora New" && v.atISO === row.clientRequestedAt?.toISOString(), JSON.stringify(v));
       c.ok("…and reads \"Client changes by Nora New · <the client's time>\"", at.verdictLine(v) === `Client changes by Nora New · ${ET(row.clientRequestedAt!)}` && ET(row.clientRequestedAt!) !== ET(approvedAt), at.verdictLine(v) ?? "");
@@ -417,7 +438,11 @@ async function main() {
       const qrow = q.waitingOnEditor.find((s) => s.id === cut);
       c.ok("the queue's In-revisions row says it was the client", qrow?.verdict?.source === "client" && at.verdictLine(qrow.verdict)?.startsWith("Client changes by Nora New") === true, at.verdictLine(qrow?.verdict) ?? "no row");
       const page = fs.readFileSync(path.join(REPO, "src/app/edit/[id]/page.tsx"), "utf8");
-      c.ok("the edit page now selects the client's stamp and hands the revision block the verdict", /clientRequestedAt: true, clientRequestedBy: true/.test(page) && /verdict: verdictOf\(s\)/.test(page));
+      // Oct 5 2026: a60424b (Oct 2) folded the per-round revision block into
+      // each version's panel on the edit page — the verdict now rides as
+      // EditorCutPanel's verdict={verdictOf(s)}, the same pure rule.
+      c.ok("the edit page now selects the client's stamp and hands each version's panel the verdict",
+        /clientRequestedAt: true, clientRequestedBy: true/.test(page) && /<EditorCutPanel\b[^>]*?verdict=\{verdictOf\(s\)\}/.test(page.replace(/\s+/g, " ")));
       // The rule's other half: the office rules AFTER the client → the office's.
       const later = at.verdictOf({ status: "CHANGES_REQUESTED", decidedAt: new Date(Date.now() + 60_000), decidedBy: "Kyle Cabrera", clientRequestedAt: row.clientRequestedAt, clientRequestedBy: "Nora New" });
       c.ok("an office verdict given after the client's reads as the office's", later?.source === "office" && later.by === "Kyle Cabrera");
@@ -457,7 +482,7 @@ async function main() {
       c.ok("the Review Room's note list carries author + time: \"James Rivera · <when>\"", !!wNote && at.byLine(wNote.authorName, wNote.createdAt) === `James Rivera · ${ET(jNote.createdAt)}`, wNote ? at.byLine(wNote.authorName, wNote.createdAt) : "none");
       const wKyle = ws?.notes.find((n) => n.id === kimNote.id);
       // (Row times come from the database's own clock, not the pinned one.)
-      c.ok("replies carry their time (gap 3)", !!wKyle?.replies[0] && at.whenET(wKyle.replies[0].createdAt) === ET(reply!.createdAt) && /^Mon, Sep 28, \d{1,2}:\d{2} (AM|PM)$/.test(ET(reply!.createdAt)), wKyle?.replies[0]?.createdAt);
+      c.ok("replies carry their time (gap 3)", !!wKyle?.replies[0] && at.whenET(wKyle.replies[0].createdAt) === ET(reply!.createdAt) && /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} (AM|PM)$/.test(ET(reply!.createdAt)) /* Oct 5 2026: was "Mon, Sep 28" — the database's own clock, i.e. the day it ran; the format is the claim */, wKyle?.replies[0]?.createdAt);
       const panel = fs.readFileSync(path.join(REPO, "src/components/review/CutReviewPanel.tsx"), "utf8");
       c.ok("the panel prints byLine(author, createdAt) on every note and the time on every reply", /byLine\(n\.authorName \?\? "Someone", n\.createdAt\)/.test(panel) && /whenET\(r\.createdAt\)/.test(panel));
       const fb = await room.getEditorFeedback(J2.id, "kim");
@@ -527,7 +552,7 @@ async function main() {
       const p1 = await P.cut(1);
       const p2 = await P.cut(2);
       const p3 = await P.cut(3);
-      for (const id of [p1, p2, p3]) await approveAs(V.james, id);
+      for (const id of [p1, p2, p3]) await approveAndPublish(V.james, id);
       viewer = null;
       advance(10);
       const casNote = await P.note(p1, "Swap the song", { clientUserId: casey.id }, 3);
@@ -582,7 +607,7 @@ async function main() {
       const all = groups.flatMap((g) => g.notes);
       const cas = all.find((n) => n.id === casNote.id);
       c.ok("the Room's client notes are grouped by cut (gap 8)", groups.length === 3 && groups.every((g) => g.notes.every((n) => n.submissionId === g.submissionId)), `${groups.length} groups`);
-      c.ok("…each with its author and time: \"Casey Collab · <when>\"", cas?.author === "Casey Collab" && at.byLine(cas.author, cas.createdAtISO) === `Casey Collab · ${ET(cas.createdAtISO)}` && /^Casey Collab · Mon, Sep 28, \d{1,2}:\d{2} (AM|PM)$/.test(at.byLine(cas.author, cas.createdAtISO)), cas ? at.byLine(cas.author, cas.createdAtISO) : "none");
+      c.ok("…each with its author and time: \"Casey Collab · <when>\"", cas?.author === "Casey Collab" && at.byLine(cas.author, cas.createdAtISO) === `Casey Collab · ${ET(cas.createdAtISO)}` && /^Casey Collab · [A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} (AM|PM)$/.test(at.byLine(cas.author, cas.createdAtISO)) /* Oct 5 2026: was "Mon, Sep 28" — the database's own clock; the format is the claim */, cas ? at.byLine(cas.author, cas.createdAtISO) : "none");
       c.ok("…a sent note says so, not \"new\"", cas?.status === "SENT");
       const repliesAuthors = cas?.replies.map((r) => r.author) ?? [];
       c.ok("replies nest under their note, each named — Pat, then link visitors 1 and 2", repliesAuthors.length === 3 && repliesAuthors[0] === "Pat Client" && repliesAuthors[1] === `${P.f.clientName} (portal), link visitor 1` && repliesAuthors[2] === `${P.f.clientName} (portal), link visitor 2`, repliesAuthors.join(" | "));
@@ -926,7 +951,7 @@ async function main() {
       // ---- 13e · finding 5: the link's top-level note carries its visitor too ----
       const L = await contentWorld("Link Lane", "Lena Link");
       const lc = await L.cut(1);
-      await approveAs(V.james, lc);
+      await approveAndPublish(V.james, lc);
       viewer = null;
       const portalActions = await import("@/app/portal/actions");
       const headers = Module.createRequire(__filename)("next/headers") as { cookies: () => Promise<{ get: (n: string) => { value: string } | undefined; delete: (n: string) => void }> };
@@ -950,7 +975,7 @@ async function main() {
       // ---- 13f · finding 9: a SENT note resolved afterwards says so, with who ----
       const P9 = await contentWorld("Resolve Row", "Rhea Resolve");
       const pc9 = await P9.cut(1);
-      await approveAs(V.james, pc9);
+      await approveAndPublish(V.james, pc9);
       const note9 = await P9.note(pc9, "Brighten the kitchen", { clientUserId: P9.f.clientUserId }, 5);
       viewer = null;
       await cd.requestChangesOnCut(P9.owner, pc9, "");
@@ -1010,7 +1035,7 @@ async function main() {
       c.ok("…her text: \"Olivia Aide asked for changes by text\"", (await whoOn(birch)) === "Olivia Aide asked for changes by text", await whoOn(birch) ?? "none");
       const P10 = await contentWorld("Card Client", "Cora Card");
       const p10 = await P10.cut(1);
-      await approveAs(V.james, p10);
+      await approveAndPublish(V.james, p10);
       advance(30);
       await P10.note(p10, "Swap the song", { clientUserId: P10.f.clientUserId }, 4);
       viewer = null;

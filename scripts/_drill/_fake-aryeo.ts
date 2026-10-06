@@ -235,6 +235,12 @@ export function createFakeAryeo(opts: {
       variants: opts.variants?.[id] ? [{ object: "PRODUCT_VARIANT", id: opts.variants[id], title: id, price_amount: priceOf(opts.variants[id]), price: priceOf(opts.variants[id]) }] : [],
     });
     if (method === "GET" && path === "/products") {
+      // The real API refuses any include outside this list (found by the first
+      // real supervised dry run, Oct 5 2026: `include=variants` → 400). Variants
+      // come back by default, so the fake must refuse it too.
+      const allowed = new Set(["categories", "order_form_categories", "order_form_categories.order_form", "providers"]);
+      const bad = (q.get("include") ?? "").split(",").map((x) => x.trim()).filter((x) => x && !allowed.has(x));
+      if (bad.length) return json(400, { status: "error", message: `Requested include(s) \`${bad.join(",")}\` are not allowed. Allowed include(s) are \`categories, order_form_categories, order_form_categories.order_form, providers\`.` });
       return json(200, { data: Object.entries(opts.products).map(([id, tms]) => productOut(id, tms)), meta: { current_page: 1, last_page: 1 } });
     }
     if (method === "GET" && seg[0] === "products" && seg[1] && !seg[2]) {
@@ -313,6 +319,11 @@ export function createFakeAryeo(opts: {
       return json(200, { data: list, meta: { current_page: 1, last_page: 1 } });
     }
     if (seg[0] === "orders" && seg[1] && method === "GET") {
+      // Real Aryeo refuses `address` as an include here (it is returned by
+      // default) — found by the first real supervised run, Oct 5 2026.
+      const ORDER_ALLOWED = new Set(["items", "itemsCount", "itemsExists", "customer", "customerGroup", "taxes", "payments", "tags", "listing", "appointments", "appointments.users", "unconfirmed_appointments", "order_form", "discounts", "discounts.coupon", "order_fees"]);
+      const badInc = (q.get("include") ?? "").split(",").map((x) => x.trim()).filter((x) => x && !ORDER_ALLOWED.has(x));
+      if (badInc.length) return json(400, { status: "error", message: `Requested include(s) \`${badInc.join(",")}\` are not allowed.` });
       const o = orders.get(seg[1]);
       return o ? json(200, { status: "success", data: orderOut(o) }) : json(404, { status: "error", message: "Order not found." });
     }

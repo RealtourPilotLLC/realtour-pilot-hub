@@ -46,9 +46,33 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
   if (request === "next/cache") return { revalidatePath: () => {}, revalidateTag: () => {}, unstable_cache: (f: unknown) => f };
   if (request === "next/navigation") return { redirect: () => { throw new Error("redirect"); }, notFound: () => { throw new Error("notFound"); } };
   if (request === "next/headers") return {};
-  if (request === "next/server") return { after: (f: () => unknown) => { void f; } };
+  // Oct 5 2026: after() is QUEUED, not dropped. Since Oct 5 a verdict answers
+  // at once and its follow-ons (bells, Dropbox copy, per-video rows) run in
+  // after(), once the response is out; the old stub threw that work away, so
+  // the approve bell this drill counts never rang. drainAfter() below plays the
+  // role of "the response has gone out": it runs what was handed over, in order.
+  if (request === "next/server") return { after: (f: unknown) => { afterQueue.push(f); } };
   return realLoad.call(this, request, parent, isMain);
 };
+
+const afterQueue: unknown[] = [];
+/** Run every follow-on handed to after() so far — the moment the response has
+ *  gone out. A failure is printed and counted, never swallowed. */
+async function drainAfter(): Promise<number> {
+  let ran = 0;
+  while (afterQueue.length) {
+    const f = afterQueue.shift();
+    ran++;
+    try {
+      await (typeof f === "function" ? (f as () => unknown)() : f);
+    } catch (e) {
+      afterFailures.push(e instanceof Error ? e.message : String(e));
+      console.error("after() follow-on failed:", e);
+    }
+  }
+  return ran;
+}
+const afterFailures: string[] = [];
 
 const exec = promisify(execFile);
 const PORT = 5493;
@@ -75,7 +99,12 @@ async function main() {
   await exec("npx", ["prisma", "db", "push", "--skip-generate", "--accept-data-loss"], { env: { ...process.env } });
 
   const { prisma } = await import("@/lib/prisma");
-  const { approveCut, requestCutChanges } = await import("@/app/review/actions");
+  const review = await import("@/app/review/actions");
+  // A press, as a person sees it (Oct 5 2026): the verdict answers, then the
+  // response goes out and its follow-ons run (drainAfter). 1a checks the two
+  // halves separately; every other journey takes the press as a whole.
+  const approveCut = async (...a: Parameters<typeof review.approveCut>) => { const r = await review.approveCut(...a); await drainAfter(); return r; };
+  const requestCutChanges = async (...a: Parameters<typeof review.requestCutChanges>) => { const r = await review.requestCutChanges(...a); await drainAfter(); return r; };
   const { setQueueStatus, mergeProjectWork } = await import("@/app/editing/actions");
   const { reconcileDeliverablesToOrder, orderDeliverables } = await import("@/lib/integrations/aryeo");
   const { mergeFrom } = await import("@/lib/projectMerge");
@@ -135,7 +164,16 @@ async function main() {
     const d = await mkReel(P.id, "Standard Tour Reel");
     const cut = await mkCut(P.id, d.id, 1, "reel-v1.mp4");
     const bellsWhere = { dedupeKey: { startsWith: `review-approved-${cut.id}` } };
-    const r1 = await approveCut(cut.id);
+    const r1 = await review.approveCut(cut.id);
+    // Oct 5 2026 (Jordan: "it should close and give a confirmation instantly …
+    // everything it's currently waiting on should be done in the background"):
+    // the verdict is on the row when the click answers; the bells are not yet.
+    const statusAtAnswer = await subStatus(cut.id);
+    const bellsAtAnswer = await prisma.notification.count({ where: bellsWhere });
+    const handedOff = afterQueue.length;
+    ok("the first press answers with the cut APPROVED and its follow-ons handed to the background", r1.ok && statusAtAnswer === "APPROVED" && handedOff >= 1, `${r1.message} · ${statusAtAnswer} · ${handedOff} after() job(s)`);
+    ok("…the bells wait for the background, not the click", bellsAtAnswer === 0, `${bellsAtAnswer} bell rows at the answer`);
+    await drainAfter();
     const bells1 = await prisma.notification.count({ where: bellsWhere });
     const r2 = await approveCut(cut.id);
     const bells2 = await prisma.notification.count({ where: bellsWhere });
@@ -146,7 +184,16 @@ async function main() {
     const topaz = await prisma.topazJob.count({ where: { submissionId: cut.id } });
     ok("at most ONE 1080p render was filed (TopazJob.submissionId is @unique)", topaz <= 1, `${topaz} render rows`);
     ok("the second press rings NO new bell", bells2 === bells1, `${bells1} rows after the first press, ${bells2} after the second`);
-    ok("…and the first press rang one row per person addressed, not one per press", bells1 >= 1 && bells1 <= 3, `${bells1} rows (office, editor, photographer)`);
+    // Oct 5 2026: the audience grew by one, deliberately — "who hears a
+    // verdict" now includes Jordan (an OWNER never saw the old ADMIN-only
+    // broadcast). With no review seat named in this fixture that is the office
+    // broadcast, the owner broadcast, the editor and the photographer: four
+    // rows, each a DIFFERENT audience. The point of the check is unchanged —
+    // one row per audience, never one per press.
+    const rows1 = await prisma.notification.findMany({ where: bellsWhere, select: { audience: true, userKey: true } });
+    const audiences = new Set(rows1.map((r) => `${r.userKey ?? "broadcast"}|${r.audience}`));
+    ok("…and the first press rang one row per audience addressed (office, Jordan, editor, photographer), not one per press",
+      bells1 === 4 && audiences.size === bells1, `${bells1} rows: ${[...audiences].join(", ")}`);
     const timeline = await activityLike(P.id, "Cut approved in review");
     ok("ONE 'cut approved' line on the timeline", timeline === 1, `${timeline} timeline rows`);
     // The sweep that runs after any verdict.
@@ -620,6 +667,26 @@ async function main() {
     const { sweepUndeliveredPhotos } = await import("@/lib/deliveryWatch");
     const { flushPendingSms, notifyInApp } = await import("@/lib/notify");
 
+    // THE CLOCK, for this journey only (Oct 5 2026). The alert window below was
+    // built from the REAL ET hour, as [hour, min(23, hour + 1)) — so at 23:xx
+    // ET it was [23, 23), an empty window, and four checks failed every night
+    // from 11 PM. The journey is "the 16:00 pass", so the clock is pinned to
+    // Tue Sep 29 2026 16:05 ET (running forward in real time) and put back
+    // when the journey ends.
+    const RealDate = Date;
+    const offset = RealDate.UTC(2026, 8, 29, 20, 5, 0) - RealDate.now(); // Tue Sep 29 2026 16:05 EDT
+    globalThis.Date = new Proxy(RealDate, {
+      construct(target, args: unknown[]) {
+        if (args.length === 0) return new target(RealDate.now() + offset);
+        return Reflect.construct(target, args);
+      },
+      get(target, prop, recv) {
+        if (prop === "now") return () => RealDate.now() + offset;
+        return Reflect.get(target, prop, recv);
+      },
+    }) as DateConstructor;
+    try {
+
     // The alert only runs inside its own ET window and only on a day the rota
     // covers. Both are Settings rows, so the isolated database is configured to
     // put "now" inside the alert window and OUTSIDE covered hours — which is the
@@ -679,6 +746,9 @@ async function main() {
       (await prisma.pendingSms.count({ where: { teamMemberId: kyle.id, sentAt: null } })) === 1);
 
     void notifyInApp; // see the note below: colliding on the bell's unique index would end the run
+    } finally {
+      globalThis.Date = RealDate;
+    }
   }
   note(
     "two overlapping cron runs of the photos alert",
@@ -723,6 +793,9 @@ async function main() {
       "reaches a provider, and this is the only one of the four journeys whose guard is a database invariant rather than a " +
       "read-then-write.",
   );
+
+  await drainAfter();
+  ok("every follow-on handed to after() ran without throwing (Oct 5 2026)", afterFailures.length === 0, afterFailures.join(" | ").slice(0, 300));
 
   console.log("\n" + "=".repeat(78));
   console.log(`${fail === 0 ? `ALL CHECKS PASSED (${pass} passed` : `${fail} FAILED, ${pass} passed`}${fail === 0 ? "" : ""}, ${noted} statement${noted === 1 ? "" : "s"} this harness could not decide)`);

@@ -5,6 +5,12 @@
 import { bootDrillDb, installNextStubs, interceptModule, fenceFetch, makeChecker } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
+// Oct 5 2026: the sign-in button's POST must prove it came from our own page —
+// a same-origin Origin or Sec-Fetch-Site: same-origin, which is what a browser
+// sends when the "Continue to your portal" button on that page is pressed (a
+// POST with neither is now refused). The drill presses it as a browser would.
+const SAME_SITE_PRESS = { "sec-fetch-site": "same-origin" };
+
 installNextStubs();
 let clientCookie: string | null = null;
 interceptModule((r) => r === "@/lib/portal" || /[\\/]src[\\/]lib[\\/]portal$/.test(r), (loaded) => {
@@ -74,7 +80,7 @@ async function main() {
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout } = await import("@/lib/programRolloutCore");
     const { mintLoginLink } = await import("@/lib/portalAccess");
-    const { GET } = await import("@/app/portal/auth/[token]/route");
+    const { POST } = await import("@/app/portal/auth/[token]/route"); // Oct 5: the press (POST) signs in; opening the link does not
     const { NextRequest } = await import("next/server");
     const now = new Date();
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
@@ -90,7 +96,7 @@ async function main() {
     await setSwitch("portal_login_email", true);
     await setSwitch("portal_layout_v2", true);
     const link = await mintLoginLink(f.membershipId!, null);
-    const login = await GET(new NextRequest(link.url), { params: Promise.resolve({ token: new URL(link.url).pathname.split("/").pop()! }) });
+    const login = await POST(new NextRequest(link.url, { method: "POST", headers: SAME_SITE_PRESS }), { params: Promise.resolve({ token: new URL(link.url).pathname.split("/").pop()! }) });
     clientCookie = login.cookies.get("rtp_client")?.value ?? null;
     const auth = { enrollmentId: f.enrollmentId };
     const resolve = () => portal.resolvePortalViewer({ ...auth, cookies: { get: (name) => name === "rtp_client" ? clientCookie ?? undefined : undefined } });

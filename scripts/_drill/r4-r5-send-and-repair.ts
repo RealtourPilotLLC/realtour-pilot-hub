@@ -188,7 +188,9 @@ async function main() {
   // =====================================================================
   console.log("\n=== R5: a half-finished settle is visible and repairable ===\n");
   // =====================================================================
-  const project = await prisma.project.create({ data: { clientId: client.id, title: "9 Larch Way", status: "DELIVERED" }, select: { id: true } });
+  // A listing job carries its Aryeo listing; since Oct 2 Kyle's own press needs
+  // his Mark as Uploaded first (recorded below, before the injected failure).
+  const project = await prisma.project.create({ data: { clientId: client.id, title: "9 Larch Way", status: "DELIVERED", aryeoListingId: "01a0b0b0-1111-7222-8333-444455556666" }, select: { id: true } });
   const deliverable = await prisma.deliverable.create({ data: { projectId: project.id, type: "VIDEO", label: "Cinematic Video", quantity: 1 }, select: { id: true } });
   await prisma.deliverableOutput.create({ data: { deliverableId: deliverable.id, projectId: project.id, slot: 1, category: "VIDEO" } });
   const sub = await prisma.reviewSubmission.create({
@@ -202,6 +204,12 @@ async function main() {
   });
 
   const rts = await import("@/lib/readyToSend");
+  {
+    const { recordUploaded } = await import("@/lib/deliveryUploads");
+    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    const up = await recordUploaded(sub.id, { id: null, name: "Kyle" }, sourceFingerprint((await loadCut(sub.id))!)!);
+    ok("Kyle's Mark as Uploaded is recorded first", up.ok, up.message);
+  }
   // Fail the task close after the cut is stamped — A04's exact injection.
   const realTaskUpdate = prisma.smartTask.updateMany.bind(prisma.smartTask) as (...a: unknown[]) => Promise<{ count: number }>;
   let throwOnce = true;

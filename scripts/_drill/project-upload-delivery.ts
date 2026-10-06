@@ -76,7 +76,7 @@ async function main() {
     const live = event("fresh-signed");
     await handleAryeoActivity("LISTING_DELIVERED", live, { authenticated: true });
     const webhookSent = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: third.id } });
-    c.ok("distinct authenticated delivery resolves acknowledged versions even inside the prior-event cooldown", !!webhookSent.sentToClientAt && !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: replacement.id } })).sentToClientAt && webhookSent.sentToClientBy?.includes("after staff upload acknowledgement") === true);
+    c.ok("distinct authenticated delivery resolves acknowledged versions even inside the prior-event cooldown", !!webhookSent.sentToClientAt && !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: replacement.id } })).sentToClientAt && webhookSent.sentToClientBy?.startsWith("Aryeo (delivery confirmed)") === true && webhookSent.sentToClientBy.includes("after the upload was recorded"));
     c.ok("webhook fills per-output delivery using the acknowledged version", (await prisma.deliverableOutput.findUniqueOrThrow({ where: { deliverableId_slot: { deliverableId: shell.deliverableId!, slot: 1 } } })).sentSubmissionId === replacement.id);
     await handleAryeoActivity("LISTING_DELIVERED", live, { authenticated: true });
     c.ok("webhook replay preserves first saved attribution/time", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: third.id } })).sentToClientAt?.getTime() === webhookSent.sentToClientAt?.getTime());

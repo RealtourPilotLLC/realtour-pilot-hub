@@ -85,6 +85,29 @@ const REPO = path.resolve(__dirname, "../..");
 const BASE = "e26cacd"; // pinned: the commit batches B–D start from (HEAD moved on once they were committed)
 const BASE_B3 = "810b29f"; // pinned: batch 3's baseline (the adapter before its A23/R03 guards)
 
+// THE CLOCK (Oct 5 2026). Every slot below is a fixed October 2026 weekday,
+// written when "now" was late September — so on the real clock the drill
+// broke the day those dates passed (Oct 5: "That time has passed — pick a
+// later one." for every request, and a null row after it). The clock is
+// pinned to Mon Sep 28 2026 10:00 ET — the same Monday section 33 already
+// hands the adapter — and runs forward from there in real time, so the 24-hour,
+// weekend and capacity rules are measured against the calendar the fixtures
+// were drawn on. Sections that pin their own instant (13, 33-34) still do.
+{
+  const RealDate = Date;
+  const offset = RealDate.UTC(2026, 8, 28, 14, 0, 0) - RealDate.now(); // Mon Sep 28 2026 10:00 EDT
+  globalThis.Date = new Proxy(RealDate, {
+    construct(target, args: unknown[]) {
+      if (args.length === 0) return new target(RealDate.now() + offset);
+      return Reflect.construct(target, args);
+    },
+    get(target, prop, recv) {
+      if (prop === "now") return () => RealDate.now() + offset;
+      return Reflect.get(target, prop, recv);
+    },
+  }) as DateConstructor;
+}
+
 installNextStubs();
 
 let fake: ReturnType<typeof createFakeAryeo>;
@@ -340,6 +363,12 @@ async function main() {
     const o0 = writes("POST", "/orders"), oc0 = committed("POST", "/orders");
     const t0 = now();
     await sb.bookSessionRequest(r.id, { now: t0 });
+    // Oct 5 2026: the attempt's createdAt is written by the database's own
+    // now() — the REAL clock — while this drill's clock is pinned to Sep 28.
+    // The two-scans-and-30-minutes rule measures from createdAt, so restamp it
+    // on the drill's clock (the instant the attempt was made, t0); the rule
+    // itself is unchanged and still asserted below.
+    await prisma.programBookingAttempt.updateMany({ where: { requestId: r.id }, data: { createdAt: t0 } });
     const s1 = await sb.bookSessionRequest(r.id, { now: new Date(t0.getTime() + 11 * MIN) });
     c.ok("scan 1 (+10 min): not found, waits", s1.outcome === "pending", `${s1.outcome}: ${s1.detail}`);
     const s2 = await sb.bookSessionRequest(r.id, { now: new Date(t0.getTime() + 36 * MIN) });

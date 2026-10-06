@@ -29,7 +29,9 @@
  *   4. the first press wins — a second press by somebody else does not rewrite
  *      the name or restart the clock;
  *   5. marking it sent is what actually clears it, and it leaves the download
- *      stamp alone.
+ *      stamp alone. Since Oct 2 Kyle does that by hand in two presses — Mark
+ *      as Uploaded, then Mark as sent — so the drill records the upload first
+ *      (the job carries its Aryeo listing, as every listing job does).
  */
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
@@ -80,7 +82,7 @@ async function main() {
   const project = await prisma.project.create({
     data: {
       title: "5 Raymond Cir, Royersford, PA", clientId: client.id, status: "EDITING",
-      shootDate: new Date(Date.now() - 5 * DAY),
+      shootDate: new Date(Date.now() - 5 * DAY), aryeoListingId: "01a0a0e5-e4c0-705f-a848-c0b89de99171",
     },
     select: { id: true },
   });
@@ -169,7 +171,14 @@ async function main() {
   await markCutDownloaded(cut.id, "Jordan");
   ok("and the clock is not restarted", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: cut.id }, select: { downloadedAt: true } })).downloadedAt!.getTime() === held);
 
-  console.log("\n6. WHAT ACTUALLY CLEARS IT");
+  console.log("\n6. WHAT ACTUALLY CLEARS IT — Kyle's two presses, in order");
+  const early = await markVideoSent(cut.id, "Kyle");
+  ok("Mark as sent before Mark as Uploaded is refused (a download is not an upload either)", !early.ok && /uploaded/i.test(early.message), early.message);
+  const { recordUploaded } = await import("@/lib/deliveryUploads");
+  const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+  const up = await recordUploaded(cut.id, { id: null, name: "Kyle" }, sourceFingerprint((await loadCut(cut.id))!)!);
+  ok("Mark as Uploaded records Kyle's upload", up.ok, up.message);
+  ok("…and the row is still owed until it is sent", !!(await rowFor(cut.id)));
   const sent = await markVideoSent(cut.id, "Kyle");
   ok("marking it sent is accepted", sent.ok && !sent.already, sent.message);
   ok("NOW the row leaves the card", (await rowFor(cut.id)) === null);

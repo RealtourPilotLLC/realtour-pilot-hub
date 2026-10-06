@@ -130,6 +130,14 @@ async function main() {
     await assignMember(project.id, "editor", kimTeam.id);
     c.ok("project-page assignment back changes generation through the same effective owner rule", (await view()).state.digest !== beforeRefresh);
     await setTaskAssignee(card.id, "john");
+    // Oct 5 2026: a task-card reassign carries the job's saved editor with it
+    // (tasks.reassignVideoCard), so the hand-picked Kim no longer gets the job
+    // back when John's card closes. The fallback checks below still need the
+    // project (Kim) and the card (John) to differ: the direct project door
+    // (assignTeamMember) sets the project's editor without moving the card.
+    const savedEditor = async () => (await prisma.project.findUniqueOrThrow({ where: { id: project.id }, select: { editor: { select: { name: true } } } })).editor?.name;
+    c.ok("task-card reassignment carries the project's saved editor with the card", await savedEditor() === "John Mark");
+    await assignTeamMember(project.id, "editorId", kimTeam.id);
     const beforeComplete = (await view()).state;
     await setSmartTaskStatus(card.id, "COMPLETED");
     const completedState = (await view()).state;
@@ -158,6 +166,8 @@ async function main() {
     const hubAssigned = await hub("assign_task", { task: "W02 edit", person: "kim" }) as { done?: boolean };
     const hubReturned = await hub("assign_task", { task: "W02 edit", person: "john" }) as { done?: boolean };
     c.ok("Ask the Hub return records a new exact assignment generation", hubAssigned.done === true && hubReturned.done === true && (await view()).state.editorKey === "john" && (await view()).state.digest !== hubBefore);
+    c.ok("Ask the Hub's reassign carries the project's saved editor with the card", await savedEditor() === "John Mark");
+    await assignTeamMember(project.id, "editorId", kimTeam.id);
     const beforeHubComplete = (await view()).state.digest;
     const hubCompleted = await hub("complete_task", { task: "W02 edit" }) as { done?: boolean };
     const hubCompleteState = (await view()).state;

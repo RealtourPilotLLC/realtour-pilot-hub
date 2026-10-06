@@ -381,7 +381,12 @@ async function main() {
     // PGlite: Friday call, the weekend, and the DST change in one window.
     // A staff-controlled inbox, so the preview renders the body (a TEST client
     // with an outside address is held as test_client_real_address). Nothing is sent.
-    const Cm = await buildContentMonth(db, { name: "Cal Callroute TEST", package: "Accelerator", project: false, owner: { email: "drill-cal@realtourpilot.com" }, topics: [{ title: "Call topic one", selection: "SELECTED" }] });
+    // Oct 5 2026: "staff-controlled" now means one of Jordan's VERIFIED test
+    // inboxes (testClients.JORDAN_TEST_INBOXES) — any other @realtourpilot.com
+    // address on a TEST client is held as test_client_real_address, which is
+    // what the three reminder checks below were reading. info+<tag>@ folds to
+    // info@, the verified inbox, so each fixture keeps its own address.
+    const Cm = await buildContentMonth(db, { name: "Cal Callroute TEST", package: "Accelerator", project: false, owner: { email: "info+drill-cal@realtourpilot.com" }, topics: [{ title: "Call topic one", selection: "SELECTED" }] });
     await prisma.contentMonth.update({ where: { id: Cm.monthId }, data: { planningMode: "CALL", planningChosenAt: new Date() } });
     const cRec = await callRecord(Cm, et(2026, 10, 30, 13, 30), et(2026, 10, 30, 14)); // Fri Oct 30, 1:30–2:00 PM EDT
     const cEarliest = et(2026, 11, 4, 14); // Wed Nov 4, 2:00 PM EST
@@ -423,13 +428,13 @@ async function main() {
     const schW = (await portal.portalScheduleMonths(vW.enrollment)).find((m) => m.monthId === Wm.monthId);
     const staffW = await ws.loadSessionGates({ id: Wm.monthId }, { now: NOW0 });
     c.ok("written route — portal gate = schedule card = staff Sessions view = the request's snapshot", [gW.earliest.toISOString(), staffW[0]?.earliestISO, wRow?.gateEarliestAt?.toISOString()].every((x) => x === wEarliest.toISOString()) && (schW?.sessions.length ?? 0) + (schW?.requests.length ?? 0) > 0, `${schW?.earliestISO} ${staffW[0]?.text}`);
-    const E2 = await buildContentMonth(db, { name: "Rhea Reminder TEST", package: "Starter", videosPerMonth: 1, project: false, owner: { email: "drill-rhea@realtourpilot.com" }, topics: [{ title: "Reminder topic", selection: "SELECTED" }] });
+    const E2 = await buildContentMonth(db, { name: "Rhea Reminder TEST", package: "Starter", videosPerMonth: 1, project: false, owner: { email: "info+drill-rhea@realtourpilot.com" }, topics: [{ title: "Reminder topic", selection: "SELECTED" }] });
     await prisma.contentMonth.update({ where: { id: E2.monthId }, data: { planningMode: "WRITTEN" } });
     await interview(E2, E2.topicIds[0], "SUBMITTED", et(2026, 10, 29, 9));
     const remW = await primaryLane(E2.monthId, NOW0);
     const gE2 = await portal.sessionGate(E2.enrollmentId, E2.monthId, { now: NOW0 });
     c.ok("written route — the BOOK_SESSION reminder quotes the portal gate's instant (Tue Nov 3 9:00 AM EST)", remW.candidate.action === "BOOK_SESSION" && remW.candidate.state.earliestSessionAt === gE2.earliest.toISOString() && gE2.earliest.getTime() === wEarliest.getTime() && /Tuesday, November 3 at 9:00 AM ET/.test(remW.body ?? ""), `${remW.candidate.action} ${remW.candidate.state.earliestSessionAt}`);
-    const E3 = await buildContentMonth(db, { name: "Ray Longago TEST", package: "Starter", videosPerMonth: 1, project: false, owner: { email: "drill-ray@realtourpilot.com" }, topics: [{ title: "Old answers topic", selection: "SELECTED" }] });
+    const E3 = await buildContentMonth(db, { name: "Ray Longago TEST", package: "Starter", videosPerMonth: 1, project: false, owner: { email: "info+drill-ray@realtourpilot.com" }, topics: [{ title: "Old answers topic", selection: "SELECTED" }] });
     await prisma.contentMonth.update({ where: { id: E3.monthId }, data: { planningMode: "WRITTEN" } });
     await interview(E3, E3.topicIds[0], "SUBMITTED", et(2026, 10, 5, 9));
     const remOld = await primaryLane(E3.monthId, NOW0);

@@ -18,6 +18,12 @@
  * unnamed — so the one record that answers "did THIS FILE go out" was never
  * written on the one occasion Aryeo told us exactly what happened.
  *
+ * Oct 5 2026 (wave 2): the proof needs Aryeo's SIGNED word that the listing
+ * was delivered after the video went up — and then needs nothing from Kyle.
+ * From Oct 2 to Oct 5 it also demanded his upload receipt plus a content hash
+ * Aryeo never sends, so this card could never close by itself; section 2 shows
+ * both sides.
+ *
  * What this has to show:
  *   1. the fixture is the real shape — a cut with a 1080p job of its own, which
  *      is why the cut-level pass can never stamp it from its side;
@@ -99,6 +105,9 @@ async function main() {
   const { prisma } = await import("@/lib/prisma");
   const { proveListingNow } = await import("@/lib/aryeoDelivery");
   const { cutsOnTheCardFor } = await import("@/lib/readyToSend");
+  const { uploadsFor } = await import("@/lib/deliveryUploads");
+  /** Aryeo's signed LISTING_DELIVERED, as the webhook stores it before anything else. */
+  const signed = (listingId: string) => prisma.auditLog.create({ data: { target: listingId, actor: "Aryeo authenticated webhook", action: "aryeo_listing_delivery_event", detail: JSON.stringify({ listingId, occurredAt: new Date().toISOString() }) } });
 
   console.log("=".repeat(74));
   console.log("The per-cut stamp — closing Kyle's card is not the same as recording the send");
@@ -202,6 +211,10 @@ async function main() {
 
   // ---- 2: the proof closes the card AND records the send ------------------
   console.log("\n2. ARYEO SHOWS THE VIDEO — the card closes and the send is recorded on the file itself");
+  const r0 = await proveListingNow(L1, "drill: listing traffic, nothing signed yet");
+  ok("with no signed delivery on record, nothing closes (unsigned traffic is not proof)", r0.closed === 0 && (await prisma.topazJob.findUnique({ where: { id: cut.jobId } }))?.deliveredAt == null, r0.note);
+  await signed(L1);
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   const r1 = await proveListingNow(L1, "drill: LISTING_DELIVERED");
   console.log(`   ${r1.note}`);
   ok("the pass closed the upload card", r1.closed === 1, `closed ${r1.closed}`);
@@ -216,6 +229,7 @@ async function main() {
   });
   ok("THE CUT IS STAMPED SENT — the fix", sub?.sentToClientAt != null, sub?.sentToClientBy ?? "nothing");
   ok("the stamp names the video that proved it", (sub?.sentToClientBy ?? "").includes("Cinematic Video"));
+  ok("NEW: no upload receipt was needed, and none was invented", !(await uploadsFor([cut.submissionId])).has(cut.submissionId) && (sub?.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)"), sub?.sentToClientBy ?? "");
 
   const out = await prisma.deliverableOutput.findUnique({
     where: { id: cut.outputId },
@@ -272,6 +286,7 @@ async function main() {
     delivery_status: "DELIVERED",
     videos: [{ id: v7(T0 + 10 * 60_000), duration: 60, title: "Cinematic Video" }],
   });
+  await signed(L2); // signed proof of delivery does not make an older video this file
   const r2 = await proveListingNow(L2, "drill: a video that predates the file");
   console.log(`   ${r2.note}`);
   const unprovenJob = await prisma.topazJob.findUnique({ where: { id: unproven.jobId }, select: { deliveredAt: true } });

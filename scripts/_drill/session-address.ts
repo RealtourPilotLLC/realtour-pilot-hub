@@ -58,6 +58,28 @@ import { createFakeAryeo, DRILL_TEAM } from "./_fake-aryeo";
 const PORT = Number(process.env.DRILL_PORT ?? 5517);
 const REPO = path.resolve(__dirname, "../..");
 
+// THE CLOCK (Oct 5 2026). The sessions below are fixed October 2026 weekdays
+// drawn when "now" was late September; most sections hand the code their own
+// `now`, but the address link itself reads the real clock — so from Oct 5
+// 10:00 ET (the first session's start) every save answered "This link has
+// closed because the session has started or passed" and nine checks failed.
+// Pinned to Thu Oct 1 2026 12:00 ET (section 1's own Thursday) and running
+// forward in real time; every explicit `now` below is unchanged.
+{
+  const RealDate = Date;
+  const offset = RealDate.UTC(2026, 9, 1, 16, 0, 0) - RealDate.now(); // Thu Oct 1 2026 12:00 EDT
+  globalThis.Date = new Proxy(RealDate, {
+    construct(target, args: unknown[]) {
+      if (args.length === 0) return new target(RealDate.now() + offset);
+      return Reflect.construct(target, args);
+    },
+    get(target, prop, recv) {
+      if (prop === "now") return () => RealDate.now() + offset;
+      return Reflect.get(target, prop, recv);
+    },
+  }) as DateConstructor;
+}
+
 installNextStubs();
 
 let fake: ReturnType<typeof createFakeAryeo>;

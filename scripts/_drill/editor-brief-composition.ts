@@ -213,8 +213,21 @@ async function main() {
     const tree = await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({ queue, cut: cuts[0].id }) });
     const flat = elements(tree), by = (name: string) => flat.filter((e) => e.name === name);
     c.ok("all canonical outputs are selectable while only one article expands", flat.filter((e) => typeof e.props.id === "string" && e.props.id.startsWith("brief-")).length === 1 && outputs.every((o) => flat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`output=${o.id}`))) && flat.some((e) => e.props["aria-label"] === "Video selector"));
-    c.ok("exact assignment receipt exists once inside each canonical output, with unchanged digest and role", outputs.filter((o) => flat.some((e) => e.props.id === `brief-${o.id}`)).every((o) => { const r = by("EditorBriefReceiptCard").filter((e) => e.props.outputId === o.id); return r.length === 1 && r[0].props.canAcknowledge === true && r[0].ancestors.some((a) => a.props.id === `brief-${o.id}`) && (r[0].props.state as { digest?: string })?.digest === receiptStates.get(o.id)?.digest; }));
-    c.ok("canonical briefs retain exact filmed script words, source links and intentional no-brand choice", safeBriefs.filter((b) => flat.some((e) => e.props.id === `brief-${b.outputId}`)).every((b) => { const article = flat.find((e) => e.props.id === `brief-${b.outputId}`); const nested = elements(article?.props.children); return !!article && words(article.props.children).includes("intentionally none") && (!b.folder || nested.some((e) => e.props.href === b.folder?.url)) && (!b.script?.text || nested.some((e) => e.name === "ScriptView" && e.props.body === b.script?.text)); }));
+    // Oct 5: the per-video "Receive this assignment" became ONE "Got it". Oct 5
+    // night review: that one press acknowledged EVERY pending video, opened or
+    // not, so it now carries only the exact digest of the video on the page
+    // (when that one still needs it) and names Kim's other pending videos,
+    // one tap away. The receipt itself is unchanged.
+    const gotIt = by("BriefGotIt");
+    const pending = (gotIt[0]?.props.pending ?? []) as { outputId: string; digest: string }[];
+    const others = (gotIt[0]?.props.otherVideos ?? []) as { number: number; href: string }[];
+    const selectedArticle = flat.find((e) => typeof e.props.id === "string" && e.props.id.startsWith("brief-"))?.props.id as string | undefined;
+    const selectedOutput = selectedArticle?.slice("brief-".length) ?? null;
+    const pendingIds = outputs.filter((o) => o.id !== outputs[0].id).map((o) => o.id);
+    c.ok("one Got it, for the video on the page only: never a digest for an unopened video; Kim's other pending videos are named with a link",
+      gotIt.length === 1 && pending.every((p) => p.outputId === selectedOutput && p.digest === receiptStates.get(p.outputId)?.digest) && pending.length === (pendingIds.includes(selectedOutput ?? "") ? 1 : 0) && others.length === pendingIds.filter((id) => id !== selectedOutput).length && others.every((v) => pendingIds.some((id) => v.href.includes(`output=${id}`))) && gotIt[0].ancestors.some((a) => typeof a.props.id === "string" && a.props.id.startsWith("brief-")),
+      JSON.stringify({ selectedOutput, pending: pending.map((p) => p.outputId), others: others.map((o) => o.number) }));
+    c.ok("canonical briefs retain exact filmed script words, source links and intentional no-brand choice", safeBriefs.filter((b) => flat.some((e) => e.props.id === `brief-${b.outputId}`)).every((b) => { const article = flat.find((e) => e.props.id === `brief-${b.outputId}`); const nested = elements(article?.props.children); return !!article && words(article.props.children).includes("the office's choice") && (!b.folder || nested.some((e) => e.props.href === b.folder?.url)) && (!b.script?.text || nested.some((e) => e.name === "BriefScript" && e.props.body === b.script?.text)); }));
     c.ok("selected revision instructions and raw files remain available", flat.some((e) => e.props.target === "_blank" && typeof e.props.href === "string" && e.props.href.includes("grove")) && by("RevisionIssuesPanel").some((e) => e.props.canReview === false));
     c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && flat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`cut=${cuts[0].id}`) && e.props.href.endsWith(`#cut-${cuts[0].id}`)) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
     const currentIssues = by("RevisionIssuesPanel").find((e) => e.props.canReview === false && !e.ancestors.some((a) => a.name === "details"));
@@ -224,7 +237,7 @@ async function main() {
     const tracker = by("EditTracker")[0];
     c.ok("top tracker follows selected revision rather than another approved output", String(tracker.props.statusLine).includes("Changes requested") && tracker.props.dueISO === safeBriefs.find((b) => b.outputId === outputs[0].id)?.promisedAtISO);
     c.ok("every history link selects its exact version before anchoring", (tracker.props.rounds as { id: string; href: string }[]).every((r) => r.href.includes(`cut=${r.id}`) && r.href.endsWith(`#cut-${r.id}`)));
-    c.ok("editor brief free-text remains creative-safe after recomposition", !words(tree).includes("$500") && !JSON.stringify(by("ScriptView").map((e) => e.props.body)).includes("$500"));
+    c.ok("editor brief free-text remains creative-safe after recomposition", !words(tree).includes("$500") && !JSON.stringify(by("BriefScript").map((e) => e.props.body)).includes("$500"));
     const empty = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({ queue, output: outputs[15].id }) }));
     c.ok("sixteen mixed-state outputs include an unsubmitted selected workspace", outputs.length === 16 && empty.filter((e) => e.props["aria-current"] === "page").length === 1 && empty.some((e) => e.props.id === `brief-${outputs[15].id}`) && !empty.some((e) => e.name === "EditorCutPanel"));
     for (const data of [
@@ -245,18 +258,22 @@ async function main() {
     c.ok("actual project month controls scope; private, proposed AI and CRM narrative stay out", mainFacts.some((f) => f.body === "Exact month instruction") && !singleFacts.some((f) => f.scope === "MONTH") && !mainFacts.some((f) => ["Another month instruction", "Private instruction", "Unapproved AI command", "General CRM narrative"].includes(f.body)));
     const one = await page({ params: Promise.resolve({ id: single.id }), searchParams: Promise.resolve({ queue }) });
     const oneFlat = elements(one);
-    c.ok("single shared-instruction output now has its exact link target and one receipt", oneFlat.filter((e) => e.props.id === `brief-${singleOutput.id}`).length === 1 && oneFlat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`output=${singleOutput.id}`)) && oneFlat.filter((e) => e.name === "EditorBriefReceiptCard").length === 1);
+    // Oct 5: one video on a job has no video chooser (its brief IS the page);
+    // its link target and its one Got it remain.
+    c.ok("single shared-instruction output keeps its exact link target and one Got it", oneFlat.filter((e) => e.props.id === `brief-${singleOutput.id}`).length === 1 && !oneFlat.some((e) => e.props["aria-label"] === "Video selector") && oneFlat.filter((e) => e.name === "BriefGotIt").length === 1 && ((oneFlat.find((e) => e.name === "BriefGotIt")?.props.pending ?? []) as { outputId: string }[]).every((p) => p.outputId === singleOutput.id));
     const after = JSON.stringify({ work: await prisma.editorWorkItem.findMany({ orderBy: { id: "asc" } }), receipts: await prisma.editorBriefReceipt.findMany({ orderBy: { id: "asc" } }), cuts: await prisma.reviewSubmission.findMany({ orderBy: { id: "asc" } }) });
     c.ok("page recomposition never auto-starts, accepts a receipt or changes cut history", before === after && await prisma.outboxMessage.count() === 0);
     await signIn(owner, kim.id);
     const preview = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
-    c.ok("moved receipt and uploader stay read-only in owner preview", preview.filter((e) => e.name === "EditorBriefReceiptCard").every((e) => e.props.canAcknowledge === false) && preview.find((e) => e.name === "CutUploader")?.props.canUpload === false);
+    c.ok("moved receipt and uploader stay read-only in owner preview", !preview.some((e) => e.name === "BriefGotIt") && preview.find((e) => e.name === "CutUploader")?.props.canUpload === false);
     await signIn(kyle);
     const office = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
     c.ok("office brief forms remain mounted inside native disclosures with exact expected versions", outputs.filter((o) => office.some((e) => e.props.id === `brief-${o.id}`)).every((o) => office.some((e) => e.name === "form" && e.ancestors.some((a) => a.name === "details") && elements(e.props.children).some((x) => x.props.name === "outputId" && x.props.value === o.id) && elements(e.props.children).some((x) => x.props.name === "expectedVersion" && x.props.value === 1))));
     c.ok("all providers remained declared fakes and workers/sends stayed off", fence.blocked.length === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { not: "portal_layout_v2" } } }) === 0 && await prisma.outboxMessage.count() === 0);
     c.ok("social brief never shows the music chooser and directs trending audio", !office.some((e) => e.name === "MusicCard") && words(office.map((e) => e.props.children)).includes("trending audio"));
-    c.ok("client assets are expanded with their direct top navigation", office.some((e) => e.name === "section" && e.props.id === "brand-assets") && office.some((e) => e.props.href === "#brand-assets" && words(e.props.children).includes("Client assets")));
+    // Oct 5: the Brand section is section 5 of the brief itself, so it needs no
+    // jump pill; the client's asset shelf (and its upload) sits inside it.
+    c.ok("client assets live in the brief's Brand section", office.some((e) => e.name === "section" && e.props.id === "brand-assets" && elements(e.props.children).some((x) => x.name === "ClientAssetsCard" || (typeof x.props.href === "string" && x.props.href.includes("dropbox")))));
     if (!serve) {
       await prisma.deliverable.updateMany({ where: { projectId: single.id }, data: { videoStyle: "standard_cinematic", type: "VIDEO" } });
       const cinematic = elements(await page({ params: Promise.resolve({ id: single.id }), searchParams: Promise.resolve({}) }));

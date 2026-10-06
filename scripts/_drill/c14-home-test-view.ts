@@ -33,6 +33,16 @@ function hrefs(tree: unknown): string[] {
   if (!isValidElement<Props>(tree)) return [];
   return [...(typeof tree.props.href === "string" ? [tree.props.href] : []), ...Object.values(tree.props).flatMap(hrefs)];
 }
+// Oct 5: Home streams its secondary sections (Suspense around async server
+// components that await reads started with the page's own). Resolve those
+// named components so the checks read the page as it finishes composing.
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+async function settleHome(tree: unknown): Promise<unknown> {
+  if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
+  if (!isValidElement<Props>(tree)) return tree;
+  if (typeof tree.type === "function" && STREAMED_HOME.has(tree.type.name)) return settleHome(await (tree.type as (props: Props) => Promise<unknown>)(tree.props));
+  return { ...tree, props: Object.fromEntries(await Promise.all(Object.entries(tree.props).map(async ([key, value]) => [key, await settleHome(value)] as const))) };
+}
 class Redirect extends Error { constructor(readonly href: string) { super(href); } }
 const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never; useRouter: () => { refresh: () => void } };
 navigation.redirect = (href) => { throw new Redirect(href); };
@@ -80,7 +90,7 @@ async function main() {
     await prisma.stripeTransaction.create({ data: { id: "isolated-finance-charge", type: "charge", gross: 125, fee: 3, net: 122, projectId: jobs[1].project.id, createdAt: now } });
     const beforeTasks = await prisma.smartTask.findMany({ orderBy: { id: "asc" } });
     const signIn = (u: { id: string; email: string; role: string }) => setSession({ uid: u.id, email: u.email, role: u.role });
-    const render = (test?: string | string[]) => home({ searchParams: Promise.resolve({ test }) });
+    const render = async (test?: string | string[]) => settleHome(await home({ searchParams: Promise.resolve({ test }) }));
     await clearSession();
     let anonymous = "";
     try { await render("1"); } catch (error) { if (error instanceof Redirect) anonymous = error.href; else throw error; }

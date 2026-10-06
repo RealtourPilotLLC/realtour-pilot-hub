@@ -39,6 +39,28 @@ loader._load = function (request: string, parent: unknown, isMain: boolean) {
   return realLoad.call(this, request, parent, isMain);
 };
 
+// THE CLOCK (Oct 5 2026). This drill read the real clock, and the staff
+// digest only goes 7 AM–10 PM ET: run at night, the first flush (rightly)
+// held everything, `sent[0]` was undefined, the throw left the PGlite server
+// up and the suite killed it at 600 s. Pinned to Tue Sep 29 2026 14:00 ET and
+// running forward in real time. Every row this drill writes is stamped from
+// that same clock (createdAt is set explicitly below), so the 30-minute batch
+// window is measured on one clock — the database's own now() is the real one.
+const RealDate = Date;
+{
+  const offset = RealDate.UTC(2026, 8, 29, 18, 0, 0) - RealDate.now(); // Tue Sep 29 2026 14:00 EDT
+  globalThis.Date = new Proxy(RealDate, {
+    construct(target, args: unknown[]) {
+      if (args.length === 0) return new target(RealDate.now() + offset);
+      return Reflect.construct(target, args);
+    },
+    get(target, prop, recv) {
+      if (prop === "now") return () => RealDate.now() + offset;
+      return Reflect.get(target, prop, recv);
+    },
+  }) as DateConstructor;
+}
+
 const exec = promisify(execFile);
 const PORT = 5493;
 const URL_ = `postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres?sslmode=disable`;
@@ -93,7 +115,7 @@ async function main() {
   // Twelve ~210-character updates: far more than one text holds.
   const line = (n: number) => `Update ${n}: ` + "x".repeat(210 - `Update ${n}: `.length);
   for (let i = 1; i <= 12; i++) {
-    await prisma.pendingSms.create({ data: { teamMemberId: member.id, line: line(i) } });
+    await prisma.pendingSms.create({ data: { teamMemberId: member.id, line: line(i), createdAt: new Date() } }); // the pinned clock, not the database's
   }
 
   // THE OLD FAILURE, made impossible rather than mocked: if a release were
@@ -164,11 +186,14 @@ async function main() {
   // genuine orphan behind them. This is the audit's scenario exactly.
   const old = new Date(Date.now() - 6 * 3600_000);
   for (let i = 0; i < 240; i++) {
-    await prisma.pendingSms.create({ data: { teamMemberId: member.id, line: `settled ${i}`, sentAt: new Date(old.getTime() + i * 1000), settledAt: new Date() } });
+    await prisma.pendingSms.create({ data: { teamMemberId: member.id, line: `settled ${i}`, createdAt: new Date(old.getTime() + i * 1000), sentAt: new Date(old.getTime() + i * 1000), settledAt: new Date() } });
   }
   const orphanStamp = new Date(Date.now() - 60 * 60_000); // inside the window, newer than all 240
   const orphan = await prisma.pendingSms.create({
-    data: { teamMemberId: member.id, line: "THE ORPHAN — claimed, never handed to the provider", sentAt: orphanStamp },
+    // createdAt = now, as the database's own default stamped it before the
+    // clock was pinned: queued just now, so once recovery puts it back the
+    // 30-minute batch window keeps it queued and the check below can see it.
+    data: { teamMemberId: member.id, line: "THE ORPHAN — claimed, never handed to the provider", createdAt: new Date(), sentAt: orphanStamp },
     select: { id: true },
   });
 
@@ -217,5 +242,9 @@ async function main() {
 
 main().catch((e) => {
   console.error(e);
-  process.exitCode = 1;
+  // Exit, not just exitCode (Oct 5 2026): a throw leaves the PGlite socket
+  // server listening, so the process never ended and the runner killed it at
+  // 600 s — a timeout that hid the actual failure.
+  console.log(`\n${pass} passed, ${fail + 1} failed\n`);
+  process.exit(1);
 });

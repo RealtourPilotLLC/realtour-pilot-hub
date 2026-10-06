@@ -120,7 +120,14 @@ function firstDiff(a: any, b: any, at = "root"): string | null {
 const schedulingOf = (s: string) => /\n## Scheduling\n([^\n]+)\n/.exec(s)?.[1] ?? null;
 
 /** HEAD's PortalPage.tsx, runnable: its `@/` imports pointed at this tree. */
-function writeBasePage(): { dir: string; file: string; src: string; oldScheduling: string | null; newScheduling: string | null } {
+/** 9f9213f's token swap: a filled white-text action's bg-brand → bg-brand-action. */
+const WHITE_TEXT_BRAND = /\bbg-brand(?=\s[^"]*\btext-white\b)/g;
+const brandActionSwap = (s: string) => s.replace(WHITE_TEXT_BRAND, "bg-brand-action");
+
+/** The account-menu button's class list in a PortalPage.tsx source. */
+const accountMenuOf = (s: string) => /<summary className="([^"]+)" aria-label="Account menu">/.exec(s)?.[1] ?? null;
+
+function writeBasePage(): { dir: string; file: string; src: string; oldScheduling: string | null; newScheduling: string | null; oldAccountMenu: string | null; newAccountMenu: string | null } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ui01-base-"));
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
   const src = execFileSync("git", ["show", `${BASE}:src/components/portal/PortalPage.tsx`], { cwd: REPO, encoding: "utf8" });
@@ -132,11 +139,27 @@ function writeBasePage(): { dir: string; file: string; src: string; oldSchedulin
   // stays HEAD's own text for the OLD source checks.
   const oldScheduling = schedulingOf(src);
   const newScheduling = schedulingOf(fs.readFileSync(path.join(REPO, "src/components/portal/PortalPage.tsx"), "utf8"));
-  const runnable = oldScheduling && newScheduling ? src.replace(oldScheduling, () => newScheduling) : src;
+  const withTerms = oldScheduling && newScheduling ? src.replace(oldScheduling, () => newScheduling) : src;
+  // Oct 5 2026 — the SECOND intended v1 difference: 8754c91 (Oct 2, "keep
+  // mobile navigation and shared controls usable") made the account-menu
+  // button a 44px tap target on every portal page, v1 included (size-9 →
+  // size-11). Carried into the runnable copy the same way, exact string for
+  // exact string, so the tree comparison stays exact for everything else;
+  // section 3 asserts that swap explicitly too.
+  const oldAccountMenu = accountMenuOf(src);
+  const newAccountMenu = accountMenuOf(fs.readFileSync(path.join(REPO, "src/components/portal/PortalPage.tsx"), "utf8"));
+  const withMenu = oldAccountMenu && newAccountMenu ? withTerms.replace(oldAccountMenu, () => newAccountMenu) : withTerms;
+  // …and the THIRD: 9f9213f (Sep 30, "Improve action and secondary text
+  // contrast") moved every filled white-text action from the brand colour to
+  // the darker action token (bg-brand → bg-brand-action) across the hub,
+  // v1's tab bar, banner button, sign-in button and unread badge included.
+  // Swapped token for token in the copy — only where the same class list also
+  // says text-white — and asserted in section 3.
+  const runnable = brandActionSwap(withMenu);
   // Outside the repo tsconfig's "jsx": "react-jsx" does not reach the copy; the
   // pragma gives it the same automatic runtime, so the two trees are comparable.
   fs.writeFileSync(file, `/** @jsxRuntime automatic */\n/** @jsxImportSource react */\n${runnable.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)}`);
-  return { dir, file, src, oldScheduling, newScheduling };
+  return { dir, file, src, oldScheduling, newScheduling, oldAccountMenu, newAccountMenu };
 }
 const show = (f: string) => execFileSync("git", ["show", `${BASE}:${f}`], { cwd: REPO, encoding: "utf8" });
 const read = (f: string) => fs.readFileSync(path.join(REPO, f), "utf8");
@@ -239,14 +262,59 @@ async function main() {
     // =======================================================================
     const tabs = ["home", "videos", "topics", "strategy", "schedule", "resources", "messages", "profile", "settings", "terms", "library", "ideas", "team", "garbage"];
     const drift: string[] = [];
+    // Oct 5 2026 — the FOURTH intended v1 difference: 7b401ef (Sep 30,
+    // "preserve month and session scheduling context") hands v1's Schedule tab
+    // the month and session the address asked for (its key, selectedMonthId,
+    // selectedSessionIndex), and its call link now comes from the call-booking
+    // settings (callBookingUrl) rather than a constant. Those four are set
+    // aside in the comparison and asserted on their own below; every other
+    // prop and element must still match exactly.
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const scheduleTabs: any[] = [];
+    const v1Normal = (n: any): any => {
+      if (Array.isArray(n)) return n.map(v1Normal);
+      if (n && typeof n === "object") {
+        if (n.type === "ScheduleTab" && n.props) {
+          const rest = { ...n.props };
+          delete rest.selectedMonthId;
+          delete rest.selectedSessionIndex;
+          delete rest.bookingUrl;
+          return { ...n, key: null, props: v1Normal(rest) };
+        }
+        return Object.fromEntries(Object.entries(n).map(([k, v]) => [k, v1Normal(v)]));
+      }
+      return n;
+    };
+    const findType = (n: any, type: string, out: any[]): any[] => {
+      if (Array.isArray(n)) n.forEach((x) => findType(x, type, out));
+      else if (n && typeof n === "object") { if (n.type === type) out.push(n); Object.values(n).forEach((x) => findType(x, type, out)); }
+      return out;
+    };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
     for (const t of tabs) {
       const query = { tab: t };
       const oldTree = await OldPage.PortalPage({ viewer: realTokenViewer, tab: headTabOf(t), path: "/portal/[token]", query });
       const newTree = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query });
-      const d = firstDiff(ser(oldTree), ser(newTree));
+      const newSer = ser(newTree);
+      findType(newSer, "ScheduleTab", scheduleTabs);
+      const d = firstDiff(v1Normal(ser(oldTree)), v1Normal(newSer));
       if (d) drift.push(`${t} → ${d}`);
     }
     c.ok(`the element tree is identical to HEAD on all ${tabs.length} tabs and aliases`, drift.length === 0, drift[0] ?? "");
+    const schedTab = scheduleTabs[0];
+    c.ok("…v1's Schedule tab carries the address's scheduling context (none asked → the default month, the next session) and a call link (7b401ef, Sep 30)",
+      scheduleTabs.length >= 1 && scheduleTabs.every((x) => x.key === "default:next" && x.props.selectedMonthId === null && x.props.selectedSessionIndex === null) &&
+      typeof schedTab?.props.bookingUrl === "string" && schedTab.props.bookingUrl.length > 0,
+      JSON.stringify(schedTab ? { key: schedTab.key, m: schedTab.props.selectedMonthId, s: schedTab.props.selectedSessionIndex, url: schedTab.props.bookingUrl } : null));
+    c.ok("…an intended v1 change: the account menu became a 44px tap target (8754c91, Oct 2) — size-9 then, size-11 now, nothing else on the button",
+      !!base.oldAccountMenu && !!base.newAccountMenu && /\bsize-9\b/.test(base.oldAccountMenu) && /\bsize-11\b/.test(base.newAccountMenu) &&
+      base.newAccountMenu.replace(/\bsize-11 shrink-0\b/, "size-9").replace("focus-visible:outline-2 focus-visible:outline-offset-2", "focus-visible:outline focus-visible:outline-2") === base.oldAccountMenu,
+      `${base.oldAccountMenu?.slice(0, 40)} → ${base.newAccountMenu?.slice(0, 50)}`);
+    const oldWhite = (base.src.match(WHITE_TEXT_BRAND) ?? []).length;
+    const nowSrc = read("src/components/portal/PortalPage.tsx");
+    c.ok("…and the contrast token swap (9f9213f, Sep 30): every filled white-text action that was bg-brand is bg-brand-action now, none left behind",
+      oldWhite >= 4 && (nowSrc.match(WHITE_TEXT_BRAND) ?? []).length === 0 && (nowSrc.match(/\bbg-brand-action(?=\s[^"]*\btext-white\b)/g) ?? []).length >= oldWhite,
+      `${oldWhite} then · ${(nowSrc.match(/\bbg-brand-action(?=\s[^"]*\btext-white\b)/g) ?? []).length} now`);
     for (const extra of drift.slice(1, 4)) console.log(`     also: ${extra}`);
     // The one v1 change that is meant (batch 3, §3): HEAD's Scheduling terms
     // promised "a few business days"; they now state the 72-weekday-hour window.

@@ -449,8 +449,15 @@ async function main() {
 
     c.ok("job bar, idle: \"Working on this job now?\" and one button, \"Start\"",
       t("barIdle").includes("Working on this job now?") && JSON.stringify(buttonWords("barIdle")) === JSON.stringify(["Start"]), buttonWords("barIdle").join(" | "));
-    c.ok("…the video picker is folded under details, relabelled \"Which video? (optional)\", with \"Any / not sure\"",
-      /<details[\s\S]*Which video\? \(optional\)[\s\S]*Any \/ not sure[\s\S]*<\/details>/.test(r.barIdle ?? ""));
+    // Oct 5 2026 — SUPERSEDED, deliberately (WorkStateBar header): the picker
+    // folded under "details" on "Any / not sure" meant nearly every Start named
+    // no video, and a Start that names no video is ended by ANY hand-in on the
+    // job. It now sits beside Start, labelled "Video", still offering "Any /
+    // not sure" — and is no longer inside the fold.
+    const idleHtml = r.barIdle ?? "";
+    c.ok("…the video picker sits beside Start (Oct 5), labelled \"Video\", with \"Any / not sure\" — not folded under details",
+      /<label[^>]*>Video<select[^>]*aria-label="Which video you(?:&#x27;|')re working on"[\s\S]*?<option value=""[^>]*>Any \/ not sure<\/option>[\s\S]*?<\/select>/.test(idleHtml.split("<details")[0]) &&
+      !/<details[\s\S]*<select/.test(idleHtml) && !idleHtml.includes("Which video? (optional)"), idleHtml.slice(Math.max(0, idleHtml.indexOf("<select") - 160), idleHtml.indexOf("<select") + 360));
     c.ok("…the fine print (\"not a timer\") lives only inside details now",
       !text((r.barIdle ?? "").replace(/<details[\s\S]*<\/details>/, "")).includes("not a timer") && t("barIdle").includes("It's not a timer, and it's not used for pay."));
     c.ok("job bar, on it: \"You're on this job since 12:40am your time\" + Pause", t("barActive").includes("You're on this job since 12:40am your time") && JSON.stringify(buttonWords("barActive")) === JSON.stringify(["Pause"]));
@@ -465,8 +472,11 @@ async function main() {
       t("barOffice").includes("Kim on this job since 12:40pm") && JSON.stringify(buttonWords("barOffice")) === JSON.stringify(["Pause for Kim"]) && t("barOffice").includes("office correction") &&
       t("barOffice").includes("Last change made by Jordan Spackman for Kim (office correction)."));
     c.ok("a read-only view: the words, no button", t("barView").includes("Nobody has pressed Start on this job") && buttons("barView").length === 0);
-    c.ok("the prompt: \"Sent. Are you still working on this job?\" / \"1 more video to make here.\" / Yes / No",
-      t("prompt1").includes("Sent. Are you still working on this job?") && t("prompt1").includes("1 more video to make here.") &&
+    // Oct 5 2026 — SUPERSEDED wording, deliberately: the prompt now sits
+    // directly under the upload panel's own confirmation ("Video 1 v1 sent to
+    // James for review"), so it no longer says "Sent." a second time.
+    c.ok("the prompt: \"Are you still working on this job?\" (no second \"Sent.\") / \"1 more video to make here.\" / Yes / No",
+      t("prompt1").includes("Are you still working on this job?") && !t("prompt1").includes("Sent.") && t("prompt1").includes("1 more video to make here.") &&
       t("prompt1").includes("Yes, I’m on it") && t("prompt1").includes("No, done for now") && !t("prompt1").includes("Yes pauses"));
     c.ok("…plural, and \"Yes pauses 22 Switch Ave.\" when they're on another job", t("prompt3").includes("3 more videos to make here.") && t("prompt3").includes("Yes pauses 22 Switch Ave."));
   }
@@ -746,14 +756,29 @@ async function main() {
   c.ok("the work actions are called only from EditorDesk, WorkStateBar and StillWorkingPrompt (and defined in workActions)",
     JSON.stringify(callers) === JSON.stringify(["src/app/editing/workActions.ts", "src/components/editing/EditorDesk.tsx", "src/components/editing/StillWorkingPrompt.tsx", "src/components/editing/WorkStateBar.tsx"]), callers.join(", "));
   c.ok("CutUploader calls none of them (it only draws the prompt)", !/workActions|startEditing|pauseEditing|confirmCurrentWork/.test(upSrc));
-  c.ok("setSent(key) appears exactly once — after the finalize said ok, after the message save, right before the refresh",
-    (upSrc.match(/setSent\(key\)/g) ?? []).length === 1 &&
-    /if \(!done\.ok\) throw new Error\(done\.message\);[\s\S]*saveCutMessage\(started\.submissionId[\s\S]*setSent\(key\);\s*router\.refresh\(\);\s*\} catch/.test(upSrc));
-  const heldBranch = upSrc.slice(upSrc.indexOf("if (!done.ok && done.held) {"), upSrc.indexOf("if (!done.ok) throw new Error(done.message);"));
-  const abandonAt = upSrc.indexOf("} catch (e) {\n      await abandonCutUpload");
-  c.ok("…never on a held upload, a failure or an abandon; every other setSent clears it",
-    heldBranch.length > 0 && !heldBranch.includes("setSent") && (upSrc.match(/setSent\(/g) ?? []).length === (upSrc.match(/setSent\((null|key)\)/g) ?? []).length &&
-    abandonAt > upSrc.indexOf("setSent(key)") && !upSrc.slice(abandonAt, abandonAt + 400).includes("setSent(key)"));
+  // Oct 5 2026 — the hand-in became instant (CutUploader: "THE BYTES ARE IN:
+  // say so now"): the card appears the moment the bytes land, in a
+  // "confirming" phase, and the finish runs behind it (confirmHandIn). The old
+  // shape — ONE setSent(key) after the finish — is gone; the rule it guarded
+  // is not, and is asserted on the new shape: the "still working?" prompt is
+  // drawn only in phase "done"; "done" is written exactly once, after
+  // `if (!done.ok) { … return; }` and the message save, right before the
+  // refresh; a held or failed finish is phase "problem" and returns; and the
+  // abandon path (no bytes landed) never draws a card at all.
+  const confirmFn = upSrc.slice(upSrc.indexOf("async function confirmHandIn("), upSrc.indexOf("if (cuts.length === 0) return null;"));
+  const notOkBranch = confirmFn.slice(confirmFn.indexOf("if (!done.ok) {"), confirmFn.indexOf("return;", confirmFn.indexOf("if (!done.ok) {")) + "return;".length);
+  c.ok("phase \"done\" is written exactly once — after the finish said ok, after the message save, right before the refresh",
+    (upSrc.match(/phase: "done"/g) ?? []).length === 1 && confirmFn.includes('phase: "done"') &&
+    /if \(!done\.ok\) \{[\s\S]*?return;\s*\}[\s\S]*saveCutMessage\(h\.submissionId[\s\S]*phase: "done"[\s\S]*router\.refresh\(\);\s*\}\s*$/.test(confirmFn),
+    confirmFn.length ? "" : "confirmHandIn not found");
+  const abandonAt = upSrc.indexOf("await abandonCutUpload(started.submissionId, null)");
+  const abandonBlock = upSrc.slice(abandonAt, upSrc.indexOf("return;", abandonAt));
+  c.ok("…the prompt only in phase \"done\"; a held or failed finish is \"problem\" (never \"done\") and returns; the abandon path draws no card",
+    /const askRemaining = handIn && handIn\.phase === "done" && !handIn\.answered && stillWorking \?/.test(upSrc) &&
+    notOkBranch.includes('phase: "problem"') && !notOkBranch.includes('phase: "done"') && notOkBranch.trimEnd().endsWith("return;") &&
+    abandonAt > 0 && abandonAt < upSrc.indexOf("setSent(handIn)") && !abandonBlock.includes("setSent") &&
+    (upSrc.match(/setSent\(/g) ?? []).length === (upSrc.match(/setSent\((null|handIn|\(s\) => \(s && s\.submissionId === h(andIn)?\.submissionId \? \{ \.\.\.s, (phase|sentTo)|\(s\) => \(s \? \{ \.\.\.s, answered: true \} : s\))/g) ?? []).length,
+    `${notOkBranch.slice(0, 120)} | abandon block: ${abandonBlock.slice(0, 80)}`);
   c.ok("the store line is byte-identical to a2f8484 (store-cutover)",
     oldUploader.includes('const CUT_STORE_ACCESS = process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" ? "private" : "public";') &&
     upSrc.includes('const CUT_STORE_ACCESS = process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" ? "private" : "public";') && upSrc.includes("access: started.access ?? CUT_STORE_ACCESS,"));

@@ -333,7 +333,12 @@ async function main() {
   }
   c.ok("…the round trip compared every row and the header's id hashes", has(good.evidence, "PASS", "roundtrip", /id hashes equal the header's/));
   c.ok("…the pre-existing dangling plain ref is a WARN, never a FAIL", has(good.evidence, "WARN", "plainref", /^ContentEnrollment\.clientId -> Client: 1 dangling, already so in the file/));
-  c.ok("…49 foreign keys checked", has(good.evidence, "PASS", "fk", /^49 foreign keys/));
+  // Oct 5 2026: was a literal 49, the schema's count on Sep 28. FinalRenditionCheck
+  // and ClientBrandReceipt (Sep 30–Oct 4) each added a required foreign key, so
+  // the number is now read from the schema itself — every relation that carries
+  // its own key — and the rehearsal must have checked exactly that many.
+  const schemaFks = Prisma.dmmf.datamodel.models.reduce((n, m) => n + m.fields.filter((f) => f.kind === "object" && (f.relationFromFields?.length ?? 0) > 0).length, 0);
+  c.ok(`…every foreign key in the schema checked (${schemaFks}; 49 on Sep 28)`, schemaFks >= 49 && has(good.evidence, "PASS", "fk", new RegExp(`^${schemaFks} foreign keys`)), `${schemaFks} in the schema`);
   c.ok("…the evidence file is 0600", good.mode === 0o600);
   c.ok("…no row value in the output (names and counts only)", !/Agent Alpha|pat@drill|12 Oak St|Twilight/.test(good.res.out + JSON.stringify(good.evidence)));
 

@@ -449,6 +449,10 @@ async function main() {
   const james = await mkUser("james@drill.invalid", "James Porter", "ADMIN", jamesTm.id);
   const tess = await mkUser("tess@drill.invalid", "Tess Office", "ADMIN", tessTm.id);
   const kim = await mkUser("kimm@drill.invalid", "Kim Miguel", "EDITOR", kimTm.id, "kim");
+  // Oct 5 2026: John is the editor ON these jobs (editorId below); since the
+  // /edit/<id> route was scoped (c01-edit-route-access), he is the editor who
+  // can open this page at all — Kim, on none of them, now gets a 404.
+  const john = await mkUser("johnm@drill.invalid", "John Mark", "EDITOR", johnTm.id, "john");
   type U = { id: string; email: string; name: string | null; role: string };
   const as = (u: U, actingAs?: U) => setSession({ uid: u.id, email: u.email, role: u.role, name: u.name ?? undefined, ...(actingAs ? { actingAs: actingAs.id } : {}) });
   await putSetting("review_room", { creativeApproverTeamMemberId: jamesTm.id, backupReviewerTeamMemberId: kyleTm.id, fallbackReviewerTeamMemberId: jordanTm.id });
@@ -527,13 +531,23 @@ async function main() {
       const te = await rushOf(tess);
       c.ok("James (creative manager seat, ADMIN login) and Kyle (backup seat, ADMIN) see it", ja.n === 1 && ky.n === 1);
       c.ok("an office login with no seat (Tess) sees it too — she can look, and send it to Jordan; approving is the server's rushAuthority", te.n === 1);
-      let kimSaw = -1;
-      let kimWhy = "";
-      try { kimSaw = (await rushOf(kim)).n; } catch (e) { kimWhy = (e as Error).message; }
-      c.ok("Kim (EDITOR): no Rush button", kimSaw === 0, kimWhy || `${kimSaw}`);
-      const pv = await rushOf(jordan, kim);
+      // Oct 5 2026 — this was "Kim (EDITOR): no Rush button", rendered on a job
+      // that is not Kim's. Since the route was scoped, an editor who holds
+      // nothing on the job gets no page at all (notFound) — stronger than "no
+      // button" — and the editor-sees-no-Rush check moves to John, the job's
+      // own editor, for whom the page renders. The previews follow the same
+      // rule: previewing Kim is refused like Kim; previewing John or Kyle
+      // renders, with no Rush and no Override.
+      const refused = async (u: U, actingAs?: U) => { try { await rushOf(u, actingAs); return ""; } catch (e) { return (e as Error).message; } };
+      const kimWhy = await refused(kim);
+      c.ok("Kim (EDITOR, not on this job): the page is refused outright — so no Rush button", /notFound/.test(kimWhy), kimWhy || "rendered!");
+      const jn = await rushOf(john);
+      c.ok("John (EDITOR, the job's own editor): the page renders, with no Rush button and no Override", jn.n === 0 && jn.overrides === 0, `${jn.n} rush · ${jn.overrides} override`);
+      const pvKimWhy = await refused(jordan, kim);
+      const pv = await rushOf(jordan, john);
       const pvAdmin = await rushOf(jordan, kyle);
-      c.ok("Jordan previewing Kim, and Jordan previewing Kyle (an admin): no Rush button, no Override", pv.n === 0 && pv.overrides === 0 && pvAdmin.n === 0 && pvAdmin.overrides === 0, `${pv.n}/${pvAdmin.n}`);
+      c.ok("Jordan previewing Kim is refused like Kim; previewing John, and previewing Kyle (an admin): no Rush button, no Override",
+        /notFound/.test(pvKimWhy) && pv.n === 0 && pv.overrides === 0 && pvAdmin.n === 0 && pvAdmin.overrides === 0, `${pvKimWhy ? "refused" : "rendered"} · ${pv.n}/${pvAdmin.n}`);
     }
     // The server says the same thing to anybody the page leaves the button off for.
     await as(kim);
@@ -712,7 +726,14 @@ async function main() {
     c.ok("…a visible tab is refreshed on the tick; a hidden one is not (two ticks, nothing); visible again → refreshed", !!ar && ar.afterVisible === 1 && ar.afterHidden === 1 && ar.afterBack === 2);
     c.ok("…the timer is cleared on unmount, and navigator.onLine is never read", !!ar && ar.cleared === 1 && ar.onLineReads === 0);
     const editingPage = fs.readFileSync(path.join(REPO, "src/app/editing/page.tsx"), "utf8");
-    c.ok("the office Editing Room mounts <AutoRefresh seconds={60} /> beside the panel", /<AutoRefresh seconds=\{60\} \/>\s*<WorkingNowPanel/.test(editingPage));
+    // Oct 5 2026: the Editing Room leads with a compact "editors today"
+    // summary (EditingWorkSummary — the same read, judged by the same
+    // readFreshness) and the full WorkingNowPanel moved into the workload
+    // fold. The minute re-read now sits beside the summary that is on screen.
+    const summarySrc = fs.readFileSync(path.join(REPO, "src/components/editing/EditingWorkSummary.tsx"), "utf8");
+    c.ok("the office Editing Room mounts <AutoRefresh seconds={60} /> beside the editors-today summary, which judges freshness the panel's way",
+      /<AutoRefresh seconds=\{60\} \/>\s*<EditingWorkSummary view=\{today\} \/>/.test(editingPage) && /<WorkingNowPanel view=\{today\} \/>/.test(editingPage) &&
+      /readFreshness\(view, now\)/.test(summarySrc) && !/navigator\.onLine/.test(summarySrc));
     const panelSrc = fs.readFileSync(PANEL, "utf8");
     c.ok("the panel judges freshness from the read's own time only — no navigator.onLine, no presence", !/navigator\.onLine|visibilityState|presence/i.test(panelSrc.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "")) && /readFreshness\(view, now\)/.test(panelSrc));
   }

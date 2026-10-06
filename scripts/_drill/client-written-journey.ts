@@ -5,6 +5,12 @@ import { bootDrillDb, installNextStubs, interceptModule, fenceFetch, makeChecker
 import { buildContentMonth } from "./_fixtures/contentMonth";
 import type { VersionParts } from "@/lib/contentScripts";
 
+// Oct 5 2026: the sign-in button's POST must prove it came from our own page —
+// a same-origin Origin or Sec-Fetch-Site: same-origin, which is what a browser
+// sends when the "Continue to your portal" button on that page is pressed (a
+// POST with neither is now refused). The drill presses it as a browser would.
+const SAME_SITE_PRESS = { "sec-fetch-site": "same-origin" };
+
 installNextStubs();
 let clientCookie: string | null = null;
 // Only request transport is supplied here. The real resolver verifies the
@@ -35,7 +41,7 @@ async function main() {
     const actions = await import("@/app/portal/actions");
     const staff = await import("@/app/content/actions");
     const { mintLoginLink } = await import("@/lib/portalAccess");
-    const { GET } = await import("@/app/portal/auth/[token]/route");
+    const { POST } = await import("@/app/portal/auth/[token]/route"); // Oct 5: the press (POST) signs in; opening the link does not
     const { NextRequest } = await import("next/server");
     const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout } = await import("@/lib/programRolloutCore");
     const { portalLayoutDecision } = await import("@/lib/portalLayout");
@@ -63,10 +69,12 @@ async function main() {
     await prisma.programAutomation.create({ data: { key: "portal_layout_v2", enabled: true, enabledBy: "isolated-fixture", enabledAt: now } });
     const link = await mintLoginLink(f.membershipId!, null);
     const raw = new URL(link.url).pathname.split("/").pop()!;
-    const signed = await GET(new NextRequest(link.url), { params: Promise.resolve({ token: raw }) });
+    const bare = await POST(new NextRequest(link.url, { method: "POST" }), { params: Promise.resolve({ token: raw }) });
+    c.ok("a sign-in POST that does not prove it came from our page (no Origin, no Sec-Fetch-Site) is refused and sets no cookie", bare.status === 303 && /reason=invalid/.test(bare.headers.get("location") ?? "") && !bare.cookies.get("rtp_client"));
+    const signed = await POST(new NextRequest(link.url, { method: "POST", headers: SAME_SITE_PRESS }), { params: Promise.resolve({ token: raw }) });
     clientCookie = signed.cookies.get("rtp_client")?.value ?? null;
     c.ok("one-time route establishes a signed client cookie", !!clientCookie && signed.status === 303 && new URL(signed.headers.get("location")!).pathname === "/portal/me");
-    const reused = await GET(new NextRequest(link.url), { params: Promise.resolve({ token: raw }) });
+    const reused = await POST(new NextRequest(link.url, { method: "POST", headers: SAME_SITE_PRESS }), { params: Promise.resolve({ token: raw }) });
     c.ok("the same sign-in link cannot establish a second session", !reused.cookies.get("rtp_client") && /portal\/login/.test(reused.headers.get("location") ?? ""));
     const resolved = await portal.resolvePortalViewer({ ...auth, cookies: { get: (name) => name === "rtp_client" ? clientCookie ?? undefined : undefined } });
     if (!resolved.ok) throw new Error(`signed client failed to resolve: ${resolved.reason}`);

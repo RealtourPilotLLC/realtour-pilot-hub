@@ -551,7 +551,8 @@ async function run(base: { draftActions: string; filmedTopics: string; page: str
   const portalSrc = fs.readFileSync(path.join(REPO, "src/components/upload/UploadPortal.tsx"), "utf8");
   c.ok("page.tsx no longer catches the topic read to null", !/topicsForSession\([^)]*\)\.catch\(\(\) => null\)/.test(pageSrc));
   c.ok("page.tsx reads with readSessionTopics and flags a failed read on a content job",
-    pageSrc.includes("await readSessionTopics(project.id)") && pageSrc.includes("const topicsUnavailable = (!topicsRead.ok || pendingUnknown) && !!project.contentMonthId;") && pageSrc.includes("topicsUnavailable={topicsUnavailable}"));
+    // Oct 5: the read runs in the page's parallel round (Promise.all), still uncaught-to-null.
+    /\breadSessionTopics\(project\.id\)/.test(pageSrc) && !/readSessionTopics\(project\.id\)\.catch/.test(pageSrc) && pageSrc.includes("const topicsUnavailable = (!topicsRead.ok || pendingUnknown) && !!project.contentMonthId;") && pageSrc.includes("topicsUnavailable={topicsUnavailable}"));
   c.ok("the portal restores ticks through restoredTopicTicks with the unavailable flag",
     /const ticksFrom = \(ids: string\[\]\) =>\s*restoredTopicTicks\(\{ unavailable: topicsUnavailable,/.test(portalSrc));
   c.ok("the portal holds the video half while the list is unavailable (the reload line in the missing list)",
@@ -942,7 +943,7 @@ async function run(base: { draftActions: string; filmedTopics: string; page: str
     c.ok("the portal decides the restore with decideDeviceRestore — the stamp comparison is gone",
       /const d = decideDeviceRestore\(window\.localStorage\.getItem\(mirrorKey\), \{/.test(portal) && !portal.includes(OLD_RULE));
     c.ok("on ASK it stops the autosave BEFORE putting the copy on the page, and opens the conflict panel with the server's copy",
-      /if \(d\.action === "ask" && draft\) \{[\s\S]{0,300}saver\.stop\(\);\s*applyDraft\(m\.payload\);[\s\S]{0,200}setDraftConflict\(\{\s*revision: draft\.revision, payload: draft\.payload,/.test(portal));
+      /if \(d\.action === "ask" && draft\) \{[\s\S]{0,300}saver\.stop\(\);\s*applyDraft\(m\.payload\);[\s\S]{0,200}holdDraftConflict\(\{\s*revision: draft\.revision, payload: draft\.payload,/.test(portal));
   }
 
   // =======================================================================

@@ -258,7 +258,25 @@ async function main() {
     // ======================================================================
     // 1 · BOOKING
     // ======================================================================
-    {
+    // THE CLOCK, for section 1 only (Oct 5 2026). The bookings below are fixed
+    // October 2026 weekdays drawn in late September; on the real clock the
+    // first one (Mon Oct 5 10:00 ET) became "That time has passed — pick a
+    // later one." and the drill stopped with 0 checks run. Pinned to Mon Sep 28
+    // 2026 10:00 ET (running forward in real time) while the bookings run, and
+    // put back before the Topaz section, which reads this month's real caps.
+    const RealDate = Date;
+    const offset = RealDate.UTC(2026, 8, 28, 14, 0, 0) - RealDate.now(); // Mon Sep 28 2026 10:00 EDT
+    globalThis.Date = new Proxy(RealDate, {
+      construct(target, args: unknown[]) {
+        if (args.length === 0) return new target(RealDate.now() + offset);
+        return Reflect.construct(target, args);
+      },
+      get(target, prop, recv) {
+        if (prop === "now") return () => RealDate.now() + offset;
+        return Reflect.get(target, prop, recv);
+      },
+    }) as DateConstructor;
+    try {
       const { ARYEO_CONTENT_PRODUCTS } = await import("@/lib/contentProgram");
       const everyone = [DRILL_TEAM.james.tm, DRILL_TEAM.jordan.tm, DRILL_TEAM.harrison.tm];
       fake = createFakeAryeo({
@@ -380,6 +398,11 @@ async function main() {
         const t0 = new Date();
         const a = sbNew.bookSessionRequest(id, { now: t0, worker: "A" });
         await inside.wait;
+        // Oct 5 2026: the attempt's createdAt is the database's now() — the REAL
+        // clock — while section 1's clock is pinned to Sep 28. The marker-scan
+        // schedule (next scan no earlier than createdAt + 35 min) measures from
+        // it, so restamp it on the drill's clock: the instant A made it, t0.
+        await prisma.programBookingAttempt.updateMany({ where: { requestId: id }, data: { createdAt: t0 } });
         const wB = fk.writes.length; // A's address is already written; its order is not
         const b1 = await sbNew.bookSessionRequest(id, { now: new Date(t0.getTime() + 5 * MIN + 1000), worker: "B" });
         const b2 = await sbNew.bookSessionRequest(id, { now: new Date(t0.getTime() + 10 * MIN + 1000), worker: "B" });
@@ -398,6 +421,8 @@ async function main() {
         c.ok("exactly 1 order and 1 appointment committed, no desk task", committed("POST", "/orders") - w0.o === 1 && committed("POST", "/appointments/store") - w0.s === 1 && !final.deskOpen);
       }
       await prisma.programAutomation.deleteMany({ where: { key: "session_booking" } });
+    } finally {
+      globalThis.Date = RealDate;
     }
 
     // ======================================================================

@@ -110,10 +110,19 @@ async function main() {
     await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: streamUrlFor(row.id), blobUrl: `https://drill.invalid/${row.id}.mp4`, blobPathname: `review-cuts/${row.id}.mp4` } });
     return row.id;
   };
-  /** Jordan's QC approve in the Review Room — which is the release. */
+  /** Jordan's QC approve in the Review Room, then its portal publication —
+   *  since a60424b (Oct 2) the publication, not the approval, is the release.
+   *  Publication needs Topaz and Dropbox (fenced here), so its release, window
+   *  and round answer are recorded the way publishApprovedCutToLibrary does
+   *  (scripts/_fixtures/reviewWorld.ts, the same simulation). */
   const release = async (id: string) => {
     const r = await rr.approveCut(id);
     if (!r.ok) throw new Error(`release ${id}: ${r.message}`);
+    await prisma.reviewSubmission.update({ where: { id }, data: { clientReleasedAt: new Date(), clientReleasedBy: "Portal publication" } });
+    await rw.openReviewWindow(id, { by: "Portal publication" });
+    const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id } });
+    const { correctedCutApproved } = await import("@/lib/reviewCuts");
+    await correctedCutApproved(cut.projectId, { cutCreatedAt: cut.createdAt, round: cut.round, cut: { id: cut.id, deliverableId: cut.deliverableId, slot: cut.slot, assetPath: cut.assetPath } });
   };
   /** What the Review Room's approve did BEFORE this deploy: the verdict, and no window. */
   const approveInRoomOld = (id: string, at = new Date()) => prisma.reviewSubmission.update({ where: { id }, data: { status: "APPROVED", decidedAt: at, decidedBy: "Jordan" } });
@@ -388,12 +397,23 @@ async function main() {
     const staffAdd = await cd.requestChangesOnCut(W.staff, a1, "office note: keep the old music");
     c.ok("staff are never throttled", staffAdd.ok, staffAdd.message);
 
-    // Contrast: a FIRST request of that length is analysed (the counter works).
+    // Contrast. Oct 5 2026 — SUPERSEDED half, deliberately: since dc5aea7
+    // (Sep 30) a portal request is PINNED to its exact cut, and a pinned
+    // brief's items ARE the editor's work order (revisionBrief.worthAnalyzing:
+    // `!opts.pin`), so even a FIRST portal request that long makes no model
+    // call — asserted. The counter's non-vacuity, which is what this contrast
+    // was for, is shown on an UNPINNED ask of the same length (a revision that
+    // arrives by text, through the same createRevisionBrief): that one the
+    // model does read.
     const a2 = await mkCut(W, 2, 1);
     await release(a2);
     const before = aiCalls;
     await cd.requestChangesOnCut(W.viewer, a2, long);
-    c.ok("(a first request that long IS analysed — the counter sees the model)", aiCalls === before + 1, `${aiCalls - before}`);
+    c.ok("a FIRST portal request that long makes no model call either — pinned to its cut, its items are the work order (dc5aea7)", aiCalls === before, `${aiCalls - before}`);
+    const { createRevisionBrief } = await import("@/lib/revisionBrief");
+    const unpinned = aiCalls;
+    await createRevisionBrief({ projectId: W.f.projectId!, source: "sms", text: long, clientName: "Drill Client TEST" });
+    c.ok("(an UNPINNED ask that long IS analysed — the counter sees the model)", aiCalls === unpinned + 1, `${aiCalls - unpinned}`);
   }
 
   // =========================================================================

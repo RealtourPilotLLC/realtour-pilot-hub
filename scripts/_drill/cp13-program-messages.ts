@@ -266,7 +266,21 @@ async function main() {
   // =========================================================================
   {
     // A Tuesday at 11am ET — inside the client window, whatever day this runs.
-    const T = etAt("2026-09-29", 11);
+    //
+    // Oct 5 2026: and a Tuesday still AHEAD of the real clock. It was the fixed
+    // Tue Sep 29; the outbox stamps each notice's createdAt with the
+    // database's own now() (the real clock), and the "never twice" read counts
+    // notices created after the client's read mark (seen = T + 2h). Once the
+    // real date passed Sep 29 the first notice always looked newer than her
+    // read, so the reply she had NOT read was skipped as "already sent" and
+    // both checks below failed. The next Tuesday at least a day from now keeps
+    // every real-clock stamp behind the drill's own times, as on Sep 28.
+    const nextTuesdayKey = (() => {
+      const wk = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" });
+      const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
+      for (let d = new Date(Date.now() + 36 * 3_600_000); ; d = new Date(d.getTime() + 86_400_000)) if (wk.format(d) === "Tue") return ymd.format(d);
+    })();
+    const T = etAt(nextTuesdayKey, 11);
     const seatEmail = "info+maratest@realtourpilot.com";
     const noticeRows = () => prisma.outboxMessage.findMany({ where: { requestedBy: "program-message-notice" } });
     await pm.postStaffMessage(mara.enrollmentId, { id: kyle.id, name: "Kyle Drill", email: kyle.email }, "Moved it to October. Tuesday is still on.", null, { now: new Date(T.getTime() - 5 * 60_000) });

@@ -88,6 +88,9 @@ async function main() {
         projectId: o.projectId, deliverableId: o.deliverableId ?? null, slot: o.slot ?? 1, round: o.round ?? 1, fileName: o.fileName, status: o.status ?? "APPROVED",
         decidedBy: o.status === "PENDING" ? null : "Jordan", decidedAt: o.decidedAt === undefined ? (o.status === "PENDING" ? null : new Date()) : o.decidedAt,
         completedAt: o.completedAt ?? null, source: "upload", sizeBytes: BYTES.length, finalPath: `/Final/${o.fileName}`, ...(o.createdAt ? { createdAt: o.createdAt } : {}),
+        // Oct 5: a monthly cut approved since the publication gate reaches the
+        // client only once published; these fixtures stand for published cuts.
+        ...((o.status ?? "APPROVED") === "APPROVED" ? { clientReleasedAt: o.decidedAt === undefined ? new Date() : o.decidedAt } : {}),
       },
       select: { id: true },
     });

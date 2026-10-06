@@ -22,10 +22,18 @@ for (const navigation of [load("next/navigation"), load("./_next-navigation-stub
   navigation.useSearchParams = () => new URLSearchParams(search);
 }
 const copied: string[] = [];
-interceptModule((request) => request === "@/components/ui/CopyButton" || /components[\/]ui[\/]CopyButton(?:\.tsx)?$/.test(request), (loaded) => {
-  const original = loaded as typeof import("../../src/components/ui/CopyButton");
-  return { ...original, CopyButton: (props: Parameters<typeof original.CopyButton>[0]) => { copied.push(props.value); return createElement(original.CopyButton, props); } };
+// Oct 5 2026: "Copy project link" moved off the row (CopyButton) into the
+// row's floating menu (ActionMenu, a3133a5 Oct 2). The real menu still
+// renders; this keeps the items each one was handed, so the drill presses
+// every Copy item and reads what reached the clipboard — the value actually
+// written, not a prop.
+type MenuItem = { id: string; onSelect: () => void };
+const menuItems: { label: string; items: MenuItem[] }[] = [];
+interceptModule((request) => request === "@/components/ui/ActionMenu" || /components[\/]ui[\/]ActionMenu(?:\.tsx)?$/.test(request), (loaded) => {
+  const original = loaded as typeof import("../../src/components/ui/ActionMenu");
+  return { ...original, ActionMenu: (props: Parameters<typeof original.ActionMenu>[0]) => { menuItems.push({ label: props.label, items: props.items as MenuItem[] }); return createElement(original.ActionMenu, props); } };
 });
+Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async (value: string) => { copied.push(value); } } } });
 
 function row(id: string, status: string, editorKey: string | null = "kim", due = "late"): QueueRow {
   const dueISO = due === "none" ? null : due === "late" ? "2026-09-28T21:00:00.000Z" : "2026-10-01T21:00:00.000Z";
@@ -78,7 +86,10 @@ async function main() {
     const refreshed = render(safe.split("?")[1]);
     c.ok("stage survives first paint and refresh without widening editor or due", [selected, refreshed].every((html) => rowCount(html) === 1 && ["changes", "kim", "overdue"].every((value) => selectedOption(html, value)) && html.includes("changes-kim Fixture Lane")));
     c.ok("brief link and explicit return preserve all selected dimensions", selected.includes('href="/edit/changes-kim?queue=editor%3Dkim%26due%3Doverdue%26stage%3Dchanges"') && queueReturnHref("editor=kim&due=overdue&stage=changes") === safe);
-    c.ok("clipboard still receives canonical public job URL", copied.includes("https://hub.example.test/edit/changes-kim") && copied.every((value) => !value.includes("?")));
+    const copyItems = menuItems.flatMap((m) => m.items.filter((x) => x.id === "copy"));
+    for (const item of copyItems) item.onSelect();
+    for (let i = 0; i < 50 && copied.length < copyItems.length; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    c.ok("clipboard still receives canonical public job URL", copyItems.length > 0 && copied.length === copyItems.length && copied.includes("https://hub.example.test/edit/changes-kim") && copied.every((value) => !value.includes("?")), `${copyItems.length} copy item(s) · ${copied.slice(0, 3).join(" | ")}`);
 
     let transitions = 0;
     const mismatches: string[] = [];

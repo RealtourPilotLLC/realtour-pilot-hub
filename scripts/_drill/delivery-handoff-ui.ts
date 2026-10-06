@@ -69,7 +69,9 @@ async function main() {
   ];
   stub(req.resolve("../../src/lib/prisma.ts"), { prisma: { auditLog: { findMany: async () => [] }, reviewSubmission: { findMany: async (args: NonNullable<typeof noticeQuery.args>) => { noticeQuery.args = args; if (noticeQuery.fail) throw new Error("fixture reader unavailable"); return readerRows; } } } });
   const uploadCalls: { id: string; fingerprint: string }[] = []; let uploadResult = deferred<{ ok: boolean; message: string }>();
+  const undoCalls: { id: string; fingerprint: string }[] = []; let undoResult = deferred<{ ok: boolean; message: string }>();
   stub(req.resolve("../../src/app/ops/actions.ts"), {
+    undoVideoUploadAction: async (id: string, fingerprint: string) => { undoCalls.push({ id, fingerprint }); return undoResult.promise; },
     markVideoUploadedAction: async (id: string, fingerprint: string) => { uploadCalls.push({ id, fingerprint }); return uploadResult.promise; },
     markVideoSentAction: async (id: string, notice?: string | null) => { calls.push({ id, notice }); return result.promise; },
     recordClientNoticeAction: async (id: string, notice: string) => { noticeCalls.push({ id, notice }); return noticeResult.promise; },
@@ -194,7 +196,8 @@ async function main() {
     c.ok("files and upload is an always-visible section, never a disclosure", listingHTML.includes('aria-label="Files and upload"') && !listingHTML.includes('<summary class="cursor-pointer text-sm font-medium">Files and upload'));
     const listing = { ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source", overdue: true };
     const uploadedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: { id: "receipt", at: ready.approvedAtISO, by: "Kyle" } }] } }));
-    c.ok("uploaded-not-sent is expanded with only title, overdue and requested actions", uploadedHTML.includes("Uploaded, not sent") && uploadedHTML.includes("Past due") && uploadedHTML.includes("Aryeo listing") && uploadedHTML.includes(">Watch</a>") && uploadedHTML.includes("Mark as sent") && !uploadedHTML.includes("Files and upload") && !uploadedHTML.includes("Download") && !uploadedHTML.includes("Mark as Uploaded") && !uploadedHTML.includes("<details"));
+    // Watch opens the in-page player (Oct 5 playback release): a button now, not a link.
+    c.ok("uploaded-not-sent is expanded with only title, overdue and requested actions", uploadedHTML.includes("Uploaded, not sent") && uploadedHTML.includes("Past due") && uploadedHTML.includes("Aryeo listing") && / Watch<\/button>/.test(uploadedHTML) && uploadedHTML.includes("Mark as sent") && !uploadedHTML.includes("Files and upload") && !uploadedHTML.includes("Download") && !uploadedHTML.includes("Mark as Uploaded") && !uploadedHTML.includes("<details") && !uploadedHTML.includes("Undo upload"));
     card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [listing] } }));
     const uploadRow = namedComponent(tree(), "ReadyRow")!;
     (uploadRow.props.onUploaded as () => void)();
@@ -208,7 +211,30 @@ async function main() {
       { ...listing, cutLabel: "Personal Branding Reel — Video 1 of 2", uploaded: { id: "one", at: ready.approvedAtISO, by: "Kyle" } },
       { ...listing, submissionId: "second-cut", cutLabel: "Personal Branding Reel — Video 2 of 2", uploaded: { id: "two", at: ready.approvedAtISO, by: "Kyle" } },
     ] } }));
-    c.ok("same project has one concise unsent item and one set of actions", groupedHTML.includes("Personal Branding - Not Sent") && (groupedHTML.match(/>Mark as sent</g) ?? []).length === 1 && (groupedHTML.match(/>Watch</g) ?? []).length === 1 && !groupedHTML.includes("Video 2 of 2"));
+    c.ok("same project has one concise unsent item and one set of actions", groupedHTML.includes("Personal Branding - Not Sent") && (groupedHTML.match(/>Mark as sent</g) ?? []).length === 1 && (groupedHTML.match(/ Watch<\/button>/g) ?? []).length === 1 && !groupedHTML.includes("Video 2 of 2"));
+
+    // ---- Oct 5 wave 2 · no linked Aryeo listing: one plain next step --------
+    const linkedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: null }] } }));
+    const unlinkedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: null, listingMissing: true }] } }));
+    c.ok("OLD shape still holds for a linked job: Mark as Uploaded is offered", linkedHTML.includes("Mark as Uploaded") && !linkedHTML.includes("Link the Aryeo listing first"));
+    c.ok("NEW: no listing → no Mark as Uploaded the server would refuse", !unlinkedHTML.includes("Mark as Uploaded") && !unlinkedHTML.includes("record the upload"));
+    c.ok("…and one plain next step that links to the job", unlinkedHTML.includes("Link the Aryeo listing first") && unlinkedHTML.includes(`href="/projects/${listing.projectId}"`) && unlinkedHTML.includes("Refresh from Aryeo"));
+
+    // ---- Oct 5 wave 2 · undo a mistaken "Mark as Uploaded", at once ---------
+    const today = { ...listing, overdue: false, uploaded: { id: "receipt-today", at: ready.approvedAtISO, by: "Kyle", undoable: true } };
+    const undoRow = () => { const r = namedComponent(tree(), "UploadedRow"); return r ? r.type(r.props) : null; };
+    const undoButton = () => elements(undoRow(), "button").find((b) => words(b.children).includes("Undo upload"));
+    card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [{ ...today, uploaded: { ...today.uploaded, undoable: false } }] } }));
+    c.ok("an upload marked on an earlier day offers no Undo", !!namedComponent(tree(), "UploadedRow") && !undoButton());
+    card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [today] } }));
+    c.ok("today's upload offers Undo upload on its row", !!undoButton());
+    undoResult = deferred(); (undoButton()!.onClick as () => void)();
+    c.ok("Undo moves the row back to Ready for upload before the server answers", undoCalls.length === 1 && undoCalls[0].fingerprint === today.uploadFingerprint && !namedComponent(tree(), "UploadedRow") && !!namedComponent(tree(), "ReadyRow") && words(tree()).includes("Ready for upload"));
+    c.ok("…and the moved row offers Mark as Uploaded again, not Mark as sent", (namedComponent(tree(), "ReadyRow")!.props.v as ReadyVideo).uploaded === null);
+    undoResult.resolve({ ok: false, message: "Undo only works on the day it was marked uploaded (ET)." }); await until(() => !!namedComponent(tree(), "UploadedRow"));
+    c.ok("a refusal puts the row back with the reason", !namedComponent(tree(), "ReadyRow") && words(undoRow()).includes("Undo only works on the day"));
+    undoResult = deferred(); (undoButton()!.onClick as () => void)(); undoResult.resolve({ ok: true, message: "Upload undone" }); await Promise.resolve(); await Promise.resolve();
+    c.ok("a confirmed undo stays in Ready for upload", undoCalls.length === 2 && !namedComponent(tree(), "UploadedRow") && !!namedComponent(tree(), "ReadyRow"));
     const { MarkProjectSent } = await import("../../src/components/ops/MarkProjectSent");
     const groupCuts = [{ submissionId: "group-one", fingerprint: "group-fp-one" }, { submissionId: "group-two", fingerprint: "group-fp-two" }];
     const groupCompleted: UploadedTarget[] = [];

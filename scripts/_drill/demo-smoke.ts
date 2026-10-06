@@ -141,7 +141,18 @@ async function main() {
     c.ok(`${x.name}: the library lists videos`, list.rows.length > 0, `${list.total}: ${[...new Set(statesOf[x.variant])].join(", ")}`);
   }
   const acc = seed.clients.find((x) => x.variant === "accelerator")!;
-  c.ok("the Accelerator month shows a video to review, an approved one and a delivered one", ["FOR_REVIEW", "APPROVED", "DELIVERED"].every((s) => statesOf.accelerator.includes(s)), statesOf.accelerator.join(", "));
+  // Oct 5 2026 — SUPERSEDED, deliberately (cutEntitlement, e6eac69, Oct 1): a
+  // monthly video handed over through the client's PORTAL is not delivered
+  // outside it; once the client approves it the library says APPROVED (ready
+  // to post), and DELIVERED is kept for outside-portal and historical sends —
+  // which the demo has none of. So "a delivered one" is now asserted on the
+  // record of the handover itself: approved videos carrying the exact portal
+  // handoff marker (this month's D and last month's two).
+  const accCuts = await prisma.reviewSubmission.findMany({ where: { project: { clientId: acc.clientId } }, select: { id: true, sentToClientAt: true } });
+  const accHandoffs = await (await import("@/lib/cutEntitlement")).monthlyPortalHandoffsFor(accCuts.map((x) => x.id));
+  c.ok("the Accelerator month shows a video to review, one with changes in progress, approved ones, and three handed over in the portal",
+    ["FOR_REVIEW", "CHANGES_IN_PROGRESS", "APPROVED"].every((s) => statesOf.accelerator.includes(s)) && !statesOf.accelerator.includes("DELIVERED") && accHandoffs.size === 3 && accCuts.filter((x) => accHandoffs.has(x.id)).every((x) => !!x.sentToClientAt),
+    `${statesOf.accelerator.join(", ")} · ${accHandoffs.size} portal handoff(s)`);
   const pro = seed.clients.find((x) => x.variant === "pro")!;
   const proSessions = await prisma.programSessionRequest.findMany({ where: { enrollmentId: pro.enrollmentId, monthId: pro.month?.monthId ?? undefined }, select: { id: true, status: true, sessionIndex: true, dedupeKey: true, slotStart: true, slotEnd: true } });
   c.ok("the Pro month holds two distinct confirmed sessions", proSessions.length === 2 && proSessions.every((s) => s.status === "CONFIRMED") && new Set(proSessions.map((s) => s.sessionIndex)).size === 2 && new Set(proSessions.map((s) => s.dedupeKey)).size === 2, proSessions.map((s) => `${s.sessionIndex}:${s.status}`).join(", "));

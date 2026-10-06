@@ -381,10 +381,11 @@ async function main() {
   c.ok("the portal was handed exactly that version line and those words", n2.brief?.versionLabel === oReel.versionLabel && n2.brief?.sections.find((x) => x.key === "onSite")?.text === `${LINE1}\n${LINE2}`);
   c.ok("the editor's copy: the same notes, no money", JSON.stringify(editorCopy.find((o) => o.outputId === reel.id)?.sections).includes(LINE2) && !JSON.stringify(editorCopy).includes("$150"));
   await establishSession(kyle.id);
-  const editTree = await EditPage({ params: Promise.resolve({ id: two.id }), searchParams: Promise.resolve({}) });
-  const card = (id: string) => words(find(editTree, (e) => e.props?.id === `brief-${id}`)[0]).join(" ");
-  const reelCard = card(reel.id);
-  const mlsCard = card(mls.id);
+  // Oct 5 fixture fix: /edit/<id> shows ONE selected video (?output=<id>,
+  // a60424b); each card is read on its own video's page.
+  const card = async (id: string) => words(find(await EditPage({ params: Promise.resolve({ id: two.id }), searchParams: Promise.resolve({ output: id }) }), (e) => e.props?.id === `brief-${id}`)[0]).join(" ");
+  const reelCard = await card(reel.id);
+  const mlsCard = await card(mls.id);
   c.ok("/edit/<id> (the office's page): the reel's card prints v3 by Harrison and both notes", reelCard.includes("Brief v3 · saved by Harrison Drill") && reelCard.includes(LINE1) && reelCard.includes(LINE2), reelCard.slice(0, 240));
   c.ok("/edit/<id>: the MLS film's card prints Harrison's note as its v1", mlsCard.includes("Brief v1 · saved by Harrison Drill") && mlsCard.includes("No twilight: the agent is rebooking it."), mlsCard.slice(0, 200));
   const shootTwo = (await getShoot(two.id))!;
@@ -442,6 +443,12 @@ async function main() {
   // the figures; the office's page keeps them (its Plan form saves them back).
   const gapJob = await listing("5 Gap Money Way, Testville", ["SOCIAL_REEL", "VIDEO"]);
   const [gReel, gMls] = gapJob.outs;
+  // Oct 5 fixture fix: the editor reading this job below is Kim, so the job is
+  // HERS — the project's editor is her roster row. Standard reels route to
+  // John Mark by default, and /edit/<id> rightly refuses Kim on his job (it
+  // answered notFound, which is what these checks used to trip on).
+  const kimTm = await prisma.teamMember.create({ data: { name: "Kim Drill", email: "kim-roster-upb@drill.invalid", role: "EDITOR" }, select: { id: true } });
+  await prisma.project.update({ where: { id: gapJob.id }, data: { editorId: kimTm.id } });
   await dout.saveOutputBrief({ outputId: gReel.id, projectId: gapJob.id, sections: { limitations: "Drone was not ordered ($175 add-on). No aerials." }, actor: "Kyle Drill" });
   const { raiseGapFromBrief } = await import("@/lib/productionGaps");
   const raisedGap = await raiseGapFromBrief({ outputId: gReel.id, projectId: gapJob.id, actor: "Kyle Drill" });
@@ -467,7 +474,7 @@ async function main() {
   c.ok("the office's upload page keeps its own words (the Plan form is filled from them)", gapWords(kGap).includes("$200") && gapWords(kGap).includes("Invoice the client $200."));
   const cardWords = async (outputId: string) => {
     try {
-      const tree = await EditPage({ params: Promise.resolve({ id: gapJob.id }), searchParams: Promise.resolve({}) });
+      const tree = await EditPage({ params: Promise.resolve({ id: gapJob.id }), searchParams: Promise.resolve({ output: outputId }) });
       return words(find(tree, (e) => e.props?.id === `brief-${outputId}`)[0]).join(" ").replace(/\s+/g, " ");
     } catch (e) {
       return `PAGE_ERROR ${(e as Error).message}`;

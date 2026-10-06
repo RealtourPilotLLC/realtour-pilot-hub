@@ -321,8 +321,27 @@ async function main() {
     c.ok("F has one script, one version", fs1.length === 1 && fs1[0].versions === 1, JSON.stringify(fs1));
     c.ok("and only F: exactly one version was added in the whole database", (await prisma.contentScriptVersion.count()) === versionsBefore + 1);
     c.ok("nothing is owed now", (await owedNow()).length === 0, JSON.stringify(await owedNow()));
-    const jobs = await prisma.programTranscriptJob.findMany({ select: { kind: true, state: true } });
-    c.ok("the transcript jobs ran: INGEST and ANALYZE SUCCEEDED", jobs.length >= 2 && jobs.every((j) => j.state === "SUCCEEDED"), JSON.stringify(jobs));
+    // Oct 5 2026 — SUPERSEDED, deliberately (R05, Sep 28: transcriptJobs
+    // backlogCutoff / holdReasonFor). The pasted transcript's jobs were queued
+    // while the call processor had never been on, and since R05 a job queued
+    // before the FIRST switch-on is backlog: it waits until Jordan chooses
+    // "include older jobs" (Settings → Calendly & calls), so switching the
+    // processor on never spends AI credit on a pile of old calls by itself.
+    // So this GET must HOLD them, saying why; Jordan's include (the same config
+    // write his button makes) must then let the next GET run both.
+    const tjBody = r.body.transcriptJobs as { held?: { backlog?: number } } | undefined;
+    const jobs = await prisma.programTranscriptJob.findMany({ select: { kind: true, state: true, lastError: true } });
+    c.ok("the transcript jobs queued before the processor's first switch-on are HELD as backlog, with the reason — not run on the switch alone",
+      jobs.length >= 2 && jobs.every((j) => j.state === "QUEUED" && /before the call processor was first switched on/.test(j.lastError ?? "")) && tjBody?.held?.backlog === jobs.length,
+      `${JSON.stringify(jobs.map((j) => [j.kind, j.state]))} · held ${JSON.stringify(tjBody?.held)}`);
+    const tj = await import("@/lib/transcriptJobs");
+    const { setAutomationConfigField } = await import("@/lib/programAutomation");
+    await setAutomationConfigField("transcript_jobs", tj.BACKLOG_FIELD, tj.INCLUDE_BACKLOG, "drill (the owner's include older jobs)", "transcript_backlog_choice");
+    const r2 = await get();
+    describe("GET after the owner includes older jobs", r2);
+    const jobs2 = await prisma.programTranscriptJob.findMany({ select: { kind: true, state: true } });
+    c.ok("…once the owner includes older jobs, the next GET runs them: INGEST and ANALYZE SUCCEEDED", r2.status === 200 && jobs2.length >= 2 && jobs2.every((j) => j.state === "SUCCEEDED"), JSON.stringify(jobs2));
+    c.ok("…and drafts nothing more (nothing was owed)", (await owedNow()).length === 0 && (await prisma.contentScriptVersion.count()) === versionsBefore + 1);
     const run = await latestRun();
     c.ok("the CronRun row is ok, with the deploy stamp", !!run?.finishedAt && run.ok === true && summaryOf(run.summary).deploy === "0123456789ab", `${run?.ok} ${run?.error ?? ""}`);
     c.ok("still nothing queued to send", (await prisma.outboxMessage.count()) === 0);

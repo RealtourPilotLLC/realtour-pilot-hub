@@ -30,6 +30,11 @@
 //    9. programDispatchGate: switch, TEST floor, scope, seats, sign-in links,
 //       removal takes effect on the next send, fail-closed codes.
 //   10. Fail closed end to end: '{bad' → TEST only; a DB error → refused.
+//   12. PER-CLIENT CHOICES (Oct 5 2026, Settings → Client onboarding): an
+//       optional clientOps[clientId] list; a value without it means exactly
+//       what it did. Every reader (decision, sweep filter, hub-write pilot,
+//       scope line, tier, since) is per client; setClientOpsChange widens
+//       nobody but the client it names. The cap is PROGRAM_PILOT_MAX (30).
 //
 // SEP 28 REVIEW FIXES (the fixer's pass; each check below fails without its
 // fix): caption_assistant is a reach op (14 ops, in "Automatic portal
@@ -116,6 +121,7 @@ async function loadBasePure<T>(rel: string): Promise<T> {
 }
 
 const DAY = 86_400_000;
+const OWNER_EMAIL = "info@realtourpilot.com";
 
 async function main() {
   const drill = await bootDrillDb({ port: PORT });
@@ -218,7 +224,7 @@ async function main() {
       }
       c.ok(`mode ${mode} × pilot ${kind}: every op × in/out × lock × {T,P,X,N,N-named} matches the rules`, mismatches === 0, detail.join(" | "));
     }
-    c.ok("the matrix covered 3 × 4 × 14 × 2 × 2 × 5 = 3360 decisions", evaluated === 3360, String(evaluated));
+    c.ok(`the matrix covered 3 × 4 × ${PROGRAM_REACH_OPS.length} ops × 2 × 2 × 5 = ${60 * PROGRAM_REACH_OPS.length * 4} decisions (15 ops since manual_messages, Oct 5 2026)`, evaluated === 60 * PROGRAM_REACH_OPS.length * 4 && (PROGRAM_REACH_OPS.length as number) === 15, String(evaluated));
     c.ok("N (a never-synthetic row renamed TEST) is never tier TEST", MODES.every((mode) => {
       const d = rolloutDecision({ rollout: { mode, modeSince: null, pilot: pilotOf("active", [N.id], ALL_GROUP_OPS) }, client: N, op: "reminders", now: NOW });
       return !d.ok || d.tier !== "TEST";
@@ -232,8 +238,9 @@ async function main() {
     c.ok("publishing never reaches a pilot client, even hand-listed", !dPub.ok && dPub.code === "operation_not_in_pilot");
     const dTest = rolloutDecision({ rollout: { ...CLOSED_ROLLOUT }, client: T, op: "publishing", now: NOW, featureTestOnly: true });
     c.ok("a TEST client is reached for every op, in TEST_ONLY, with the lock on", dTest.ok && dTest.tier === "TEST" && dTest.since === null);
-    c.ok("isProgramReachOp: the 14 ops and nothing else (caption_assistant joined them)", PROGRAM_REACH_OPS.every(isProgramReachOp) && !isProgramReachOp("session_booking") && !isProgramReachOp(null) && PROGRAM_REACH_OPS.length === 14 && isProgramReachOp("caption_assistant"));
-    c.ok("the five groups carry every op but publishing, each exactly once", JSON.stringify([...ALL_GROUP_OPS].sort()) === JSON.stringify(PROGRAM_REACH_OPS.filter((o) => o !== "publishing").sort()) && PROGRAM_PILOT_GROUPS.flatMap((g) => g.ops).length === 13);
+    // Oct 5 2026 review fix: manual_messages ("Messages I send myself") joined them, in its own group.
+    c.ok("isProgramReachOp: the 15 ops and nothing else (caption_assistant, then manual_messages, joined them)", PROGRAM_REACH_OPS.every(isProgramReachOp) && !isProgramReachOp("session_booking") && !isProgramReachOp(null) && (PROGRAM_REACH_OPS.length as number) === 15 && isProgramReachOp("caption_assistant") && isProgramReachOp("manual_messages"));
+    c.ok("the six groups carry every op but publishing, each exactly once; manual_messages alone in 'messages'", JSON.stringify([...ALL_GROUP_OPS].sort()) === JSON.stringify(PROGRAM_REACH_OPS.filter((o) => o !== "publishing").sort()) && PROGRAM_PILOT_GROUPS.flatMap((g) => g.ops).length === 14 && core.pilotGroupOf("manual_messages")?.ops.join() === "manual_messages" && core.pilotGroupOf("manual_messages")?.key === "messages");
     c.ok("REVIEW FIX: caption_assistant is an automatic portal change (a pilot without that group does not reach it)", core.pilotGroupOf("caption_assistant")?.key === "portal_changes" &&
       !rolloutDecision({ rollout: { mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("active", [P.id], opsForGroups(["emails"])) }, client: P, op: "caption_assistant", now: NOW }).ok &&
       rolloutDecision({ rollout: { mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("active", [P.id], opsForGroups(["portal_changes"])) }, client: P, op: "caption_assistant", now: NOW }).ok);
@@ -304,7 +311,7 @@ async function main() {
       [JSON.stringify({ mode: "EVERYONE" }), "unknown mode"],
       [JSON.stringify({ pilot: null }), "unknown mode"],
       [JSON.stringify({ mode: "PILOT", pilot: "P" }), "pilot is not a JSON object"],
-      [JSON.stringify({ mode: "PILOT", pilot: { clientIds: ["a", "b", "c", "d"] } }), "more than the cap of 3"],
+      [JSON.stringify({ mode: "PILOT", pilot: { clientIds: Array.from({ length: PROGRAM_PILOT_MAX + 1 }, (_, i) => `c${i}`) } }), `more than the cap of ${PROGRAM_PILOT_MAX}`],
     ];
     for (const [raw, why] of bad) {
       const r = parseProgramRollout(raw);
@@ -320,7 +327,7 @@ async function main() {
     c.ok("tolerant read: bad dates → null, text trimmed, empty note → null", tolerant.rollout.modeSince === null && tp.expiresAt === null && tp.approvedBy === "info@realtourpilot.com" && tp.note === null);
     c.ok("tolerant read: joinedAt keeps only listed clients with real dates", JSON.stringify(tp.joinedAt) === JSON.stringify({ c_p: JOINED }));
     c.ok("CLOSED_ROLLOUT is frozen and parse hands out copies", Object.isFrozen(CLOSED_ROLLOUT) && parseProgramRollout("{bad").rollout !== CLOSED_ROLLOUT && CLOSED_ROLLOUT.mode === "TEST_ONLY");
-    c.ok(`PROGRAM_PILOT_MAX is 3; exactly 3 parses`, PROGRAM_PILOT_MAX === 3 && parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: ["a", "b", "c"] } })).problem === null);
+    c.ok(`PROGRAM_PILOT_MAX is 30 (raised from 3, Oct 5 2026 — still a cap); exactly ${PROGRAM_PILOT_MAX} parses`, (PROGRAM_PILOT_MAX as number) === 30 && parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: Array.from({ length: PROGRAM_PILOT_MAX }, (_, i) => `c${i}`) } })).problem === null);
   }
 
   // =========================================================================
@@ -377,8 +384,8 @@ async function main() {
     const toAll = settleRolloutChange(r1!, { ...r1!, mode: "ALL" }, t1);
     const allToPilot = settleRolloutChange((toAll as { rollout: Rollout }).rollout, { ...(toAll as { rollout: Rollout }).rollout, mode: "PILOT" }, new Date(t1.getTime() + DAY));
     c.ok("PILOT → ALL → PILOT: a client inside the whole time keeps joinedAt", "rollout" in allToPilot && allToPilot.rollout.pilot?.joinedAt[P.id] === iso(t0.getTime()));
-    const four = settleRolloutChange(r1!, { ...r1!, pilot: { ...r1!.pilot!, clientIds: ["a", "b", "c", "d"] } }, t1);
-    c.ok("a 4th real client is refused", "error" in four && four.error.includes("cap is 3"));
+    const four = settleRolloutChange(r1!, { ...r1!, pilot: { ...r1!.pilot!, clientIds: Array.from({ length: PROGRAM_PILOT_MAX + 1 }, (_, i) => `c${i}`) } }, t1);
+    c.ok(`a ${PROGRAM_PILOT_MAX + 1}st real client is refused`, "error" in four && four.error.includes(`cap is ${PROGRAM_PILOT_MAX}`));
   }
 
   // =========================================================================
@@ -455,7 +462,7 @@ async function main() {
     c.ok("REVIEW FIX: an accounts-only pilot client lists 'accounts' only (no email group)", accountsOnly.tier === "PILOT" && accountsOnly.groups.join() === "accounts", JSON.stringify(accountsOnly));
     c.ok("…X is refused not_in_pilot for every group; T is TEST", sumX.tier === null && sumX.code === "not_in_pilot" && sumX.groups.length === 0 && sumT.tier === "TEST");
     const allSum = core.clientReachSummary({ mode: "ALL", modeSince: APPROVED, pilot: pilotOf("active", [P.id], ALL_GROUP_OPS) }, X, NOW);
-    c.ok("…in ALL, X is reached for every group but bookings (the hub still writes only for the named pilot)", allSum.tier === "ALL" && !allSum.groups.includes("bookings") && allSum.groups.length === 4, JSON.stringify(allSum));
+    c.ok("…in ALL, X is reached for every group but bookings (the hub still writes only for the named pilot)", allSum.tier === "ALL" && !allSum.groups.includes("bookings") && allSum.groups.length === PROGRAM_PILOT_GROUPS.length - 1, JSON.stringify(allSum));
     c.ok("pilotCandidateProblem: TEST refused, N gets 'fix the name', a real name passes",
       !!pilotCandidateProblem(T)?.includes("TEST client") && !!pilotCandidateProblem(N)?.includes("fix the name") && pilotCandidateProblem(P) === null);
   }
@@ -654,7 +661,7 @@ async function main() {
       ["a client with no program", [P.id, "c_r"], "no ACTIVE program"],
       ["a PAUSED program", [P.id, "c_y"], "no ACTIVE program"],
       ["a client that does not exist", [P.id, "c_nobody"], "not found"],
-      ["a 4th real client", [P.id, "c_p2", "c_p3", "c_p4"], "cap is 3"],
+      [`a ${PROGRAM_PILOT_MAX + 1}st real client`, [P.id, ...Array.from({ length: PROGRAM_PILOT_MAX }, (_, i) => `c_cap${i}`)], `cap is ${PROGRAM_PILOT_MAX}`],
     ];
     for (const [label, ids, why] of refusals) {
       const r = await R.updateProgramRollout((cur) => ({ ...cur, pilot: { ...cur.pilot!, clientIds: ids } }), OWNER, "program_rollout_pilot_add");
@@ -796,6 +803,148 @@ async function main() {
     c.ok("REVIEW FIX: a failed LOCK read → gate_error (retry later), not launch_not_authorised", !vl.ok && vl.code === "gate_error", JSON.stringify(vl));
     c.ok("…the frozen featureTestOnlyFor still folds that failure into 'locked' (readiness/preview), which is what the gate used to pass on", oldView === true);
     c.ok("and with the reads healthy again, P is sent", (await G.programDispatchGate(pRow)).ok);
+  }
+
+  // =========================================================================
+  c.head("12. Per-client choices (Oct 5 2026): clientOps, back-compatible, per client everywhere");
+  {
+    const { setClientOpsChange, clientAllowedOps, pilotOpsFor } = core;
+    const Q = { id: "c_q2", name: "Quinn Shared Realty" };
+    const own = (ops: Record<string, Op[]>, ids = [P.id, X.id, Q.id], extra: Partial<NonNullable<Rollout["pilot"]>> = {}): Rollout => ({
+      mode: "PILOT", modeSince: APPROVED,
+      pilot: { ...pilotOf("active", ids, ALL_GROUP_OPS)!, joinedAt: Object.fromEntries(ids.map((id) => [id, JOINED])), clientOps: ops, ...extra },
+    });
+    // P: reminders only. X: listed with NOTHING. Q: no entry → the shared list (every group).
+    const r = own({ [P.id]: ["reminders"], [X.id]: [] });
+    const ok = (cl: { id: string; name: string }, op: Op) => rolloutDecision({ rollout: r, client: cl, op, now: NOW });
+    c.ok("P (own list: reminders) is reached for reminders and nothing else",
+      ok(P, "reminders").ok && PROGRAM_REACH_OPS.filter((o) => o !== "reminders").every((o) => { const d = ok(P, o); return !d.ok && d.code === "operation_not_in_pilot"; }));
+    c.ok("X (listed, own list EMPTY) is reached for nothing", PROGRAM_REACH_OPS.every((o) => { const d = ok(X, o); return !d.ok && d.code === "operation_not_in_pilot"; }));
+    c.ok("Q (listed, no entry) keeps the shared list: every grouped op, never publishing",
+      ALL_GROUP_OPS.every((o) => ok(Q, o).ok) && !ok(Q, "publishing").ok);
+    c.ok("T is reached for everything whatever the lists say; an unlisted real client for nothing",
+      PROGRAM_REACH_OPS.every((o) => ok(T, o).ok) && PROGRAM_REACH_OPS.every((o) => !ok({ id: "c_unlisted", name: "Una Listed" }, o).ok));
+    c.ok("pilotOpsFor / clientAllowedOps read the client's own list, else the shared one, else nothing",
+      pilotOpsFor(r.pilot!, P.id).join() === "reminders" && pilotOpsFor(r.pilot!, X.id).length === 0 && pilotOpsFor(r.pilot!, Q.id).join() === ALL_GROUP_OPS.join() &&
+      clientAllowedOps(r, P).join() === "reminders" && clientAllowedOps(r, { id: "c_unlisted", name: "Una Listed" }).length === 0 && clientAllowedOps(r, T).length === ALL_GROUP_OPS.length);
+    c.ok("a per-client publishing entry is dropped (publishing is never a pilot op)", parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id], operations: [], clientOps: { [P.id]: ["publishing", "reminders"] } } })).rollout.pilot?.clientOps?.[P.id].join() === "reminders");
+
+    // rolloutClientFilter ≡ rolloutDecision, per client, over many lists.
+    let bad = 0, combos = 0;
+    const lists: Op[][] = [[], ["reminders"], ["portal_sign_in", "hub_writes"], opsForGroups(["portal_changes"]), ALL_GROUP_OPS];
+    for (const lp of lists) for (const lx of lists) for (const shared of [[] as Op[], ALL_GROUP_OPS]) for (const op of PROGRAM_REACH_OPS) for (const fto of [false, true]) {
+      combos++;
+      const rr: Rollout = { mode: "PILOT", modeSince: APPROVED, pilot: { ...pilotOf("active", [P.id, X.id, Q.id], shared)!, clientOps: { [P.id]: lp, [X.id]: lx } } };
+      const f = rolloutClientFilter({ rollout: rr, op, now: NOW, featureTestOnly: fto });
+      for (const cl of [P, X, Q]) if ((f.everyone || f.realClientIds.includes(cl.id)) !== rolloutDecision({ rollout: rr, client: cl, op, now: NOW, featureTestOnly: fto }).ok) bad++;
+    }
+    c.ok(`rolloutClientFilter ≡ rolloutDecision for every client's own list (${combos} combinations × 3 clients)`, bad === 0, String(bad));
+    c.ok("clientTier: an own EMPTY list is REAL (named, but given nothing); own non-empty and shared are PILOT",
+      clientTier(r, X, NOW) === "REAL" && clientTier(r, P, NOW) === "PILOT" && clientTier(r, Q, NOW) === "PILOT");
+
+    // The hub-write pilot, per client.
+    const rb = own({ [P.id]: ["reminders"], [X.id]: ["hub_writes"] }, [P.id, X.id]);
+    const routeOf = (rr: Rollout, cl: { id: string; name: string }) =>
+      hub.routeHubWrite({ switchKey: "session_booking", config: withProgramPilot({ authorizedFixtureClientIds: [], pilot: null }, rr, "session_booking"), client: cl, operation: "appointments.store", now: NOW, isTestName: tc.isTestClientName, isNeverSynthetic: tc.isNeverSyntheticClientId }).kind;
+    c.ok("hub writes: only the client whose own list has bookings is written for (X yes, P no)", routeOf(rb, X) === "PILOT" && routeOf(rb, P) === "REFUSE" && programPilotAsHubPilot(rb, "session_booking")?.clientIds.join() === X.id);
+    const rnone = own({ [P.id]: ["reminders"], [X.id]: [] }, [P.id, X.id]);
+    const hn = programPilotAsHubPilot(rnone, "session_booking");
+    c.ok("…nobody booked: the named list with NO operations, so the refusal still says 'does not include bookings'",
+      !!hn && hn.operations.length === 0 && hn.clientIds.length === 2 && !!hub.pilotProblem("session_booking", hn, P.id, "orders.create", NOW)?.includes("does not include bookings"));
+    c.ok("clientReachSummary: bookings only for the booked client", core.clientReachSummary(rb, X, NOW).groups.includes("bookings") && !core.clientReachSummary(rb, P, NOW).groups.includes("bookings") && core.clientReachSummary(rb, P, NOW).groups.join() === "emails");
+
+    // The scope line names only the clients an op reaches.
+    const names = new Map([[P.id, P.name], [X.id, X.name], [Q.id, Q.name]]);
+    const line = (rr: Rollout, op: Op) => describeProgramScope({ rollout: rr, op, featureTestOnly: false, testNames: ["Rollout TEST"], names, now: NOW });
+    const lr = line(r, "reminders");
+    c.ok("describeProgramScope: reminders names P and Q (shared), never X", lr.realClients && lr.line.includes(P.name) && lr.line.includes(Q.name) && !lr.line.includes(X.name) && lr.pilotNames.join() === `${P.name},${Q.name}`, lr.line);
+    const lnone = line(own({ [P.id]: ["reminders"], [X.id]: [] }, [P.id, X.id]), "portal_layout_v2");
+    c.ok("…an op nobody has: TEST only, 'no named client has … turned on'", !lnone.realClients && lnone.line.includes("no named client has") && !/every client/i.test(lnone.line), lnone.line);
+
+    // parse / serialize.
+    const legacy = serializeProgramRollout({ mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("active", [P.id], ALL_GROUP_OPS) });
+    c.ok("BACK-COMPAT: a value with no per-client choices serializes byte-for-byte as before (no new keys)", !legacy.includes("clientOps") && serializeProgramRollout(parseProgramRollout(legacy).rollout) === legacy);
+    const withOwn = { ...r, pilot: { ...r.pilot!, clientOpsSince: { [P.id]: { reminders: JOINED } } } };
+    const sOwn = serializeProgramRollout(withOwn);
+    const pOwn = parseProgramRollout(sOwn);
+    c.ok("per-client choices round-trip byte-stable (clientOps + clientOpsSince)", pOwn.problem === null && serializeProgramRollout(pOwn.rollout) === sOwn && pOwn.rollout.pilot?.clientOps?.[X.id]?.length === 0 && pOwn.rollout.pilot?.clientOpsSince?.[P.id]?.reminders === JOINED);
+    const tol = parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id, X.id], operations: ALL_GROUP_OPS, clientOps: { [P.id]: "reminders", [X.id]: ["reminders", "bogus", "reminders"], c_gone: ["reminders"] }, clientOpsSince: { [X.id]: { reminders: "soon", portal_invites: JOINED } } } }));
+    c.ok("tolerant read: a malformed entry is NOTHING for that client (never the shared list); junk dropped; entries for unlisted clients dropped; since kept only for held ops with real dates",
+      tol.problem === null && tol.rollout.pilot?.clientOps?.[P.id]?.length === 0 && tol.rollout.pilot?.clientOps?.[X.id]?.join() === "reminders" && !("c_gone" in (tol.rollout.pilot?.clientOps ?? {})) && !tol.rollout.pilot?.clientOpsSince,
+      JSON.stringify(tol.rollout.pilot));
+    const garbled = parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id], operations: ALL_GROUP_OPS, clientOps: ["reminders"] } }));
+    c.ok("a per-client value that is not an object is UNREADABLE (TEST only + problem), never 'absent' (which would widen)", garbled.rollout.mode === "TEST_ONLY" && !!garbled.problem?.includes("per-client choices"), garbled.problem ?? "");
+    c.ok("an empty clientOps object reads as absent (everyone on the shared list)", !parseProgramRollout(JSON.stringify({ mode: "PILOT", pilot: { clientIds: [P.id], operations: ["reminders"], clientOps: {} } })).rollout.pilot?.clientOps);
+
+    // settle: since per client, per op.
+    const t0 = NOW, t1 = new Date(NOW.getTime() + 2 * DAY), t2 = new Date(NOW.getTime() + 4 * DAY);
+    const s0 = settleRolloutChange({ ...CLOSED_ROLLOUT }, { mode: "PILOT", modeSince: null, pilot: { clientIds: [P.id, Q.id], operations: opsForGroups(["emails"]), approvedBy: OWNER_EMAIL, approvedAt: iso(t0.getTime()), expiresAt: null, note: null, joinedAt: {}, clientOps: { [P.id]: ["reminders"] } } }, t0);
+    const r0 = (s0 as { rollout: Rollout }).rollout;
+    c.ok("settle: a new client's own ops start at the change (clientOpsSince = now)", r0.pilot?.clientOpsSince?.[P.id]?.reminders === iso(t0.getTime()) && r0.pilot?.joinedAt[P.id] === iso(t0.getTime()));
+    const s1 = settleRolloutChange(r0, { ...r0, pilot: { ...r0.pilot!, clientOps: { [P.id]: ["reminders", "revision_policy"], [Q.id]: ["reminders", "portal_sign_in"] } } }, t1);
+    const r1 = (s1 as { rollout: Rollout }).rollout;
+    const sinceOf = (rr: Rollout, cl: { id: string; name: string }, op: Op, at: Date) => { const d = rolloutDecision({ rollout: rr, client: cl, op, now: at }); return d.ok ? d.since?.toISOString() ?? null : `refused ${d.code}`; };
+    c.ok("settle: P keeps reminders' start; review deadlines (newly on) start at the change",
+      sinceOf(r1, P, "reminders", t2) === iso(t0.getTime()) && sinceOf(r1, P, "revision_policy", t2) === iso(t1.getTime()), `${sinceOf(r1, P, "reminders", t2)} · ${sinceOf(r1, P, "revision_policy", t2)}`);
+    c.ok("settle: Q moving from the shared list to their own keeps the shared start for what they had (reminders), and starts the new op now",
+      sinceOf(r1, Q, "reminders", t2) === iso(t0.getTime()) && sinceOf(r1, Q, "portal_sign_in", t2) === iso(t1.getTime()), `${sinceOf(r1, Q, "reminders", t2)} · ${sinceOf(r1, Q, "portal_sign_in", t2)}`);
+    const s2 = settleRolloutChange(r1, { ...r1, pilot: { ...r1.pilot!, clientOps: { ...r1.pilot!.clientOps!, [P.id]: ["revision_policy"] } } }, t2);
+    const s3 = settleRolloutChange((s2 as { rollout: Rollout }).rollout, { ...(s2 as { rollout: Rollout }).rollout, pilot: { ...(s2 as { rollout: Rollout }).rollout.pilot!, clientOps: { ...r1.pilot!.clientOps!, [P.id]: ["revision_policy", "reminders"] } } }, new Date(t2.getTime() + DAY));
+    c.ok("settle: an op turned off and on again restarts (no backlog from the gap)", sinceOf((s3 as { rollout: Rollout }).rollout, P, "reminders", new Date(t2.getTime() + 2 * DAY)) === iso(t2.getTime() + DAY));
+    c.ok("settle: the cap still holds with per-client lists", "error" in settleRolloutChange(r1, { ...r1, pilot: { ...r1.pilot!, clientIds: Array.from({ length: PROGRAM_PILOT_MAX + 1 }, (_, i) => `c${i}`) } }, t2));
+
+    // setClientOpsChange — the onboarding page's one change.
+    const by = OWNER_EMAIL;
+    const fresh = setClientOpsChange({ ...CLOSED_ROLLOUT }, { client: P, ops: ["reminders"], by, now: NOW }) as Rollout;
+    c.ok("first turn-on from TEST clients only: mode PILOT, P listed with their own list, approval stamped", fresh.mode === "PILOT" && fresh.pilot?.clientIds.join() === P.id && fresh.pilot?.clientOps?.[P.id]?.join() === "reminders" && fresh.pilot?.approvedBy === by && fresh.pilot?.operations.length === 0);
+    const oldOnFile: Rollout = { mode: "TEST_ONLY", modeSince: null, pilot: pilotOf("active", [X.id, Q.id], ALL_GROUP_OPS) };
+    // Oct 5 2026 review fix: an old list on file is no longer pinned silently —
+    // the change is refused, naming them, unless the owner asks for P only.
+    const refusedFlip = setClientOpsChange(oldOnFile, { client: P, ops: ["reminders"], by, now: NOW });
+    c.ok("NOBODY ELSE WIDENED: an old list on file under TEST only REFUSES the page's turn-on, naming X and Q",
+      "error" in refusedFlip && refusedFlip.othersOnFile?.join() === [X.id, Q.id].join(), JSON.stringify(refusedFlip));
+    const flip = setClientOpsChange(oldOnFile, { client: P, ops: ["reminders"], by, now: NOW, onlyThisClient: true }) as Rollout;
+    c.ok("…'only this client': X and Q set to nothing, only P reached",
+      flip.mode === "PILOT" && flip.pilot?.clientOps?.[X.id]?.length === 0 && flip.pilot?.clientOps?.[Q.id]?.length === 0 &&
+      !rolloutDecision({ rollout: flip, client: X, op: "reminders", now: NOW }).ok && !rolloutDecision({ rollout: flip, client: Q, op: "portal_sign_in", now: NOW }).ok && rolloutDecision({ rollout: flip, client: P, op: "reminders", now: NOW }).ok);
+    const unapproved: Rollout = { mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("unapproved", [X.id], ALL_GROUP_OPS) };
+    const reapRefused = setClientOpsChange(unapproved, { client: P, ops: ["reminders"], by, now: NOW });
+    const reap = setClientOpsChange(unapproved, { client: P, ops: ["reminders"], by, now: NOW, onlyThisClient: true }) as Rollout;
+    c.ok("…and an UNAPPROVED list the page's approval would switch on: refused naming X; for P only, X set to nothing", "error" in reapRefused && reapRefused.othersOnFile?.join() === X.id && !rolloutDecision({ rollout: reap, client: X, op: "reminders", now: NOW }).ok && rolloutDecision({ rollout: reap, client: P, op: "reminders", now: NOW }).ok);
+    const live: Rollout = { mode: "PILOT", modeSince: APPROVED, pilot: pilotOf("active", [X.id], ALL_GROUP_OPS) };
+    const addP = setClientOpsChange(live, { client: P, ops: ["reminders"], by, now: NOW }) as Rollout;
+    c.ok("an ACTIVE list: the others keep exactly what they had (X still on the shared list)", !("clientOps" in addP.pilot! && X.id in (addP.pilot!.clientOps ?? {})) && rolloutDecision({ rollout: addP, client: X, op: "portal_sign_in", now: NOW }).ok);
+    const narrow = setClientOpsChange(addP, { client: P, ops: [], by: "someone@else", now: new Date(NOW.getTime() + DAY) }) as Rollout;
+    c.ok("taking everything off: P leaves the list, the approval is NOT re-stamped, the mode is kept", !narrow.pilot?.clientIds.includes(P.id) && narrow.pilot?.approvedBy === by && narrow.mode === "PILOT");
+    const onlyP = setClientOpsChange(fresh, { client: P, ops: [], by, now: NOW }) as Rollout;
+    c.ok("…and when P was the only one, the list is removed (mode kept)", onlyP.pilot === null && onlyP.mode === "PILOT");
+    const expired: Rollout = { mode: "PILOT", modeSince: APPROVED, pilot: { ...pilotOf("expired", [X.id], ALL_GROUP_OPS)! } };
+    const ex = setClientOpsChange(expired, { client: P, ops: ["reminders"], by, now: NOW });
+    const exNarrow = setClientOpsChange({ ...expired, pilot: { ...expired.pilot!, clientIds: [X.id, P.id], clientOps: { [P.id]: ["reminders"] } } }, { client: P, ops: [], by, now: NOW });
+    c.ok("allowing something on an ENDED list is refused (it would restart everyone); taking things away is fine", "error" in ex && ex.error.includes("ended after") && !("error" in exNarrow));
+    const allMode: Rollout = { mode: "ALL", modeSince: APPROVED, pilot: null };
+    c.ok("'every client' is left alone (never narrowed or widened by the page)", (setClientOpsChange(allMode, { client: P, ops: ["hub_writes"], by, now: NOW }) as Rollout).mode === "ALL");
+    c.ok("a TEST client and N are refused (TEST clients are always reached; N must fix the name)",
+      "error" in setClientOpsChange(fresh, { client: T, ops: ["reminders"], by, now: NOW }) && "error" in setClientOpsChange(fresh, { client: N, ops: ["reminders"], by, now: NOW }));
+    c.ok("unknown ops and publishing are dropped from the client's list", (setClientOpsChange({ ...CLOSED_ROLLOUT }, { client: P, ops: ["publishing", "reminders", "bogus" as Op], by, now: NOW }) as Rollout).pilot?.clientOps?.[P.id]?.join() === "reminders");
+
+    // Through the writer and the gate (the database part).
+    await db.appSetting.deleteMany({ where: { key: "program-rollout" } });
+    const w1 = await R.updateProgramRollout((cur, now) => setClientOpsChange(cur, { client: P, ops: ["reminders", "portal_invites"], by, now }), by, "client_onboarding_toggle");
+    c.ok("through updateProgramRollout: saved, audited, mode PILOT, P's own list stamped", w1.ok && w1.to.mode === "PILOT" && w1.to.pilot?.clientOps?.[P.id]?.join() === "reminders,portal_invites" && !!w1.to.pilot?.clientOpsSince?.[P.id]?.reminders &&
+      (await db.auditLog.count({ where: { action: "client_onboarding_toggle", target: "program-rollout" } })) === 1);
+    c.ok("programReach: P reminders yes, P layout no, X nothing", (await R.programReach("reminders", P.id)).ok && !(await R.programReach("portal_layout_v2", P.id)).ok && !(await R.programReach("reminders", X.id)).ok);
+    const gRow = (key: string, clientId: string, toRef: string) => ({
+      id: "g12", channel: "email", toRef, body: "b", state: "pending", attempts: 0, leaseUntil: null, leaseBy: null, providerId: null, providerError: null,
+      dedupeKey: key, requestedBy: "drill", clientId, projectId: null, taskId: null, createdAt: new Date(), acceptedAt: null, resolvedAt: null, extraToRefsJson: null, mediaUrlsJson: null,
+    });
+    await setSwitch("reminders", true, JSON.stringify({ testClientsOnly: false }));
+    await setSwitch("program_message_notice", true);
+    c.ok("the dispatch gate reads P's own list: a reminder passes, an office-replied notice is refused", (await G.programDispatchGate(gRow("program_reminder:X:r12:2026-10", P.id, "pat@example.test"))).ok &&
+      (await G.programDispatchGate(gRow("program_message:e12:1", P.id, "pat@example.test"))).ok === false);
+    const sweep = await R.rolloutSweepClientIds("reminders");
+    c.ok("a sweep's prefilter for reminders: the TEST clients and P, never X", !!sweep && sweep.includes(P.id) && !sweep.includes(X.id) && sweep.includes(T.id));
+    await db.appSetting.deleteMany({ where: { key: "program-rollout" } });
   }
 
   // =========================================================================

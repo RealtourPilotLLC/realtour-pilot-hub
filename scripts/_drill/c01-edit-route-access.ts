@@ -82,7 +82,12 @@ async function main() {
     };
     const signIn = (user: { id: string; email: string; role: string }, actingAs?: string) => setSession({ uid: user.id, email: user.email, role: user.role, actingAs });
     const noSensitiveWork = () => calls.length === 0 && submissionReads === 0;
-    const renderedScript = (tree: unknown) => elementsNamed(tree, "ReelScriptCard").some((props) => props.script === script);
+    // Oct 5: the editor's brief draws the reel script in its own Script
+    // section (BriefScript, the exact stored words as a named part); the
+    // office keeps ReelScriptCard in its tools. Either way: the EXACT script.
+    const renderedScript = (tree: unknown) =>
+      elementsNamed(tree, "ReelScriptCard").some((props) => props.script === script) ||
+      elementsNamed(tree, "BriefScript").some((props) => Array.isArray(props.parts) && (props.parts as { text: string }[]).some((p) => p.text === script));
     const reachedReadsInOrder = (preview = false) => (preview ? !calls.includes("autoSyncScript") : calls[0] === "autoSyncScript") && calls.includes("getProject") && calls.includes("getTeam") && submissionReads > 0;
 
     await clearSession();
@@ -114,11 +119,13 @@ async function main() {
     const workBar = elementsNamed(preview.tree, "WorkStateBar")[0]?.bar as { mode?: string } | undefined;
     const previewChats = elementsNamed(preview.tree, "ProjectMessages");
     const previewUploads = elementsNamed(preview.tree, "CutUploader");
-    const previewReceipts = elementsNamed(preview.tree, "EditorBriefReceiptCard");
+    // Oct 5: the receipt is one job-level "Got it", drawn only for the
+    // assigned editor themselves — a preview gets no receipt control at all.
+    const previewReceipts = elementsNamed(preview.tree, "BriefGotIt");
     c.ok("owner preview of assigned editor reads saved script without running auto-sync", !preview.stop && renderedScript(preview.tree) && reachedReadsInOrder(true));
     const previewProject = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     c.ok("configured preview makes zero provider reads or script/timestamp writes", studioReads === beforePreviewReads && previewProject.reelScript === script && previewProject.scriptingSyncedAt === null);
-    c.ok("preview tree keeps work/chat/upload/brief receipt controls read-only", workBar?.mode === "view" && previewChats.length === 1 && previewChats[0].readOnly === true && previewUploads.length === 1 && previewUploads[0].canUpload === false && previewReceipts.length === 1 && previewReceipts[0].canAcknowledge === false);
+    c.ok("preview tree keeps work/chat/upload/brief receipt controls read-only", workBar?.mode === "view" && previewChats.length === 1 && previewChats[0].readOnly === true && previewUploads.length === 1 && previewUploads[0].canUpload === false && previewReceipts.length === 0);
     c.ok("preview has not written chat receipts, assignment receipts or editing work", await prisma.threadRead.count() === 0 && await prisma.editorBriefReceipt.count() === 0 && await prisma.editorWorkItem.count() === 0);
     // Keep later ownership cases independent if the preview regression fails.
     studioScript = script;

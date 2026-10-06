@@ -20,6 +20,17 @@ function elements(tree: unknown, name: string): Props[] {
   const type = tree.type as string | { name?: string };
   return [...((typeof type === "string" ? type : type.name) === name ? [tree.props] : []), ...Object.values(tree.props).flatMap((part) => elements(part, name))];
 }
+// Oct 5: Home streams its secondary sections (Suspense around async server
+// components that await reads started with the page's own). Resolve those
+// named components — inside the injected window — so the checks read the
+// page as it finishes composing.
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+async function settleHome(tree: unknown): Promise<unknown> {
+  if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
+  if (!isValidElement<Props>(tree)) return tree;
+  if (typeof tree.type === "function" && STREAMED_HOME.has(tree.type.name)) return settleHome(await (tree.type as (props: Props) => Promise<unknown>)(tree.props));
+  return { ...tree, props: Object.fromEntries(await Promise.all(Object.entries(tree.props).map(async ([key, value]) => [key, await settleHome(value)] as const))) };
+}
 async function settleSchedule(tree: unknown): Promise<unknown> {
   if (isValidElement<Props>(tree) && typeof tree.type === "function" && tree.type.name === "ListView") return (tree.type as (props: Props) => Promise<unknown>)(tree.props);
   return tree;
@@ -35,7 +46,8 @@ async function main() {
   try {
     const { prisma } = await import("@/lib/prisma");
     const { setSession } = await import("@/lib/auth/session");
-    const { default: home } = await import("@/app/page");
+    const { default: homePage } = await import("@/app/page");
+    const home = async (props: Parameters<typeof homePage>[0]) => settleHome(await homePage(props));
     const { default: review } = await import("@/app/review/page");
     const { default: editing } = await import("@/app/editing/page");
     const { default: schedule } = await import("@/app/schedule/page");

@@ -49,6 +49,12 @@ import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
+// Oct 5 2026: the sign-in button's POST must prove it came from our own page —
+// a same-origin Origin or Sec-Fetch-Site: same-origin, which is what a browser
+// sends when the "Continue to your portal" button on that page is pressed (a
+// POST with neither is now refused). The drill presses it as a browser would.
+const SAME_SITE_PRESS = { "sec-fetch-site": "same-origin" };
+
 const PORT = Number(process.env.DRILL_PORT ?? 5514);
 const REPO = path.resolve(__dirname, "../..");
 const BASE = "e26cacd"; // the commit batch B starts from
@@ -416,7 +422,10 @@ async function main() {
       const { url } = await mintLoginLink(L.membershipId!, null);
       const raw = url.split("/portal/auth/")[1];
       const req = new NextRequest(`https://drill.invalid/portal/auth/${raw}${next === null ? "" : `?next=${encodeURIComponent(next)}`}`);
-      const res = await r.GET(req, { params: Promise.resolve({ token: raw }) });
+      // Oct 5: the new route signs in on the button's POST (next rides the form); the old one on GET.
+      const res = r === route
+        ? await route.POST(new NextRequest(`https://drill.invalid/portal/auth/${raw}`, { method: "POST", headers: SAME_SITE_PRESS, body: new URLSearchParams(next === null ? {} : { next }) }), { params: Promise.resolve({ token: raw }) })
+        : await r.GET(req, { params: Promise.resolve({ token: raw }) });
       return new URL(res.headers.get("location") ?? "", "https://drill.invalid").pathname + new URL(res.headers.get("location") ?? "", "https://drill.invalid").search;
     };
     c.ok("OLD: the sign-in route ignored where to land", (await hit(oldRoute, `/portal/me${path8}`)) === "/portal/me");

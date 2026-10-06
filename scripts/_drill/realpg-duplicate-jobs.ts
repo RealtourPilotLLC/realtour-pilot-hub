@@ -339,6 +339,27 @@ async function main() {
     // ======================================================================
     // THE PROGRAM WORLD (sections 2-4)
     // ======================================================================
+    // THE CLOCK, from here on (Oct 5 2026). The asks below are October 2026
+    // weekdays drawn when "now" was late September; on the real clock every
+    // day already passed is refused "That time has passed", so of the eight
+    // different-slot asks only five could even be weighed ("1 created, 4
+    // full"). Pinned to Mon Sep 28 2026 10:00 ET and running forward in real
+    // time, in this process only — the importer children of section 1 are not
+    // part of sections 2-4, and section 1 ran on the real clock as before.
+    {
+      const RealDate = Date;
+      const offset = RealDate.UTC(2026, 8, 28, 14, 0, 0) - RealDate.now(); // Mon Sep 28 2026 10:00 EDT
+      globalThis.Date = new Proxy(RealDate, {
+        construct(target, args: unknown[]) {
+          if (args.length === 0) return new target(RealDate.now() + offset);
+          return Reflect.construct(target, args);
+        },
+        get(target, prop, recv) {
+          if (prop === "now") return () => RealDate.now() + offset;
+          return Reflect.get(target, prop, recv);
+        },
+      }) as DateConstructor;
+    }
     const sr = await import("@/lib/sessionRequests");
     const sb = await import("@/lib/sessionBooking");
     const sa = await import("@/lib/sessionAddress");

@@ -43,7 +43,7 @@ async function main() {
     view.outputBriefs[0].sections[0].text = "Neighborhood park";
     const after = shootBriefLines(view as never, []);
     const changes = briefChanges(parseBriefSnapshot(read.snapshotJson), after);
-    c.ok("changed approved script and must-show appear as two precise deltas", changes.length === 2 && changes.some((x) => x.label.includes("released script") && x.before?.includes("v2") && x.after?.includes("v3")) && changes.some((x) => x.label.includes("Must show") && x.after === "Neighborhood park"));
+    c.ok("changed approved script and must-show appear as two precise deltas", changes.length === 2 && changes.some((x) => x.label.includes("script to film") && x.before?.includes("v2") && x.after?.includes("v3")) && changes.some((x) => x.label.includes("Must show") && x.after === "Neighborhood park"));
     c.ok("unchanged brief has no delta", briefChanges(after, after).length === 0);
     c.ok("changed digest refuses stale page version", briefDigest(briefSnapshot(after)) !== digest);
     const second = await prisma.shootBriefRead.create({ data: { projectId: project.id, readerUserId: "photographer-1", snapshotJson: briefSnapshot(after), digest: briefDigest(briefSnapshot(after)) } });

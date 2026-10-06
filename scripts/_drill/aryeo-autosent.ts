@@ -16,6 +16,14 @@
  * was approved, and the only Aryeo traffic since is LISTING_CONTENT_DOWNLOADED —
  * which the hub read and then threw away.
  *
+ * Oct 5 2026 (wave 2): Aryeo's own signed word is delivery. Since Oct 2 these
+ * passes also demanded Kyle's upload receipt and a provider content hash
+ * Aryeo does not publish, so they could never close a row by themselves. Now a
+ * SIGNED delivery event (or an accepted delivery text) that happened after the
+ * matched video went up closes the row with no receipt, recorded as "Aryeo
+ * (delivery confirmed)" — never as Kyle's upload. Unsigned traffic alone still
+ * closes nothing, and every matcher guard below is unchanged.
+ *
  * What this has to show:
  *   1. a listing that gains a video proves the right cut and stamps it;
  *   2. the wrong cut on the same job is NOT stamped;
@@ -187,6 +195,7 @@ async function main() {
   const uploaded = async (id: string) => recordUploaded(id, { id: null, name: "Kyle isolated fixture" }, sourceFingerprint((await loadCut(id))!)!);
   const trusted = async (listingId: string) => prisma.auditLog.create({ data: { target: listingId, actor: "authenticated-webhook", action: "aryeo_listing_delivery_event", detail: JSON.stringify({ listingId, occurredAt: new Date().toISOString() }) } });
   const { cutsOnTheCardFor } = await import("@/lib/readyToSend");
+  const { uploadsFor, claimListingDelivery } = await import("@/lib/deliveryUploads");
 
   console.log("=".repeat(74));
   console.log("The auto-stamp, event-driven — Aryeo says something, the right cut clears");
@@ -256,22 +265,34 @@ async function main() {
   ok("the 60s reel is a row the card is asking for", onCard.has(right.id));
   ok("the 30s teaser is a row the card is asking for", onCard.has(wrong.id), `card shows ${onCard.size}`);
 
-  // One 60s video, uploaded 4 hours after both cuts were approved.
+  // One 60s video, uploaded 4 hours after both cuts were approved. Kyle never
+  // pressed Mark as Uploaded on either — the whole point.
   LISTINGS.set(L1, {
     delivery_status: "DELIVERED",
-    videos: [{ id: v7(T0 + 4 * HOUR), duration: 60, title: "Cinematic Video", content_hash: "fixture-Cardigan reel" }],
+    videos: [{ id: v7(T0 + 4 * HOUR), duration: 60, title: "Cinematic Video" }],
   });
-  await uploaded(right.id); await uploaded(wrong.id); await trusted(L1);
 
   console.log("\n2. A LISTING THAT GAINED A VIDEO — the matching runs on the event, not on the hour");
+  const r0 = await proveListingNow(L1, "drill: unsigned traffic only");
+  ok("with no signed delivery on record, the same listing closes nothing", r0.looked && r0.stamped === 0 && (await prisma.reviewSubmission.count({ where: { id: { in: [right.id, wrong.id] }, sentToClientAt: { not: null } } })) === 0, r0.note);
+  // OLD (Oct 2-5): the claim refused any send without Kyle's receipt, so even
+  // Aryeo's signed word could not close the row. NEW: the proof pass may, and
+  // the claim re-checks that word itself — the flag alone buys nothing.
+  const flagOnly = await claimListingDelivery(right.id, "drill", undefined, { providerConfirmed: true });
+  ok("the provider flag alone (no signed delivery yet) is refused by the claim", !flagOnly.ok, flagOnly.ok ? "" : flagOnly.message);
+  await trusted(L1);
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   const r1 = await proveListingNow(L1, "drill: LISTING_CONTENT_DOWNLOADED");
   console.log(`   ${r1.note}`);
   const rightRow = await prisma.reviewSubmission.findUnique({ where: { id: right.id }, select: { sentToClientAt: true, sentToClientBy: true } });
   const wrongRow = await prisma.reviewSubmission.findUnique({ where: { id: wrong.id }, select: { sentToClientAt: true } });
   ok("the pass looked", r1.looked && r1.stamped === 1, `stamped ${r1.stamped}`);
-  ok("the 60s reel is stamped sent", rightRow?.sentToClientAt != null, rightRow?.sentToClientBy ?? "");
+  ok("NEW: the 60s reel is stamped sent with NO upload receipt", rightRow?.sentToClientAt != null && !(await uploadsFor([right.id])).has(right.id), rightRow?.sentToClientBy ?? "");
   ok("the 30s teaser is NOT stamped", wrongRow?.sentToClientAt == null);
   ok("the stamp names the video that proved it", (rightRow?.sentToClientBy ?? "").includes("Cinematic Video"));
+  ok("…and says Aryeo confirmed it, not that anybody uploaded it", (rightRow?.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && !/upload/i.test(rightRow?.sentToClientBy ?? ""));
+  const line = await prisma.activity.findFirst({ where: { projectId: p1.id, type: "SYSTEM" }, select: { body: true } });
+  ok("the timeline reads 'Video delivered (Aryeo confirmed)'", (line?.body ?? "").startsWith("Video delivered (Aryeo confirmed)"), line?.body ?? "");
 
   // ---- 3: a replay changes nothing ----------------------------------------
   console.log("\n3. THE SAME EVENT AGAIN — a retry, a replay, and the hourly sweep behind it");
@@ -310,16 +331,33 @@ async function main() {
 
   // THE COUNTERFACTUAL. Same listing, same video, same cut — with the download
   // stamp removed. If this did not stamp, the case above would prove nothing
-  // about the guard and everything about the fixtures.
+  // about the guard and everything about the fixtures. (A signed delivery is on
+  // record for L2 throughout, so it is the download stamp alone that said no.)
+  await trusted(L2);
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
+  const r2s = await proveListingNow(L2, "drill: the download contradicts, signed delivery on record");
+  ok("…even with a signed delivery on record, the download stamp still says no", r2s.stamped === 0 && (await prisma.reviewSubmission.findUnique({ where: { id: late.id } }))?.sentToClientAt == null, r2s.note);
   await prisma.reviewSubmission.update({ where: { id: late.id }, data: { downloadedAt: null, downloadedBy: null } });
   await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   const r2b = await proveListingNow(L2, "drill: the same case with no download stamp");
   const lateRow2 = await prisma.reviewSubmission.findUnique({ where: { id: late.id }, select: { sentToClientAt: true } });
-  ok("removing download does not fabricate upload or delivery evidence", r2b.stamped === 0 && lateRow2?.sentToClientAt == null, r2b.note);
-  await uploaded(late.id); await trusted(L2);
-  LISTINGS.get(L2)!.videos[0].content_hash = "fixture-Raymond reel";
+  ok("without the download stamp the very same case DOES stamp", r2b.stamped === 1 && lateRow2?.sentToClientAt != null, r2b.note);
+
+  // KYLE'S EXACT-BYTES PATH IS KEPT (Oct 2): an in-place replacement whose
+  // media ID predates this file can only be matched by its own bytes, never by
+  // a delivery occurrence alone.
+  const L5 = "01a0d0d5-e4c0-705f-a848-c0b89de99172";
+  const p5 = await mkJob("7 Replacement Way", L5);
+  const replaced = await mkCut(p5.id, { name: "Replacement reel", approvedAt: new Date(T0 + 6 * HOUR), lengthSec: 59 });
+  LISTINGS.set(L5, { delivery_status: "DELIVERED", videos: [{ id: v7(T0 + 4 * HOUR), duration: 59, title: "Standard Reel" }] });
+  await trusted(L5);
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
+  const r5a = await proveListingNow(L5, "drill: an older media ID, no receipt");
+  ok("a delivery occurrence never lets an OLDER media ID stand in for a newer file", r5a.stamped === 0 && (await prisma.reviewSubmission.findUnique({ where: { id: replaced.id } }))?.sentToClientAt == null, r5a.note);
+  await uploaded(replaced.id); await trusted(L5);
+  LISTINGS.get(L5)!.videos[0].content_hash = "fixture-Replacement reel";
   const swept = await (await import("@/lib/aryeoDelivery")).sweepReadyToSendAgainstAryeo({ max: 12 });
-  ok("hourly sweep accepts exact replacement bytes with unchanged media ID", !!(await prisma.reviewSubmission.findUnique({ where: { id: late.id } }))?.sentToClientAt, JSON.stringify(swept.jobs));
+  ok("hourly sweep accepts exact replacement bytes with unchanged media ID", !!(await prisma.reviewSubmission.findUnique({ where: { id: replaced.id } }))?.sentToClientAt, JSON.stringify(swept.jobs));
 
   // ---- 5: the download EVENT carries it, end to end -----------------------
   console.log("\n5. THE EVENT ITSELF — LISTING_CONTENT_DOWNLOADED through the shipped handler");
@@ -351,13 +389,14 @@ async function main() {
   const limeRow2 = await prisma.reviewSubmission.findUnique({ where: { id: limeport.id }, select: { sentToClientAt: true } });
   ok("the 10-second retry changes nothing", limeRow2?.sentToClientAt?.getTime() === limeRow?.sentToClientAt?.getTime(), ev2.note);
 
-  await uploaded(limeport.id);
-  LISTINGS.get(L3)!.videos[0].content_hash = "fixture-Limeport reel";
   await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   const deliveryEvent = { ...activity, id: "isolated-delivery-event", name: "LISTING_DELIVERED", occurred_at: new Date().toISOString() };
+  const unsigned = await handleAryeoActivity("LISTING_DELIVERED", { ...deliveryEvent, id: "isolated-unsigned-event" });
+  ok("an UNSIGNED delivery post closes nothing and records no occurrence", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } })).sentToClientAt == null && await prisma.auditLog.count({ where: { target: L3, action: "aryeo_listing_delivery_event" } }) === 0, unsigned.note);
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   await handleAryeoActivity("LISTING_DELIVERED", deliveryEvent, { authenticated: true });
   const delivered = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } });
-  ok("authenticated delivery occurrence settles the exact uploaded non-Topaz cut", !!delivered.sentToClientAt);
+  ok("NEW: a signed delivery settles the non-Topaz cut with no upload receipt", !!delivered.sentToClientAt && (delivered.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && !(await uploadsFor([limeport.id])).has(limeport.id), delivered.sentToClientBy ?? "");
   await handleAryeoActivity("LISTING_DELIVERED", deliveryEvent, { authenticated: true });
   ok("duplicate authenticated occurrence preserves timestamp and one ledger record", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } })).sentToClientAt?.getTime() === delivered.sentToClientAt?.getTime() && await prisma.auditLog.count({ where: { target: L3, action: "aryeo_listing_delivery_event" } }) === 1);
 
@@ -367,6 +406,7 @@ async function main() {
   const p4 = await mkJob("893 S Matlack St", L4);
   const matlack = await mkCut(p4.id, { name: "Matlack reel", approvedAt: new Date(T0), lengthSec: 60 });
   LISTINGS.set(L4, { delivery_status: "PROCESSING", videos: [{ id: v7(T0 + 2 * HOUR), duration: 60, title: "Cinematic Video" }] });
+  await trusted(L4); // even a signed event cannot make an undelivered listing delivered
   const r4 = await proveListingNow(L4, "drill: not delivered");
   const matRow = await prisma.reviewSubmission.findUnique({ where: { id: matlack.id }, select: { sentToClientAt: true } });
   ok("a video on an undelivered listing stamps nothing", !r4.looked && matRow?.sentToClientAt == null, r4.note);

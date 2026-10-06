@@ -60,7 +60,10 @@ async function main() {
     const photographer = render(Sidebar, user("PHOTOGRAPHER"));
     check("owner has the six requested groups in order", [...owner.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "daily,production,clients,team,reference,administration");
     check("Daily work and Production remain directly visible", !group(owner, "daily").includes("<details") && !group(owner, "production").includes("<details") && group(owner, "daily").includes('href="/tasks"') && group(owner, "production").includes('href="/review"'));
-    check("secondary owner groups start collapsed", ["clients", "team", "reference", "administration"].every((id) => group(owner, id).includes("<details") && !/<details[^>]*\sopen(?:[\s=>])/.test(group(owner, id))));
+    check("secondary owner groups start collapsed", ["team", "reference", "administration"].every((id) => group(owner, id).includes("<details") && !/<details[^>]*\sopen(?:[\s=>])/.test(group(owner, id))));
+    // Oct 5 2026: Clients (Content Program + Clients) is open by default — the
+    // office is onboarding clients this week. For every role that has it.
+    check("Clients group is open by default with both doors visible", ["OWNER", "ADMIN"].every((role) => { const html = render(Sidebar, user(role)); return !group(html, "clients").includes("<details") && group(html, "clients").includes('href="/content"') && group(html, "clients").includes('href="/clients"'); }));
     check("disclosure summaries participate in the existing drawer focus selector", [...owner.matchAll(/<summary\b([^>]*)>/g)].every((match) => match[1].includes('tabindex="0"')));
     const both = renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(Sidebar, { user: user("OWNER") }), React.createElement(Sidebar, { user: user("OWNER") })));
     const ids = [...both.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);

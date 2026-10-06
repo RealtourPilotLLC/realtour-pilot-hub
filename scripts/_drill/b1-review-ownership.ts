@@ -20,8 +20,10 @@
 //   1  Nothing configured → the new code behaves exactly like the old.
 //   2  James primary, Kyle backup, Jordan fallback → ONE reviewer per cut, one
 //      SUBMITTED event, the assignee's person row + Jordan's oversight + Kyle's
-//      FYI (his Slack DM kept), James bell-only by his own switch; a repeat or
-//      a race writes nothing more.
+//      FYI (his Slack DM kept); a repeat or a race writes nothing more. James
+//      gets "Video in review" on Slack by the SEAT default (Oct 5 2026: first
+//      and backup seats, Slack ID on file, nothing saved) — a saved bell-only
+//      switch still wins, and his own quiet time holds the DM, never drops it.
 //   3  Scoped authority: James approves as ADMIN and as a non-admin seat;
 //      Harrison (even with the creative-manager flag), Kim and "view as" are
 //      refused; Kyle/Jordan ruling on James's cut is ONE call and a COVER
@@ -147,7 +149,7 @@ async function main() {
   const { prisma } = await import("@/lib/prisma");
   const { saveSecret } = await import("@/lib/integrations/connections");
   const { putSetting } = await import("@/lib/settings");
-  const { notifyPrefsFor } = await import("@/lib/notifyPrefs");
+  const { notifyPrefsFor, hasExplicitNotifyPrefs } = await import("@/lib/notifyPrefs");
   const { announceCutInReview } = await import("@/lib/reviewCuts");
   const ra = await import("@/lib/reviewerAssignment");
   const actions = await import("@/app/review/actions");
@@ -215,15 +217,23 @@ async function main() {
       data: { title: `${street}, Royersford, PA`, clientId: client.id, status: "REVIEW", addressLine: street, photographerId },
       select: { id: true },
     });
-    const d = await prisma.deliverable.create({ data: { projectId: p.id, type: "VIDEO", label: "Listing Reel", quantity: 1 }, select: { id: true } });
-    return { id: p.id, deliverableId: d.id, street };
+    return { id: p.id, street };
   };
   type Job = Awaited<ReturnType<typeof mkJob>>;
+  // EVERY CUT IS ITS OWN VIDEO (Oct 5 2026). Until today every cut here was
+  // another round of the SAME video (one deliverable, slot 1, round = seq), so
+  // since 7cb9e03 — only the newest version of a video may be ruled on, which
+  // is intended — "James approves" on cut2 was refused as a replaced version
+  // before the permission question was ever asked, and two later lines read
+  // that refusal as their subject. Each cut now gets its own deliverable (its
+  // own deliverable×slot, i.e. its own DeliverableOutput), version 1, so every
+  // approve / send back / take below asks exactly the question it names.
   const mkCut = async (job: Job, over: Record<string, unknown> = {}) => {
     seq++;
+    const d = await prisma.deliverable.create({ data: { projectId: job.id, type: "VIDEO", label: `Listing Reel ${seq}`, quantity: 1 }, select: { id: true } });
     const row = await prisma.reviewSubmission.create({
       data: {
-        projectId: job.id, deliverableId: job.deliverableId, slot: 1, round: seq, kind: "video", source: "upload",
+        projectId: job.id, deliverableId: d.id, slot: 1, round: 1, kind: "video", source: "upload",
         status: "PENDING", fileName: `cut-${seq}.mp4`, submittedByKey: "kim", submittedByName: "Kim Miguel",
         createdAt: new Date(Date.now() - 60_000), ...over,
       },
@@ -292,7 +302,18 @@ async function main() {
   const chain = await ra.reviewerChain();
   c.ok("the chain reads three seats in order", chain.members.map((m) => m.slot).join(",") === "PRIMARY,BACKUP,FALLBACK" && chain.members.every((m) => m.canRule));
   c.ok("the active reviewer is James", (await ra.resolveActiveReviewer())?.teamMemberId === james.id);
-  c.ok("James's own 'video in review' switch is bell-only (shipped default, never flipped here)", !(await notifyPrefsFor(james.id)).review_ready.slack && !(await notifyPrefsFor(james.id)).review_ready.sms);
+  // Oct 5 2026 (team notifications pass): the Review Room's first and backup
+  // seats get "Video in review" on Slack by default when a Slack ID is on file
+  // and nothing is saved — the SEAT decides, not the roster role (James is
+  // PHOTOGRAPHER on it). Until Oct 5 this line asserted his bell-only default.
+  const jamesDefault = (await notifyPrefsFor(james.id)).review_ready;
+  c.ok("James (first seat, Slack ID on file, nothing saved): 'video in review' defaults to Slack — never a text", jamesDefault.slack && !jamesDefault.sms && !(await hasExplicitNotifyPrefs(james.id)), JSON.stringify(jamesDefault));
+  const harrisonDefault = (await notifyPrefsFor(harrison.id)).review_ready;
+  c.ok("…the seat decides, not the role: Harrison (photographer, Slack ID on file, no seat) stays bell-only", !harrisonDefault.slack && !harrisonDefault.sms, JSON.stringify(harrisonDefault));
+  await prisma.teamMember.update({ where: { id: james.id }, data: { slackId: null } });
+  const jamesNoId = (await notifyPrefsFor(james.id)).review_ready;
+  await prisma.teamMember.update({ where: { id: james.id }, data: { slackId: "U-JAMES" } });
+  c.ok("…and the same seat with no Slack ID on file gets no Slack default", !jamesNoId.slack && !jamesNoId.sms, JSON.stringify(jamesNoId));
   const J2 = await mkJob("12 Owner St");
   const cut2 = await mkCut(J2);
   slack.length = 0;
@@ -311,9 +332,18 @@ async function main() {
   // Jordan, Sep 25: all three are told; Kyle's copy names his part in it.
   c.ok("Kyle's Slack DM is kept, and says James is first and Kyle may rule", dmsTo(kyle).length === 1 && /James reviews it first/.test(dmsTo(kyle)[0].text) && /approve it or send it back yourself/.test(dmsTo(kyle)[0].text), dmsTo(kyle)[0]?.text ?? "none");
   c.ok("Jordan's oversight DM says James is first and he may approve any time, and his text is queued as before", dmsTo(jordan).length === 1 && /James reviews it first/.test(dmsTo(jordan)[0].text) && /approve it any time/.test(dmsTo(jordan)[0].text) && (await smsFor(jordan)) === jordanSmsBefore + 1, dmsTo(jordan)[0]?.text ?? "none");
-  c.ok("James: bell only — no DM, no text", dmsTo(james).length === 0 && (await smsFor(james)) === 0);
-  const jamesLegs = await prisma.notificationDelivery.findMany({ where: { teamMemberId: james.id }, select: { channel: true, status: true } });
-  c.ok("…and his delivery log says bell, nothing else", jamesLegs.length >= 1 && jamesLegs.every((l) => l.channel === "bell"), JSON.stringify(jamesLegs));
+  // Oct 5 2026: was "bell only — no DM, no text" (the seat default above).
+  c.ok("James: ONE Slack DM saying it is waiting on him — and no text", dmsTo(james).length === 1 && /Waiting on you — 12 Owner St/.test(dmsTo(james)[0].text) && (await smsFor(james)) === 0, dmsTo(james).map((m) => m.text).join(" | ") || "none");
+  const legsOf = async (tm: { id: string }, cutId: string) => {
+    const row = await prisma.notification.findFirst({ where: { userKey: `tm:${tm.id}`, dedupeKey: { startsWith: `cut-in-review-${cutId}-` } }, select: { id: true } });
+    if (!row) return [];
+    const legs = await prisma.notificationDelivery.findMany({ where: { teamMemberId: tm.id, notificationId: row.id }, select: { channel: true, status: true } });
+    return legs.map((l) => `${l.channel}:${l.status}`).sort();
+  };
+  const jamesLegs = await legsOf(james, cut2);
+  c.ok("…and his delivery log says exactly bell + one Slack sent, nothing else", JSON.stringify(jamesLegs) === JSON.stringify(["bell:sent", "slack:sent"]), JSON.stringify(jamesLegs));
+  const jamesAll = await prisma.notificationDelivery.findMany({ where: { teamMemberId: james.id }, select: { channel: true, status: true } });
+  c.ok("…and in his whole log so far: one Slack DM, never a text", jamesAll.filter((l) => l.channel === "slack").length === 1 && jamesAll.every((l) => l.channel !== "sms"), JSON.stringify(jamesAll));
   const rowsBefore = await prisma.notification.count();
   await announce(J2, cut2);
   c.ok("a repeat announce adds 0 rows and 0 events", (await prisma.notification.count()) === rowsBefore && (await events(cut2)).length === 1);
@@ -326,6 +356,46 @@ async function main() {
   const cutShot = await mkCut(Jshot);
   await announce(Jshot, cutShot);
   c.ok("James shooting a job he reviews hears it ONCE, as its reviewer", (await rowsFor(cutShot)).filter((r) => r.userKey === `tm:${james.id}`).length === 1);
+
+  // ---- the seat default's two limits (Oct 5 2026) --------------------------
+  // A SAVED preference still wins: James switching "Video in review" to bell
+  // only is honoured exactly as before the seat default existed.
+  const prefsKey = `notify-prefs:${james.id}`;
+  const off = { slack: false, sms: false };
+  await putSetting(prefsKey, { mention: { ...off }, project_message: { ...off }, job_ping: { ...off }, review_ready: { ...off }, shoot_change: { ...off } });
+  const jamesSaved = (await notifyPrefsFor(james.id)).review_ready;
+  c.ok("a SAVED bell-only switch beats the seat default", !jamesSaved.slack && !jamesSaved.sms && (await hasExplicitNotifyPrefs(james.id)), JSON.stringify(jamesSaved));
+  const cutSaved = await mkCut(J2);
+  slack.length = 0;
+  const jamesSmsSaved = await smsFor(james);
+  await announce(J2, cutSaved);
+  c.ok("…the next cut is still his, and his person row rings", (await sub(cutSaved)).reviewerTeamMemberId === james.id && (await rowsFor(cutSaved)).filter((r) => r.userKey === `tm:${james.id}`).length === 1);
+  c.ok("…bell only: no DM, no text", dmsTo(james).length === 0 && (await smsFor(james)) === jamesSmsSaved, dmsTo(james).map((m) => m.text).join(" | "));
+  const savedLegs = await legsOf(james, cutSaved);
+  c.ok("…and that row's delivery log says bell, nothing else", JSON.stringify(savedLegs) === JSON.stringify(["bell:sent"]), JSON.stringify(savedLegs));
+  // Back to "nothing saved" (putSetting drops the cached copy; the row goes).
+  await putSetting(prefsKey, {});
+  await prisma.appSetting.delete({ where: { key: prefsKey } });
+  c.ok("…and with the saved row gone the seat default is back", (await notifyPrefsFor(james.id)).review_ready.slack && !(await hasExplicitNotifyPrefs(james.id)));
+  // QUIET HOURS: James's own quiet time (Tue 9–11 AM ET, around the pinned
+  // 10 AM) holds the Slack DM until it ends — the bell rings at once, the DM
+  // is kept (never dropped, never turned into a text he did not ask for).
+  const { saveSchedule, HELD_DM_PREFIX } = await import("@/lib/notifySchedule");
+  await saveSchedule(james.id, [{ day: 2, from: 9 * 60, to: 11 * 60 }], "drill");
+  const cutQuiet = await mkCut(J2);
+  slack.length = 0;
+  const jamesSmsQuiet = await smsFor(james);
+  await announce(J2, cutQuiet);
+  const heldForJames = (await prisma.appSetting.findMany({ where: { key: { startsWith: `${HELD_DM_PREFIX}${james.id}:` } }, select: { value: true } }))
+    .map((r) => JSON.parse(r.value) as { until?: string; text?: string; settledAt?: string });
+  c.ok("quiet hours: inside James's own quiet time the bell still rings at once", (await rowsFor(cutQuiet)).filter((r) => r.userKey === `tm:${james.id}`).length === 1);
+  c.ok("…the DM is NOT sent now — none went out, and no text stands in for it", dmsTo(james).length === 0 && (await smsFor(james)) === jamesSmsQuiet, dmsTo(james).map((m) => m.text).join(" | "));
+  c.ok("…it is held on Slack until his quiet time ends (11:00 AM ET), once",
+    heldForJames.length === 1 && heldForJames[0].until === et(22, 11).toISOString() && /Waiting on you/.test(heldForJames[0].text ?? "") && !heldForJames[0].settledAt,
+    JSON.stringify(heldForJames));
+  const quietLegs = await legsOf(james, cutQuiet);
+  c.ok("…and the log says bell sent + Slack queued (held), nothing sent", JSON.stringify(quietLegs) === JSON.stringify(["bell:sent", "slack:queued"]), JSON.stringify(quietLegs));
+  await saveSchedule(james.id, null, "drill");
 
   // =========================================================================
   c.head("3 · SCOPED AUTHORITY on the real server actions (AUTH_ENFORCE on)");
@@ -564,7 +634,9 @@ async function main() {
   viewer = V.kyle;
   const seats = await actions.loadCutReviewerSeats();
   const jamesSeat = seats.find((s) => s.id === james.id);
-  c.ok("Settings: James's seat reads 'bell-only' (his switch, shown not flipped)", !!jamesSeat && !jamesSeat.reviewReady.slack && !jamesSeat.reviewReady.sms && jamesSeat.canRuleIfDesignated);
+  // Oct 5 2026: was "reads 'bell-only'" — the card shows what the bridge does,
+  // and for the first seat with nothing saved that is now Slack (no text).
+  c.ok("Settings: James's seat reads Slack on, text off (the seat default, as the bridge acts on it)", !!jamesSeat && jamesSeat.reviewReady.slack && !jamesSeat.reviewReady.sms && jamesSeat.canRuleIfDesignated, JSON.stringify(jamesSeat?.reviewReady));
   viewer = V.harrison;
   c.ok("…and the seat list is the desk's only", (await actions.loadCutReviewerSeats()).length === 0);
   viewer = null;

@@ -182,6 +182,14 @@ async function main() {
     select: { id: true },
   });
 
+  // Since Oct 2 Kyle's press needs his Mark as Uploaded for this exact file.
+  {
+    const { recordUploaded } = await import("@/lib/deliveryUploads");
+    const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
+    const up = await recordUploaded(sub.id, { id: null, name: "Kyle" }, sourceFingerprint((await loadCut(sub.id))!)!);
+    ok("Kyle's Mark as Uploaded is recorded first", up.ok, up.message);
+  }
+
   // THE INJECTED FAILURE, exactly as the audit ran it: the Topaz
   // acknowledgement throws AFTER the cut row has been stamped.
   const realTaskUpdate = prisma.smartTask.updateMany;

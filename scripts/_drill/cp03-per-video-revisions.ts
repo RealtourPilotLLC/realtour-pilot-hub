@@ -113,9 +113,19 @@ async function main() {
     await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: streamUrlFor(row.id) } });
     return row.id;
   };
+  // Approval, then its portal publication — since a60424b (Oct 2) the
+  // publication is the release. Publication needs Topaz and Dropbox (fenced
+  // here), so its release, window and round answer are recorded the way
+  // publishApprovedCutToLibrary does (scripts/_fixtures/reviewWorld.ts).
   const release = async (id: string) => {
     const r = await rr.approveCut(id);
     if (!r.ok) throw new Error(`release ${id}: ${r.message}`);
+    await prisma.reviewSubmission.update({ where: { id }, data: { clientReleasedAt: new Date(), clientReleasedBy: "Portal publication" } });
+    const { openReviewWindow } = await import("@/lib/reviewWindows");
+    await openReviewWindow(id, { by: "Portal publication" });
+    const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id } });
+    const { correctedCutApproved } = await import("@/lib/reviewCuts");
+    await correctedCutApproved(cut.projectId, { cutCreatedAt: cut.createdAt, round: cut.round, cut: { id: cut.id, deliverableId: cut.deliverableId, slot: cut.slot, assetPath: cut.assetPath } });
     return r;
   };
   const note = (w: World, sub: string, body: string) =>

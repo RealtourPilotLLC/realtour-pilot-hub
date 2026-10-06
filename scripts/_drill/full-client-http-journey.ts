@@ -162,7 +162,12 @@ async function main() {
     for (let i = 0; i < 60; i++) { if (server.exitCode !== null) throw new Error("Owned server stopped during setup; inspect private server log."); try { if ((await get("/login")).status === 200) { ready = true; break; } } catch { /* wait only for our known process */ } await wait(500); }
     if (!ready) throw new Error("Owned server did not become ready in30s.");
     for (const person of personas) { const form = new FormData(); form.set("email", person.email); form.set("password", password); form.set("next", "/"); const logged = await action("/login", "src/app/login/actions.ts", "loginWithPassword", [form]); person.cookie = cookieFrom(logged.response, "rtp_session"); if (logged.response.status !== 200 || logged.flightError || logged.result?.ok !== true || !person.cookie) throw new Error("Isolated signed staff password transport failed."); }
-    const entered = await get(login.url); privateManifest.clientCookie = cookieFrom(entered, "rtp_client");
+    // Oct 5: opening the link shows a button; its POST signs in — and that POST
+    // must prove it came from our own page (a same-origin Origin, as the
+    // browser sends when the button is pressed). The cookie assignment was
+    // swallowed into this comment by the first edit; it runs again.
+    const entered = await fetch(new URL(login.url, BASE), { method: "POST", redirect: "manual", headers: { origin: BASE } });
+    privateManifest.clientCookie = cookieFrom(entered, "rtp_client");
     if (entered.status !== 303 || !privateManifest.clientCookie) throw new Error("One-use client login failed.");
     const clientCookie = privateManifest.clientCookie, auth = { enrollmentId: f.enrollmentId }, contentUrl = `/content/${f.enrollmentId}`, portalUrl = "/portal/me";
     fs.writeFileSync(privateFile, JSON.stringify(privateManifest, null, 2), { mode: 0o600 });

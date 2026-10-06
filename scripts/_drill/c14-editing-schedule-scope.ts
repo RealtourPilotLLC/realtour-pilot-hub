@@ -35,6 +35,16 @@ function hrefs(tree: unknown): string[] {
 function queueRows(tree: unknown, key: "notDone" | "upcoming" | "done") {
   return elements(tree, "SimpleQueue")[0]?.[key] as QueueRow[] | undefined ?? [];
 }
+// Oct 5: Home streams its secondary sections (Suspense around async server
+// components that await reads started with the page's own). Resolve those
+// named components so the checks read the page as it finishes composing.
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+async function settleHome(tree: unknown): Promise<unknown> {
+  if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
+  if (!isValidElement<Props>(tree)) return tree;
+  if (typeof tree.type === "function" && STREAMED_HOME.has(tree.type.name)) return settleHome(await (tree.type as (props: Props) => Promise<unknown>)(tree.props));
+  return { ...tree, props: Object.fromEntries(await Promise.all(Object.entries(tree.props).map(async ([key, value]) => [key, await settleHome(value)] as const))) };
+}
 async function settleSchedule(tree: unknown): Promise<unknown> {
   if (isValidElement<Props>(tree) && typeof tree.type === "function" && ["ListView", "MapView"].includes(tree.type.name)) return (tree.type as (props: Props) => Promise<unknown>)(tree.props);
   return tree;
@@ -172,7 +182,7 @@ async function main() {
     const dials = await getOwnerDials({ excludeClientIds: [fixture.id] });
     const dialHtml = renderToStaticMarkup(createElement(QualityDials, { dials, includeTest: true }));
     c.ok("SLA dial labels its existing sample definition and links to matching explicit scope", dialHtml.includes("in the SLA sample") && dialHtml.includes('href="/editing?test=1"') && dialHtml.includes("also includes waiting and upcoming projects"));
-    const homeTest = await home({ searchParams: Promise.resolve({ test: "1" }) });
+    const homeTest = await settleHome(await home({ searchParams: Promise.resolve({ test: "1" }) }));
     c.ok("Home composes explicit record scope through week and SLA presentations", elements(homeTest, "WeekStrip")[0].includeTest === true && elements(homeTest, "QualityDials")[0].includeTest === true && hrefs(homeTest).includes("/schedule?test=1"));
     c.ok("scope reads preserve assignments, manual work, source tasks, settings and client-send boundary", before === await sourceSnapshot() && await prisma.outboxMessage.count() === 0 && fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();

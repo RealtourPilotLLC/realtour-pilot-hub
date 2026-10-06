@@ -4,9 +4,16 @@
 // The earlier completed planning call, externally booked appointment, object
 // arrival and finished renderer output are explicit isolated provider inputs.
 // No provider booking, AI generation, full media watch or browser claim.
+import { createHash } from "node:crypto";
 import { bootDrillDb, installNextStubs, interceptModule, fenceFetch, makeChecker } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 import type { VersionParts } from "@/lib/contentScripts";
+
+// Oct 5 2026: the sign-in button's POST must prove it came from our own page —
+// a same-origin Origin or Sec-Fetch-Site: same-origin, which is what a browser
+// sends when the "Continue to your portal" button on that page is pressed (a
+// POST with neither is now refused). The drill presses it as a browser would.
+const SAME_SITE_PRESS = { "sec-fetch-site": "same-origin" };
 
 const RealDate = Date;
 let clock = RealDate.UTC(2026, 9, 1, 14);
@@ -33,6 +40,10 @@ const ANSWERS: Record<string, string> = {
 const FINAL_BYTES = "isolated-verified-render-v2";
 let expectedFinalPath = "";
 const mediaPaths: string[] = [];
+/** The verified 1080p files filed in the job's Final folder — Dropbox's metadata
+ *  answer for these is a real file proof (id, rev, content hash), which the
+ *  portal publication reads (Oct 5 2026). Everything else keeps the old shape. */
+const verifiedFinals = new Set<string>();
 
 async function main() {
   const db = await bootDrillDb({ port: Number(process.env.DRILL_PORT ?? 5964), env: { AUTH_ENFORCE: "true", APP_SECRET: "isolated-complete-client-journey-secret", BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_drillstore_isolated", DROPBOX_APP_KEY: "isolated-dropbox-key", DROPBOX_APP_SECRET: "isolated-dropbox-secret" } });
@@ -51,7 +62,14 @@ async function main() {
       return new Response(JSON.stringify({ metadata: { ".tag": "file", path_display: body.to_path } }));
     }
     if (url === "https://api.dropboxapi.com/2/files/save_url") return new Response(JSON.stringify({ ".tag": "complete" }));
-    if (url === "https://api.dropboxapi.com/2/files/get_metadata") return new Response(JSON.stringify({ ".tag": "file", size: 100, content_hash: "fixture-cut-content" }));
+    if (url === "https://api.dropboxapi.com/2/files/get_metadata") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { path?: string };
+      if (body.path && verifiedFinals.has(body.path)) {
+        const hash = createHash("sha256").update(`verified-final:${body.path}`).digest("hex");
+        return new Response(JSON.stringify({ ".tag": "file", id: `id:${hash.slice(0, 16)}`, rev: "0fixturefinal1", content_hash: hash, size: FINAL_BYTES.length, name: body.path.split("/").pop(), path_display: body.path, path_lower: body.path.toLowerCase() }));
+      }
+      return new Response(JSON.stringify({ ".tag": "file", size: 100, content_hash: "fixture-cut-content" }));
+    }
     if (url === "https://api.dropboxapi.com/2/files/get_temporary_link") {
       const body = JSON.parse(String(init?.body ?? "{}")) as { path?: string };
       mediaPaths.push(body.path ?? "");
@@ -107,7 +125,7 @@ async function main() {
 
     c.head("Signed normal client and attributable onboarding");
     const link = await mintLoginLink(f.membershipId!, null);
-    const login = await loginRoute.GET(new NextRequest(link.url), { params: Promise.resolve({ token: new URL(link.url).pathname.split("/").pop()! }) });
+    const login = await loginRoute.POST(new NextRequest(link.url, { method: "POST", headers: SAME_SITE_PRESS }), { params: Promise.resolve({ token: new URL(link.url).pathname.split("/").pop()! }) });
     clientCookie = login.cookies.get("rtp_client")?.value ?? null;
     const auth = { enrollmentId: f.enrollmentId };
     const r = await portal.resolvePortalViewer({ ...auth, cookies: { get: (name) => name === "rtp_client" ? clientCookie ?? undefined : undefined } });
@@ -259,8 +277,28 @@ async function main() {
     const finishing = (await clientCutFiles([v2])).get(v2);
     const finishingApproval = await pa.portalApproveCut(auth, v2, "NONE");
     c.ok("the client cannot accept the export while its final rendition is processing", finishing?.kind === "finishing" && !finishingApproval.ok, finishingApproval.message);
-    expectedFinalPath = "/Fixture/05-Final-Video/pricing-v2-FINAL.mp4";
+    // Oct 5 2026 — THE PORTAL PUBLICATION GATE (a60424b, Oct 2): James's
+    // approval no longer hands the client the video; its checked 1080p file,
+    // filed in the job's own Final folder, is PUBLISHED to the portal (the
+    // monthly handoff), and only then can the client decide. The renders are
+    // filed where the gate looks (the job's actual Final folder), and the
+    // product's own publication runs — the same call the hourly repair makes
+    // (repairMonthlyPublications → publishApprovedCutToLibrary).
+    const { actualFolderPaths } = await import("@/lib/dropboxFolders");
+    const job = await prisma.project.findUniqueOrThrow({ where: { id: project.id }, include: { client: { select: { id: true, name: true } } } });
+    const finalFolder = actualFolderPaths(job).finalVideo;
+    expectedFinalPath = `${finalFolder}/pricing-v2-FINAL.mp4`;
+    const siblingFinalPath = `${finalFolder}/buyer-visit-v1-FINAL.mp4`;
+    verifiedFinals.add(expectedFinalPath);
+    verifiedFinals.add(siblingFinalPath);
     await prisma.topazJob.update({ where: { id: render.id }, data: { state: "done", finalPath: expectedFinalPath, savedAt: new Date(), outputCheck: "verified", finishedAt: new Date() } });
+    await prisma.topazJob.create({ data: { projectId: project.id, submissionId: sibling, state: "done", fileName: "buyer-visit-v1.mp4", finalPath: siblingFinalPath, savedAt: new Date(), outputCheck: "verified", finishedAt: new Date() } });
+    const published = await videos.publishApprovedCutToLibrary(v2);
+    const siblingPublished = await videos.publishApprovedCutToLibrary(sibling);
+    const handoffs = await (await import("@/lib/cutEntitlement")).monthlyPortalHandoffsFor([v2, sibling]);
+    c.ok("the verified 1080p files are published to the client's portal by the product's own publication path, each with its handoff marker",
+      published.published && siblingPublished.published && handoffs.has(v2) && handoffs.has(sibling) && !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: v2 } })).clientReleasedAt,
+      JSON.stringify({ published, siblingPublished }));
     await videos.syncEnrollmentLibrary(viewer.enrollment);
     const list = await videos.portalVideoList(viewer.enrollment);
     const clientVideos = await prisma.contentVideo.findMany({ where: { enrollmentId: f.enrollmentId, status: { not: "ARCHIVED" } } });

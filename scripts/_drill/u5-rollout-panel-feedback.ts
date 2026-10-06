@@ -74,7 +74,8 @@ async function main() {
     c.ok("the entire submitted pilot form is frozen while pending, including date, groups and note", /^<fieldset disabled=""/.test(pendingAdd) && /^<fieldset disabled=""/.test(pendingEdit) && pendingAdd.includes('type="date"') && pendingAdd.includes('maxLength="500"') && pendingEdit.includes('value="2026-10-31"'));
     const addDefaults = renderToStaticMarkup(createElement(PilotForm, { data: { ...rollout, pilot: null }, busy: false, onSave() {} }));
     const addExisting = renderToStaticMarkup(createElement(PilotForm, { data: rollout, busy: false, onSave() {} }));
-    c.ok("new pilot still defaults to all five groups while an existing pilot keeps its saved two", (addDefaults.match(/type="checkbox"[^>]*checked=""/g) ?? []).length === 5 && (addExisting.match(/type="checkbox"[^>]*checked=""/g) ?? []).length === 2);
+    // Oct 5 2026: six groups ("Messages you send yourself" joined them).
+    c.ok("new pilot still defaults to every group while an existing pilot keeps its saved two", (addDefaults.match(/type="checkbox"[^>]*checked=""/g) ?? []).length === PROGRAM_PILOT_GROUPS.length && (addExisting.match(/type="checkbox"[^>]*checked=""/g) ?? []).length === 2);
     const writeOwner = renderToStaticMarkup(createElement(HubWriteScopePanel, { isOwner: true, initial: scopes }));
     const writeAdmin = renderToStaticMarkup(createElement(HubWriteScopePanel, { isOwner: false, initial: scopes }));
     c.ok("write scopes keep switch-off state, fixture refusal and the single program pilot link", writeOwner.includes("switch off") && writeOwner.includes("fixture refusal evidence") && writeOwner.includes("Pilot Fixture") && writeOwner.includes('href="#program-rollout"'));

@@ -106,6 +106,10 @@ async function main() {
         decidedBy: "Jordan", decidedAt: o.decidedAt === undefined ? new Date() : o.decidedAt, completedAt: o.completedAt ?? null, source: "upload", sizeBytes: 5,
         assetPath: o.assetPath ?? null, finalPath: o.finalPath === undefined ? `/Final/${o.fileName}` : o.finalPath, sentToClientAt: o.sentToClientAt ?? null,
         clientRequestedAt: o.clientRequestedAt ?? null, ...(o.createdAt ? { createdAt: o.createdAt } : {}),
+        // Oct 5: a monthly cut approved since the publication gate (Oct 2)
+        // reaches the client once published; these fixtures stand for released
+        // cuts, so the release is recorded at the approval's own time.
+        ...((o.status ?? "APPROVED") === "APPROVED" && o.decidedAt !== null ? { clientReleasedAt: o.decidedAt === undefined ? new Date() : o.decidedAt } : {}),
       },
       select: { id: true },
     });

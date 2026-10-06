@@ -435,11 +435,11 @@ async function main() {
   await prisma.project.update({ where: { id: V.projectId! }, data: { debriefSubmittedAt: PAST } });
   const cutIds: string[] = [];
   {
-    const mk = async (slot: number, o: { status: string; released?: boolean }) => {
+    const mk = async (slot: number, o: { status: string; released?: boolean; decidedAt?: Date }) => {
       const row = await prisma.reviewSubmission.create({
         data: {
           projectId: V.projectId!, deliverableId: V.deliverableId, slot, round: 1, fileName: `v-reel-${slot}.mp4`, status: o.status, source: "upload", sizeBytes: 5,
-          decidedBy: o.status === "APPROVED" ? "Jordan" : null, decidedAt: o.status === "APPROVED" ? now : null, clientReleasedAt: o.released ? now : null,
+          decidedBy: o.status === "APPROVED" ? "Jordan" : null, decidedAt: o.status === "APPROVED" ? o.decidedAt ?? now : null, clientReleasedAt: o.released ? now : null,
           finalPath: `/Final/v-reel-${slot}.mp4`, createdAt: at(now.getTime() - HOUR),
         },
         select: { id: true },
@@ -449,7 +449,13 @@ async function main() {
       return row.id;
     };
     await mk(1, { status: "PENDING" });
-    await mk(2, { status: "APPROVED" });
+    // Oct 5 2026: the LEGACY release is a QC approval from before the portal
+    // publication gate (contentVideos.PORTAL_PUBLICATION_GATE_SINCE, Oct 2
+    // 20:49Z). It was stamped with the real `now`, which was before the gate
+    // when this was written; since then an approval that late waits for its
+    // publication and is no longer inferred released (asserted below). So the
+    // legacy cut is dated before the gate, as the label always meant.
+    await mk(2, { status: "APPROVED", decidedAt: new Date(Date.parse("2026-10-02T20:49:00Z") - 86_400_000) });
     const s3 = await mk(3, { status: "APPROVED", released: true });
     const s4 = await mk(4, { status: "APPROVED", released: true });
     const s4row = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: s4 } });
@@ -469,6 +475,12 @@ async function main() {
     c.ok("produced 4", pr.produced === 4, String(pr.produced));
     c.ok("internally approved 1 (approved, never released)", pr.internallyApproved === 1, String(pr.internallyApproved));
     c.ok("released 2 (clientReleasedAt), the inferred legacy release kept apart (1)", pr.released === 2 && pr.releasedInferred === 1, `${pr.released}/${pr.releasedInferred}`);
+    {
+      const cv = await import("@/lib/contentVideos");
+      const late = { status: "APPROVED", decidedBy: "Jordan", decidedAt: new Date(cv.PORTAL_PUBLICATION_GATE_SINCE.getTime() + 60_000), clientReleasedAt: null, clientRequestedAt: null, sentToClientAt: null, clientApprovedDecisionId: null, portalPublicationRequiredAt: null };
+      c.ok("…while a monthly approval AFTER the gate, not yet published, is not inferred released (it waits for its 1080p publication)",
+        cv.cutReleasedAt(cv.withPublicationGate(late, true)) === null && cv.cutReleasedAt(cv.withPublicationGate({ ...late, decidedAt: new Date(cv.PORTAL_PUBLICATION_GATE_SINCE.getTime() - 60_000) }, true)) !== null);
+    }
     c.ok("client approved 1", pr.clientApproved === 1, String(pr.clientApproved));
     c.ok("downloadable 1", pr.downloadable === 1 && pr.downloadableKnown, String(pr.downloadable));
     c.ok("the Review Room's pending cut is counted as awaiting internal review", pr.awaitingInternalReview === 1);

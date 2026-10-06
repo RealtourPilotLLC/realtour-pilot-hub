@@ -282,8 +282,21 @@ async function main() {
     c.ok("D approved and sent", (await dec(cuts.D)).map((x) => x.decision).join() === "APPROVE" && !!d.sentToClientAt);
     const vids = await prisma.contentVideo.findMany({ where: { enrollmentId: full1.enrollmentId, status: { not: "ARCHIVED" } }, select: { monthKey: true, status: true, deliveredAt: true } });
     const byMonth = (k: string) => vids.filter((v) => v.monthKey === k);
-    c.ok("the library: this month A in review, B editing, C approved, D delivered", byMonth(full1.monthKey).map((v) => v.status).sort().join() === "APPROVED,CLIENT_REVIEW,DELIVERED,EDITING", byMonth(full1.monthKey).map((v) => v.status).sort().join());
-    c.ok("last month: two delivered videos", byMonth(full1.lastMonthKey).filter((v) => v.status === "DELIVERED").length === 2, byMonth(full1.lastMonthKey).map((v) => v.status).join());
+    // Oct 5 2026 — SUPERSEDED, deliberately (cutEntitlement, e6eac69, Oct 1):
+    // a monthly video handed over through the client's PORTAL is not a
+    // delivery outside it — its standing is the client's own decision, so one
+    // the client approved reads APPROVED (ready to post, downloadable), never
+    // DELIVERED, which now means delivered outside the portal or historically.
+    // D and last month's two were approved by the client and then handed over
+    // through the portal, so each must read APPROVED AND carry the exact portal
+    // handoff marker and the send stamp — the delivery is asserted on the row
+    // that records it rather than on a library word that no longer means it.
+    const handoffs = await (await import("@/lib/cutEntitlement")).monthlyPortalHandoffsFor([cuts.D, ...cuts.last]);
+    c.ok("the library: this month A in review, B editing, C approved, D approved and handed over in the portal", byMonth(full1.monthKey).map((v) => v.status).sort().join() === "APPROVED,APPROVED,CLIENT_REVIEW,EDITING" && handoffs.has(cuts.D) && !!d.sentToClientAt, `${byMonth(full1.monthKey).map((v) => v.status).sort().join()} · D handoff ${handoffs.has(cuts.D)}`);
+    const lastSent = await prisma.reviewSubmission.findMany({ where: { id: { in: cuts.last } }, select: { id: true, sentToClientAt: true } });
+    c.ok("last month: two videos, each approved by the client and handed over in the portal (sent, marker, downloadable)",
+      byMonth(full1.lastMonthKey).filter((v) => v.status === "APPROVED").length === 2 && lastSent.length === 2 && lastSent.every((x) => !!x.sentToClientAt && handoffs.has(x.id)) && (await Promise.all(lastSent.map((x) => ce.cutDownloadableFor(pair, x.id)))).every(Boolean),
+      `${byMonth(full1.lastMonthKey).map((v) => v.status).join()} · ${lastSent.map((x) => `${!!x.sentToClientAt}/${handoffs.has(x.id)}`).join(" ")}`);
     const req = await prisma.programSessionRequest.findMany({ where: { enrollmentId: full1.enrollmentId }, select: { status: true, projectId: true } });
     c.ok("the session request is confirmed on this month's job", req.length === 1 && req[0].status === "CONFIRMED" && req[0].projectId === full1.projectId, JSON.stringify(req));
     c.ok("still no appointment, no provider id", (await prisma.appointment.count({ where: { project: { clientId: dora.clientId } } })) === 0);
@@ -458,7 +471,7 @@ async function main() {
       fs.utimesSync(older, new Date("2026-09-27T12:00:00Z"), new Date("2026-09-27T12:00:00Z"));
       let facts = bf.backupFacts(dir, all);
       const f = (name: string) => facts.find((x) => x.fact === name);
-      c.ok("the newest backup is read by its header", /rtp-backup-2026-09-28-newest\.json/.test(f("newest row-level backup")?.evidence ?? "") && /143 models in the header · schema has 144/.test(f("newest row-level backup")?.evidence ?? ""), f("newest row-level backup")?.evidence);
+      c.ok("the newest backup is read by its header", /rtp-backup-2026-09-28-newest\.json/.test(f("newest row-level backup")?.evidence ?? "") && new RegExp(`${all.length - 1} models in the header · schema has ${all.length}`).test(f("newest row-level backup")?.evidence ?? "") /* Oct 5 2026: was the literal 143/144 of Sep 28; the file is written one model short of the schema, whatever its size */, f("newest row-level backup")?.evidence);
       c.ok("a header missing one model: WARN, naming it", f("backup covers its schema's models")?.labels.includes("WARN") === true && /MISSING from the file: ContentReviewWindow/.test(f("backup covers its schema's models")?.evidence ?? ""), f("backup covers its schema's models")?.evidence);
       c.ok("a world-readable backup: WARN, naming the file and its mode", f("backup files are private (0600)")?.labels.includes("WARN") === true && /rtp-backup-2026-09-27-older\.json \(644\)/.test(f("backup files are private (0600)")?.evidence ?? ""));
       c.ok("no rehearsal recorded: WARN, with the command", f("restore rehearsal for the newest backup")?.labels.includes("WARN") === true && /restore-rehearsal\.ts/.test(f("restore rehearsal for the newest backup")?.evidence ?? ""));

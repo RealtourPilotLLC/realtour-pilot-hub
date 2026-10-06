@@ -79,7 +79,7 @@ async function main() {
     const tree = await page({});
     const html = renderToStaticMarkup(tree);
     c.ok("signed owner sees summary and queue before collapsed diagnostics", html.indexOf('aria-label="Editors today"') < html.indexOf('id="editing-queue-heading"') && html.indexOf('id="editing-queue-heading"') < html.indexOf('id="editing-capacity"') && /<details[^>]*id="editing-capacity"[^>]*>/.test(html) && !/<details[^>]*id="editing-capacity"[^>]*open/.test(html));
-    c.ok("manual add remains alongside queue and counts name their units", html.includes("Add a job to the queue") && html.includes("open projects") && html.includes("videos to edit") && html.includes("overdue projects"));
+    c.ok("manual add remains alongside queue and counts name their units", html.includes("Add a job to the queue") && html.includes("open projects") && /videos to edit · \d+ late/.test(html.replace(/<!-- -->/g, "")));
     c.ok("capacity exception remains visible on collapsed summary", html.includes("recorded availability") && html.includes("change") && html.includes("in force"));
     const summary = elements(tree, "EditingWorkSummary")[0].view as EditorsTodayView;
     const summaryHtml = renderToStaticMarkup(createElement(EditingWorkSummary, { view: summary }));

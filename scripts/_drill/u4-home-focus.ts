@@ -29,6 +29,16 @@ function textOf(tree: unknown): string {
   if (Array.isArray(tree)) return tree.map(textOf).join(" ");
   return isValidElement<{ children?: unknown }>(tree) ? textOf(tree.props.children) : "";
 }
+// Oct 5: Home streams its secondary sections (Suspense around async server
+// components that await reads started with the page's own). Resolve those
+// named components so the checks read the page as it finishes composing.
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+async function settleHome(tree: unknown): Promise<unknown> {
+  if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
+  if (!isValidElement<Record<string, unknown>>(tree)) return tree;
+  if (typeof tree.type === "function" && STREAMED_HOME.has(tree.type.name)) return settleHome(await (tree.type as (props: Record<string, unknown>) => Promise<unknown>)(tree.props));
+  return { ...tree, props: Object.fromEntries(await Promise.all(Object.entries(tree.props).map(async ([key, value]) => [key, await settleHome(value)] as const))) };
+}
 class Redirect extends Error { constructor(readonly href: string) { super(href); } }
 const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never };
 navigation.redirect = (href) => { throw new Redirect(href); };
@@ -39,7 +49,8 @@ async function main() {
   try {
     const { prisma } = await import("@/lib/prisma");
     const { setSession, clearSession } = await import("@/lib/auth/session");
-    const { default: page } = await import("@/app/page");
+    const { default: home } = await import("@/app/page");
+    const page = async (props: Parameters<typeof home>[0]) => settleHome(await home(props));
     const { getReviewQueue } = await import("@/lib/reviewRoom");
     const real = await prisma.client.create({ data: { name: "Real Agent" } });
     const fixture = await prisma.client.create({ data: { name: "Avery TEST" } });
@@ -88,6 +99,10 @@ async function main() {
     const opsTree = await page({});
     c.ok("backup reviewer retains the operations first screen", textOf(opsTree).includes("Deliveries and client follow-through") && !textOf(opsTree).includes("Your creative review desk"));
     const routine = elements(opsTree, "HomeRoutine")[0];
+    // Oct 5 2026: Kyle's operations Home opens the daily checklist by default;
+    // the owner's and the creative review desk's stay folded.
+    c.ok("operations Home opens the daily checklist by default; owner and review desk keep it folded",
+      routine?.defaultOpen === true && elements(reviewTree, "HomeRoutine").every((r) => r.defaultOpen !== true));
     const blocks = elements(routine.children, "Block");
     const keys = blocks.map((b) => (b.def as { key: string }).key);
     c.ok("optional checklist retains all 15 existing block anchors", keys.length === 15 && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => keys.includes(id)) && String(routine.attention).includes("urgent work"));
@@ -110,6 +125,7 @@ async function main() {
     c.ok("delivery evidence/actions remain reachable in the original video-review block", elements(renderedBody, "VideoReviewCard")[0]?.showReady === true);
     await signIn(owner);
     const ownerTree = await page({});
+    c.ok("owner Home keeps the daily checklist folded", elements(ownerTree, "HomeRoutine").length === 1 && elements(ownerTree, "HomeRoutine")[0].defaultOpen !== true);
     c.ok("owner decision view preserves lower financial and private-task sections", textOf(ownerTree).includes("Decisions and delivery exceptions") && elements(ownerTree, "QuickAdd").length === 1 && elements(ownerTree, "PulseStrip").length === 1);
     c.ok("Home presentation never completes tasks or starts editing", (await prisma.smartTask.findUniqueOrThrow({ where: { id: task.id } })).status === "OPEN" && await prisma.editorWorkEvent.count() === 0);
     c.ok("Home checks reach no providers and send no client communication", fence.blocked.length === 0 && fence.faked.length === 0 && await prisma.outboxMessage.count() === 0);

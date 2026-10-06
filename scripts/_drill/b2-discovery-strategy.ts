@@ -521,11 +521,31 @@ async function main() {
     c.ok("the gap list is kept for Jordan, as its own section", (await sectionsOf(v1)).some((s) => s.id === "gaps"));
 
     // The manifest is deterministic and matches the files on this machine.
+    //
+    // Oct 5 2026: this compared the WHOLE rendered manifest whenever the first
+    // reference file was in ~/Downloads, so it failed the day two of the seven
+    // (the Kristin and Mike Flatley PDFs) left that folder — the render's "Not
+    // found when this was generated" line then differs. Those are real client
+    // documents and are not copied into the repository (the manifest is
+    // structure only, by design). Now: two runs must render the same bytes;
+    // with every file present the render must equal the committed manifest
+    // byte for byte, as before; with some absent, EVERY file that is present
+    // must equal its committed entry exactly (size, sha256, sections, labels)
+    // and the absent ones are named — a changed file still fails.
     const dl = path.join(os.homedir(), "Downloads");
-    if (fs.existsSync(path.join(dl, manifest.REFERENCE_FILES[0].file))) {
+    if (manifest.REFERENCE_FILES.some((f) => fs.existsSync(path.join(dl, f.file)))) {
       const a = await manifest.manifestEntries(dl), b = await manifest.manifestEntries(dl);
       const ta = manifest.renderManifest(a.entries, a.missing), tb = manifest.renderManifest(b.entries, b.missing);
-      c.ok("the manifest script is deterministic and matches the committed manifest", ta === tb && ta === fs.readFileSync(path.join(REPO, "docs", "strategy-reference-manifest.md"), "utf8"));
+      const committedText = fs.readFileSync(path.join(REPO, "docs", "strategy-reference-manifest.md"), "utf8");
+      c.ok("the manifest script is deterministic (two runs, the same bytes)", ta === tb);
+      if (a.missing.length === 0) {
+        c.ok("…and matches the committed manifest byte for byte", ta === committedText);
+      } else {
+        const committed = manifest.readManifestEntries(committedText);
+        const drifted = a.entries.filter((e) => JSON.stringify(e) !== JSON.stringify(committed.find((x) => x.file === e.file))).map((e) => e.file);
+        c.ok(`…every reference file on this machine equals its committed entry (${a.entries.length} of ${manifest.REFERENCE_FILES.length} here; absent: ${a.missing.join(", ")})`,
+          drifted.length === 0 && a.entries.length > 0 && committed.length === manifest.REFERENCE_FILES.length, drifted.length ? `drifted: ${drifted.join(", ")}` : "");
+      }
     } else c.ok("(reference files absent on this machine — determinism not re-checked)", true);
   }
 

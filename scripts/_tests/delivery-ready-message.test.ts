@@ -30,8 +30,23 @@ test("uploaded stage asks to send, never upload again", () => {
 });
 test("portal destination preserves release and access gates", () => {
   const p=plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true});
-  assert.match(p.slackDm,/portal delivery checks/);
-  assert.doesNotMatch(p.slackDm,/Upload this video to Aryeo|Mark as Uploaded|Aryeo listing:/);
+  assert.match(p.slackDm,/client's portal/);
+  // Oct 5: it no longer asks for a "final check" no screen offers.
+  assert.doesNotMatch(p.slackDm,/final check|Upload this video to Aryeo|Mark as Uploaded|Aryeo listing:/);
+});
+test("portal client not live: send the Final Dropbox link, then Mark as sent", () => {
+  const p=plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true,file:{...cut.file,dropboxUrl:"https://www.dropbox.com/home/Final?preview=final.mp4"},
+    portalStep:{action:"send-outside-portal",blocked:false,says:"Fixture client's portal isn't live yet. Send the Final Dropbox link to Fixture client, then Mark as sent."}} as ReadyVideo);
+  assert.match(p.slackDm,/Send the Final Dropbox link to Fixture client, then Mark as sent/);
+  assert.match(p.slackDm,/Final Dropbox file: https:\/\/www.dropbox.com/);
+  assert.notEqual(p.dedupeKey,plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true}).dedupeKey);
+});
+test("portal video without its checked 1080p file names the retry and offers no download", () => {
+  const p=plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true,
+    portalStep:{action:"retry-1080p",blocked:true,says:"The 1080p pass didn't finish: Topaz said no."}} as ReadyVideo);
+  assert.match(p.title,/1080p file needed/);
+  assert.match(p.slackDm,/Retry 1080p/);
+  assert.doesNotMatch(p.slackDm,/Download:|editor's export is the deliverable|final check/);
 });
 test("monthly branding explicitly switched to Aryeo uses upload workflow", () => {
   assert.match(plan({...cut,monthlyProgram:true}).slackDm,/Upload this video to Aryeo now/);

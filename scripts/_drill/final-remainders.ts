@@ -541,7 +541,12 @@ async function main() {
     const h6 = String(out.d6);
     c.ok("a 6-start day: one plain grid, no morning/afternoon labels", (h6.match(/<button/g) ?? []).length === 6 && !/Morning|Afternoon/.test(h6) && (h6.match(/grid-cols-3/g) ?? []).length === 1);
     const sched = fs.readFileSync(SCHED, "utf8");
-    c.ok("PortalScheduler draws the day through SlotTimes", /<SlotTimes day=\{activeDay\} slot=\{slot\} tz=\{tz\} onPick=\{pickSlot\} \/>/.test(sched));
+    // Oct 5 2026: the call also passes disabled={busy} now — the times stand
+    // still while the booking request is in flight (the scheduler's own
+    // useTransition), so a second tap cannot ask for a second slot. Still the
+    // ONE way the day is drawn.
+    c.ok("PortalScheduler draws the day through SlotTimes (held while a request is in flight)",
+      /<SlotTimes day=\{activeDay\} slot=\{slot\} tz=\{tz\} onPick=\{pickSlot\} disabled=\{busy\} \/>/.test(sched) && (sched.match(/<SlotTimes /g) ?? []).length === 1);
   }
 
   // =========================================================================

@@ -558,8 +558,9 @@ async function main() {
   await work.closeActiveWork(P.id, { editorKey: "kim", reason: "SUBMITTED", actor: { userId: kim.id, name: "Kim Miguel", role: "EDITOR" } });
   const s10 = await view("10");
   const kl10 = lineOf(s10.v, "kim");
-  c.ok("\"Last action 12:50pm — uploaded a version of 107 E Old Baltimore Pike · hasn't pressed Start since\"",
-    st10.ok && kl10?.tone === "evidence" && kl10.text === "Last action 12:50pm — uploaded a version of 107 E Old Baltimore Pike · hasn't pressed Start since", kl10?.text);
+  // Oct 5: the line's committed wording (e0b5a5a) ends "since that action".
+  c.ok("\"Last action 12:50pm — uploaded a version of 107 E Old Baltimore Pike · hasn't pressed Start since that action\"",
+    st10.ok && kl10?.tone === "evidence" && kl10.text === "Last action 12:50pm — uploaded a version of 107 E Old Baltimore Pike · hasn't pressed Start since that action", kl10?.text);
   c.ok("…her Start and Resume today are both counted (2), the office's is not", s10.act.ok && s10.act.editors.kim.startsToday.length === 2);
   c.ok("…the 12:45 pause is older than the upload, so it sits in the details", !!kl10?.details.some((d) => d.startsWith("Paused: 9 Office Ln — 12:45pm")));
   // A Start AFTER the last action, closed by somebody else: the tail names it
@@ -687,7 +688,10 @@ async function main() {
     const qo = get("queue-office");
     const tq = textOf(qo);
     const ths = (h: string) => (h.match(/<th /g) ?? []).length;
-    c.ok("backlog (office): 7 columns, no \"Videos\" header, min-w 700", ths(qo) === 7 && !/>Videos</.test(qo) && qo.includes("min-w-[700px]"), `${ths(qo)} th`);
+    // Oct 5: the table is the simplified five-column shape (Project · Progress ·
+    // Due · Editor · Action) that replaced the seven-column one; still no
+    // separate "Videos" column — the count rides the project cell.
+    c.ok("backlog (office): 5 columns with Editor, no \"Videos\" header", ths(qo) === 5 && />Editor</.test(qo) && !/>Videos</.test(qo) && qo.includes("min-w-[880px]"), `${ths(qo)} th`);
     c.ok("…107 E's type pill reads \"<tier> · 4 videos\"", /(Standard|Premium|Personal Branding) · 4 videos/.test(tq), tq.match(/(Standard|Premium|Personal Branding)[^A-Z]{0,12}/)?.[0]);
     c.ok("…the evidence line \"Kim uploaded a version · 12:14pm\" with its not-a-Start title",
       tq.includes("Kim uploaded a version · 12:14pm") && qo.includes('title="Today&#x27;s activity — not a Start. Only Start and Pause say someone is working."'));
@@ -695,7 +699,7 @@ async function main() {
       !/>auto</.test(qo) && !/>Script</.test(qo) && !/Script/.test(tq));
     c.ok("…the row still reads its own word (nobody pressed Start), not \"In editing\"", !/In editing/.test(tq));
     const qe = get("queue-editor");
-    c.ok("backlog (editor's own view): 6 columns and no evidence line", ths(qe) === 6 && !textOf(qe).includes("uploaded a version"), `${ths(qe)} th`);
+    c.ok("backlog (editor's own view): 4 columns (no Editor) and no evidence line", ths(qe) === 4 && !/>Editor</.test(qe) && !textOf(qe).includes("uploaded a version"), `${ths(qe)} th`);
   }
   {
     const w = get("workload");

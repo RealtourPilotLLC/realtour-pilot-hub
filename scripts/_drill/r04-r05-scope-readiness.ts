@@ -291,9 +291,11 @@ async function parentMain() {
   const sessionFor = async (membershipId: string): Promise<string | null> => {
     const link = await pa.mintLoginLink(membershipId, null);
     const raw = new URL(link.url).pathname.split("/").pop()!;
-    const { GET } = await import("@/app/portal/auth/[token]/route");
+    const { POST } = await import("@/app/portal/auth/[token]/route"); // Oct 5: the press (POST) signs in; opening the link does not
     const { NextRequest } = await import("next/server");
-    const res = await GET(new NextRequest(link.url), { params: Promise.resolve({ token: raw }) });
+    // Oct 5 2026 (CSRF fix): the press proves it came from our own page, as a
+    // browser's does (Sec-Fetch-Site: same-origin); a bare POST is refused.
+    const res = await POST(new NextRequest(link.url, { method: "POST", headers: { "sec-fetch-site": "same-origin" } }), { params: Promise.resolve({ token: raw }) });
     return res.cookies.get("rtp_client")?.value ?? null;
   };
   const cookieSrc = (v: string) => ({ get: (n: string) => (n === "rtp_client" ? v : undefined) });
@@ -456,7 +458,7 @@ async function parentMain() {
       c.ok("the reminders line: TEST clients + pilot: Pat Pilot Realty, and never \"every client\"", /^TEST clients \(.*Rollout TEST.*\) \+ pilot: Pat Pilot Realty/.test(row("reminders").scope ?? "") && !rep.rows.some((r) => r.kind === "program" && /every client/.test(r.scope ?? "")), row("reminders").scope ?? "");
       c.ok("N (never-synthetic, renamed TEST) is not named as a TEST client anywhere", !rep.rows.some((r) => (r.scope ?? "").includes(N.name)));
       c.ok("the launch gate is OPEN and each opener names the pilot, e.g. \"Client reminders — pilot: Pat Pilot Realty\"", !rep.rolloutClosed.ok && rep.rolloutClosed.openers.includes(`${AUTOMATION_EFFECTS.reminders.title} — pilot: Pat Pilot Realty`) && rep.rolloutClosed.openers.every((o) => / — pilot: Pat Pilot Realty$/.test(o)), rep.rolloutClosed.openers.join("; "));
-      c.ok("\"Who the program may reach\": PILOT, the pilot named, T TEST, P PILOT, X not_in_pilot", rep.programScope.mode === "PILOT" && rep.programScope.pilot?.names.join() === P.name && rep.programScope.clients.find((x) => x.name === T.name)?.tier === "TEST" && rep.programScope.clients.find((x) => x.name === P.name)?.tier === "PILOT" && rep.programScope.clients.find((x) => x.name === X.name)?.code === "not_in_pilot" && rep.programScope.cap === 3, JSON.stringify(rep.programScope.clients));
+      c.ok("\"Who the program may reach\": PILOT, the pilot named, T TEST, P PILOT, X not_in_pilot", rep.programScope.mode === "PILOT" && rep.programScope.pilot?.names.join() === P.name && rep.programScope.clients.find((x) => x.name === T.name)?.tier === "TEST" && rep.programScope.clients.find((x) => x.name === P.name)?.tier === "PILOT" && rep.programScope.clients.find((x) => x.name === X.name)?.code === "not_in_pilot" && rep.programScope.cap === core.PROGRAM_PILOT_MAX, JSON.stringify(rep.programScope.clients));
       c.ok("the hub-write row reads the PROGRAM pilot (bookings ticked → P is written for)", /program pilot: active · Pat Pilot Realty/.test(row("session_booking").scope ?? "") && row("session_booking").realClients, row("session_booking").scope ?? "");
 
       // The outbox dispatch gate, per rollout kind and client (a row, never sent).
@@ -592,7 +594,9 @@ async function parentMain() {
       const ax = await add(X, X.name, { expiresOnET: new Date(Date.now() + 40 * DAY).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) });
       const a1 = await add(R1);
       const a2 = await add(R2);
-      c.ok("X, R1 added; a 4th (R2) is refused by the cap of 3", ax.ok && a1.ok && !a2.ok && /most it may have is 3/.test(a2.message), a2.message);
+      // Oct 5 2026: the cap rose from 3 to PROGRAM_PILOT_MAX (30) so every
+      // program client can be named (Settings → Client onboarding); a 4th fits.
+      c.ok(`X, R1 and a 4th (R2) added — the cap is now ${core.PROGRAM_PILOT_MAX}`, ax.ok && a1.ok && a2.ok && (core.PROGRAM_PILOT_MAX as number) === 30, a2.message);
       c.ok("the end date is ONE date for the pilot, kept when a later add leaves it blank", /ends/.test(a1.message) && core.parseProgramRollout((await prisma.appSetting.findUnique({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY } }))!.value).rollout.pilot?.expiresAt !== null, a1.message);
       const allWrong = await ra.setProgramRolloutModeAction({ mode: "ALL", typedConfirm: "every client" });
       c.ok("ALL without typing EVERY CLIENT exactly → refused", !allWrong.ok && new RegExp(EVERY_CLIENT_CONFIRM).test(allWrong.message), allWrong.message);
@@ -825,7 +829,7 @@ async function parentMain() {
       // React separates adjacent text with <!-- -->; the words are read without it.
       const html = (w: string) => (fs.existsSync(path.join(outDir, `${w}.html`)) ? fs.readFileSync(path.join(outDir, `${w}.html`), "utf8").replace(/<!-- -->/g, "") : "");
       const O = html("owner"), A = html("admin");
-      c.ok("owner: the anchor, the three plain-word choices, add / take out / end, the cap", /id="program-rollout"/.test(O) && (O.match(/name="program-rollout-mode"/g) ?? []).length === 3 && /Add a pilot client/.test(O) && /Take out of the pilot/.test(O) && /End the pilot/.test(O) && /at most 3 real clients/.test(O));
+      c.ok("owner: the anchor, the three plain-word choices, add / take out / end, the cap", /id="program-rollout"/.test(O) && (O.match(/name="program-rollout-mode"/g) ?? []).length === 3 && /Add a pilot client/.test(O) && /Take out of the pilot/.test(O) && /End the pilot/.test(O) && new RegExp(`at most ${core.PROGRAM_PILOT_MAX} real clients`).test(O));
       c.ok("owner: shows who is in it, what it covers, who approved it", O.includes(P.name) && /approved by jordan@drill.test/.test(O) && /covers/.test(O));
       c.ok("admin: the same facts, READ-ONLY — no choice, no add, no take-out, no end", /id="program-rollout"/.test(A) && A.includes(P.name) && !/name="program-rollout-mode"/.test(A) && !/Add a pilot client/.test(A) && !/Take out of the pilot/.test(A) && !/End the pilot/.test(A) && /Only Jordan can change it/.test(A));
       c.ok("the render child reached nothing outside the machine", result.blocked.length === 0, result.blocked.join(","));
