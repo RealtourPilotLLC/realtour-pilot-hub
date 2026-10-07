@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 import { etMonthKey } from "@/lib/contentProgram";
+import { catchUpInto, sessionsForMonth } from "@/lib/catchUp";
 
 // ---------------------------------------------------------------------------
 // PROGRAM MONTH STATE (spec §4 / §19), Sep 16 2026.
@@ -666,7 +667,17 @@ export type DeriveInput = {
    * that builds its own input keeps compiling; when it is absent the derivation
    * falls back to the month-wide reading described on `sessionsKnown`.
    */
-  plan?: { videosPerMonth: number; sessionsPerMonth: number } | null;
+  plan?: {
+    videosPerMonth: number; sessionsPerMonth: number;
+    /**
+     * Oct 7 2026: this month carries a missed month's catch-up (catchUp.ts).
+     * Its second strategy call plans the EXTRA batch; it must not re-anchor
+     * the sessions the first call already opened. So in a catch-up month the
+     * EARLIEST held call anchors the gate (and names strategyCallAt), never
+     * the latest. Every other month reads exactly as before.
+     */
+    catchUp?: boolean;
+  } | null;
   /** The month's topics with the material each one carries. Optional, same reason. */
   topics?: TopicMaterialInput[] | null;
   /**
@@ -806,6 +817,9 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     }),
   );
   const held = live.filter((r) => !conflicted.has(r) && HELD(r, now)).sort((a, b) => (b.scheduledStart?.getTime() ?? 0) - (a.scheduledStart?.getTime() ?? 0));
+  // Oct 7 2026 (catch-up months): the call that FIRST planned the month keeps
+  // anchoring it; a second call on the month plans the caught-up batch.
+  if (input.plan?.catchUp && held.length > 1) held.reverse();
   /** Monthly call RECORDS own this month (live or not): its stored call status is theirs, not a legacy stamp's. */
   const recordsOwnMonth = input.records.some((r) => r.callType === "MONTHLY_STRATEGY");
   const upcoming = live.filter((r) => !HELD(r, now) && r.status === "SCHEDULED").sort((a, b) => (a.scheduledStart?.getTime() ?? 0) - (b.scheduledStart?.getTime() ?? 0));
@@ -1364,6 +1378,14 @@ export type RecalcResult = {
  *  (A24), or the check and the write are not looking at the same database. */
 export type ProgramDb = Prisma.TransactionClient;
 
+/** Oct 7 2026: the filming sessions ONE month owes — the package's plus a catch-up it carries (catchUp.sessionsForMonth). */
+export async function sessionsRequiredForMonth(monthId: string, db: ProgramDb = prisma): Promise<number> {
+  const m = await db.contentMonth.findUnique({ where: { id: monthId }, select: { monthKey: true, enrollmentId: true } });
+  if (!m) return 1;
+  const e = await db.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { sessionsPerMonth: true, overridesJson: true } });
+  return e ? sessionsForMonth(e, m.monthKey) : 1;
+}
+
 /**
  * The month's distinct confirmed sessions, read from the rows Aryeo's hourly
  * sync already maintains — no provider call.
@@ -1471,7 +1493,13 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     // topics are counted against videosOwed, so a staff allowance change must
     // move the session plan with it — or a written session planned for a
     // topic the allowance cannot hold would never open.
-    plan: { videosPerMonth: month.videosOwed > 0 ? month.videosOwed : enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth },
+    // Oct 7 2026: the MONTH's session count — the package's plus a catch-up
+    // this month carries (catchUp.sessionsForMonth, the one reading).
+    plan: {
+      videosPerMonth: month.videosOwed > 0 ? month.videosOwed : enrollment.videosPerMonth,
+      sessionsPerMonth: sessionsForMonth(enrollment, month.monthKey),
+      catchUp: !!catchUpInto(enrollment.overridesJson, month.monthKey),
+    },
     booking: await monthSessionCount(month.id, enrollment.clientId, now),
   });
   const before = { strategyCallStatus: month.strategyCallStatus, strategyCallAt: month.strategyCallAt, planningMode: month.planningMode, preparationStatus: month.preparationStatus };

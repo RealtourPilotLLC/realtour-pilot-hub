@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
+import { catchUpFrom, sessionsForMonth } from "@/lib/catchUp";
 import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparationGate, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
@@ -577,7 +578,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (e.status === "ENDED") {
       next = { text: `Ended — ${monthLabel(key)} is the last month on file`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open the history" };
     } else if (m.status === "SKIPPED") {
-      next = { text: "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
+      const caughtUp = catchUpFrom(e.overridesJson, key);
+      next = { text: caughtUp ? `Caught up in ${monthLabel(caughtUp.targetMonthKey)} — nothing owed here` : "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (m.historical) {
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
@@ -706,7 +708,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       },
       session: {
         state: sessionState, dateISO: iso(sessionDate), detail: sessionDetail, requestedCount: myRequests.length,
-        required: ps?.required ?? Math.max(1, e.sessionsPerMonth || 1), confirmed: ps?.confirmed ?? 0, missing: ps?.missing ?? Math.max(1, e.sessionsPerMonth || 1),
+        required: ps?.required ?? sessionsForMonth(e, key), confirmed: ps?.confirmed ?? 0, missing: ps?.missing ?? sessionsForMonth(e, key),
         filmedConfirmed: ps?.filmedConfirmed ?? 0, unverified: ps?.unverified ?? 0, heldUnconfirmed: ps?.heldUnconfirmed ?? 0,
       },
       work: { topicsSelected, topicsNeeded, answersOutstanding, scriptsDrafting: drafting, scriptsReviewNeeded: reviewNeeded, scriptsApproved: approved, strategyReviewNeeded, openScriptRequests: progress?.scripts.openSuggestions ?? 0 },

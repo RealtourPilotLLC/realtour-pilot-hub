@@ -99,6 +99,8 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
   // the month that are not a session at all (listed so Kyle can see them;
   // never counted), then the requests and exact addresses behind them.
   const view = progress ? staffMonthView(progress) : null;
+  // The MONTH's sessions (Oct 7 2026): a catch-up month owes one more than the package.
+  const sessionsOwed = progress?.sessions.required ?? ctx.enrollment.sessionsPerMonth;
   const [{ projects }, gates] = await Promise.all([loadSessionsView(month ? { id: month.id } : null), loadSessionGates(month ? { id: month.id } : null)]);
   const byId = new Map(projects.map((p) => [p.id, p]));
   const sessionIds = new Set(view?.sessionRows.map((r) => r.projectId).filter((x): x is string => !!x) ?? []);
@@ -120,7 +122,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
         <>
           {/* A25: a session whose call moved or vanished — Kyle's to confirm. */}
           <ReassessmentBanner monthId={month.id} />
-          <Section icon={Camera} title="Filming sessions" count={view?.sessionsCount ?? `0/${ctx.enrollment.sessionsPerMonth}`} flush>
+          <Section icon={Camera} title="Filming sessions" count={view?.sessionsCount ?? `0/${ctx.progress?.sessions.required ?? ctx.enrollment.sessionsPerMonth}`} flush>
             <div className="divide-y divide-border">
               {view?.sessionRows.map((r) => {
                 const p = r.projectId ? byId.get(r.projectId) ?? null : null;
@@ -162,7 +164,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
               })}
               {view && view.missing > 0 && (
                 <p className="px-5 py-3 text-[13px] text-warning">
-                  {view.missing} of {ctx.enrollment.sessionsPerMonth} session{ctx.enrollment.sessionsPerMonth === 1 ? "" : "s"} still to book
+                  {view.missing} of {sessionsOwed} session{sessionsOwed === 1 ? "" : "s"} still to book
                   {/* A20: the preparation gate per session — the portal picker's own reading. */}
                   {gates.map((g) => (
                     <span key={g.index} className="block text-[12px] text-muted">{gates.length > 1 ? `Session ${g.index}: ` : ""}{g.text}</span>

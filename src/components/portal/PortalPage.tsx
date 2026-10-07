@@ -123,7 +123,10 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     orderBy: { monthKey: "asc" }, take: 3, select: { id: true, monthKey: true },
   }) : [];
   const selectedMonth = selectedPortalMonth(contextMonths, query.month);
-  const selectedSession = selectedMonth ? portalSessionIndex(query.session, enrollment.sessionsPerMonth) : null;
+  // The MONTH's sessions (Oct 7 2026): a catch-up month offers its extra session too.
+  const selectedSession = selectedMonth
+    ? portalSessionIndex(query.session, await import("@/lib/programMonths").then((m) => m.sessionsRequiredForMonth(selectedMonth.id)).catch(() => enrollment.sessionsPerMonth))
+    : null;
   const monthKey = selectedMonth?.monthKey ?? etMonthKey();
   const scope = mediaScopeOf(viewer);
   // Greet the PERSON when we know one. A collaborator or viewer signed into

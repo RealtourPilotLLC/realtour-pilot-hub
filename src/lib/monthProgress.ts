@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { countDistinctSessions, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
+import { catchUpFrom, catchUpInto, sessionsForMonth } from "@/lib/catchUp";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { cutReleasedAt, isDeliveredProgramVideo } from "@/lib/contentVideos";
 import { DELIVERED_STAMP, NOT_A_CUT } from "@/lib/reviewCuts";
@@ -131,6 +132,15 @@ export type MonthProgress = {
   /** historical / skipped / imported: record-keeping, never warnings */
   muted: boolean;
   videosOwed: number;
+  /**
+   * Oct 7 2026 (catch-up months, catchUp.ts). `into`: this month also films a
+   * missed month (its extra sessions and videos are already in the counts
+   * here). `from`: this month was closed because a later month caught it up.
+   */
+  catchUp: {
+    into: { missedMonthKey: string; extraSessions: number; extraVideos: number; by: string | null; at: string } | null;
+    from: { targetMonthKey: string; by: string | null; at: string } | null;
+  };
   owners: OwnerMap;
   /** `required`/`mode`: the month's EFFECTIVE call mode (programMonths.effectiveCallMode via the planning reader) — the first call is required, later ones optional (§3). */
   call: { status: string; atISO: string | null; required: boolean; mode: string | null };
@@ -331,7 +341,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
   const [enrollments, monthRows, ownerSeats] = await Promise.all([
     prisma.contentEnrollment.findMany({
       where: { id: { in: enrollmentIds } },
-      select: { id: true, clientId: true, package: true, status: true, accessRevokedAt: true, videosPerMonth: true, sessionsPerMonth: true, strategyCallRequired: true, clientSuppliesTopics: true },
+      select: { id: true, clientId: true, package: true, status: true, accessRevokedAt: true, videosPerMonth: true, sessionsPerMonth: true, overridesJson: true, strategyCallRequired: true, clientSuppliesTopics: true },
     }),
     monthIds.length
       ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, enrollmentId: true, clientId: true, monthKey: true, videosOwed: true, strategyCallStatus: true, strategyCallAt: true, historical: true, status: true } })
@@ -463,7 +473,8 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     }
 
     // ---- sessions ----------------------------------------------------------
-    const required = Math.max(1, e.sessionsPerMonth || 1);
+    // The MONTH's sessions (Oct 7 2026): the package's plus a catch-up it carries.
+    const required = sessionsForMonth(e, pair.monthKey);
     const count: BookedSessionCount = mid ? countFor(mid, sessionRows, now) : { sessions: [], booked: 0, filmed: 0, accountedFor: 0, duplicatesFolded: 0 };
     const myProjects = sessionRows.projects.filter((p) => mid && p.contentMonthId === mid);
     const myProjectIds = new Set(myProjects.map((p) => p.id));
@@ -628,6 +639,10 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       enrollmentId: e.id, clientId: e.clientId, pkg: e.package, enrollmentStatus: e.status,
       portalApprover: e.status === "ACTIVE" && !e.accessRevokedAt && hasOwnerSeat.has(e.id),
       monthId: mid, monthKey: pair.monthKey, monthStatus: m?.status ?? "NONE", historical: !!m?.historical, muted, videosOwed,
+      catchUp: ((into, from) => ({
+        into: into ? { missedMonthKey: into.missedMonthKey, extraSessions: into.extraSessions, extraVideos: into.extraVideos, by: into.by, at: into.at } : null,
+        from: from && m?.status === "SKIPPED" ? { targetMonthKey: from.targetMonthKey, by: from.by, at: from.at } : null,
+      }))(catchUpInto(e.overridesJson, pair.monthKey), catchUpFrom(e.overridesJson, pair.monthKey)),
       owners,
       call: {
         status: m?.strategyCallStatus ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"), atISO: m?.strategyCallAt?.toISOString() ?? null,

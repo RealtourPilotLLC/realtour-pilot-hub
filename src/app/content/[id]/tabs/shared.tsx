@@ -57,13 +57,16 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
 }) {
   const m = ctx.month;
   const key = m?.monthKey ?? ctx.activeKey;
+  // Oct 7 2026: a month in a catch-up (either side) changes only through the catch-up's own Undo.
+  const caughtUpIn = ctx.progress?.monthId === m?.id ? ctx.progress?.catchUp.from?.targetMonthKey ?? null : null;
+  const inCatchUp = !!caughtUpIn || (ctx.progress?.monthId === m?.id && !!ctx.progress?.catchUp.into);
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
         <h2 className="break-words text-2xl font-semibold tracking-tight">
           {title ?? monthLabel(key)}
           {m?.historical && <span className="ml-2 align-middle text-ui-status font-normal text-muted">imported history</span>}
-          {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-ui-status font-normal text-muted">skipped</span>}
+          {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-ui-status font-normal text-muted">{caughtUpIn ? `caught up in ${monthLabel(caughtUpIn).split(" ")[0]}` : "skipped"}</span>}
         </h2>
         {subtitle && <p className="mt-1 break-words text-ui-secondary leading-relaxed text-muted">{subtitle}</p>}
       </div>
@@ -74,7 +77,7 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
             currentKey={key}
             makeHref={contentHref(ctx.id, { tab, view: view ?? null, month: "MONTH" })}
           />
-          {withSkip && m && <SkipMonthButton monthId={m.id} skipped={m.status === "SKIPPED"} />}
+          {withSkip && m && !inCatchUp && <SkipMonthButton monthId={m.id} skipped={m.status === "SKIPPED"} />}
         </div>
       )}
     </div>

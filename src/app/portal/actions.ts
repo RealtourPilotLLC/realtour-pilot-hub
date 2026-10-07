@@ -532,8 +532,8 @@ export async function portalRescheduleSession(
   if (!Number.isFinite(slot.getTime())) return fail("Pick a time from the list.");
   // A24: a move is held to the gate of the session it moves — the row's own
   // index, else the one it resolves to in slot order (a legacy row).
-  const { monthSessionIndexes } = await import("@/lib/programMonths");
-  const required = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionsPerMonth: true } }))?.sessionsPerMonth ?? 1;
+  const { monthSessionIndexes, sessionsRequiredForMonth } = await import("@/lib/programMonths");
+  const required = await sessionsRequiredForMonth(r.monthId);
   const sessionIndex = r.sessionIndex ?? (await monthSessionIndexes(r.monthId, r.clientId, required, new Date()).catch(() => null))?.requestIndex.get(r.id) ?? null;
   const { sessionGate } = await import("@/lib/portal");
   const gate = await sessionGate(v.enrollment.id, r.monthId, { sessionIndex: sessionIndex != null && sessionIndex <= Math.max(1, required) ? sessionIndex : null });
@@ -1117,8 +1117,8 @@ export async function portalScheduleLater(auth: PortalAuth, monthId: string, ses
   // which keeps the address and step a client resumes from). The session is
   // the one named, else the next still to book; with every session taken
   // there is nothing to defer beyond the month's stamp above.
-  const required = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionsPerMonth: true } }))?.sessionsPerMonth ?? 1;
-  const { monthSessionIndexes } = await import("@/lib/programMonths");
+  const { monthSessionIndexes, sessionsRequiredForMonth } = await import("@/lib/programMonths");
+  const required = await sessionsRequiredForMonth(month.id);
   const idx = sessionIndex != null && Number.isInteger(sessionIndex) && sessionIndex >= 1 && sessionIndex <= Math.max(1, required)
     ? sessionIndex
     : (await monthSessionIndexes(month.id, v.enrollment.clientId, required, now).catch(() => null))?.next ?? null;

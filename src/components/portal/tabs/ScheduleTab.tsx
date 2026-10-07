@@ -62,6 +62,8 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
         ) : (
           <div className="mt-2 space-y-1.5 text-sm">
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{monthLabel(p.monthKey)}</div>
+            {p.catchUp && <p className="font-medium text-brand">{p.catchUp.line}</p>}
+            {p.catchUp?.nextCallISO && <p className="text-xs text-muted">Your call to plan the {p.catchUp.label} videos is booked for {fmtDate(p.catchUp.nextCallISO, tz)} at {fmtTime(p.catchUp.nextCallISO, tz)} {zoneOf(p.catchUp.nextCallISO)}.</p>}
             {p.planningMode === "WRITTEN" ? (
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>

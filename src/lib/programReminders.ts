@@ -13,6 +13,7 @@ import { appBase } from "@/lib/appUrl";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
 import { ownersFor, type OwnerDuty } from "@/lib/programOwners";
+import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import {
   templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS,
   type ReminderAction, type TemplateVars,
@@ -728,6 +729,8 @@ type EnrollmentRow = {
    *  off the package rather than written into a sentence. Three live
    *  Accelerators carry a manual override of 5 that §3 says must survive. */
   videosPerMonth: number;
+  /** Oct 7 2026: the ledgered overrides bag — read for a month's catch-up (catchUp.ts). */
+  overridesJson?: string | null;
   /** A28: the first program month this enrollment ever had — its first paid
    *  production cycle, which never receives a use-it-or-lose-it warning. */
   firstMonthKey: string | null;
@@ -736,7 +739,7 @@ type EnrollmentRow = {
 
 const ENROLLMENT_SELECT = {
   id: true, clientId: true, status: true, callMode: true, strategyCallRequired: true, noCallEligible: true,
-  portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true, sessionsPerMonth: true, videosPerMonth: true, startedAt: true,
+  portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true, sessionsPerMonth: true, videosPerMonth: true, startedAt: true, overridesJson: true,
 } as const;
 
 /** The enrollment's first paid production cycle: whichever is EARLIER, the
@@ -1054,17 +1057,22 @@ export const MID_MONTH_PARAGRAPH =
  *  a manual videosPerMonth of 5 that §3 says must survive reconciliation, so a
  *  hard-coded four is a sentence that can become untrue without anyone touching
  *  this file. No em dashes and it ends with the way forward (Jordan's rule). */
-export const secondSessionParagraph = (ordinal: number, required: number, videosPerMonth: number) => {
+/** Oct 7 2026: a catch-up month's sessions are not the package's — say where the extra one came from. */
+const sessionsOpening = (required: number, catchUpOf?: string | null) => {
+  const n = required === 2 ? "two filming sessions" : `${required} filming sessions`;
+  return catchUpOf ? `This month includes ${n}, because it also catches up your ${catchUpOf} videos,` : `Your package includes ${n} this month,`;
+};
+export const secondSessionParagraph = (ordinal: number, required: number, videosPerMonth: number, catchUpOf?: string | null) => {
   const perSession = Math.max(1, Math.ceil(Math.max(0, videosPerMonth) / Math.max(1, required)) || 1);
   const done = ordinal - 1;
-  return `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, which is another ${perSession} video${perSession === 1 ? "" : "s"}. Pick a time in your portal and we'll confirm it.`;
+  return `${sessionsOpening(required, catchUpOf)} and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, which is another ${perSession} video${perSession === 1 ? "" : "s"}. Pick a time in your portal and we'll confirm it.`;
 };
 
 /** COMPLETE_ANSWERS for a later session whose own gate is shut (batch-3 review): what that session still needs. No em dashes (client words). */
-export const sessionAnswersParagraph = (ordinal: number, required: number, videosPerMonth: number) => {
+export const sessionAnswersParagraph = (ordinal: number, required: number, videosPerMonth: number, catchUpOf?: string | null) => {
   const perSession = Math.max(1, Math.ceil(Math.max(0, videosPerMonth) / Math.max(1, required)) || 1);
   const done = ordinal - 1;
-  return `Your package includes ${required === 2 ? "two filming sessions" : `${required} filming sessions`} this month, and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, another ${perSession} video${perSession === 1 ? "" : "s"}: choose its topics and answer their questions, and its filming calendar opens as soon as they're in.`;
+  return `${sessionsOpening(required, catchUpOf)} and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, another ${perSession} video${perSession === 1 ? "" : "s"}: choose its topics and answer their questions, and its filming calendar opens as soon as they're in.`;
 };
 
 /** Which sub-lane of the ledger a row belongs to. The dedupeKey carries it:
@@ -1118,7 +1126,8 @@ async function evaluateMonth(
   // Authoritative month state, derived fresh (never persisted from here).
   const recalc = await recalcProgramMonth(month.id, { now, dryRun: true });
   const d: DerivedMonthState | null = recalc?.after ?? null;
-  const facts = await monthFacts(month.id, e.clientId, now, e.sessionsPerMonth);
+  // The MONTH's sessions (Oct 7 2026): the derivation already counts a catch-up's extra session.
+  const facts = await monthFacts(month.id, e.clientId, now, d?.sessionsRequired ?? e.sessionsPerMonth);
   const firstCycle = !!e.firstMonthKey && e.firstMonthKey === month.monthKey;
   const state: EvaluatedState = {
     strategyCallStatus: d?.strategyCallStatus ?? "?", planningMode: d?.planningMode ?? "?", preparationStatus: d?.preparationStatus ?? null, callMode: d?.callMode ?? "?",
@@ -1429,12 +1438,16 @@ async function evaluateMonth(
   // script names the (at most two) questions still open and links straight to
   // them. House or per-topic wording only — never a fact from the file.
   const answerGap = action === "COMPLETE_ANSWERS" ? await import("@/lib/programDeskTasks").then((m) => m.monthAnswerGapParagraph(month.id)).catch(() => null) : null;
+  // Oct 7 2026: a catch-up month films the missed month's videos too.
+  const monthCatchUp = catchUpInto(e.overridesJson, month.monthKey);
+  const catchUpOf = monthCatchUp ? catchUpMonthName(monthCatchUp.missedMonthKey, month.monthKey) : null;
+  const monthVideos = e.videosPerMonth + (monthCatchUp?.extraVideos ?? 0);
   const extraParagraph = milestone === "MID_MONTH"
     ? MID_MONTH_PARAGRAPH
     : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
-      ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, e.videosPerMonth)
+      ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, monthVideos, catchUpOf)
       : action === "COMPLETE_ANSWERS" && sessionOrdinal && sessionOrdinal > 1
-        ? [sessionAnswersParagraph(sessionOrdinal, facts.sessionsRequired, e.videosPerMonth), answerGap?.paragraph].filter(Boolean).join("\n\n")
+        ? [sessionAnswersParagraph(sessionOrdinal, facts.sessionsRequired, monthVideos, catchUpOf), answerGap?.paragraph].filter(Boolean).join("\n\n")
         : answerGap?.paragraph ?? null;
   const linkPath = answerGap?.path ?? null;
 

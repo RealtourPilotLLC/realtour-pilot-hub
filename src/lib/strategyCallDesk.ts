@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { etDayKey } from "@/lib/datetime";
 import { isTestClientName } from "@/lib/testClients";
+import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 
 // ---------------------------------------------------------------------------
 // STRATEGY CALLS · LAST 30 DAYS (Oct 6 2026) — the read behind /content/calls.
@@ -110,6 +111,8 @@ export type DeskRow = {
   defaultMonthKey: string | null;
   monthOptions: string[];
   note: string | null;
+  /** Oct 7 2026: the month it is on carries a missed month's catch-up — what this call is to it. */
+  catchUpNote: string | null;
 };
 export type DeskData = {
   rows: DeskRow[];
@@ -134,7 +137,7 @@ export async function strategyCallDesk(opts: { now?: Date } = {}): Promise<DeskD
       select: { id: true, callType: true, status: true, matchState: true, matchNote: true, confirmedBy: true, scheduledStart: true, scheduledEnd: true, inviteeName: true, inviteeEmail: true, clientId: true, monthId: true, targetMonthKey: true, mappingId: true, rawJson: true },
     }),
     prisma.programCalendlyEventMapping.findMany({ select: { id: true, eventName: true, purpose: true, enabled: true, lastSyncedAt: true } }),
-    prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } }),
+    prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true, overridesJson: true } }),
   ]);
   const mappingOf = new Map(mappings.map((m) => [m.id, m]));
   // A record a brand-discovery mapping classified stays out even if its callType moved.
@@ -158,6 +161,23 @@ export async function strategyCallDesk(opts: { now?: Date } = {}): Promise<DeskD
   const monthKeyOf = new Map(monthRows.map((m) => [m.id, m.monthKey]));
   const clientName = new Map([...clients, ...recordClients].map((c) => [c.id, c.name]));
 
+  // Oct 7 2026: a catch-up month may hold two calls — the first planned the
+  // month (and keeps anchoring its filming dates), a later one plans the
+  // caught-up batch. Said on the row so nobody "fixes" the second one away.
+  const overridesOf = new Map(enrollments.map((e) => [e.clientId, e.overridesJson]));
+  const liveOnMonth = (monthId: string) => rows0
+    .filter((x) => x.monthId === monthId && x.callType === "MONTHLY_STRATEGY" && x.matchState !== "IGNORED" && x.status !== "CANCELLED" && x.status !== "RESCHEDULED" && x.scheduledStart)
+    .sort((a, b) => a.scheduledStart!.getTime() - b.scheduledStart!.getTime());
+  const catchUpNoteFor = (r: (typeof rows0)[number], monthKey: string | null): string | null => {
+    if (!r.clientId || !r.monthId || !monthKey) return null;
+    const cu = catchUpInto(overridesOf.get(r.clientId), monthKey);
+    if (!cu) return null;
+    const missed = catchUpMonthName(cu.missedMonthKey, monthKey), month = catchUpMonthName(monthKey);
+    const order = liveOnMonth(r.monthId).findIndex((x) => x.id === r.id);
+    return order <= 0
+      ? `${month} also catches up ${missed}. This call planned the month; a second call can be filed on ${month} too, to plan the ${missed} videos.`
+      : `${month} also catches up ${missed}: this second call plans the ${missed} videos. The first call keeps the filming dates.`;
+  };
   const rows: DeskRow[] = rows0.map((r) => {
     let raw: { calendly?: { event?: { name?: string } }; identity?: { candidates?: { clientId: string }[] }; assignment?: unknown } = {};
     try { raw = r.rawJson ? JSON.parse(r.rawJson) : {}; } catch { /* a bad snapshot reads as none */ }
@@ -185,6 +205,7 @@ export async function strategyCallDesk(opts: { now?: Date } = {}): Promise<DeskD
       defaultMonthKey: onMonth && monthKey ? monthKey : start ? suggestedPlanMonthKey(start) : null,
       monthOptions: start ? monthOptionsFor(start, onMonth ? monthKey : null) : monthKey ? [monthKey] : [],
       note: r.matchNote,
+      catchUpNote: onMonth ? catchUpNoteFor(r, monthKey ?? null) : null,
     };
   });
   const candidate = mappings.filter((m) => m.purpose === "STRATEGY_CANDIDATE" && m.enabled);

@@ -86,6 +86,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
       <section aria-labelledby="your-month-headline" className="panel-shadow rounded-2xl border border-brand/30 bg-brand-soft/30 p-4 backdrop-blur">
         <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{monthLabel(month.monthKey)}</div>
         <h2 id="your-month-headline" className="mt-1 break-words text-lg font-semibold leading-snug">{planning.headline.text}</h2>
+        {p.catchUp && <p className="mt-1 text-sm font-medium text-brand">{p.catchUp.line}</p>}
         <p className="mt-0.5 text-sm text-muted">
           {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
           {month.overflow > 0 && <> · {month.overflow} extra{month.overflow === 1 ? "" : "s"} waiting {month.overflow === 1 ? "its" : "their"} turn</>}

@@ -4,6 +4,7 @@ import { MONTHLY_PLAN_RE } from "@/lib/videoStyles";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { monthSessionCount, monthSessionIndexes, recalcProgramMonth, replacesPendingMove, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
+import { sessionsForMonth } from "@/lib/catchUp";
 import { aryeoProductFor, etMonthKey } from "@/lib/contentProgram";
 import { TEXT_KYLE } from "@/lib/portalWords";
 
@@ -111,7 +112,10 @@ const TASK_PREFIX = "content-session-request-";
 export async function sessionCapacity(enrollmentId: string, monthId: string, opts: { now?: Date; db?: ProgramDb } = {}): Promise<CapacityCheck> {
   const db = opts.db ?? prisma;
   const now = opts.now ?? new Date();
-  const enrollment = await db.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, sessionsPerMonth: true, sessionHours: true } });
+  const [enrollment, monthRow] = await Promise.all([
+    db.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, sessionsPerMonth: true, sessionHours: true, overridesJson: true } }),
+    db.contentMonth.findUnique({ where: { id: monthId }, select: { monthKey: true } }),
+  ]);
   const count = enrollment ? await monthSessionCount(monthId, enrollment.clientId, now, db) : { sessions: [], booked: 0, filmed: 0, accountedFor: 0, duplicatesFolded: 0 };
   const requests = await db.programSessionRequest.findMany({
     where: { enrollmentId, monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED"] } },
@@ -133,7 +137,8 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
       !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
   );
   const extrasApproved = requests.filter((r) => r.kind === "EXTRA_SESSION" && r.extraApprovedBy).length;
-  const sessionsPerMonth = Math.max(1, enrollment?.sessionsPerMonth ?? 1);
+  // The MONTH's sessions (Oct 7 2026): the package's plus a catch-up it carries.
+  const sessionsPerMonth = enrollment ? sessionsForMonth(enrollment, monthRow?.monthKey) : 1;
   const allowed = sessionsPerMonth + extrasApproved;
   const used = count.accountedFor + pending.length;
   const shortfall = sessionShortfall(sessionsPerMonth, count);
@@ -405,7 +410,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
  * collision across months would cost a moment's waiting, never correctness.
  * (Two int4s rather than one int8 because the build targets below ES2020.)
  */
-function monthLockKey(enrollmentId: string, monthId: string): [number, number] {
+export function monthLockKey(enrollmentId: string, monthId: string): [number, number] {
   const str = `program-session|${enrollmentId}|${monthId}`;
   const fnv = (seed: number): number => {
     let h = seed;

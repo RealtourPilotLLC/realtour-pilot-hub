@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { PACKAGE_RULES, etMonthKey } from "@/lib/contentProgram";
 import { callModeOf, recalcProgramMonthsForEnrollment, type CallMode } from "@/lib/programMonths";
+import { readCatchUps } from "@/lib/catchUp";
 
 // ---------------------------------------------------------------------------
 // ENROLLMENT CHANGES (spec §17, Jordan's rules). Every settings edit on a
@@ -363,7 +364,14 @@ export async function applyDueEnrollmentChanges(enrollmentId?: string): Promise<
       if (c.field === "videosPerMonth" && c.effectiveMonthKey) {
         // Only OPEN, live months from the obligation month forward. Past and
         // historical months are never rewritten (spec §17 / Jordan).
-        await prisma.contentMonth.updateMany({ where: { enrollmentId: c.enrollmentId, historical: false, status: { notIn: ["SKIPPED", "IMPORTED"] }, monthKey: { gte: c.effectiveMonthKey } }, data: { videosOwed: Number(to) } });
+        // Oct 7 2026: a month carrying a catch-up owes the new count PLUS the
+        // missed month's videos — those were not the package's to change.
+        const catchUps = readCatchUps((await prisma.contentEnrollment.findUnique({ where: { id: c.enrollmentId }, select: { overridesJson: true } }))?.overridesJson);
+        const carrying = catchUps.filter((r) => r.targetMonthKey >= c.effectiveMonthKey!);
+        await prisma.contentMonth.updateMany({ where: { enrollmentId: c.enrollmentId, historical: false, status: { notIn: ["SKIPPED", "IMPORTED"] }, monthKey: { gte: c.effectiveMonthKey, notIn: carrying.map((r) => r.targetMonthKey) } }, data: { videosOwed: Number(to) } });
+        for (const r of carrying) {
+          await prisma.contentMonth.updateMany({ where: { enrollmentId: c.enrollmentId, monthKey: r.targetMonthKey, historical: false, status: { notIn: ["SKIPPED", "IMPORTED"] } }, data: { videosOwed: Number(to) + r.extraVideos } });
+        }
       }
     }
     await prisma.programEnrollmentChange.update({ where: { id: c.id }, data: { appliedAt: now } });

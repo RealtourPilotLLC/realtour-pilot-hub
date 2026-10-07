@@ -169,6 +169,7 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
             <CheckCircle2 className="size-4 text-success" aria-hidden />
             <span><b>{r.client.name}</b> · {monthName(r.month.key)}</span>
             <span className="text-muted-2">({r.assignedBy === "staff" ? "assigned by staff" : "matched by email"})</span>
+            {r.catchUpNote && <span className="basis-full text-[13px] text-muted">{r.catchUpNote}</span>}
           </p>
         ) : r.state === "IGNORED" ? (
           <p className="text-muted">Not a program call</p>

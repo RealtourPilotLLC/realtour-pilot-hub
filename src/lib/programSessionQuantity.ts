@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { planSessions } from "@/lib/programMonths";
+import { sessionsForMonth } from "@/lib/catchUp";
 import type { SessionMatchKind } from "@/lib/sessionRequests";
 
 // The reconciliation writer's canonical vocabulary, plus its explicit desk
@@ -34,14 +35,14 @@ export async function confirmedProgramSessionQuantities(projectIds: string[]): P
     }),
     prisma.contentMonth.findMany({
       where: { id: { in: projects.map((p) => p.contentMonthId!) } },
-      select: { id: true, clientId: true, enrollmentId: true, videosOwed: true },
+      select: { id: true, clientId: true, enrollmentId: true, videosOwed: true, monthKey: true },
     }),
   ]);
   if (!requests.length) return out;
   const [enrollments, replacements] = await Promise.all([
     prisma.contentEnrollment.findMany({
       where: { id: { in: months.map((m) => m.enrollmentId) } },
-      select: { id: true, clientId: true, videosPerMonth: true, sessionsPerMonth: true },
+      select: { id: true, clientId: true, videosPerMonth: true, sessionsPerMonth: true, overridesJson: true },
     }),
     prisma.programSessionRequest.findMany({
       where: { supersedesId: { in: requests.map((r) => r.id) }, status: { notIn: ["CANCELLED", "DECLINED", "EXPIRED"] } },
@@ -56,7 +57,10 @@ export async function confirmedProgramSessionQuantities(projectIds: string[]): P
     if (bound.length !== 1) continue;
     const r = bound[0], month = months.find((m) => m.id === project.contentMonthId);
     const enrollment = month && enrollments.find((e) => e.id === month.enrollmentId);
-    if (!month || !enrollment || enrollment.sessionsPerMonth <= 1 ||
+    // The MONTH's sessions (Oct 7 2026): a catch-up month of a one-session
+    // package owes two, so each confirmed session owes its own part.
+    const sessions = month && enrollment ? sessionsForMonth(enrollment, month.monthKey) : 1;
+    if (!month || !enrollment || sessions <= 1 ||
       r.kind !== "CONTENT_SESSION" || r.status !== "CONFIRMED" || !r.confirmedAt || r.cancelledAt ||
       r.bookingState === "CONFLICT" || r.pendingChangeJson || superseded.has(r.id) ||
       !Object.hasOwn(CONFIRMED_MATCH_STATES, r.matchState ?? "") ||
@@ -71,7 +75,7 @@ export async function confirmedProgramSessionQuantities(projectIds: string[]): P
     if (!appointment?.startAt || appointment.postponedAt || /cancel|postpon/i.test(appointment.status ?? "")) continue;
     const planned = planSessions([], {
       videosPerMonth: month.videosOwed > 0 ? month.videosOwed : enrollment.videosPerMonth,
-      sessionsPerMonth: enrollment.sessionsPerMonth,
+      sessionsPerMonth: sessions,
     }).find((s) => s.index === r.sessionIndex)?.plannedVideos;
     if (planned && Number.isInteger(planned) && planned > 0) out.set(project.id, planned);
   }

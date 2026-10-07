@@ -7,6 +7,7 @@ import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress
 import type { MonthPlanning, PlanStep } from "@/lib/planningState";
 import { TEXT_KYLE } from "@/lib/portalWords";
 import { PROGRAM_SLOT_HORIZON_DAYS } from "@/lib/portalScheduling";
+import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28; identity layer,
@@ -1685,6 +1686,8 @@ export type PortalPlanning = {
   undoBlocked: string | null;
   /** Oct 6: switching TO each route — null when allowed, else the plain reason it isn't (planningSwitchRefusal). */
   switchBlocked: { CALL: string | null; WRITTEN: string | null };
+  /** Oct 7: this month also films a missed month ("This month includes your September catch-up"), or null. */
+  catchUp: { missedMonthKey: string; label: string; line: string; nextCallISO: string | null } | null;
 };
 
 /** Steps past the answers stage: the material is in, or the script is. */
@@ -1750,18 +1753,18 @@ export function planningUndoRefusal(i: { callStatus: string; planningMode: strin
 
 export async function portalPlanning(enrollment: { id: string; clientId: string }, monthId?: string | null): Promise<PortalPlanning | null> {
   const month = monthId
-    ? await prisma.contentMonth.findFirst({ where: { id: monthId, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, historical: true } })
-    : await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, historical: true } });
+    ? await prisma.contentMonth.findFirst({ where: { id: monthId, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, historical: true, videosOwed: true } })
+    : await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, historical: true, videosOwed: true } });
   if (!month) return null;
   const { recalcProgramMonth } = await import("@/lib/programMonths");
   const { planningForMonth } = await import("@/lib/planningFacts");
-  const [r, e, record, interviews, pf, liveRequests, scriptRows] = await Promise.all([
+  const [r, e, recordRows, interviews, pf, liveRequests, scriptRows] = await Promise.all([
     recalcProgramMonth(month.id, { dryRun: true }),
-    prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { callMode: true, strategyCallRequired: true, noCallEligible: true, timezone: true } }),
-    prisma.programCallRecord.findFirst({
+    prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { callMode: true, strategyCallRequired: true, noCallEligible: true, timezone: true, overridesJson: true } }),
+    prisma.programCallRecord.findMany({
       where: { monthId: month.id, enrollmentId: enrollment.id, callType: "MONTHLY_STRATEGY", status: { in: ["SCHEDULED", "COMPLETED"] }, matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF", "AMBIGUOUS_CLIENT"] } },
-      orderBy: { scheduledStart: "desc" }, select: { scheduledStart: true, scheduledEnd: true, meetLink: true, timezone: true },
-    }),
+      orderBy: { scheduledStart: "desc" }, take: 5, select: { id: true, status: true, scheduledStart: true, scheduledEnd: true, meetLink: true, timezone: true },
+    }).then((rows) => rows),
     prisma.contentInterview.findMany({ where: { enrollmentId: enrollment.id, monthId: month.id }, select: { status: true, submittedAt: true } }),
     planningForMonth(month.id).catch(() => null),
     prisma.programSessionRequest.count({ where: { monthId: month.id, enrollmentId: enrollment.id, status: { in: LIVE_SESSION_REQUEST } } }),
@@ -1769,6 +1772,13 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
   ]);
   if (!r || !e) return null;
   const d = r.after;
+  // Oct 7 2026: a month can hold two calls (a catch-up month's second call
+  // plans the extra batch). The call this card talks about is the one the
+  // month's status names (strategyCallAt) — else the newest, as before — so
+  // "held" never sits next to a date that is still to come.
+  const record = recordRows.find((x) => d.strategyCallAt && x.scheduledStart?.getTime() === d.strategyCallAt.getTime()) ?? recordRows[0] ?? null;
+  const cu = catchUpInto(e.overridesJson, month.monthKey);
+  const cuName = cu ? catchUpMonthName(cu.missedMonthKey, month.monthKey) : null;
   // The EFFECTIVE mode (§3: the first call is required, later ones optional) —
   // the derivation's, so this card and the reminder evaluator agree.
   const mode = d.callMode;
@@ -1798,6 +1808,12 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
       CALL: planningSwitchRefusal({ to: "CALL", callStatus: d.strategyCallStatus, planningMode: d.planningMode, filmingBooked }),
       WRITTEN: planningSwitchRefusal({ to: "WRITTEN", callStatus: d.strategyCallStatus, planningMode: d.planningMode, filmingBooked }),
     },
+    catchUp: cu && cuName ? {
+      missedMonthKey: cu.missedMonthKey, label: cuName,
+      line: `This month includes your ${cuName} catch-up: ${d.sessionsRequired === 2 ? "two filming sessions" : `${d.sessionsRequired} filming sessions`} to book and ${month.videosOwed} videos in all.`,
+      // A second call booked to plan the catch-up batch (the card above names the first).
+      nextCallISO: recordRows.filter((x) => x !== record && x.status === "SCHEDULED" && x.scheduledStart && x.scheduledStart > new Date()).sort((a, b) => a.scheduledStart!.getTime() - b.scheduledStart!.getTime())[0]?.scheduledStart?.toISOString() ?? null,
+    } : null,
   };
 }
 

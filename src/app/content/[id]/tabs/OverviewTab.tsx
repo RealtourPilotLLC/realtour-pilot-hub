@@ -8,6 +8,8 @@ import { overviewFacts } from "@/lib/programOverview";
 import { progressKey, staffMonthView } from "@/lib/monthProgress";
 import { loadOverviewTab } from "../workspaceData";
 import { MonthHeader, type TabCtx } from "./shared";
+import { CatchUpControl } from "@/components/content/CatchUpControl";
+import { monthLabel } from "@/lib/contentProgram";
 
 // ---------------------------------------------------------------------------
 // OVERVIEW (UI-02) — the month at a glance, and nothing to edit.
@@ -41,6 +43,9 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   const view = progress ? staffMonthView(progress) : null;
   const f = row ? overviewFacts(row) : null;
   const owed = row?.production.owed ?? month.videosOwed;
+  // Oct 7 2026: "Catch up a missed month here" — owner/admin; shown when this
+  // month carries a catch-up, or could take one.
+  const catchUp = ctx.staffEyes ? await import("@/lib/monthCatchUp").then((m) => m.catchUpPanel(month.id)).catch(() => null) : null;
   const mk = month.monthKey;
   const planHref = (v: string) => contentHref(id, { tab: "plan", view: v, month: mk });
   const prodHref = (v: string) => contentHref(id, { tab: "production", view: v, month: mk });
@@ -67,6 +72,15 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   return (
     <div className="space-y-6">
       <MonthHeader ctx={ctx} tab="overview" withSkip subtitle={`${plural(owed, "video")} this month`} />
+      {catchUp && (
+        <CatchUpControl
+          monthId={catchUp.monthId} monthName={monthLabel(catchUp.monthKey).split(" ")[0]}
+          sessionsNow={catchUp.sessionsNow} videosNow={catchUp.videosNow} refusal={catchUp.refusal}
+          carrying={catchUp.carrying ? { missedLabel: catchUp.carrying.missedLabel, extraSessions: catchUp.carrying.extraSessions, extraVideos: catchUp.carrying.extraVideos, by: catchUp.carrying.by, at: catchUp.carrying.at, undoRefusal: catchUp.carrying.undoRefusal } : null}
+          caughtUpNote={catchUp.caughtUpIn ? `Caught up in ${catchUp.caughtUpIn.targetLabel}${catchUp.caughtUpIn.by ? ` by ${catchUp.caughtUpIn.by}` : ""}${catchUp.caughtUpIn.at ? ` on ${new Date(catchUp.caughtUpIn.at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}: its videos are filmed in ${catchUp.caughtUpIn.targetLabel}'s extra session, so nothing is owed or chased here. To reopen it, undo the catch-up on ${catchUp.caughtUpIn.targetLabel}.` : null}
+          options={catchUp.options.map((o) => ({ monthId: o.monthId, label: o.label, videosOwed: o.videosOwed, refusal: o.refusal }))}
+        />
+      )}
 
       {/* THE TRACKER and THE ONE NEXT STEP — who holds it and by when. */}
       <div className="panel-shadow rounded-2xl border bg-surface p-4 sm:p-6">

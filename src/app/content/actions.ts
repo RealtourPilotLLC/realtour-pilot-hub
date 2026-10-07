@@ -721,8 +721,18 @@ export async function attachUnlinkedSessionToMonth(projectId: string, monthId: s
 
 export async function setMonthSkipped(monthId: string, skipped: boolean): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
-  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, status: true } });
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, status: true, monthKey: true } });
   if (!month) return { ok: false, outcome: "refused", message: "Month not found." };
+  // Oct 7 2026: a month closed by a catch-up (or carrying one) is changed through
+  // the catch-up's own Undo, which puts BOTH months back — never one of them alone.
+  {
+    const { catchUpFrom, catchUpInto, catchUpMonthName } = await import("@/lib/catchUp");
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: month.enrollmentId }, select: { overridesJson: true } });
+    const from = month.status === "SKIPPED" ? catchUpFrom(e?.overridesJson, month.monthKey) : null;
+    if (from) return { ok: false, outcome: "refused", message: `This month was caught up in ${catchUpMonthName(from.targetMonthKey, month.monthKey)}. To reopen it, undo the catch-up on ${catchUpMonthName(from.targetMonthKey, month.monthKey)}.` };
+    const into = skipped ? catchUpInto(e?.overridesJson, month.monthKey) : null;
+    if (into) return { ok: false, outcome: "refused", message: `This month carries the ${catchUpMonthName(into.missedMonthKey, month.monthKey)} catch-up. Undo the catch-up first.` };
+  }
   await prisma.contentMonth.update({
     where: { id: monthId },
     data: { status: skipped ? "SKIPPED" : "OPEN" },
@@ -730,6 +740,38 @@ export async function setMonthSkipped(monthId: string, skipped: boolean): Promis
   revalidatePath(`/content/${month.enrollmentId}`);
   revalidatePath("/content");
   return { ok: true, outcome: "confirmed", message: skipped ? "Marked skipped — no more nagging about this month." : "Reopened." };
+}
+
+// ---------------------------------------------------------------------------
+// CATCH UP A MISSED MONTH (Oct 7 2026) — owner/admin only. The rules and the
+// writes live in src/lib/monthCatchUp.ts; these only check who is asking.
+// ---------------------------------------------------------------------------
+export async function catchUpMonthAction(targetMonthId: string, missedMonthId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof targetMonthId !== "string" || typeof missedMonthId !== "string" || !targetMonthId || !missedMonthId) return { ok: false, outcome: "refused", message: "Pick the month to catch up." };
+  const who = await actor();
+  try {
+    const { applyCatchUp } = await import("@/lib/monthCatchUp");
+    const r = await applyCatchUp(targetMonthId, missedMonthId, who.name ?? who.email);
+    const t = await prisma.contentMonth.findUnique({ where: { id: targetMonthId }, select: { enrollmentId: true } });
+    if (t) revalidatePath(`/content/${t.enrollmentId}`);
+    revalidatePath("/content");
+    return { ok: true, outcome: "confirmed", message: r.message };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
+export async function undoCatchUpAction(targetMonthId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof targetMonthId !== "string" || !targetMonthId) return { ok: false, outcome: "refused", message: "Month not found." };
+  const who = await actor();
+  try {
+    const { undoCatchUp } = await import("@/lib/monthCatchUp");
+    const r = await undoCatchUp(targetMonthId, who.name ?? who.email);
+    const t = await prisma.contentMonth.findUnique({ where: { id: targetMonthId }, select: { enrollmentId: true } });
+    if (t) revalidatePath(`/content/${t.enrollmentId}`);
+    revalidatePath("/content");
+    return { ok: true, outcome: "confirmed", message: r.message };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
 }
 
 // Scripts slip months too (Jordan, Aug 28: "her July scripts were for the

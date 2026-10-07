@@ -471,7 +471,7 @@ export async function getProgramRoster(opts: { now?: Date } = {}): Promise<Progr
       videosOwed: p?.videosOwed ?? 0,
       strategyCallStatus: p?.call.status ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"),
       sessionsScheduled: s?.confirmed ?? 0,
-      sessionsRequired: e.sessionsPerMonth,
+      sessionsRequired: s?.required ?? e.sessionsPerMonth,
       sessionsMissing: s?.missing ?? 0,
       shotCount: s?.filmedConfirmed ?? 0,
       delivered: p?.production.delivered ?? 0,
