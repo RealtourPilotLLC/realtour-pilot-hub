@@ -132,6 +132,35 @@ export async function setWorkflowFlagsAction(enrollmentId: string, flags: { clie
   } catch (e) { return fail(e); }
 }
 
+/**
+ * Oct 8 2026: the client's PROGRAM STYLE — strategy calls on/off, and "the
+ * client plans their own content (we show up and shoot)". Owner or admin.
+ * Ledgered; the open months re-derive. Nothing is sent to anyone.
+ */
+export async function setProgramStyleAction(enrollmentId: string, change: { strategyCalls?: boolean; clientPlanned?: boolean }): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  if (typeof enrollmentId !== "string" || !enrollmentId) return { ok: false, message: "Enrollment not found." };
+  try {
+    const me = await actor();
+    const { setClientPlanned, setStrategyCalls } = await import("@/lib/programStyle");
+    const said: string[] = [];
+    if (typeof change.strategyCalls === "boolean") {
+      const r = await setStrategyCalls(enrollmentId, change.strategyCalls, me.email);
+      said.push(change.strategyCalls
+        ? (r.changed ? "Strategy calls are on again." : "Strategy calls were already on.")
+        : (r.changed ? "Strategy calls are off — no call step, no call reminders." : "Strategy calls were already off."));
+    }
+    if (typeof change.clientPlanned === "boolean") {
+      const r = await setClientPlanned(enrollmentId, change.clientPlanned, me.email);
+      said.push(change.clientPlanned
+        ? (r.changed ? "They plan their own content now — no topics, questions or scripts from us, and filming isn't held up by planning." : "Already set: they plan their own content.")
+        : (r.changed ? "We plan their content again — topics, questions and scripts are back on." : "Already set: we plan their content."));
+    }
+    touch(enrollmentId);
+    return { ok: true, message: said.join(" ") || "Nothing changed." };
+  } catch (e) { return fail(e); }
+}
+
 export async function setOverrideAction(enrollmentId: string, key: string, value: string): Promise<Result> {
   try { await requireOwner(); } catch (e) { return fail(e); }
   if (!(OVERRIDE_KEYS as readonly string[]).includes(key)) return { ok: false, message: "Unknown override." };

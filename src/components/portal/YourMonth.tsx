@@ -10,6 +10,8 @@ import { PortalScheduler } from "@/components/portal/PortalScheduler";
 import { RouteChoice, ScheduleLaterButton } from "@/components/portal/PlanningChoice";
 import { PortalCallPicker } from "@/components/portal/PortalCallPicker";
 import type { PortalCallBookingView } from "@/lib/callBooking";
+import type { MonthBriefView } from "@/lib/monthBriefCore";
+import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 
 // ---------------------------------------------------------------------------
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
@@ -40,6 +42,8 @@ export type YourMonthData = {
   readOnly: boolean;
   filter?: string;
   hrefs: { month: string; bank: string; scripts: string; schedule: string };
+  /** Oct 8 2026: a client who plans their own content — this month's creative brief (links scoped to this visit). */
+  brief?: MonthBriefView | null;
 };
 
 const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -74,7 +78,9 @@ export function YourMonth({ d }: { d: YourMonthData }) {
     can: d.can, readOnly: d.readOnly,
     hrefs: { bank: d.hrefs.bank, month: `${d.hrefs.month}#this-month`, scripts: d.hrefs.scripts, bookingUrl: d.bookingUrl },
     timezone: p.timezone,
+    clientPlanned: p.clientPlanned ? { briefFiles: d.brief?.files.length ?? 0, briefNotes: !!d.brief?.notes?.text.trim() } : null,
   });
+  const clientPlanned = p.clientPlanned;
   const route = p.planningMode === "WRITTEN" ? "WRITTEN" : p.planningMode === "CALL" ? "CALL" : "UNDECIDED";
   const canChoose = p.noCallEligible && d.can.session && !d.readOnly;
   const current = steps.find((x) => x.state === "current") ?? null;
@@ -87,11 +93,15 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{monthLabel(month.monthKey)}</div>
         <h2 id="your-month-headline" className="mt-1 break-words text-lg font-semibold leading-snug">{planning.headline.text}</h2>
         {p.catchUp && <p className="mt-1 text-sm font-medium text-brand">{p.catchUp.line}</p>}
-        <p className="mt-0.5 text-sm text-muted">
-          {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
-          {month.overflow > 0 && <> · {month.overflow} extra{month.overflow === 1 ? "" : "s"} waiting {month.overflow === 1 ? "its" : "their"} turn</>}
-          {planning.progress && <> · {planning.progress}</>}
-        </p>
+        {clientPlanned ? (
+          <p className="mt-0.5 text-sm text-muted">{month.owed} video{month.owed === 1 ? "" : "s"} this month · you plan them, we film and edit them</p>
+        ) : (
+          <p className="mt-0.5 text-sm text-muted">
+            {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
+            {month.overflow > 0 && <> · {month.overflow} extra{month.overflow === 1 ? "" : "s"} waiting {month.overflow === 1 ? "its" : "their"} turn</>}
+            {planning.progress && <> · {planning.progress}</>}
+          </p>
+        )}
         {current?.cta && (
           current.cta.external
             ? <a href={current.cta.href} target="_blank" rel="noopener noreferrer" className={cn("mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-action px-5 text-sm font-semibold text-white shadow hover:opacity-90 sm:w-auto", focusRing)}>{current.cta.label} <ExternalLink className="size-4" aria-hidden /></a>
@@ -144,6 +154,13 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                   ) : step.state === "current" ? <PortalCallPicker view={d.callBooking} /> : null
                 )}
 
+                {/* Oct 8 2026: the client's own brief for the month — files and notes, right here. */}
+                {step.key === "brief" && (
+                  <div className="mt-3">
+                    <MonthBriefPanel mode="portal" monthId={p.monthId} files={d.brief?.files ?? []} notes={d.brief?.notes ?? null} canEdit={d.can.suggest && !d.readOnly} />
+                  </div>
+                )}
+
                 {/* Book filming — the Schedule page's own picker, embedded. */}
                 {step.key === "filming" && (d.scheduleFailed ? (
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
@@ -166,8 +183,9 @@ export function YourMonth({ d }: { d: YourMonthData }) {
       </ol>
 
       {/* Keep the full bank in reach when choosing or answering, then fold it
-          so a later action does not compete with a second work area. */}
-      <section id="this-month" aria-label="This month's topics" className="scroll-mt-24">
+          so a later action does not compete with a second work area. A client
+          who plans their own content has no topics to choose (Oct 8 2026). */}
+      {!clientPlanned && <section id="this-month" aria-label="This month's topics" className="scroll-mt-24">
         <details open={topicsAreCurrent} className="rounded-2xl border border-border bg-surface/70 px-4 py-3">
           <summary className={cn("min-h-11 cursor-pointer py-2 text-sm font-semibold", focusRing)}>This month&rsquo;s topics · {month.selected} of {month.owed} chosen</summary>
           <div className="mt-3 space-y-3">
@@ -180,7 +198,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
             />
           </div>
         </details>
-      </section>
+      </section>}
     </div>
   );
 }

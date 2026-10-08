@@ -13,8 +13,12 @@ async function main() {
     const { prisma } = await import("@/lib/prisma");
     const { programOverview } = await import("@/lib/programOverview");
     const { monthProgressMany, progressKey } = await import("@/lib/monthProgress");
-    const f = await buildContentMonth(prisma, { name: "Held Evidence TEST", monthKey: "2026-10", package: "Starter", videosPerMonth: 1, project: false, owner: false });
-    await prisma.contentEnrollment.update({ where: { id: f.enrollmentId }, data: { callMode: "REQUIRED", clientSuppliesTopics: true } });
+    // The month's one topic is chosen, so the ladder reaches the call's evidence.
+    // (Oct 8 2026: this used `clientSuppliesTopics` to skip the topics step; that
+    // flag now means "the client plans their own content", which needs no call
+    // evidence at all — oct8-program-style covers it.)
+    const f = await buildContentMonth(prisma, { name: "Held Evidence TEST", monthKey: "2026-10", package: "Starter", videosPerMonth: 1, project: false, owner: false, topics: [{ title: "Held evidence topic", selection: "SELECTED" }] });
+    await prisma.contentEnrollment.update({ where: { id: f.enrollmentId }, data: { callMode: "REQUIRED" } });
     await prisma.contentMonth.update({ where: { id: f.monthId }, data: { strategyCallStatus: "COMPLETED", strategyCallAt: new Date("2026-10-08T14:00:00Z") } });
     const call = await prisma.programCallRecord.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthId: f.monthId, callType: "MONTHLY_STRATEGY", status: "COMPLETED", matchState: "MATCHED", transcriptState: "CONFIRMED", scheduledStart: new Date("2026-10-08T14:00:00Z"), scheduledEnd: new Date("2026-10-08T14:30:00Z") } });
     const read = async (progress?: NonNullable<Parameters<typeof programOverview>[0]>["progress"]) => {

@@ -23,6 +23,8 @@ import { BriefReadCard } from "@/components/shoot/BriefReadCard";
 import { assetRegistry, type AssetRow } from "@/lib/clientAssets";
 import { shootBriefLines, briefSnapshot, briefDigest, briefChanges, parseBriefSnapshot } from "@/lib/shootBriefRead";
 import { stripMoneySentences } from "@/lib/text";
+import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
+import type { MonthBriefView } from "@/lib/monthBriefCore";
 
 export const dynamic = "force-dynamic";
 
@@ -131,6 +133,11 @@ export default async function ShootDetailPage({
     try { briefAssets = await assetRegistry(view.client.id, { links: false }); }
     catch { briefUnavailable = true; }
   }
+  // Oct 8 2026: the client's own brief for this job's month (client-planned
+  // months above all) — the same door the editor's brief links through.
+  const monthBrief = view.project.contentSession
+    ? await import("@/lib/monthBrief").then(async (m) => { const b = await m.briefForProject(id); return b ? { view: await m.briefView(b, null), clientPlanned: b.clientPlanned } : null; }).catch(() => null)
+    : null;
   const briefLines = shootBriefLines(view, briefAssets);
   const briefDigestNow = briefDigest(briefSnapshot(briefLines));
   // WHOEVER IS SHOOTING IT marks it read (Oct 5): the photographer, or James
@@ -165,7 +172,7 @@ export default async function ShootDetailPage({
           route — the topics, the words the client was shown and the direction
           written with them, and any video with a brief of its own. The same
           readers the editor's page and printed brief use. */}
-      <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} />
+      <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} clientBrief={monthBrief} />
     </>
   );
   // "I read this brief" sits UNDER what it is about (Oct 5): ShootScreen
@@ -232,8 +239,9 @@ export default async function ShootDetailPage({
 // it lives (the scripts in the content workspace, a video's brief on its edit
 // page). Everything in it arrived money-scrubbed from lib/shoot.
 // ---------------------------------------------------------------------------
-function SessionBriefCard({ session, outputs, assets }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"]; assets: AssetRow[] }) {
-  if (!session && outputs.length === 0) return null;
+function SessionBriefCard({ session, outputs, assets, clientBrief }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"]; assets: AssetRow[]; clientBrief?: { view: MonthBriefView | null; clientPlanned: boolean } | null }) {
+  if (!session && outputs.length === 0 && !clientBrief) return null;
+  const clientPlanned = !!clientBrief?.clientPlanned;
   const toFilm = session?.topics.filter((t) => !t.filmedElsewhere) ?? [];
   const elsewhere = session?.topics.filter((t) => t.filmedElsewhere) ?? [];
   const brand = session?.brand ?? null;
@@ -245,7 +253,8 @@ function SessionBriefCard({ session, outputs, assets }: { session: ShootView["se
       count={session ? `${toFilm.length} topic${toFilm.length === 1 ? "" : "s"}` : undefined}
       bodyClassName="space-y-3"
     >
-      {session && toFilm.length === 0 && (
+      {clientBrief && <BriefReadOnly brief={clientBrief.view} clientPlanned={clientPlanned} monthName={session?.monthKey ? new Date(Date.UTC(Number(session.monthKey.slice(0, 4)), Number(session.monthKey.slice(5, 7)) - 1, 15)).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" }) : "this month"} />}
+      {session && toFilm.length === 0 && !clientPlanned && (
         <p className="text-sm text-muted">No topics are chosen for this session yet. Ask the office before you start.</p>
       )}
       {toFilm.map((t, i) => (

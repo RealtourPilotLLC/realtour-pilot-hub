@@ -6,7 +6,7 @@ import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparatio
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
 import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } from "@/lib/monthProgress";
-import { contentHref, type StaffTab } from "@/lib/contentNav";
+import { catchUpHref, contentHref, type StaffTab } from "@/lib/contentNav";
 import type { JourneyInput } from "@/lib/contentStatus";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
@@ -71,6 +71,10 @@ export type OverviewRow = {
   monthName: string;
   monthStatus: string; // OPEN | COMPLETED | SKIPPED | IMPORTED
   historical: boolean;
+  /** Oct 8 2026: the month ended with nothing done on it — forfeited, nothing owed (forfeit.ts). */
+  forfeited: boolean;
+  /** Oct 8 2026: the client plans their own content ("we show up and shoot"). */
+  clientPlanned: boolean;
   owners: OwnerMap;
 
   planning: {
@@ -171,7 +175,7 @@ const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 const REQUIREMENT_WORD: Record<CallMode, string> = {
   REQUIRED: "Call required",
   OPTIONAL_WRITTEN: "Call optional — written path allowed",
-  NOT_INCLUDED: "No call in this package",
+  NOT_INCLUDED: "Strategy calls off",
 };
 
 const PREP_WORD: Record<PreparationStatus, string> = {
@@ -255,9 +259,18 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   // to and including this one that is not already COMPLETED — an August
   // obligation does not disappear because September started (Jordan's rule:
   // old obligations never vanish).
-  const scoped = allOpen
+  const scopedRaw = allOpen
     ? allMonths.filter((m) => !m.historical && m.status !== "SKIPPED" && m.status !== "IMPORTED" && m.monthKey <= thisMonth && m.status !== "COMPLETED")
     : allMonths.filter((m) => m.monthKey === monthKey);
+  // FORFEITED MONTHS (Oct 8 2026): a month that ended with nothing done on it
+  // owes nothing — "a missed month is a forfeited month". It leaves "all open
+  // months" entirely, and on a single month's view it reads as forfeited
+  // with the one way back: staff approving a catch-up session.
+  const forfeitedSet = await import("@/lib/monthForfeit").then((f) => f.forfeitedMonths(scopedRaw, { now })).catch(() => new Set<string>());
+  const scoped = allOpen ? scopedRaw.filter((m) => !forfeitedSet.has(m.id)) : scopedRaw;
+  // Where a catch-up would be carried: the first open month from this one on.
+  const catchUpTargetOf = (enrollmentId: string) =>
+    allMonths.filter((x) => x.enrollmentId === enrollmentId && !x.historical && x.status === "OPEN" && x.monthKey >= thisMonth).sort((a, b) => a.monthKey.localeCompare(b.monthKey))[0] ?? null;
 
   // An enrollment with NO month workspace for the selected month still gets a
   // row (that absence is itself the exception) — but only for a single month
@@ -358,6 +371,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // OPTIONAL_WRITTEN, and only because a prior call was held — so that is
     // exactly what the local derivation below is told.
     const legacyCallMode = callModeOf(e);
+    const forfeited = !!m && forfeitedSet.has(m.id);
+    const clientPlanned = e.clientSuppliesTopics;
     const callMode = (progress?.call.mode as CallMode | null | undefined) ?? legacyCallMode;
     const priorCallHeld = legacyCallMode === "REQUIRED" && callMode === "OPTIONAL_WRITTEN";
 
@@ -435,7 +450,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
             preparationWindowDays: m.preparationWindowDays, preparationExceptionAt: m.preparationExceptionAt,
             preparationExceptionReason: m.preparationExceptionReason, filmingReadyAt: m.filmingReadyAt, historical: m.historical,
           },
-          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(e.overridesJson) },
+          enrollment: { callMode: e.callMode, strategyCallRequired: e.strategyCallRequired, noCallEligible: e.noCallEligible, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(e.overridesJson), clientPlanned },
           // The call's END (A19): the clock runs from it. This passed
           // `scheduledEnd: null`, so the overview measured every call from its start.
           records: monthly.map((c) => ({ id: c.id, callType: c.callType, status: c.status, matchState: c.matchState, scheduledStart: c.scheduledStart, scheduledEnd: c.scheduledEnd, transcriptState: c.transcriptState, createdAt: c.createdAt })),
@@ -449,6 +464,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     const blockingCallProblem = hardCallProblem ?? (callProblem && !preparationComplete && myScripts.length === 0 ? callProblem : null);
     const preparationWord = blockingCallProblem
       ? callEvidence.preparationWord
+      : clientPlanned ? "client-planned — they bring their own topics and scripts"
       : preparationStatus ? PREP_WORD[preparationStatus]
       : callMode === "NOT_INCLUDED" ? "no call — written preparation"
       : "not started";
@@ -505,7 +521,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       delivered: pp?.delivered ?? 0,
       // A month that does not exist because the client is paused/ended owes
       // nothing — "0/4" on a paused client reads as the agency being behind.
-      owed: progress?.videosOwed ?? m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0),
+      // A forfeited month owes nothing (Oct 8 2026).
+      owed: forfeited ? 0 : progress?.videosOwed ?? m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0),
       carriedIn: pp?.carriedIn ?? 0,
       produced: pp?.produced ?? 0,
       internallyApproved: pp?.internallyApproved ?? 0,
@@ -524,15 +541,17 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       libraryAhead: pp?.libraryAhead ?? false,
       awaitingInternalReview: pp?.awaitingInternalReview ?? 0,
     };
-    const topicsNeeded = Math.max(0, production.owed - topicsSelected);
+    // A client who plans their own content has no topics of ours to pick (Oct 8 2026).
+    const topicsNeeded = clientPlanned ? 0 : Math.max(0, production.owed - topicsSelected);
     // Legacy projects and videos may be linked to this month without the
     // corresponding planning fields. A client must not be asked to start over
     // because those fields are empty. Keep partially filmed months actionable
     // when their remaining topics are genuinely unplanned.
     const downstreamWork = (ps?.filmedConfirmed ?? 0) > 0 || production.filmed > 0;
     const unlinkedFilmedOutput = !!progress?.production.videos.some((v) => v.countsTowardAllowance && v.stage !== "PLANNED" && !v.topicId);
-    const missingPlanningRoute = callMode !== "NOT_INCLUDED" && !callHeld && !callSkipped && !bookedCall && planningMode === "UNDECIDED";
-    const needsReconciliation = downstreamWork && (topicsSelected === 0 || production.filmed > topicsSelected || unlinkedFilmedOutput || missingPlanningRoute);
+    const missingPlanningRoute = !clientPlanned && callMode !== "NOT_INCLUDED" && !callHeld && !callSkipped && !bookedCall && planningMode === "UNDECIDED";
+    // A client-planned month has no topic links of ours to reconcile.
+    const needsReconciliation = !clientPlanned && downstreamWork && (topicsSelected === 0 || production.filmed > topicsSelected || unlinkedFilmedOutput || missingPlanningRoute);
 
     // ---- communication — read only, empty is honest --------------------------------
     const myReminders = reminders.filter((r) => r.enrollmentId === e.id && (r.monthKey ? r.monthKey === key : true));
@@ -580,6 +599,14 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (m.status === "SKIPPED") {
       const caughtUp = catchUpFrom(e.overridesJson, key);
       next = { text: caughtUp ? `Caught up in ${monthLabel(caughtUp.targetMonthKey)} — nothing owed here` : "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
+    } else if (forfeited) {
+      // Staff-only words. The link opens the catch-up flow on the next open
+      // month with this month picked — an exception, never a routine step.
+      const target = catchUpTargetOf(e.id);
+      next = {
+        text: `Forfeited — ${monthLabel(key)} was missed, nothing is owed`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null,
+        href: target ? catchUpHref(e.id, target.monthKey, m.id, now) : href(), cta: "Approve a catch-up",
+      };
     } else if (m.historical) {
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
@@ -600,11 +627,11 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       };
     } else if (callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall && m.strategyCallStatus !== "SCHEDULED" && !planningInWriting) {
       next = { text: "Strategy call is required and nothing is booked", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Chase the booking" };
-    } else if (callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" && !callHeld && !callSkipped && !bookedCall) {
+    } else if (callMode === "OPTIONAL_WRITTEN" && planningMode === "UNDECIDED" && !callHeld && !callSkipped && !bookedCall && !clientPlanned) {
       next = { text: "They have not chosen a call or the written path", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("plan", "calls"), cta: "Ask them to choose" };
     } else if (bookedCall?.scheduledStart && !callHeld) {
       next = { text: `Strategy call booked for ${bookedCall.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" })}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "nobody", deadlineISO: iso(bookedCall.scheduledStart), href: href("plan", "calls"), cta: "Open the call" };
-    } else if (answersOutstanding > 0) {
+    } else if (answersOutstanding > 0 && !clientPlanned) {
       const overtook = planningInWriting && callMode === "REQUIRED" && !callHeld && !callSkipped && !bookedCall;
       next = {
         text: `${answersOutstanding} topic${answersOutstanding === 1 ? "" : "s"} still waiting on their answers${overtook ? " — they are planning this month in writing rather than on a call" : ""}`,
@@ -614,16 +641,16 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: `${topicsNeeded} more topic${topicsNeeded === 1 ? "" : "s"} to pick for ${monthLabel(key)}`, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: href("plan", "topics"), cta: "Pick topics" };
     } else if (strategyReviewNeeded > 0) {
       next = { text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("plan", "strategy"), cta: "Review the strategy" };
-    } else if (reviewNeeded > 0) {
+    } else if (reviewNeeded > 0 && !clientPlanned) {
       next = { text: `${reviewNeeded} script${reviewNeeded === 1 ? "" : "s"} waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
-    } else if (drafting > 0 || (approved < production.owed && myScripts.length < production.owed)) {
+    } else if (!clientPlanned && (drafting > 0 || (approved < production.owed && myScripts.length < production.owed))) {
       const notStarted = Math.max(0, production.owed - myScripts.length);
       const parts = [drafting > 0 ? `${drafting} draft script${drafting === 1 ? "" : "s"} need work` : null, notStarted > 0 ? `${notStarted} script${notStarted === 1 ? "" : "s"} not started` : null].filter(Boolean);
       next = { text: parts.join(" · "), owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
     } else if (sessionState === "REQUESTED") {
       next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
     } else if (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED") {
-      next = { text: "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
+      next = { text: clientPlanned ? "Client-planned — no filming session on the calendar" : "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
     } else if (ps && sessionState === "CONFIRMED" && ps.missing > 0) {
       // One Pro booking does not complete a two-session month.
       next = ps.pendingRequests > 0
@@ -656,18 +683,19 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // enrollment: a paused or ended client has no planning to be missing and
     // no appointment to book, and listing them here made the first filter
     // Jordan reaches for on his morning page mostly false alarms.
-    const live = e.status === "ACTIVE";
+    // A forfeited month raises no flag of any kind: nothing is owed on it.
+    const live = e.status === "ACTIVE" && !forfeited;
     if (live && (!m || (!needsReconciliation && missingPlanningRoute) || !!blockingCallProblem)) flags.push("missing_planning");
     // Compared with the PACKAGE (CP-10): a half-booked Pro month is missing an appointment.
     if (live && m && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED" || (ps?.missing ?? 0) > 0)) flags.push("missing_appointment");
-    if (next.blocked === "client") flags.push("awaiting_client");
+    if (next.blocked === "client" && !forfeited) flags.push("awaiting_client");
     // "Ready to film" must agree with the preparation reading: a month whose
     // scripts are approved but whose call evidence never landed is NOT ready,
     // and listing it here would send a photographer to a shoot nobody planned.
     if (live && preparationComplete && !blockingCallProblem && sessionState !== "COMPLETED") flags.push("ready_to_film");
     if (production.editing > 0 || (production.filmed > production.delivered)) flags.push("in_production");
     if (production.clientReview > 0) flags.push("awaiting_review");
-    if (myFailures.length > 0) flags.push("failed_automation");
+    if (myFailures.length > 0 && !forfeited) flags.push("failed_automation");
     // Overdue is the same kind of claim: an ENDED client's last month is in the
     // past by definition, and flagging all twelve of them "overdue" the moment
     // Jordan ticks "show ended clients" would be twelve accusations about work
@@ -676,7 +704,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 
     // ---- priority: the worse it is, the smaller the number ------------------------
     let priority = 500;
-    if (m?.status === "SKIPPED" || m?.historical) priority = 900;
+    if (m?.status === "SKIPPED" || m?.historical || forfeited) priority = 900;
     else if (flags.includes("overdue")) priority = 10;
     else if (blockingCallProblem) priority = 20;
     else if (flags.includes("failed_automation")) priority = 30;
@@ -695,7 +723,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     rows.push({
       enrollmentId: e.id, clientId: e.clientId, clientName: nameOf.get(e.clientId) ?? "Unknown client",
       pkg: e.package, enrollmentStatus: e.status, trial: e.billingType === "TRIAL",
-      monthId: mid, monthKey: key, monthName: monthLabel(key), monthStatus: m?.status ?? "NONE", historical: !!m?.historical,
+      monthId: mid, monthKey: key, monthName: monthLabel(key), monthStatus: m?.status ?? "NONE", historical: !!m?.historical, forfeited, clientPlanned,
       owners: owner,
       planning: {
         callMode, requirementWord: REQUIREMENT_WORD[callMode], planningMode,
@@ -708,7 +736,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       },
       session: {
         state: sessionState, dateISO: iso(sessionDate), detail: sessionDetail, requestedCount: myRequests.length,
-        required: ps?.required ?? sessionsForMonth(e, key), confirmed: ps?.confirmed ?? 0, missing: ps?.missing ?? sessionsForMonth(e, key),
+        required: ps?.required ?? sessionsForMonth(e, key), confirmed: ps?.confirmed ?? 0, missing: forfeited ? 0 : ps?.missing ?? sessionsForMonth(e, key),
         filmedConfirmed: ps?.filmedConfirmed ?? 0, unverified: ps?.unverified ?? 0, heldUnconfirmed: ps?.heldUnconfirmed ?? 0,
       },
       work: { topicsSelected, topicsNeeded, answersOutstanding, scriptsDrafting: drafting, scriptsReviewNeeded: reviewNeeded, scriptsApproved: approved, strategyReviewNeeded, openScriptRequests: progress?.scripts.openSuggestions ?? 0 },
@@ -782,7 +810,8 @@ const SESSION_FACT_WORDS: Record<SessionState, { word: string; tone: OverviewFac
 
 export function overviewFacts(r: OverviewRow): OverviewFacts {
   const p = r.production;
-  const s = SESSION_FACT_WORDS[r.session.state];
+  // Oct 8 2026: a forfeited month has nothing to schedule — never "Not scheduled" in warning colour.
+  const s = r.forfeited ? { word: "Forfeited", tone: "foreground" as const } : SESSION_FACT_WORDS[r.session.state];
   const exception: OverviewException | null =
     r.flags.includes("overdue") ? { kind: "overdue", label: "Overdue" }
     : r.failures.length > 0 ? { kind: "failed_automation", label: "Failed automation" }
@@ -801,7 +830,7 @@ export function overviewFacts(r: OverviewRow): OverviewFacts {
         : null,
     sessionWord: s.word,
     sessionTone: s.tone,
-    sessionLabel: `${s.word} · ${r.session.confirmed}/${r.session.required} confirmed`,
+    sessionLabel: r.forfeited ? "Forfeited · nothing owed" : `${s.word} · ${r.session.confirmed}/${r.session.required} confirmed`,
     owner: r.nextAction.owner,
     ownerDuty: r.nextAction.ownerDuty,
     blocked: r.nextAction.blocked,

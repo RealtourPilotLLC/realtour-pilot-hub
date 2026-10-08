@@ -62,7 +62,9 @@ export function journeyFromOverview(r: OverviewRow): JourneyInput {
     clientApproved: r.production.clientApproved,
     inReview: r.production.awaitingInternalReview,
     unknown: { shoot: "the month's progress could not be read — refresh to try again" },
-    muted: r.historical || r.monthStatus === "SKIPPED",
+    muted: r.historical || r.monthStatus === "SKIPPED" || r.forfeited,
+    clientPlanned: r.clientPlanned,
+    forfeited: r.forfeited,
   };
 }
 

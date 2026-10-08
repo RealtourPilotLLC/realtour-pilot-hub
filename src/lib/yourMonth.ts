@@ -25,7 +25,7 @@ import { CTA_WORDS, answerCta } from "@/lib/portalWords";
 // no new query and no new rule.
 // ---------------------------------------------------------------------------
 
-export type YourMonthStepKey = "route" | "topics" | "answers" | "call" | "filming" | "scripts";
+export type YourMonthStepKey = "route" | "topics" | "answers" | "call" | "filming" | "scripts" | "brief";
 export type YourMonthStepState = "done" | "current" | "todo" | "waiting";
 export type YourMonthStep = {
   key: YourMonthStepKey;
@@ -61,6 +61,12 @@ export type YourMonthInput = {
   can: { suggest: boolean; session: boolean };
   readOnly: boolean;
   hrefs: { bank: string; month: string; scripts: string; bookingUrl: string };
+  /**
+   * Oct 8 2026: the client plans their own content ("we show up and shoot").
+   * The month is then: add your creative brief (optional) → the strategy call
+   * when calls are on → book filming. No route, topics, answers or scripts.
+   */
+  clientPlanned?: { briefFiles: number; briefNotes: boolean } | null;
   timezone?: string;
   /** The clock "today"/"tomorrow" is read against (default: now). */
   now?: Date;
@@ -103,6 +109,7 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
   const owed = m.videosOwed;
   const inTopics = m.topics.filter((t) => t.inAllowance);
   const steps: Raw[] = [];
+  if (i.clientPlanned) return clientPlannedSteps(i, i.clientPlanned, { actSession, tz, now });
 
   // ---- 1 · the route -------------------------------------------------------
   if (route === "UNDECIDED") {
@@ -180,30 +187,7 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     }
   }
 
-  // ---- 4 · filming ---------------------------------------------------------
-  const s = i.schedule;
-  if (!s) {
-    steps.push({ key: "filming", status: "todo", title: CTA_WORDS.BOOK, detail: "Your next program month isn't open for booking yet.", cta: null });
-  } else if (s.sessionsMissing === 0 && s.sessionsRequired > 0) {
-    steps.push({ key: "filming", status: "done", title: s.sessionsRequired > 1 ? `All ${s.sessionsRequired} filming sessions are booked` : "Filming is booked", detail: null, cta: null });
-  } else if (s.pendingRequest) {
-    steps.push({ key: "filming", status: "waiting", title: "Filming requested", detail: "We're confirming the time with you.", cta: null });
-  } else if (s.locked) {
-    steps.push({ key: "filming", status: "todo", title: CTA_WORDS.BOOK, detail: s.reason || null, cta: null });
-  } else if (!actSession || s.capacityRemaining <= 0) {
-    steps.push({ key: "filming", status: "waiting", title: CTA_WORDS.BOOK, detail: i.readOnly ? "Booking is off while your program is paused or ended." : "The program owner books filming for this account.", cta: null });
-  } else {
-    const booked = s.sessionsRequired - s.sessionsMissing;
-    steps.push({
-      key: "filming", status: i.planning.deferredAtISO ? "deferred" : "action",
-      title: s.sessionsRequired > 1 && booked > 0 ? `Book your next filming session (${booked} of ${s.sessionsRequired} booked)` : CTA_WORDS.BOOK,
-      detail: i.planning.deferredAtISO
-        ? "You chose to schedule later — book any time."
-        : s.earliestISO ? `Sessions start on or after ${dayOnly(s.earliestISO)}.` : null,
-      // The picker sits inside this step; the page's next-step button jumps to it.
-      cta: { label: CTA_WORDS.BOOK, href: "#step-filming" },
-    });
-  }
+  steps.push(filmingStep(i, { actSession, dayOnly }));
 
   // ---- 5 · scripts ---------------------------------------------------------
   const ready = m.counts.READY_FOR_YOU;
@@ -219,10 +203,65 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     steps.push({ key: "scripts", status: "todo", title: "Review your scripts", detail: route === "CALL" ? "We write them from your call, then share them here." : "We write them from your answers, then share them here.", cta: null });
   }
 
-  // ---- one current step ------------------------------------------------------
+  return oneCurrent(steps);
+}
+
+/** The filming step — the same for every month, planned by us or by the client. */
+function filmingStep(i: YourMonthInput, o: { actSession: boolean; dayOnly: (iso: string) => string }): Raw {
+  const s = i.schedule;
+  const actSession = o.actSession;
+  const dayOnly = o.dayOnly;
+  if (!s) {
+    return { key: "filming", status: "todo", title: CTA_WORDS.BOOK, detail: "Your next program month isn't open for booking yet.", cta: null };
+  } else if (s.sessionsMissing === 0 && s.sessionsRequired > 0) {
+    return { key: "filming", status: "done", title: s.sessionsRequired > 1 ? `All ${s.sessionsRequired} filming sessions are booked` : "Filming is booked", detail: null, cta: null };
+  } else if (s.pendingRequest) {
+    return { key: "filming", status: "waiting", title: "Filming requested", detail: "We're confirming the time with you.", cta: null };
+  } else if (s.locked) {
+    return { key: "filming", status: "todo", title: CTA_WORDS.BOOK, detail: s.reason || null, cta: null };
+  } else if (!actSession || s.capacityRemaining <= 0) {
+    return { key: "filming", status: "waiting", title: CTA_WORDS.BOOK, detail: i.readOnly ? "Booking is off while your program is paused or ended." : "The program owner books filming for this account.", cta: null };
+  } else {
+    const booked = s.sessionsRequired - s.sessionsMissing;
+    return {
+      key: "filming", status: i.planning.deferredAtISO ? "deferred" : "action",
+      title: s.sessionsRequired > 1 && booked > 0 ? `Book your next filming session (${booked} of ${s.sessionsRequired} booked)` : CTA_WORDS.BOOK,
+      detail: i.planning.deferredAtISO
+        ? "You chose to schedule later — book any time."
+        : s.earliestISO ? `Sessions start on or after ${dayOnly(s.earliestISO)}.` : null,
+      // The picker sits inside this step; the page's next-step button jumps to it.
+      cta: { label: CTA_WORDS.BOOK, href: "#step-filming" },
+    };
+  }
+}
+
+/** At most ONE step is current: the first the client can act on now; a deferred filming step only when nothing else is waiting on them. */
+function oneCurrent(steps: Raw[]): YourMonthStep[] {
   const currentIdx = steps.findIndex((x) => x.status === "action") >= 0 ? steps.findIndex((x) => x.status === "action") : steps.findIndex((x) => x.status === "deferred");
   return steps.map((x, idx): YourMonthStep => ({
     key: x.key, title: x.title, detail: x.detail, cta: x.cta,
     state: idx === currentIdx ? "current" : x.status === "done" ? "done" : x.status === "waiting" ? "waiting" : "todo",
   }));
+}
+
+/**
+ * THE CLIENT-PLANNED MONTH (Oct 8 2026). Their brief first — optional, so it
+ * is never the one current step, only "also ready for you" — then the call
+ * when calls are on (offered, never a gate), then filming.
+ */
+function clientPlannedSteps(i: YourMonthInput, cp: { briefFiles: number; briefNotes: boolean }, o: { actSession: boolean; tz: string; now: Date }): YourMonthStep[] {
+  const steps: Raw[] = [];
+  const has = cp.briefFiles > 0 || cp.briefNotes;
+  steps.push(has
+    ? { key: "brief", status: "done", title: "Your creative brief is in", detail: [cp.briefFiles ? plural(cp.briefFiles, "file") : null, cp.briefNotes ? "notes" : null].filter(Boolean).join(" and ") + ". Add to it any time.", cta: null }
+    : { key: "brief", status: "todo", title: `Add your creative brief for ${i.monthLabel} (optional)`, detail: "Upload your plan or paste your notes, and your crew will have it at the shoot.", cta: i.readOnly ? null : { label: "Add your brief", href: "#step-brief" } });
+  if (i.planning.callMode !== "NOT_INCLUDED" && i.planning.callStatus !== "NOT_REQUIRED") {
+    const held = i.month.call === "HELD";
+    if (held) steps.push({ key: "call", status: "done", title: "Strategy call held", detail: null, cta: null });
+    else if (i.month.call === "BOOKED") steps.push({ key: "call", status: "waiting", title: i.planning.callAtISO ? `Your call is booked for ${callWhenWords(i.planning.callAtISO, o.tz, o.now)}` : "Your call is booked", detail: "You can book filming now — you don't need to wait for the call.", cta: null });
+    else steps.push({ key: "call", status: o.actSession ? "action" : "waiting", title: "Book your strategy call", detail: "Filming isn't held up by it — book both whenever suits you.", cta: o.actSession ? { label: "Book the call", href: i.hrefs.bookingUrl, external: /^https?:/i.test(i.hrefs.bookingUrl) } : null });
+  }
+  const dayOnly = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: o.tz, weekday: "long", month: "long", day: "numeric" });
+  steps.push(filmingStep(i, { actSession: o.actSession, dayOnly }));
+  return oneCurrent(steps);
 }

@@ -1,6 +1,7 @@
 import { SettingsPanel } from "@/components/content/SettingsPanel";
 import { PortalAccessCard } from "@/components/content/PortalAccessCard";
 import { EnrollmentControls } from "@/components/content/Workspace";
+import { ProgramStyleCard } from "@/components/content/ProgramStyleCard";
 import { loadSettingsTab } from "../workspaceData";
 import type { TabCtx } from "./shared";
 
@@ -22,6 +23,8 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
   const s = d.settings;
   return (
     <div className="space-y-5">
+      {/* Oct 8 2026: strategy calls on/off and "we show up and shoot" — owner/admin. */}
+      <ProgramStyleCard enrollmentId={ctx.id} strategyCalls={s.callMode !== "NOT_INCLUDED"} clientPlanned={s.clientSuppliesTopics} canEdit={ctx.staffEyes} />
       {ctx.staffEyes && (
         <EnrollmentControls
           enrollmentId={ctx.id} pkg={s.pkg} status={s.status} videosPerMonth={s.videosPerMonth} sessionsPerMonth={s.sessionsPerMonth}

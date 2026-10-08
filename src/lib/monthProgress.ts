@@ -129,8 +129,10 @@ export type MonthProgress = {
   monthKey: string;
   monthStatus: string;
   historical: boolean;
-  /** historical / skipped / imported: record-keeping, never warnings */
+  /** historical / skipped / imported / forfeited: record-keeping, never warnings */
   muted: boolean;
+  /** Oct 8 2026: the month ended with nothing done on it — forfeited, nothing owed (forfeit.ts). */
+  forfeited: boolean;
   videosOwed: number;
   /**
    * Oct 7 2026 (catch-up months, catchUp.ts). `into`: this month also films a
@@ -376,6 +378,11 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       : Promise.resolve([]),
     opts.owners === false ? Promise.resolve(new Map<string, OwnerMap>()) : ownersForMany(pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthId: p.monthId }))),
   ]);
+  // Oct 8 2026: which of these months are FORFEITED (forfeit.ts) — a fixed
+  // set of grouped reads whatever the roster's size. Unreadable → none.
+  const forfeitedSet = await import("@/lib/monthForfeit")
+    .then((f) => f.forfeitedMonths(liveMonths.map((m) => ({ id: m.id, monthKey: m.monthKey, status: m.status, historical: m.historical, strategyCallStatus: m.strategyCallStatus })), { now, fixedCost: true }))
+    .catch(() => new Set<string>());
   // R01: the allowance and each topic's step, through the ONE planning reader
   // (a fixed set of queries for every month at once). Unreadable → the
   // union below, with the extras no longer counted twice.
@@ -425,10 +432,12 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     const mid = m?.id ?? null;
     // NEVER another row's owners: a wrong name beside a client reads as a fact.
     const owners = ownerMaps.get(pairKey(e.id, mid)) ?? UNASSIGNED_OWNERS;
-    const muted = !!m && (m.historical || m.status === "SKIPPED" || m.status === "IMPORTED");
+    const forfeited = !!m && forfeitedSet.has(m.id);
+    const muted = !!m && (m.historical || m.status === "SKIPPED" || m.status === "IMPORTED" || forfeited);
     // A month that does not exist because the client is paused/ended owes
-    // nothing (the overview's rule, kept so the two cannot disagree).
-    const videosOwed = m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0);
+    // nothing (the overview's rule, kept so the two cannot disagree) — and
+    // neither does a forfeited one (Oct 8 2026).
+    const videosOwed = forfeited ? 0 : m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0);
 
     // ---- topics ------------------------------------------------------------
     // The planning reader's allowance: chosen = IN, overflow = EXTRA. The old
@@ -507,7 +516,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       heldUnconfirmed: facts.filter((f) => f.state === "HELD_UNCONFIRMED").length,
       filmedConfirmed,
       booked: facts.filter((f) => f.state === "BOOKED").length,
-      missing: shortfall.missing,
+      missing: forfeited ? 0 : shortfall.missing,
       fullyScheduled: confirmed >= required,
       cancelledOnly: myRequests.length > 0 && count.accountedFor === 0 && myRequests.every((r) => ["CANCELLED", "DECLINED", "EXPIRED"].includes(r.status)),
       nextAtISO: nextBooked?.startsAtISO ?? null,
@@ -638,7 +647,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     const progress: MonthProgress = {
       enrollmentId: e.id, clientId: e.clientId, pkg: e.package, enrollmentStatus: e.status,
       portalApprover: e.status === "ACTIVE" && !e.accessRevokedAt && hasOwnerSeat.has(e.id),
-      monthId: mid, monthKey: pair.monthKey, monthStatus: m?.status ?? "NONE", historical: !!m?.historical, muted, videosOwed,
+      monthId: mid, monthKey: pair.monthKey, monthStatus: m?.status ?? "NONE", historical: !!m?.historical, muted, forfeited, videosOwed,
       catchUp: ((into, from) => ({
         into: into ? { missedMonthKey: into.missedMonthKey, extraSessions: into.extraSessions, extraVideos: into.extraVideos, by: into.by, at: into.at } : null,
         from: from && m?.status === "SKIPPED" ? { targetMonthKey: from.targetMonthKey, by: from.by, at: from.at } : null,
@@ -685,9 +694,12 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   if (p.muted || !p.monthId) return null;
   const monthShort = new Date(Date.UTC(Number(p.monthKey.slice(0, 4)), Number(p.monthKey.slice(5, 7)) - 1, 15)).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
   const callDone = !p.call.required || ["COMPLETED", "SKIPPED", "NOT_REQUIRED"].includes(p.call.status);
-  const topicsDone = p.topics.clientSupplies || p.topics.selected >= owed;
+  // Oct 8 2026: a client who plans their own content brings the topics AND
+  // the scripts — neither is a step of ours to chase.
+  const clientPlanned = p.topics.clientSupplies;
+  const topicsDone = clientPlanned || p.topics.selected >= owed;
   const awaiting = p.scripts.drafting + p.scripts.needsJordan;
-  const scriptsDone = p.scripts.ready >= owed && awaiting === 0;
+  const scriptsDone = clientPlanned || (p.scripts.ready >= owed && awaiting === 0);
   const s = p.sessions;
   const filmedDone = s.filmedConfirmed >= s.required;
   // A released cut has a live review clock. Keep that decision visible even
@@ -707,7 +719,7 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const routeUnresolved = p.call.mode !== "NOT_INCLUDED" &&
     p.planning?.route === "UNDECIDED" &&
     !["COMPLETED", "SKIPPED", "SCHEDULED"].includes(p.call.status);
-  if (downstreamWork && (p.topics.selected === 0 || p.production.filmed > p.topics.selected || unlinkedFilmedOutput || routeUnresolved)) {
+  if (!clientPlanned && downstreamWork && (p.topics.selected === 0 || p.production.filmed > p.topics.selected || unlinkedFilmedOutput || routeUnresolved)) {
     const missingLinks = p.topics.selected === 0 || p.production.filmed > p.topics.selected || unlinkedFilmedOutput;
     return { text: `Filming or video work exists, but the ${missingLinks ? "topic links" : "planning route"} for ${monthShort} need checking before asking the client to plan again`, cta: "Check month history", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "month reconciliation", blocked: "us" };
   }
@@ -720,13 +732,13 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   }
   // §6.4: a month that may be planned either way and has not been is the
   // CLIENT's next step (choose here or book a call), not ours.
-  if (p.planning?.route === "UNDECIDED" && p.call.status === "NOT_SCHEDULED" && (p.planning.counts.CHOSEN > 0 || !topicsDone)) {
+  if (!clientPlanned && p.planning?.route === "UNDECIDED" && p.call.status === "NOT_SCHEDULED" && (p.planning.counts.CHOSEN > 0 || !topicsDone)) {
     return { text: `They haven't chosen how to plan ${monthShort} — topics in the portal, or a call`, cta: "See the month", href: "#call", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
   }
   if (!topicsDone) return { text: `Pick ${monthShort}'s topics`, cta: "Pick topics", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "us" };
   // A call's proposals fill allowance slots (R01 counts them, last) but are not
   // the plan until a person keeps or drops them — that is the step, not "drafting".
-  const proposed = p.planning?.counts.CONFIRMING ?? 0;
+  const proposed = clientPlanned ? 0 : p.planning?.counts.CONFIRMING ?? 0;
   if (proposed > 0) return { text: `${plural(proposed, "topic")} proposed on the call — keep or drop ${proposed === 1 ? "it" : "them"}`, cta: "Reconcile topics", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "us" };
   if (!scriptsDone) {
     if (p.scripts.needsJordan > 0) return { text: `${plural(p.scripts.needsJordan, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" };
@@ -739,7 +751,7 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
     if (s.count.accountedFor === 0) {
       return s.pendingRequests > 0
         ? { text: "They asked for a session — nothing confirmed", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" }
-        : { text: "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" };
+        : { text: clientPlanned ? "Client-planned — no filming session on the calendar yet" : "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" };
     }
     if (s.missing > 0) {
       return s.pendingRequests > 0
@@ -801,6 +813,8 @@ export function journeyInputFrom(p: MonthProgress): JourneyInput {
     inReview: p.production.awaitingInternalReview,
     unknown: journeyUnknown(p),
     muted: p.muted,
+    clientPlanned: p.topics.clientSupplies,
+    forfeited: p.forfeited,
   };
 }
 

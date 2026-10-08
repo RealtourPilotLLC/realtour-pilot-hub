@@ -73,6 +73,7 @@ import { prisma } from "@/lib/prisma";
 import { officeReopenOf, verdictLine, verdictOf } from "@/lib/reviewAttribution";
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
+import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
 
 export const dynamic = "force-dynamic";
 // The Music card's "Download to the job folder" action posts to this segment:
@@ -958,6 +959,11 @@ export default async function EditBriefPage({
   const sharedJobScript = useReelScript && outputBriefs.length > 1;
   const studioShotList = useReelScript ? project.reelShotList?.trim() || null : null;
   const scriptMissing = isVideoJob && !topicScript && !useReelScript && !!styleKey && SCRIPTED_STYLE_RE.test(styleKey);
+  // Oct 8 2026: the client's creative brief for this job's month — and whether
+  // they plan their own content (then "no script on file" is the plan, not a gap).
+  const clientBrief = project.contentMonthId
+    ? await import("@/lib/monthBrief").then(async (m) => { const b = await m.briefForProject(project.id); return b ? { view: await m.briefView(b, null), clientPlanned: b.clientPlanned, monthName: new Date(Date.UTC(Number(b.monthKey.slice(0, 4)), Number(b.monthKey.slice(5, 7)) - 1, 15)).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" }) } : null; }).catch(() => null)
+    : null;
 
   // 4 · the footage: this topic's own folder, else the job's raw folder — one link.
   const ownFolder = selectedBrief?.folder ?? null;
@@ -1260,6 +1266,9 @@ export default async function EditBriefPage({
             </section>
           )}
 
+          {/* Oct 8 2026: the client's own brief for the month (client-planned, or whenever one is on file). */}
+          {clientBrief && <BriefReadOnly brief={clientBrief.view} clientPlanned={clientBrief.clientPlanned} monthName={clientBrief.monthName} className="sm:mx-0" />}
+
           {/* 3 · THE SCRIPT — open, with Copy; never money-scrubbed. */}
           {(topicScript || useReelScript || scriptMissing) && (
             <section id="video-script" data-brief-section="script" className={CARD}>
@@ -1288,7 +1297,7 @@ export default async function EditBriefPage({
                     <p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{studioShotList}</p>
                   </div>
                 )}
-                {scriptMissing && <p className="text-sm text-muted">No script on file for this video yet — cut the B-roll first, or ask in the messages.</p>}
+                {scriptMissing && <p className="text-sm text-muted">{clientBrief?.clientPlanned ? "Client-planned — they wrote their own script. Go by the footage and their brief below." : "No script on file for this video yet — cut the B-roll first, or ask in the messages."}</p>}
                 {topicScript?.direction && (
                   <dl className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm">
                     {topicScript.direction.creativeDirection && <div><dt className="font-medium text-muted">Direction</dt><dd className="whitespace-pre-wrap">{topicScript.direction.creativeDirection}</dd></div>}

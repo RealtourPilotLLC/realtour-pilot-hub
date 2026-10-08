@@ -159,6 +159,16 @@ export function contentHref(enrollmentId: string, opts: ContentHrefOpts = {}): s
 }
 
 /**
+ * Oct 8 2026: "Approve a catch-up" from a forfeited month — the catching-up
+ * month's Overview (the first open month from this one on) with the catch-up
+ * control open and the forfeited month picked. Staff only; an exception.
+ */
+export function catchUpHref(enrollmentId: string, targetMonthKey: string, missedMonthId: string, now?: Date): string {
+  const base = contentHref(enrollmentId, { month: targetMonthKey, now });
+  return `${base}${base.includes("?") ? "&" : "?"}catchup=${encodeURIComponent(missedMonthId)}#catch-up`;
+}
+
+/**
  * monthProgress's next steps point at anchors that lived on the old one-page
  * Overview (#call, #topics, #scripts, #sessions). Those sections now live on
  * Plan and Production; this turns such an href into the tab that holds it and

@@ -356,7 +356,7 @@ export function PortalScheduler({
   const selfBooking = month?.bookingMode === "SELF";
   const sessions = month?.sessions ?? [];
   const required = month?.sessionsRequired ?? 1;
-  const writtenPath = !!month && month.planningMode === "WRITTEN";
+  const writtenPath = !!month && month.planningMode === "WRITTEN" && !month.clientPlanned;
   const monthFull = !!month && month.capacity.remaining <= 0;
   const showPicker = !!month && !readOnly && !month.locked && (!monthFull || !!moving) && !done;
 
@@ -410,7 +410,7 @@ export function PortalScheduler({
             ) : month.callStatus === "NOT_REQUIRED" ? (
               // NOT_REQUIRED means the program has no strategy call at all —
               // say that, never a tick implying one is booked.
-              <StatusRow icon={Info} tone="muted">Your program doesn&rsquo;t include a strategy call. We plan the month from your topics and answers.</StatusRow>
+              <StatusRow icon={Info} tone="muted">{month.clientPlanned ? "Your program doesn\u2019t include a strategy call. You plan your videos; just book your filming." : <>Your program doesn&rsquo;t include a strategy call. We plan the month from your topics and answers.</>}</StatusRow>
             ) : month.callStatus === "SKIPPED" ? (
               // SKIPPED means no call exists for this month. The client still
               // needs a way to get one, so the booking link stays reachable.

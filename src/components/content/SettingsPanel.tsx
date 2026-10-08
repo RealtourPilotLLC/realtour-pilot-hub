@@ -130,11 +130,9 @@ export function SettingsPanel({
 
       {/* WORKFLOW FLAGS. */}
       <Section icon={Settings2} title="Workflow">
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" defaultChecked={s.clientSuppliesTopics} disabled={busy}
-            onChange={(e) => start(async () => say(await setWorkflowFlagsAction(s.enrollmentId, { clientSuppliesTopics: e.target.checked })))} />
-          This client brings their own topics (the topic bank does not chase them)
-        </label>
+        {/* Oct 8 2026: "brings their own topics" grew into Program style's
+            "Client plans their own content" switch at the top of this tab. */}
+        <p className="text-[13px] text-muted">{s.clientSuppliesTopics ? "They plan their own content" : "We plan their content"} — change it under Program style at the top of this tab.</p>
         <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
           Time zone
           <input className={input} defaultValue={s.timezone ?? ""} placeholder="America/New_York" disabled={busy}
@@ -300,7 +298,7 @@ function CallModeForm({
   const MODES = [
     { key: "REQUIRED" as const, label: "Call required", hint: "the month does not start until the strategy call happens" },
     { key: "OPTIONAL_WRITTEN" as const, label: "Optional — written answers allowed", hint: "they may plan the month without a call" },
-    { key: "NOT_INCLUDED" as const, label: "No call in this package", hint: "planning is always written" },
+    { key: "NOT_INCLUDED" as const, label: "No strategy calls", hint: "the same as Program style's Strategy calls off" },
   ];
   return (
     <div className="space-y-2 text-sm">

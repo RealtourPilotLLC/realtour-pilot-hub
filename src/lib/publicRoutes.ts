@@ -23,6 +23,10 @@ export const PUBLIC_PREFIXES = [
   // stream below; left off this list the middleware sent every real client's
   // "Download" button to the STAFF sign-in page (review blocker, Sep 17).
   "/api/portal/download",
+  // The month's creative brief (Oct 8 2026): upload and read. Both doors
+  // authenticate themselves — a scoped portal token or the hub session —
+  // exactly like the download door above (src/app/api/portal/brief).
+  "/api/portal/brief",
   "/api/review/cut",
   "/api/review/upload",
   "/api/auth",

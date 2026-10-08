@@ -188,7 +188,7 @@ export function topicPlanStep(f: TopicPlanFacts, ctx: TopicPlanContext): TopicPl
 // THE MONTH
 // ---------------------------------------------------------------------------
 
-export type PlanningHeadlineKey = PlanStep | "PICK" | "DONE" | "EMPTY";
+export type PlanningHeadlineKey = PlanStep | "PICK" | "DONE" | "EMPTY" | "CLIENT_PLANNED";
 
 export type MonthPlanning = {
   route: PlanningRoute;
@@ -211,15 +211,20 @@ export type MonthPlanning = {
   headline: { key: PlanningHeadlineKey; text: string };
   /** Precise progress, e.g. "2 of 4 scripts approved"; null before anything is chosen. */
   progress: string | null;
+  /** Oct 8 2026: the client plans their own content — no topics, answers or scripts are asked of them. */
+  clientPlanned?: boolean;
 };
 
 const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+
+/** The month's one sentence when the client plans their own content. */
+export const CLIENT_PLANNED_HEADLINE = "You're planning this month's videos — book your filming when you're ready";
 
 export function emptyCounts(): Record<PlanStep, number> {
   return Object.fromEntries(PLAN_STEPS.map((s) => [s, 0])) as Record<PlanStep, number>;
 }
 
-export function monthPlanning(facts: readonly TopicPlanFacts[], ctx: { route: PlanningRoute; call: CallState; videosOwed: number; callRead?: boolean }): MonthPlanning {
+export function monthPlanning(facts: readonly TopicPlanFacts[], ctx: { route: PlanningRoute; call: CallState; videosOwed: number; callRead?: boolean; clientPlanned?: boolean }): MonthPlanning {
   const owed = Math.max(0, Math.floor(ctx.videosOwed) || 0);
   const slots = allowanceOrder(facts.map((f) => ({ topicId: f.topicId, status: f.selectionStatus, rank: f.rank ?? null, createdAt: f.selectedAt ?? null })), owed);
   const counts = emptyCounts();
@@ -238,10 +243,20 @@ export function monthPlanning(facts: readonly TopicPlanFacts[], ctx: { route: Pl
   const answersOwed = counts.NEEDS_ANSWERS + counts.NEEDS_MORE;
   const approved = counts.APPROVED + topics.filter((t) => t.inAllowance && t.step === "FILMED").length;
   const target = owed || chosen;
+  // Oct 8 2026: a client who plans their own content owes us no topics,
+  // answers or scripts — whatever rows exist, nothing is asked of them here.
+  if (ctx.clientPlanned) {
+    return {
+      route: ctx.route, call: ctx.call, videosOwed: owed, chosen, extras, counts, answersOwed: 0, missingAnswers: 0, approved, topics,
+      headline: { key: "CLIENT_PLANNED", text: CLIENT_PLANNED_HEADLINE },
+      progress: null, clientPlanned: true,
+    };
+  }
   return {
     route: ctx.route, call: ctx.call, videosOwed: owed, chosen, extras, counts, answersOwed, missingAnswers, approved, topics,
     headline: headlineFor({ route: ctx.route, call: ctx.call, owed, chosen, counts, answersOwed, missingAnswers, approved }),
     progress: chosen === 0 ? null : `${approved} of ${n(target, "script")} approved`,
+    clientPlanned: false,
   };
 }
 

@@ -443,10 +443,10 @@ export type PreparationHold = {
  * window, is what the client meets then).
  */
 export function preparationHold(
-  preparation: { earliest: Date | null; anchor: { kind: "SUBMISSION" | "CALL_END" } | null; windowHours: number; windowWaived: boolean } | null | undefined,
+  preparation: { earliest: Date | null; anchor: { kind: "SUBMISSION" | "CALL_END" | "CLIENT_PLANNED" } | null; windowHours: number; windowWaived: boolean } | null | undefined,
   now: Date,
 ): PreparationHold | null {
-  if (!preparation?.earliest || !preparation.anchor || preparation.windowWaived) return null;
+  if (!preparation?.earliest || !preparation.anchor || preparation.windowWaived || preparation.anchor.kind === "CLIENT_PLANNED") return null;
   if (etDayKey(preparation.earliest) <= etDayKey(new Date(now.getTime() + 86_400_000))) return null;
   return {
     earliestISO: preparation.earliest.toISOString(),

@@ -64,7 +64,10 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{monthLabel(p.monthKey)}</div>
             {p.catchUp && <p className="font-medium text-brand">{p.catchUp.line}</p>}
             {p.catchUp?.nextCallISO && <p className="text-xs text-muted">Your call to plan the {p.catchUp.label} videos is booked for {fmtDate(p.catchUp.nextCallISO, tz)} at {fmtTime(p.catchUp.nextCallISO, tz)} {zoneOf(p.catchUp.nextCallISO)}.</p>}
-            {p.planningMode === "WRITTEN" ? (
+            {p.clientPlanned && p.callStatus === "NOT_REQUIRED" ? (
+              // Oct 8 2026: they plan their own videos and have no strategy call.
+              <p className="text-muted">Your program doesn&rsquo;t include a strategy call — you plan your videos and we film them.</p>
+            ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>
                 <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</>}</p>

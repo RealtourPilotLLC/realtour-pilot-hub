@@ -46,6 +46,10 @@ export type JourneyInput = {
   unknown?: Partial<Record<"shoot" | "delivered", string>>;
   /** historical/imported months read as record-keeping, never as warnings */
   muted?: boolean;
+  /** Oct 8 2026: the client plans their own content — topics and scripts are theirs, never a step of ours. */
+  clientPlanned?: boolean;
+  /** Oct 8 2026: the month ended with nothing done on it — forfeited, nothing owed. */
+  forfeited?: boolean;
 };
 
 export type JourneyStepKey = "call" | "topics" | "scripts" | "shoot" | "delivered";
@@ -61,12 +65,12 @@ export function journeySteps(j: JourneyInput): JourneyStep[] {
     : j.callStatus === "COMPLETED" ? step("call", "Call", "done", "done")
     : j.callStatus === "SCHEDULED" ? step("call", "Call", "active", "booked")
     : step("call", "Call", "warn", "not booked");
-  const topics = step("topics", "Topics",
+  const topics = j.clientPlanned ? step("topics", "Topics", "done", "client-planned") : step("topics", "Topics",
     j.topicsSelected >= owed ? "done" : j.topicsSelected > 0 ? "active" : call.state === "done" ? "warn" : "todo",
     `${j.topicsSelected}/${owed}`);
   // Drafts on Jordan's desk mean NOT done, even with enough approved — the
   // node must agree with its own "N to review" caption and the next-step line.
-  const scripts = step("scripts", "Scripts",
+  const scripts = j.clientPlanned ? step("scripts", "Scripts", "done", "client-planned") : step("scripts", "Scripts",
     (j.scriptsAwaiting ?? 0) > 0 ? "warn"
     : j.scriptsReady >= owed ? "done"
     : j.scriptsReady > 0 ? "active"
@@ -88,6 +92,8 @@ export function journeySteps(j: JourneyInput): JourneyStep[] {
     `${j.delivered}/${owed}${deliveredUnknown ? "?" : ""}`,
     deliveredUnknown);
   const steps = [call, topics, scripts, shoot, delivered];
+  // A forfeited month: nothing was done and nothing is owed — no node is a warning.
+  if (j.forfeited) for (const s of steps) { s.state = "todo"; s.why = null; if (s.key === "shoot" || s.key === "delivered") s.detail = "forfeited"; }
   // Imported history: show what happened, never nag about what didn't.
   if (j.muted) for (const s of steps) if (s.state === "warn" || s.state === "unknown") s.state = "todo";
   return steps;

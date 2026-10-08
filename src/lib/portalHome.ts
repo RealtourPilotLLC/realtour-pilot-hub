@@ -84,7 +84,7 @@ export function planModel(t: PortalTopicsData, monthKey: string, now: Date = new
 
 export type HomeActionKind =
   | "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "READ_REPLY" | "ANSWER_QUESTIONS" | "CHOOSE_ROUTE" | "BOOK_CALL"
-  | "PICK_TOPICS" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "FINISH_SETUP" | "DOWNLOAD";
+  | "PICK_TOPICS" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "FINISH_SETUP" | "DOWNLOAD" | "ADD_BRIEF";
 
 /**
  * The order a client should do things in. Reviews first — a video waiting on
@@ -96,7 +96,7 @@ export type HomeActionKind =
  */
 export const HOME_PRIORITY: readonly HomeActionKind[] = [
   "REVIEW_VIDEOS", "APPROVE_SCRIPTS", "READ_REPLY", "ANSWER_QUESTIONS", "CHOOSE_ROUTE", "BOOK_CALL",
-  "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS", "FINISH_SETUP", "DOWNLOAD",
+  "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS", "FINISH_SETUP", "DOWNLOAD", "ADD_BRIEF",
 ];
 
 export type HomeAction = {
@@ -124,6 +124,8 @@ export type HomeActionsInput = {
   month: { monthKey: string; label: string; owed: number; selected: number } | null;
   /** Downstream filming is evidence this month began, even if a legacy planning row is missing. */
   filmingStarted?: boolean;
+  /** Oct 8 2026: the client plans their own content — no topics, answers, scripts or route to choose; their brief is optional. */
+  clientPlanned?: { briefIn: boolean; monthLabel: string } | null;
   /** Staff must connect historical topic rows before the client is asked to select them again. */
   topicHistoryNeedsReview?: boolean;
   /** The planning reader's owed answers (planModel.toAnswer): never an extra, never a topic the call covered. `missing` = its known gaps. */
@@ -161,7 +163,8 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
         cta: i.review.single ? "Review it" : "Review now", dest: "library", extra: i.review.single ? `v=${i.review.single.id}` : undefined,
       });
     }
-    if (i.scripts.length > 0 && i.perms.suggest) {
+    const cp = i.clientPlanned ?? null;
+    if (i.scripts.length > 0 && i.perms.suggest && !cp) {
       add({
         kind: "APPROVE_SCRIPTS", count: i.scripts.length,
         title: i.scripts.length === 1 ? `Read your script for “${i.scripts[0].title}”` : `Read ${plural(i.scripts.length, "script")} before we film`,
@@ -171,7 +174,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     // R01: keyed on what is OWED, on either route — a call-route gap after the
     // call is asked too, and a topic the call covered, a script in review or an
     // extra never is. (It used to need planningMode WRITTEN and counted all three.)
-    if (i.toAnswer.length > 0 && i.perms.suggest) {
+    if (i.toAnswer.length > 0 && i.perms.suggest && !cp) {
       const one = i.toAnswer.length === 1 ? i.toAnswer[0] : null;
       add({
         kind: "ANSWER_QUESTIONS", count: i.toAnswer.length,
@@ -181,14 +184,14 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       });
     }
     const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;
-    if (undecided && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+    if (undecided && !cp && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "CHOOSE_ROUTE", count: 1, title: `How would you like to plan ${i.month?.label ?? "this month"}?`, detail: "Choose your topics here, or talk them through on a call.", cta: "Choose", dest: "plan", step: "route" });
-    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+    } else if (i.planning && (i.planning.planningMode !== "WRITTEN" || cp) && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "BOOK_CALL", count: 1, title: "Book your strategy call", detail: "We plan the month on it.", cta: "Book the call", dest: "plan", step: "call" });
     }
     // On the call route the topics are chosen together on the call — browsing
     // first is optional (§6.4), so it is not a to-do for the client.
-    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview) {
+    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview && !cp) {
       const n = i.month.owed - i.month.selected;
       add({ kind: "PICK_TOPICS", count: n, title: `Choose ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Choose topics", dest: "plan", extra: "pv=bank" });
     }
@@ -204,6 +207,10 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     }
     if (i.setup && !i.setup.complete && i.setup.remaining > 0 && i.perms.profile) {
       add({ kind: "FINISH_SETUP", count: i.setup.remaining, title: `Finish setting up your account (${plural(i.setup.remaining, "step")} left)`, detail: "Your editor uses these on every video.", cta: "Continue setup", dest: "brand" });
+    }
+    // Optional, so it is the last thing on the list — never ahead of booking filming.
+    if (cp && !cp.briefIn && i.perms.suggest) {
+      add({ kind: "ADD_BRIEF", count: 1, title: `Add your creative brief for ${cp.monthLabel}`, detail: "Optional — upload your plan or paste notes for your crew.", cta: "Add your brief", dest: "plan", step: "brief" });
     }
     if (i.ready.count > 0 && i.ready.withFile) {
       add({

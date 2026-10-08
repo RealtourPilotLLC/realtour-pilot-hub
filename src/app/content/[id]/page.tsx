@@ -61,7 +61,7 @@ export default async function ContentClientPage({
   params, searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ month?: string; tab?: string; view?: string; moved?: string }>;
+  searchParams: Promise<{ month?: string; tab?: string; view?: string; moved?: string; catchup?: string }>;
 }) {
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/content");
@@ -112,6 +112,8 @@ export default async function ContentClientPage({
     months, month, activeKey, view: nav.view, progress,
     me: me ? { id: me.id, role: me.role, name: me.name } : null,
     ownerEyes, staffEyes,
+    // Oct 8 2026: a forfeited month's "Approve a catch-up" link names the month to pick.
+    catchupPick: typeof sp.catchup === "string" && /^[a-z0-9]{10,40}$/i.test(sp.catchup) ? sp.catchup : null,
   };
   const mk = month?.monthKey ?? null;
   // A badged tab opens the view that HOLDS what it counts (Sep 24): Plan's

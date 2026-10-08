@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardCheck, MessageSquare, Rocket } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardCheck, FileText, MessageSquare, Rocket } from "lucide-react";
+import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 import { Section } from "@/components/ui/Section";
 import { MonthJourney, journeyFromOverview, monthJourneyLinks } from "@/components/content/MonthJourney";
 import { BlockedChip, SESSION_TONE } from "@/components/content/OverviewRow";
@@ -43,10 +44,16 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   const view = progress ? staffMonthView(progress) : null;
   const f = row ? overviewFacts(row) : null;
   const owed = row?.production.owed ?? month.videosOwed;
-  // Oct 7 2026: "Catch up a missed month here" — owner/admin; shown when this
-  // month carries a catch-up, or could take one.
+  // Oct 7 2026: "Approve a catch-up session" — owner/admin only, an exception
+  // (Oct 8: a missed month is forfeited); shown when this month carries a
+  // catch-up, or an earlier month could be caught up here.
   const catchUp = ctx.staffEyes ? await import("@/lib/monthCatchUp").then((m) => m.catchUpPanel(month.id)).catch(() => null) : null;
   const mk = month.monthKey;
+  // Oct 8 2026: the client's creative brief for this month — shown for a
+  // client who plans their own content, or whenever one is on file.
+  const clientPlanned = !!progress?.topics.clientSupplies;
+  const brief = await import("@/lib/monthBrief").then(async (m) => m.briefView(await m.monthBrief(month.id), null)).catch(() => null);
+  const showBrief = !month.historical && (clientPlanned || (!!brief && (brief.files.length > 0 || !!brief.notes)));
   const planHref = (v: string) => contentHref(id, { tab: "plan", view: v, month: mk });
   const prodHref = (v: string) => contentHref(id, { tab: "production", view: v, month: mk });
   // The roster's "Open the history" / "Open" point at THIS page (ended,
@@ -78,7 +85,8 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
           sessionsNow={catchUp.sessionsNow} videosNow={catchUp.videosNow} refusal={catchUp.refusal}
           carrying={catchUp.carrying ? { missedLabel: catchUp.carrying.missedLabel, extraSessions: catchUp.carrying.extraSessions, extraVideos: catchUp.carrying.extraVideos, by: catchUp.carrying.by, at: catchUp.carrying.at, undoRefusal: catchUp.carrying.undoRefusal } : null}
           caughtUpNote={catchUp.caughtUpIn ? `Caught up in ${catchUp.caughtUpIn.targetLabel}${catchUp.caughtUpIn.by ? ` by ${catchUp.caughtUpIn.by}` : ""}${catchUp.caughtUpIn.at ? ` on ${new Date(catchUp.caughtUpIn.at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}: its videos are filmed in ${catchUp.caughtUpIn.targetLabel}'s extra session, so nothing is owed or chased here. To reopen it, undo the catch-up on ${catchUp.caughtUpIn.targetLabel}.` : null}
-          options={catchUp.options.map((o) => ({ monthId: o.monthId, label: o.label, videosOwed: o.videosOwed, refusal: o.refusal }))}
+          options={catchUp.options.map((o) => ({ monthId: o.monthId, label: o.label, videosOwed: o.videosOwed, refusal: o.refusal, forfeited: o.forfeited }))}
+          initialPick={ctx.catchupPick ?? null}
         />
       )}
 
@@ -119,6 +127,16 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
           )
         )}
       </div>
+
+      {/* THE CLIENT'S CREATIVE BRIEF (Oct 8 2026) — what they planned for this month. */}
+      {showBrief && brief && (
+        <Section icon={FileText} title={`Creative brief · ${monthLabel(mk).split(" ")[0]}`} action={clientPlanned ? <span className="text-[11px] font-semibold text-brand">Client-planned</span> : undefined}>
+          <div id="brief" className="scroll-mt-24">
+            {clientPlanned && <p className="mb-2 text-[13px] text-muted">They plan their own videos — no topics or scripts from us. The crew and the editor see this brief on the job.</p>}
+            <MonthBriefPanel mode="staff" monthId={month.id} files={brief.files} notes={brief.notes} canEdit={ctx.staffEyes} />
+          </div>
+        </Section>
+      )}
 
       {/* ONBOARDING — only while the discovery → strategy → bank ladder is still running. */}
       {onboarding && onboarding.status !== "COMPLETE" && onboarding.status !== "WAIVED" && (

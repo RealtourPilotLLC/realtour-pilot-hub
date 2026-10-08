@@ -452,8 +452,9 @@ export async function reconcileScriptApprovalTasks(opts: { now?: Date; max?: num
     if (!session || !stillOwed) { if (opts.dryRun) closed++; else if (await closeProgramDeskTask(t.dedupeKey!)) closed++; }
   }
 
-  // 2. OPEN / RING for sessions inside their windows.
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } });
+  // 2. OPEN / RING for sessions inside their windows. A client who plans their
+  // own content (Oct 8 2026) has no scripts of ours to chase before a shoot.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true, clientId: true } });
   if (!live.length) return { opened, closed, bells, checkedSessions, wouldOpen, wouldRing };
   const curKey = now.toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
   const months = await prisma.contentMonth.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, monthKey: { gte: curKey } }, select: { id: true, monthKey: true, enrollmentId: true, clientId: true }, take: opts.max ?? 100 });

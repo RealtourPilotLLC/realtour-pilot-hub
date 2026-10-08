@@ -111,6 +111,8 @@ export type MonthPlanningFacts = {
   callMode: CallMode;
   /** The written route may be offered (effective call mode OPTIONAL_WRITTEN and not switched off for this client). */
   noCallEligible: boolean;
+  /** Oct 8 2026: the client plans their own content (ContentEnrollment.clientSuppliesTopics). */
+  clientPlanned: boolean;
   chosenAt: Date | null;
   chosenBy: string | null;
   deferredAt: Date | null;
@@ -178,7 +180,7 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
   // the reader costs the same statements for one month or a roster — the
   // monthProgress guard (cp10 §10) measures exactly that.
   const [enrollments, records, priorRecords, completedMonths, topics, interviews, scripts, footage, events] = await Promise.all([
-    prisma.contentEnrollment.findMany({ where: { id: { in: enrollmentIds } }, select: { id: true, callMode: true, strategyCallRequired: true, noCallEligible: true } }),
+    prisma.contentEnrollment.findMany({ where: { id: { in: enrollmentIds } }, select: { id: true, callMode: true, strategyCallRequired: true, noCallEligible: true, clientSuppliesTopics: true } }),
     prisma.programCallRecord.findMany({
       where: { monthId: { in: monthIds } },
       select: { id: true, monthId: true, callType: true, status: true, matchState: true, scheduledStart: true, scheduledEnd: true, transcriptState: true },
@@ -273,7 +275,7 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
     );
     // Route and call from the SAME derivation the gate uses. Neither depends on
     // scripts, interviews or topics, so the month-only input is exact.
-    const d = deriveMonthState({ now, month: m, enrollment: { ...e, priorCallHeld }, records: monthRecords, scripts: [], interviews: [] });
+    const d = deriveMonthState({ now, month: m, enrollment: { ...e, priorCallHeld, clientPlanned: e.clientSuppliesTopics }, records: monthRecords, scripts: [], interviews: [] });
     const route = d.planningMode as PlanningRoute;
     const call = callStateOf(d.strategyCallStatus);
     // "Held" is not "read": a record counts as held the moment its end passes,
@@ -321,10 +323,12 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
     out.set(m.id, {
       monthId: m.id, enrollmentId: m.enrollmentId, clientId: m.clientId, monthKey: m.monthKey, videosOwed: m.videosOwed, historical: m.historical,
       route, call, callRead, callMode: d.callMode,
-      noCallEligible: d.callMode === "OPTIONAL_WRITTEN" && e.noCallEligible !== false,
+      // A client-planned month offers no route choice: there is nothing of ours to plan.
+      noCallEligible: d.callMode === "OPTIONAL_WRITTEN" && e.noCallEligible !== false && !e.clientSuppliesTopics,
+      clientPlanned: e.clientSuppliesTopics,
       chosenAt: m.planningChosenAt, chosenBy: m.planningChosenBy, deferredAt: m.schedulingDeferredAt,
       allowance, facts,
-      planning: monthPlanning(facts, { route, call, videosOwed: m.videosOwed, callRead }),
+      planning: monthPlanning(facts, { route, call, videosOwed: m.videosOwed, callRead, clientPlanned: e.clientSuppliesTopics }),
     });
   }
   return out;

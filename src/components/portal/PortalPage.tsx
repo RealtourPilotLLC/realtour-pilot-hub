@@ -209,6 +209,11 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       perms: { session: perms.session, suggest: perms.suggest, request: perms.request, approve: perms.approve }, readOnly,
       readOnlyState: readOnly ? (enrollment.status === "PAUSED" ? "PAUSED" : "ENDED") : null,
     };
+    // Oct 8 2026: a client who plans their own content — is this month's brief in?
+    if (home.planning?.clientPlanned) {
+      const b = await import("@/lib/monthBrief").then((m) => m.monthBrief(home!.planning!.monthId)).catch(() => null);
+      home.brief = b ? { files: b.files.length, notes: !!b.notes?.text.trim(), href: `${portalHref(contextBase, "plan")}#step-brief` } : null;
+    }
     // CP-06: the account-setup checklist — derived from what is on file, only
     // for someone who can act on it, and never on a paused/ended program.
     if (!readOnly && perms.profile) {
@@ -422,6 +427,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       scripts: (hp?.scripts ?? []).map((t) => ({ topicId: t.id, title: t.title })),
       unread: messagesUnread,
       planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
+      clientPlanned: home.planning?.clientPlanned ? { briefIn: !!home.brief && (home.brief.files > 0 || home.brief.notes), monthLabel: monthLabel(home.planning.monthKey) } : null,
       month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
       filmingStarted: filmedWork, topicHistoryNeedsReview,
       toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
@@ -468,7 +474,12 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
       days = await companySlotDays({ package: pkg }).catch(() => []);
     }
+    // Oct 8 2026: the client plans their own content — their brief, with links scoped to this visit.
+    const brief = p.ok && p.data?.clientPlanned
+      ? await import("@/lib/monthBrief").then(async (m) => m.briefView(await m.monthBrief(p.data!.monthId), scope)).catch(() => null)
+      : null;
     yourMonth = {
+      brief,
       planning: p.ok ? p.data : null, planningFailed: !p.ok,
       schedule: thisMonth, scheduleFailed: !sm.ok,
       slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
@@ -512,6 +523,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
           strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
           monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
+          clientPlanned: yourMonth?.planning?.clientPlanned ?? (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { clientSuppliesTopics: true } }).catch(() => null))?.clientSuppliesTopics ?? false,
         }} />
       )}
       {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={tabHref} /> : <LibraryV2 d={library} failed={libraryFailed} href={tabHref} />)}

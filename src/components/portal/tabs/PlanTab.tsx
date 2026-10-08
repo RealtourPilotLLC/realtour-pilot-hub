@@ -51,6 +51,8 @@ export type PlanTabData = {
   filter: string | undefined;
   /** My Plan's own address for each subview (query-only). */
   hrefs: Record<PlanView, string>;
+  /** Oct 8 2026: the client plans their own content — no Scripts or Topic bank views, just the month and the strategy. */
+  clientPlanned?: boolean;
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
 };
@@ -66,9 +68,11 @@ export function PlanTab({ d }: { d: PlanTabData }) {
     { key: "scripts" as const, label: "Scripts", short: "Scripts", count: plan?.scripts.length ?? 0, countLabel: "waiting across all months" },
     { key: "bank" as const, label: "Topic bank", short: "Topics" },
     { key: "strategy" as const, label: "Strategy", short: "Strategy" },
-  ];
+  ].filter((t) => !d.clientPlanned || t.key === "month" || t.key === "strategy" || t.key === d.view);
   const intro = {
-    month: { title: "Your Month", detail: "Plan this month's videos step by step, then book the filming time that fits." },
+    month: d.clientPlanned
+      ? { title: "Your Month", detail: "You plan the videos — add your brief if you like, then book your filming time." }
+      : { title: "Your Month", detail: "Plan this month's videos step by step, then book the filming time that fits." },
     scripts: { title: "Scripts to review", detail: "All program months. Each script shows the month it belongs to and the version waiting for your decision." },
     bank: { title: "Topic bank", detail: "Ideas not yet placed on an open month. Choose one when your monthly plan has room." },
     strategy: { title: "Content strategy", detail: "Your account-wide direction for future topics and videos." },

@@ -291,10 +291,11 @@ async function main() {
     // may be planned either way (neither input here is one), and answers are
     // asked whenever the planning reader says they are OWED — toAnswer is that list.
     // …and on the call route the topics are chosen on the call (§6.4), so
-    // PICK_TOPICS is not a client to-do there.
-    c.ok("ACTIVE, call month, everything true: every kind in HOME_PRIORITY order", kinds(active) === home.HOME_PRIORITY.filter((k) => k !== "ANSWER_QUESTIONS" && k !== "CHOOSE_ROUTE" && k !== "PICK_TOPICS").join(","), kinds(active));
+    // PICK_TOPICS is not a client to-do there. ADD_BRIEF (Oct 8 2026) is only
+    // for a client who plans their own content — neither input here is one.
+    c.ok("ACTIVE, call month, everything true: every kind in HOME_PRIORITY order", kinds(active) === home.HOME_PRIORITY.filter((k) => k !== "ANSWER_QUESTIONS" && k !== "CHOOSE_ROUTE" && k !== "PICK_TOPICS" && k !== "ADD_BRIEF").join(","), kinds(active));
     const written = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "WRITTEN", callStatus: "NOT_REQUIRED" }, toAnswer: [{ title: "Kitchen" }] });
-    c.ok("…a written month asks for the answers instead of the call", kinds(written) === home.HOME_PRIORITY.filter((k) => k !== "BOOK_CALL" && k !== "READ_REPLY" && k !== "CHOOSE_ROUTE").join(","), kinds(written));
+    c.ok("…a written month asks for the answers instead of the call", kinds(written) === home.HOME_PRIORITY.filter((k) => k !== "BOOK_CALL" && k !== "READ_REPLY" && k !== "CHOOSE_ROUTE" && k !== "ADD_BRIEF").join(","), kinds(written));
     const filmedLegacy = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "UNDECIDED", callStatus: "NOT_SCHEDULED", noCallEligible: true }, month: { monthKey, label: "x", owed: 4, selected: 0 }, filmingStarted: true, topicHistoryNeedsReview: true });
     c.ok("C13: filmed legacy month does not ask for a fresh route or topic selection", !/CHOOSE_ROUTE|BOOK_CALL|PICK_TOPICS/.test(kinds(filmedLegacy)), kinds(filmedLegacy));
     const partialPro = home.homeActions({ ...blankInput, status: "ACTIVE", readOnly: false, planning: { planningMode: "WRITTEN", callStatus: "NOT_REQUIRED" }, month: { monthKey, label: "x", owed: 8, selected: 5 }, filmingStarted: true, topicHistoryNeedsReview: false, session: { offerBooking: true, required: 2, missing: 1 } });

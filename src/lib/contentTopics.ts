@@ -566,8 +566,10 @@ type RefreshRequest = { enrollmentId: string; kind: RefreshKind; monthId?: strin
  * while the cron's run is queued claims that run instead of paying twice).
  */
 async function refreshPlan(opts: RefreshRequest) {
-  const e = await prisma.contentEnrollment.findUnique({ where: { id: opts.enrollmentId }, select: { clientId: true } });
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: opts.enrollmentId }, select: { clientId: true, clientSuppliesTopics: true } });
   if (!e) throw new Error("Enrollment not found.");
+  // Oct 8 2026: no topic bank, refill or recommendation for a client who plans their own content.
+  if (e.clientSuppliesTopics) { const { CLIENT_PLANNED_REFUSAL } = await import("@/lib/programStyle"); const err = new Error(CLIENT_PLANNED_REFUSAL); err.name = "ClientPlannedError"; throw err; }
   const [policy, strategy] = await Promise.all([activePolicyVersion(), approvedStrategy(opts.enrollmentId)]);
   // The prompt's count stays inside the policy's band (10–15: the bank prompt
   // refuses anything else); how many of the results are KEPT is `keep`.
@@ -730,10 +732,16 @@ export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: nu
     take: max * 3,
     select: { id: true, enrollmentId: true, inputsJson: true },
   });
+  // Oct 8 2026: a run queued before the client was switched to planning their
+  // own content is set aside (CANCELLED, with the reason), never run.
+  const clientPlanned = new Set((due.length ? await prisma.contentEnrollment.findMany({ where: { id: { in: [...new Set(due.map((r) => r.enrollmentId))] }, clientSuppliesTopics: true }, select: { id: true } }) : []).map((x) => x.id));
+  for (const run of due.filter((r) => clientPlanned.has(r.enrollmentId))) {
+    await prisma.contentTopicRefreshRun.updateMany({ where: { id: run.id, status: "QUEUED" }, data: { status: "CANCELLED", lastError: "The client plans their own content — no topic bank is generated for them.", finishedAt: now, dedupeKey: null } }).catch(() => {});
+  }
   let ran = 0, succeeded = 0, failed = 0;
   let paused: string | null = null;
   let lastError: string | null = null;
-  for (const run of due) {
+  for (const run of due.filter((r) => !clientPlanned.has(r.enrollmentId))) {
     if (ran >= max || Date.now() - started > budgetMs) break;
     if (!(await claimQueuedRun(run.id, "topic-bank-cron"))) continue;
     ran++;
@@ -808,7 +816,8 @@ export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; n
   const now = opts.now ?? new Date();
   let queued = 0, initial = 0, refills = 0;
   let lastError: string | null = null;
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  // Oct 8 2026: a client who plans their own content has no bank to keep stocked.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true } });
   for (const e of live) {
     try {
       const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: e.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { approvedAt: true, createdAt: true } });

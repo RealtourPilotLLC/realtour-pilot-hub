@@ -50,6 +50,8 @@ export type HomeData = {
   setup?: SetupCardData | null;
   /** CP-13: replies on the program conversation this viewer has not opened. */
   messages?: { unread: number; href: string } | null;
+  /** Oct 8 2026: a client who plans their own content — what their brief for this month holds. */
+  brief?: { files: number; notes: boolean; href: string } | null;
 };
 
 /**
@@ -87,7 +89,9 @@ export function AppointmentCards({ d, href, plan }: {
           <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load this month&rsquo;s planning state — refresh to try again.</p>
         ) : !p ? (
           <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
-        ) : p.planningMode === "WRITTEN" ? (
+        ) : p.clientPlanned && (p.callStatus === "NOT_REQUIRED" || p.callMode === "NOT_INCLUDED") ? (
+          <p className="mt-2 text-sm text-muted">Your program doesn&rsquo;t include a strategy call.</p>
+        ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
           <div className="mt-2 text-sm">
             <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing</div>
             <p className="mt-0.5 text-xs text-muted">{p.answersSubmitted ? "Your answers are in — we're preparing the month." : "No call this month — answer the questions in Your Month."}</p>
@@ -311,7 +315,15 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
           </ul>
         </>
       )}
-      {d.topicsFailed ? (
+      {d.planning?.clientPlanned ? (
+        // Oct 8 2026: they plan their own videos — no topics to choose, just their brief.
+        <p className="mt-3 text-sm text-muted">
+          You plan this month&rsquo;s videos.{" "}
+          {d.brief && (d.brief.files > 0 || d.brief.notes)
+            ? <>Your brief is in — <Link href={d.brief.href} className="font-medium text-brand hover:underline">see it or add more</Link>.</>
+            : !d.readOnly && d.perms.suggest ? <Link href={d.brief?.href ?? `${href("plan")}#step-brief`} className="font-medium text-brand hover:underline">Add your creative brief (optional)</Link> : null}
+        </p>
+      ) : d.topicsFailed ? (
         <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your topics — refresh to try again.</p>
       ) : topicHistoryNeedsReview ? (
         <p className="mt-3 text-sm text-muted">Your filming and video work is on file. We&rsquo;re checking how earlier topics connect to this month; you don&rsquo;t need to choose those topics again.</p>

@@ -1046,6 +1046,9 @@ export function withExtraParagraph(body: string, paragraph: string | null): stri
 
 /** §12's roll-over note. No em dashes, no emojis, and it ends with the way
  *  forward — Jordan's rule for anything a client reads. */
+/** The evaluator's reason for a forfeited month (Oct 8 2026). */
+export const FORFEITED_REASON = "month is forfeited — it ended with nothing booked or done, so nothing is chased";
+
 export const MID_MONTH_PARAGRAPH =
   "One note on timing: your monthly sessions do not roll over into next month, and the calendar fills up as the month goes on. Picking your time this week is the surest way to get the slot you want.";
 
@@ -1146,6 +1149,11 @@ async function evaluateMonth(
 
   if (!d) return out({ action: null, decision: "none", reason: "month or enrollment not found" });
   if (month.status !== "OPEN") return out({ action: null, decision: "none", reason: `month is ${month.status}` });
+  // Oct 8 2026: "a missed month is a forfeited month" — it ended with nothing
+  // booked or done, so nothing about it is chased, by any lane (forfeit.ts).
+  if (await import("@/lib/monthForfeit").then((f) => f.isMonthForfeited(month.id, { now })).catch(() => false)) {
+    return out({ action: null, decision: "none", reason: FORFEITED_REASON });
+  }
 
   // ---- the ONE action for THIS lane -----------------------------------------
   // A call on the WRITTEN route is the §6.4 "call to discuss scripts": it does
@@ -2005,6 +2013,10 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
       const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane, null, rollout);
+      // A forfeited month's internal chasing stops with it (Oct 8 2026).
+      if (lane === "PRIMARY" && c.reason === FORFEITED_REASON && !opts.dryRun) {
+        await import("@/lib/monthForfeit").then((f) => f.closeForfeitedMonthTasks(m.id, now)).catch(() => 0);
+      }
       if (lane === "REVIEW" && c.action === null && c.decision === "none") continue; // nothing waiting: not worth a row in the preview
       candidates.push(c);
       if (c.kyleFollowUp?.due) {

@@ -805,6 +805,8 @@ export type PortalScheduleMonth = {
   takenIndexes: number[];
   /** A21: the next session's "Schedule later", when the client chose it (its plan row, else the month's first stamp). */
   deferredAtISO: string | null;
+  /** Oct 8 2026: the client plans their own content — no planning step gates filming. */
+  clientPlanned?: boolean;
 };
 
 export type PortalScheduleSession = {
@@ -895,6 +897,7 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
       callStatus: gate.callStatus,
       callAtISO: gate.callAt ? gate.callAt.toISOString() : null,
       planningMode: gate.planningMode,
+      clientPlanned: gate.preparation?.anchor?.kind === "CLIENT_PLANNED",
       capacity: { allowed: capacity.allowed, used: capacity.used, remaining: capacity.remaining },
       requests: shown.map((r) => ({
         id: r.id, status: r.status, label: r.label, bookingState: r.bookingState, creativeName: r.creativeName,
@@ -1688,6 +1691,8 @@ export type PortalPlanning = {
   switchBlocked: { CALL: string | null; WRITTEN: string | null };
   /** Oct 7: this month also films a missed month ("This month includes your September catch-up"), or null. */
   catchUp: { missedMonthKey: string; label: string; line: string; nextCallISO: string | null } | null;
+  /** Oct 8: the client plans their own content — the month is "add your brief (optional) → book filming". */
+  clientPlanned: boolean;
 };
 
 /** Steps past the answers stage: the material is in, or the script is. */
@@ -1793,8 +1798,10 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
     callAtISO: (record?.scheduledStart ?? d.strategyCallAt)?.toISOString() ?? null, callEndISO: record?.scheduledEnd?.toISOString() ?? null,
     timezone: e.timezone ?? record?.timezone ?? "America/New_York", meetLink: record?.meetLink ?? null,
     planningMode: d.planningMode, preparationStatus: d.preparationStatus, earliestSessionISO: d.earliestSessionAt?.toISOString() ?? null,
-    // REQUIRED wins over any per-client flag; NOT_INCLUDED already IS the written path, so the offer is moot there.
-    noCallEligible: mode === "OPTIONAL_WRITTEN" && e.noCallEligible !== false,
+    // REQUIRED wins over any per-client flag; NOT_INCLUDED already IS the written path, so the offer is moot there —
+    // and a client who plans their own content has no route to choose (Oct 8).
+    noCallEligible: mode === "OPTIONAL_WRITTEN" && e.noCallEligible !== false && !d.clientPlanned,
+    clientPlanned: d.clientPlanned,
     // R01: counted over the allowance through the planning reader — an extra,
     // or a topic the call already covered, is not an interview they owe.
     answersSubmitted: planning ? inAllowance.length > 0 && inAllowance.every((t) => PAST_ANSWERS.has(t.step)) : interviews.length > 0 && interviews.every((i) => i.status === "SUBMITTED" || !!i.submittedAt),

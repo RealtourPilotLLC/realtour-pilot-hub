@@ -30,7 +30,8 @@ import { monthSessionCount, recalcProgramMonth, type ProgramDb } from "@/lib/pro
 // Nothing here messages a client, books, cancels, or talks to Aryeo/Calendly.
 // ---------------------------------------------------------------------------
 
-export type CatchUpOption = { monthId: string; monthKey: string; label: string; videosOwed: number; refusal: string | null };
+/** `forfeited` (Oct 8 2026): the month ended with nothing done on it (forfeit.ts) — the usual reason one is picked. */
+export type CatchUpOption = { monthId: string; monthKey: string; label: string; videosOwed: number; refusal: string | null; forfeited: boolean };
 export type CatchUpPanel = {
   monthId: string;
   monthKey: string;
@@ -149,13 +150,14 @@ export async function catchUpPanel(monthId: string, opts: { now?: Date } = {}): 
   const earlier = into || refusal ? [] : await prisma.contentMonth.findMany({
     where: { enrollmentId: t.enrollmentId, monthKey: { lt: t.monthKey }, historical: false },
     orderBy: { monthKey: "desc" }, take: 12,
-    select: { id: true, monthKey: true, status: true, historical: true, videosOwed: true },
+    select: { id: true, monthKey: true, status: true, historical: true, videosOwed: true, strategyCallStatus: true },
   });
+  const forfeited = earlier.length ? await import("@/lib/monthForfeit").then((f) => f.forfeitedMonths(earlier, { now })).catch(() => new Set<string>()) : new Set<string>();
   const options: CatchUpOption[] = [];
   for (const m of earlier) {
     // Months long closed are history, not candidates: list OPEN ones and say why each can't be used.
     if (m.status !== "OPEN") continue;
-    options.push({ monthId: m.id, monthKey: m.monthKey, label: name(m.monthKey, t.monthKey), videosOwed: m.videosOwed, refusal: await missedMonthRefusal(prisma, m, t.monthKey, e.overridesJson) });
+    options.push({ monthId: m.id, monthKey: m.monthKey, label: name(m.monthKey, t.monthKey), videosOwed: m.videosOwed, refusal: await missedMonthRefusal(prisma, m, t.monthKey, e.overridesJson), forfeited: forfeited.has(m.id) });
   }
   return {
     monthId: t.id, monthKey: t.monthKey,

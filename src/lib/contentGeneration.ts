@@ -236,6 +236,7 @@ async function assertUnscripted(topicId: string, monthId: string | null, intervi
 /** Transcript / topic path: one script version (INTERNAL_REVIEW) for a topic, through the policy prompt + validator. */
 export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number }> {
   const { topic, row } = await policyTopic(o.topicId);
+  await (await import("@/lib/programStyle")).assertWeWriteFor(row.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(row.enrollmentId, { monthId: o.monthId });
   const excerpts = o.excerpts ?? (await excerptsForTopic(o.topicId, o.monthId));
   const scrub = await scrubOtherClients(row.clientId, excerpts.map((e) => e.text));
@@ -273,6 +274,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
 /** Written-answer path: a DRAFT version from the interview's exact answer rows, gaps carried through, never filled. */
 export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
+  await (await import("@/lib/programStyle")).assertWeWriteFor(a.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
   // The call's own words about this topic ride along beside the answers
   // (CP-08) — already confidential- and other-client-scrubbed.
@@ -752,6 +754,8 @@ export async function runTranscriptJob(job: TranscriptJobInput): Promise<Transcr
       }
       case "SCRIPT_DRAFT": {
         if (!month) return { ok: false, reviewReason: "A brand discovery call plans no month — scripts are drafted from a monthly planning call or the client's answers." };
+        // Oct 8 2026: a client who plans their own content writes their own scripts — the job is done with nothing drafted.
+        if (await (await import("@/lib/programStyle")).clientPlansOwnContent(enrollment.id)) return { ok: true, resultJson: { versionIds: [], skipped: 0, clientPlanned: true } };
         // Only RECONCILED/SELECTED topics get scripts; call-proposed ones wait for a person.
         const sels = await prisma.contentTopicSelection.findMany({ where: { monthId: month.id, status: { in: ["SELECTED", "RECONCILED"] } }, select: { topicId: true } });
         const done: string[] = [];
@@ -922,6 +926,7 @@ export async function planInterviewQuestions(interviewId: string, o: { requested
   const { INTERVIEW_QUESTION_PLAN } = await import("@/lib/contentPolicy");
   const { buildInterviewPlanPrompt } = await import("@/lib/contentPolicy/prompts");
   const ctxRow = await interviewPlanningContext(interviewId);
+  await (await import("@/lib/programStyle")).assertWeWriteFor(ctxRow.enrollmentId); // Oct 8 2026: client-planned → no questions from us
   const built = await buildClientContext(ctxRow.enrollmentId, { monthId: ctxRow.monthId });
   const bundle = buildInterviewPlanPrompt(built.ctx, { topic: ctxRow.topic, plan: INTERVIEW_QUESTION_PLAN });
   type PlanOut = { questions: { id: string; ask: string }[]; followUps: { key: string; ask: string }[] };

@@ -274,6 +274,9 @@ export type DraftOpts = {
  * (Sep 24; cron-route-journey §4 drives it).
  */
 export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; paused: string | null; outcomes: DraftOutcome[] }> {
+  // Oct 8 2026: a client who plans their own content gets no scripts from us.
+  const owner = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true } });
+  if (owner) { const { assertWeWriteFor } = await import("@/lib/programStyle"); await assertWeWriteFor(owner.enrollmentId); }
   const work = await scriptWorkForMonth(monthId);
   const todo = work.filter((w) => (opts.includeThin ? w.readiness === "THIN" || w.readiness === "THIN_ANSWERS" || isAutoDraftable(w.readiness) : isAutoDraftable(w.readiness)));
   const outcomes: DraftOutcome[] = [];
@@ -359,8 +362,9 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   const maxScripts = opts.max ?? 6;
 
   // Open months on live enrollments only. A paused or ended client is not owed
-  // new work, and a historical month is a record, not a plan.
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  // new work, and a historical month is a record, not a plan — and a client
+  // who plans their own content (Oct 8 2026) is owed no scripts from us.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true } });
   const months = live.length
     ? await prisma.contentMonth.findMany({
         where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },
@@ -431,7 +435,8 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   const budgetMs = opts.budgetMs ?? 45_000;
   const max = opts.max ?? 5;
 
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  // Oct 8 2026: no questions are planned for a client who plans their own content.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true } });
   if (!live.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
   const months = await prisma.contentMonth.findMany({
     where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },

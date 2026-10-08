@@ -2,7 +2,8 @@ import Link from "next/link";
 import type { ContentMonth } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import { monthLabel } from "@/lib/contentProgram";
-import { contentHref, type StaffTab } from "@/lib/contentNav";
+import { catchUpHref, contentHref, type StaffTab } from "@/lib/contentNav";
+import { etMonthKeyOf } from "@/lib/forfeit";
 import type { MonthProgress } from "@/lib/monthProgress";
 import { MonthPicker, SkipMonthButton } from "@/components/content/MonthControls";
 
@@ -25,6 +26,8 @@ export type TabCtx = {
   ownerEyes: boolean;
   /** OWNER or ADMIN (or open local dev) — the roles the program's write actions accept */
   staffEyes: boolean;
+  /** Oct 8 2026: ?catchup=<monthId> — open the catch-up control with that missed month picked. */
+  catchupPick?: string | null;
 };
 
 /** A tab's second row of links (Plan › Topics …). Wraps rather than scrolls at 375px. */
@@ -60,6 +63,11 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
   // Oct 7 2026: a month in a catch-up (either side) changes only through the catch-up's own Undo.
   const caughtUpIn = ctx.progress?.monthId === m?.id ? ctx.progress?.catchUp.from?.targetMonthKey ?? null : null;
   const inCatchUp = !!caughtUpIn || (ctx.progress?.monthId === m?.id && !!ctx.progress?.catchUp.into);
+  // Oct 8 2026: a missed month is forfeited. Staff see the word and the one
+  // way back — approving a catch-up session on the next open month.
+  const forfeited = !!m && ctx.progress?.monthId === m.id && !!ctx.progress?.forfeited;
+  const nowKey = etMonthKeyOf(new Date());
+  const catchUpTarget = forfeited ? ctx.months.filter((x) => !x.historical && x.status === "OPEN" && x.monthKey >= nowKey).sort((a, b) => a.monthKey.localeCompare(b.monthKey))[0] ?? null : null;
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
@@ -67,7 +75,14 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
           {title ?? monthLabel(key)}
           {m?.historical && <span className="ml-2 align-middle text-ui-status font-normal text-muted">imported history</span>}
           {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-ui-status font-normal text-muted">{caughtUpIn ? `caught up in ${monthLabel(caughtUpIn).split(" ")[0]}` : "skipped"}</span>}
+          {forfeited && <span className="ml-2 align-middle text-ui-status font-normal text-muted">forfeited</span>}
         </h2>
+        {forfeited && m && (
+          <p className="mt-1 text-ui-secondary text-muted">
+            Missed — nothing is owed or chased.
+            {ctx.staffEyes && catchUpTarget && <> <Link href={catchUpHref(ctx.id, catchUpTarget.monthKey, m.id)} className="font-medium text-brand hover:underline">Approve a catch-up</Link></>}
+          </p>
+        )}
         {subtitle && <p className="mt-1 break-words text-ui-secondary leading-relaxed text-muted">{subtitle}</p>}
       </div>
       {ctx.months.length > 0 && (

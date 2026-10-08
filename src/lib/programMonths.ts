@@ -247,7 +247,8 @@ export type MonthCallRecordInput = {
 // ---------------------------------------------------------------------------
 
 export type GateAnchor = {
-  kind: "SUBMISSION" | "CALL_END";
+  /** CLIENT_PLANNED (Oct 8 2026): the client plans their own content — no planning step gates filming. */
+  kind: "SUBMISSION" | "CALL_END" | "CLIENT_PLANNED";
   /** The instant the window is counted from. */
   at: Date;
   /** `CALL_END:<recordId|legacy>:<epoch ms>` or `SUBMISSION:<topicId|month>:<epoch ms>` — equal only while the fact is unchanged. */
@@ -649,6 +650,14 @@ export type DeriveInput = {
     callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null; priorCallHeld?: boolean;
     /** The enrollment's window override in weekday hours (enrollmentWindowOverrideHours), when an owner set one. */
     preparationWindowHours?: number | null;
+    /**
+     * Oct 8 2026 (ContentEnrollment.clientSuppliesTopics): the client plans
+     * their own content — "we show up and shoot". No topics, answers or
+     * scripts are ours to prepare, so no planning step gates filming (the
+     * 72-weekday-hour window does not apply; the portal's 24-hour floor and
+     * the slot rules still do) and the month is ready to film from the start.
+     */
+    clientPlanned?: boolean;
   };
   records: MonthCallRecordInput[];
   /**
@@ -745,7 +754,13 @@ export type DerivedMonthState = {
   exceptions: string[];
   /** Chasing work with an owner. Computed only; nothing here sends anything. */
   followUps: PreparationFollowUp[];
+  /** Oct 8 2026: the client plans their own content (no planning gate, nothing of ours to prepare). */
+  clientPlanned: boolean;
 };
+
+/** The fixed anchor a client-planned month's sessions open from — long past, so no window ever counts from it. */
+export const CLIENT_PLANNED_ANCHOR_AT = new Date(Date.UTC(2000, 0, 3, 5));
+export const CLIENT_PLANNED_REF = "CLIENT_PLANNED";
 
 const HELD = (r: MonthCallRecordInput, now: Date) =>
   r.status === "COMPLETED" ||
@@ -1061,6 +1076,21 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     });
   }
 
+  // ---- the client plans their own content (Oct 8 2026) ----------------------
+  // "Mike is really a we-show-up-and-shoot kind of deal." Nothing of ours
+  // gates filming: every session is open from a fixed past anchor (so the
+  // window never counts), and the portal's own 24-hour floor and slot rules
+  // are what remain. A call, when calls are on, is offered — never a gate.
+  const clientPlanned = !!enrollment.clientPlanned;
+  if (clientPlanned) {
+    for (const s of sessions) {
+      s.anchor = { kind: "CLIENT_PLANNED", at: CLIENT_PLANNED_ANCHOR_AT, ref: CLIENT_PLANNED_REF, label: "nothing — the client plans their own content", estimated: false };
+      s.lock = null;
+      s.earliestSessionAt = CLIENT_PLANNED_ANCHOR_AT;
+    }
+    reasons.push("the client plans their own content — no planning step gates filming");
+  }
+
   // ---- the written route's call buffer (§6.4, Sep 25 2026) ------------------
   // "The written route can still offer a strategy call to discuss scripts.
   // Preserve the agreed call buffer when it is used and surface any conflict
@@ -1072,7 +1102,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   //   (b) a booked, unfilmed session inside that buffer is an EXCEPTION with a
   //       follow-up for Kyle. The booking is never moved or cancelled here.
   const booking = input.booking ?? null;
-  if (planningMode === "WRITTEN") {
+  if (planningMode === "WRITTEN" && !clientPlanned) {
     const calls = [...held, ...upcoming].filter((r) => !conflicted.has(r) && (r.scheduledEnd ?? r.scheduledStart));
     const latest = calls.reduce<MonthCallRecordInput | null>((a, r) => (!a || (r.scheduledEnd ?? r.scheduledStart)! > (a.scheduledEnd ?? a.scheduledStart)! ? r : a), null);
     if (latest) {
@@ -1140,7 +1170,8 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   // written path, or by an archive import. They outrank a missing call stamp so a
   // finished month (Marcee's August: 9 scripts, one shoot) never reads "book your
   // strategy call". The call STATUS itself is left alone: we do not invent a call.
-  if (planningMode === "CALL") preparationStatus = callHeld || scripts.length > 0 ? afterPrep() : "CALL_PLANNED";
+  if (clientPlanned) preparationStatus = "READY_FOR_FILMING";
+  else if (planningMode === "CALL") preparationStatus = callHeld || scripts.length > 0 ? afterPrep() : "CALL_PLANNED";
   else if (planningMode === "WRITTEN") {
     if (preparationSufficient) preparationStatus = afterPrep();
     else preparationStatus = input.interviews.length > 0 ? "AWAITING_ANSWERS" : "WRITTEN_SELECTED";
@@ -1154,7 +1185,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
 
   // Missing post-call information: a warning and a chase, never a closed gate
   // and never a restarted clock (spec §8).
-  if (planningMode === "CALL" && callHeld && !preparationSufficient) {
+  if (planningMode === "CALL" && callHeld && !preparationSufficient && !clientPlanned) {
     const gaps = sessions.filter((s) => !s.sufficient).map((s) => s.index);
     followUps.push({
       kind: "MISSING_POST_CALL_INFO", owner: "KYLE", sessionIndex: gaps[0] ?? null,
@@ -1177,6 +1208,8 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   if (stuckTranscript) reasons.push(`a monthly call's transcript is ${stuckTranscript.transcriptState.toLowerCase()} — its topics, answers and facts have not been read`);
   const lastApproval = approved.reduce<Date | null>((m, s) => (s.approvedAt && (!m || s.approvedAt > m) ? s.approvedAt : m), null);
   const filmingReadyAt = month.filmingReadyAt ?? (preparationStatus === "READY_FOR_FILMING" ? lastApproval : null);
+  // Topics, answers and scripts are the client's own: nothing about them is ours to chase.
+  const followUpsOut = clientPlanned ? followUps.filter((f) => f.kind === "CONFIRM_CALL_END" || f.kind === "CALL_INSIDE_BUFFER") : followUps;
   return {
     callMode, strategyCallStatus, strategyCallAt, strategyCallEndsAt, callBookedAt: anchorCall?.createdAt ?? null, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt,
     earliestSessionAt, sessions, sessionsKnown, preparationSufficient,
@@ -1196,7 +1229,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     // quietly opened filming a full business day early. Deleting it rather
     // than correcting it is the point: a day-shaped reading of an hour-shaped
     // rule has to fail to compile, not round.
-    windowHours, windowWaived, reasons, exceptions, followUps,
+    windowHours, windowWaived, reasons, exceptions, followUps: followUpsOut, clientPlanned,
   };
 }
 
@@ -1245,7 +1278,9 @@ export function preparationGate(d: DerivedMonthState, sessionIndex?: number | nu
     const lock: GateLock = s?.lock ?? "PREPARING";
     return { ...base, earliest: null, anchor: null, locked: true, lock, reason: LOCK_WORDS[lock] };
   }
-  const reason = d.windowWaived
+  const reason = s.anchor.kind === "CLIENT_PLANNED"
+    ? "no planning step — the client plans their own content"
+    : d.windowWaived
     ? `from ${s.anchor.label} (${etWhen(s.anchor.at)}), window waived by staff`
     : `${d.windowHours} weekday hours after ${s.anchor.label} (${etWhen(s.anchor.at)})`;
   return { ...base, earliest: s.earliestSessionAt, anchor: s.anchor, locked: false, lock: null, reason };
@@ -1268,6 +1303,8 @@ export function gateSnapshot(g: PreparationGate): GateSnapshot {
 /** "Earliest start allowed: Thu, Oct 1, 2:30 PM ET (72 weekday hours after the strategy call's scheduled end, Mon, Sep 28, 2:30 PM ET)" — the desk's line, from a snapshot. */
 export function earliestStartLine(s: { gateEarliestAt: Date | null; gateWindowHours: number | null; gateAnchorRef: string | null; gateAnchorAt: Date | null }): string | null {
   if (!s.gateEarliestAt) return null;
+  // A client-planned month has no preparation window to quote (Oct 8 2026).
+  if (s.gateAnchorRef?.startsWith(CLIENT_PLANNED_REF)) return null;
   const from = s.gateAnchorRef?.startsWith("CALL_END:") ? "the strategy call ends" : s.gateAnchorRef?.startsWith("SUBMISSION:") ? "the answers were submitted" : null;
   const tail = s.gateWindowHours != null && from
     ? ` (${s.gateWindowHours} weekday hours after ${from}${s.gateAnchorAt ? `, ${etWhen(s.gateAnchorAt)}` : ""})`
@@ -1433,7 +1470,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   const [enrollment, records, scriptsAll, interviews, allowances, priorRecords, completedMonths] = await Promise.all([
     prisma.contentEnrollment.findUnique({
       where: { id: month.enrollmentId },
-      select: { clientId: true, callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true, overridesJson: true },
+      select: { clientId: true, callMode: true, strategyCallRequired: true, noCallEligible: true, videosPerMonth: true, sessionsPerMonth: true, overridesJson: true, clientSuppliesTopics: true },
     }),
     prisma.programCallRecord.findMany({
       where: { monthId: month.id },
@@ -1487,7 +1524,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   });
   const after = deriveMonthState({
     now, month,
-    enrollment: { ...enrollment, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(enrollment.overridesJson) },
+    enrollment: { ...enrollment, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(enrollment.overridesJson), clientPlanned: enrollment.clientSuppliesTopics },
     records, scripts, interviews, topics,
     // The MONTH's allowance, not the package's (A18): the planning reader's IN
     // topics are counted against videosOwed, so a staff allowance change must
