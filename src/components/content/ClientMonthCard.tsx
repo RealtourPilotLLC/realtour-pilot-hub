@@ -63,7 +63,7 @@ export function ClientMonthCard({ r }: { r: OverviewRow; showMonth: boolean }) {
       {/* NEXT ACTION — what, who, by when, and the one button that does it. */}
       <div className="space-y-1.5 border-t border-border pt-2.5">
         <div className="flex items-start gap-2">
-          <BlockedChip blocked={f.blocked} />
+          <BlockedChip blocked={f.blocked} closed={f.closed} />
           <p className="min-w-0 flex-1 text-sm leading-relaxed text-foreground">{r.nextAction.text}</p>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2">

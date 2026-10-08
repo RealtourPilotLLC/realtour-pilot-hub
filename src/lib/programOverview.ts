@@ -6,7 +6,7 @@ import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparatio
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
 import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } from "@/lib/monthProgress";
-import { catchUpHref, contentHref, type StaffTab } from "@/lib/contentNav";
+import { contentHref, type StaffTab } from "@/lib/contentNav";
 import type { JourneyInput } from "@/lib/contentStatus";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
@@ -143,6 +143,8 @@ export type OverviewRow = {
     owner: string; // the person's name
     ownerDuty: string;
     blocked: "us" | "client" | "nobody";
+    /** A month that owes nothing (forfeited, skipped/caught up, ended, history) — reads "nothing owed", not "on track". */
+    closed?: boolean;
     deadlineISO: string | null;
     href: string;
     cta: string;
@@ -268,9 +270,6 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   // with the one way back: staff approving a catch-up session.
   const forfeitedSet = await import("@/lib/monthForfeit").then((f) => f.forfeitedMonths(scopedRaw, { now })).catch(() => new Set<string>());
   const scoped = allOpen ? scopedRaw.filter((m) => !forfeitedSet.has(m.id)) : scopedRaw;
-  // Where a catch-up would be carried: the first open month from this one on.
-  const catchUpTargetOf = (enrollmentId: string) =>
-    allMonths.filter((x) => x.enrollmentId === enrollmentId && !x.historical && x.status === "OPEN" && x.monthKey >= thisMonth).sort((a, b) => a.monthKey.localeCompare(b.monthKey))[0] ?? null;
 
   // An enrollment with NO month workspace for the selected month still gets a
   // row (that absence is itself the exception) — but only for a single month
@@ -595,20 +594,21 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (!m) {
       next = { text: `No ${monthLabel(key)} workspace yet — "Sync now" mints it`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href(), cta: "Open the client file" };
     } else if (e.status === "ENDED") {
-      next = { text: `Ended — ${monthLabel(key)} is the last month on file`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open the history" };
+      next = { text: `Ended — ${monthLabel(key)} is the last month on file`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open the history" };
     } else if (m.status === "SKIPPED") {
       const caughtUp = catchUpFrom(e.overridesJson, key);
-      next = { text: caughtUp ? `Caught up in ${monthLabel(caughtUp.targetMonthKey)} — nothing owed here` : "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
+      next = { text: caughtUp ? `Caught up in ${monthLabel(caughtUp.targetMonthKey)} — nothing owed here` : "Month skipped on purpose — nothing owed", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
     } else if (forfeited) {
       // Staff-only words. The link opens the catch-up flow on the next open
       // month with this month picked — an exception, never a routine step.
-      const target = catchUpTargetOf(e.id);
+      // Jordan, Oct 8 2026: a catch-up is an exception — the quiet header link
+      // offers it; the next-action card stays a plain "Open", never a CTA.
       next = {
-        text: `Forfeited — ${monthLabel(key)} was missed, nothing is owed`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null,
-        href: target ? catchUpHref(e.id, target.monthKey, m.id, now) : href(), cta: "Approve a catch-up",
+        text: `Forfeited — ${monthLabel(key)} was missed, nothing is owed`, owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null,
+        href: href(), cta: "Open",
       };
     } else if (m.historical) {
-      next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", deadlineISO: null, href: href(), cta: "Open" };
+      next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
       next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: callEvidence.cta };
     } else if ((pp?.awaitingClient ?? 0) > 0) {
@@ -790,6 +790,7 @@ export type OverviewFacts = {
   owner: string;
   ownerDuty: string;
   blocked: "us" | "client" | "nobody";
+  closed: boolean;
   dueISO: string | null;
   /** "Sep 30", ET — null when nothing is due */
   dueLabel: string | null;
@@ -834,6 +835,7 @@ export function overviewFacts(r: OverviewRow): OverviewFacts {
     owner: r.nextAction.owner,
     ownerDuty: r.nextAction.ownerDuty,
     blocked: r.nextAction.blocked,
+    closed: !!r.nextAction.closed,
     dueISO: r.nextAction.deadlineISO,
     dueLabel: r.nextAction.deadlineISO
       ? new Date(r.nextAction.deadlineISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })

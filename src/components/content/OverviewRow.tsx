@@ -30,7 +30,8 @@ export const SESSION_TONE: Record<OverviewFacts["sessionTone"], string> = {
   warning: "text-warning", brand: "text-brand", foreground: "text-foreground", success: "text-success",
 };
 
-export function BlockedChip({ blocked }: { blocked: Row["nextAction"]["blocked"] }) {
+export function BlockedChip({ blocked, closed = false }: { blocked: Row["nextAction"]["blocked"]; closed?: boolean }) {
+  if (closed) return <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted">nothing owed</span>;
   // "We owe work" and "waiting on the client" are different problems and must
   // never be one amber blob (Jordan's rule).
   if (blocked === "client") return <span className="shrink-0 rounded-full bg-[#8b93e6]/20 px-2 py-0.5 text-[10px] font-semibold text-[#8b93e6]">waiting on them</span>;
@@ -80,7 +81,7 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
           {r.production.libraryAhead && <span className="ml-0.5 text-warning">!</span>}
         </span>
         <div className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto sm:flex-1">
-          <BlockedChip blocked={r.nextAction.blocked} />
+          <BlockedChip blocked={r.nextAction.blocked} closed={!!r.nextAction.closed} />
           <span className="min-w-0 flex-1 truncate text-[12px] text-foreground/80">{r.nextAction.text}</span>
         </div>
         <Link

@@ -111,7 +111,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <div className="min-w-0 flex-1 basis-64">
                 <div className="flex items-start gap-2">
-                  <BlockedChip blocked={f.blocked} />
+                  <BlockedChip blocked={f.blocked} closed={f.closed} />
                   <p className="text-[15px] font-medium">{row.nextAction.text}</p>
                 </div>
                 <p className="mt-1 text-[12px] text-muted-2">
