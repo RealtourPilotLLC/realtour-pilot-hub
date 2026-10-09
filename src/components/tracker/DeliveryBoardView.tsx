@@ -165,14 +165,17 @@ function JobNote({ notes }: { notes: string }) {
   );
 }
 
-function JobCard({ j }: { j: BoardJob }) {
+function JobCard({ j, asOf }: { j: BoardJob; asOf: number | null }) {
   const [open, setOpen] = useState(false);
   const b = BLOCKER[j.blocker];
   const BIcon = b.icon;
   // Past the shoot (or past every stage that implies one): an empty upload
   // tick means something here, and must not be swallowed by "not checked".
+  // Measured against the moment the SERVER read the board, never this
+  // component's own clock — the server render and the browser's hydration
+  // must print the same line (#418, Oct 9 2026).
   const postShoot =
-    (!!j.shootDate && j.shootDate <= new Date()) ||
+    (!!j.shootDate && asOf != null && j.shootDate.getTime() <= asOf) ||
     ["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"].includes(j.status);
 
   return (
@@ -301,6 +304,7 @@ const TABS = [
 export function DeliveryBoardView({ board }: { board: DeliveryBoard }) {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("today");
   const jobs = board[tab];
+  const asOf = board.asOf ? Date.parse(board.asOf) : null;
 
   if (board.unavailable) {
     return (
@@ -371,7 +375,7 @@ export function DeliveryBoardView({ board }: { board: DeliveryBoard }) {
       ) : (
         <div className="space-y-2.5">
           {jobs.map((j) => (
-            <JobCard key={j.id} j={j} />
+            <JobCard key={j.id} j={j} asOf={asOf} />
           ))}
         </div>
       )}

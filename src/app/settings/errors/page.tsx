@@ -20,6 +20,18 @@ export const dynamic = "force-dynamic";
 
 const STATUSES = { open: "OPEN", fixed: "FIXED", ignored: "IGNORED", all: "ALL" } as const;
 
+// A scheduled job's provider timeout is recorded but quiet until it persists
+// (lib/cronNoise.ts) — say which of the two it is, so a row that sent no
+// message does not look like one that was missed.
+function watchNote(context: Record<string, unknown> | null): string | null {
+  if (!context || context.transient !== true) return null;
+  if (typeof context.persistentSince === "string") {
+    return `Kept failing since ${etDateTime(context.persistentSince)} (${typeof context.rule === "string" ? context.rule : "it persisted"}) — counted as open.`;
+  }
+  const n = typeof context.failedRunsInARow === "number" ? context.failedRunsInARow : 1;
+  return `Brief provider timeout — not messaged: the next run usually catches up. ${n} failed run${n === 1 ? "" : "s"} in a row so far; you're messaged at 3 in a row or 6 hours without a success.`;
+}
+
 export default async function ErrorsPage({ searchParams }: { searchParams: Promise<{ status?: string; sort?: string; id?: string }> }) {
   await requirePageAccess("settings");
   const me = await getCurrentUser().catch(() => null);
@@ -44,6 +56,7 @@ export default async function ErrorsPage({ searchParams }: { searchParams: Promi
     lastSeenLabel: etDateTime(r.lastSeenAt),
     resolvedLabel: r.resolvedAt ? etDateTime(r.resolvedAt) : null,
     reopenedLabel: r.reopenedAt ? etDateTime(r.reopenedAt) : null,
+    watchNote: watchNote(r.context),
     report: claudeReport(r),
   }));
 

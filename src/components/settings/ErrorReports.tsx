@@ -20,6 +20,9 @@ export type ErrorReportRow = ErrorRowView & {
   lastSeenLabel: string;
   resolvedLabel: string | null;
   reopenedLabel: string | null;
+  /** A transient cron failure (lib/cronNoise.ts): what the quiet rule says
+   *  about it, worded on the server. Null for every other row. */
+  watchNote: string | null;
   report: string;
 };
 
@@ -140,6 +143,7 @@ function ErrorRow({ row, open, onToggle, canAct }: { row: ErrorReportRow; open: 
             {row.route ? ` · ${row.route}` : ""} · last {row.lastSeenLabel}
             {row.reopenCount > 0 ? ` · came back ${row.reopenCount}×` : ""}
           </span>
+          {row.watchNote && <span className="mt-0.5 block text-[12px] text-muted-2">{row.watchNote}</span>}
         </span>
         <span className="flex shrink-0 flex-col items-end gap-1">
           <span className="text-sm font-semibold tabular-nums">{row.count}×</span>

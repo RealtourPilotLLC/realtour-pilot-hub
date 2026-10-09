@@ -28,7 +28,7 @@ type Query = Record<string, string | number | boolean | undefined>;
 // key); otherwise it loads the stored, decrypted key.
 export async function aryeoRequest<T = unknown>(
   path: string,
-  opts: { method?: string; query?: Query; body?: unknown; key?: string; timeoutMs?: number } = {},
+  opts: { method?: string; query?: Query; body?: unknown; key?: string; timeoutMs?: number; attempts?: number; backoffMs?: number } = {},
 ): Promise<T> {
   const key = opts.key ?? (await getSecret("aryeo"));
   if (!key) throw new AryeoError("Aryeo is not connected — no API key on file.", 401);
@@ -44,7 +44,8 @@ export async function aryeoRequest<T = unknown>(
   // retry those up to 2 extra times with a short backoff instead of failing the
   // whole sync run on one blip (audit crack #25). Writes are never retried.
   const method = opts.method ?? "GET";
-  const maxAttempts = method === "GET" ? 3 : 1;
+  const maxAttempts = method === "GET" ? Math.max(1, opts.attempts ?? 3) : 1;
+  const backoffMs = opts.backoffMs ?? 1000;
   let res: Response | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const ctrl = new AbortController();
@@ -62,14 +63,14 @@ export async function aryeoRequest<T = unknown>(
         signal: ctrl.signal,
       });
       if (res.status >= 500 && attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, attempt * 1000));
+        await new Promise((r) => setTimeout(r, attempt * backoffMs));
         continue;
       }
       break;
     } catch (e) {
       const timedOut = e instanceof Error && e.name === "AbortError";
       if (timedOut && attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, attempt * 1000));
+        await new Promise((r) => setTimeout(r, attempt * backoffMs));
         continue;
       }
       if (timedOut) throw new AryeoError("Aryeo timed out — please try again.", 504);
@@ -96,6 +97,18 @@ export async function aryeoRequest<T = unknown>(
   }
   return json as T;
 }
+
+// BACKGROUND LIST READS (Oct 9 2026). The cron's big list pages are not a
+// person waiting on a screen, and the 12 s default was below what they take:
+// GET /appointments?include=users,order at 100 rows averaged ~11.7 s a page
+// (measured for the reconcile slices), so any slower-than-average page timed
+// out three times running (12 s + 1 s + 12 s + 2 s + 12 s ≈ 39 s — exactly the
+// step time every "Aryeo timed out" CronRun shows) and the step failed. A
+// background list read gets 25 s, and one retry after 3 s instead of two after
+// 1–2 s: a page that is slow today succeeds the first time, a real blip still
+// gets its second chance, and the worst case (25 + 3 + 25 s) stays inside the
+// steps' budgets. Interactive reads keep the short default.
+export const BACKGROUND_LIST_READ = { timeoutMs: 25_000, attempts: 2, backoffMs: 3_000 } as const;
 
 // Aryeo wraps lists as { data: [...], meta: { current_page, last_page } } (Laravel-style).
 type Paginated<T> = { data: T[]; meta?: { current_page?: number; last_page?: number } };
@@ -2372,6 +2385,7 @@ export async function syncAryeoOrders(
         // Every other caller keeps the newest-first default byte-for-byte.
         const res = await aryeoRequest<{ data: AryeoOrder[]; meta?: { last_page?: number } }>("/orders", {
           query: { include: ORDER_INCLUDES, page, per_page: perPage, ...(resumable ? { sort: "created_at" } : {}) },
+          ...BACKGROUND_LIST_READ,
         });
         batch = res?.data ?? [];
         lastPage = res?.meta?.last_page;
@@ -4652,8 +4666,12 @@ export async function syncAryeoAppointments(
     return nf ? next < cur : next > cur; // both future: soonest; both past: latest
   };
 
-  const perPage = 100;
-  let page = apptCursor?.page ?? 1;
+  // 50 a page, not 100 (Oct 9 2026): with users + order embedded a 100-row
+  // page sat right at the old request timeout (see BACKGROUND_LIST_READ). A
+  // cursor saved at another page size is translated, not restarted, so the
+  // resumable pass carries on from the same row.
+  const perPage = APPT_PAGE_SIZE;
+  let page = apptCursor ? apptPageAt(apptCursor, perPage) : 1;
   for (let i = 0; i < 200; i++) {
     if (resumable && ((opts.budgetMs && Date.now() - t0 >= opts.budgetMs) || (opts.maxPages && pagesThisRun >= opts.maxPages))) break;
     // Incremental runs used to fetch the ENTIRE appointment history (~15 heavy
@@ -4681,6 +4699,7 @@ export async function syncAryeoAppointments(
     } else {
       const res = await aryeoRequest<{ data: AryeoAppointment[]; meta?: { last_page?: number } }>("/appointments", {
         query: { include: "users,order", page, per_page: perPage, ...(windowAgoTs !== null ? { sort: "-start_at" } : {}) },
+        ...BACKGROUND_LIST_READ,
       });
       batch = res?.data ?? [];
       pagesThisRun++;
@@ -4872,11 +4891,11 @@ export async function syncAryeoAppointments(
       break;
     }
     page++;
-    if (resumable) await writeApptCursor({ page, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
+    if (resumable) await writeApptCursor({ page, perPage, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
   }
   if (resumable) {
-    if (reachedEnd) await writeApptCursor({ page: 1, startedAt: null, lastCompletedAt: new Date().toISOString() });
-    else await writeApptCursor({ page, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
+    if (reachedEnd) await writeApptCursor({ page: 1, perPage, startedAt: null, lastCompletedAt: new Date().toISOString() });
+    else await writeApptCursor({ page, perPage, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
   }
 
   // A resumable SLICE saw only some of each project's visits — Aryeo lists
@@ -5059,23 +5078,39 @@ export async function syncAryeoAppointments(
   };
 }
 
-// Same cursor shape as the orders sweep, its own key.
+// Same cursor shape as the orders sweep, its own key — plus the page size the
+// page number was counted in (absent on cursors saved before Oct 9 2026, which
+// were all 100 a page).
 export const APPT_CURSOR_KEY = "aryeo:apptReconcile";
-export async function readApptCursor(): Promise<ReconcileCursor> {
+export const APPT_PAGE_SIZE = 50;
+const LEGACY_APPT_PAGE_SIZE = 100;
+export type ApptCursor = ReconcileCursor & { perPage: number };
+export async function readApptCursor(): Promise<ApptCursor> {
   try {
     const row = await prisma.appSetting.findUnique({ where: { key: APPT_CURSOR_KEY }, select: { value: true } });
-    const c = row ? (JSON.parse(row.value) as Partial<ReconcileCursor>) : null;
+    const c = row ? (JSON.parse(row.value) as Partial<ApptCursor>) : null;
     const page = Number(c?.page);
+    const perPage = Number(c?.perPage);
     return {
       page: Number.isInteger(page) && page >= 1 ? page : 1,
+      perPage: Number.isInteger(perPage) && perPage >= 1 ? perPage : LEGACY_APPT_PAGE_SIZE,
       startedAt: typeof c?.startedAt === "string" ? c.startedAt : null,
       lastCompletedAt: typeof c?.lastCompletedAt === "string" ? c.lastCompletedAt : null,
     };
   } catch {
-    return { page: 1, startedAt: null, lastCompletedAt: null };
+    return { page: 1, perPage: APPT_PAGE_SIZE, startedAt: null, lastCompletedAt: null };
   }
 }
-async function writeApptCursor(c: ReconcileCursor): Promise<void> {
+/** The page, at `perPage` rows a page, that holds the first row of the
+ *  cursor's page — so a size change resumes at the same row (page 5 of 100 →
+ *  page 9 of 50), never skipping one. A bigger new size rounds DOWN: a few rows
+ *  read twice, none missed. */
+export function apptPageAt(c: { page: number; perPage: number }, perPage: number): number {
+  if (c.perPage === perPage) return c.page;
+  const firstRow = (c.page - 1) * c.perPage; // zero-based
+  return Math.floor(firstRow / perPage) + 1;
+}
+async function writeApptCursor(c: ApptCursor): Promise<void> {
   const value = JSON.stringify(c);
   await prisma.appSetting
     .upsert({ where: { key: APPT_CURSOR_KEY }, create: { key: APPT_CURSOR_KEY, value }, update: { value } })

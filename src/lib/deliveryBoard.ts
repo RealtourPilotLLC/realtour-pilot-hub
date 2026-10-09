@@ -148,6 +148,11 @@ export type DeliveryBoard = {
    * set this, and every reassuring zero is suppressed while it is true.
    */
   unavailable?: boolean;
+  /** When the board was read (ISO). The view compares shoot times against
+   *  THIS, never its own clock: the server's render and the browser's
+   *  hydration run seconds apart, and a shoot starting in between would print
+   *  two different upload lines for one render (#418, Oct 9 2026). */
+  asOf?: string;
 };
 
 const VIDEOISH = new Set(["VIDEO", "SOCIAL_REEL"]);
@@ -1385,6 +1390,7 @@ export async function deliveryBoard(opts: { includeTest?: boolean; excludeClient
     today, tomorrow, upcoming, delivered,
     overdueCount: today.filter((j) => j.overdue).length,
     needsProductionDate,
+    asOf: now.toISOString(),
   };
 }
 

@@ -102,14 +102,21 @@ export function normalizeRoute(input: unknown): string | null {
 
 /** The message with its variable parts removed, so one bug is one fingerprint. */
 export function normalizeMessage(message: string): string {
-  return scrubText(message, 400)
+  // A React production error's NUMBER is the whole of its meaning (#418 is a
+  // hydration mismatch, #423 a render-phase recovery, #185 an update loop) —
+  // folding it to "#N" with every other number would make them one row on
+  // the same page. Its ?args are scrubbed with every query string; that only
+  // merges one error's variants, which is right (Oct 9 2026).
+  const reactCodes = [...message.matchAll(/(?:React error #|react\.dev\/errors\/)(\d+)/gi)].map((m) => m[1]);
+  const codes = reactCodes.length ? ` [react ${[...new Set(reactCodes)].join(",")}]` : "";
+  return (scrubText(message, 400)
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "[id]")
     .replace(/\bc[a-z0-9]{20,32}\b/g, "[id]")
     .replace(/\b[0-9a-f]{12,}\b/gi, "[hex]")
     .replace(/\d+(\.\d+)?/g, "N")
     .replace(/\s+/g, " ")
     .trim()
-    .toLowerCase();
+    .toLowerCase()) + codes;
 }
 
 /** The first stack frame in OUR code: "fn (src/lib/x.ts)" with no line/column
@@ -121,7 +128,7 @@ export function topFrame(stack: string | null | undefined): string {
     lines.find((l) => !/node_modules|node:internal|\(native\)|<anonymous>|webpack-internal:\/\/\/\(rsc\)\/\.\/node_modules|\bnext\/dist\b/.test(l)) ??
     lines[0] ??
     "";
-  return ours
+  const frame = ours
     .replace(/:\d+:\d+\)?$/g, "")
     .replace(/:\d+:\d+/g, "")
     .replace(/[?#].*$/g, "")
@@ -129,8 +136,34 @@ export function topFrame(stack: string | null | undefined): string {
     .replace(/https?:\/\/[^/\s)]+/g, "") // origin
     .replace(/\(|\)/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 200);
+    .trim();
+  return builtFrame(frame).slice(0, 200);
+}
+
+/**
+ * A frame inside the production BUILD (the browser's /_next/static/chunks/…,
+ * the server's .next/server/chunks/…) names a Turbopack chunk whose file name
+ * carries a content hash ("1sloqs30e_g-z.js", "src_lib_x_ts_1zd0k9e._.js") and
+ * a minified function ("rX", "o"). Both change with every deploy, so one bug
+ * would come back as a "new" error after each one (Oct 9 2026). Kept: the
+ * frame's style (Chrome "at …" / Safari & Firefox "fn@…"), a function name
+ * long enough to be a real one, and a server chunk's readable module prefix.
+ */
+function builtFrame(frame: string): string {
+  const browser = /\/_next\/static\/(chunks|media)\//.test(frame);
+  const server = /\.next\/server\//.test(frame);
+  if (!browser && !server) return frame;
+  const safari = /^[^\s@]*@/.test(frame) && !frame.startsWith("at ");
+  const fn = safari ? frame.slice(0, frame.indexOf("@")) : (/^at (?:async )?([^\s/]+) /.exec(frame)?.[1] ?? "");
+  const name = fn.length >= 4 ? fn : "";
+  const file = browser
+    ? "/_next/static/chunks/[chunk].js"
+    : frame
+        .slice(frame.indexOf(".next/server/"))
+        .replace(/\[root-of-the-server\]__[^/\s]*$/, "[root-of-the-server]")
+        .replace(/_[0-9a-z]{5,12}\._\.js$/i, "")
+        .replace(/\.js$/, "");
+  return safari ? `${name}@${file}` : `at ${name ? `${name} ` : ""}${file}`;
 }
 
 export function fingerprintOf(parts: { message: string; stack?: string | null; route?: string | null }): string {

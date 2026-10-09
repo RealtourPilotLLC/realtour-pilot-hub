@@ -37,6 +37,23 @@
 //   8  DAILY DIGEST: lists open errors with counts, once per ET day.
 //   9  TABLE MISSING (schema not pushed): every entry point is a silent no-op —
 //      no throw, null results, the page reads "missing".
+//   0  ONLY PRODUCTION RECORDS (Oct 9): local dev, previews and drills share
+//      the live database, so with VERCEL_ENV absent or "preview" nothing is
+//      recorded — recordError, reportError, onRequestError, a cron step, the
+//      beacon, the digest — and nothing alerts; VERCEL_ENV=production turns it
+//      on. Every later section opts in through setErrorTrackingForTests(true),
+//      never through the environment. The beacon, in production, refuses a
+//      report addressed to any host but the app's own (appBase()).
+//  10  TRANSIENT CRON FAILURES (Oct 9, lib/cronNoise.ts): an Aryeo timeout in
+//      a cron step is recorded but quiet — no DM, not in the digest — on the
+//      1st and 2nd failed run; the 3rd in a row alerts once ("Keeps failing");
+//      a 4th, and a failure after a success, stay quiet but counted; a daily
+//      job with no success in 6 hours alerts on its first; a FIXED one that
+//      comes back is reopened quietly; a non-transient cron error alerts at
+//      once; a summary past 4000 characters still carries the step's error.
+//  11  GROUPING: Safari and Chrome frames in the production bundle group one
+//      bug across deploys (chunk hash and minified name dropped); different
+//      React error numbers on one page stay different rows.
 //
 // ISOLATION: PGlite on 127.0.0.1:6871 (this builder's range 6870-6879);
 // production is never opened; every non-loopback call is fenced; Slack is a
@@ -124,6 +141,35 @@ async function main() {
     e.stack = `Error: ${message}\n    at ${frame}\n    at async Page (src/app/projects/[id]/page.tsx:10:3)\n    at node_modules/next/dist/server/app-render.js:1:1`;
     return e;
   };
+
+  // =========================================================================
+  c.head("0 · ONLY THE PRODUCTION DEPLOYMENT RECORDS");
+  {
+    const before = await prisma.errorEvent.count();
+    const s0 = slack.length;
+    delete process.env.VERCEL_ENV;
+    tracker.setErrorTrackingForTests(null);
+    c.ok("no VERCEL_ENV (local dev, a drill): tracking is off", tracker.errorTrackingEnabled() === false);
+    const r = await tracker.recordError({ error: boom("a developer's parse error on localhost"), source: "server-request", path: "/" });
+    tracker.reportError(new Error("local background failure"), { area: "local:x" });
+    await tracker.flushErrorReports();
+    const { onRequestError } = await import("../../src/instrumentation");
+    await onRequestError(new Error("Expected ',', got ';'"), { path: "/", method: "GET", headers: {} }, { routerKind: "App Router", routePath: "/page", routeType: "render", renderSource: "react-server-components", revalidateReason: undefined, renderType: "dynamic" } as never);
+    const { cronBudget } = await import("@/lib/cron");
+    await cronBudget(60_000, Date.now(), "localjob").step("boom", async () => { throw new TypeError("local cron bug"); });
+    const { POST } = await import("@/app/api/errors/route");
+    const beacon = await POST(new Request("https://drill.invalid/api/errors", { method: "POST", headers: { host: "drill.invalid", origin: "https://drill.invalid", "x-forwarded-for": "198.51.100.1" }, body: JSON.stringify({ message: "local browser error", path: "/" }) }));
+    const digest = await tracker.errorDigest();
+    c.ok("…recordError, reportError, onRequestError, a cron step and the beacon write nothing", r === null && beacon.status === 204 && (await prisma.errorEvent.count()) === before, `${await prisma.errorEvent.count()} rows`);
+    c.ok("…no alert, no digest", slack.length === s0 && digest.sent === false && /production/.test(digest.reason ?? ""), digest.reason);
+    process.env.VERCEL_ENV = "preview";
+    c.ok("a preview deployment: off", tracker.errorTrackingEnabled() === false && (await tracker.recordError({ error: boom("preview"), source: "server-request", path: "/" })) === null);
+    process.env.VERCEL_ENV = "production";
+    c.ok("VERCEL_ENV=production: on", tracker.errorTrackingEnabled() === true);
+    delete process.env.VERCEL_ENV;
+    // From here on the drill opts in explicitly — never through the env.
+    tracker.setErrorTrackingForTests(true);
+  }
 
   // =========================================================================
   c.head("1 · ONE BUG, ONE ROW");
@@ -259,6 +305,7 @@ async function main() {
   c.head("6 · THE BROWSER BEACON (/api/errors)");
   {
     tracker.resetErrorTrackerState();
+    process.env.NEXT_PUBLIC_APP_URL = "http://hub.test"; // the production app's origin, for this section
     const { POST } = await import("@/app/api/errors/route");
     const post = (body: unknown, h: Record<string, string> = {}) =>
       POST(new Request("http://hub.test/api/errors", {
@@ -272,6 +319,8 @@ async function main() {
     c.ok("a same-origin portal report is accepted (204) as client-portal", res.status === 204 && portalRows.length === 1, `${res.status} ${portalRows.length}`);
     c.ok("…anonymous, path scrubbed", portalRows[0]?.lastUserId === null && portalRows[0]?.lastPath === "/portal/[token]/videos" && !JSON.stringify(portalRows).includes(token));
     c.ok("cross-origin → 403", (await post({ message: "x" }, { origin: "https://evil.example" })).status === 403);
+    const otherHost = await POST(new Request("https://realtour-pilot-hub-git-x.vercel.app/api/errors", { method: "POST", headers: { host: "realtour-pilot-hub-git-x.vercel.app", origin: "https://realtour-pilot-hub-git-x.vercel.app", "x-forwarded-for": "198.51.100.6" }, body: JSON.stringify({ message: "from another host" }) }));
+    c.ok("a same-origin report to a host that is not the app's own (appBase) → 403, nothing stored", otherHost.status === 403 && (await prisma.errorEvent.count({ where: { message: { contains: "another host" } } })) === 0);
     const noOrigin = await POST(new Request("http://hub.test/api/errors", { method: "POST", headers: { host: "hub.test", "x-forwarded-for": "198.51.100.8" }, body: JSON.stringify({ message: "y" }) }));
     c.ok("no Origin and no Sec-Fetch-Site → 403", noOrigin.status === 403);
     c.ok("oversize → 413", (await post("x".repeat(20_000), { "x-forwarded-for": "198.51.100.9" })).status === 413);
@@ -324,6 +373,107 @@ async function main() {
     c.ok("the owner page's list reads, most frequent first", !list.missing && list.rows.length > 0 && list.rows.every((r, i, a) => i === 0 || a[i - 1].count >= r.count) && list.counts.IGNORED === 1);
     const report = tracker.claudeReport(list.rows[0]);
     c.ok("'Copy for Claude' carries message, route, counts and stack", report.includes(list.rows[0].message) && report.includes("Seen:") && report.includes("Stack:"));
+  }
+
+  // =========================================================================
+  c.head("10 · A PROVIDER TIMEOUT IN A CRON STEP IS QUIET UNTIL IT PERSISTS");
+  {
+    const { cronBudget } = await import("@/lib/cron");
+    const { AryeoError } = await import("@/lib/integrations/aryeo");
+    const timeout = () => new AryeoError("Aryeo timed out — please try again.", 504);
+    const bugDms = (since: number) => dmsTo(S.jordan, since).filter((m) => m.text.includes("🐞"));
+    const ctx = async (route: string) => {
+      const r = await prisma.errorEvent.findFirst({ where: { route } });
+      return { row: r, c: r?.context ? (JSON.parse(r.context) as Record<string, unknown>) : {} };
+    };
+    // One hourly run of "drillsync": a few bulky steps (so the summary passes
+    // 4000 characters, as the real sync's does) and then the appointments step.
+    const run = async (appointments: () => Promise<unknown>, job = "drillsync") => {
+      const r = cronBudget(250_000, Date.now(), job);
+      for (let i = 0; i < 16; i++) await r.step(`bulky${i}`, async () => "x".repeat(400));
+      await r.step("appointments", appointments);
+      await r.finish();
+    };
+    setClock(edt(10, 19, 9, 0));
+    await prisma.cronRun.create({ data: { job: "drillsync", startedAt: new Date(Date.now() - 3600_000), finishedAt: new Date(Date.now() - 3590_000), ok: true, summary: JSON.stringify({ ms: { appointments: 8000 }, appointments: { appointments: 12 } }) } });
+
+    let s0 = slack.length;
+    await run(async () => { throw timeout(); });
+    let x = await ctx("cron:drillsync/appointments");
+    c.ok("1st failed run: recorded, marked transient, NOT alerted", !!x.row && x.c.transient === true && x.c.failedRunsInARow === 1 && x.c.persistentSince === null && bugDms(s0).length === 0 && x.row.lastAlertedAt === null, JSON.stringify(x.c));
+    const summary = (await prisma.cronRun.findFirst({ where: { job: "drillsync" }, orderBy: { startedAt: "desc" } }))?.summary ?? "";
+    c.ok("…the run's summary is past 4000 characters and STILL carries the step's error", summary.includes("\"truncated\":true") && summary.includes("appointmentsError"), summary.slice(0, 120));
+    c.ok("…the digest does not count it, and says so in one line", tracker.isQuietTransient(x.row?.context) && (await tracker.listErrors("OPEN")).rows.some((r) => r.route === "cron:drillsync/appointments"));
+    const dg = await tracker.errorDigest();
+    const dm = dmsTo(S.jordan, s0).find((m) => /Daily error report/.test(m.text));
+    c.ok("…today's digest: not in the open count, named as watched", dg.sent && (dg.watching ?? 0) >= 1 && !!dm && !dm.text.includes("Aryeo timed out") && /brief provider timeout/.test(dm.text), dm?.text.slice(-200));
+
+    setClock(edt(10, 19, 10, 0));
+    s0 = slack.length;
+    await run(async () => { throw timeout(); });
+    x = await ctx("cron:drillsync/appointments");
+    c.ok("2nd failed run in a row: still quiet", x.c.failedRunsInARow === 2 && x.c.persistentSince === null && bugDms(s0).length === 0, JSON.stringify(x.c));
+
+    setClock(edt(10, 19, 11, 0));
+    s0 = slack.length;
+    await run(async () => { throw timeout(); });
+    x = await ctx("cron:drillsync/appointments");
+    const third = bugDms(s0);
+    c.ok("3rd failed run in a row: ONE alert, 'Keeps failing … 3 runs in a row'", third.length === 1 && /Keeps failing/.test(third[0].text) && /3 runs in a row/.test(third[0].text) && typeof x.c.persistentSince === "string", third.map((m) => m.text.slice(0, 160)).join(" | "));
+    c.ok("…and it now counts as open", !tracker.isQuietTransient(x.row?.context));
+
+    setClock(edt(10, 19, 12, 0));
+    s0 = slack.length;
+    await run(async () => { throw timeout(); });
+    c.ok("4th: counted, no second alert", bugDms(s0).length === 0 && (await ctx("cron:drillsync/appointments")).row?.count === 4);
+
+    setClock(edt(10, 19, 13, 0));
+    await run(async () => ({ appointments: 9 }));
+    setClock(edt(10, 19, 14, 0));
+    s0 = slack.length;
+    await run(async () => { throw timeout(); });
+    x = await ctx("cron:drillsync/appointments");
+    c.ok("a success, then a failure: streak back to 1, quiet — but the row that persisted stays open", x.c.failedRunsInARow === 1 && typeof x.c.persistentSince === "string" && bugDms(s0).length === 0, JSON.stringify(x.c));
+
+    // Marked fixed, then one transient failure: reopened, quietly.
+    await tracker.setErrorStatus(x.row!.id, "FIXED", "Jordan");
+    setClock(edt(10, 19, 15, 0));
+    await run(async () => ({ appointments: 9 }));
+    setClock(edt(10, 19, 16, 0));
+    s0 = slack.length;
+    await run(async () => { throw timeout(); });
+    x = await ctx("cron:drillsync/appointments");
+    c.ok("FIXED, then one transient failure: OPEN again, quiet, not counted", x.row?.status === "OPEN" && x.c.persistentSince === null && bugDms(s0).length === 0 && tracker.isQuietTransient(x.row?.context), `${x.row?.status} ${JSON.stringify(x.c)}`);
+
+    // A daily job: one run a day, so its last success is 24 h old.
+    await prisma.cronRun.create({ data: { job: "drilldaily", startedAt: new Date(Date.now() - 24 * 3600_000), finishedAt: new Date(Date.now() - 24 * 3600_000 + 60_000), ok: true, summary: JSON.stringify({ ms: { booksSync: 30000 }, booksSync: { ok: 1 } }) } });
+    s0 = slack.length;
+    const daily = cronBudget(250_000, Date.now(), "drilldaily");
+    await daily.step("booksSync", async () => { throw Object.assign(new Error("QuickBooks 503 Service Unavailable"), { status: 503 }); });
+    await daily.finish();
+    const d1 = bugDms(s0);
+    c.ok("a daily job with no success in 6 hours: alerts on its first failure", d1.length === 1 && /no successful run in 6 hours/.test(d1[0].text), d1.map((m) => m.text.slice(0, 160)).join(" | "));
+
+    // Not a provider hiccup: a bug in our code alerts at once, as before.
+    s0 = slack.length;
+    const bug = cronBudget(250_000, Date.now(), "drillsync");
+    await bug.step("statuses", async () => { throw new TypeError("Cannot read properties of undefined (reading 'id')"); });
+    await bug.finish();
+    const b = bugDms(s0);
+    c.ok("a non-transient cron error alerts on its first occurrence ('New error')", b.length === 1 && /New error/.test(b[0].text), b.map((m) => m.text.slice(0, 120)).join(" | "));
+  }
+
+  // =========================================================================
+  c.head("11 · GROUPING ACROSS DEPLOYS");
+  {
+    const safari = (chunk: string, fn: string) => `${fn}@https://hub.realtourpilot.com/_next/static/chunks/${chunk}.js:1:47634\nsh@https://hub.realtourpilot.com/_next/static/chunks/${chunk}.js:1:148171`;
+    const msg = (n: number) => `Minified React error #${n}; visit https://react.dev/errors/${n}?args[]=text for the full message`;
+    const fp = (m: string, st: string) => scrub.fingerprintOf({ message: m, stack: st, route: "/review/[id]" });
+    c.ok("the same #418 from two deploys (new chunk name, new minified name) is one fingerprint", fp(msg(418), safari("1sloqs30e_g-z", "rX")) === fp(msg(418), safari("0k2mq9zz_a1-b", "aQ")));
+    c.ok("…#418 and #423 on the same page are different rows", fp(msg(418), safari("1sloqs30e_g-z", "rX")) !== fp(msg(423), safari("1sloqs30e_g-z", "rX")));
+    c.ok("Safari's 'fn@url' frame is read as a frame", scrub.topFrame(safari("1sloqs30e_g-z", "handleApprove")) === "handleApprove@/_next/static/chunks/[chunk].js", scrub.topFrame(safari("1sloqs30e_g-z", "handleApprove")));
+    const server = (hash: string) => `AryeoError: x\n    at o (/var/task/.next/server/chunks/src_lib_integrations_aryeo_ts_${hash}._.js:1:1174)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)`;
+    c.ok("a server chunk keeps its module name and loses its hash", scrub.topFrame(server("1zd0k9e")) === scrub.topFrame(server("9ab12cd")) && scrub.topFrame(server("1zd0k9e")).includes("src_lib_integrations_aryeo_ts"), scrub.topFrame(server("1zd0k9e")));
   }
 
   // =========================================================================

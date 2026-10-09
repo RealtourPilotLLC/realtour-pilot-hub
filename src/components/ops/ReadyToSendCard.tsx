@@ -152,7 +152,10 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       {!board.boardUnavailable && <div className="mt-1 space-y-0.5 text-ui-status text-muted">
         {(["needsFinishing", "notTold"] as const).filter((lane) => board.followUpChecks?.[lane] === null).map((lane) => (
           <p key={lane}>{lane === "needsFinishing" ? "Delivery records" : "Client notification"}: {board.followUpLastSuccess?.[lane]
-            ? `last successful check ${new Date(board.followUpLastSuccess[lane]).toLocaleString()}`
+            // ET, through the shared helper: a bare toLocaleString() printed the
+            // server's UTC clock and the browser its own zone — two different
+            // strings for one render, a hydration error (#418) every time.
+            ? `last successful check ${etDateTime(board.followUpLastSuccess[lane])} ET`
             : "no previous successful check recorded"}.</p>
         ))}
       </div>}

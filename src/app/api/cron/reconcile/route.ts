@@ -26,8 +26,10 @@ export async function GET(req: NextRequest) {
 
   await step("ordersSlice", () =>
     syncAryeoOrders({ full: true, maxPages: 8, budgetMs: Math.max(60_000, remaining() - 120_000) }));
+  // 8 pages of 50 = the 4 pages of 100 this used to walk (the page size halved
+  // on Oct 9 2026 — see BACKGROUND_LIST_READ in aryeo.ts), same rows a slice.
   await step("appointmentsSlice", () =>
-    syncAryeoAppointments({ maxPages: 4, budgetMs: Math.max(30_000, remaining() - 20_000) }));
+    syncAryeoAppointments({ maxPages: 8, budgetMs: Math.max(30_000, remaining() - 20_000) }));
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

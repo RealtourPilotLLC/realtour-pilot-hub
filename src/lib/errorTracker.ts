@@ -14,6 +14,7 @@ import {
   STACK_MAX,
   type ErrorSource,
 } from "@/lib/errorScrub";
+import type { StepPersistence } from "@/lib/cronNoise";
 
 // ---------------------------------------------------------------------------
 // THE ERROR TRACKER (Oct 6 2026). Jordan: "I also want to make sure we are
@@ -42,6 +43,14 @@ import {
 // lambda alive for it); captureRequestError is time-capped. If the table has
 // not been pushed yet, every call is a silent no-op (checked once, then
 // remembered for five minutes).
+//
+// TRANSIENT CRON FAILURES (Oct 9 2026, lib/cronNoise.ts). A cron step that
+// fails with a provider timeout / 5xx is recorded like anything else, but its
+// row is marked `transient` in its context and stays quiet — no alert, not
+// counted in the daily digest — until the step has failed 3 runs in a row or
+// gone 6 hours without a success. Then it alerts ONCE ("keeps failing") and
+// stamps `persistentSince`, which sticks: from then on it is an ordinary open
+// error until Jordan marks it fixed (a reopen starts the quiet count again).
 //
 // ALERTS. A NEW error, or a FIXED one that came back, tells Jordan — a bell row
 // addressed to him and his Slack DM through notify.notifyStaffSms, which asks
@@ -76,6 +85,9 @@ export type ErrorInput = {
   at?: Date;
   /** false = record only, never alert (drills, the digest's own failures). */
   alert?: boolean;
+  /** A cron step's TRANSIENT provider failure (lib/cronNoise.ts): recorded
+   *  always, alerted and counted in the digest only once it persists. */
+  persistence?: StepPersistence;
 };
 
 export type RecordResult = {
@@ -87,6 +99,29 @@ export type RecordResult = {
 };
 
 export type AlertOutcome = "sent" | "deduped" | "capped" | "ignored" | "failed";
+
+// ---- only the real deployment records (Oct 9 2026) --------------------------
+//
+// Local dev, `next start` on a laptop, preview deployments and the drills all
+// share the LIVE database through .env — and on Oct 9 a mid-edit parse error on
+// a developer's localhost:3000 landed in production's ErrorEvent table and
+// Slack-messaged Jordan. So the tracker records, alerts and digests ONLY when
+// it is the production deployment: VERCEL_ENV === "production" (Vercel sets
+// it; it is absent everywhere else, the drills' scrubbed environment
+// included). A drill that tests recording turns it on through the seam below —
+// explicitly, never by an environment variable leaking in. Reading the table
+// (the Errors page, marking fixed) is not gated.
+
+let enabledOverride: boolean | null = null;
+/** Test seam: true/false forces recording on/off; null returns to the rule. */
+export function setErrorTrackingForTests(on: boolean | null): void {
+  enabledOverride = on;
+}
+/** Is this process the production deployment the tracker records for? */
+export function errorTrackingEnabled(): boolean {
+  if (enabledOverride !== null) return enabledOverride;
+  return process.env.VERCEL_ENV === "production";
+}
 
 // ---- the table may not exist yet ------------------------------------------
 
@@ -144,6 +179,7 @@ const CLIENT_SOURCES: ErrorSource[] = ["client", "client-portal"];
  */
 export async function recordError(input: ErrorInput): Promise<RecordResult | null> {
   try {
+    if (!errorTrackingEnabled()) return null;
     const d = describeThrown(input.error);
     const digest = input.digest ?? d.digest;
     if (isIgnorable({ message: d.message, digest, stack: d.stack, name: d.name })) return null;
@@ -156,15 +192,27 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
     const message = scrubText(d.message || "Unknown error", MESSAGE_MAX);
     const stack = d.stack ? scrubText(d.stack, STACK_MAX) : null;
     const fingerprint = fingerprintOf({ message: d.message || "Unknown error", stack: d.stack, route });
-    const context = scrubContext(input.context);
+    const transient = input.persistence ?? null;
+    const transientContext = (persistentSince: string | null) =>
+      transient
+        ? {
+            ...(input.context ?? {}),
+            transient: true,
+            failedRunsInARow: transient.consecutiveFailures,
+            lastSuccessAt: transient.lastSuccessAt,
+            persistentSince,
+            ...(transient.rule ? { rule: transient.rule } : {}),
+          }
+        : input.context;
+    let context = scrubContext(transientContext(transient?.persistent ? now.toISOString() : null));
     const user = {
       lastUserId: input.userId ? String(input.userId).slice(0, 40) : null,
       lastUserRole: input.userRole ? String(input.userRole).slice(0, 20) : null,
     };
 
-    let existing: { id: string; recentPaths: string | null } | null;
+    let existing: { id: string; recentPaths: string | null; status: string; context: string | null } | null;
     try {
-      existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true } });
+      existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true, status: true, context: true } });
     } catch (e) {
       if (noteMissing(e)) return null;
       throw e;
@@ -195,14 +243,27 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
           },
           select: { id: true },
         });
-        const alert = input.alert === false ? null : await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: 1 }, "new", now);
+        const quiet = input.alert === false || (transient !== null && !transient.persistent);
+        const alert = quiet ? null : await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: 1, rule: transient?.rule ?? null }, transient ? "persistent" : "new", now);
         return { id: row.id, fingerprint, isNew: true, reopened: false, alert };
       } catch (e) {
         if ((e as { code?: string } | null)?.code !== "P2002") throw e;
         // Somebody else created it a moment ago — count this one on their row.
-        existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true } });
+        existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true, status: true, context: true } });
         if (!existing) return null;
       }
+    }
+
+    // A transient row that already persisted keeps its stamp (it stays an open
+    // error, counted in the digest) — unless it was marked fixed, in which case
+    // this occurrence starts the quiet count again.
+    let escalateNow = false;
+    if (transient) {
+      let prior: { persistentSince?: unknown } = {};
+      try { prior = existing.context ? (JSON.parse(existing.context) as { persistentSince?: unknown }) : {}; } catch { prior = {}; }
+      const kept = existing.status !== "FIXED" && typeof prior.persistentSince === "string" ? prior.persistentSince : null;
+      escalateNow = transient.persistent && !kept;
+      context = scrubContext(transientContext(kept ?? (transient.persistent ? now.toISOString() : null)));
     }
 
     let recent: string[] = [];
@@ -229,10 +290,15 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
       data: { status: "OPEN", reopenedAt: now, reopenCount: { increment: 1 }, resolvedAt: null, resolvedBy: null },
     });
     const reopened = reopen.count === 1;
-    const alert =
-      reopened && input.alert !== false
-        ? await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: row.count }, "reopened", now)
-        : null;
+    let alert: AlertOutcome | null = null;
+    if (input.alert !== false && row.status !== "IGNORED") {
+      if (transient) {
+        // Quiet until it persists; then once, as "keeps failing".
+        if (escalateNow) alert = await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: row.count, rule: transient.rule }, "persistent", now);
+      } else if (reopened) {
+        alert = await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: row.count }, "reopened", now);
+      }
+    }
     return { id: row.id, fingerprint, isNew: false, reopened, alert };
   } catch (e) {
     if (noteMissing(e)) return null;
@@ -248,6 +314,7 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
  */
 export function reportError(err: unknown, ctx: { area: string; source?: ErrorSource; path?: string | null } & Record<string, unknown>): void {
   try {
+    if (!errorTrackingEnabled()) return;
     const { area, source, path, ...rest } = ctx;
     const p = track(recordError({ error: err, source: source ?? "background", route: area, path: path ?? null, context: { area, ...rest } }));
     try {
@@ -295,6 +362,7 @@ export function sourceForRequest(routeType: string | undefined, path: string | n
 
 export async function captureRequestError(err: unknown, request: RequestInfo, context: RequestCtx): Promise<void> {
   try {
+    if (!errorTrackingEnabled()) return;
     const path = request?.path ?? null;
     const user = await sessionUserFromHeaders(request?.headers ?? {});
     // The route FILE (/app/projects/[id]/page) is the best grouping key Next
@@ -374,11 +442,11 @@ export async function recordClientReport(body: ClientReport, user: { id: string;
 
 // ---- alerts ---------------------------------------------------------------------
 
-type AlertRow = { id: string; fingerprint: string; message: string; route: string | null; source: string; count: number };
+type AlertRow = { id: string; fingerprint: string; message: string; route: string | null; source: string; count: number; rule?: string | null };
 
 const hourKey = (d: Date) => d.toISOString().slice(0, 13).replace("T", "-");
 
-async function alertForError(row: AlertRow, why: "new" | "reopened", now: Date): Promise<AlertOutcome> {
+async function alertForError(row: AlertRow, why: "new" | "reopened" | "persistent", now: Date): Promise<AlertOutcome> {
   try {
     const db = table();
     if (!db) return "failed";
@@ -401,14 +469,15 @@ async function alertForError(row: AlertRow, why: "new" | "reopened", now: Date):
       });
       return "capped";
     }
-    const label = why === "new" ? "New error" : "Error is back (was marked fixed)";
+    const label = why === "new" ? "New error" : why === "persistent" ? "Keeps failing" : "Error is back (was marked fixed)";
     const where = row.route ? ` · ${row.route}` : "";
+    const why2 = why === "persistent" && row.rule ? ` · ${row.rule}` : "";
     const sent = await deliverToOwner({
       kind: "error_report",
       title: `${label} — ${row.message}`.slice(0, 90),
-      body: `${row.source}${where}${why === "reopened" ? ` · ${row.count}× in all` : ""}`.slice(0, 140),
+      body: `${row.source}${where}${why2}${why !== "new" ? ` · ${row.count}× in all` : ""}`.slice(0, 140),
       href: `/settings/errors?id=${row.id}`,
-      slack: `🐞 ${label} (${row.source}${where}):\n> ${row.message.replace(/\s+/g, " ").slice(0, 300)}\n${link(`/settings/errors?id=${row.id}`)}`,
+      slack: `🐞 ${label} (${row.source}${where}${why2}):\n> ${row.message.replace(/\s+/g, " ").slice(0, 300)}\n${link(`/settings/errors?id=${row.id}`)}`,
       dedupeKey: `error-${row.fingerprint}-${hourKey(now)}`,
     });
     return sent ? "sent" : "failed";
@@ -463,17 +532,33 @@ async function deliverToOwner(n: { kind: string; title: string; body: string; hr
 
 // ---- the daily digest (cron/daily) ----------------------------------------------
 
-export async function errorDigest(now: Date = new Date()): Promise<{ sent: boolean; open: number; recent?: number; reason?: string }> {
+/** A transient cron row (cronNoise) that has not persisted: recorded, quiet. */
+export function isQuietTransient(context: string | null | undefined): boolean {
+  if (!context) return false;
+  try {
+    const c = JSON.parse(context) as { transient?: unknown; persistentSince?: unknown };
+    return c.transient === true && typeof c.persistentSince !== "string";
+  } catch {
+    return false;
+  }
+}
+
+export async function errorDigest(now: Date = new Date()): Promise<{ sent: boolean; open: number; recent?: number; watching?: number; reason?: string }> {
+  if (!errorTrackingEnabled()) return { sent: false, open: 0, reason: "not the production deployment" };
   const db = table();
   if (!db) return { sent: false, open: 0, reason: "error table not present" };
   try {
-    const open = await db.findMany({
+    const openRows = await db.findMany({
       where: { status: "OPEN" },
       orderBy: [{ lastSeenAt: "desc" }],
       take: 200,
-      select: { id: true, message: true, route: true, source: true, count: true, lastSeenAt: true },
+      select: { id: true, message: true, route: true, source: true, count: true, lastSeenAt: true, context: true },
     });
-    if (open.length === 0) return { sent: false, open: 0, reason: "no open errors" };
+    // A transient cron failure that never persisted is not an open problem —
+    // the next run picked the work up. Said in one line, never counted.
+    const watching = openRows.filter((r) => isQuietTransient(r.context));
+    const open = openRows.filter((r) => !isQuietTransient(r.context));
+    if (open.length === 0) return { sent: false, open: 0, watching: watching.length, reason: "no open errors" };
     const dayAgo = now.getTime() - 24 * 3600_000;
     const recent = open.filter((r) => r.lastSeenAt.getTime() >= dayAgo);
     const top = (recent.length ? recent : open).sort((a, b) => b.count - a.count).slice(0, 8);
@@ -484,6 +569,7 @@ export async function errorDigest(now: Date = new Date()): Promise<{ sent: boole
       `🐞 Daily error report — ${open.length} open, ${recent.length} seen in the last 24 h`,
       ...lines,
       ...(more > 0 ? [`…and ${more} more`] : []),
+      ...(watching.length ? [`(${watching.length} brief provider timeout${watching.length === 1 ? "" : "s"} in scheduled jobs not counted — each recovered on its next run)`] : []),
       link("/settings/errors"),
     ].join("\n");
     const sent = await deliverToOwner({
@@ -494,7 +580,7 @@ export async function errorDigest(now: Date = new Date()): Promise<{ sent: boole
       slack,
       dedupeKey: `error-digest-${etDayKey(now)}`,
     });
-    return { sent, open: open.length, recent: recent.length, ...(sent ? {} : { reason: "already sent today" }) };
+    return { sent, open: open.length, recent: recent.length, watching: watching.length, ...(sent ? {} : { reason: "already sent today" }) };
   } catch (e) {
     if (noteMissing(e)) return { sent: false, open: 0, reason: "error table not present" };
     throw e;

@@ -96,8 +96,10 @@ function timeago(iso: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h`;
   const days = Math.floor(hrs / 24);
-  if (days < 7) return new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(d);
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(d);
+  // ET like every other date in the hub. (Rows arrive after mount, so this
+  // never takes part in hydration — the clock read above is safe here.)
+  if (days < 7) return new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: "America/New_York" }).format(d);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" }).format(d);
 }
 
 export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar" | "header" }) {

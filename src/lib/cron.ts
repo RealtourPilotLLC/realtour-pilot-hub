@@ -69,7 +69,16 @@ function serialize(out: Record<string, unknown>): string {
     clipped[k] = s && s.length > 300 ? `${s.slice(0, 297)}…` : v;
   }
   const json = JSON.stringify(clipped);
-  return json.length <= 4000 ? json : JSON.stringify({ at: out.at, deploy: out.deploy, skipped: out.skipped, timedOut: out.timedOut, ms: out.ms, truncated: true });
+  if (json.length <= 4000) return json;
+  // The fallback keeps every step's ERROR (clipped) beside the timings: the
+  // hourly sync's summary is always past 4000, and without them a step that
+  // failed and a step that worked read the same — which is exactly what
+  // cronNoise needs to tell apart (Oct 9 2026).
+  const errors: Record<string, string> = {};
+  for (const [k, v] of Object.entries(out)) if (k.endsWith("Error")) errors[k] = String(v).slice(0, 120);
+  const slim = { at: out.at, deploy: out.deploy, skipped: out.skipped, timedOut: out.timedOut, ms: out.ms, truncated: true };
+  const withErrors = JSON.stringify({ ...slim, ...errors });
+  return withErrors.length <= 4000 ? withErrors : JSON.stringify(slim);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,13 +201,20 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
         if (!firstError) firstError = `${name}: ${msg}`.slice(0, 500);
         // Into the error tracker too (Oct 6 2026), grouped per job+step so a
         // step that fails every tick is one row with a count, and a new
-        // failure alerts the owner. Capped at 3 s; recordError never throws.
+        // failure alerts the owner. A provider timeout / 5xx is recorded but
+        // stays quiet until it persists — 3 failed runs in a row or 6 hours
+        // without a success, read from this job's CronRun rows (cronNoise.ts,
+        // Oct 9 2026). Capped at 5 s; neither half ever throws.
         try {
-          const { recordError } = await import("@/lib/errorTracker");
+          const [{ recordError, errorTrackingEnabled }, noise] = await Promise.all([import("@/lib/errorTracker"), import("@/lib/cronNoise")]);
           let timer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([
-            recordError({ error: e, source: "cron", route: `cron:${job ?? "unnamed"}/${name}`, path: job ? `/api/cron/${job}` : null, context: { job: job ?? null, step: name } }),
-            new Promise((resolve) => { timer = setTimeout(resolve, 3000); }),
+            (async () => {
+              if (!errorTrackingEnabled()) return; // only production records (errorTracker.ts)
+              const persistence = job && noise.isTransientProviderError(e) ? await noise.readStepPersistence(job, name, startedAtMs) : undefined;
+              await recordError({ error: e, source: "cron", route: `cron:${job ?? "unnamed"}/${name}`, path: job ? `/api/cron/${job}` : null, context: { job: job ?? null, step: name }, persistence });
+            })(),
+            new Promise((resolve) => { timer = setTimeout(resolve, 5000); }),
           ]).finally(() => clearTimeout(timer));
         } catch { /* the cron's own record above is the truth */ }
       }

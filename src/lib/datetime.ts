@@ -4,8 +4,22 @@
 
 export const TZ = "America/New_York";
 
+// THE SAME WORDS IN EVERY ENGINE (Oct 9 2026). These strings are rendered
+// twice when a client component uses them — once by Node on the server, once by
+// the browser while hydrating — and React refuses the page (minified error
+// #418) when the two differ. Two engine differences are real:
+//   · one Intl call asked for a date AND a time joins them with the locale's
+//     date-time glue, which is CLDR data, not ours: Node says
+//     "Thu, Oct 8, 7:30 PM", Safari (JavaScriptCore on Apple's ICU) says
+//     "Thu, Oct 8 at 7:30 PM". That was the Review Room's and Home's #418 —
+//     every report came from Safari. So a date-and-time label is ALWAYS two
+//     calls joined here (etDateTime), never one;
+//   · some ICU builds put a narrow no-break space (U+202F) before AM/PM, or a
+//     thin space (U+2009) in ranges, where others put a plain space.
+// The timeZone is always ET, so the server's UTC clock and the browser's zone
+// never enter into it.
 function fmt(d: Date, opts: Intl.DateTimeFormatOptions, locale = "en-US"): string {
-  return new Intl.DateTimeFormat(locale, { timeZone: TZ, ...opts }).format(d);
+  return new Intl.DateTimeFormat(locale, { timeZone: TZ, ...opts }).format(d).replace(/[   ]/g, " ");
 }
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const toDate = (d: Date | string | null | undefined): Date | null => {
@@ -21,7 +35,8 @@ const toDate = (d: Date | string | null | undefined): Date | null => {
 
 export const etTime = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { hour: "numeric", minute: "2-digit" }) : ""; };
 export const etDate = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "short", month: "short", day: "numeric" }) : ""; };
-export const etDateTime = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""; };
+// Two calls, joined by us — see fmt() above for why never one.
+export const etDateTime = (d?: Date | string | null) => { const x = toDate(d); return x ? `${fmt(x, { weekday: "short", month: "short", day: "numeric" })}, ${fmt(x, { hour: "numeric", minute: "2-digit" })}` : ""; };
 export const etMonthDay = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { month: "short", day: "numeric" }) : ""; };
 export const etDateYear = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { month: "short", day: "numeric", year: "numeric" }) : ""; };
 export const etMonth = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { month: "short" }) : ""; };

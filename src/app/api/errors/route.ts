@@ -1,7 +1,8 @@
 import { after, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth/jwt";
-import { CLIENT_BODY_MAX, limiter, recordClientReport, type ClientReport } from "@/lib/errorTracker";
+import { CLIENT_BODY_MAX, errorTrackingEnabled, limiter, recordClientReport, type ClientReport } from "@/lib/errorTracker";
+import { appBase } from "@/lib/appUrl";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,11 @@ export const dynamic = "force-dynamic";
 //   · only the error's description is read from the body. The signed-in staff
 //     member (if any) comes from the session cookie's signature — id and role
 //     only; a portal visitor is stored as nobody.
+//   · ONLY THE PRODUCTION APP (Oct 9 2026): outside the production deployment
+//     (local dev, previews, drills — all of which share the live database)
+//     the beacon records nothing, and in production it takes reports only for
+//     the app's own origin (appBase()), not another host the deployment
+//     happens to answer on.
 // Always answers 204 for an accepted or ignored report: the browser has
 // nothing to do with the answer.
 // ---------------------------------------------------------------------------
@@ -37,6 +43,16 @@ function sameOrigin(req: Request): boolean {
   return req.headers.get("sec-fetch-site") === "same-origin";
 }
 
+/** The request came to the production app's own host. */
+function productionHost(req: Request): boolean {
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  try {
+    return !!host && host.toLowerCase() === new URL(appBase()).host.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 function clientKey(req: Request): string {
   const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("x-real-ip") || "unknown";
   return createHash("sha256").update(ip).digest("hex").slice(0, 16);
@@ -52,7 +68,9 @@ function cookie(req: Request, name: string): string | null {
 
 export async function POST(req: Request) {
   try {
-    if (!sameOrigin(req)) return new NextResponse(null, { status: 403 });
+    // Not production: nothing to record into (and nothing to tell the browser).
+    if (!errorTrackingEnabled()) return noContent();
+    if (!productionHost(req) || !sameOrigin(req)) return new NextResponse(null, { status: 403 });
     const declared = Number(req.headers.get("content-length") ?? "0");
     if (declared > CLIENT_BODY_MAX) return new NextResponse(null, { status: 413 });
     if (!limiter.allow(clientKey(req))) return new NextResponse(null, { status: 429 });
