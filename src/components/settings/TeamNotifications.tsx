@@ -1,5 +1,6 @@
 "use client";
 
+import { etMonthDay, etTime, etWeekday } from "@/lib/datetime";
 import { useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight, MessageSquare, RotateCcw, Smartphone } from "lucide-react";
@@ -44,12 +45,8 @@ function whenLabel(iso: string): string | null {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   const recent = Date.now() - d.getTime() < 6 * 86400_000;
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    ...(recent ? { weekday: "short" } : { month: "short", day: "numeric" }),
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(d).replace(",", "");
+  // ET, day and time as two calls (see datetime.ts): "Tue 4:12 PM" / "Oct 8 4:12 PM".
+  return `${recent ? etWeekday(d) : etMonthDay(d)} ${etTime(d)}`;
 }
 
 // "Last reached: Slack · Tue 4:12 PM (tagged) · text · Mon 9:03 AM (shoot

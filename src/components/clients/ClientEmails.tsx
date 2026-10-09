@@ -1,17 +1,14 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
 import { useEffect, useState, useTransition } from "react";
 import { Loader2, Mail, ChevronDown, ChevronRight, Sparkles, Copy, AlertCircle } from "lucide-react";
 import type { GmailEmail } from "@/lib/integrations/google";
 import { loadClientEmails, draftEmailReply } from "@/app/clients/actions";
 import { loadMailboxGap } from "@/components/clients/mailboxHealth.actions";
 
-function fmt(iso: string): string {
-  if (!iso) return "";
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
-}
+// ET, date and time as two calls (see datetime.ts).
+const fmt = (iso: string): string => (iso ? etMonthDayTime(iso) : "");
 
 // Read-only Gmail conversation for a client, lazy-loaded on the client detail
 // page so the page paints instantly. Gives context on what email threads are

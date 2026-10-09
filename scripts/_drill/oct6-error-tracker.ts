@@ -51,6 +51,8 @@
 //      job with no success in 6 hours alerts on its first; a FIXED one that
 //      comes back is reopened quietly; a non-transient cron error alerts at
 //      once; a summary past 4000 characters still carries the step's error.
+//      The cron's OWN "degraded" page (ops Slack + the owner's bell) follows
+//      the same rule: nothing for runs 1–2, one page at run 3, none at run 4.
 //  11  GROUPING: Safari and Chrome frames in the production bundle group one
 //      bug across deploys (chunk hash and minified name dropped); different
 //      React error numbers on one page stay different rows.
@@ -382,6 +384,11 @@ async function main() {
     const { AryeoError } = await import("@/lib/integrations/aryeo");
     const timeout = () => new AryeoError("Aryeo timed out — please try again.", 504);
     const bugDms = (since: number) => dmsTo(S.jordan, since).filter((m) => m.text.includes("🐞"));
+    // The cron's own page: an ops Slack post and an owner bell per degraded run.
+    const degraded = async (job: string, since: number) => ({
+      slack: slack.slice(since).filter((m) => m.text.includes(`Cron "${job}" degraded`)).length,
+      bells: await prisma.notification.count({ where: { title: `Sync degraded — ${job}` } }),
+    });
     const ctx = async (route: string) => {
       const r = await prisma.errorEvent.findFirst({ where: { route } });
       return { row: r, c: r?.context ? (JSON.parse(r.context) as Record<string, unknown>) : {} };
@@ -400,6 +407,10 @@ async function main() {
     let s0 = slack.length;
     await run(async () => { throw timeout(); });
     let x = await ctx("cron:drillsync/appointments");
+    const g1 = await degraded("drillsync", s0);
+    c.ok("1st failed run: the cron's own 'degraded' page stays quiet too (no ops post, no bell)", g1.slack === 0 && g1.bells === 0, JSON.stringify(g1));
+    const lastRun = await prisma.cronRun.findFirst({ where: { job: "drillsync" }, orderBy: { startedAt: "desc" } });
+    c.ok("…while the run itself is still recorded as not ok, with the error", lastRun?.ok === false && (lastRun.summary ?? "").includes("quietErrors"));
     c.ok("1st failed run: recorded, marked transient, NOT alerted", !!x.row && x.c.transient === true && x.c.failedRunsInARow === 1 && x.c.persistentSince === null && bugDms(s0).length === 0 && x.row.lastAlertedAt === null, JSON.stringify(x.c));
     const summary = (await prisma.cronRun.findFirst({ where: { job: "drillsync" }, orderBy: { startedAt: "desc" } }))?.summary ?? "";
     c.ok("…the run's summary is past 4000 characters and STILL carries the step's error", summary.includes("\"truncated\":true") && summary.includes("appointmentsError"), summary.slice(0, 120));
@@ -413,6 +424,8 @@ async function main() {
     await run(async () => { throw timeout(); });
     x = await ctx("cron:drillsync/appointments");
     c.ok("2nd failed run in a row: still quiet", x.c.failedRunsInARow === 2 && x.c.persistentSince === null && bugDms(s0).length === 0, JSON.stringify(x.c));
+    const g2 = await degraded("drillsync", s0);
+    c.ok("…no 'degraded' page either", g2.slack === 0 && g2.bells === 0, JSON.stringify(g2));
 
     setClock(edt(10, 19, 11, 0));
     s0 = slack.length;
@@ -421,11 +434,14 @@ async function main() {
     const third = bugDms(s0);
     c.ok("3rd failed run in a row: ONE alert, 'Keeps failing … 3 runs in a row'", third.length === 1 && /Keeps failing/.test(third[0].text) && /3 runs in a row/.test(third[0].text) && typeof x.c.persistentSince === "string", third.map((m) => m.text.slice(0, 160)).join(" | "));
     c.ok("…and it now counts as open", !tracker.isQuietTransient(x.row?.context));
+    const g3 = await degraded("drillsync", s0);
+    c.ok("…and the cron's 'degraded' page goes out ONCE, naming the step", g3.slack === 1 && g3.bells === 1 && slack.slice(s0).some((m) => /degraded: error — appointments: Aryeo timed out/.test(m.text)), JSON.stringify(g3));
 
     setClock(edt(10, 19, 12, 0));
     s0 = slack.length;
     await run(async () => { throw timeout(); });
     c.ok("4th: counted, no second alert", bugDms(s0).length === 0 && (await ctx("cron:drillsync/appointments")).row?.count === 4);
+    c.ok("…and no second 'degraded' page (same failure as the run before)", (await degraded("drillsync", s0)).slack === 0);
 
     setClock(edt(10, 19, 13, 0));
     await run(async () => ({ appointments: 9 }));
@@ -434,6 +450,7 @@ async function main() {
     await run(async () => { throw timeout(); });
     x = await ctx("cron:drillsync/appointments");
     c.ok("a success, then a failure: streak back to 1, quiet — but the row that persisted stays open", x.c.failedRunsInARow === 1 && typeof x.c.persistentSince === "string" && bugDms(s0).length === 0, JSON.stringify(x.c));
+    c.ok("…no 'degraded' page for the lone failure", (await degraded("drillsync", s0)).slack === 0);
 
     // Marked fixed, then one transient failure: reopened, quietly.
     await tracker.setErrorStatus(x.row!.id, "FIXED", "Jordan");
@@ -453,6 +470,7 @@ async function main() {
     await daily.finish();
     const d1 = bugDms(s0);
     c.ok("a daily job with no success in 6 hours: alerts on its first failure", d1.length === 1 && /no successful run in 6 hours/.test(d1[0].text), d1.map((m) => m.text.slice(0, 160)).join(" | "));
+    c.ok("…and its 'degraded' page goes out too", (await degraded("drilldaily", s0)).slack === 1);
 
     // Not a provider hiccup: a bug in our code alerts at once, as before.
     s0 = slack.length;
@@ -461,6 +479,7 @@ async function main() {
     await bug.finish();
     const b = bugDms(s0);
     c.ok("a non-transient cron error alerts on its first occurrence ('New error')", b.length === 1 && /New error/.test(b[0].text), b.map((m) => m.text.slice(0, 120)).join(" | "));
+    c.ok("…and pages 'degraded' at once, as before", slack.slice(s0).some((m) => /Cron "drillsync" degraded: error — statuses: Cannot read/.test(m.text)));
   }
 
   // =========================================================================

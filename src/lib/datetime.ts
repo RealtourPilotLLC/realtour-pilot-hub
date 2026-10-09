@@ -36,9 +36,18 @@ const toDate = (d: Date | string | null | undefined): Date | null => {
 export const etTime = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { hour: "numeric", minute: "2-digit" }) : ""; };
 export const etDate = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "short", month: "short", day: "numeric" }) : ""; };
 // Two calls, joined by us — see fmt() above for why never one.
-export const etDateTime = (d?: Date | string | null) => { const x = toDate(d); return x ? `${fmt(x, { weekday: "short", month: "short", day: "numeric" })}, ${fmt(x, { hour: "numeric", minute: "2-digit" })}` : ""; };
+const withTime = (x: Date, date: Intl.DateTimeFormatOptions) => `${fmt(x, date)}, ${fmt(x, { hour: "numeric", minute: "2-digit" })}`;
+/** "Thu, Oct 8, 7:30 PM" */
+export const etDateTime = (d?: Date | string | null) => { const x = toDate(d); return x ? withTime(x, { weekday: "short", month: "short", day: "numeric" }) : ""; };
+/** "Oct 8, 7:30 PM" */
+export const etMonthDayTime = (d?: Date | string | null) => { const x = toDate(d); return x ? withTime(x, { month: "short", day: "numeric" }) : ""; };
+/** "Thu, Oct 8, 2026" */
+export const etWeekdayDateYear = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : ""; };
+/** "Thu, Oct 8, 2026, 7:30 PM" */
+export const etDateTimeYear = (d?: Date | string | null) => { const x = toDate(d); return x ? withTime(x, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : ""; };
 export const etMonthDay = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { month: "short", day: "numeric" }) : ""; };
 export const etDateYear = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { month: "short", day: "numeric", year: "numeric" }) : ""; };
+export const etWeekday = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "short" }) : ""; };
 export const etMonth = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { month: "short" }) : ""; };
 export const etDayNum = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { day: "numeric" }) : ""; };
 export const etFullDate = (d?: Date | string | null) => { const x = toDate(d); return x ? fmt(x, { weekday: "long", month: "long", day: "numeric" }) : ""; };

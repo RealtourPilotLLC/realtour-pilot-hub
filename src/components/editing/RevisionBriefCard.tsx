@@ -1,5 +1,6 @@
 "use client";
 
+import { etDateTime } from "@/lib/datetime";
 import { useState, useTransition } from "react";
 import {
   ArrowRight,
@@ -75,15 +76,8 @@ const SOURCE_LABEL: Record<string, string> = {
   office: "Put back by the office",
 };
 
-const fmtWhen = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/New_York",
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+// ET, date and time as two calls (see datetime.ts).
+const fmtWhen = (iso: string) => etDateTime(iso);
 
 /** One cut the Review Room sent back — the ask that never had a card. */
 export type BouncedCutView = {

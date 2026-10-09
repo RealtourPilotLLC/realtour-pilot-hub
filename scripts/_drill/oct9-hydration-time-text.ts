@@ -28,7 +28,10 @@
 //      Home and /review/[id]: no date/time Intl call without an explicit
 //      timeZone, no single call asking for a date AND a time, no bare
 //      toLocaleString(), and no clock read (new Date() / Date.now()) except
-//      the reviewed ones listed below with why each is safe.
+//      the reviewed ones listed below with why each is safe. The formatting
+//      rules also cover eight more client components (ReplyQueue, ClientEmails,
+//      AppointmentManager, ProjectMap, RevisionBriefCard, TeamNotifications,
+//      PlaidConnect, PayoutCard) and their imports.
 //
 // Pure: no database, no network.
 // ---------------------------------------------------------------------------
@@ -82,7 +85,7 @@ async function main() {
       const esbuild = await import("esbuild");
       const src = fs.readFileSync(path.join(ROOT, "src/lib/datetime.ts"), "utf8");
       const js = esbuild.transformSync(src, { loader: "ts", format: "iife", globalName: "DT", target: "es2019" }).code;
-      const helpers = ["etDateTime", "etTime", "etDate", "etMonthDay", "etDateYear", "etFullDate", "etDayKey"] as const;
+      const helpers = ["etDateTime", "etMonthDayTime", "etDateTimeYear", "etWeekdayDateYear", "etWeekday", "etTime", "etDate", "etMonthDay", "etDateYear", "etFullDate", "etDayKey"] as const;
       const OLD_ONE_CALL = { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" } as const;
       const program = `${js}
 var instants = ${JSON.stringify(INSTANTS)};
@@ -187,12 +190,23 @@ JSON.stringify(out);`;
       "src/lib/datetime.ts": "helpers that take an explicit date from their callers; the today/year defaults are not used by these client trees",
     };
     const files = clientModules(["src/app/layout.tsx", "src/app/page.tsx", "src/app/review/[id]/page.tsx"]);
+    // Oct 9 follow-up: the other client components that printed a one-call
+    // date+time (or no zone). The formatting rules apply to them and their
+    // imports; the clock rule stays with the three trees above.
+    const EXTRA = [
+      "src/components/comms/ReplyQueue.tsx", "src/components/clients/ClientEmails.tsx", "src/components/project/AppointmentManager.tsx",
+      "src/components/map/ProjectMap.tsx", "src/components/editing/RevisionBriefCard.tsx", "src/components/settings/TeamNotifications.tsx",
+      "src/components/connections/PlaidConnect.tsx", "src/components/payouts/PayoutCard.tsx",
+    ];
+    const extra = clientModules(EXTRA).filter((f) => !files.includes(f));
+    c.ok("the eight extra components are in the formatting scan", EXTRA.every((f) => files.includes(f) || extra.includes(f)), `${extra.length} more modules`);
     c.ok("the walk found the trees (the layout's shell, Home's cards, the Review Room panel)", ["src/components/Shell.tsx", "src/components/ops/ReadyToSendCard.tsx", "src/components/tracker/DeliveryBoardView.tsx", "src/components/review/CutReviewPanel.tsx"].every((f) => files.includes(f)), `${files.length} modules`);
     const noZone: string[] = [];
     const oneCall: string[] = [];
     const bare: string[] = [];
     const clock: string[] = [];
-    for (const rel of files) {
+    for (const rel of [...files, ...extra]) {
+      const inTrees = files.includes(rel);
       const src = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
       for (const call of calls(src, /(new Intl\.DateTimeFormat|\.toLocaleDateString|\.toLocaleTimeString|\.toLocaleString)\(/g)) {
         const where = `${rel}:${call.line}`;
@@ -205,7 +219,7 @@ JSON.stringify(out);`;
         const partsOnly = rel === "src/lib/datetime.ts" && /hourCycle: "h23"/.test(call.args);
         if (!partsOnly && /\b(hour|minute|timeStyle)\b/.test(call.args) && /\b(weekday|day|month|year|dateStyle)\b/.test(call.args)) oneCall.push(where);
       }
-      if (/new Date\(\s*\)|Date\.now\(\)/.test(src) && !REVIEWED_CLOCK_READS[rel]) clock.push(rel);
+      if (inTrees && /new Date\(\s*\)|Date\.now\(\)/.test(src) && !REVIEWED_CLOCK_READS[rel]) clock.push(rel);
     }
     c.ok("every date/time format names its time zone", noZone.length === 0, noZone.join(", "));
     c.ok("no single call asks for a date AND a time (Node and Safari join them differently)", oneCall.length === 0, oneCall.join(", "));

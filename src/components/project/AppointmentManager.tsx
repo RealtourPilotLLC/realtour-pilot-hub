@@ -1,5 +1,6 @@
 "use client";
 
+import { etDateTimeYear, etWeekdayDateYear } from "@/lib/datetime";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Calendar, Clock, RefreshCw, XCircle, Loader2, AlertTriangle, ChevronDown } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
@@ -27,17 +28,10 @@ export type ApptView = {
   assignedTo: { name: string; avatarColor: string } | null;
 };
 
+// Shoots are Eastern. Date and time as two calls (see datetime.ts).
 function fmt(d: string | Date | null, withTime = true) {
   if (!d) return null;
-  const date = new Date(d);
-  return date.toLocaleString("en-US", {
-    timeZone: "America/New_York", // shoots are Eastern
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}),
-  });
+  return (withTime ? etDateTimeYear(d) : etWeekdayDateYear(d)) || null;
 }
 
 // Aryeo appointment descriptions mix newlines + light HTML.

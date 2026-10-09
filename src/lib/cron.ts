@@ -46,8 +46,12 @@ export type CronRunner = {
 
 // What went wrong in a run, from its `out` shape: step names that errored +
 // the skipped list. Used to compare consecutive runs for alert dedupe.
+// A step's error listed in `quietErrors` was a transient provider failure that
+// has not persisted (cronNoise.ts) — it is left out, so it neither pages on
+// its own nor hides the page when the same step does persist next run.
 function failureSignature(out: Record<string, unknown>): string {
-  const errors = Object.keys(out).filter((k) => k.endsWith("Error")).sort();
+  const quiet = new Set(Array.isArray(out.quietErrors) ? (out.quietErrors as string[]).map((s) => `${s}Error`) : []);
+  const errors = Object.keys(out).filter((k) => k.endsWith("Error") && !quiet.has(k)).sort();
   const skipped = Array.isArray(out.skipped) ? [...(out.skipped as string[])].sort() : [];
   const timedOut = Array.isArray(out.timedOut) ? [...(out.timedOut as string[])].sort() : [];
   return [...errors, ...skipped.map((s) => `skip:${s}`), ...timedOut.map((s) => `timeout:${s}`)].join(",");
@@ -64,7 +68,7 @@ function failureSignature(out: Record<string, unknown>): string {
 function serialize(out: Record<string, unknown>): string {
   const clipped: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(out)) {
-    if (["at", "deploy", "skipped", "timedOut", "ms"].includes(k)) { clipped[k] = v; continue; }
+    if (["at", "deploy", "skipped", "timedOut", "ms", "quietErrors"].includes(k)) { clipped[k] = v; continue; }
     const s = typeof v === "string" ? v : JSON.stringify(v);
     clipped[k] = s && s.length > 300 ? `${s.slice(0, 297)}…` : v;
   }
@@ -76,7 +80,7 @@ function serialize(out: Record<string, unknown>): string {
   // cronNoise needs to tell apart (Oct 9 2026).
   const errors: Record<string, string> = {};
   for (const [k, v] of Object.entries(out)) if (k.endsWith("Error")) errors[k] = String(v).slice(0, 120);
-  const slim = { at: out.at, deploy: out.deploy, skipped: out.skipped, timedOut: out.timedOut, ms: out.ms, truncated: true };
+  const slim = { at: out.at, deploy: out.deploy, skipped: out.skipped, timedOut: out.timedOut, quietErrors: out.quietErrors, ms: out.ms, truncated: true };
   const withErrors = JSON.stringify({ ...slim, ...errors });
   return withErrors.length <= 4000 ? withErrors : JSON.stringify(slim);
 }
@@ -158,6 +162,9 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
   const timings: Record<string, number> = {};
   out.ms = timings;
   const timedOut: string[] = [];
+  /** Steps whose error was a transient provider failure that has not
+   *  persisted — recorded, but no "degraded" page for them (cronNoise.ts). */
+  const quietErrors: string[] = [];
 
   return {
     out,
@@ -199,22 +206,36 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
         const msg = e instanceof Error ? e.message : String(e);
         out[`${name}Error`] = msg;
         if (!firstError) firstError = `${name}: ${msg}`.slice(0, 500);
+        // A provider timeout / 5xx is noise until it persists — 3 failed runs
+        // in a row or 6 hours without a success, read from this job's CronRun
+        // rows (cronNoise.ts, Oct 9 2026). One answer drives BOTH alerts: the
+        // error tracker's row below and finish()'s "degraded" page. A read
+        // that does not answer in 3 s counts as persistent (never hidden).
+        let persistence: import("@/lib/cronNoise").StepPersistence | undefined;
+        try {
+          const noise = await import("@/lib/cronNoise");
+          if (job && noise.isTransientProviderError(e)) {
+            let t: ReturnType<typeof setTimeout> | undefined;
+            persistence = await Promise.race([
+              noise.readStepPersistence(job, name, startedAtMs),
+              new Promise<undefined>((resolve) => { t = setTimeout(() => resolve(undefined), 3000); }),
+            ]).finally(() => clearTimeout(t));
+            persistence ??= { consecutiveFailures: 1, lastSuccessAt: null, persistent: true, rule: "its run history could not be read in time" };
+            if (!persistence.persistent) {
+              quietErrors.push(name);
+              out.quietErrors = quietErrors;
+            }
+          }
+        } catch { /* no answer: alert as before */ }
         // Into the error tracker too (Oct 6 2026), grouped per job+step so a
         // step that fails every tick is one row with a count, and a new
-        // failure alerts the owner. A provider timeout / 5xx is recorded but
-        // stays quiet until it persists — 3 failed runs in a row or 6 hours
-        // without a success, read from this job's CronRun rows (cronNoise.ts,
-        // Oct 9 2026). Capped at 5 s; neither half ever throws.
+        // failure alerts the owner. Capped at 3 s; recordError never throws.
         try {
-          const [{ recordError, errorTrackingEnabled }, noise] = await Promise.all([import("@/lib/errorTracker"), import("@/lib/cronNoise")]);
+          const { recordError } = await import("@/lib/errorTracker");
           let timer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([
-            (async () => {
-              if (!errorTrackingEnabled()) return; // only production records (errorTracker.ts)
-              const persistence = job && noise.isTransientProviderError(e) ? await noise.readStepPersistence(job, name, startedAtMs) : undefined;
-              await recordError({ error: e, source: "cron", route: `cron:${job ?? "unnamed"}/${name}`, path: job ? `/api/cron/${job}` : null, context: { job: job ?? null, step: name }, persistence });
-            })(),
-            new Promise((resolve) => { timer = setTimeout(resolve, 5000); }),
+            recordError({ error: e, source: "cron", route: `cron:${job ?? "unnamed"}/${name}`, path: job ? `/api/cron/${job}` : null, context: { job: job ?? null, step: name }, persistence }),
+            new Promise((resolve) => { timer = setTimeout(resolve, 3000); }),
           ]).finally(() => clearTimeout(timer));
         } catch { /* the cron's own record above is the truth */ }
       }
@@ -238,7 +259,9 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
 
         // Slack-ping on failure/skip — deduped against the PREVIOUS run so a
         // persistent failure pings once (and again if the failure changes).
-        if (!ok) {
+        // A run whose only trouble is a quiet transient error (quietErrors)
+        // records ok=false — the truth — but pages nobody (Oct 9 2026).
+        if (!ok && failureSignature(out) !== "") {
           const prev = await prisma.cronRun.findFirst({
             where: { job, startedAt: { lt: new Date(startedAtMs) } },
             orderBy: { startedAt: "desc" },
@@ -249,8 +272,11 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
             try { prevSig = failureSignature(JSON.parse(prev.summary) as Record<string, unknown>); } catch { /* unreadable */ }
           }
           if (failureSignature(out) !== prevSig) {
+            // Name the first error that is paging, not a quiet one before it.
+            const loudKey = Object.keys(out).find((k) => k.endsWith("Error") && !quietErrors.includes(k.slice(0, -"Error".length)));
+            const loudError = loudKey ? `${loudKey.slice(0, -"Error".length)}: ${String(out[loudKey])}`.slice(0, 500) : null;
             const bits = [
-              firstError ? `error — ${firstError}` : null,
+              loudError ? `error — ${loudError}` : null,
               skipped.length ? `skipped: ${skipped.join(", ")}` : null,
               timedOut.length ? `timed out: ${timedOut.join(", ")}` : null,
             ].filter(Boolean).join(" · ");

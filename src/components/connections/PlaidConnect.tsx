@@ -1,4 +1,5 @@
 "use client";
+import { etDateYear } from "@/lib/datetime";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { usePlaidLink } from "react-plaid-link";
@@ -135,7 +136,7 @@ export function PlaidConnect({
               Pull full history
             </button>
             <span className="text-xs text-muted-2">
-              {banks.length} bank{banks.length === 1 ? "" : "s"} · {txnCount.toLocaleString()} transactions ·{" "}
+              {banks.length} bank{banks.length === 1 ? "" : "s"} · {txnCount.toLocaleString("en-US")} transactions ·{" "}
               <span className="uppercase tracking-wide">{env}</span>
             </span>
           </div>
@@ -231,7 +232,7 @@ function BankCard({ bank }: { bank: PlaidBankView }) {
           {bank.status === "ERROR" && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-medium text-danger">Needs attention</span>}
         </div>
         <div className="flex items-center gap-3">
-          {bank.lastSyncedAt && <span className="text-[11px] text-muted-2">synced {new Date(bank.lastSyncedAt).toLocaleDateString()}</span>}
+          {bank.lastSyncedAt && <span className="text-[11px] text-muted-2">synced {etDateYear(bank.lastSyncedAt)}</span>}
           <button
             onClick={() => { if (!confirm(`Disconnect ${bank.institutionName ?? "this bank"}? Its transactions will be removed.`)) return; setBusy(true); disconnectPlaidBank(bank.id).then(() => router.refresh()).finally(() => setBusy(false)); }}
             disabled={busy} title="Disconnect"

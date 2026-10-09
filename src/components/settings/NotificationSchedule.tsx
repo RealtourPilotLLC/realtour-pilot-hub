@@ -1,5 +1,6 @@
 "use client";
 
+import { etTime, etWeekday } from "@/lib/datetime";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Loader2, Plus, RotateCcw, X } from "lucide-react";
 import { loadNotifySchedules, saveNotifySchedule } from "@/app/settings/actions";
@@ -51,7 +52,7 @@ function whenLabel(iso: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "2-digit" }).format(d).replace(",", "");
+  return `${etWeekday(d)} ${etTime(d)}`; // ET, day and time as two calls (see datetime.ts)
 }
 
 export function NotificationSchedule() {

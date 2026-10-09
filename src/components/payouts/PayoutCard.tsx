@@ -1,5 +1,6 @@
 "use client";
 
+import { etDate } from "@/lib/datetime";
 import { useState, useEffect, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -376,7 +377,7 @@ function MileageDayRow({ day: d, memberId, busy, run }: {
   const [err, setErr] = useState<string | null>(null);
   const adjusted = d.overrideMiles != null;
   const orphan = adjusted && d.jobs === 0; // adjustment survives, but no shoots pay out of this day
-  const dayLabel = new Date(d.dayKey + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const dayLabel = etDate(d.dayKey); // a calendar day key, read as that ET day
 
   const beginEdit = () => {
     if (busy) return; // a Recompute/refresh is in flight — don't capture a stale prefill

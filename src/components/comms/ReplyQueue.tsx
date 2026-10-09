@@ -1,5 +1,6 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import {
@@ -34,11 +35,9 @@ function waitLabel(hours: number): { text: string; tone: "ok" | "warn" | "bad" }
   return { text: `${d} day${d === 1 ? "" : "s"} waiting`, tone: "bad" };
 }
 
-function fmtTime(iso: string) {
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
-}
+// ET, date and time as two calls (datetime.ts: Safari joins a one-call
+// date+time differently from Node — a hydration mismatch).
+const fmtTime = (iso: string) => etMonthDayTime(iso);
 
 type CardState = {
   draft: string;

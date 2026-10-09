@@ -1,5 +1,6 @@
 "use client";
 
+import { etDateTime, etTime } from "@/lib/datetime";
 import "leaflet/dist/leaflet.css";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -45,16 +46,9 @@ const pinScope = (pin: MapPin | null) => pin ? JSON.stringify([pin.id, pin.proje
 const addressScope = (scope: string, query: string) => JSON.stringify([scope, query]);
 const mapAction = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-1.5 rounded-lg border border-border-strong px-3 py-2 text-sm font-medium whitespace-normal hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 
-function fmt(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
-}
-function fmtTimeOnly(iso: string | null): string {
-  if (!iso) return "";
-  return new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
-}
+// ET, date and time as two calls (see datetime.ts).
+const fmt = (iso: string | null): string => (iso ? etDateTime(iso) : "—");
+const fmtTimeOnly = (iso: string | null): string => (iso ? etTime(iso) : "");
 
 export function ProjectMap({
   pins, days, defaultDay, home,

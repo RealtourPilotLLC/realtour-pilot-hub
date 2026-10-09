@@ -1,5 +1,6 @@
 "use client";
 
+import { etMonthDayTime } from "@/lib/datetime";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Loader2 } from "lucide-react";
 import { loadEmailSla, saveEmailSla } from "@/components/settings/emailSla.actions";
@@ -83,7 +84,7 @@ export function EmailSlaForm({ initial, initialSince }: { initial: EmailSlaRules
   };
 
   const sinceWords = since
-    ? new Date(since).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    ? etMonthDayTime(since) // ET, date and time as two calls (see datetime.ts)
     : null;
   return (
     <div className="rounded-lg border border-border p-3">
