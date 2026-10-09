@@ -230,32 +230,30 @@ export default async function CutReviewPage({
       <div className="grid min-w-0 grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the cut */}
         <div className="min-w-0 space-y-4 lg:col-span-2">
-          {slots.length > 0 && <nav aria-label="Project videos" className="flex max-w-full gap-2 overflow-x-auto pb-2">
+          {slots.length > 0 && <nav aria-label="Project videos" className="-mx-1 flex max-w-full snap-x gap-2 overflow-x-auto px-1 py-1">
             {slots.map((slot, index) => {
               const key = `${slot.deliverableId}:${slot.slot}`;
               const current = latestPerCut.get(key);
               const selected = current ? active?.id === current.id : output === key;
               const tone = current?.status === "APPROVED" ? "border-success/40 bg-success-soft text-success" : current?.status === "PENDING" ? "border-warning/40 bg-warning-soft text-warning" : "border-border bg-surface text-muted";
-              return <Link key={key} aria-current={selected ? "page" : undefined} href={current ? `/review/${w.projectId}?cut=${current.id}#cut-${current.id}` : `/review/${w.projectId}?output=${key}`} title={slot.topicTitle ?? slot.deliverableLabel} className={`inline-flex min-h-11 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-2 ring-offset-background" : ""}`}>Video {navigation.get(key)?.number ?? index + 1} of {navigation.get(key)?.total ?? slots.length} · {current ? `V${current.round}` : "Awaiting edit"}</Link>;
+              return <Link key={key} aria-current={selected ? "page" : undefined} href={current ? `/review/${w.projectId}?cut=${current.id}#cut-${current.id}` : `/review/${w.projectId}?output=${key}`} title={slot.topicTitle ?? slot.deliverableLabel} className={`inline-flex min-h-11 shrink-0 snap-start items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 text-sm sm:min-h-9 ${tone} ${selected ? "border-brand ring-1 ring-inset ring-brand" : ""}`}><span className="font-semibold">Video {navigation.get(key)?.number ?? index + 1}<span className="font-normal opacity-70"> of {navigation.get(key)?.total ?? slots.length}</span></span><span className="text-xs opacity-80">{current ? `V${current.round}` : "Awaiting edit"}</span></Link>;
             })}
           </nav>}
           {slots.length === 0 && currentCuts.length > 1 && <nav aria-label="Legacy videos" className="flex flex-wrap gap-2">{currentCuts.map((current) => <Link key={current.id} href={`/review/${w.projectId}?cut=${current.id}`} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm">{current.fileName ?? "Unmapped video"} · V{current.round}</Link>)}</nav>}
           {active ? (
             <>
-              <div id={`cut-${active.id}`} className="flex scroll-mt-24 flex-wrap items-center gap-2 text-sm text-muted">
-                {slotLabel(active) && <span className="font-semibold text-foreground">{slotLabel(active)}</span>}
-                {slotLabel(active) && <span className="text-muted-2">·</span>}
-                <span className="font-medium text-foreground/85">Version {active.round}</span>
-                <span className="text-muted-2">·</span>
-                <span>from {editorLabel}</span>
-                <span className="text-muted-2">·</span>
-                <span>{formatDistanceToNow(new Date(active.createdAt), { addSuffix: true })}</span>
-                {active.fileName && (
-                  <>
-                    <span className="text-muted-2">·</span>
-                    <span className="min-w-0 break-all text-xs text-muted-2">{active.fileName}</span>
-                  </>
-                )}
+              {/* Oct 9 2026 (Jordan: "fix the spacing"): what this is on one line,
+                  who/when/file quietly underneath — no more one long wrapping row. */}
+              <div id={`cut-${active.id}`} className="min-w-0 scroll-mt-24 space-y-0.5">
+                <p className="text-sm">
+                  {slotLabel(active) && <span className="font-semibold text-foreground">{slotLabel(active)}</span>}
+                  {slotLabel(active) && <span className="text-muted-2"> · </span>}
+                  <span className="font-medium text-foreground/85">Version {active.round}</span>
+                </p>
+                <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                  <span className="shrink-0">from {editorLabel} · {formatDistanceToNow(new Date(active.createdAt), { addSuffix: true })}</span>
+                  {active.fileName && <span className="min-w-0 truncate text-muted-2" title={active.fileName}>· {active.fileName}</span>}
+                </p>
               </div>
               {active.note && (
                 <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm italic text-foreground/80">“{active.note}”</p>

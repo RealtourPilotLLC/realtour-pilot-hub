@@ -402,7 +402,7 @@ export function CutReviewPanel({
         </button>
         {/* The escape hatch, deliberately quiet beside the verdict buttons. */}
         {canDecide && takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
-        <span className="flex-1" />
+        <span className="hidden flex-1 sm:block" />
         {closing ? (
           // The cut is closed on the click; the move to the next one is under way.
           <span
@@ -438,13 +438,13 @@ export function CutReviewPanel({
             {editorLabel} for a change and it travels with the cut when it goes back.
           </span>
         ) : (
-          <>
-            <span className="text-sm text-muted">{stage.label} · version {submission.round}</span>
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <span className="w-full text-xs text-muted sm:text-right">{stage.label} · version {submission.round}</span>
             <button
               onClick={() => decide("send-back", () => requestCutChanges(submission.id, notFixed.size ? { notFixedIssueIds: [...notFixed] } : undefined))}
               disabled={pending || needsReload || (openEditorNotes === 0 && !typedEditorFix)}
               title={openEditorNotes === 0 && !typedEditorFix ? "Add at least one editor note first" : `Send ${openEditorNotes + (typedEditorFix ? 1 : 0)} open note${openEditorNotes + (typedEditorFix ? 1 : 0) === 1 ? "" : "s"} back to ${editorLabel}`}
-              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50"
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-warning/40 bg-warning/10 px-4 py-2 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50 sm:flex-none"
             >
               <Undo2 className="size-4" /> Request changes{openEditorNotes + (typedEditorFix ? 1 : 0) > 0 ? ` (${openEditorNotes + (typedEditorFix ? 1 : 0)})` : ""}
             </button>
@@ -452,11 +452,11 @@ export function CutReviewPanel({
               onClick={requestApproval}
               disabled={pending || needsReload}
               title={notFixed.size > 0 ? "Review the missing ticks before approving anyway" : undefined}
-              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 sm:flex-none"
             >
               <ThumbsUp className="size-4" /> Approve cut
             </button>
-          </>
+          </div>
         )}
       </div>
       {canDecide && submission.status === "APPROVED" && submission.deliverableId && (
