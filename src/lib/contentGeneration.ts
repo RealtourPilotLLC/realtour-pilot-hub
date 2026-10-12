@@ -509,10 +509,21 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
     schema: ANALYSIS_SCHEMA, maxTokens: 10_000,
   });
   const out = run.output;
-  // Which month the selections are FOR (a late-month call plans the next month).
+  // Which month the selections are FOR. A call RECORD is already filed on its
+  // month by the hub's own rule (contentCallRecords.targetMonthFor: held on or
+  // after the 24th → next month) or by a person on the calls desk, and that
+  // filing wins. The model's guess only ever moved a call's results onto a
+  // wrong month (Oct 12 2026: Erica's Sep 24 call onto October; Arielle's
+  // Sep 11 call onto a November it created and marked "call completed",
+  // because the call mentioned her November anniversary). It is honoured only
+  // for a bare transcript (no call record) held late in the month, and only
+  // for the very next month — the same rule the call records follow.
   let targetMonthId = o.monthId;
   const planned = typeof out.plannedMonthKey === "string" && /^\d{4}-\d{2}$/.test(out.plannedMonthKey) ? out.plannedMonthKey : null;
-  if (planned && planned !== o.monthKey) {
+  const { etDayKey } = await import("@/lib/datetime");
+  const nextOf = (k: string) => { const [y, m] = k.split("-").map(Number); return `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}`; };
+  const lateInMonth = !!o.callDate && Number(etDayKey(o.callDate).slice(8, 10)) >= 24;
+  if (planned && planned !== o.monthKey && !o.callRecordId && planned === nextOf(o.monthKey) && lateInMonth) {
     const { etMonthKey } = await import("@/lib/contentProgram");
     const enr = await prisma.contentEnrollment.findUnique({ where: { id: o.enrollmentId }, select: { videosPerMonth: true } });
     const target = await prisma.contentMonth.upsert({

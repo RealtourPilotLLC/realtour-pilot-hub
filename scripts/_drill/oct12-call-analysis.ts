@@ -82,6 +82,8 @@ async function flushAfter() { while (pendingAfter.length) await pendingAfter.shi
 // ---- the model ---------------------------------------------------------------
 const modelCalls: { prompt: string }[] = [];
 let failNextAnalysis = false;
+/** The month the fake model says a call plans (Arielle, Oct 12 2026: a Sep 11 call it read as November). */
+let plannedGuess = "2026-10";
 const TOPICS = ["Why spring listings sell faster", "Three questions before you price"];
 const excerpt = (text: string) => ({ speaker: "client", speakerName: "Client", time: null, text });
 interceptModule((r) => r === "@/lib/integrations/ai" || /[\\/]integrations[\\/]ai(\.ts)?$/.test(r), (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
@@ -93,7 +95,7 @@ interceptModule((r) => r === "@/lib/integrations/ai" || /[\\/]integrations[\\/]a
       if (failNextAnalysis) { failNextAnalysis = false; throw new Error("503 isolated fake model unavailable"); }
       return {
         result: {
-          callKind: "planning", plannedMonthKey: "2026-10",
+          callKind: "planning", plannedMonthKey: plannedGuess,
           selectedTopics: TOPICS.map((title) => ({ title, concept: `${title} — the client's angle`, pillar: "Seller Strategy", excerpts: [excerpt(`I want a video on ${title.toLowerCase()}.`)] })),
           discussedTopics: [{ title: "A day in the life on the Main Line", concept: "Local life", pillar: null, excerpts: [excerpt("Maybe something about my day.")] }],
           rejectedIdeas: [],
@@ -385,6 +387,30 @@ async function main() {
       const an = await legacy.analyzeTranscript(L.monthId);
       const m = await prisma.contentMonth.findUniqueOrThrow({ where: { id: L.monthId } });
       c.ok("save + Analyze (the month's own path): one model call, the month stamped, its topics proposed", saved.ok && an.ok && modelCalls.length === before + 1 && !!m.transcriptProcessedAt && (await prisma.contentTopicSelection.count({ where: { monthId: L.monthId, status: "PROPOSED" } })) === 2, an.message);
+    }
+
+    // =========================================================================
+    c.head("11b · a call filed on its month keeps its results there, whatever month the AI guesses");
+    {
+      // Arielle Roemer, Oct 12 2026: her Sep 11 strategy call (filed on
+      // September) was analysed today; the model said it planned November (the
+      // call mentions her November anniversary), so the hub created November,
+      // marked its strategy call "completed" and put September's two topics on it.
+      const Ar = await buildContentMonth(prisma, { name: "Arielle Roemer TEST", package: "Starter", monthKey: "2026-09", project: false, owner: false });
+      await prisma.contentMonth.update({ where: { id: Ar.monthId }, data: { strategyCallStatus: "COMPLETED" } });
+      const at = edt(9, 11, 14);
+      const call = await prisma.programCallRecord.create({ data: { enrollmentId: Ar.enrollmentId, clientId: Ar.clientId, monthId: Ar.monthId, targetMonthKey: "2026-09", callType: "MONTHLY_STRATEGY", status: "COMPLETED", matchState: "CONFIRMED_BY_STAFF", transcriptState: "CONFIRMED", scheduledStart: at, scheduledEnd: new RealDate(at.getTime() + 30 * 60_000), inviteeName: Ar.clientId } });
+      await prisma.programTranscriptSource.create({ data: { callRecordId: call.id, provider: "drive", externalId: "drive-arielle", sourceUrl: "https://docs.google.com/document/d/drive-arielle/edit", title: "Arielle Roemer and Jordan Spackman - 2026/09/11 14:00 EDT - Notes by Gemini", recordedAt: at, text: WORDS("Arielle"), contentHash: "oct12-arielle", matchState: "CONFIRMED", confirmedBy: "drive-sweep", confirmedAt: at, createdBy: "drive-sweep" } });
+      await prisma.programTranscriptJob.create({ data: { callRecordId: call.id, enrollmentId: Ar.enrollmentId, kind: "ANALYZE", dedupeKey: `${call.id}:ANALYZE`, requestedBy: "drive-sweep" } });
+      plannedGuess = "2026-11";
+      await as(kyle);
+      const r = await A.analyzeCallAction(call.id);
+      await flushAfter();
+      plannedGuess = "2026-10";
+      const nov = await prisma.contentMonth.findUnique({ where: { enrollmentId_monthKey: { enrollmentId: Ar.enrollmentId, monthKey: "2026-11" } } });
+      c.ok("the analysis ran", r.ok, r.message);
+      c.ok("its topic proposals stay on September, the month the call is filed on", (await prisma.contentTopicSelection.count({ where: { monthId: Ar.monthId, status: "PROPOSED" } })) === 2);
+      c.ok("no November month is created, and none reads 'strategy call completed'", !nov, JSON.stringify(nov && { status: nov.strategyCallStatus }));
     }
 
     // =========================================================================
