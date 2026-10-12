@@ -367,7 +367,7 @@ async function main() {
     const j1 = await r1.json() as { ok: boolean; message: string; file?: { id: string; href: string } };
     c.ok("Mike (his link) adds a PDF to October", r1.status === 200 && j1.ok && !!j1.file && /\?m=/.test(j1.file.href), JSON.stringify(j1));
     const stored = uploads.at(-1) ?? "";
-    c.ok("…stored in the app's private Dropbox prefix (never the public cut store)", stored.startsWith(`/RealTour Pilot/Hub/content-briefs/${D.enrollmentId}/2026-10/`), stored);
+    c.ok("…stored in the app's private Dropbox prefix (never the public cut store)", stored.startsWith(`/AutoHDR/Hub/content-briefs/${D.enrollmentId}/2026-10/`), stored);
     const bell = await prisma.notification.findMany({ where: { kind: "content_brief" } });
     c.ok("…the office is belled: owner/admin and the creative manager", bell.length === 2 && bell.some((n) => n.userKey === null && /OWNER/.test(n.audience) && /ADMIN/.test(n.audience)) && bell.some((n) => n.userKey === `tm:${managerTm.id}`) && bell.every((n) => /Mike Ciunci/.test(n.title)), JSON.stringify(bell.map((n) => [n.userKey, n.audience, n.title])));
     const r2 = await post(form({ monthId: A.monthId, token: D.portalToken!, file: pdf("sneaky.pdf") }));

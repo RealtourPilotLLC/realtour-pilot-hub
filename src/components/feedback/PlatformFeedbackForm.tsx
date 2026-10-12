@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bug, Sparkles, MessageSquare, Send, Loader2, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { submitPlatformFeedback } from "@/app/feedback/actions";
@@ -17,13 +18,18 @@ export function PlatformFeedbackForm() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [by, setBy] = useState("");
-  const [pending, start] = useTransition();
+  // Plain async, not a transition: the spinner ends with the server's answer,
+  // and the board refresh below happens after it without holding the button.
+  const [pending, setPending] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const router = useRouter();
 
-  const submit = () => {
+  const submit = async () => {
+    if (pending) return;
     setErr(null);
-    start(async () => {
+    setPending(true);
+    try {
       const r = await submitPlatformFeedback({
         kind,
         title,
@@ -35,8 +41,13 @@ export function PlatformFeedbackForm() {
         setDone(r.message);
         setTitle(""); setBody("");
         setTimeout(() => setDone(null), 4000);
+        router.refresh(); // show the new card on the board below
       } else setErr(r.message);
-    });
+    } catch {
+      setErr("The hub didn't answer. Your words are still here; try again.");
+    } finally {
+      setPending(false);
+    }
   };
 
   return (
@@ -80,7 +91,7 @@ export function PlatformFeedbackForm() {
           className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
         />
         <button
-          onClick={submit}
+          onClick={() => void submit()}
           disabled={pending || !title.trim()}
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
