@@ -7,6 +7,7 @@ import {
   parseDeliveredScript, renderScript, estimateSpokenSeconds, makeBlock, emptyInternal, validateNewScript, TALKING_POINT_ROLES, roleFromLabel, stripScriptDashes,
   type ApprovedPillar, type CanonicalScript, type Finding, type Gap, type TalkingPointRole,
 } from "@/lib/contentPolicy";
+import { cleanUploadText, looksLikeSkit, readSkitScript } from "@/lib/scriptUploadParse";
 
 // ---------------------------------------------------------------------------
 // Script VERSIONS (spec §6/§22/§27, Jordan's rulings). ContentScript is the
@@ -255,12 +256,26 @@ export async function editScriptVersion(scriptId: string, parts: VersionParts, b
   return { versionId: r.versionId, versionNo: r.versionNo };
 }
 
-/** Edit from a plain body (the workspace textarea) — parsed with the archive reader, words kept. */
+/**
+ * A hand edit of a script kept AS WRITTEN — a skit uploaded on Oct 12 2026
+ * with "JOE: …" speaker lines, [stage directions] and [scene headings] — is
+ * read back line by line by the upload's own reader, so saving it keeps every
+ * one of those lines. The archive reader would strip the speakers and drop
+ * the directions. Every other body goes through the archive reader as before.
+ */
+function partsFromEditedBody(title: string, body: string): VersionParts {
+  const cleaned = cleanUploadText(body);
+  if (!looksLikeSkit(cleaned)) return partsFromBody(title, body);
+  const r = readSkitScript(cleaned);
+  return { title: r.title || title, categoryLabel: r.categoryLabel, hook: r.hook, points: r.points, close: r.close, captionCta: r.caption, goal: r.goal, speakerLabels: r.speakers.length ? r.speakers : undefined };
+}
+
+/** Edit from a plain body (the workspace textarea) — parsed with the archive reader (a skit: line by line), words kept. */
 export async function editScriptFromBody(scriptId: string, body: string, by: string): Promise<{ versionId: string; versionNo: number }> {
   const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { title: true, historical: true } });
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("This is an imported historical script — it is not edited; draft a new script instead.");
-  const parts = partsFromBody(s.title, body);
+  const parts = partsFromEditedBody(s.title, body);
   if (!parts.hook && !parts.points.length && !parts.close) {
     // No labels at all: keep the text whole as the hook so nothing is lost.
     parts.hook = body.trim();

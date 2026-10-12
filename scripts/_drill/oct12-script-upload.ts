@@ -33,10 +33,32 @@
 //   §9 the portal: released scripts only, read in full; approve one; request
 //      changes with a note → the office's queue + the bell; all approved →
 //      "All 4 scripts approved".
-//   §10 a messy document: no scripts → "Let AI split it" (attended, logged,
-//       words checked against the document).
+//   §10 a messy document (no labels): the AI reads it straight away on upload
+//       (attended, logged, words checked against the document); "Let AI read
+//       it" on the same document reuses that reading.
 //   §11 a month whose strategy call is booked keeps its call.
-//   §12 nothing sent, nothing left the machine.
+//
+// Jordan, Oct 12 (Joe Sutow's PDF): "his are written in a different way, and
+// the upload does not accept PDFs … AI should analyze the upload and upload it
+// as written. Also, a Pillar should automatically be assigned based on the
+// context of the script. I should be able to change it, though."
+//   §12 a skit PDF, read where production has no canvas module (the live
+//       site refused every PDF: "DOMMatrix is not defined"): the AI files each
+//       script's own lines into the five parts — multi-scene build up and a
+//       second re-hook in Build up, speaker labels inline ("ALEX (HOST): …"),
+//       [directions] and [CUT] cues kept, headings without dashes, the
+//       document's curly quotes back — the title is the script's name, the
+//       structure check passes, the length is spoken lines only; a dropped
+//       line is flagged word for word; the pillar comes from the APPROVED
+//       strategy that has no pillar records (Joe's case), with a reason; the
+//       staff changes one; Add makes the pillars and files the scripts; the
+//       versions keep speakers/directions, no dash; the portal and the
+//       editor's brief read the scene; a hand edit keeps it all.
+//   §13 the same document again reuses the AI's reading (no second call).
+//   §14 the AI is down: the parser's own skit reading, with a plain note.
+//   §15 pillars from a draft strategy (kept as a label) and no pillars at all
+//       (said plainly; added without one).
+//   §16 nothing sent, nothing left the machine.
 //
 // ISOLATION: PGlite on 127.0.0.1 (the harness). Production is never opened;
 // every non-loopback call is fenced; the model is stubbed at aiJsonWithUsage
@@ -71,8 +93,59 @@ installNextStubs();
 const fence = fenceFetch();
 
 // ---- the model boundary ----------------------------------------------------
+// The AS-WRITTEN reading's answer (scriptUploadAi), by document. The skit
+// answer is written the way a model really answers: straight quotes for the
+// document's curly ones, a label with its dash, a scene heading and a cue
+// unbracketed, a stray "PAYOFF" label inside the payoff — and, on script 2,
+// one line dropped and one word added, which the word check must catch.
 let aiCalls = 0;
 let aiPrompt = "";
+let aiDown = false;
+const pillarList = (prompt: string) => (prompt.split("THE DOCUMENT:")[0].match(/^\d+\. ([^|\n]+?)(?: \||$)/gm) ?? []).map((l) => l.replace(/^\d+\. /, "").replace(/ \|$/, "").trim());
+const pick = (prompt: string, want: RegExp, at: number) => { const l = pillarList(prompt); return l.find((n) => want.test(n)) ?? l[at] ?? l[0] ?? null; };
+const SCRIPT_FIELDS = { purpose: null, topic: null, dimensions: null, category: null, speakers: [] as string[], caption: null, leftOut: null, pillar: null, pillarWhy: null };
+function skitAnswer(prompt: string) {
+  const p1 = pick(prompt, /personal brand/i, 0), p2 = pick(prompt, /seller/i, 1);
+  return {
+    scripts: [
+      {
+        ...SCRIPT_FIELDS,
+        title: "THE OPEN HOUSE INTERVIEW",
+        purpose: "Use a sideline-reporter parody to show that a strong open house comes from preparation, pricing, and follow-up, not luck.",
+        dimensions: "Credibility + Entertainment | Trust + Value",
+        speakers: ["ALEX — HOST", "DANA", "ALEX", "DANA — TO CAMERA"],
+        hook: 'ALEX — HOST: "Dana, huge crowd out there today. What\'s the secret?"\n[Dana is in a referee jersey. Dead serious.]',
+        rehook: 'DANA: "Honestly, it starts long before the doors open."\n"We priced it where buyers could see the value."\n[Pause.]\n"Everything else follows."',
+        buildUp: 'BUILD UP — SCENE 1: THE PREP\n[Dana walks the kitchen with a clipboard.]\nDANA: "Fresh paint, bright bulbs — nothing on the counters."\nCUT TO ALEX REACTION\n[Impressed nod.]\nBUILD UP — SCENE 2: THE CROWD\nALEX: "And the people?"\nDANA: "We told every neighbor first. Neighbors know buyers."\n[SECOND REHOOK]\n[Crowd noise rises.]\nDANA: "But here\'s what most agents miss."\n"The follow-up after the open house is where the offers come from."',
+        payoff: 'PAYOFF\nDANA — TO CAMERA: "Prepare the house, price it right, and follow up the same day."\n[Dana nods.]',
+        close: 'DANA: "Thinking about selling this spring? Let\'s talk before you pick a price."\n[Walks off, then turns back.]\n"And bring snacks."',
+        pillar: p1, pillarWhy: p1 ? "A parody skit built on humor that shows how Dana works." : null,
+      },
+      {
+        ...SCRIPT_FIELDS,
+        title: "THE PRICE IS WRONG AND THE BUYERS KNOW IT BEFORE YOU DO",
+        topic: "Why overpricing costs you more than it saves.",
+        dimensions: "Value + Credibility | Trust + Entertainment",
+        speakers: ["DANA"],
+        hook: '[Game show lights. Dana stands behind a podium.]\nDANA: "Contestant number one, come on down… and lower your price."',
+        rehook: 'DANA: "Overpriced homes sit, and sitting homes get cheaper."',
+        buildUp: 'DANA: "Buyers really compare every listing against the ones they can afford."',
+        payoff: 'DANA: "Price it where buyers compete, and they push the price up for you."',
+        close: 'DANA: "Want the real number for your home? Message me today."',
+        pillar: p2, pillarWhy: p2 ? "It teaches sellers how pricing decides the offers." : null,
+      },
+    ],
+  };
+}
+function messyAnswer() {
+  return {
+    scripts: [
+      { ...SCRIPT_FIELDS, title: "first weekend pricing", hook: "so the first weekend decides your price and most sellers miss it.", rehook: "buyers read every week on market as a signal.", buildUp: "a stale listing invites low offers.", payoff: "price it right on day one and buyers compete.", close: "call me before you pick a price." },
+      // Two words the document never said — the word check must flag them.
+      { ...SCRIPT_FIELDS, title: "repairs", hook: "not every repair pays you back, honestly.", rehook: "some fixes cost more than they return.", buildUp: "paint and lighting usually pay, absolutely.", payoff: "spend where buyers look first.", close: "ask me for my checklist." },
+    ],
+  };
+}
 interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
@@ -81,16 +154,9 @@ interceptModule(
       return async (opts: { system: string; prompt: string }) => {
         aiCalls++;
         aiPrompt = opts.prompt;
-        return {
-          result: {
-            scripts: [
-              { title: "first weekend pricing", category: null, hook: "so the first weekend decides your price and most sellers miss it.", talkingPoints: [{ label: null, text: "buyers read every week on market as a signal." }, { label: null, text: "a stale listing invites low offers." }, { label: null, text: "price it right on day one and buyers compete." }], close: "call me before you pick a price.", caption: null },
-              // Two words the document never said — the reader must flag them.
-              { title: "repairs", category: null, hook: "not every repair pays you back, honestly.", talkingPoints: [{ label: "Rehook", text: "some fixes cost more than they return." }, { label: "Build up", text: "paint and lighting usually pay, absolutely." }, { label: "Payoff", text: "spend where buyers look first." }], close: "ask me for my checklist.", caption: null },
-            ],
-          },
-          usage: { inputTokens: 900, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0 }, model: "drill-stub",
-        };
+        if (aiDown) throw new Error("Anthropic 529: Overloaded");
+        const result = /OPEN HOUSE INTERVIEW/.test(opts.prompt) ? skitAnswer(opts.prompt) : messyAnswer();
+        return { result, usage: { inputTokens: 900, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0 }, model: "drill-stub" };
       };
     },
   }),
@@ -119,6 +185,89 @@ async function docx(lines: string[]): Promise<Buffer> {
   zip.file("word/document.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paras}</w:body></w:document>`);
   return zip.generateAsync({ type: "nodebuffer" });
 }
+
+// ---- a real PDF (pdf-lib, in package.json) ------------------------------------
+async function pdf(pages: string[][]): Promise<Buffer> {
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  for (const lines of pages) {
+    const page = doc.addPage([612, 792]);
+    lines.forEach((l, i) => { if (l) page.drawText(l, { x: 54, y: 740 - i * 14, size: 10, font }); });
+  }
+  return Buffer.from(await doc.save());
+}
+
+// Modelled on Joe Sutow's October PDF (Oct 12): numbered skit scripts with
+// Purpose / Topic / "Pillars:" (the quality dimensions) lines, HOOK / REHOOK /
+// BUILD UP scenes / SECOND REHOOK / PAYOFF / CLOSE, speaker labels on their
+// own line (one with a dash), [directions], a CUT cue, a line the PDF wraps,
+// a wrapped capitalised title, a spoken em dash, two pages.
+const SKIT_PAGE_1 = [
+  "1. THE OPEN HOUSE INTERVIEW",
+  "Purpose: Use a sideline-reporter parody to show that a strong open house comes from preparation,",
+  "pricing, and follow-up, not luck.",
+  "Pillars: Credibility + Entertainment | Trust + Value",
+  "HOOK",
+  "ALEX — HOST",
+  "“Dana, huge crowd out there today. What's the secret?”",
+  "[Dana is in a referee jersey. Dead serious.]",
+  "REHOOK",
+  "DANA",
+  "“Honestly, it starts long before the doors open.”",
+  "“We priced it where buyers could see the value.”",
+  "[Pause.]",
+  "“Everything else follows.”",
+  "BUILD UP — SCENE 1: THE PREP",
+  "[Dana walks the kitchen with a clipboard.]",
+  "DANA",
+  "“Fresh paint, bright bulbs — nothing on the counters.”",
+  "CUT TO ALEX REACTION",
+  "Impressed nod.",
+  "BUILD UP — SCENE 2: THE CROWD",
+  "ALEX",
+  "“And the people?”",
+  "DANA",
+  "“We told every neighbor first. Neighbors know buyers.”",
+  "SECOND REHOOK",
+  "[Crowd noise rises.]",
+  "DANA",
+  "“But here's what most agents miss.”",
+  "“The follow-up after the open house is where the offers",
+  "come from.”",
+  "PAYOFF",
+  "DANA — TO CAMERA",
+  "“Prepare the house, price it right, and follow up the same day.”",
+  "[Dana nods.]",
+  "CLOSE",
+  "DANA",
+  "“Thinking about selling this spring? Let's talk before you pick a price.”",
+  "[Walks off, then turns back.]",
+  "“And bring snacks.”",
+];
+const SKIT_PAGE_2 = [
+  "2. THE PRICE IS WRONG AND THE BUYERS KNOW IT BEFORE",
+  "YOU DO",
+  "Topic: Why overpricing costs you more than it saves.",
+  "Pillars: Value + Credibility | Trust + Entertainment",
+  "HOOK",
+  "[Game show lights. Dana stands behind a podium.]",
+  "DANA",
+  "“Contestant number one, come on down… and lower your price.”",
+  "REHOOK",
+  "DANA",
+  "“Overpriced homes sit, and sitting homes get cheaper.”",
+  "BUILD UP",
+  "DANA",
+  "“Buyers compare every listing against the ones they can afford.”",
+  "“If yours looks like the worst deal, it gets skipped.”",
+  "PAYOFF",
+  "DANA",
+  "“Price it where buyers compete, and they push the price up for you.”",
+  "CLOSE",
+  "DANA",
+  "“Want the real number for your home? Message me today.”",
+];
 
 // Jordan's October document for Ashley: four scripts in the shorthand people type.
 const OCT_DOC = [
@@ -262,7 +411,8 @@ async function main() {
     c.ok("#1 matches October's own pick (near-identical title)", d1.topicId === weekendId && d1.matchKind === "month", `${d1.topicId} ${d1.matchKind}`);
     c.ok("#2 matches the bank topic exactly", d2.topicId === repairsId && d2.matchKind === "exact");
     c.ok("#3 and #4 are new topics", d3.topicId === null && d4.topicId === null);
-    c.ok("pillars resolved from 'Pillar:' lines; none guessed for #3", d1.pillarId === mkt.id && d2.pillarId === edu.id && d3.pillarId === null && d3.notes.some((n) => /No pillar/.test(n)));
+    c.ok("pillars resolved from 'Pillar:' lines (with the reason); none guessed for #3 (no shared words)", d1.pillarId === mkt.id && d2.pillarId === edu.id && /document says “Market Authority”/.test(d1.pillarWhy ?? "") && d3.pillarId === null && d3.pillarWhy === null && p.pillarSource === "pillars");
+    c.ok("a document in the house labels is read by the parser — no AI call, nothing to check word for word", p.parser === "house" && !p.aiRecommended && aiCalls === 0 && p.drafts.every((d) => d.format === "house" && d.asWritten === null));
     c.ok("length estimates on every script", p.drafts.every((d) => d.words > 10 && d.seconds > 0 && ["under", "on", "over"].includes(d.pace)));
     c.ok("#4 (four talking points) says what stops it; #1-#3 are clean", d4.shape.some((x) => /4 talking points/.test(x)) && [d1, d2, d3].every((d) => d.shape.length === 0), d4.shape.join(";"));
     c.ok("each script in the house layout (Hook · Talking Point 1: Re-hook · … · Close)", /HOOK[\s\S]*Talking Point 1: Re-hook[\s\S]*Talking Point 2: Build up[\s\S]*Talking Point 3: Payoff[\s\S]*Close \/ Call to action/.test(d1.houseText), d1.houseText.slice(0, 200));
@@ -450,23 +600,23 @@ async function main() {
     c.ok("the change box says what it's for and submits (label, box, Submit changes, Cancel)", /What would you like changed\?/.test(card) && />Submit changes</.test(card) && />Cancel</.test(card) && /portalRequestScriptChanges\(portalAuthFromLocation\(\), script\.id, changeNote, script\.sharedVersionId \?\? ""\)/.test(card));
 
     // =======================================================================
-    c.head("§10 · a messy document: let AI split it (attended)");
+    c.head("§10 · a messy document: the AI reads it on upload (attended)");
     // =======================================================================
     const D = await buildContentMonth(prisma, { name: "Dana Messy TEST", package: "Starter", monthKey: "2026-10", project: false });
     const messy = "Dana — October ideas (rough)\n\nfirst weekend pricing\nso the first weekend decides your price and most sellers miss it. buyers read every week on market as a signal. a stale listing invites low offers. price it right on day one and buyers compete. call me before you pick a price.\n\nrepairs\nnot every repair pays you back. some fixes cost more than they return. paint and lighting usually pay. spend where buyers look first. ask me for my checklist.";
     const mForm = new FormData(); mForm.append("file", new File([Buffer.from(messy)], "dana ideas.txt"));
     const pD = await act.previewScriptUploadAction(D.enrollmentId, D.monthId, mForm);
-    c.ok("no labels → nothing usable found, and the AI is offered", pD.ok && pD.preview.drafts.every((d) => !d.isScript) && pD.preview.suggestAi, pD.ok ? `${pD.message} ${pD.preview.drafts.length}` : pD.message);
     if (!pD.ok) throw new Error(pD.message);
+    c.ok("no labels → the AI reads it straight away on upload: two scripts in the house parts", pD.preview.parser === "ai" && pD.preview.drafts.length === 2 && pD.preview.drafts.every((d) => d.isScript && d.shape.length === 0) && aiCalls === 1, `${pD.message} · ${pD.preview.drafts.map((d) => `${d.title}:${d.shape.join(";")}`).join(" | ")}`);
+    const run = await prisma.programAiRun.findFirstOrThrow({ where: { kind: "import_split" } });
+    c.ok("one ProgramAiRun: import_split, as written, requested by the person who uploaded, succeeded", run.requestedBy === owner.email && run.status === "SUCCEEDED" && run.promptKey === "script-upload-as-written" && run.enrollmentId === D.enrollmentId && pD.preview.aiRunId === run.id && aiPrompt.includes("first weekend pricing"));
+    c.ok("words the document never said are flagged on that script, word for word; the clean one matches", pD.preview.drafts[1].asWritten?.checked === true && pD.preview.drafts[1].asWritten.ok === false && pD.preview.drafts[1].asWritten.added.join(" ").includes("honestly") && pD.preview.drafts[1].asWritten.added.join(" ").includes("absolutely") && pD.preview.drafts[0].asWritten?.ok === true && /One needs a look/.test(pD.message), JSON.stringify(pD.preview.drafts.map((d) => d.asWritten)));
     await signIn(editor);
-    c.ok("an editor cannot run it", !(await act.aiSplitScriptUploadAction(D.enrollmentId, D.monthId, pD.preview.sources)).ok && aiCalls === 0);
+    c.ok("an editor cannot run it", !(await act.aiSplitScriptUploadAction(D.enrollmentId, D.monthId, pD.preview.sources)).ok && aiCalls === 1);
     await signIn(admin);
     const ai = await act.aiSplitScriptUploadAction(D.enrollmentId, D.monthId, pD.preview.sources);
-    c.ok("Kyle clicks it: two scripts, read into the house parts", ai.ok && ai.preview.parser === "ai" && ai.preview.drafts.length === 2 && ai.preview.drafts.every((d) => d.isScript && d.shape.length === 0), ai.ok ? ai.preview.drafts.map((d) => `${d.title}:${d.shape.join(";")}`).join(" | ") : ai.message);
     if (!ai.ok) throw new Error(ai.message);
-    const run = await prisma.programAiRun.findFirstOrThrow({ where: { kind: "import_split" } });
-    c.ok("one ProgramAiRun: import_split, requested by Kyle, attended, succeeded", aiCalls === 1 && run.requestedBy === admin.email && run.status === "SUCCEEDED" && run.enrollmentId === D.enrollmentId && ai.preview.aiRunId === run.id && aiPrompt.includes("first weekend pricing"));
-    c.ok("words the document never said are flagged on that script", ai.preview.drafts[1].notes.some((n) => /aren't in your document/.test(n)) && !ai.preview.drafts[0].notes.some((n) => /in your document/.test(n)), ai.preview.drafts[1].notes.join(" | "));
+    c.ok("Kyle's 'Let AI read it' on the same document reuses that reading — no second model call", ai.preview.parser === "ai" && ai.preview.drafts.length === 2 && ai.preview.aiRunId === run.id && aiCalls === 1 && (await prisma.programAiRun.count({ where: { kind: "import_split" } })) === 1);
     c.ok("the AI changed nothing on its own: no topic, script or month write", (await prisma.contentScript.count({ where: { enrollmentId: D.enrollmentId } })) === 0 && (await prisma.contentTopic.count({ where: { enrollmentId: D.enrollmentId } })) === 0);
 
     // =======================================================================
@@ -485,10 +635,165 @@ async function main() {
     c.ok("…the route is untouched (no office stamp), the call stays booked, scripts await approval", cE.ok && mE.planningChosenBy === null && mE.strategyCallStatus === "SCHEDULED" && mE.preparationStatus === "AWAITING_SCRIPT_APPROVAL", `${cE.message} | ${mE.planningMode} ${mE.strategyCallStatus} ${mE.preparationStatus}`);
 
     // =======================================================================
-    c.head("§12 · nothing sent, nothing left the machine");
+    c.head("§12 · a skit PDF, read as written (Joe Sutow, Oct 12)");
+    // =======================================================================
+    // Production's bundle has no @napi-rs/canvas: every PDF failed there with
+    // "DOMMatrix is not defined". The same here, from now on in this process.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Module = require("node:module") as { _resolveFilename: (req: string, ...rest: unknown[]) => string };
+    const resolveReal = Module._resolveFilename;
+    Module._resolveFilename = function (req: string, ...rest: unknown[]) {
+      if (req.startsWith("@napi-rs/canvas")) throw new Error(`Cannot find module '${req}'`);
+      return resolveReal.call(this, req, ...rest);
+    };
+    const { renderStrategy } = await import("@/lib/contentPolicy");
+    const cs = await import("@/lib/contentStrategy");
+    const JOE_PILLARS = [
+      { number: 1, name: "Buyer Strategy & Competitive Market Education", purpose: "Help buyers win in a competitive market.", focusAreas: "pre-approval, offers, financing" },
+      { number: 2, name: "Seller Strategy & Listing Preparation", purpose: "Help sellers prepare, price and negotiate.", focusAreas: "pricing, repairs, staging, overpricing" },
+      { number: 3, name: "Personal Brand, Humor & Trust Building", purpose: "Use humor and personality to build trust.", focusAreas: "funny skits, parody, personality" },
+    ];
+    const strategyFor = async (enrollmentId: string, approved: boolean, pillars = JOE_PILLARS) => {
+      const text = renderStrategy({
+        clientName: "Skit Client", year: 2026, subtitle: "Content Strategy",
+        brandOverview: { coreValues: "Plain advice.", brandMessage: "Prepared wins.", shortBrandStatement: null, brandVoice: "Warm, witty.", otherFields: [], paragraphs: [] },
+        targetAudience: { present: true, heading: "Target Audience", primaryServiceAreas: "Main Line", pricePositioning: null, primaryClientTypes: "Buyers and sellers", longTermPositioningGoal: "The agent people call first.", otherFields: [], paragraphs: [] },
+        contentGoals: { heading: "Content Goals", items: ["Build trust"], numbered: false },
+        contentPillars: { heading: "Content Pillars", preamble: [], pillars: pillars.map((p) => ({ ...p, heading: `Pillar ${p.number}: ${p.name}`, contentApproach: null, otherFields: [] })) },
+        framework: null, captionCtaExamples: { heading: "Caption CTA Examples", items: ["DM me."] }, strategicDirection: { heading: "Strategic Direction", paragraphs: ["Lead with skits."] }, otherSections: [],
+      } as unknown as Parameters<typeof renderStrategy>[0]);
+      const { stored } = cs.structuredFromText(text);
+      const sv = await cs.createStrategyVersion({ enrollmentId, stored, rawText: text, sourceKind: "import", createdBy: "drill", status: approved ? "DRAFT" : "INTERNAL_REVIEW" } as Parameters<typeof cs.createStrategyVersion>[0]);
+      // Joe's shape: APPROVED (lifted by the migration) with NO pillar records.
+      if (approved) await prisma.contentStrategyVersion.update({ where: { id: sv.versionId }, data: { status: "APPROVED", approvedBy: "legacy-import", approvedAt: new Date() } });
+      return sv.versionId;
+    };
+    const J = await buildContentMonth(prisma, { name: "Jo Skit TEST", package: "Accelerator", monthKey: "2026-10", project: false });
+    const joStrategy = await strategyFor(J.enrollmentId, true);
+    c.ok("the client's shape (Joe Sutow): an approved strategy naming 3 pillars, 0 pillar records", (await prisma.contentPillar.count({ where: { enrollmentId: J.enrollmentId } })) === 0 && !!(await cs.approvedStrategy(J.enrollmentId))?.document?.contentPillars.pillars.length);
+    const skitPdf = await pdf([SKIT_PAGE_1, SKIT_PAGE_2]);
+    const { extractDocumentText } = await import("@/lib/documentText");
+    const ex = await extractDocumentText(skitPdf, "Jo Sutow - October Content Session Scripts.pdf");
+    c.ok("a PDF reads where the canvas module is missing (production) — every line, both pages", ex.ok && ex.text.includes("1. THE OPEN HOUSE INTERVIEW") && ex.text.includes("“Want the real number for your home? Message me today.”") && /--\s*1 of 2\s*--/.test(ex.text), ex.ok ? ex.text.slice(0, 120) : ex.message);
+    const panel = fs.readFileSync(path.join(REPO, "src/components/content/ScriptUploadPanel.tsx"), "utf8");
+    c.ok("the upload takes .pdf and says 'Reading your scripts…' at once (then what it's doing)", /accept="\.docx,\.pdf,/.test(panel) && /read\(form, "Reading your scripts…"\)/.test(panel) && /This can take up to a minute/.test(panel));
+    const pdfForm = () => { const f = new FormData(); f.append("file", new File([new Uint8Array(skitPdf)], "Jo Sutow - October Content Session Scripts.pdf", { type: "application/pdf" })); return f; };
+    const callsBefore = aiCalls;
+    const pJ = await act.previewScriptUploadAction(J.enrollmentId, J.monthId, pdfForm());
+    if (!pJ.ok) throw new Error(pJ.message);
+    const pj = pJ.preview;
+    const [s1, s2] = pj.drafts;
+    c.ok("not the house labels → the AI read it on upload (attended, logged, one call)", pj.parser === "ai" && aiCalls === callsBefore + 1 && !!pj.aiRunId && /Found 2 scripts for October, read as written\. One needs a look/.test(pJ.message), pJ.message);
+    c.ok("titles are the scripts' names (not the 'Pillars:' line), a wrapped capitalised title joined", s1.title === "The Open House Interview" && s2.title === "The Price Is Wrong and the Buyers Know It Before You Do", `${s1.title} | ${s2.title}`);
+    c.ok("five parts each, the structure check passes (scenes are not extra talking points)", pj.drafts.every((d) => d.parts.points.length === 3 && d.parts.points.map((x) => x.role).join(",") === "re-hook,build-up,payoff" && d.shape.length === 0), pj.drafts.map((d) => d.shape.join(";")).join(" | "));
+    const tp2 = s1.parts.points[1].text.split("\n");
+    c.ok("Build up holds BOTH scenes and the second re-hook, in order, headings without dashes", tp2[0] === "[BUILD UP, SCENE 1: THE PREP]" && tp2.indexOf("[BUILD UP, SCENE 2: THE CROWD]") > 0 && tp2.indexOf("[SECOND REHOOK]") > tp2.indexOf("[BUILD UP, SCENE 2: THE CROWD]"), tp2.join(" / "));
+    c.ok("speakers inline as written, labels cleaned ('ALEX (HOST)', 'DANA (TO CAMERA)'); the document's curly quotes back", s1.parts.hook.startsWith("ALEX (HOST): “Dana, huge crowd out there today. What's the secret?”") && s1.parts.points[2].text.startsWith("DANA (TO CAMERA): “Prepare the house") && s1.speakers.includes("ALEX (HOST)") && !/[—–]/.test(s1.speakers.join(" ")), s1.parts.hook);
+    c.ok("[directions] and the CUT cue kept as directions; a stray 'PAYOFF' label taken out", tp2.includes("[CUT TO ALEX REACTION]") && tp2.includes("[Impressed nod.]") && s1.parts.hook.includes("[Dana is in a referee jersey. Dead serious.]") && !/^PAYOFF$/m.test(s1.parts.points[2].text) && s1.directions >= 8, `${s1.directions}`);
+    c.ok("the wrapped spoken line is one line again; no 'isn't a part we know' anywhere", tp2.includes("“The follow-up after the open house is where the offers come from.”") && pj.drafts.every((d) => !d.notes.some((n) => /isn't a part we know|isn't in the script/.test(n))));
+    c.ok("Purpose → goal, Topic → topic, the 'Pillars:' line → dimensions (never the content pillar)", /sideline-reporter parody/.test(s1.goal ?? "") && s2.topicLine === "Why overpricing costs you more than it saves." && s1.dimensions === "Credibility + Entertainment | Trust + Value" && s1.categoryLabel === null);
+    c.ok("script 1: every word matches the document", s1.asWritten?.checked === true && s1.asWritten.ok === true, JSON.stringify(s1.asWritten));
+    c.ok("script 2: the dropped line and the added word are shown, word for word", s2.asWritten?.ok === false && s2.asWritten.missing.some((m) => /If yours looks like the worst deal it gets skipped/.test(m)) && s2.asWritten.added.includes("really"), JSON.stringify(s2.asWritten));
+    const spokenOnly = (t: string) => t.split("\n").filter((l) => !/^\[.*\]$/.test(l.trim())).map((l) => l.replace(/^[A-Z][A-Z ()]*:\s+/, "")).join(" ").split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+    const allLines = [s1.parts.hook, ...s1.parts.points.map((x) => x.text), s1.parts.close].join("\n");
+    c.ok("length counts spoken lines only (no labels, no directions) and is never flagged red for a skit", s1.words === spokenOnly(allLines) && s1.words < allLines.split(/\s+/).length - 20 && s1.format === "skit", `${s1.words} vs ${spokenOnly(allLines)}`);
+    c.ok("pillars from the APPROVED strategy, labelled so; each script picked with a reason", pj.pillarSource === "approved" && pj.pillars.length === 3 && pj.pillars.every((x) => x.from === "approved") && pj.pillars.find((x) => x.id === s1.pillarId)?.name === "Personal Brand, Humor & Trust Building" && /^Picked by AI: /.test(s1.pillarWhy ?? "") && pj.pillars.find((x) => x.id === s2.pillarId)?.name === "Seller Strategy & Listing Preparation", JSON.stringify([s1.pillarId, s1.pillarWhy, s2.pillarId]));
+    c.ok("no 'no pillars yet' scare on any card", pj.drafts.every((d) => !d.notes.some((n) => /no pillars yet|No pillar/.test(n))));
+    // The staff reads script 2 against the document, ticks it, and moves it to the Buyer pillar.
+    const buyerOpt = pj.pillars.find((x) => /^Buyer/.test(x.name))!;
+    const jItems = pj.drafts.map((d) => ({ key: d.key, text: d.text, title: d.title, topicId: d.topicId, pillarId: d.key === s2.key ? buyerOpt.id : d.pillarId, sourceName: d.sourceName }));
+    const cJ = await act.confirmScriptUploadAction({ enrollmentId: J.enrollmentId, monthId: J.monthId, fileNames: pj.fileNames, parser: pj.parser, aiRunId: pj.aiRunId, items: jItems });
+    c.ok("Add: 'Added 2 scripts… Jo Skit TEST's 3 content pillars from the approved strategy are now set up.'", cJ.ok && /^Added 2 scripts to October/.test(cJ.message) && /3 content pillars from the approved strategy are now set up/.test(cJ.message), cJ.message);
+    const jPillars = await prisma.contentPillar.findMany({ where: { enrollmentId: J.enrollmentId } });
+    const jScripts = await prisma.contentScript.findMany({ where: { monthId: J.monthId }, orderBy: { createdAt: "asc" } });
+    c.ok("the pillars are made from the approved document (stable ids), the scripts filed under them — the staff's change kept", jPillars.length === 3 && jPillars.every((x) => x.strategyVersionId === joStrategy) && jScripts[0].pillarId === jPillars.find((x) => /^Personal Brand/.test(x.name))?.id && jScripts[1].pillarId === jPillars.find((x) => /^Buyer/.test(x.name))?.id);
+    const jv = await prisma.contentScriptVersion.findFirstOrThrow({ where: { scriptId: jScripts[0].id } });
+    const jPoints = JSON.parse(jv.pointsJson) as { role: string; text: string }[];
+    const { hasScriptDash } = await import("@/lib/contentPolicy");
+    c.ok("the version keeps every line: speakers inline, [directions], scene headings, three roled points", jv.hook.startsWith("ALEX (HOST): “Dana") && jPoints.map((x) => x.role).join(",") === "RE_HOOK,BUILD_UP,PAYOFF" && jPoints[1].text.includes("[BUILD UP, SCENE 2: THE CROWD]") && jPoints[1].text.includes("DANA: “We told every neighbor first. Neighbors know buyers.”") && jv.close.endsWith("“And bring snacks.”"));
+    c.ok("no dash in anything the script says or shows (the spoken one became a comma at save)", ![jv.title, jv.hook, jv.close, ...jPoints.map((x) => x.text)].some((x) => hasScriptDash(x)) && jPoints[1].text.includes("“Fresh paint, bright bulbs, nothing on the counters.”"));
+    const jVal = JSON.parse(jv.validationJson ?? "{}") as { ok: boolean; findings: { code: string; severity: string }[] };
+    c.ok("internal notes ride along: speakers, the Purpose as goal, the dimension line; validation passes (no block)", JSON.parse(jv.speakerLabelsJson ?? "[]").includes("ALEX (HOST)") && /sideline-reporter/.test(jv.goal ?? "") && /Lead/.test(jv.dimensionsCheckJson ?? "") && jVal.ok === true && !jVal.findings.some((f) => f.severity === "block"), JSON.stringify(jVal.findings.map((f) => f.code)));
+    c.ok("the stored length is the spoken lines only, the same as the preview said", jv.spokenWordCount === s1.words, `${jv.spokenWordCount} vs ${s1.words}`);
+    const jTab = await programData.loadScriptsTab(J.enrollmentId, { id: J.monthId });
+    c.ok("Plan › Scripts: both in the review queue, marked as skits (length a note, no Tighten offered)", jTab.queueCount === 2 && jTab.scripts.every((x) => x.versions[0].skit === true));
+    const jTopics = await prisma.contentTopic.findMany({ where: { id: { in: jScripts.map((x) => x.topicId!) } } });
+    c.ok("the new topics carry the script's Topic / Purpose as their concept", jTopics.some((t) => t.concept === "Why overpricing costs you more than it saves.") && jTopics.some((t) => /sideline-reporter/.test(t.concept ?? "")));
+    // Send, then the client's portal and the editor's brief.
+    const jBatch = (await up.monthUploads(J.enrollmentId, J.monthId)).batches[0];
+    await signIn(owner);
+    const jSent = await act.sendScriptUploadAction(jBatch.id);
+    c.ok("sent to the client's portal", jSent.ok && /^Sent 2 scripts/.test(jSent.message), jSent.message);
+    const vJ = await (async () => { const r = await portal.resolvePortalViewer({ token: J.portalToken ?? "" }); if (!r.ok) throw new Error(r.reason); return r.viewer; })();
+    const jPm = home.planModel(await portal.portalTopics(vJ.enrollment), "2026-10", now());
+    const onPortal = jPm.scripts.find((t) => t.script?.id === jScripts[0].id);
+    const layout = await import("@/lib/scriptLayout");
+    const portalLines = (onPortal?.scriptText?.parts?.points[1].text ?? "").split("\n");
+    c.ok("the client reads the scene: speaker lines, directions and headings in Talking Point 2", portalLines.includes("[BUILD UP, SCENE 1: THE PREP]") && portalLines.some((l) => l.startsWith("DANA: “Fresh paint")) && layout.lineShape("DANA: “Fresh paint”").speaker === "DANA" && layout.lineShape("[Impressed nod.]").kind === "direction" && layout.lineShape("[BUILD UP, SCENE 1: THE PREP]").kind === "heading", portalLines.slice(0, 4).join(" / "));
+    const brief = layout.scriptBlocksFromText(jv.body);
+    c.ok("the editor's brief (stored body → the one layout): Hook, three talking points, Close, every line kept", brief.sections.map((x) => x.role).join(",") === "hook,point,point,point,close" && layout.spokenLayoutWords(brief).length === layout.scriptWords([jv.hook, ...jPoints.map((x) => x.text), jv.close].join("\n")).length, brief.sections.map((x) => x.label).join(" | "));
+    // A hand edit keeps the scene (the archive reader would strip it).
+    const edited = jv.body.replace("“And bring snacks.”", "“And bring the snacks.”");
+    const savedEdit = await staffActions.saveScriptText(jScripts[0].id, edited);
+    const jv2 = await prisma.contentScriptVersion.findFirstOrThrow({ where: { scriptId: jScripts[0].id, versionNo: 2 } });
+    const jv2Points = JSON.parse(jv2.pointsJson) as { text: string }[];
+    c.ok("a hand edit keeps speakers, directions and headings (a new version)", savedEdit.ok && jv2.close.endsWith("“And bring the snacks.”") && jv2.hook.startsWith("ALEX (HOST): “Dana") && jv2Points[1].text.includes("[BUILD UP, SCENE 1: THE PREP]") && jv2Points[1].text.includes("[Impressed nod.]") && JSON.parse(jv2.speakerLabelsJson ?? "[]").includes("DANA"), savedEdit.message);
+
+    // =======================================================================
+    c.head("§13 · the same document again reuses the AI's reading");
+    // =======================================================================
+    const J2 = await buildContentMonth(prisma, { name: "Jo Again TEST", package: "Accelerator", monthKey: "2026-10", project: false });
+    await strategyFor(J2.enrollmentId, true);
+    await signIn(admin);
+    const firstRead = await act.previewScriptUploadAction(J2.enrollmentId, J2.monthId, pdfForm());
+    const calls2 = aiCalls;
+    const again2 = await act.previewScriptUploadAction(J2.enrollmentId, J2.monthId, pdfForm());
+    c.ok("cancelled and uploaded again: the same reading, no second model call", firstRead.ok && again2.ok && again2.preview.aiRunId === firstRead.preview.aiRunId && aiCalls === calls2 && again2.preview.drafts.map((d) => d.text).join() === firstRead.preview.drafts.map((d) => d.text).join());
+
+    // =======================================================================
+    c.head("§14 · the AI is down: the parser's own skit reading, said plainly");
+    // =======================================================================
+    const J3 = await buildContentMonth(prisma, { name: "Jo Fallback TEST", package: "Accelerator", monthKey: "2026-10", project: false });
+    await strategyFor(J3.enrollmentId, true);
+    aiDown = true;
+    const down = await act.previewScriptUploadAction(J3.enrollmentId, J3.monthId, pdfForm());
+    aiDown = false;
+    if (!down.ok) throw new Error(down.message);
+    const [f1, f2] = down.preview.drafts;
+    c.ok("a plain note, and the parser's reading instead (no error, nothing lost)", down.preview.parser === "house" && /The AI couldn't read it just now \(Anthropic 529: Overloaded\), so this is the plain reading/.test(down.preview.notes[0] ?? ""), down.preview.notes.join(" | "));
+    c.ok("…the same five parts, names, speakers, scenes and directions as the AI's", f1.title === "The Open House Interview" && f2.title === s2.title && f1.parts.hook === s1.parts.hook && f1.parts.points.map((x) => x.text).join("\n") === s1.parts.points.map((x) => x.text).join("\n") && f1.parts.close === s1.parts.close && f1.shape.length === 0 && f2.shape.length === 0);
+    c.ok("…every word of both matches the document", f1.asWritten?.ok === true && f2.asWritten?.ok === true);
+    c.ok("…the pillar by its words, with the reason", down.preview.pillars.find((x) => x.id === f2.pillarId)?.name === "Seller Strategy & Listing Preparation" && /^Closest match by its words/.test(f2.pillarWhy ?? ""), `${f2.pillarId} ${f2.pillarWhy}`);
+
+    // =======================================================================
+    c.head("§15 · pillars from a draft strategy, and none at all");
+    // =======================================================================
+    const J4 = await buildContentMonth(prisma, { name: "Jo Draft TEST", package: "Accelerator", monthKey: "2026-10", project: false });
+    await strategyFor(J4.enrollmentId, false);
+    const skitText = [...SKIT_PAGE_1, "", ...SKIT_PAGE_2].join("\n");
+    const pasteJ4 = new FormData(); pasteJ4.append("text", skitText);
+    const pJ4 = await act.previewScriptUploadAction(J4.enrollmentId, J4.monthId, pasteJ4);
+    if (!pJ4.ok) throw new Error(pJ4.message);
+    c.ok("a draft strategy's pillars are offered, labelled 'from the draft strategy', and picked", pJ4.preview.pillarSource === "draft" && pJ4.preview.pillars.every((x) => x.from === "draft") && !!pJ4.preview.drafts[0].pillarId);
+    const cJ4 = await act.confirmScriptUploadAction({ enrollmentId: J4.enrollmentId, monthId: J4.monthId, fileNames: pJ4.preview.fileNames, parser: pJ4.preview.parser, aiRunId: pJ4.preview.aiRunId, items: pJ4.preview.drafts.map((d) => ({ text: d.text, title: d.title, topicId: d.topicId, pillarId: d.pillarId, sourceName: d.sourceName })) });
+    const j4Script = await prisma.contentScript.findFirstOrThrow({ where: { monthId: J4.monthId }, orderBy: { createdAt: "asc" } });
+    const j4v = await prisma.contentScriptVersion.findFirstOrThrow({ where: { scriptId: j4Script.id } });
+    const j4Topic = await prisma.contentTopic.findUniqueOrThrow({ where: { id: j4Script.topicId! } });
+    c.ok("…added: the pillar kept as the script's label (a draft makes no pillar), no pillar record created", cJ4.ok && (await prisma.contentPillar.count({ where: { enrollmentId: J4.enrollmentId } })) === 0 && j4v.pillarId === null && j4v.categoryLabel === "Personal Brand, Humor & Trust Building" && j4Topic.pillar === "Personal Brand, Humor & Trust Building", cJ4.message);
+    const J5 = await buildContentMonth(prisma, { name: "Jo None TEST", package: "Accelerator", monthKey: "2026-10", project: false });
+    const pasteJ5 = new FormData(); pasteJ5.append("text", skitText);
+    const pJ5 = await act.previewScriptUploadAction(J5.enrollmentId, J5.monthId, pasteJ5);
+    if (!pJ5.ok) throw new Error(pJ5.message);
+    c.ok("no pillars at all: said plainly once ('none'), no warning on any card, nothing blocks", pJ5.preview.pillarSource === "none" && pJ5.preview.pillars.length === 0 && pJ5.preview.drafts.every((d) => d.pillarId === null && d.shape.length === 0 && !d.notes.some((n) => /pillar/i.test(n))) && /has no content pillars on file yet\. That&rsquo;s fine/.test(panel));
+    const cJ5 = await act.confirmScriptUploadAction({ enrollmentId: J5.enrollmentId, monthId: J5.monthId, fileNames: pJ5.preview.fileNames, parser: pJ5.preview.parser, aiRunId: pJ5.preview.aiRunId, items: pJ5.preview.drafts.map((d) => ({ text: d.text, title: d.title, topicId: d.topicId, pillarId: null, sourceName: d.sourceName })) });
+    c.ok("…and they go in without one", cJ5.ok && (await prisma.contentScript.count({ where: { monthId: J5.monthId } })) === 2, cJ5.message);
+    Module._resolveFilename = resolveReal;
+
+    // =======================================================================
+    c.head("§16 · nothing sent, nothing left the machine");
     // =======================================================================
     c.ok("no outbox message — no client was messaged", outbox.length === 0 && (await prisma.outboxMessage.count()) === 0, outbox.join(","));
-    c.ok("the model ran once, on the click", aiCalls === 1);
+    c.ok("the model ran only on uploads that needed it (Dana, Jo, Jo again once, the failed try, the draft and no-pillar clients)", aiCalls === 6, `${aiCalls}`);
     c.ok("no request left the machine", fence.blocked.length === 0, JSON.stringify(fence.blocked.slice(0, 3)));
     console.log(await drill.evidence());
   } finally {

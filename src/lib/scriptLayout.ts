@@ -329,6 +329,29 @@ export function scriptBlocksFromText(body: string): ScriptLayout {
   };
 }
 
+// ---- one line, as it reads -----------------------------------------------------
+
+/**
+ * How one line of a script reads (Oct 12 2026 — skits kept as written): a
+ * [stage direction], a [SCENE HEADING] or [EDIT CUE] (no lower-case letter
+ * inside the brackets), or a spoken line, with the speaker label that opens
+ * it ("JOE:") split off so it can be set in bold. Presentation only: `text`
+ * plus the speaker are exactly the line.
+ */
+export type LineShape = { kind: "direction" | "heading" | "spoken"; speaker: string | null; text: string };
+const SPEAKER_PREFIX_RE = /^([A-Z][A-Z0-9 .'’&,]{0,40}?(?:\s*\([^()]{1,30}\))?):\s+(\S[\s\S]*)$/;
+const NOT_A_SPEAKER = /^(?:HOOK|CTA|CLOSE|PAYOFF|RE-?HOOK|TP\s*\d|NOTE|NOTES|PS|PSA|FYI)$/;
+export function lineShape(line: string): LineShape {
+  const t = line.trim();
+  const br = /^\[([^\]]*)\]$/.exec(t);
+  if (br) return { kind: /[a-z]/.test(br[1]) ? "direction" : "heading", speaker: null, text: t };
+  const sp = SPEAKER_PREFIX_RE.exec(t);
+  if (sp && !/[a-z]/.test(sp[1].replace(/\([^)]*\)/g, "")) && !NOT_A_SPEAKER.test(sp[1].trim())) {
+    return { kind: /^\[[^\]]*\]$/.test(sp[2].trim()) ? "direction" : "spoken", speaker: sp[1].trim(), text: sp[2] };
+  }
+  return { kind: "spoken", speaker: null, text: t };
+}
+
 /** A plain-text rendering of a layout — what "Download" writes when no exact stored text is handed over. */
 export function layoutToText(layout: ScriptLayout): string {
   const out: string[] = [];

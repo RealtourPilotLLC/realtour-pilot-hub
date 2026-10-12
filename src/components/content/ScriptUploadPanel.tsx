@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, ClipboardPaste, Combine, FileText, Loader2, Send, Sparkles, Undo2, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, ClipboardPaste, Combine, FileText, Loader2, Send, Sparkles, Undo2, Upload, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
 import { ScriptView } from "@/components/script/ScriptView";
@@ -11,13 +11,18 @@ import type { UploadBatchUi, UploadDraft, UploadPreview } from "@/lib/scriptUplo
 
 // ---------------------------------------------------------------------------
 // UPLOAD THIS MONTH'S SCRIPTS (Jordan, Oct 12 2026) — Plan › Scripts, owner
-// and admin only. Drop the documents (or paste) → "Reading your scripts…" →
-// one card per script in the house layout, its topic and pillar, what stops
-// approval → Add them to the month → one card per upload with "Send to the
-// client for review" and Undo (until anything reaches the client).
+// and admin only. Drop the documents (Word, PDF, text — or paste) → "Reading
+// your scripts…" → one card per script in the house layout, its topic and
+// pillar, what stops approval → Add them to the month → one card per upload
+// with "Send to the client for review" and Undo (until anything reaches the
+// client). A document not in the house labels (Joe Sutow's skits) is read by
+// the AI as written, each script checked word for word against the document;
+// a script whose words don't match has to be looked at before it can be added.
+// The pillar is picked for each script (AI or the closest words), and stays a
+// dropdown the staff can change.
 // ---------------------------------------------------------------------------
 
-type Edit = { title?: string; topic?: string; pillarId?: string | null; drop?: boolean };
+type Edit = { title?: string; topic?: string; pillarId?: string | null; drop?: boolean; looked?: boolean };
 type Stage = "idle" | "reading" | "preview" | "saving";
 
 const btn = "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
@@ -45,8 +50,14 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [slow, setSlow] = useState(false);
   const [, start] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
+  const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Reading a skit takes the AI up to a minute: after a few seconds the
+  // "Reading your scripts…" line says what is happening and how long it takes.
+  const startSlowTimer = () => { if (slowTimer.current) clearTimeout(slowTimer.current); setSlow(false); slowTimer.current = setTimeout(() => setSlow(true), 6000); };
+  const stopSlowTimer = () => { if (slowTimer.current) clearTimeout(slowTimer.current); slowTimer.current = null; setSlow(false); };
 
   const loadPreview = (p: UploadPreview, keepEdits = false) => {
     setPreview(p);
@@ -61,9 +72,11 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
     setNote(null);
     setStage("reading");
     setBusyLabel(label);
+    startSlowTimer();
     start(async () => {
       const r = await previewScriptUploadAction(enrollmentId, monthId, form).catch(() => ({ ok: false as const, message: "That didn't go through — try again." }));
       setBusyLabel(null);
+      stopSlowTimer();
       if (!r.ok) { setStage("idle"); setNote({ ok: false, text: r.message }); return; }
       loadPreview(r.preview);
       setNote({ ok: true, text: r.message });
@@ -71,7 +84,7 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
   };
 
   const readFiles = (files: FileList | File[]) => {
-    const list = [...files].filter((f) => /\.(docx|pdf|txt|md)$/i.test(f.name));
+    const list = [...files].filter((f) => /\.(docx|pdf|txt|md)$/i.test(f.name) || f.type === "application/pdf");
     if (!list.length) { setNote({ ok: false, text: "Use Word (.docx), PDF, or text files." }); return; }
     if (list.reduce((n, f) => n + f.size, 0) > MAX_UPLOAD_BYTES) { setNote({ ok: false, text: "Those files are too big to send in one go (4 MB) — upload fewer at a time, or paste the text." }); return; }
     const form = new FormData();
@@ -90,14 +103,16 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
     if (!preview) return;
     setNote(null);
     setStage("reading");
-    setBusyLabel("Asking AI to split the document — this takes about half a minute…");
+    setBusyLabel("Reading your scripts as written…");
+    startSlowTimer();
     const sources = preview.sources;
     start(async () => {
       const r = await aiSplitScriptUploadAction(enrollmentId, monthId, sources).catch(() => ({ ok: false as const, message: "The AI didn't answer — try again." }));
       setBusyLabel(null);
+      stopSlowTimer();
       if (!r.ok) { setStage("preview"); setNote({ ok: false, text: r.message }); return; }
       loadPreview(r.preview);
-      setNote({ ok: true, text: `${r.message} The AI only sorts your words into the house parts — check each one.` });
+      setNote({ ok: true, text: r.message });
     });
   };
 
@@ -124,9 +139,12 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
       else if (collision && !collision.eligible) problem = `A topic called “${collision.title}” already exists and ${collision.why} — change the title.`;
       else if (t !== "new" && (used.get(t) ?? 0) > 1) problem = "Two scripts use the same topic — give one its own.";
       else if (collision && kept.some((o) => o.key !== d.key && topicOf(o) === collision.id)) problem = `“${collision.title}” is already used by another script here.`;
-      return { d, extra: i >= slots, collision, problem };
+      // Words that don't match the document: someone reads it before it goes in.
+      const unchecked = !!d.asWritten && !(d.asWritten.checked && d.asWritten.ok) && !e(d).looked;
+      return { d, extra: i >= slots, collision, problem, unchecked };
     });
-    return { slots, rows, blocked: rows.some((r) => r.problem) || rows.length === 0 };
+    const unchecked = rows.filter((r) => r.unchecked).length;
+    return { slots, rows, unchecked, blocked: rows.some((r) => r.problem || r.unchecked) || rows.length === 0 };
   }, [preview, kept, edits]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const confirm = () => {
@@ -160,6 +178,8 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
       setBusyLabel(null);
       if (!r.ok) { setNote({ ok: false, text: r.message }); return; }
       const { [b.key]: _gone, ...rest } = edits; void _gone;
+      // The merged script is checked against the document afresh: read it again.
+      if (rest[a.key]) rest[a.key] = { ...rest[a.key], looked: false };
       setEdits(rest);
       loadPreview(r.preview, true);
     });
@@ -195,9 +215,9 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
               >
                 <FileText className="mx-auto size-6 text-muted" aria-hidden />
                 <p className="mt-2 text-sm font-semibold">Drop your script documents here</p>
-                <p className="mt-1 text-[13px] text-muted">Word (.docx), PDF or text — one document with every script, or one file each. Each script needs a Hook, three Talking points and a Close.</p>
+                <p className="mt-1 text-[13px] text-muted">Word (.docx), PDF or text, one document with every script or one file each. Scripts in any style are read as written: house labels, skits with speakers and directions, or plain paragraphs.</p>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                  <input ref={fileRef} type="file" multiple accept=".docx,.pdf,.txt,.md" className="hidden" onChange={(ev) => { if (ev.target.files?.length) readFiles(ev.target.files); ev.target.value = ""; }} />
+                  <input ref={fileRef} type="file" multiple accept=".docx,.pdf,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" className="hidden" onChange={(ev) => { if (ev.target.files?.length) readFiles(ev.target.files); ev.target.value = ""; }} />
                   <button type="button" onClick={() => fileRef.current?.click()} className={cn(btn, "bg-brand text-white")}><Upload className="size-4" aria-hidden />Choose files</button>
                   <button type="button" onClick={() => setPasting(!pasting)} className={quiet}><ClipboardPaste className="size-4" aria-hidden />Paste text</button>
                   {batches.length > 0 && <button type="button" onClick={() => setOpen(false)} className={quiet}>Close</button>}
@@ -214,13 +234,18 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
           )}
 
           {(stage === "reading" || stage === "saving") && (
-            <p role="status" className="flex items-center gap-2 rounded-lg border border-border bg-surface-2/50 px-3 py-3 text-sm"><Loader2 className="size-4 animate-spin text-brand" aria-hidden />{busyLabel ?? "Working…"}</p>
+            <div role="status" className="rounded-lg border border-border bg-surface-2/50 px-3 py-3 text-sm">
+              <p className="flex items-center gap-2"><Loader2 className="size-4 animate-spin text-brand" aria-hidden />{busyLabel ?? "Working…"}</p>
+              {stage === "reading" && slow && <p className="mt-1 pl-6 text-[13px] text-muted">Reading each script as written and filing its lines into Hook, Re-hook, Build up, Payoff and Close. This can take up to a minute.</p>}
+            </div>
           )}
 
           {stage === "preview" && preview && view && (
             <div className="space-y-3">
               <FitLine preview={preview} keptCount={kept.length} slots={view.slots} />
+              {preview.parser === "ai" && <p className="text-[13px] text-muted">Read as written: the AI only filed your lines into Hook, Re-hook, Build up, Payoff and Close, and every word was checked against your document.</p>}
               {preview.notes.length > 0 && <ul className="list-inside list-disc space-y-0.5 text-[13px] text-muted">{preview.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
+              <PillarSourceLine preview={preview} />
               <p className="rounded-lg bg-surface-2/60 px-3 py-2 text-[13px] text-muted">{preview.route.text}</p>
 
               {preview.selections.length > 0 && (
@@ -262,7 +287,8 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
                   return (
                     <DraftCard
                       key={d.key} d={d} n={kept.indexOf(d) + 1} row={row} preview={preview}
-                      title={titleOf(d)} topic={topicOf(d)} pillarId={pillarOf(d) ?? null}
+                      title={titleOf(d)} topic={topicOf(d)} pillarId={pillarOf(d) ?? null} pillarChanged={ed.pillarId !== undefined && ed.pillarId !== d.pillarId}
+                      looked={!!ed.looked} onLooked={(v) => setEdit(d.key, { looked: v })}
                       onTitle={(v) => setEdit(d.key, { title: v })} onTopic={(v) => setEdit(d.key, { topic: v })} onPillar={(v) => setEdit(d.key, { pillarId: v })}
                       onDrop={() => setEdit(d.key, { drop: true })} onMerge={i < drafts.length - 1 ? () => merge(i) : null}
                       busy={!!busyLabel}
@@ -277,9 +303,9 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
                 </button>
                 <button type="button" onClick={cancel} className={quiet}><X className="size-4" aria-hidden />Cancel</button>
                 {preview.parser === "house" && preview.sources.length > 0 && (
-                  <button type="button" onClick={aiSplit} disabled={!!busyLabel} className={cn(quiet, preview.suggestAi && "border-brand/40 text-brand")}><Sparkles className="size-4" aria-hidden />{preview.suggestAi ? "Doesn't look right? Let AI split it" : "Let AI split it instead"}</button>
+                  <button type="button" onClick={aiSplit} disabled={!!busyLabel} className={cn(quiet, preview.suggestAi && "border-brand/40 text-brand")}><Sparkles className="size-4" aria-hidden />{preview.suggestAi ? "Doesn't look right? Let AI read it" : "Let AI read it instead"}</button>
                 )}
-                {view.blocked && kept.length > 0 && <span className="text-[13px] text-danger">Fix the red lines first.</span>}
+                {view.blocked && kept.length > 0 && <span className="text-[13px] text-danger">{view.rows.some((r) => r.problem) ? "Fix the red lines first." : `Check the wording on ${view.unchecked === 1 ? "the flagged script" : `the ${view.unchecked} flagged scripts`} first.`}</span>}
               </div>
               <p className="text-[12px] text-muted-2">Nothing is saved until you add them. Nothing reaches {clientName} until you send it.</p>
             </div>
@@ -309,24 +335,40 @@ function FitLine({ preview, keptCount, slots }: { preview: UploadPreview; keptCo
   );
 }
 
-function DraftCard({ d, n, row, preview, title, topic, pillarId, onTitle, onTopic, onPillar, onDrop, onMerge, busy }: {
-  d: UploadDraft; n: number; row: { extra: boolean; collision: UploadPreview["bank"][number] | null; problem: string | null }; preview: UploadPreview;
-  title: string; topic: string; pillarId: string | null;
+/** Where the pillar list came from, said once above the cards — plainly, and never as a warning. */
+function PillarSourceLine({ preview }: { preview: UploadPreview }) {
+  const who = preview.clientName;
+  if (preview.pillarSource === "approved") return <p className="text-[13px] text-muted">{who}&rsquo;s pillars come from the approved strategy. They&rsquo;re set up as {who}&rsquo;s pillars when you add these.</p>;
+  if (preview.pillarSource === "draft") return <p className="text-[13px] text-muted">{who}&rsquo;s pillars come from the draft strategy (not approved yet), so a pillar is kept as the script&rsquo;s label for now.</p>;
+  if (preview.pillarSource === "none") return <p className="text-[13px] text-muted">{who} has no content pillars on file yet. That&rsquo;s fine: these can go in without one.</p>;
+  return null;
+}
+
+const FROM_GROUP: Record<UploadPreview["pillars"][number]["from"], string> = { pillar: "Pillars", approved: "From the approved strategy", draft: "From the draft strategy" };
+
+function DraftCard({ d, n, row, preview, title, topic, pillarId, pillarChanged, looked, onLooked, onTitle, onTopic, onPillar, onDrop, onMerge, busy }: {
+  d: UploadDraft; n: number; row: { extra: boolean; collision: UploadPreview["bank"][number] | null; problem: string | null; unchecked: boolean }; preview: UploadPreview;
+  title: string; topic: string; pillarId: string | null; pillarChanged: boolean; looked: boolean; onLooked: (v: boolean) => void;
   onTitle: (v: string) => void; onTopic: (v: string) => void; onPillar: (v: string | null) => void; onDrop: () => void; onMerge: (() => void) | null; busy: boolean;
 }) {
   const bankOptions = preview.bank.filter((b) => b.eligible || b.id === topic);
   const onMonth = bankOptions.filter((b) => b.onMonth);
   const rest = bankOptions.filter((b) => !b.onMonth);
   const chosen = topic !== "new" ? preview.bank.find((b) => b.id === topic) : null;
-  const paceTone = d.pace === "on" ? "text-muted" : "font-medium text-warning";
+  const skit = d.format === "skit";
+  // A skit runs longer than a talking head: its length is shown, never flagged.
+  const paceTone = d.pace === "on" || skit ? "text-muted" : "font-medium text-warning";
+  const groups = (["pillar", "approved", "draft"] as const).map((from) => ({ from, list: preview.pillars.filter((p) => p.from === from) })).filter((g) => g.list.length);
+  const aw = d.asWritten;
   return (
-    <li className={cn("rounded-xl border bg-surface p-3", row.problem ? "border-danger/40" : "border-border")}>
+    <li className={cn("rounded-xl border bg-surface p-3", row.problem ? "border-danger/40" : row.unchecked ? "border-warning/50" : "border-border")}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[12px] font-semibold text-muted-2">#{n}</span>
         <input value={title} onChange={(ev) => onTitle(ev.target.value)} aria-label={`Title of script ${n}`} placeholder="Title" className={cn(field, "min-w-0 flex-1 basis-56 font-semibold")} />
       </div>
       <p className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[12px]">
-        <span className={paceTone}>≈{d.seconds}s · {d.words} words{d.pace === "over" ? " · well over a minute" : d.pace === "under" ? " · on the short side" : ""}</span>
+        <span className={paceTone}>≈{d.seconds}s · {d.words} spoken words{d.pace === "over" ? (skit ? " · runs long, fine for a skit" : " · well over a minute") : d.pace === "under" ? " · on the short side" : ""}</span>
+        {skit && <span className="text-muted-2">skit{d.speakers.length ? ` · ${d.speakers.join(", ")}` : ""}{d.directions ? ` · ${plural(d.directions, "direction")}` : ""}</span>}
         {row.extra && <span className="rounded-full bg-surface-2 px-2 text-muted">extra</span>}
         {preview.fileNames.length > 1 && <span className="text-muted-2">from {d.sourceName}</span>}
       </p>
@@ -341,8 +383,10 @@ function DraftCard({ d, n, row, preview, title, topic, pillarId, onTitle, onTopi
         <label className="text-[12px] text-muted">Pillar
           <select value={pillarId ?? ""} onChange={(ev) => onPillar(ev.target.value || null)} className={cn(field, "mt-0.5 text-foreground")}>
             <option value="">No pillar</option>
-            {preview.pillars.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {groups.length === 1 ? groups[0].list.map((p) => <option key={p.id} value={p.id}>{p.name}</option>) : groups.map((g) => <optgroup key={g.from} label={FROM_GROUP[g.from]}>{g.list.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</optgroup>)}
           </select>
+          {!pillarChanged && pillarId && d.pillarWhy && <span className="mt-0.5 block text-[12px] text-muted-2">{d.pillarWhy}</span>}
+          {!pillarId && preview.pillars.length > 0 && <span className="mt-0.5 block text-[12px] text-muted-2">No close match. Pick one, or leave it.</span>}
         </label>
       </div>
       <div className="mt-2 space-y-1 text-[13px]">
@@ -352,12 +396,31 @@ function DraftCard({ d, n, row, preview, title, topic, pillarId, onTitle, onTopi
         {topic === "new" && !row.collision && d.suggestion && (
           <p className="text-muted">Similar topic in the bank: “{d.suggestion.title}” — <button type="button" onClick={() => onTopic(d.suggestion!.topicId)} className="font-medium text-brand hover:underline">use it</button></p>
         )}
+        {aw && aw.checked && aw.ok && <p className="flex items-start gap-1.5 text-success"><CheckCircle2 className="mt-0.5 size-3.5 shrink-0" aria-hidden />Every word matches your document.</p>}
+        {aw && !(aw.checked && aw.ok) && (
+          <div className="rounded-lg border border-warning/40 bg-warning-soft/30 px-2.5 py-2">
+            <p className="font-medium text-foreground">{aw.checked ? "The words don't match your document exactly. Read it against the document." : "This one couldn't be lined up with your document to check its words. Read it against the document."}</p>
+            {aw.missingCount > 0 && <p className="mt-1 text-muted">In your document, not in this script ({plural(aw.missingCount, "word")}): {aw.missing.map((m) => `“${m}”`).join(" · ")}</p>}
+            {aw.addedCount > 0 && <p className="mt-1 text-muted">In this script, not in your document ({plural(aw.addedCount, "word")}): {aw.added.map((m) => `“${m}”`).join(" · ")}</p>}
+            <label className="mt-1.5 inline-flex min-h-9 items-center gap-2 font-medium text-foreground">
+              <input type="checkbox" className="size-4" checked={looked} onChange={(ev) => onLooked(ev.target.checked)} />
+              I&rsquo;ve checked the wording
+            </label>
+          </div>
+        )}
         {d.shape.map((s, i) => <p key={`s${i}`} className="text-danger">Fix before sending: {s}</p>)}
         {d.notes.filter((x) => !(pillarId && /pillar/i.test(x))).map((s, i) => <p key={`n${i}`} className="text-warning">{s}</p>)}
       </div>
       <details className="mt-2 rounded-lg border border-border bg-surface-2/30 px-3 py-2">
         <summary className="cursor-pointer text-[13px] font-medium text-muted">Read it — Hook · Talking points · Close</summary>
         <div className="mt-2">
+          {(d.goal || d.topicLine || d.dimensions) && (
+            <div className="mb-2 space-y-0.5 text-[12px] text-muted">
+              {d.goal && <p><span className="font-semibold">Purpose:</span> {d.goal}</p>}
+              {d.topicLine && <p><span className="font-semibold">Topic:</span> {d.topicLine}</p>}
+              {d.dimensions && <p><span className="font-semibold">Dimensions (from the document):</span> {d.dimensions}</p>}
+            </div>
+          )}
           <ScriptView body={d.houseText} parts={{ title, hook: d.parts.hook, points: d.parts.points, close: d.parts.close, captionCta: d.parts.captionCta }} pillarName={preview.pillars.find((p) => p.id === pillarId)?.name ?? null} size="sm" audience="staff" actions={false} showMissingPillar={false} />
         </div>
       </details>

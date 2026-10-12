@@ -685,11 +685,48 @@ function allSpokenText(script: CanonicalScript): string {
   return [script.hook?.text ?? "", ...script.points.map((p) => p.text), ...script.extraSpokenBlocks.map((b) => b.text), script.close?.text ?? ""].join("\n");
 }
 
+// A skit kept as written (Oct 12 2026, scriptUploadParse.readSkitScript)
+// carries its speaker labels in front of their lines ("JOE: “…”") and its
+// stage directions, cues and scene headings as whole [bracketed] lines. Neither
+// is spoken (the word rule above), so neither is timed. A script with no
+// speaker labels and no bracketed line — every other script — is counted
+// exactly as before.
+const WHOLE_BRACKET_LINE_RE = /^\s*\[[^\]]*\]\s*$/;
+const LONE_PLACEHOLDER_RE = /^\$?\[[A-Z][A-Z0-9_]*\]$/;
+const DIRECTION_WORD_RE = /^\[(?:BEAT|PAUSE|LAUGHS?|SMILES?|MUSIC|SFX|SILENCE|CUT|TRANSITION|B-?ROLL)\.?\]$/i;
+/**
+ * A whole line in [brackets] that is a stage direction, a cue or a scene
+ * heading — never spoken. A lone placeholder ("[PRICE]", one capitalised
+ * token) is a word the presenter will say, so it is not one of these.
+ */
+export function isStageDirectionLine(line: string): boolean {
+  const t = line.trim();
+  if (!WHOLE_BRACKET_LINE_RE.test(t)) return false;
+  return !LONE_PLACEHOLDER_RE.test(t) || DIRECTION_WORD_RE.test(t);
+}
+const labelKey = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+function blockSpokenWords(block: SpokenBlock | null | undefined, speakerLabels: readonly string[]): number {
+  if (!block) return 0;
+  const bracketed = isStageDirectionLine;
+  if (!speakerLabels.length && !block.lines.some(bracketed)) return countSpokenWords(block.text);
+  const labels = new Set(speakerLabels.map(labelKey));
+  let n = 0;
+  for (const raw of block.lines) {
+    let line = raw.trim();
+    const sp = /^([^:“”"[\]]{1,60}):\s+(.*)$/.exec(line);
+    if (sp && labels.has(labelKey(sp[1]))) line = sp[2];
+    if (bracketed(line)) continue;
+    n += countSpokenWords(line);
+  }
+  return n;
+}
+
 export function estimateSpokenSeconds(script: CanonicalScript, wordsPerSec: number = GENERATION_POLICY.timing.wordsPerSec): SpokenEstimate {
-  const hook = countSpokenWords(script.hook?.text ?? "");
-  const points = script.points.map((p) => countSpokenWords(p.text));
-  const extra = script.extraSpokenBlocks.reduce((n, b) => n + countSpokenWords(b.text), 0);
-  const close = countSpokenWords(script.close?.text ?? "");
+  const speakers = script.internal.speakerLabels ?? [];
+  const hook = blockSpokenWords(script.hook, speakers);
+  const points = script.points.map((p) => blockSpokenWords(p, speakers));
+  const extra = script.extraSpokenBlocks.reduce((n, b) => n + blockSpokenWords(b, speakers), 0);
+  const close = blockSpokenWords(script.close, speakers);
   const words = hook + points.reduce((a, b) => a + b, 0) + extra + close;
   const seconds = Math.round(words / wordsPerSec);
   const target = GENERATION_POLICY.timing.targetSec;

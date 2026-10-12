@@ -30,7 +30,9 @@ import { approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevision
 // (or the failure, with its reason and Try again).
 // ---------------------------------------------------------------------------
 
-export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[] };
+export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[];
+  /** A skit kept as written (speaker lines, directions): its length is a note, and Tighten would rewrite it, so it isn't offered. */
+  skit?: boolean };
 /** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
 export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
 
@@ -172,8 +174,8 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
             {cur.estimatedSeconds != null && (
               // Never colour alone: the words "over"/"under" carry the same
               // information for anyone who cannot tell the tints apart.
-              <span className={pace === "on" || pace === null ? "" : "font-medium text-warning"} title={`${TARGET_LO}–${TARGET_HI}s target (about a minute is fine) · ${GENERATION_POLICY.timing.wordsPerSec} words per second`}>
-                {" "}· ≈{cur.estimatedSeconds}s / {cur.spokenWordCount}w{pace === "over" ? " · well over a minute" : pace === "under" ? ` · under ${TARGET_LO}s` : ""}
+              <span className={pace === "on" || pace === null || (cur.skit && pace === "over") ? "" : "font-medium text-warning"} title={`${TARGET_LO}–${TARGET_HI}s target (about a minute is fine) · ${GENERATION_POLICY.timing.wordsPerSec} words per second`}>
+                {" "}· ≈{cur.estimatedSeconds}s / {cur.spokenWordCount}w{pace === "over" ? (cur.skit ? " · a skit, runs long" : " · well over a minute") : pace === "under" ? ` · under ${TARGET_LO}s` : ""}
               </span>
             )}
             {cur.pointCount !== 3 && !s.historical ? ` · ${cur.pointCount} points` : ""}
@@ -212,7 +214,10 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
                 all four store no findings, and all four displayed nothing about
                 their length. */}
             {cur.findings.filter((f) => f.severity !== "info" && f.code !== "timing.out-of-range" && !/^Spoken estimate /.test(f.message)).map((f, i) => <p key={`f${i}`} className={f.severity === "block" ? "text-danger" : "text-warning"}>{f.severity === "block" ? "Format: " : "Note: "}{f.message}</p>)}
-            {pace === "over" && (
+            {pace === "over" && cur.skit && (
+              <p className="text-muted">Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} spoken words; speakers and directions aren&rsquo;t counted). Skits run longer than a talking head, and that&rsquo;s fine.</p>
+            )}
+            {pace === "over" && !cur.skit && (
               <p className="flex flex-wrap items-center gap-1.5 text-warning">
                 <span>Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) — well over a minute; the target is {TARGET_LO}–{TARGET_HI}s. It can still be approved — this is an estimate from a word count, not a rejection.</span>
                 <button disabled={revBusy} onClick={() => rev?.onRevise("tighten")} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">

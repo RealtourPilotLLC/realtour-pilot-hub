@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Check, Copy, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { realCategory, scriptBlocksFromParts, scriptBlocksFromText, type ScriptLine, type ScriptParts } from "@/lib/scriptLayout";
+import { ScriptLineText } from "@/components/script/ScriptLineText";
 
 // ---------------------------------------------------------------------------
 // THE ONE SCRIPT RENDERER (U01). Every script surface — the client's topic
@@ -50,7 +51,7 @@ function Lines({ lines, textCls }: { lines: ScriptLine[]; textCls: string }) {
             {l.items.map((it, j) => <li key={j} className="break-words">{it.text}</li>)}
           </ul>
         ) : (
-          <p key={i} className={cn("break-words leading-relaxed text-foreground/90", textCls)}>{l.text}</p>
+          <ScriptLineText key={i} text={l.text} className={textCls} />
         ),
       )}
     </>

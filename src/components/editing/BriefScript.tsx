@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { scriptBlocksFromText, type ScriptLine } from "@/lib/scriptLayout";
+import { ScriptLineText } from "@/components/script/ScriptLineText";
 
 // ---------------------------------------------------------------------------
 // THE SCRIPT, AS THE EDITOR NEEDS IT (Oct 5 2026) — section 3 of the video's
@@ -23,7 +24,7 @@ function Lines({ lines }: { lines: ScriptLine[] }) {
             {l.items.map((it, j) => <li key={j} className="break-words">{it.text}</li>)}
           </ul>
         ) : (
-          <p key={i} className="break-words text-sm leading-relaxed text-foreground/90">{l.text}</p>
+          <ScriptLineText key={i} text={l.text} className="text-sm" />
         ),
       )}
     </>

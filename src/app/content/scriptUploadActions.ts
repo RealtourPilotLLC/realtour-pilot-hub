@@ -42,11 +42,18 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 function previewMessage(p: UploadPreview): string {
   const n = p.drafts.filter((d) => d.isScript).length;
-  if (!n) return p.parser === "ai" ? "The AI found no scripts in that either." : "No scripts found. Check the document has Hook / Talking point / Close labels — or let AI split it.";
-  return `Found ${plural(n, "script")} for ${p.monthName}.`;
+  if (!n) return p.parser === "ai" ? "The AI found no scripts in that either." : "No scripts found. Check the document has Hook / Talking point / Close labels — or let AI read it.";
+  const flagged = p.drafts.filter((d) => d.asWritten && !(d.asWritten.checked && d.asWritten.ok)).length;
+  return `Found ${plural(n, "script")} for ${p.monthName}${p.parser === "ai" ? ", read as written" : ""}.${flagged ? ` ${flagged === 1 ? "One needs" : `${flagged} need`} a look against your document.` : ""}`;
 }
 
-/** Upload → preview. Files (.docx, .pdf, .txt, .md) and/or pasted text. Writes nothing. */
+/**
+ * Upload → preview. Files (.docx, .pdf, .txt, .md) and/or pasted text. Writes
+ * nothing. A document in the house labels is read by the parser; any other
+ * shape (Joe Sutow's skits, Oct 12) goes straight on to the AI reading — the
+ * staff member's upload is the click, so it runs attended and is logged. If
+ * the AI can't answer, the parser's reading is shown with a plain note.
+ */
 export async function previewScriptUploadAction(enrollmentId: string, monthId: string, form: FormData): Promise<PreviewResult> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
@@ -63,8 +70,18 @@ export async function previewScriptUploadAction(enrollmentId: string, monthId: s
     const pasted = form.get("text");
     if (typeof pasted === "string" && pasted.trim()) sources.push({ name: "Pasted text", text: pasted.trim() });
     if (!sources.length) return { ok: false, message: "Choose a file or paste the scripts first." };
-    const { buildUploadPreview } = await import("@/lib/scriptUpload");
+    const { buildUploadPreview, aiSplitUpload } = await import("@/lib/scriptUpload");
     const preview = await buildUploadPreview({ enrollmentId, monthId, sources });
+    if (preview.aiRecommended) {
+      try {
+        const me = await actor();
+        const read = await aiSplitUpload({ enrollmentId, monthId, sources: preview.sources, requestedBy: me.email });
+        if (read.drafts.some((d) => d.isScript) || !preview.drafts.some((d) => d.isScript)) return { ok: true, preview: read, message: previewMessage(read) };
+        preview.notes.unshift("The AI found no scripts in it, so this is the plain reading. Check each script.");
+      } catch (e) {
+        preview.notes.unshift(`The AI couldn't read it just now (${e instanceof Error ? e.message.replace(/[.\s]+$/, "") : "no answer"}), so this is the plain reading. Check each script, or try “Let AI read it” again.`);
+      }
+    }
     return { ok: true, preview, message: previewMessage(preview) };
   } catch (e) { return fail(e); }
 }
@@ -79,7 +96,7 @@ export async function rereadScriptUploadAction(enrollmentId: string, monthId: st
   } catch (e) { return fail(e); }
 }
 
-/** "Let AI split it" — attended (a person clicked), logged as a ProgramAiRun, words checked against the document. */
+/** "Let AI read it" — attended (a person clicked), logged as a ProgramAiRun, words checked against the document. */
 export async function aiSplitScriptUploadAction(enrollmentId: string, monthId: string, sources: UploadSource[]): Promise<PreviewResult> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {

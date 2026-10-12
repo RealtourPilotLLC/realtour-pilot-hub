@@ -5,7 +5,8 @@ import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { canonicalFromParts, createScriptVersion, partsFromBody, STRUCTURAL_CODES, type VersionParts } from "@/lib/contentScripts";
 import { ALLOWANCE_SELECTION_STATUSES, createTopic, recordTopicEvent, selectTopicForMonth, type Actor } from "@/lib/contentTopics";
 import { GENERATION_POLICY, normalizeTitle, renderScript, titleSimilarity, validateNewScript } from "@/lib/contentPolicy";
-import { hasScriptParts, readUploadedScript, shapeProblems, splitUploadedScripts, type UploadPoint, type UploadSource } from "@/lib/scriptUploadParse";
+import { checkAsWritten, hasScriptParts, locateScriptBlocks, pickPillarByWords, readUploadedScript, shapeProblems, splitUploadedScripts, type AsWrittenCheck, type ScriptFormat, type UploadPoint, type UploadSource } from "@/lib/scriptUploadParse";
+import { AS_WRITTEN_PROMPT_KEY, AS_WRITTEN_SCHEMA, AS_WRITTEN_SYSTEM, asWrittenPrompt, dimensionsRecord, itemsFromAsWritten, type AsWrittenOut, type PillarChoice, type PillarSource } from "@/lib/scriptUploadAi";
 
 // ---------------------------------------------------------------------------
 // "UPLOAD THIS MONTH'S SCRIPTS" (Jordan, Oct 12 2026) — the writing half.
@@ -13,7 +14,11 @@ import { hasScriptParts, readUploadedScript, shapeProblems, splitUploadedScripts
 //   preview  reads the documents (scriptUploadParse) and proposes, per script,
 //            a title, a topic (a bank topic when the title matches one, else a
 //            new one), a pillar, its length and anything that stops approval.
-//            WRITES NOTHING.
+//            A document in the house labels is read by the parser (fast); any
+//            other shape (a skit, unlabelled paragraphs) is read by the AI AS
+//            WRITTEN — attended, logged — and every script it files is checked
+//            word for word against the document (Oct 12 2026, Joe Sutow).
+//            WRITES NOTHING (the AI run is the log row of a person's click).
 //   apply    is the office saying "we planned this month": the scripts' topics
 //            become the month's plan (selections, in document order, ahead of
 //            anything already picked), each script is a live hub script — a
@@ -64,7 +69,20 @@ export type UploadDraft = {
   /** Words that are not in the script, wording checks, look-alikes. */
   notes: string[];
   isScript: boolean;
+  format: ScriptFormat;
+  speakers: string[];
+  directions: number;
+  goal: string | null;
+  topicLine: string | null;
+  dimensions: string | null;
+  /** How the pillar was chosen, in words ("Picked by AI: …", "From the document's Category line"). */
+  pillarWhy: string | null;
+  /** The word-for-word check against the document (skits and AI readings); null when not run. */
+  asWritten: AsWrittenCheck | null;
 };
+
+/** A pillar the staff can pick: one of the client's pillars, or a pillar named in their strategy that has no record yet. */
+export type PillarOptionUi = { id: string; name: string; from: "pillar" | "approved" | "draft" };
 
 export type BankTopicUi = { id: string; title: string; norm: string; pillarId: string | null; onMonth: boolean; eligible: boolean; why: string | null };
 export type MonthSelectionUi = { topicId: string; title: string; status: string; hasScript: boolean; answersStarted: boolean; carried: boolean; replaceable: boolean };
@@ -84,12 +102,16 @@ export type UploadPreview = {
   carried: number;
   selections: MonthSelectionUi[];
   bank: BankTopicUi[];
-  pillars: { id: string; name: string }[];
+  pillars: PillarOptionUi[];
+  /** Where the pillar list came from: the client's pillars, the approved strategy (records made on Add), a draft strategy, or none. */
+  pillarSource: PillarSource;
   route: { keep: boolean; text: string };
   notes: string[];
   /** The extracted documents, kept for "Let AI split it". */
   sources: UploadSource[];
   suggestAi: boolean;
+  /** Not in the house labels (a skit, paragraphs, dropped lines): the upload hands it to the AI reading. */
+  aiRecommended: boolean;
 };
 
 export type UploadItemInput = { text: string; title: string; topicId: string | null; pillarId: string | null; sourceName: string; key?: string };
@@ -118,6 +140,31 @@ async function uploadMonth(enrollmentId: string, monthId: string) {
   if (e.clientSuppliesTopics) throw new Error("This client plans their own videos — there are no scripts from us to upload. Turn that off in Settings first.");
   const client = await prisma.client.findUnique({ where: { id: m.clientId }, select: { name: true } });
   return { ...m, clientName: client?.name ?? "the client" };
+}
+
+const STRATEGY_PILLAR = /^(strategy|draft):([^:]+):(\d{1,2})$/;
+
+/**
+ * The content pillars a script can be filed under: the client's pillars; else
+ * the pillars their APPROVED strategy names (Joe Sutow, Oct 12: an approved
+ * strategy naming five pillars, no pillar records — the version was lifted
+ * before approval made them; Add makes them, as approval does); else the
+ * latest draft strategy's (kept as the script's label only — a draft makes no
+ * pillar); else none.
+ */
+async function pillarChoices(enrollmentId: string): Promise<{ options: (PillarChoice & { from: PillarOptionUi["from"] })[]; source: PillarSource }> {
+  const rows = await listPillars(enrollmentId);
+  if (rows.length) return { source: "pillars", options: rows.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, from: "pillar" as const })) };
+  const { approvedStrategy, parseStoredSections } = await import("@/lib/contentStrategy");
+  const approved = await approvedStrategy(enrollmentId).catch(() => null);
+  const fromDoc = (versionId: string, kind: "strategy" | "draft", list: { name: string; purpose?: string | null; focusAreas?: string | null }[]) =>
+    list.filter((p) => p.name?.trim()).map((p, i) => ({ id: `${kind}:${versionId}:${i}`, name: p.name.trim(), purpose: p.purpose ?? null, focusAreas: p.focusAreas ?? null, from: (kind === "strategy" ? "approved" : "draft") as PillarOptionUi["from"] }));
+  const approvedList = approved?.document?.contentPillars?.pillars ?? [];
+  if (approved && approvedList.length) return { source: "approved", options: fromDoc(approved.versionId, "strategy", approvedList) };
+  const latest = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, orderBy: { versionNo: "desc" }, select: { id: true, sectionsJson: true } });
+  const draftList = latest ? parseStoredSections(latest.sectionsJson)?.document?.contentPillars?.pillars ?? [] : [];
+  if (latest && draftList.length) return { source: "draft", options: fromDoc(latest.id, "draft", draftList) };
+  return { source: "none", options: [] };
 }
 
 type TopicRow = { id: string; title: string; status: string; approvalState: string | null; clientDeclinedAt: Date | null; pillarId: string | null; monthId: string | null };
@@ -177,16 +224,22 @@ async function routePlan(monthId: string): Promise<{ keep: boolean; text: string
 /** A script's spoken text, normalized, for "already on file" checks. */
 const spokenKey = (hook: string, close: string) => normalizeTitle(`${hook} ${close}`).slice(0, 400);
 
+/** Per-script extras the AI reading hands the preview (by position in `items`). */
+export type DraftExtra = { notes?: string[]; pillarWhy?: string | null; titleAsWritten?: string | null };
+
+const PLAIN_LEFT_OUT = /isn't in the script|isn't a part we know/;
+
 /**
  * THE PREVIEW. Reads only. `sources` = documents to split; `items` = a list of
- * scripts the staff already shaped (a merge re-reads through here).
+ * scripts the staff already shaped (a merge re-reads through here) or the AI
+ * filed (`parser: "ai"`).
  */
 export async function buildUploadPreview(opts: {
   enrollmentId: string; monthId: string;
   sources?: UploadSource[];
   items?: UploadItemInput[];
   parser?: "house" | "ai"; aiRunId?: string | null;
-  extraNotes?: Map<number, string[]>;
+  extras?: Map<number, DraftExtra>;
   keepSources?: UploadSource[];
 }): Promise<UploadPreview> {
   const month = await uploadMonth(opts.enrollmentId, opts.monthId);
@@ -195,7 +248,8 @@ export async function buildUploadPreview(opts: {
   type Raw = ReturnType<typeof readUploadedScript> & { wantTopicId?: string | null; wantPillarId?: string | null; key?: string };
   let raws: Raw[] = [];
   if (opts.items) {
-    raws = opts.items.slice(0, MAX_SCRIPTS + 10).map((it) => ({ ...readUploadedScript(it.text, { title: it.title, sourceName: it.sourceName }), wantTopicId: it.topicId, wantPillarId: it.pillarId, key: it.key }));
+    // What the AI filed is read line by line as written, like a skit — never by the archive reader, which drops lines it can't label.
+    raws = opts.items.slice(0, MAX_SCRIPTS + 10).map((it) => ({ ...readUploadedScript(it.text, { title: it.title, sourceName: it.sourceName, asWritten: opts.parser === "ai" }), wantTopicId: it.topicId, wantPillarId: it.pillarId, key: it.key }));
   } else {
     for (const s of sources) {
       const split = splitUploadedScripts(s);
@@ -216,13 +270,14 @@ export async function buildUploadPreview(opts: {
     if (named && named.slice(5) !== month.monthKey.slice(5)) { notes.push(`${s.name} mentions ${monthName(named)} — you're adding these to ${monthName(month.monthKey)}.`); break; }
   }
 
-  const [bank, selections, pillarRows, route, existingScripts] = await Promise.all([
+  const [bank, selections, choices, route, existingScripts] = await Promise.all([
     bankFor(opts.enrollmentId, month.id),
     monthSelections(month.id),
-    listPillars(opts.enrollmentId),
+    pillarChoices(opts.enrollmentId),
     routePlan(month.id),
     prisma.contentScript.findMany({ where: { enrollmentId: opts.enrollmentId, historical: false, currentVersionId: { not: null } }, select: { id: true, title: true, monthId: true, currentVersionId: true } }),
   ]);
+  const options = choices.options;
   const versions = existingScripts.length ? await prisma.contentScriptVersion.findMany({ where: { id: { in: existingScripts.map((s) => s.currentVersionId!) } }, select: { id: true, hook: true, close: true } }) : [];
   const monthKeys = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId: opts.enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
   const onFile = new Map<string, string>();
@@ -230,6 +285,20 @@ export async function buildUploadPreview(opts: {
     const v = versions.find((x) => x.id === s.currentVersionId);
     if (v) onFile.set(spokenKey(v.hook, v.close), `“${s.title}”${s.monthId && monthKeys.get(s.monthId) ? ` (${monthName(monthKeys.get(s.monthId)!)})` : ""}`);
   }
+
+  // Where each script sits in the documents, for the word-for-word check of a
+  // list (the AI's, or one the staff merged): found by its title, else its hook.
+  const parser = opts.parser ?? "house";
+  const docText = (opts.keepSources ?? sources).map((s) => s.text).join("\n");
+  const located = opts.items && docText.trim()
+    ? locateScriptBlocks(docText, raws.map((r, i) => ({ title: opts.extras?.get(i)?.titleAsWritten || r.title, hook: r.hook })))
+    : [];
+
+  const optionByLabel = (label: string | null) => {
+    if (!label) return null;
+    const key = normalizeTitle(label.split(/\s+(?:\/|•|\||·)\s+/)[0]);
+    return options.find((o) => normalizeTitle(o.name) === key)?.id ?? null;
+  };
 
   const claimed = new Set<string>();
   const drafts: UploadDraft[] = [];
@@ -258,16 +327,36 @@ export async function buildUploadPreview(opts: {
     }
     if (topicId) claimed.add(topicId);
     const matched = topicId ? bank.rows.find((t) => t.id === topicId) : null;
-    const pillarId = (r.wantPillarId && pillarRows.some((p) => p.id === r.wantPillarId) ? r.wantPillarId : null)
-      ?? (r.categoryLabel ? await resolvePillarByLabel(opts.enrollmentId, r.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : null)
-      ?? (matched?.pillarId && pillarRows.some((p) => p.id === matched.pillarId) ? matched.pillarId : null);
-    const rowNotes = [...r.notes, ...(opts.extraNotes?.get(i) ?? [])];
+    const extra = opts.extras?.get(i);
+
+    // The pillar: the staff's pick (a merge), the document's own Category
+    // line, the AI's pick (with its reason), the bank topic's, else the
+    // closest by words.
+    let pillarId: string | null = null;
+    let pillarWhy: string | null = null;
+    const byCategory = r.categoryLabel ? (choices.source === "pillars" ? await resolvePillarByLabel(opts.enrollmentId, r.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : null) ?? optionByLabel(r.categoryLabel) : null;
+    const wantedPillar = r.wantPillarId && options.some((o) => o.id === r.wantPillarId) ? r.wantPillarId : null;
+    if (wantedPillar && !(extra && byCategory)) { pillarId = wantedPillar; pillarWhy = extra?.pillarWhy ? `Picked by AI: ${extra.pillarWhy}` : null; }
+    if (!pillarId && byCategory) { pillarId = byCategory; pillarWhy = `The document says “${r.categoryLabel}”.`; }
+    if (!pillarId && matched?.pillarId && options.some((o) => o.id === matched.pillarId)) { pillarId = matched.pillarId; pillarWhy = "The pillar of the topic it uses."; }
+    if (!pillarId && !r.wantPillarId && options.length && hasScriptParts(r)) {
+      const pick = pickPillarByWords([r.title, r.topic, r.goal, r.hook, ...r.points.map((p) => p.text), r.close].filter(Boolean).join("\n"), options);
+      if (pick) { pillarId = pick.id; pillarWhy = pick.why; }
+    }
+
+    const rowNotes = [...r.notes, ...(extra?.notes ?? [])];
     if (r.categoryLabel && !pillarId) rowNotes.push(`“${r.categoryLabel}” isn't one of this client's pillars — pick one.`);
-    else if (!pillarId) rowNotes.push(pillarRows.length ? "No pillar — pick one before sending it." : "This client has no pillars yet — approve a strategy with pillars, or approve this script with a note.");
     const dup = onFile.get(spokenKey(r.hook, r.close));
     if (dup && (r.hook || r.close)) rowNotes.push(`Looks like ${dup}, already on file.`);
-    const pillarName = pillarId ? pillarRows.find((p) => p.id === pillarId)?.name ?? null : null;
-    const parts: VersionParts = { title: r.title || "(untitled)", categoryLabel: pillarName ?? r.categoryLabel, pillarId, hook: r.hook, points: r.points, close: r.close, captionCta: r.caption };
+    const pillarName = pillarId ? options.find((p) => p.id === pillarId)?.name ?? null : null;
+    const parts: VersionParts = { title: r.title || "(untitled)", categoryLabel: pillarName ?? r.categoryLabel, pillarId: pillarId && !STRATEGY_PILLAR.test(pillarId) ? pillarId : null, hook: r.hook, points: r.points, close: r.close, captionCta: r.caption };
+
+    // Word for word against the document: every skit, and everything the AI filed.
+    let asWritten: AsWrittenCheck | null = null;
+    const block = r.sourceBlock ?? located[i] ?? null;
+    if (r.format === "skit" || parser === "ai") {
+      asWritten = block ? checkAsWritten(block, r) : { checked: false, ok: false, missing: [], added: [], missingCount: 0, addedCount: 0 };
+    }
     drafts.push({
       key: r.key ?? sha256(`${i}\n${r.sourceName}\n${r.text}`).slice(0, 16),
       sourceName: r.sourceName, title: r.title, titleFound: r.titleFound, text: r.text,
@@ -277,93 +366,70 @@ export async function buildUploadPreview(opts: {
       pillarId, topicId, matchKind, suggestion, conflict,
       shape: hasScriptParts(r) ? shapeProblems(r) : ["Not a script — no Hook, Talking points or Close found."],
       notes: rowNotes, isScript: hasScriptParts(r),
+      format: r.format, speakers: r.speakers, directions: r.directions, goal: r.goal, topicLine: r.topic, dimensions: r.dimensions,
+      pillarWhy, asWritten,
     });
   }
-  const parser = opts.parser ?? "house";
+  const notHouse = drafts.length === 0 || drafts.some((d) => !d.isScript || d.format === "skit" || d.notes.some((n) => PLAIN_LEFT_OUT.test(n)));
   return {
     enrollmentId: opts.enrollmentId, monthId: month.id, monthKey: month.monthKey, monthName: monthName(month.monthKey), clientName: month.clientName,
     fileNames: [...new Set((opts.keepSources ?? sources).map((s) => s.name))],
     parser, aiRunId: opts.aiRunId ?? null,
     drafts, owed: month.videosOwed, carried: selections.filter((s) => s.carried).length,
-    selections, bank: bank.ui.slice(0, 800), pillars: pillarRows.map((p) => ({ id: p.id, name: p.name })),
+    selections, bank: bank.ui.slice(0, 800), pillars: options.map((p) => ({ id: p.id, name: p.name, from: p.from })), pillarSource: choices.source,
     route: { keep: route.keep, text: route.text }, notes,
     sources: opts.keepSources ?? sources,
-    suggestAi: parser === "house" && (drafts.length === 0 || drafts.some((d) => !d.isScript || d.shape.length > 0 || d.notes.some((n) => /isn't in the script|isn't a part we know/.test(n)))),
+    suggestAi: parser === "house" && (notHouse || drafts.some((d) => d.shape.length > 0)),
+    aiRecommended: parser === "house" && !opts.items && sources.length > 0 && notHouse,
   };
 }
 
 // ---------------------------------------------------------------------------
-// AI ASSIST — attended only. A person clicks "Let AI split it" on a messy
-// document; the model returns each script's parts COPIED from the document,
-// which are then read by the same deterministic reader as any upload. Every
-// word the model hands back is checked against the document.
+// THE AI READING, AS WRITTEN — attended only: it runs because a person
+// uploaded a document the house labels don't describe (or clicked "Let AI
+// read it"). The model files each script's own lines into the five parts and
+// picks its pillar (scriptUploadAi); the preview then reads what it filed with
+// the same reader as any upload and checks every word against the document.
+// The same document read again reuses the earlier answer (the same prompt,
+// word for word) instead of paying for it twice.
 // ---------------------------------------------------------------------------
-type AiSplitOut = { scripts: { title: string; category: string | null; hook: string; talkingPoints: { label: string | null; text: string }[]; close: string; caption: string | null }[] };
-
-const wordsOf = (s: string) => (s.toLowerCase().match(/[a-z0-9']+/g) ?? []).map((w) => w.replace(/'/g, ""));
-
 export async function aiSplitUpload(opts: { enrollmentId: string; monthId: string; sources: UploadSource[]; requestedBy: string }): Promise<UploadPreview> {
   const month = await uploadMonth(opts.enrollmentId, opts.monthId);
-  const doc = opts.sources.map((s) => `=== FILE: ${s.name} ===\n${s.text}`).join("\n\n").slice(0, 60_000);
-  if (!doc.trim()) throw new Error("There's no text to split.");
-  const { runAiJson } = await import("@/lib/aiRuns");
-  const run = await runAiJson<AiSplitOut>({
-    kind: "import_split", enrollmentId: opts.enrollmentId, clientId: month.clientId,
-    scope: { monthId: month.id, purpose: "month_script_upload" }, inputRefs: { files: opts.sources.map((s) => s.name), docHash: sha256(doc) },
-    promptKey: "script-upload-split", requestedBy: opts.requestedBy, unattended: false,
-    dedupeKey: `script-upload-split:${month.id}:${sha256(doc).slice(0, 16)}`,
-    system: `You split a real estate agent's document of short-form video scripts into the individual scripts, and sort each script's lines into the House Video Structure Framework: Hook; Talking Point 1 (Re-hook); Talking Point 2 (Build up); Talking Point 3 (Payoff); Close / Call to action; optional caption.
-
-STRICT RULES:
-1. COPY THE WORDS EXACTLY. Never rewrite, shorten, add, reorder, correct or improve a word. Every word you return must appear in the document.
-2. One entry per video script, in document order. Skip cover pages, headers, notes to the team and anything that is not a script.
-3. The title is the script's own heading as written. If it has none, use its first few words.
-4. Keep the talking points as the document has them. If it has four, return four; if it has none labelled, split the body between the hook and the close as written.
-5. "label" is the talking point's own label from the document (e.g. "Rehook", "Build up", "Payoff"), or null.
-6. category is the pillar/category line if the script has one, else null. caption is a caption line if present, else null.`,
-    prompt: doc,
-    schema: {
-      type: "object",
-      properties: {
-        scripts: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              title: { type: "string" },
-              category: { type: ["string", "null"] },
-              hook: { type: "string" },
-              talkingPoints: { type: "array", items: { type: "object", properties: { label: { type: ["string", "null"] }, text: { type: "string" } }, required: ["label", "text"] } },
-              close: { type: "string" },
-              caption: { type: ["string", "null"] },
-            },
-            required: ["title", "category", "hook", "talkingPoints", "close", "caption"],
-          },
-        },
-      },
-      required: ["scripts"],
-    },
-    maxTokens: 8000,
+  const sources = opts.sources.map((s) => ({ name: (s.name || "Pasted text").slice(0, 160), text: String(s.text ?? "").slice(0, MAX_SOURCE_CHARS) }));
+  if (!sources.some((s) => s.text.trim())) throw new Error("There's no text to read.");
+  const choices = await pillarChoices(opts.enrollmentId);
+  const prompt = asWrittenPrompt(sources, choices.options, choices.source);
+  const promptHash = sha256(`${AS_WRITTEN_SYSTEM}\n${prompt}`);
+  const earlier = await prisma.programAiRun.findFirst({
+    where: { kind: "import_split", enrollmentId: opts.enrollmentId, promptKey: AS_WRITTEN_PROMPT_KEY, status: "SUCCEEDED", inputRefsJson: { contains: promptHash } },
+    orderBy: { createdAt: "desc" }, select: { id: true, outputJson: true },
   });
-  const docWords = new Set(wordsOf(doc));
-  const items: UploadItemInput[] = [];
-  const extraNotes = new Map<number, string[]>();
-  for (const [i, s] of (run.output.scripts ?? []).slice(0, MAX_SCRIPTS).entries()) {
-    const lines: string[] = [s.title?.trim() || `Script ${i + 1}`];
-    if (s.category?.trim()) lines.push(`Category: ${s.category.trim()}`);
-    lines.push("HOOK", s.hook ?? "");
-    (s.talkingPoints ?? []).forEach((p, j) => {
-      const role = p.label ? /re-?\s?hook/i.test(p.label) ? " - RE-HOOK" : /build|set-?\s?up|context/i.test(p.label) ? " - BUILD UP" : /pay-?\s?off/i.test(p.label) ? " - PAYOFF" : "" : "";
-      lines.push(`TALKING POINT ${j + 1}${role}`, p.text ?? "");
+  let output: AsWrittenOut | null = null;
+  let runId: string;
+  try { output = earlier?.outputJson ? (JSON.parse(earlier.outputJson) as AsWrittenOut) : null; } catch { output = null; }
+  if (earlier && output?.scripts) runId = earlier.id;
+  else {
+    const { runAiJson } = await import("@/lib/aiRuns");
+    const run = await runAiJson<AsWrittenOut>({
+      kind: "import_split", enrollmentId: opts.enrollmentId, clientId: month.clientId,
+      scope: { monthId: month.id, purpose: "month_script_upload" }, inputRefs: { files: sources.map((s) => s.name), docHash: sha256(sources.map((s) => s.text).join("\n")), pillarSource: choices.source },
+      promptKey: AS_WRITTEN_PROMPT_KEY, requestedBy: opts.requestedBy, unattended: false,
+      dedupeKey: `script-upload-read:${month.id}:${promptHash.slice(0, 16)}`,
+      system: AS_WRITTEN_SYSTEM, prompt, schema: AS_WRITTEN_SCHEMA as unknown as Record<string, unknown>,
+      maxTokens: 16_000,
     });
-    lines.push("CLOSE / CTA", s.close ?? "");
-    if (s.caption?.trim()) lines.push("CAPTION", s.caption.trim());
-    const spoken = wordsOf([s.hook, ...(s.talkingPoints ?? []).map((p) => p.text), s.close].join(" "));
-    const missing = spoken.filter((w) => !docWords.has(w)).length;
-    if (spoken.length && missing / spoken.length > 0.03) extraNotes.set(i, [`AI: ${plural(missing, "word")} here ${missing === 1 ? "isn't" : "aren't"} in your document — check the wording against it.`]);
-    items.push({ text: lines.join("\n"), title: s.title?.trim() || "", topicId: null, pillarId: null, sourceName: opts.sources.length === 1 ? opts.sources[0].name : "Your documents" });
+    output = run.output;
+    runId = run.runId;
   }
-  const preview = await buildUploadPreview({ enrollmentId: opts.enrollmentId, monthId: opts.monthId, items, parser: "ai", aiRunId: run.runId, extraNotes, keepSources: opts.sources });
+  const filed = itemsFromAsWritten(output ?? { scripts: [] }, choices.options, sources.map((s) => s.text).join("\n")).slice(0, MAX_SCRIPTS);
+  const sourceName = sources.length === 1 ? sources[0].name : "Your documents";
+  const extras = new Map<number, DraftExtra>();
+  filed.forEach((f, i) => extras.set(i, {
+    pillarWhy: f.pillarWhy, titleAsWritten: f.titleAsWritten,
+    notes: f.leftOut ? [`The AI left this out of the script: “${f.leftOut.slice(0, 160)}${f.leftOut.length > 160 ? "…" : ""}”`] : [],
+  }));
+  const items: UploadItemInput[] = filed.map((f) => ({ text: f.text, title: f.title, topicId: null, pillarId: f.pillarId, sourceName }));
+  const preview = await buildUploadPreview({ enrollmentId: opts.enrollmentId, monthId: opts.monthId, items, parser: "ai", aiRunId: runId, extras, keepSources: sources });
   if (!items.length) preview.notes.push("The AI found no scripts in the document either.");
   return preview;
 }
@@ -388,6 +454,8 @@ type UploadLedger = {
   scriptIds: string[]; createdTopicIds: string[]; matched: PriorSelection[]; replaced: PriorSelection[];
   route: { chosen: boolean; before: { mode: "CALL" | "WRITTEN" | null; chosenAt: string | null; chosenBy: string | null; strategyCallStatus: string } | null; at: string | null };
   parser: "house" | "ai"; aiRunId: string | null; owed: number;
+  /** Pillars made from the approved strategy because a script here was filed under one (kept on undo — they are the strategy's). */
+  pillarsCreated?: number;
   sent?: { by: string; at: string; versionIds: string[] }[];
   undone?: { by: string; at: string; routeRestored: boolean };
 };
@@ -410,7 +478,7 @@ export async function applyScriptUpload(input: {
   // Read every script again from its text: what the browser sent back is the
   // staff's titles and choices, never parts to be trusted as they are.
   const read = items.map((it, i) => {
-    const r = readUploadedScript(it.text, { title: it.title, sourceName: it.sourceName });
+    const r = readUploadedScript(it.text, { title: it.title, sourceName: it.sourceName, asWritten: input.parser === "ai" });
     if (!hasScriptParts(r)) throw new Error(`Script ${i + 1} has no Hook, Talking points or Close — drop it or fix it.`);
     const title = (it.title ?? "").trim().slice(0, 200) || r.title;
     if (!title) throw new Error(`Script ${i + 1} needs a title.`);
@@ -426,7 +494,39 @@ export async function applyScriptUpload(input: {
   // Topics: the one each script hangs off. A named bank topic must still be
   // free for a new script; a NEW title must not collide with one that isn't.
   const bank = await bankFor(input.enrollmentId, month.id);
-  const pillars = await listPillars(input.enrollmentId, { includeRetired: true });
+  let pillars = await listPillars(input.enrollmentId, { includeRetired: true });
+  // A pillar picked from the client's strategy document (no pillar record yet):
+  // from the APPROVED strategy, its pillars are made now — exactly what approving
+  // it does (contentStrategy.syncPillarsFromVersion) — and the script is filed
+  // under the real one; from a draft, the name is kept as the script's label.
+  const docPicks = items.map((it) => STRATEGY_PILLAR.exec(it.pillarId ?? "")).filter((m): m is RegExpExecArray => !!m);
+  let pillarsCreated = 0;
+  const docNames = new Map<string, string>();
+  if (docPicks.length) {
+    const choices = await pillarChoices(input.enrollmentId);
+    for (const o of choices.options) docNames.set(o.id, o.name);
+    const approvedIds = [...new Set(docPicks.filter((m) => m[1] === "strategy").map((m) => m[2]))];
+    for (const versionId of approvedIds) {
+      const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true, status: true } });
+      if (!v || v.enrollmentId !== input.enrollmentId || v.status !== "APPROVED") throw new Error("That strategy isn't approved any more — pick the pillars again.");
+      const { syncPillarsFromVersion } = await import("@/lib/contentStrategy");
+      pillarsCreated += await syncPillarsFromVersion(versionId, actor.email);
+    }
+    if (approvedIds.length) pillars = await listPillars(input.enrollmentId, { includeRetired: true });
+  }
+  const pillarFor = (id: string | null): { pillarId: string | null; label: string | null } => {
+    if (!id) return { pillarId: null, label: null };
+    if (pillars.some((p) => p.id === id)) return { pillarId: id, label: null };
+    const m = STRATEGY_PILLAR.exec(id);
+    const name = m ? docNames.get(id) ?? null : null;
+    if (!m || !name) return { pillarId: null, label: null };
+    if (m[1] === "strategy") {
+      const key = normalizeTitle(name);
+      const row = pillars.find((p) => normalizeTitle(p.name) === key || p.aliases.some((a) => normalizeTitle(a) === key));
+      return { pillarId: row?.id ?? null, label: row ? null : name };
+    }
+    return { pillarId: null, label: name };
+  };
   const used = new Set<string>();
   const resolved = read.map(({ it, r, title }, i) => {
     let topicId: string | null = null;
@@ -442,8 +542,8 @@ export async function applyScriptUpload(input: {
     }
     if (topicId && used.has(topicId)) throw new Error(`Two scripts point at the same topic (“${title}”) — give one its own topic.`);
     if (topicId) used.add(topicId);
-    const pillarId = it.pillarId && pillars.some((p) => p.id === it.pillarId) ? it.pillarId : null;
-    return { it, r, title, topicId, pillarId };
+    const { pillarId, label: pillarLabel } = pillarFor(it.pillarId);
+    return { it, r, title, topicId, pillarId, pillarLabel };
   });
 
   const fileLabel = input.fileNames.filter(Boolean).join(", ").slice(0, 300) || "Pasted text";
@@ -463,6 +563,7 @@ export async function applyScriptUpload(input: {
     monthId: month.id, monthKey: month.monthKey, by: actor.email, byName: firstName(actor), at: new Date().toISOString(),
     scriptIds: [], createdTopicIds: [], matched: [], replaced: [], route: { chosen: false, before: null, at: null },
     parser: input.parser ?? "house", aiRunId: input.aiRunId ?? null, owed: month.videosOwed,
+    ...(pillarsCreated ? { pillarsCreated } : {}),
   };
   const saveLedger = () => prisma.contentImportBatch.update({ where: { id: batchId }, data: { previewJson: JSON.stringify(ledger) } });
 
@@ -502,7 +603,7 @@ export async function applyScriptUpload(input: {
         if (x.pillarId && !t.pillarId) await prisma.contentTopic.update({ where: { id: topicId }, data: { pillarId: x.pillarId } });
       } else {
         const created = await createTopic({
-          enrollmentId: input.enrollmentId, title: x.title, pillarId: x.pillarId, source: "staff", status: "SELECTED", monthId: month.id,
+          enrollmentId: input.enrollmentId, title: x.title, pillarId: x.pillarId, pillarLabel: x.pillarLabel, concept: x.r.topic ?? x.r.goal, source: "staff", status: "SELECTED", monthId: month.id,
           approvalState: "APPROVED", approvedBy: actor.email, actor: staff, sourceRef: `upload:${batchId}`,
           note: `From the scripts ${firstName(actor)} uploaded (${fileLabel})`,
         });
@@ -520,14 +621,21 @@ export async function applyScriptUpload(input: {
       const item = await prisma.contentImportItem.create({
         data: {
           batchId, ordinal: i + 1, kind: "SCRIPT", sourceHash: sha256(`${i}\n${x.it.text}`), sourceText: x.it.text.slice(0, 50_000),
-          parsedJson: JSON.stringify({ title: x.title, topicId, pillarId: x.pillarId, points: x.r.points.length, words: x.r.words, seconds: x.r.seconds, category: x.r.categoryLabel }),
+          parsedJson: JSON.stringify({ title: x.title, topicId, pillarId: x.pillarId, pillarLabel: x.pillarLabel, format: x.r.format, speakers: x.r.speakers, points: x.r.points.length, words: x.r.words, seconds: x.r.seconds, category: x.r.categoryLabel }),
           proposedMode: "CREATE", decidedMode: "CREATE", decidedBy: actor.email, decidedAt: new Date(), targetKind: "ContentScript",
           proposedMonthKey: month.monthKey, pillarLabel: x.r.categoryLabel,
         },
         select: { id: true },
       });
-      const base = partsFromBody(x.title, x.r.text);
-      const pillarName = x.pillarId ? pillars.find((p) => p.id === x.pillarId)?.name ?? null : null;
+      // A script read as written (a skit, or what the AI filed) keeps every line
+      // as the reader holds it — speakers, [directions], scene headings — and
+      // its Purpose, speakers and dimension line ride along as internal notes.
+      // A house-format script is read by the archive reader, as it always was.
+      const asWritten = input.parser === "ai" || x.r.format === "skit";
+      const base: VersionParts = asWritten
+        ? { title: x.title, categoryLabel: x.r.categoryLabel, hook: x.r.hook, points: x.r.points, close: x.r.close, captionCta: x.r.caption, goal: x.r.goal, speakerLabels: x.r.speakers.length ? x.r.speakers : undefined, dimensionsCheck: dimensionsRecord(x.r.dimensions) }
+        : partsFromBody(x.title, x.r.text);
+      const pillarName = x.pillarId ? pillars.find((p) => p.id === x.pillarId)?.name ?? null : x.pillarLabel;
       const parts: VersionParts = { ...base, title: x.title, pillarId: x.pillarId, categoryLabel: pillarName ?? base.categoryLabel ?? null };
       const validation = validateNewScript(canonicalFromParts(parts, month.clientId), { approvedPillars });
       const v = await createScriptVersion({
@@ -573,6 +681,7 @@ export async function applyScriptUpload(input: {
   const mName = monthName(month.monthKey);
   const message = [
     `Added ${plural(ledger.scriptIds.length, "script")} to ${mName} (${ledger.createdTopicIds.length} new topic${ledger.createdTopicIds.length === 1 ? "" : "s"}, ${ledger.matched.length} from the bank).`,
+    pillarsCreated ? `${month.clientName}'s ${plural(pillarsCreated, "content pillar")} from the approved strategy ${pillarsCreated === 1 ? "is" : "are"} now set up.` : "",
     extras ? `${extras === 1 ? "1 is an extra" : `${extras} are extras`} beyond the ${month.videosOwed} owed — kept on the month, waiting ${extras === 1 ? "its" : "their"} turn.` : "",
     open ? `${plural(open, "slot")} still open for ${mName}.` : "",
     "They're in the review queue — send them to the client when you're ready.",
