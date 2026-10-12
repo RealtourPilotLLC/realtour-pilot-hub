@@ -138,7 +138,11 @@ async function main() {
     const released = await staff.releaseStrategy(strategy.id);
     c.ok("signed owner approves and releases strategy with notice suppressed", approved.ok && released.ok && /suppressed/i.test(released.message) && !!(await portal.portalStrategy(clientView.viewer.enrollment)), `${approved.message} / ${released.message}`);
     await clearSession();
-    c.ok("released brand strategy does not stand in for first monthly planning call", !(await clientActions.portalPlanWithoutCall(auth, f.monthId)).ok && (await portal.sessionGate(f.enrollmentId, f.monthId)).locked);
+    // Jordan, Oct 12 2026 ("Or skip the call and select topics and answer questions here"): a released,
+    // approved strategy now OFFERS the written route from the first month — offered, not chosen; the
+    // filming gate stays locked until the month is actually planned. (It used to wait for a first monthly call.)
+    const offered = await portal.portalPlanning(clientView.viewer.enrollment, f.monthId);
+    c.ok("released brand strategy offers the written route as a choice, and filming stays locked until the month is planned", !!offered?.noCallEligible && (await portal.sessionGate(f.enrollmentId, f.monthId)).locked);
 
     analysisPhase = "monthly";
     const monthly = await createManualCallRecord({ clientId: f.clientId, callType: "MONTHLY_STRATEGY", scheduledStart: new Date(now.getTime() - 2 * 3_600_000), scheduledEnd: new Date(now.getTime() - 90 * 60_000), targetMonthKey: monthKey, by: jordan.email });

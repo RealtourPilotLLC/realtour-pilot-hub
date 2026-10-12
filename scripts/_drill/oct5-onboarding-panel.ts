@@ -154,9 +154,10 @@ async function main() {
         d.steps.map((s) => `${s.key}:${s.status}`).join(",") === "account:done,strategy:needs_you,features:needs_you,portal:blocked,messages:needs_you,filming:done,done:needs_you",
         d.steps.map((s) => `${s.key}:${s.status}`).join(","));
       c.ok("…the strategy step names v1 as waiting; automatic booking is unavailable and says why", d.strategy.inReview?.versionNo === 1 && !d.booking.autoAvailable && d.booking.whyNot.some((w) => /switched off/.test(w)));
-      c.ok("…the messages are composed for reading: the welcome greets Erica, the strategy call carries Jordan's link, the subjects are set",
+      c.ok("…the messages are composed for reading: the welcome greets Erica, the strategy call carries the Content Program - Strategy Call link, the subjects are set",
         /^Hi Erica,/.test(d.messages.find((m) => m.key === "welcome")!.body.email) &&
-        d.messages.find((m) => m.key === "strategy_call")!.body.email.includes("https://calendly.com/realtourpilot-info/strategy-call") &&
+        // Jordan, Oct 12 2026: every content-program strategy call uses the "Content Program - Strategy Call" link.
+        d.messages.find((m) => m.key === "strategy_call")!.body.email.includes("https://calendly.com/realtourpilot-info/content-program-strategy-call") &&
         obc.messageOf("strategy_call").subject === "Book your Realtour Pilot strategy call");
       c.ok("…the recipients are the addresses on file (email and text), never a typed one",
         JSON.stringify(d.messages[0].recipients.map((r) => [r.channel, r.toRef])) === JSON.stringify([["email", "erica@example.test"], ["sms", "6105550101"]]));

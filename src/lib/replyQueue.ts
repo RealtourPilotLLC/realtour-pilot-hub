@@ -6,7 +6,7 @@ import { contentTier } from "@/lib/auth/access";
 import { phoneKey } from "@/lib/integrations/openphone";
 import { classifyComm, isReaction, PRAISE_ONLY } from "@/lib/comms";
 import { stripQuotedReply } from "@/lib/text";
-import { HUB_REPLY_SOURCE, HUB_SMS_PREFIX, HUB_SMS_SOURCES, isHubSms, isHubSmsSource } from "@/lib/hubSms";
+import { HUB_REPLY_SOURCE, HUB_SMS_PREFIXES, HUB_SMS_SOURCES, isHubSms, isHubSmsSource } from "@/lib/hubSms";
 
 // ---------------------------------------------------------------------------
 // THE ONE ANSWER TO "WHO IS WAITING ON A REPLY".
@@ -1064,7 +1064,7 @@ export async function openObligations(
         // The hub's own staff texts, recognised by their body as well as their
         // source: a "⚙️ RealTour Hub:" line logged under somebody's own number
         // is not that person answering (outboundIsAnswer says the same).
-        { body: { startsWith: HUB_SMS_PREFIX } },
+        ...HUB_SMS_PREFIXES.map((p) => ({ body: { startsWith: p } })),
         // AND THE UNSUCCESSFUL CALL. This is the reopened defect: without it a
         // later missed callback counted as the answer to a text from a week
         // ago, and the obligation vanished from the board without anybody

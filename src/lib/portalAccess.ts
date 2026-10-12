@@ -704,11 +704,13 @@ export async function welcomeFactsFor(clientId: string | null, now: Date): Promi
   });
   // How their month runs (programMonths.callModeOf / effectiveCallMode, read
   // for the enrollment): an explicit mode wins; the legacy-derived REQUIRED
-  // holds until a first monthly call has been held, then the month may be
-  // planned in writing unless they are switched off the written route.
+  // holds until a first monthly call has been held OR their content strategy
+  // is approved and released (Jordan, Oct 12 2026: "Or skip the call and
+  // select topics and answer questions here"), then the month may be planned
+  // in writing unless they are switched off the written route.
   const explicit = enrollment?.callMode === "REQUIRED" || enrollment?.callMode === "OPTIONAL_WRITTEN" || enrollment?.callMode === "NOT_INCLUDED" ? enrollment.callMode : null;
   const base = explicit ?? (enrollment?.strategyCallRequired === false ? "NOT_INCLUDED" : "REQUIRED");
-  const mode = !explicit && base === "REQUIRED" && monthlyHeld > 0 && enrollment?.noCallEligible !== false ? "OPTIONAL_WRITTEN" : base;
+  const mode = !explicit && base === "REQUIRED" && (monthlyHeld > 0 || released > 0) && enrollment?.noCallEligible !== false ? "OPTIONAL_WRITTEN" : base;
   const planning = clientPlanned ? "CLIENT_PLANNED" as const
     : mode === "NOT_INCLUDED" ? "WRITTEN" as const
     : mode === "OPTIONAL_WRITTEN" && enrollment?.noCallEligible !== false ? "CALL_OR_WRITTEN" as const

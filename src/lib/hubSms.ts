@@ -2,15 +2,20 @@
 // purpose: the sender (notify.ts) and the OpenPhone receiver (the echo guard
 // in the webhook) both read it, and neither should pull the other in.
 //
-// "⚙️ RealTour Hub:" is what tells a teammate — and the webhook — that the
+// "⚙️ Realtour Hub:" is what tells a teammate — and the webhook — that the
 // hub wrote the text, not Kyle from the same number. Sep 11: the receiver now
 // keys on it too, so the echo of a text the hub sent its own people is never
 // logged as a conversation, never closes a task, and never counts as "we
 // replied" on that teammate's thread.
-export const HUB_SMS_PREFIX = "⚙️ RealTour Hub";
+export const HUB_SMS_PREFIX = "⚙️ Realtour Hub";
+// The brand was spelled "RealTour" until Oct 12 2026 (Jordan: "Realtour").
+// Every text already sent and logged carries the old tag, so the receiver and
+// the reply queue recognise BOTH; only new texts use the new one.
+export const HUB_SMS_PREFIXES = [HUB_SMS_PREFIX, "⚙️ RealTour Hub"] as const;
 
 export function isHubSms(text: string | null | undefined): boolean {
-  return (text ?? "").trimStart().startsWith(HUB_SMS_PREFIX);
+  const t = (text ?? "").trimStart();
+  return HUB_SMS_PREFIXES.some((p) => t.startsWith(p));
 }
 
 // The automated staff texts that predate the prefix — the upload-page digest,

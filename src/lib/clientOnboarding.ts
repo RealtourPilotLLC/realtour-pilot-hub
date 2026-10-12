@@ -359,7 +359,6 @@ async function composeMessages(a: {
   signInByEmail: boolean; signInWhyNot: string | null;
 }): Promise<OnboardingMessageView[]> {
   const { reminderTemplate, renderReminder, monthName, firstNameOf } = await import("@/lib/reminderTemplates");
-  const { GENERAL_STRATEGY_CALL_BOOKING_URL } = await import("@/lib/settings");
   const { STRATEGY_CALL_BOOKING_URL } = await import("@/lib/integrations/calendly");
   const first = firstNameOf(a.clientName);
   const month = monthName(a.monthKey);
@@ -374,10 +373,10 @@ async function composeMessages(a: {
     prisma.programCalendlyEventMapping.findFirst({ where: { purpose: "MONTHLY_STRATEGY", enabled: true }, select: { publicUrl: true } }).catch(() => null),
     prisma.contentEnrollment.findUnique({ where: { id: a.enrollmentId }, select: { callMode: true, strategyCallRequired: true, clientSuppliesTopics: true } }).catch(() => null),
   ]);
-  // Jordan's general strategy-call link (Oct 5 2026). It is mapped as a
-  // STRATEGY_CANDIDATE, so a program client's booking on it is still filed on
-  // their month once their identity verifies.
-  const callLink = GENERAL_STRATEGY_CALL_BOOKING_URL;
+  // Jordan, Oct 12 2026: "Content Program - Strategy Call should be the link
+  // used for all content program strategy calls" — the monthly mapping's public
+  // link (the same one the portal and reminders use), else its known URL.
+  const callLink = monthlyMapping?.publicUrl ?? STRATEGY_CALL_BOOKING_URL;
   const callsOff = style?.callMode === "NOT_INCLUDED" || (!style?.callMode && style?.strategyCallRequired === false);
   const titles = scripts.map((s) => s.title).filter(Boolean);
   const render = (id: string, extra: Partial<TemplateVars> = {}) => renderReminder(reminderTemplate(id), { ...base, ...extra });
@@ -395,7 +394,7 @@ async function composeMessages(a: {
       note: style?.clientSuppliesTopics
         ? `${a.clientName} plans their own content, so a strategy call is optional for them.`
         : callsOff ? `Strategy calls are switched off for ${a.clientName} (Program style), so this message doesn't apply to them.`
-        : `Inside their portal, "Book a call" uses the monthly strategy-call event (${monthlyMapping?.publicUrl ?? STRATEGY_CALL_BOOKING_URL}) instead of this link.`,
+        : null,
     },
     strategy_ready: {
       email: strategyVars ? render("strategy_ready.v2", strategyVars) : render("strategy_ready.v2", { callLink: callsOff ? null : callLink, setupMissing: [], strategyUpdate: false, strategyCallsOff: callsOff }),

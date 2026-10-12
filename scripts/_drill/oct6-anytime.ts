@@ -247,7 +247,7 @@ async function main() {
     const j0 = texts.length;
     await announceCutInReview({ kind: "cut_ready", projectId: rv.id, submissionId: cut, round: 1, street: rv.street, fileName: "cut.mp4", editorKey: "kim", editorName: "Kim Miguel" });
     const jt = textsTo(JAMES_PH, j0);
-    c.ok(`${label}: James's review TEXT goes at once (no 7 AM–10 PM texting window)`, jt.length === 1 && jt[0].body.includes(rv.street) && jt[0].body.startsWith("⚙️ RealTour Hub"), jt.map((t) => t.body.slice(0, 90)).join(" | ") || "no text");
+    c.ok(`${label}: James's review TEXT goes at once (no 7 AM–10 PM texting window)`, jt.length === 1 && jt[0].body.includes(rv.street) && jt[0].body.startsWith("⚙️ Realtour Hub"), jt.map((t) => t.body.slice(0, 90)).join(" | ") || "no text");
     c.ok(`${label}: …and nothing of his left in the queue`, (await unsent(james.id)).length === 0);
 
     c.ok(`${label}: NOTHING held for anyone — no held DM, no dated text`, (await heldRows()).length === 0 && (await datedTexts()).length === 0, JSON.stringify({ held: await heldRows(), dated: await datedTexts() }));

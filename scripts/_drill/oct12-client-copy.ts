@@ -145,7 +145,10 @@ async function main() {
     c.ok("discovery waived by the office: no step", !hasDiscoveryStep(waived));
     const established = await welcome({ monthlyHeld: 1 });
     c.ok("an established client (a monthly strategy call already held): no step, and the month may be planned in writing",
-      !hasDiscoveryStep(established) && /1\. Plan the month: book your monthly strategy call, or skip the call and choose your video topics/.test(established));
+      !hasDiscoveryStep(established) && /1\. Book your monthly strategy call\. That's where we plan the month's videos and choose your topics together\. Or skip the call and select your topics and answer a few questions here in your portal\./.test(established));
+    // Jordan, Oct 12 2026: an approved, released strategy opens the written route too (not only a held monthly call).
+    const strategyOnly = await welcome({ strategies: 1, released: 1 });
+    c.ok("a released strategy (no monthly call held yet): the call OR topics-in-the-portal step", /Or skip the call and select your topics/.test(strategyOnly));
     const pinnedCall = await welcome({ monthlyHeld: 1, enrollment: { ...BASE.enrollment!, noCallEligible: false } });
     c.ok("…unless they are switched off the written route: call only", /1\. Book your monthly strategy call\. That's where/.test(pinnedCall) && !/skip the call/.test(pinnedCall));
 
@@ -157,7 +160,7 @@ async function main() {
       !hasDiscoveryStep(selfPlanned) && !/strategy call|topics|scripts before/i.test(selfPlanned.split("Here's what you'll do")[1] ?? selfPlanned) && /1\. Add your plan for the month if you'd like \(optional\)/.test(selfPlanned) && /2\. Book your filming session\.\n3\. Review your videos/.test(selfPlanned));
 
     const pro = await welcome({ strategies: 1, released: 1, enrollment: { ...BASE.enrollment!, sessionsPerMonth: 2 } });
-    c.ok("a two-session package (Pro): 'Book your two filming sessions', times plural", /2\. Book your two filming sessions\. You can pick times as soon as your call is booked\./.test(pro));
+    c.ok("a two-session package (Pro): 'Book your two filming sessions', times plural", /2\. Book your two filming sessions\. You can pick times as soon as your call is booked or your answers are in\./.test(pro));
     c.ok("a self-planned client's intro doesn't promise topics or scripts from us", !/video topics|your scripts/.test(selfPlanned.split("\n")[2] ?? ""));
     const brand = await welcome({ strategies: 1, released: 1, setupMissing: ["logo", "headshot", "brand colors", "fonts", "music style"] });
     c.ok("missing Brand Profile items: one short step (three named and 'the rest'), the month's list renumbered after it",

@@ -747,7 +747,7 @@ async function main() {
     setClock(edt(10, 31, 19, 31));
     await notify.flushPendingSms();
     const jt = textsTo(JORDAN_PH, t1);
-    c.ok("19:31: ONE text to Jordan with tonight's list, marked as the hub's", jt.length === 1 && /80 Owner Way/.test(jt[0].body) && jt[0].body.startsWith("⚙️ RealTour Hub"), jt.map((t) => t.body.slice(0, 80)).join(" | "));
+    c.ok("19:31: ONE text to Jordan with tonight's list, marked as the hub's", jt.length === 1 && /80 Owner Way/.test(jt[0].body) && jt[0].body.startsWith("⚙️ Realtour Hub"), jt.map((t) => t.body.slice(0, 80)).join(" | "));
     setClock(edt(10, 31, 20, 59));
     await notify.flushPendingSms();
     c.ok("20:59: Kyle's note still held", dmsTo(kyle, s1).length === 0);

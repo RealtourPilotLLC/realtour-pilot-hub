@@ -1519,7 +1519,12 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   // AWAITING_SCRIPT_APPROVAL either. Month-level rows (no topic) and imports
   // stay — they are evidence the month was planned.
   const scripts = scriptsAll.filter((s) => !s.topicId || !extraTopicIds.has(s.topicId));
-  const priorCallHeld = priorCallHeldFrom(month.id, priorRecords, completedMonths.map((m) => m.id), now);
+  // Jordan, Oct 12 2026: a client may skip the call and pick topics in the
+  // portal once their content strategy is approved (the topic bank exists),
+  // not only after a first monthly call was held. effectiveCallMode reads this
+  // as its "prior call held" fact.
+  const strategyApproved = (await prisma.contentStrategy.count({ where: { enrollmentId: month.enrollmentId, approvedVersionId: { not: null } } }).catch(() => 0)) > 0;
+  const priorCallHeld = priorCallHeldFrom(month.id, priorRecords, completedMonths.map((m) => m.id), now) || strategyApproved;
   // Per-topic material (spec §8): an approved script counts — including one
   // carried over from last month, which is why this reads the script's own
   // approval state rather than asking whether it was written this month.

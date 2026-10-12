@@ -133,7 +133,8 @@ function monthlySteps(f: WelcomeFacts): string[] {
       ];
     case "CALL_OR_WRITTEN":
       return [
-        "Plan the month: book your monthly strategy call, or skip the call and choose your video topics and answer a few short questions about each.",
+        // Jordan's words (Oct 12 2026).
+        "Book your monthly strategy call. That's where we plan the month's videos and choose your topics together. Or skip the call and select your topics and answer a few questions here in your portal.",
         `${book} ${pick} as soon as your call is booked or your answers are in.`,
         scripts,
         videos,
