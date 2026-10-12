@@ -55,6 +55,10 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   const brief = await import("@/lib/monthBrief").then(async (m) => m.briefView(await m.monthBrief(month.id), null)).catch(() => null);
   const showBrief = !month.historical && (clientPlanned || (!!brief && (brief.files.length > 0 || !!brief.notes)));
   const planHref = (v: string) => contentHref(id, { tab: "plan", view: v, month: mk });
+  // Oct 12 2026: a call whose transcript is in but nobody has analyzed — the
+  // month's call card runs it ("Analyze the call").
+  const unanalyzed = (await import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ monthId: month.id })).catch(() => []))
+    .filter((c) => c.state === "in" || c.state === "failed").length;
   const prodHref = (v: string) => contentHref(id, { tab: "production", view: v, month: mk });
   // The roster's "Open the history" / "Open" point at THIS page (ended,
   // skipped and imported months): useful on a card, dead here — the one
@@ -65,6 +69,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   const work: { text: string; href: string; tone: "us" | "client" | "approval" }[] = [];
   if (row) {
     const w = row.work;
+    if (unanalyzed > 0) work.push({ text: `${plural(unanalyzed, "call transcript")} in — not analyzed yet`, href: contentHref(id, { tab: "plan", view: "calls", month: mk, anchor: "call" }), tone: "us" });
     if (w.strategyReviewNeeded > 0) work.push({ text: `${plural(w.strategyReviewNeeded, "strategy version")} waiting for approval`, href: planHref("strategy"), tone: "approval" });
     if (w.scriptsReviewNeeded > 0) work.push({ text: `${plural(w.scriptsReviewNeeded, "script")} waiting for approval`, href: planHref("scripts"), tone: "approval" });
     if (w.openScriptRequests > 0) work.push({ text: `${plural(w.openScriptRequests, "client script request")} to answer`, href: planHref("scripts"), tone: "us" });

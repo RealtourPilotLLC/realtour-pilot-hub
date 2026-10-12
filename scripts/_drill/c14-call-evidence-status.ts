@@ -28,16 +28,17 @@ async function main() {
       return row;
     };
     let row = await read();
-    c.ok("confirmed held transcript is awaiting analysis, never absent", row.strategyCall.evidence === "transcript held, not analysed yet" && row.strategyCall.problem?.includes("awaiting analysis") === true && !row.nextAction.text.includes("no transcript") && row.nextAction.cta === "Review transcript processing");
+    // Oct 12 2026: a confirmed transcript nobody analyzed says so in plain words and opens the month's call card, where "Analyze the call" runs it.
+    c.ok("confirmed held transcript is in, not analyzed — never absent; the step opens the call card", row.strategyCall.evidence === "transcript held, not analysed yet" && row.strategyCall.problem?.includes("not analyzed yet") === true && !row.nextAction.text.includes("no transcript") && row.nextAction.cta === "Analyze the call" && /view=calls/.test(row.nextAction.href) && row.nextAction.href.endsWith("#call"), `${row.nextAction.text} | ${row.nextAction.cta} | ${row.nextAction.href}`);
     const job = await prisma.programTranscriptJob.create({ data: { callRecordId: call.id, enrollmentId: f.enrollmentId, kind: "ANALYZE", state: "QUEUED", dedupeKey: `${call.id}:ANALYZE` } });
     row = await read();
-    c.ok("missing processor switch reports queued and off without completing preparation", row.strategyCall.processing === "transcript queued — processing is off" && row.nextAction.text.includes("confirmed transcript is queued") && row.nextAction.text.includes("call processing is off") && row.planning.preparationWord.includes("queued") && row.priority === 20 && !row.flags.includes("ready_to_film"));
+    c.ok("missing processor switch reports queued and off without completing preparation", row.strategyCall.processing === "transcript queued — processing is off" && row.nextAction.text.includes("not analyzed yet; queued") && row.nextAction.text.includes("automatic analysis is off") && row.planning.preparationWord.includes("queued") && row.priority === 20 && !row.flags.includes("ready_to_film"), row.nextAction.text);
     await prisma.programAutomation.create({ data: { key: "transcript_jobs", enabled: true, configJson: JSON.stringify({ onlyQueuedAfter: "2026-10-11T00:00:00Z" }) } });
     await prisma.programTranscriptJob.update({ where: { id: job.id }, data: { lastError: "waiting: queued Oct 1, before the call processor was first switched on — include older jobs in Settings → Calendly & calls to run it" } });
     const beforeQueue = JSON.stringify(await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: job.id } }));
     const beforeSwitch = JSON.stringify(await prisma.programAutomation.findUniqueOrThrow({ where: { key: "transcript_jobs" } }));
     row = await read();
-    c.ok("queued backlog holds are named as recorded notes without promising execution", row.nextAction.text.includes("Last queue note: waiting: queued") && row.nextAction.text.includes("backlog and rollout holds") && !/next (hourly )?run/.test(row.nextAction.text));
+    c.ok("queued backlog holds are named as recorded notes without promising execution — and the manual way is offered", row.nextAction.text.includes("Last queue note: waiting: queued") && row.nextAction.text.includes("Analyze the call to do it now") && !/next (hourly )?run/.test(row.nextAction.text), row.nextAction.text);
     c.ok("overview leaves switch, cutoff, attempts and queue state untouched", beforeQueue === JSON.stringify(await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: job.id } })) && beforeSwitch === JSON.stringify(await prisma.programAutomation.findUniqueOrThrow({ where: { key: "transcript_jobs" } })));
     await prisma.programTranscriptJob.update({ where: { id: job.id }, data: { state: "RUNNING", lastError: null } });
     row = await read();
@@ -85,7 +86,7 @@ async function main() {
     const unknown = programCallEvidence({ held: true, call: { transcriptState: "CONFIRMED", lastError: null }, manualText: false, processed: false, jobs: [{ kind: "ANALYZE", state: "QUEUED", lastError: null, reviewReason: null }], processorEnabled: null });
     c.ok("unreadable processor state is unknown, never implicitly enabled", unknown.processing?.includes("processor state unavailable") === true && !unknown.problem?.includes("next run"));
     const imported = programCallEvidence({ held: true, call: { transcriptState: "CONFIRMED", lastError: null }, manualText: false, processed: false, jobs: [{ kind: "INGEST", state: "SUCCEEDED", lastError: null, reviewReason: null }], processorEnabled: false });
-    c.ok("successful import alone does not claim completed analysis", imported.processing === "transcript imported" && imported.problem?.includes("awaiting analysis") === true);
+    c.ok("successful import alone does not claim completed analysis", imported.processing === "transcript imported" && imported.problem?.includes("not analyzed yet") === true && imported.analyzeHere === true);
     c.ok("read-only overview creates no attempts, messages or processing side effects", (await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: job.id } })).attempts === 0 && await prisma.outboxMessage.count() === 0 && await prisma.contentScript.count() === 1 && (await prisma.contentScript.findUniqueOrThrow({ where: { id: script.id } })).status === "INTERNAL_REVIEW" && fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();
   } finally { fence.restore(); await db.stop(); }

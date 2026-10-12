@@ -247,11 +247,11 @@ async function main() {
   // R05 (Sep 28 2026): a QUEUED job now always runs unattended, whoever asked
   // for it ("drill-staff" included), so this drill's queued work needs the AI
   // master switch on, exactly as production would; the attended buttons
-  // (revise, draft now) are untouched by it. The processor's two new holds —
-  // the backlog from before its first switch-on, and internal AI only for
-  // TEST and pilot clients — are proven in r04-r05-scope-readiness; here the
-  // rollout reaches every client and the backlog is included, so this drill
-  // goes on testing what it tests (identity, A09, the house format).
+  // (revise, draft now) are untouched by it. The processor's backlog hold
+  // (jobs from before its first switch-on) is proven in r04-r05-scope-readiness
+  // (the rollout no longer holds internal work, Oct 12 2026); here the rollout
+  // reaches every client and the backlog is included, so this drill goes on
+  // testing what it tests (identity, A09, the house format).
   await setSwitch("ai_runs", true);
   {
     const core = await import("@/lib/programRolloutCore");

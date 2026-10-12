@@ -9,6 +9,7 @@ import {
   confirmCallClient, ignoreCall, retargetCall, confirmTranscript, rejectTranscript, verifyAlias, dismissAlias, rerunTranscriptJob, setTranscriptBacklogAction,
   type CalendlyPanelState,
 } from "@/app/settings/calendlyActions";
+import { CallTranscriptItem } from "@/components/content/CallTranscripts";
 
 // ---------------------------------------------------------------------------
 // Settings → Calendly & calls (spec §26). What the owner sees:
@@ -187,9 +188,32 @@ export function CalendlyMappingsPanel({ state, canOpenOperations = false }: { st
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-[11px] text-muted">These stay off until launch is authorised. With them off, call records and transcripts are still collected and queued; nothing is analysed and nothing is booked or sent.</p>
+          <p className="mt-2 text-[11px] text-muted">With Transcript processing or AI runs off, calls and transcripts are still collected and queued, but nothing is analysed on its own — press Analyze on the call to do it now. Analysis is internal and runs for every client; the rollout only limits what reaches clients.</p>
         </div>
       </div>
+
+      {/* Transcripts in, not analyzed (Oct 12 2026) — and why the automatic run has not done them. */}
+      {state.awaiting && (
+        <div className="rounded-xl border p-3" data-awaiting-analysis>
+          <div className="flex flex-wrap items-center gap-2 font-medium">
+            <FileText className="size-4 text-muted" /> Transcripts in, not analyzed
+            <Chip tone={state.awaiting.calls.length ? "warn" : "muted"}>{state.awaiting.calls.length}</Chip>
+          </div>
+          {state.awaiting.calls.length === 0 ? (
+            <p className="mt-1 text-xs text-muted">Every confirmed call transcript has been analyzed.</p>
+          ) : (
+            <>
+              <p className="mt-1 text-xs text-muted">
+                {state.awaiting.offLine ?? "Automatic analysis is on — the hourly run works through them, five at a time."}
+                {" "}Analyze on the month runs one now (it proposes topics, facts and script inputs for review — nothing reaches the client).
+              </p>
+              <div className="mt-2 space-y-2">
+                {state.awaiting.calls.map((c) => <CallTranscriptItem key={c.callRecordId} call={c} showClient runHere={false} />)}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Operational matching belongs in the existing queue. Keep the prior
           owner-action surface only when a page-access override blocks it. */}
@@ -315,7 +339,6 @@ function QueueBatch({ batch, busy, run }: { batch: NonNullable<CalendlyPanelStat
       <p className="text-muted">
         {cutoffWords}. Runnable now: <strong className="text-foreground">{batch.runnableNow}</strong> (five per hourly run{batch.aiJobs ? "; each AI job spends credit" : ""})
         {batch.heldBacklog > 0 && <> · <span className="text-warning">{batch.heldBacklog} skipped as older than that</span></>}
-        {batch.heldScope > 0 && <> · {batch.heldScope} wait because their client is outside the rollout (internal AI runs only for TEST and pilot clients)</>}
         {batch.ownerOff.map((o) => <span key={o.kind}> · {o.jobs} {o.kind} wait for <code>{o.owner}</code> to be on</span>)}
         {batch.needsReview > 0 && <> · {batch.needsReview} need a person</>}.
       </p>
@@ -324,7 +347,7 @@ function QueueBatch({ batch, busy, run }: { batch: NonNullable<CalendlyPanelStat
           <Btn busy={busy} onClick={() => { if (window.confirm(`Also process the ${batch.heldBacklog} older job${batch.heldBacklog === 1 ? "" : "s"}? The AI jobs among them spend credit, and some may be real clients' calls.`)) run(() => setTranscriptBacklogAction("include")); }}>Include the {batch.heldBacklog} older job{batch.heldBacklog === 1 ? "" : "s"}</Btn>
         )}
         {including && <Btn busy={busy} onClick={() => run(() => setTranscriptBacklogAction("skip"))}>Skip jobs queued before the first switch-on{first ? ` (${fmt(first)})` : ""} again</Btn>}
-        <span className="text-[11px] text-muted">Drafts still wait for your approval; nothing is released to a client. The Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use this queue.</span>
+        <span className="text-[11px] text-muted">It works through every client&rsquo;s calls (the rollout only limits what reaches clients). Drafts still wait for your approval; nothing is released to a client. The Analyze, Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use this queue.</span>
       </div>
     </div>
   );

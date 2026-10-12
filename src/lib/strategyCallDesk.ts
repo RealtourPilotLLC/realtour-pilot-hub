@@ -4,6 +4,7 @@ import { etMonthKey } from "@/lib/contentProgram";
 import { etDayKey } from "@/lib/datetime";
 import { isTestClientName } from "@/lib/testClients";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
+import type { CallTranscriptUi } from "@/lib/callAnalysis";
 
 // ---------------------------------------------------------------------------
 // STRATEGY CALLS · LAST 30 DAYS (Oct 6 2026) — the read behind /content/calls.
@@ -113,6 +114,13 @@ export type DeskRow = {
   note: string | null;
   /** Oct 7 2026: the month it is on carries a missed month's catch-up — what this call is to it. */
   catchUpNote: string | null;
+  /**
+   * Oct 12 2026: the call's transcript — none yet / in, not analyzed / analyzing
+   * / analyzed (N topic proposals) / failed — with why the automatic run has not
+   * done it and whether "Analyze the call" may run (callAnalysis.ts). null when
+   * it could not be read.
+   */
+  transcript: CallTranscriptUi | null;
 };
 export type DeskData = {
   rows: DeskRow[];
@@ -206,8 +214,14 @@ export async function strategyCallDesk(opts: { now?: Date } = {}): Promise<DeskD
       monthOptions: start ? monthOptionsFor(start, onMonth ? monthKey : null) : monthKey ? [monthKey] : [],
       note: r.matchNote,
       catchUpNote: onMonth ? catchUpNoteFor(r, monthKey ?? null) : null,
+      transcript: null,
     };
   });
+  // Every row's transcript in one read (callAnalysis.loadCallTranscripts).
+  const transcripts = rows.length
+    ? new Map((await import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ callRecordIds: rows.map((r) => r.id) }, now)).catch(() => [])).map((t) => [t.callRecordId, t]))
+    : new Map<string, CallTranscriptUi>();
+  for (const r of rows) r.transcript = transcripts.get(r.id) ?? null;
   const candidate = mappings.filter((m) => m.purpose === "STRATEGY_CANDIDATE" && m.enabled);
   const program = mappings.filter((m) => m.enabled && m.purpose !== "IGNORED");
   const last = program.map((m) => m.lastSyncedAt).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;

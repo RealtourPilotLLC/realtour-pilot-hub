@@ -2,6 +2,8 @@
 
 import { useRef, useState, useTransition } from "react";
 import { Check, Compass, Layers, Loader2, MessageSquareText, Mic, Pencil, Send, Trash2, Upload, Wand2, X } from "lucide-react";
+import type { CallTranscriptUi } from "@/lib/callAnalysis";
+import { CallTranscriptItem } from "@/components/content/CallTranscripts";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { StrategyDocView, type StrategyDocSection } from "@/components/content/StrategyDocView";
@@ -45,6 +47,8 @@ export type DiscoveryUi = {
   draftedVersionNo: number | null;
   /** The call's analysis has run (so what was said in confidence is marked). */
   analysed: boolean;
+  /** Oct 12 2026: the call's transcript line, with "Analyze the call" (callAnalysis.ts). */
+  transcript?: CallTranscriptUi | null;
 };
 export type ProposalRow = { id: string; kind: string; summary: string; impact: string | null; sourceKind: string; sourceRef: string | null; createdAt: string };
 export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string };
@@ -237,10 +241,12 @@ function DiscoveryStrip({ d, busy, isOwner, hasVersions, onDraft, onWaive }: { d
   else if (d.draftedVersionNo) line = `Discovery call ${when ?? ""} — drafted as v${d.draftedVersionNo}.`;
   else if (ready) line = `Discovery call ${when ?? ""} — transcript confirmed${d.analysed ? " and analysed" : "; its analysis hasn't run yet"}. Ready to draft the strategy.`;
   else line = `Discovery call ${when ?? ""} — ${d.call.transcriptState === "NONE" || d.call.transcriptState === "AWAITING" ? "waiting for its transcript" : `transcript: ${d.call.transcriptState.toLowerCase().replace(/_/g, " ")}`}.`;
+  const t = d.transcript && !d.waived && d.transcript.state !== "none" ? d.transcript : null;
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-[13px]">
       <Mic className="size-4 text-muted-2" />
       <span className="min-w-0 flex-1">{line}</span>
+      {t && <div className="basis-full"><CallTranscriptItem call={t} variant="inline" showCall={false} /></div>}
       {ready && !d.draftedVersionNo && !d.waived && (
         <button disabled={busy} onClick={onDraft} className={`${btn} bg-brand text-white`} title="One AI draft in the house format, from the confirmed transcript. It lands as a draft for you to edit and approve.">
           <Wand2 className="mr-1 inline size-3" />Draft from the discovery call

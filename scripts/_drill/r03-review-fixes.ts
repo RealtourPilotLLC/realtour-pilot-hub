@@ -602,7 +602,8 @@ async function main(): Promise<void> {
     const cX = await call(X);
     const failedX = await job(cX, "ANALYZE", new Date(PINNED - DAY), { state: "FAILED", attempts: 3, enrollmentId: X.enrollmentId });
     const rx = await rerunTranscriptJob(failedX.id);
-    c.ok("NEW: Re-run on the excluded client's job → 'Re-queued, but it waits: … outside the rollout (add the client to the pilot…)'", rx.ok && /waits/.test(rx.message) && /outside the rollout/.test(rx.message) && !/runs on the next hourly run/.test(rx.message), rx.message);
+    // Oct 12 2026: the rollout holds no internal work any more, so a client outside the pilot is promised the next run too.
+    c.ok("NEW (Oct 12): Re-run on a client outside the pilot → 'It runs on the next hourly run' — no rollout hold", rx.ok && /It runs on the next hourly run/.test(rx.message) && !/outside the rollout/.test(rx.message), rx.message);
     const failedT = await job(cT, "ANALYZE", new Date(PINNED - DAY), { state: "FAILED", attempts: 3, enrollmentId: T.enrollmentId });
     const rt = await rerunTranscriptJob(failedT.id);
     c.ok("…a job nothing holds is promised the next hourly run", rt.ok && /It runs on the next hourly run/.test(rt.message), rt.message);

@@ -335,6 +335,15 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   ]);
 
   const nameOf = new Map(allClients.map((c) => [c.id, c.name]));
+  // Oct 12 2026: where each call's confirmed transcript came from, so a held
+  // call's step can say "Transcript in from Drive (Gemini notes, Oct 6)".
+  const sourceOf = new Map<string, { provider: string; recordedAt: Date | null }>();
+  if (calls.length) {
+    const rows = await prisma.programTranscriptSource
+      .findMany({ where: { callRecordId: { in: calls.map((c) => c.id) }, matchState: "CONFIRMED" }, orderBy: { version: "desc" }, select: { callRecordId: true, provider: true, recordedAt: true } })
+      .catch(() => []);
+    for (const r of rows) if (r.callRecordId && !sourceOf.has(r.callRecordId)) sourceOf.set(r.callRecordId, { provider: r.provider, recordedAt: r.recordedAt });
+  }
   // CP-13: waiting client messages per enrollment — one grouped read, and a
   // failed read says 0 rather than breaking the roster.
   const waiting = new Map(
@@ -433,7 +442,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // month. "The call happened and nothing was recorded" is softer — if the
     // scripts got written anyway (Jordan's archive imports do exactly this),
     // it is a note, not the thing standing in the way.
-    const callEvidence = programCallEvidence({ held: callHeld, call, jobs: callJobs, manualText: !!m?.transcriptText, processed: !!m?.transcriptProcessedAt, processorEnabled: transcriptProcessorEnabled });
+    const callEvidence = programCallEvidence({ held: callHeld, call, jobs: callJobs, manualText: !!m?.transcriptText, processed: !!m?.transcriptProcessedAt, processorEnabled: transcriptProcessorEnabled, source: call ? sourceOf.get(call.id) ?? { provider: "", recordedAt: call.scheduledStart } : null });
     const { evidence, processing: jobWord, hardProblem: hardCallProblem, problem: callProblem } = callEvidence;
 
     // Preparation is DERIVED with programMonths.deriveMonthState, not read off
@@ -610,7 +619,10 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     } else if (m.historical) {
       next = { text: "Imported history — read only", owner: owner.DELIVERY.label, ownerDuty: "delivery", blocked: "nobody", closed: true, deadlineISO: null, href: href(), cta: "Open" };
     } else if (blockingCallProblem) {
-      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: "/content/monitoring#calls", cta: callEvidence.cta };
+      // A confirmed transcript nobody has analysed opens the month's call card,
+      // where "Analyze the call" runs it now (Oct 12 2026); anything else
+      // (a failed import, a transcript to confirm) opens the call review queue.
+      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: callEvidence.analyzeHere && !hardCallProblem ? contentHref(e.id, { tab: "plan", view: "calls", month: key, now, anchor: "call" }) : "/content/monitoring#calls", cta: callEvidence.cta };
     } else if ((pp?.awaitingClient ?? 0) > 0) {
       // The entitlement reader, not a stale video status, says these exact
       // cuts are released. Their live decision or send takes priority over

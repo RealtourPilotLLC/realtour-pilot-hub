@@ -77,7 +77,12 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   }
 
   if (v === "calls") {
-    const calls = await loadCallsTab(id);
+    // Oct 12 2026: each call on the month with its transcript and analysis
+    // (callAnalysis.ts) — the card's "Analyze the call" lives on these.
+    const [calls, monthCalls] = await Promise.all([
+      loadCallsTab(id),
+      month ? import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ monthId: month.id })).catch(() => []) : Promise.resolve([]),
+    ]);
     return (
       <div className="space-y-5">
         {sub}
@@ -93,6 +98,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
               transcriptProcessed={!!month.transcriptProcessedAt}
               required={ctx.enrollment.strategyCallRequired}
               bookingUrl={STRATEGY_CALL_BOOKING_URL}
+              calls={monthCalls}
             />
           </div>
         ) : (

@@ -43,7 +43,8 @@
 //   5. The driver: a STRATEGY_DRAFT waits while strategy_generation is off
 //      (attempts untouched, marked once) while INGEST/ANALYZE behind it run;
 //      the backlog cutoff (pinned, audited, "include" runs them); the rollout
-//      hold (a real client outside the pilot waits; ALL runs it).
+//      rollout holds nothing internal since Oct 12 2026 (a real client outside
+//      the pilot runs; the retired mark is cleared).
 //   6. Readiness R05: the blocker names transcript_jobs and the count, healthy
 //      "blocked"; a partial dependency is never healthy; "queue not draining";
 //      the read-only "Queued now" line.
@@ -708,7 +709,10 @@ async function parentMain() {
       await tj.driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "drill" });
       c.ok("the owner includes the older jobs → it runs on the next tick", inc.ok && (await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: old.id } })).state === "SUCCEEDED", inc.message);
 
-      // (c) The rollout: internal AI only for TEST and pilot clients.
+      // (c) The rollout holds NO internal work (Oct 12 2026, Jordan: "All the
+      // automations should be on — I just don't want notifications going out
+      // to the clients yet"). Sep 28 – Oct 12, X's analysis waited "outside the
+      // rollout"; now X (a real client outside the pilot) runs like P.
       const Xm = await prisma.contentMonth.create({ data: { enrollmentId: X.enrollmentId, clientId: X.clientId, monthKey, videosOwed: 4, status: "OPEN" }, select: { id: true } });
       const Pm = await prisma.contentMonth.create({ data: { enrollmentId: P.enrollmentId, clientId: P.clientId, monthKey, videosOwed: 4, status: "OPEN" }, select: { id: true } });
       const { callId: cx } = await monthlyCall(X, Xm.id, "x");
@@ -717,18 +721,21 @@ async function parentMain() {
       const pj = await jobFor(cp, "ANALYZE", "drive-sweep", P.enrollmentId);
       await tj.driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "drill" });
       const [xr, pr] = await Promise.all([prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: xj.id } }), prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: pj.id } })]);
-      c.ok("PILOT: X's (excluded) analysis WAITS, \"outside the rollout\", attempt untouched; P's (pilot) ran", xr.state === "QUEUED" && xr.attempts === 0 && /outside the rollout/.test(xr.lastError ?? "") && pr.state === "SUCCEEDED", `${xr.state} ${xr.lastError} / ${pr.state} ${pr.lastError}`);
-      await writeRollout({ mode: "ALL", modeSince: new Date().toISOString(), pilot: null });
+      c.ok("PILOT: X's analysis (a real client OUTSIDE the pilot) RUNS — internal work is not held by the rollout; P's ran too", xr.state === "SUCCEEDED" && pr.state === "SUCCEEDED" && !/outside the rollout/.test(xr.lastError ?? ""), `${xr.state} ${xr.lastError} / ${pr.state} ${pr.lastError}`);
+      // A job still carrying the retired mark (written by the Sep 28 build) is freed and cleared.
+      const { callId: cx3 } = await monthlyCall(X, Xm.id, "x3");
+      const xj3 = await jobFor(cx3, "ANALYZE", "drive-sweep", X.enrollmentId);
+      await prisma.programTranscriptJob.update({ where: { id: xj3.id }, data: { lastError: `waiting: ${X.name} is outside the rollout — internal AI work runs only for TEST and pilot clients until the rollout reaches every client`, lastErrorAt: new Date() } });
+      c.ok("the retired rollout mark still reads as a hold mark (so a tick clears it)", tj.isHoldMark((await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: xj3.id } })).lastError));
       await tj.driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "drill" });
-      c.ok("rollout ALL → X's analysis runs", (await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: xj.id } })).state === "SUCCEEDED");
-      await writeRollout(PILOT_P);
+      const x3 = await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: xj3.id } });
+      c.ok("…and that job runs on the next tick, its mark gone", x3.state === "SUCCEEDED" && x3.lastError === null, `${x3.state} ${x3.lastError}`);
       await prisma.appSetting.update({ where: { key: core.PROGRAM_ROLLOUT_SETTING_KEY }, data: { value: "{bad" } });
       const { callId: cx2 } = await monthlyCall(X, Xm.id, "x2");
       const xj2 = await jobFor(cx2, "ANALYZE", "drive-sweep", X.enrollmentId);
       await tj.driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "drill" });
-      c.ok("an unreadable rollout → TEST only: X's new analysis waits (fail closed)", (await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: xj2.id } })).state === "QUEUED");
+      c.ok("an unreadable rollout holds no internal work either: X's new analysis runs", (await prisma.programTranscriptJob.findUniqueOrThrow({ where: { id: xj2.id } })).state === "SUCCEEDED");
       await writeRollout(PILOT_P);
-      await prisma.programTranscriptJob.update({ where: { id: xj2.id }, data: { state: "CANCELLED" } });
     }
 
     // =========================================================================
@@ -797,7 +804,7 @@ async function parentMain() {
       c.ok("by requester: drive-sweep 3, the staff email 1, onboarding-cron 1", q.byRequester["drive-sweep"] === 3 && q.byRequester["kyle@realtourpilot.com"] === 1 && q.byRequester["onboarding-cron"] === 1, JSON.stringify(q.byRequester));
       const tier = (n: string) => q.clients.find((x2) => x2.name === n)?.tier;
       c.ok("by client with its tier: T TEST, P PILOT, X REAL", tier(T.name) === "TEST" && tier(P.name) === "PILOT" && tier(X.name) === "REAL", JSON.stringify(q.clients));
-      c.ok("runnable now 3 (T's two, P's one); X waits on the rollout; the draft on strategy_generation", q.runnableNow === 3 && q.heldScope === 1 && q.waitingOnOwner === 1 && q.ownerOff[0]?.owner === "strategy_generation", JSON.stringify({ r: q.runnableNow, s: q.heldScope, o: q.waitingOnOwner }));
+      c.ok("runnable now 4 (T's two, P's one, X's one — the rollout holds no internal work); the draft waits on strategy_generation", q.runnableNow === 4 && q.waitingOnOwner === 1 && q.ownerOff[0]?.owner === "strategy_generation" && !/outside the rollout/.test(q.line), JSON.stringify({ r: q.runnableNow, o: q.waitingOnOwner }));
       c.ok("oldest = the 5-day-old INGEST; five per tick; one tick to drain; 4 AI jobs", !!q.oldestQueuedAt && Date.now() - q.oldestQueuedAt.getTime() > 4 * DAY && q.perTick === 5 && q.ticksToDrain === 1 && q.aiJobs === 4);
       c.ok("the line reads as the owner needs it (off, the batch, the real client, the credit)", /^off — 5 waiting: INGEST 1 · ANALYZE 3 · STRATEGY_DRAFT 1 for 3 clients \(1 real: Xena Excluded Homes\)/.test(q.line) && /each AI job spends credit/.test(q.line), q.line);
       await tj.transcriptQueueBatch();

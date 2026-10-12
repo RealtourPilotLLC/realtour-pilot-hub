@@ -74,6 +74,8 @@ async function loadDiscoveryUi(enrollmentId: string, versions: { versionNo: numb
     call: call ? { id: call.id, whenISO: iso(call.scheduledStart), status: call.status, transcriptState: call.transcriptState, verified: call.matchState === "MATCHED" || call.matchState === "CONFIRMED_BY_STAFF" } : null,
     draftedVersionNo: drafted?.versionNo ?? null,
     analysed: call ? await discoveryAnalysisDone(call.id, call.transcriptState, call.rawJson) : false,
+    // Oct 12 2026: the transcript line with "Analyze the call" (callAnalysis.ts).
+    transcript: call ? (await import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ callRecordIds: [call.id] })).catch(() => []))[0] ?? null : null,
   };
 }
 

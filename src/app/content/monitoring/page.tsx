@@ -171,12 +171,11 @@ export default async function ContentMonitoringPage() {
                         <p className="text-muted">
                           {jobBatch.queuedNowLine}.
                           {jobBatch.heldBacklog > 0 && <> {" "}{jobBatch.heldBacklog} older job{jobBatch.heldBacklog === 1 ? " is" : "s are"} excluded by the current backlog rule; including them requires an explicit owner choice and {jobBatch.aiJobs} queued AI job{jobBatch.aiJobs === 1 ? " may" : "s may"} spend credit.</>}
-                          {jobBatch.heldScope > 0 && <> {" "}{jobBatch.heldScope} job{jobBatch.heldScope === 1 ? " waits" : "s wait"} for client rollout scope.</>}
                           {jobBatch.waitingForHandler > 0 && <> {" "}{jobBatch.waitingForHandler} job{jobBatch.waitingForHandler === 1 ? " waits" : "s wait"} for a handler in this build.</>}
                           {jobBatch.ownerOff.map((o) => <span key={o.kind}> {" "}{o.jobs} {o.kind} job{o.jobs === 1 ? " waits" : "s wait"} for <code>{o.owner}</code>.</span>)}
                         </p>
                       )}
-                      {(jobBatch.failed > 0 || jobBatch.needsReview > 0) && <p className="text-warning">Jordan reviews the call and error in Settings before using Re-run. Re-running a job does not bypass an off switch or a rollout hold.</p>}
+                      {(jobBatch.failed > 0 || jobBatch.needsReview > 0) && <p className="text-warning">Jordan reviews the call and error in Settings before using Re-run. Re-running a job does not bypass an off switch or the backlog rule.</p>}
                       <p className="text-muted">Review the clients, backlog choice and switches in <Link href="/settings#calendly" className="font-medium text-brand hover:underline">Calendly &amp; calls</Link> before any activation. Manual drafting buttons use a separate path.</p>
                     </div>
                   ) : <p className="text-warning">Current queue blockers could not be checked. Review the queue in Settings before changing a switch.</p>}

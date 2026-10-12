@@ -13,6 +13,8 @@ import {
   setStrategyCallStatus,
   staffChangePackageAction, staffSetEnrollmentStatusAction,
 } from "@/app/content/actions";
+import type { CallTranscriptUi } from "@/lib/callAnalysis";
+import { CallTranscriptList } from "@/components/content/CallTranscripts";
 
 // ---------------------------------------------------------------------------
 // Strategy call card — status ladder + manual transcript paste (Phase 3 wires
@@ -25,11 +27,19 @@ function fmtCallTime(iso: string): string {
 // The call step of the month checklist — a state machine, not a status ladder.
 // One sentence for where the call stands, one clear next action, everything
 // else behind a quiet "change" menu. Same server actions as always.
+// Oct 12 2026: the month's CALLS are first-class here too. A transcript the
+// Drive sweep found and confirmed on a call record (ProgramTranscriptSource)
+// used to be invisible to this card — it read only the month's own pasted
+// text, so it said "Paste the transcript" over a call whose transcript was in.
+// `calls` (callAnalysis.loadCallTranscripts) lists each call on the month with
+// its transcript, its analysis and an "Analyze the call" button; the paste
+// path stays as the quiet fallback.
 export function StrategyCallCard({
-  monthId, status, at, hasTranscript, transcriptProcessed, required, bookingUrl,
+  monthId, status, at, hasTranscript, transcriptProcessed, required, bookingUrl, calls = [],
 }: {
   monthId: string; status: string; at: string | null; hasTranscript: boolean;
   transcriptProcessed: boolean; required: boolean; bookingUrl: string;
+  calls?: CallTranscriptUi[];
 }) {
   const [cur, setCur] = useState(status);
   const [showPaste, setShowPaste] = useState(false);
@@ -45,11 +55,16 @@ export function StrategyCallCard({
   });
 
   const isDone = cur === "COMPLETED" || cur === "SKIPPED" || cur === "NOT_REQUIRED" || !required;
+  // A transcript linked through the call record (Drive's Gemini notes, a
+  // paste on Settings) counts as on file; one analyzed there counts as analyzed.
+  const linkedIn = calls.filter((c) => c.state === "in" || c.state === "failed" || c.state === "analyzing");
+  const linkedDone = calls.some((c) => c.state === "analyzed");
+  const linkedOnFile = linkedIn.length > 0 || linkedDone;
 
   const title =
     !required || cur === "NOT_REQUIRED" ? "Strategy call — not needed for this client"
     : cur === "SKIPPED" ? "Strategy call — skipped this month"
-    : cur === "COMPLETED" ? (analyzed ? "Strategy call held — its topics are proposed on Video Topics" : "Strategy call held")
+    : cur === "COMPLETED" ? (analyzed || (linkedDone && !linkedIn.length) ? "Strategy call held — its topics are proposed on Video Topics" : linkedIn.length ? "Strategy call held — transcript in, not analyzed yet" : "Strategy call held")
     : cur === "SCHEDULED" ? `Strategy call booked${at ? ` for ${fmtCallTime(at)}` : ""}`
     : "The strategy call isn't booked yet";
 
@@ -59,7 +74,9 @@ export function StrategyCallCard({
   return (
     <Section icon={CalendarClock} title="Strategy call"
       action={isDone ? <Check className="size-4 text-success" /> : undefined}>
-      <p className={isDone ? "text-sm text-foreground/85" : "text-[15px] font-semibold"}>{title}</p>
+      <p className={isDone && !linkedIn.length ? "text-sm text-foreground/85" : "text-[15px] font-semibold"}>{title}</p>
+      {/* Each call on the month: its transcript, its analysis, and Analyze the call. */}
+      <CallTranscriptList calls={calls} />
       {/* Paste box — reachable from every state, because reality is messy. */}
       {showPaste ? (
         <div className="mt-2.5">
@@ -101,8 +118,8 @@ export function StrategyCallCard({
         </div>
       ) : cur === "SCHEDULED" ? (
         <div className="mt-2.5">
-          <button onClick={() => setShowPaste(true)} className={primaryBtn}>
-            Call happened — paste the transcript
+          <button onClick={() => setShowPaste(true)} className={linkedOnFile ? quietLink : primaryBtn}>
+            {linkedOnFile ? "Or paste a transcript instead" : "Call happened — paste the transcript"}
           </button>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <button onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }} className={quietLink}>Copy booking link</button>
@@ -134,6 +151,8 @@ export function StrategyCallCard({
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
               Turn the call into proposed topics
             </button>
+          ) : linkedOnFile ? (
+            <button onClick={() => setShowPaste(true)} className={quietLink}>Or paste a transcript instead</button>
           ) : (
             <button onClick={() => setShowPaste(true)} className={quietLink}>Paste the transcript to propose topics from the call</button>
           )}

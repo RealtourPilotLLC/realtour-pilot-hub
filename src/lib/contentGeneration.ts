@@ -665,7 +665,8 @@ export async function analyzeDiscoveryKnowledge(o: { enrollmentId: string; clien
 export type TranscriptJobInput = { id: string; kind: string; callRecordId: string; transcriptSourceId?: string | null; enrollmentId?: string | null; requestedBy?: string | null; /** Refresh the driver's lease between long AI calls. */ heartbeat?: () => Promise<void> };
 export type TranscriptJobOutcome = { ok: true; resultJson: Record<string, unknown>; aiRunId?: string | null } | { ok: false; paused: string } | { ok: false; waiting: string } | { ok: false; reviewReason?: string; error?: string; aiRunId?: string | null };
 
-async function callAndTranscript(job: TranscriptJobInput) {
+/** The call, its CONFIRMED transcript text and the month it plans — shared by the queue's handlers and a person's "Analyze the call" (callAnalysis.ts, Oct 12 2026). */
+export async function callAndTranscript(job: TranscriptJobInput) {
   const call = await prisma.programCallRecord.findUnique({ where: { id: job.callRecordId } });
   if (!call) return { error: "Call record not found." } as const;
   if (!call.enrollmentId || !call.clientId) return { reviewReason: "The call is not matched to a client yet — confirm the invitee first." } as const;

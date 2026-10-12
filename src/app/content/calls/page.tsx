@@ -7,6 +7,8 @@ import { strategyCallDesk } from "@/lib/strategyCallDesk";
 import { StrategyCallsDesk } from "@/components/content/StrategyCallsDesk";
 
 export const dynamic = "force-dynamic";
+// "Analyze the call" runs its AI in after() under this page's ceiling (Oct 12 2026).
+export const maxDuration = 300;
 
 // ---------------------------------------------------------------------------
 // STRATEGY CALLS · LAST 30 DAYS (Oct 6 2026). Jordan: "Maybe having an option

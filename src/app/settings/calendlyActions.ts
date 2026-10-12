@@ -59,11 +59,17 @@ export type CalendlyPanelState = {
    */
   batch: TranscriptQueueBatch | null;
   enrolledClients: { id: string; name: string }[];
+  /**
+   * Oct 12 2026: calls whose transcript is in but not analyzed (or whose last
+   * run failed), with why the automatic run has not done it and — when it is
+   * the reason — "Automatic analysis is off …". null if it could not be read.
+   */
+  awaiting: { calls: import("@/lib/callAnalysis").CallTranscriptUi[]; offLine: string | null } | null;
 };
 
 export async function loadCalendlyPanelState(): Promise<CalendlyPanelState> {
   await requireAdmin();
-  const [conn, gmail, mappings, switches, rules, records, reviewRecords, queue, jobs, batch, enrollments] = await Promise.all([
+  const [conn, gmail, mappings, switches, rules, records, reviewRecords, queue, jobs, batch, enrollments, awaiting] = await Promise.all([
     prisma.connection.findUnique({ where: { provider: "calendly" } }),
     prisma.connection.findUnique({ where: { provider: "gmail" }, select: { lastSyncedAt: true } }),
     prisma.programCalendlyEventMapping.findMany({ orderBy: { createdAt: "asc" } }),
@@ -75,6 +81,7 @@ export async function loadCalendlyPanelState(): Promise<CalendlyPanelState> {
     transcriptJobsSnapshot(),
     transcriptQueueBatch().catch(() => null),
     prisma.contentEnrollment.findMany({ select: { clientId: true } }),
+    import("@/lib/callAnalysis").then((m) => m.awaitingAnalysis()).catch(() => null),
   ]);
   const clients = await prisma.client.findMany({ where: { id: { in: enrollments.map((e) => e.clientId) } }, select: { id: true, name: true }, orderBy: { name: "asc" } });
   const connected = conn?.status === "CONNECTED" && !!conn.secretEncrypted;
@@ -98,7 +105,7 @@ export async function loadCalendlyPanelState(): Promise<CalendlyPanelState> {
     // A name heuristic only decides which HINT shows — classification stays by URI.
     discoveryTypeExists: types.some((t) => /brand/i.test(`${t.name} ${t.slug ?? ""}`) && /discover/i.test(`${t.name} ${t.slug ?? ""}`)),
     switches: switches.map((s) => ({ key: s.key, enabled: s.enabled, missing: s.missing, lastRunAt: s.lastRunAt, lastError: s.lastError })),
-    rules, records, reviewRecords, queue, jobs, batch, enrolledClients: clients,
+    rules, records, reviewRecords, queue, jobs, batch, enrolledClients: clients, awaiting,
   };
 }
 
@@ -140,7 +147,7 @@ export async function setTranscriptBacklogAction(choice: "include" | "skip"): Pr
     return {
       ok: true,
       message: choice === "include"
-        ? `The call processor will also work through the ${before.heldBacklog} job${before.heldBacklog === 1 ? "" : "s"} queued before it was switched on (${after.runnableNow} runnable now, five per hourly run, each AI job spends credit${after.heldScope ? `; ${after.heldScope} for clients outside the rollout still wait` : ""}).`
+        ? `The call processor will also work through the ${before.heldBacklog} job${before.heldBacklog === 1 ? "" : "s"} queued before it was switched on (${after.runnableNow} runnable now, five per hourly run, each AI job spends credit).`
         : `The call processor will skip jobs queued before it was first switched on${first ? ` (${first.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })})` : ""}${after.heldBacklog ? ` — ${after.heldBacklog} skipped now` : ""}. Nothing already processed is undone.`,
     };
   } catch (e) { return fail(e); }
@@ -302,7 +309,7 @@ function rerunWords(state: string, h: Awaited<ReturnType<typeof transcriptJobHol
   if (!h) return "Re-queued. Whether it runs on the next hourly run could not be checked just now.";
   if (h.hold) {
     const why = h.hold.reason.replace(/^waiting: /, "");
-    const fix = h.hold.kind === "scope" ? " (add the client to the pilot to run it)" : h.hold.kind === "owner" ? " (switch it on to run it)" : "";
+    const fix = h.hold.kind === "owner" ? " (switch it on to run it)" : "";
     return `Re-queued, but it waits: ${why}${fix}.`;
   }
   if (!h.processorOn) return "Re-queued, but it waits: Transcript processing is off, so the call processor does not run. It runs on the first hourly run after you switch it on.";

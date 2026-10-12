@@ -35,7 +35,7 @@ import { etMonthDay } from "@/lib/datetime";
 // a backlog of real clients' calls can build up while every AI switch is off,
 // and turning the processor on would have worked through all of it, oldest
 // first, spending AI credit on calls nobody had asked about. And the queue
-// ran a STRATEGY_DRAFT whatever `strategy_generation` said. Three holds now
+// ran a STRATEGY_DRAFT whatever `strategy_generation` said. Two holds now
 // sit in front of the candidate query, each decided per job by ONE function
 // (holdReasonFor) that the driver and the read-only batch below both use, so
 // what Settings says is waiting is exactly what the driver will skip:
@@ -46,11 +46,17 @@ import { etMonthDay } from "@/lib/datetime";
 //      ONLY jobs queued after it was first switched on. The moment is pinned
 //      in its config (`onlyQueuedAfter`) the first time it runs; the owner can
 //      choose to include the older ones ("ALL") in Settings → Calendly &
-//      calls, which shows how many that is before he does;
-//   3. the rollout (business default, Sep 28): until the rollout is set to
-//      every client, internal AI work (every kind but INGEST, which only pulls
-//      the words in) runs only for TEST clients and the named pilot clients
-//      (programRolloutCore.clientTier). An unreadable rollout is TEST only.
+//      calls, which shows how many that is before he does.
+// THE ROLLOUT NO LONGER HOLDS THIS QUEUE (Oct 12 2026, Jordan: "All the
+// automations should be on — I just don't want notifications going out to the
+// clients yet"). A third hold kept internal AI work to TEST and pilot clients
+// until the rollout reached everyone. Everything this queue writes is internal
+// — proposals, drafts, facts, transcripts a person reviews — so it now runs for
+// every client whose call is on file, whatever the rollout says. The rollout
+// still decides everything that REACHES a client (PROGRAM_REACH_OPS: emails,
+// invites, sign-in, auto-share, review windows, carry-over, captions,
+// publishing, provider writes), exactly as before. Jobs still carrying the old
+// "outside the rollout" mark are freed and cleared on the next tick (isHoldMark).
 // A held job is marked once ("waiting: …" on lastError, the house wording for
 // a job that cannot run yet), is never claimed, and keeps its attempts — it
 // runs the tick after its hold lifts. Like the handler-less kinds, a held job
@@ -189,7 +195,10 @@ async function processorState(): Promise<{ enabled: boolean; enabledAt: Date | n
   return { enabled: row?.enabled === true, enabledAt: row?.enabledAt ?? null, cfg, unreadable };
 }
 
-/** The rollout for the internal-AI hold. A read failure is TEST only (fail closed). */
+/**
+ * The rollout, for the batch's per-client TIER column only (who is TEST, pilot
+ * or real) — since Oct 12 2026 it holds no job. A read failure reads as TEST only.
+ */
 async function rolloutForProcessor(): Promise<{ rollout: ProgramRollout; problem: string | null }> {
   try {
     const { loadProgramRollout } = await import("@/lib/programRollout");
@@ -227,10 +236,9 @@ export type HoldContext = {
   runnableKinds: readonly string[];
   ownerOn: Partial<Record<AutomationKey, boolean>>;
   backlog: BacklogCutoff;
-  rollout: ProgramRollout;
   now: Date;
 };
-export type HoldKind = "handler" | "owner" | "backlog" | "scope";
+export type HoldKind = "handler" | "owner" | "backlog";
 
 /**
  * Is this lastError one of holdReasonFor's marks (the words the driver writes
@@ -239,6 +247,8 @@ export type HoldKind = "handler" | "owner" | "backlog" | "scope";
  * 2026 — see transcriptQueueBatch's "runnable since"). Kept beside
  * holdReasonFor, whose sentences it must match. A handler's own per-job
  * "waiting: …" (callAndTranscript) is not a mark: it carries its own retry time.
+ * The retired rollout mark ("… is outside the rollout …", Sep 28 – Oct 12
+ * 2026) is still recognised, so a job that carries it is freed and cleared.
  */
 export function isHoldMark(lastError: string | null | undefined): boolean {
   const e = lastError ?? "";
@@ -251,11 +261,12 @@ export function isHoldMark(lastError: string | null | undefined): boolean {
 /**
  * Why this QUEUED job may not run now, or null. THE one rule — the driver
  * skips exactly what this names, and transcriptQueueBatch counts exactly the
- * same. Order: no handler, the kind's own switch, the backlog, the rollout.
- * A job whose client is not known yet is not held here: the handler itself
- * waits on the call's identity (contentGeneration.callAndTranscript).
+ * same. Order: no handler, the kind's own switch, the backlog. Whose client
+ * it is decides nothing here (Oct 12 2026: the rollout holds only what reaches
+ * a client); a call whose client is in question waits in the handler itself
+ * (contentGeneration.callAndTranscript).
  */
-export function holdReasonFor(job: { kind: string; createdAt: Date; attempts: number }, client: JobClient, ctx: HoldContext): { kind: HoldKind; reason: string } | null {
+export function holdReasonFor(job: { kind: string; createdAt: Date; attempts: number }, ctx: HoldContext): { kind: HoldKind; reason: string } | null {
   if (!ctx.runnableKinds.includes(job.kind)) return { kind: "handler", reason: `no ${job.kind} handler in this build (contentPipeline.transcriptJobHandlers) — job waits` };
   const owner = KIND_OWNER[job.kind as TranscriptJobKind];
   if (owner && ctx.ownerOn[owner] !== true) return { kind: "owner", reason: `waiting: ${owner} is off` };
@@ -265,10 +276,28 @@ export function holdReasonFor(job: { kind: string; createdAt: Date; attempts: nu
   if (ctx.backlog.cutoff && job.attempts === 0 && job.createdAt.getTime() < ctx.backlog.cutoff.getTime()) {
     return { kind: "backlog", reason: `waiting: queued ${etMonthDay(job.createdAt)}, before the call processor was first switched on — include older jobs in Settings → Calendly & calls to run it` };
   }
-  if (job.kind !== "INGEST" && client && ctx.rollout.mode !== "ALL" && clientTier(ctx.rollout, client, ctx.now) === "REAL") {
-    return { kind: "scope", reason: `waiting: ${client.name} is outside the rollout — internal AI work runs only for TEST and pilot clients until the rollout reaches every client` };
-  }
   return null;
+}
+
+/**
+ * The hold context the driver would build now, plus the two switches the whole
+ * queue needs — read-only (no pin, no mark). For readers outside this module
+ * (callAnalysis.ts: why a call's automatic analysis is waiting).
+ */
+export async function transcriptHoldContext(now: Date = new Date()): Promise<{ ctx: HoldContext; processorOn: boolean; aiRunsOn: boolean }> {
+  const [proc, handlers, aiRunsOn] = await Promise.all([processorState(), availableHandlers(), isAutomationEnabled("ai_runs")]);
+  const owners = [...new Set(Object.values(KIND_OWNER))] as AutomationKey[];
+  const ownerOn = Object.fromEntries(await Promise.all(owners.map(async (k) => [k, await isAutomationEnabled(k)] as const))) as Partial<Record<AutomationKey, boolean>>;
+  return {
+    ctx: {
+      runnableKinds: TRANSCRIPT_JOB_KINDS.filter((k) => typeof handlers[k] === "function"),
+      ownerOn,
+      backlog: backlogCutoff(proc.unreadable ? null : proc.cfg, proc.enabledAt, now),
+      now,
+    },
+    processorOn: proc.enabled,
+    aiRunsOn,
+  };
 }
 
 /**
@@ -374,7 +403,7 @@ export async function availableHandlers(): Promise<TranscriptJobHandlers> {
 // ---------------------------------------------------------------------------
 export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: number; leaseBy?: string; now?: Date } = {}): Promise<
   | { skipped: string }
-  | { ran: number; succeeded: number; failed: number; needsReview: number; paused: string | null; waitingForHandler: number; recovered: number; waiting: number; held: { owner: number; backlog: number; scope: number } }
+  | { ran: number; succeeded: number; failed: number; needsReview: number; paused: string | null; waitingForHandler: number; recovered: number; waiting: number; held: { owner: number; backlog: number } }
 > {
   if (!(await isAutomationEnabled("transcript_jobs"))) return { skipped: "transcript_jobs is off" };
   const now = opts.now ?? new Date();
@@ -424,7 +453,7 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
   // THE HOLDS (R05, Sep 28 2026 — see the header). Classified ONCE per tick,
   // before the loop, and the loop claims only jobs classified free: a job
   // enqueued while this tick runs waits for the next tick's classification
-  // rather than slipping past the rollout unread.
+  // rather than slipping past a hold unread.
   const proc = await processorState();
   let backlog = backlogCutoff(proc.unreadable ? null : proc.cfg, proc.enabledAt, now);
   if (backlog.source === "switch_on" && backlog.cutoff && !proc.unreadable) {
@@ -452,19 +481,17 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
   }
   const owners = [...new Set(Object.values(KIND_OWNER))] as AutomationKey[];
   const ownerOn = Object.fromEntries(await Promise.all(owners.map(async (k) => [k, await isAutomationEnabled(k)] as const))) as Partial<Record<AutomationKey, boolean>>;
-  const { rollout } = await rolloutForProcessor();
   const queued: QueuedJob[] = await prisma.programTranscriptJob.findMany({
     where: { state: "QUEUED", kind: { in: runnable } },
     orderBy: { createdAt: "asc" },
     select: { id: true, kind: true, createdAt: true, attempts: true, nextAttemptAt: true, callRecordId: true, enrollmentId: true, requestedBy: true, lastError: true },
   });
-  const jobClients = await clientsForJobs(queued);
-  const ctx: HoldContext = { runnableKinds: runnable, ownerOn, backlog, rollout, now };
+  const ctx: HoldContext = { runnableKinds: runnable, ownerOn, backlog, now };
   const free: string[] = [];
-  const held = { owner: 0, backlog: 0, scope: 0 };
+  const held = { owner: 0, backlog: 0 };
   const marks = new Map<string, string[]>();
   for (const j of queued) {
-    const h = holdReasonFor(j, jobClients.get(clientKey(j)) ?? null, ctx);
+    const h = holdReasonFor(j, ctx);
     if (!h) { free.push(j.id); continue; }
     if (h.kind !== "handler") held[h.kind]++;
     if (j.lastError !== h.reason) marks.set(h.reason, [...(marks.get(h.reason) ?? []), j.id]);
@@ -478,7 +505,7 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
   }
   // A HOLD THAT LIFTED (review fix, Sep 28 2026). A free, due job still
   // carrying a hold mark became free since the last tick (its owner switch
-  // came on, the owner included the backlog, its client joined the pilot).
+  // came on, the owner included the backlog, the retired rollout hold lifted).
   // The mark is cleared and nextAttemptAt stamped with THIS tick — "runnable
   // since" for readiness is now the moment a tick first saw it free, not when
   // it was queued: readiness called the queue "not draining" the instant a
@@ -667,14 +694,13 @@ export type TranscriptQueueBatch = {
   byRequester: Record<string, number>;
   clients: { clientId: string | null; name: string; tier: "TEST" | "PILOT" | "REAL" | "UNKNOWN"; jobs: number }[];
   oldestQueuedAt: Date | null;
-  /** A handler exists, nextAttemptAt has passed, the kind's own switch is on, and no backlog or rollout hold. */
+  /** A handler exists, nextAttemptAt has passed, the kind's own switch is on, and no backlog hold. */
   runnableNow: number;
   /** Of the runnable, the one that has been runnable longest (for "queue not draining"). */
   oldestRunnableSince: Date | null;
   /** Held because the kind's own switch is off. */
   waitingOnOwner: number;
   heldBacklog: number;
-  heldScope: number;
   waitingForHandler: number;
   /** Queued jobs, per kind, that will not run: their owning switch is off. */
   ownerOff: { kind: string; owner: AutomationKey; jobs: number }[];
@@ -694,24 +720,14 @@ export type TranscriptQueueBatch = {
  * 28 2026): the same HoldContext the batch and the driver build, the same
  * holdReasonFor, plus the two switches the whole queue needs. The owner's
  * Re-run used to promise "the next hourly run" for a job the driver would keep
- * holding (a client outside the rollout, a draft whose own switch is off, a
+ * holding (a draft whose own switch is off, a
  * re-armed backlog job). Read-only. null when the job is gone.
  */
 export async function transcriptJobHold(jobId: string, now: Date = new Date()): Promise<null | { processorOn: boolean; aiRunsOn: boolean; kind: string; hold: { kind: HoldKind; reason: string } | null }> {
-  const job = await prisma.programTranscriptJob.findUnique({ where: { id: jobId }, select: { id: true, kind: true, createdAt: true, attempts: true, callRecordId: true, enrollmentId: true } });
+  const job = await prisma.programTranscriptJob.findUnique({ where: { id: jobId }, select: { id: true, kind: true, createdAt: true, attempts: true } });
   if (!job) return null;
-  const [proc, handlers, { rollout }, aiRunsOn] = await Promise.all([processorState(), availableHandlers(), rolloutForProcessor(), isAutomationEnabled("ai_runs")]);
-  const owners = [...new Set(Object.values(KIND_OWNER))] as AutomationKey[];
-  const ownerOn = Object.fromEntries(await Promise.all(owners.map(async (k) => [k, await isAutomationEnabled(k)] as const))) as Partial<Record<AutomationKey, boolean>>;
-  const ctx: HoldContext = {
-    runnableKinds: TRANSCRIPT_JOB_KINDS.filter((k) => typeof handlers[k] === "function"),
-    ownerOn,
-    backlog: backlogCutoff(proc.unreadable ? null : proc.cfg, proc.enabledAt, now),
-    rollout,
-    now,
-  };
-  const client = (await clientsForJobs([job])).get(clientKey(job)) ?? null;
-  return { processorOn: proc.enabled, aiRunsOn, kind: job.kind, hold: holdReasonFor(job, client, ctx) };
+  const { ctx, processorOn, aiRunsOn } = await transcriptHoldContext(now);
+  return { processorOn, aiRunsOn, kind: job.kind, hold: holdReasonFor(job, ctx) };
 }
 
 export async function transcriptQueueBatch(now: Date = new Date()): Promise<TranscriptQueueBatch> {
@@ -729,7 +745,7 @@ export async function transcriptQueueBatch(now: Date = new Date()): Promise<Tran
   const ownerOn = Object.fromEntries(await Promise.all(owners.map(async (k) => [k, await isAutomationEnabled(k)] as const))) as Partial<Record<AutomationKey, boolean>>;
   const runnableKinds = TRANSCRIPT_JOB_KINDS.filter((k) => typeof handlers[k] === "function");
   const backlog = backlogCutoff(proc.unreadable ? null : proc.cfg, proc.enabledAt, now);
-  const ctx: HoldContext = { runnableKinds, ownerOn, backlog, rollout, now };
+  const ctx: HoldContext = { runnableKinds, ownerOn, backlog, now };
   const queuedRows = rows.filter((r) => r.state === "QUEUED");
   const jobClients = await clientsForJobs(rows);
 
@@ -737,7 +753,7 @@ export async function transcriptQueueBatch(now: Date = new Date()): Promise<Tran
   const byRequester: Record<string, number> = {};
   const perClient = new Map<string, { clientId: string | null; name: string; tier: TranscriptQueueBatch["clients"][number]["tier"]; jobs: number }>();
   const ownerOffCount = new Map<string, number>();
-  let runnableNow = 0, waitingOnOwner = 0, heldBacklog = 0, heldScope = 0, waitingForHandler = 0, aiJobs = 0;
+  let runnableNow = 0, waitingOnOwner = 0, heldBacklog = 0, waitingForHandler = 0, aiJobs = 0;
   let oldestRunnableSince: Date | null = null;
   for (const j of queuedRows) {
     byKind[j.kind] = (byKind[j.kind] ?? 0) + 1;
@@ -749,10 +765,9 @@ export async function transcriptQueueBatch(now: Date = new Date()): Promise<Tran
     const cur = perClient.get(key) ?? { clientId: client?.id ?? null, name: client?.name ?? "client not confirmed yet", tier: client ? clientTier(rollout, client, now) : "UNKNOWN", jobs: 0 };
     cur.jobs++;
     perClient.set(key, cur);
-    const h = holdReasonFor(j, client, ctx);
+    const h = holdReasonFor(j, ctx);
     if (h?.kind === "owner") { waitingOnOwner++; ownerOffCount.set(j.kind, (ownerOffCount.get(j.kind) ?? 0) + 1); }
     else if (h?.kind === "backlog") heldBacklog++;
-    else if (h?.kind === "scope") heldScope++;
     else if (h?.kind === "handler") waitingForHandler++;
     else if (!j.nextAttemptAt || j.nextAttemptAt.getTime() <= now.getTime()) {
       runnableNow++;
@@ -781,7 +796,6 @@ export async function transcriptQueueBatch(now: Date = new Date()): Promise<Tran
         ? `the ${heldBacklog} already waiting will be SKIPPED when it is switched on (only jobs queued after that run) unless you include them`
         : `${heldBacklog} queued before ${etMonthDay(backlog.cutoff)} are skipped unless you include them`);
     }
-    if (heldScope) pieces.push(`${heldScope} for clients outside the rollout wait (internal AI runs only for TEST and pilot clients)`);
     for (const [kind, n] of ownerOffCount) pieces.push(`${n} ${kind} wait for ${KIND_OWNER[kind as TranscriptJobKind]} to be on`);
     pieces.push(runnableNow ? `the ${proc.enabled ? "next" : "first"} run takes ${Math.min(perTick, runnableNow)} of the ${runnableNow} runnable` : "nothing is runnable");
     if (aiJobs) pieces.push("each AI job spends credit");
@@ -801,7 +815,7 @@ export async function transcriptQueueBatch(now: Date = new Date()): Promise<Tran
     failed: failedN,
     byKind, byRequester, clients, oldestQueuedAt,
     runnableNow, oldestRunnableSince,
-    waitingOnOwner, heldBacklog, heldScope, waitingForHandler,
+    waitingOnOwner, heldBacklog, waitingForHandler,
     ownerOff: [...ownerOffCount].map(([kind, jobs]) => ({ kind, owner: KIND_OWNER[kind as TranscriptJobKind]!, jobs })),
     aiJobs, perTick, ticksToDrain: Math.ceil(runnableNow / perTick),
     backlog: { ...backlog, skipped: heldBacklog },

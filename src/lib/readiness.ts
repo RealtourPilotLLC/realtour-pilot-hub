@@ -484,7 +484,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   };
   // The manual buttons never touch the queue (aiRuns.ts: a person's click is
   // attended), and the rows whose work the queue does say so.
-  const INLINE_BUTTONS = "The Draft strategy now, Draft owed scripts and Re-analyse buttons run straight away and do not use the queue.";
+  const INLINE_BUTTONS = "The Analyze button on a call, Draft strategy now, Draft owed scripts and Re-analyse run straight away and do not use the queue.";
 
   // call_booking's API mode and its stored read-only probe (callBooking.ts).
   const callCfg = parseObj(stored.get("call_booking")?.configJson);

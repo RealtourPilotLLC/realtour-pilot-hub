@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, Sparkles, Undo2 } from
 import type { DeskData, DeskRow } from "@/lib/strategyCallDesk";
 import { assignStrategyCallAction, ignoreStrategyCallAction, refreshStrategyCallsAction, unassignStrategyCallAction } from "@/app/content/calls/actions";
 import { cn } from "@/lib/utils";
+import { CallTranscriptItem } from "@/components/content/CallTranscripts";
 
 // ---------------------------------------------------------------------------
 // STRATEGY CALLS DESK (Oct 6 2026). One row per call; one tap files it on a
@@ -84,6 +85,8 @@ export function StrategyCallsDesk({ data }: { data: DeskData }) {
   const upcoming = visible.filter((r) => r.startISO && new Date(r.startISO).getTime() > now).sort((a, b) => (a.startISO ?? "").localeCompare(b.startISO ?? ""));
   const past = visible.filter((r) => !(r.startISO && new Date(r.startISO).getTime() > now));
   const open = rows.filter((r) => live(r) && r.state === "OPEN").length;
+  // Oct 12 2026: calls whose transcript is in and nobody has analyzed yet.
+  const unanalyzed = rows.filter((r) => live(r) && r.state === "ASSIGNED" && (r.transcript?.state === "in" || r.transcript?.state === "failed")).length;
   const hidden = rows.length - rows.filter((r) => live(r) && r.state !== "IGNORED").length;
 
   return (
@@ -102,6 +105,7 @@ export function StrategyCallsDesk({ data }: { data: DeskData }) {
       <div className="flex flex-wrap items-center gap-2">
         <p className="mr-auto text-sm text-muted">
           <b className="text-foreground">{open}</b> call{open === 1 ? "" : "s"} not filed on a month
+          {unanalyzed > 0 && <> · <b className="text-warning">{unanalyzed}</b> transcript{unanalyzed === 1 ? "" : "s"} in, not analyzed</>}
           {data.lastSyncedISO && <> · Calendly last read {whenET(data.lastSyncedISO)}</>}
         </p>
         <label className="inline-flex min-h-11 items-center gap-2 text-sm text-muted">
@@ -175,6 +179,13 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
           <p className="text-muted">Not a program call</p>
         ) : (
           <p className="text-muted">Not assigned{r.client && <> · on file for <b className="text-foreground">{r.client.name}</b>, no month</>}</p>
+        )}
+        {/* The call's transcript (Oct 12 2026): none yet / in, not analyzed / analyzed — and Analyze the call. */}
+        {r.transcript && live && r.state === "ASSIGNED" && (r.status === "completed" || r.transcript.state !== "none") && (
+          <div className="mt-2 border-t border-border pt-2" aria-label="Transcript">
+            <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Transcript</p>
+            <CallTranscriptItem call={r.transcript} variant="inline" showCall={false} />
+          </div>
         )}
         {showPicker && r.suggestion && r.state === "OPEN" && (
           <p className="mt-1 flex items-center gap-1.5 text-muted"><Sparkles className="size-3.5 text-brand" aria-hidden /> Suggested: <b className="text-foreground">{r.suggestion.name}</b> — {r.suggestion.reason}</p>
