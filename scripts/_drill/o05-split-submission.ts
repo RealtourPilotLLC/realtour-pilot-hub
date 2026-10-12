@@ -337,7 +337,8 @@ async function main() {
     body.includes(`https://drill.invalid/upload/${j6}`) && body.includes(`https://drill.invalid/upload/${j8}`) && !/Still waiting[^]*6 Late Ln[^]*Finish tonight/.test(body));
   c.ok("…with Jordan's words: photos uploaded, video not, before 8:00 AM tomorrow, affects the KPI",
     /Photos are uploaded but the video is not/.test(body) && /before 8:00 AM tomorrow/.test(body) && /late upload on your KPIs/.test(body), body);
-  c.ok("the old wording is byte-identical for a plain page", digest.nagText("Harrison", ["7 Plain St"]) === oldDigest.nagText("Harrison", ["7 Plain St"]));
+  // Oct 12 2026: the brand is "Realtour" now; apart from that one spelling the old line is unchanged.
+  c.ok("the old wording is byte-identical for a plain page (apart from the Oct 12 greeting: Realtour, no em dash)", digest.nagText("Harrison", ["7 Plain St"]) === oldDigest.nagText("Harrison", ["7 Plain St"]).replace(" — RealTour Pilot here.", ", Realtour Pilot here."));
   const single = digest.nagText("Harrison", [], [{ street: "6 Late Ln", url: "https://drill.invalid/upload/x" }]);
   c.ok("a single split job reads as one sentence with its link", single.includes("Photos are uploaded for 6 Late Ln, but the video is not. Please upload the video and submit it before 8:00 AM tomorrow:\nhttps://drill.invalid/upload/x"), single);
   const again = await digest.sendNightlyUploadNags();
