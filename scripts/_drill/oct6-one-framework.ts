@@ -186,7 +186,8 @@ async function main() {
     c.ok("the interview plan's hook premise names a bold statement", !!q && /bold statement/.test(q.captures));
     const rules = policy.policyRulesText();
     c.ok("the rules text every prompt carries holds the whole framework (5 parts, the Hook's 'bold statement')", /=== VIDEO STRUCTURE FRAMEWORK/.test(rules) && HEADINGS.every((h) => rules.includes(`${h} — `)) && rules.includes(policy.FRAMEWORK_HOOK.definition));
-    c.ok("the policy version was bumped with the change (length + carried direction)", policy.GENERATION_POLICY_VERSION === "2026-10-06.2");
+    // At least the Oct 6 bump (Oct 12 2026 bumped it again for the no-dash rule — oct12-queued-drafts §11).
+    c.ok("the policy version was bumped with the change (length + carried direction)", policy.GENERATION_POLICY_VERSION >= "2026-10-06.2", policy.GENERATION_POLICY_VERSION);
   }
 
   // =========================================================================

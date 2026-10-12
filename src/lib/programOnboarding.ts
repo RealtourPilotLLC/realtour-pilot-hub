@@ -1,5 +1,7 @@
 import "server-only";
+import type { ProgramCallRecord } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import type { ClaimedRun } from "@/lib/aiRuns";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { enqueueTranscriptJob } from "@/lib/transcriptJobs";
 import { parseStoredSections, releaseStrategyVersion } from "@/lib/contentStrategy";
@@ -576,11 +578,12 @@ export async function reconcileDiscoveryTasks(max = 25): Promise<number> {
 }
 
 /**
- * Staff click: draft the strategy NOW from the confirmed discovery transcript.
- * A user action (unattended=false), so it runs while the switches are off;
- * the result is still a DRAFT that Jordan reviews.
+ * Everything "Draft the strategy now" checks before it spends anything — the
+ * discovery call, whose call it is, the confirmed words — so the click can
+ * refuse at once and the AI half can run in the background (aiQueue.ts, Oct 12
+ * 2026). Database-only.
  */
-export async function draftStrategyNow(enrollmentId: string, by: string): Promise<{ versionId: string; versionNo: number; gaps: number; stripped: number; analysed: boolean }> {
+export async function strategyDraftInputs(enrollmentId: string): Promise<{ onboardingId: string; call: ProgramCallRecord & { clientId: string }; transcript: string; intakeJson: string | null; obStatus: string | null; analysed: boolean }> {
   const { id } = await ensureOnboardingRecord(enrollmentId);
   const ob = await prisma.programOnboarding.findUnique({ where: { id } });
   const call = ob?.discoveryCallRecordId
@@ -598,8 +601,20 @@ export async function draftStrategyNow(enrollmentId: string, by: string): Promis
   // have marked are not known yet — the caller says so.
   const { discoveryAnalysisDone } = await import("@/lib/contentGeneration");
   const analysed = await discoveryAnalysisDone(call.id, call.transcriptState, call.rawJson);
-  const r = await draftStrategyFromTranscript({ enrollmentId, clientId: call.clientId, transcript, callRecordId: call.id, callDate: call.scheduledStart, intakeText: ob?.intakeJson ?? null, requestedBy: by, unattended: false });
-  await prisma.programOnboarding.update({ where: { id }, data: { strategyDraftVersionId: r.versionId, strategyGenerationRunId: r.runId, status: rank(ob?.status ?? "NOT_STARTED") < rank("STRATEGY_DRAFTED") ? "STRATEGY_DRAFTED" : undefined } });
+  return { onboardingId: id, call: { ...call, clientId: call.clientId }, transcript, intakeJson: ob?.intakeJson ?? null, obStatus: ob?.status ?? null, analysed };
+}
+
+/**
+ * Staff click: draft the strategy NOW from the confirmed discovery transcript.
+ * A user action (unattended=false), so it runs while the switches are off;
+ * the result is still a DRAFT that Jordan reviews. Oct 12 2026: the queued
+ * "Draft from the discovery call" (aiQueue.ts) runs this in the background,
+ * adopting its queued run through `claimedRun`.
+ */
+export async function draftStrategyNow(enrollmentId: string, by: string, opts: { claimedRun?: ClaimedRun | null } = {}): Promise<{ versionId: string; versionNo: number; gaps: number; stripped: number; analysed: boolean }> {
+  const { onboardingId: id, call, transcript, intakeJson, obStatus, analysed } = await strategyDraftInputs(enrollmentId);
+  const r = await draftStrategyFromTranscript({ enrollmentId, clientId: call.clientId, transcript, callRecordId: call.id, callDate: call.scheduledStart, intakeText: intakeJson, requestedBy: by, unattended: false, claimedRun: opts.claimedRun ?? null });
+  await prisma.programOnboarding.update({ where: { id }, data: { strategyDraftVersionId: r.versionId, strategyGenerationRunId: r.runId, status: rank(obStatus ?? "NOT_STARTED") < rank("STRATEGY_DRAFTED") ? "STRATEGY_DRAFTED" : undefined } });
   await advanceOnboarding(enrollmentId, { enqueue: false, requestedBy: by });
   return { versionId: r.versionId, versionNo: r.versionNo, gaps: r.gaps, stripped: r.stripped, analysed };
 }

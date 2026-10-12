@@ -387,7 +387,8 @@ async function main() {
     c.ok("the system prompt carries the part budgets (Oct 6 2026: rescaled for 30–50 s)", /PART BUDGETS \(spoken words\): hook ≤16/.test(sys) && /each talking point ≤26/.test(sys) && /close ≤16/.test(sys));
     c.ok("…and 'evidence, not copy'", /EVIDENCE, NOT COPY/.test(sys));
     const runs7 = await prisma.programAiRun.findMany({ where: { kind: "script_draft" }, select: { promptVersion: true } });
-    c.ok("every script draft is stamped script.v3-budgets-30-50s", runs7.length > 0 && runs7.every((r) => r.promptVersion === "script.v3-budgets-30-50s"), JSON.stringify([...new Set(runs7.map((r) => r.promptVersion))]));
+    // Oct 12 2026: v4 carries the no-dash rule on top of v3's 30–50 s budgets (oct12-queued-drafts §11).
+    c.ok("every script draft is stamped with the current script prompt (script.v4-no-dashes, v3's budgets kept)", runs7.length > 0 && runs7.every((r) => r.promptVersion === "script.v4-no-dashes"), JSON.stringify([...new Set(runs7.map((r) => r.promptVersion))]));
     const longV = await prisma.contentScriptVersion.findFirst({ where: { title: LONG_TITLE } });
     const val = JSON.parse(longV?.validationJson ?? "{}") as { ok?: boolean; findings?: { code: string; severity: string }[] };
     const timing = (val.findings ?? []).filter((f) => f.code === "timing.out-of-range");

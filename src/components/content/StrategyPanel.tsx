@@ -1,14 +1,17 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { Check, Compass, Layers, Loader2, MessageSquareText, Mic, Pencil, Send, Trash2, Upload, Wand2, X } from "lucide-react";
+import { AlertTriangle, Check, Compass, Layers, Loader2, MessageSquareText, Mic, Pencil, Send, Trash2, Upload, Wand2, X } from "lucide-react";
 import type { CallTranscriptUi } from "@/lib/callAnalysis";
+import type { QueueItemUi } from "@/lib/aiQueue";
+import { useToast } from "@/components/ui/Toast";
+import { useAiQueueWatch } from "@/components/content/useAiQueueWatch";
 import { CallTranscriptItem } from "@/components/content/CallTranscripts";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { StrategyDocView, type StrategyDocSection } from "@/components/content/StrategyDocView";
 import {
-  addPillar, approveStrategy, confirmPillarMappingAction, createPillarsFromStrategy, dismissPillarLabelAction, draftStrategyFromDiscovery, editStrategySection, previewStrategyBackfill, rejectStrategy, releaseStrategy,
+  addPillar, approveStrategy, confirmPillarMappingAction, createPillarsFromStrategy, dismissPillarLabelAction, queueStrategyDraftAction, editStrategySection, previewStrategyBackfill, rejectStrategy, releaseStrategy,
   renamePillarAction, resolveStrategyProposal, reviseStrategy, saveMonthPriorities, saveStrategyBackfill, setDutyOwner, waiveDiscoveryAction, type StrategyPreview,
 } from "@/app/content/actions";
 
@@ -49,6 +52,8 @@ export type DiscoveryUi = {
   analysed: boolean;
   /** Oct 12 2026: the call's transcript line, with "Analyze the call" (callAnalysis.ts). */
   transcript?: CallTranscriptUi | null;
+  /** Oct 12 2026: "Draft from the discovery call" queued / drafting / failed (aiQueue.ts). */
+  drafting?: QueueItemUi | null;
 };
 export type ProposalRow = { id: string; kind: string; summary: string; impact: string | null; sourceKind: string; sourceRef: string | null; createdAt: string };
 export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string };
@@ -61,10 +66,12 @@ const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2";
 
-export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], discovery = null }: {
+export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], discovery = null, queueActive = [] }: {
   enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; mapping: MappingRowUi[]; owners: OwnerUi[];
   staff: { id: string; name: string }[]; isOwner: boolean; month: { id: string; label: string; priorities: string[]; sourceRef: string | null } | null;
   targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[]; discovery?: DiscoveryUi | null;
+  /** Oct 12: everything in flight for the client (aiQueue.activeQueueRuns) — polled until it changes. */
+  queueActive?: string[];
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -74,9 +81,22 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   const approved = versions.find((v) => v.status === "APPROVED") ?? null;
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
   const clientSuggestions = proposals.filter((p) => p.sourceKind === "client");
+  const { toast, show } = useToast(8000);
+  useAiQueueWatch(enrollmentId, queueActive);
+  // The click answers at once (the draft is queued); until the server's own
+  // state is rendered, this strip says "Drafting…" on its own word.
+  const [sending, setSending] = useState(false);
+  const draftNow = async () => {
+    setSending(true);
+    let r: { ok: boolean; message: string; runId?: string };
+    try { r = await queueStrategyDraftAction(enrollmentId); } catch { r = { ok: false, message: "Couldn't reach the server — try again." }; }
+    show(r.ok || r.runId ? "ok" : "err", r.message);
+    setTimeout(() => setSending(false), r.ok || r.runId ? 15_000 : 0);
+  };
 
   return (
     <div className="space-y-5">
+      {toast}
       {/* Owners */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
         {owners.filter((o) => o.duty === "STRATEGY" || o.duty === "SCRIPTS" || o.duty === "SCHEDULING" || o.duty === "DELIVERY").map((o) => (
@@ -92,8 +112,8 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
         ))}
       </div>
 
-      {discovery && <DiscoveryStrip d={discovery} busy={busy} isOwner={isOwner} hasVersions={versions.length > 0}
-        onDraft={() => run(() => draftStrategyFromDiscovery(enrollmentId))}
+      {discovery && <DiscoveryStrip d={discovery} busy={busy} isOwner={isOwner} hasVersions={versions.length > 0} sending={sending}
+        onDraft={draftNow}
         onWaive={(reason) => run(() => waiveDiscoveryAction(enrollmentId, reason))} />}
 
       {/* Proposals from calls / clients */}
@@ -231,7 +251,9 @@ const isFrameworkView = (s: StrategyDocSection) => !!s.canonical || s.id === "vi
 const EDITABLE = ["DRAFT", "INTERNAL_REVIEW", "APPROVED"];
 
 /** The discovery call behind the first strategy: when it was, whether its transcript is in, and the one-click draft. */
-function DiscoveryStrip({ d, busy, isOwner, hasVersions, onDraft, onWaive }: { d: DiscoveryUi; busy: boolean; isOwner: boolean; hasVersions: boolean; onDraft: () => void; onWaive: (reason: string) => void }) {
+function DiscoveryStrip({ d, busy, isOwner, hasVersions, sending = false, onDraft, onWaive }: { d: DiscoveryUi; busy: boolean; isOwner: boolean; hasVersions: boolean; sending?: boolean; onDraft: () => void; onWaive: (reason: string) => void }) {
+  const drafting = !d.draftedVersionNo && (d.drafting?.state === "queued" || d.drafting?.state === "running" || (sending && d.drafting?.state !== "failed"));
+  const failed = !drafting && !d.draftedVersionNo && d.drafting?.state === "failed" ? d.drafting : null;
   const ready = !!d.call && d.call.verified && (d.call.transcriptState === "CONFIRMED" || d.call.transcriptState === "ANALYZED");
   const when = d.call?.whenISO ? new Date(d.call.whenISO).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
   let line: string;
@@ -247,11 +269,20 @@ function DiscoveryStrip({ d, busy, isOwner, hasVersions, onDraft, onWaive }: { d
       <Mic className="size-4 text-muted-2" />
       <span className="min-w-0 flex-1">{line}</span>
       {t && <div className="basis-full"><CallTranscriptItem call={t} variant="inline" showCall={false} /></div>}
-      {ready && !d.draftedVersionNo && !d.waived && (
+      {ready && !d.draftedVersionNo && !d.waived && (drafting ? (
+        <button disabled aria-busy="true" className={`${btn} inline-flex items-center bg-brand text-white`} title="Runs in the background — the draft appears under Strategy versions when it's ready.">
+          <Loader2 className="mr-1 size-3 animate-spin" />Drafting the strategy…
+        </button>
+      ) : failed ? (
+        <button disabled={busy} onClick={onDraft} className={`${btn} inline-flex items-center border border-danger/40 text-danger hover:bg-danger-soft`}>
+          <AlertTriangle className="mr-1 size-3" />Drafting failed — Try again
+        </button>
+      ) : (
         <button disabled={busy} onClick={onDraft} className={`${btn} bg-brand text-white`} title="One AI draft in the house format, from the confirmed transcript. It lands as a draft for you to edit and approve.">
           <Wand2 className="mr-1 inline size-3" />Draft from the discovery call
         </button>
-      )}
+      ))}
+      {failed?.error && <p className="basis-full text-[12px] text-danger">Why it failed: {failed.error}</p>}
       {isOwner && !d.waived && d.required && !hasVersions && (
         <button disabled={busy} onClick={() => { const r = window.prompt("Why is discovery not needed for this client? (e.g. their strategy came from an earlier program)") ?? ""; if (r.trim()) onWaive(r); }} className={quiet}>Waive discovery</button>
       )}

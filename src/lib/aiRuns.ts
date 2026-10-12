@@ -45,7 +45,21 @@ export class LeaseLostError extends Error {
 }
 
 /** How long a run (and, with holdDedupeKey, the write after it) holds its key. */
-const LEASE_MS = 10 * 60_000;
+export const LEASE_MS = 10 * 60_000;
+
+/**
+ * THE QUEUE'S LEASES (Oct 12 2026, aiQueue.ts). A person's "Draft script" no
+ * longer waits on the model: the click writes a QUEUED ProgramAiRun holding
+ * the generator's own dedupe key, a background worker claims it (RUNNING,
+ * leaseBy "queue:<worker>") and the generator ADOPTS that row through
+ * `claimedRun` instead of creating a second one — one row per draft, from the
+ * click to the version. A queue-owned row that outlives its lease is not
+ * failed by the cleanup below: the queue puts it back (aiQueue.recoverStale)
+ * so the draft a person asked for is retried, not dropped.
+ */
+export const QUEUE_LEASE_PREFIX = "queue:";
+/** A queued run a worker holds: runAiJson adopts this row instead of creating one. */
+export type ClaimedRun = { id: string; leaseBy: string };
 
 export type AiRunKind =
   | "call_analysis" | "fact_extract" | "strategy_draft" | "topic_bank" | "topic_refresh" | "recommendation"
@@ -83,7 +97,11 @@ function dayStart(): Date {
   return d;
 }
 
-async function assertQuota(kind: AiRunKind, enrollmentId: string | null): Promise<void> {
+/**
+ * Refuses with QuotaExceededError when a limit is reached. `excludeRunId` is a
+ * queued run being adopted: it is already RUNNING, so it must not count itself.
+ */
+export async function assertQuota(kind: AiRunKind, enrollmentId: string | null, excludeRunId: string | null = null): Promise<void> {
   const since = dayStart();
   const rows = await prisma.programAiQuota.findMany({ where: { period: "DAY", enabled: true } });
   const limitFor = (scope: string, ref: string, fallback: number) => {
@@ -96,7 +114,7 @@ async function assertQuota(kind: AiRunKind, enrollmentId: string | null): Promis
   ];
   if (enrollmentId) checks.push({ where: { enrollmentId }, max: limitFor("ENROLLMENT", enrollmentId, DEFAULT_QUOTA.enrollmentPerDay), what: "this client's daily AI limit" });
   for (const c of checks) {
-    const n = await prisma.programAiRun.count({ where: { ...c.where, startedAt: { gte: since }, status: { in: ["RUNNING", "SUCCEEDED", "FAILED"] } } });
+    const n = await prisma.programAiRun.count({ where: { ...c.where, startedAt: { gte: since }, status: { in: ["RUNNING", "SUCCEEDED", "FAILED"] }, ...(excludeRunId ? { id: { not: excludeRunId } } : {}) } });
     if (n >= c.max) throw new QuotaExceededError(`${c.what} (${c.max}/day) is reached — try again tomorrow or raise the quota.`);
   }
 }
@@ -135,31 +153,46 @@ export type RunAiOpts<T> = {
   model?: string;
   /** Called with the parsed output; its return value is stored as outputRef ("ContentScriptVersion:<id>"). */
   parse?: (out: T) => T;
+  /**
+   * A queued run this caller's worker has claimed (aiQueue.ts). The run is
+   * that row — it already holds the dedupe key — so nothing is created, and
+   * every write below is fenced on the worker's lease.
+   */
+  claimedRun?: ClaimedRun | null;
 };
 
 export type RunAiResult<T> = { runId: string; output: T; usage: AiUsage; model: string; costCents: number };
 
 /** The one way a Content Program feature calls the model. */
-export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> {
-  if (opts.unattended && !(await isAutomationEnabled("ai_runs"))) throw new AutomationDisabledError();
-  await assertQuota(opts.kind, opts.enrollmentId ?? null);
-  // Duplicate clicks: an active run with the same dedupeKey means "wait for
-  // that one", not "start a second". Postgres enforces it (unique dedupeKey).
-  let runId: string;
-  const now = new Date();
-  // A run left RUNNING past its lease (function timeout, deploy mid-call) would
-  // hold its dedupeKey forever and every later click for that script/topic/
-  // interview/call would get "already running" — expire it first.
+/**
+ * Free the keys dead runs still hold. A run left RUNNING past its lease
+ * (function timeout, deploy mid-call) would hold its dedupeKey forever and
+ * every later click for that script/topic/interview/call would get "already
+ * running" — so it is expired. A QUEUE-owned run is left alone here: the queue
+ * re-queues it (aiQueue.recoverStale), because a person asked for that draft.
+ * A finished run whose caller died before releaseRunKey (holdDedupeKey) stays
+ * SUCCEEDED — the model call did succeed — and only the key goes.
+ */
+export async function expireStaleRuns(now: Date = new Date()): Promise<void> {
   await prisma.programAiRun.updateMany({
-    where: { status: "RUNNING", leaseUntil: { lt: now } },
+    where: { status: "RUNNING", leaseUntil: { lt: now }, OR: [{ leaseBy: null }, { NOT: { leaseBy: { startsWith: QUEUE_LEASE_PREFIX } } }] },
     data: { status: "FAILED", error: "Lease expired — the run never finished (timed out or the server restarted).", errorAt: now, finishedAt: now, dedupeKey: null, leaseUntil: null, leaseBy: null },
   }).catch(() => {});
-  // A finished run whose caller died before releaseRunKey (holdDedupeKey):
-  // the model call succeeded, so the row stays SUCCEEDED — only the key goes.
   await prisma.programAiRun.updateMany({
     where: { status: "SUCCEEDED", dedupeKey: { not: null }, leaseUntil: { lt: now } },
     data: { dedupeKey: null, leaseUntil: null, leaseBy: null },
   }).catch(() => {});
+}
+
+export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> {
+  if (opts.unattended && !(await isAutomationEnabled("ai_runs"))) throw new AutomationDisabledError();
+  const claimed = opts.claimedRun ?? null;
+  await assertQuota(opts.kind, opts.enrollmentId ?? null, claimed?.id ?? null);
+  // Duplicate clicks: an active run with the same dedupeKey means "wait for
+  // that one", not "start a second". Postgres enforces it (unique dedupeKey).
+  let runId: string;
+  const now = new Date();
+  await expireStaleRuns(now);
   const base = {
     kind: opts.kind,
     enrollmentId: opts.enrollmentId ?? null,
@@ -178,15 +211,39 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     leaseUntil: new Date(now.getTime() + LEASE_MS),
     leaseBy: opts.requestedBy,
   };
-  try {
-    const row = await prisma.programAiRun.create({ data: { ...base, dedupeKey: opts.dedupeKey ?? null }, select: { id: true } });
-    runId = row.id;
-  } catch (e) {
-    if (opts.dedupeKey && String(e).includes("Unique constraint")) {
-      throw new Error("That generation is already running — give it a moment.");
+  if (claimed) {
+    // ADOPT the queued row (aiQueue.ts): it already holds the key and the
+    // person's name; this records what the prompt was built from and renews
+    // the lease from the moment the model is called. Only while the worker
+    // still holds it — a row the queue took back is not ours to run.
+    const prev = await prisma.programAiRun.findUnique({ where: { id: claimed.id }, select: { scopeJson: true } });
+    let queuedScope: Record<string, unknown> = {};
+    try { queuedScope = prev?.scopeJson ? (JSON.parse(prev.scopeJson) as Record<string, unknown>) : {}; } catch { queuedScope = {}; }
+    const adopted = await prisma.programAiRun.updateMany({
+      where: { id: claimed.id, status: "RUNNING", leaseBy: claimed.leaseBy },
+      data: {
+        kind: base.kind, enrollmentId: base.enrollmentId, clientId: base.clientId, scopeJson: JSON.stringify({ ...queuedScope, ...(opts.scope ?? {}) }),
+        inputRefsJson: base.inputRefsJson, promptKey: base.promptKey, promptVersion: base.promptVersion, model: base.model, policyVersionId: base.policyVersionId, strategyVersionId: base.strategyVersionId,
+        startedAt: now, leaseUntil: base.leaseUntil,
+      },
+    });
+    if (adopted.count === 0) throw new LeaseLostError("This queued AI run was taken back by the queue before it reached the model — nothing was spent; the queue runs it again.");
+    runId = claimed.id;
+  } else {
+    try {
+      const row = await prisma.programAiRun.create({ data: { ...base, dedupeKey: opts.dedupeKey ?? null }, select: { id: true } });
+      runId = row.id;
+    } catch (e) {
+      if (opts.dedupeKey && String(e).includes("Unique constraint")) {
+        throw new Error("That generation is already running — give it a moment.");
+      }
+      throw e;
     }
-    throw e;
   }
+  // A queued run's writes are fenced on the worker's lease as well as on
+  // RUNNING: the queue re-queues a run whose lease ran out (it does not fail
+  // it), so "RUNNING" alone could be another worker's retry of the same row.
+  const mine = claimed ? { leaseBy: claimed.leaseBy } : {};
   try {
     const { result, usage, model } = await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model });
     const output = opts.parse ? opts.parse(result) : result;
@@ -198,7 +255,7 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     // row back to SUCCEEDED, and the caller went on to apply this late output:
     // a second version on a script another run had already drafted.
     const done = await prisma.programAiRun.updateMany({
-      where: { id: runId, status: "RUNNING" },
+      where: { id: runId, status: "RUNNING", ...mine },
       data: {
         status: "SUCCEEDED", finishedAt: new Date(), model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costCents,
         outputJson,
@@ -223,10 +280,9 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
     // overwrite that with this error's text.
     if (e instanceof LeaseLostError) throw e;
     const msg = e instanceof Error ? e.message : String(e);
-    await prisma.programAiRun.update({
-      where: { id: runId },
-      data: { status: "FAILED", error: msg.slice(0, 2000), errorAt: new Date(), finishedAt: new Date(), leaseUntil: null, leaseBy: null, dedupeKey: null },
-    }).catch(() => {});
+    const failed = { status: "FAILED", error: msg.slice(0, 2000), errorAt: new Date(), finishedAt: new Date(), leaseUntil: null, leaseBy: null, dedupeKey: null };
+    if (claimed) await prisma.programAiRun.updateMany({ where: { id: runId, status: "RUNNING", ...mine }, data: failed }).catch(() => {});
+    else await prisma.programAiRun.update({ where: { id: runId }, data: failed }).catch(() => {});
     throw e;
   }
 }

@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, claimRunWrite, sha256, type AiRunKind } from "@/lib/aiRuns";
+import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, claimRunWrite, sha256, type AiRunKind, type ClaimedRun } from "@/lib/aiRuns";
 import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText, parseStoredSections, deriveStrategyVersion } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
@@ -194,14 +194,18 @@ async function excerptsForTopic(topicId: string, monthId: string | null): Promis
 /**
  * CP-08: the script prompt with the per-part word budgets — every script draft
  * names it, so a before/after on estimated length is attributable. v3 (Oct 6
- * 2026): the budgets rescaled for the 30–50 s target.
+ * 2026): the budgets rescaled for the 30–50 s target. v4 (Oct 12 2026): no
+ * dashes in a script (the punctuation rule in the prompt, and a revision is
+ * told to take out any the current version has).
  */
-const SCRIPT_PROMPT_VERSION = "script.v3-budgets-30-50s";
+const SCRIPT_PROMPT_VERSION = "script.v4-no-dashes";
 
 export type GenerateScriptOpts = {
   topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean;
   /** The "draft what's owed" sweep: never add a version to a script that exists — see AlreadyDraftedError. */
   onlyIfUnscripted?: boolean;
+  /** Oct 12 2026: the queued run a background worker claimed for this draft (aiQueue.ts) — adopted, not duplicated. */
+  claimedRun?: ClaimedRun | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -245,7 +249,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length },
     promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
-    dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
+    dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: o.claimedRun ?? null,
   });
   try {
     const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId);
@@ -272,7 +276,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
 }
 
 /** Written-answer path: a DRAFT version from the interview's exact answer rows, gaps carried through, never filled. */
-export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
+export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean; claimedRun?: ClaimedRun | null } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
   await (await import("@/lib/programStyle")).assertWeWriteFor(a.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
@@ -285,7 +289,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length },
     promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`, holdDedupeKey: true,
-    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
   });
   try {
     const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId);
@@ -313,7 +317,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
  * instruction applied. The current version — and any manual edit in it — is
  * never overwritten; regeneratedSections says what changed.
  */
-export async function reviseScript(scriptId: string, instructions: string, requestedBy: string, source: "REVISION" | "CLIENT_REQUEST" = "REVISION"): Promise<{ versionId: string; versionNo: number }> {
+export async function reviseScript(scriptId: string, instructions: string, requestedBy: string, source: "REVISION" | "CLIENT_REQUEST" = "REVISION", opts: { claimedRun?: ClaimedRun | null } = {}): Promise<{ versionId: string; versionNo: number }> {
   const head = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true } });
   if (!head) throw new Error("Script not found.");
   // Historical imports are records of what was filmed — the AI never rewrites them (Jordan's ruling).
@@ -327,11 +331,11 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const rawExcerpts = s.topicId ? await excerptsForTopic(s.topicId, s.monthId) : [];
   const scrub = await scrubOtherClients(s.clientId, rawExcerpts.map((e) => e.text));
   const bundle = buildScriptPrompt(built.ctx, { path: "transcript", topic, excerpts: rawExcerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: true });
-  const user = `${bundle.user}\n\nCURRENT VERSION (v${base.versionNo}) — keep what already works, change only what the reviewer asks:\n${base.body}\n\nREVIEWER'S INSTRUCTION: ${instructions.trim().slice(0, 2000)}`;
+  const user = `${bundle.user}\n\nCURRENT VERSION (v${base.versionNo}) — keep what already works, change only what the reviewer asks:\n${base.body}\n\nREVIEWER'S INSTRUCTION: ${instructions.trim().slice(0, 2000)}\n\nPUNCTUATION: the new version has no em dash or en dash anywhere, even where the current version has one; use a comma, a period or "and" instead.`;
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_revise", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId, basedOnVersionId: baseId }, inputRefs: { ...built.inputRefs, instruction: sha256(instructions) },
     promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `revise:${scriptId}`,
-    system: bundle.system, prompt: user, schema: bundle.outputSchema, maxTokens: 3000,
+    system: bundle.system, prompt: user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
   });
   const { parts, validation, gaps } = partsFromGenerated(run.output, base.pillarId, s.clientId);
   // The reviewer's revision must not silently recategorise the script.
@@ -811,7 +815,7 @@ const etYear = (d: Date) => Number(new Intl.DateTimeFormat("en-US", { timeZone: 
  * transcript and intake reach the model only after scrubTranscriptForGeneration
  * — the counts of what was held back are on the run's inputRefs.
  */
-export async function draftStrategyFromTranscript(o: { enrollmentId: string; clientId: string; transcript: string; callRecordId?: string | null; callDate?: Date | null; intakeText?: string | null; requestedBy: string; unattended: boolean }): Promise<{ versionId: string; versionNo: number; gaps: number; runId: string; stripped: number }> {
+export async function draftStrategyFromTranscript(o: { enrollmentId: string; clientId: string; transcript: string; callRecordId?: string | null; callDate?: Date | null; intakeText?: string | null; requestedBy: string; unattended: boolean; claimedRun?: ClaimedRun | null }): Promise<{ versionId: string; versionNo: number; gaps: number; runId: string; stripped: number }> {
   const built = await buildClientContext(o.enrollmentId);
   const scrub = await scrubTranscriptForGeneration(o.clientId, o.transcript);
   // The intake is stored as JSON; one answer per line, so a private answer is held back without the rest.
@@ -820,7 +824,7 @@ export async function draftStrategyFromTranscript(o: { enrollmentId: string; cli
   const excerptCtx: ClientContext = { ...built.ctx, sourceExcerpts: [{ speaker: "client", speakerName: built.ctx.clientName, source: "discovery-call transcript (speaker turns not separated — treat lines as the client's only where the transcript says so)", text: scrub.text.slice(0, 120_000) }] };
   const bundle = buildStrategyPrompt(excerptCtx, { intakeText: intake?.text ?? null, priorStrategyNote: built.ctx.strategy ? `An approved strategy (${built.strategyLabel}) exists; this draft is a proposed new version, not a replacement.` : null });
   type StrategyOut = { clientName: string; subtitle: string; brandOverview: { coreValues: string; brandMessage: string; shortBrandStatement: string | null; brandVoice: string }; targetAudience: { primaryServiceAreas: string; pricePositioning: string | null; primaryClientTypes: string; longTermPositioningGoal: string }; contentGoals: string[]; contentPillars: { preamble: string; pillars: { name: string; purpose: string; focusAreas: string; contentApproach: string | null }[] }; framework: string; captionCtaExamples: string[]; strategicDirection: string; gaps: Gap[] };
-  const run = await runAiJson<StrategyOut>({ kind: "strategy_draft", enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, transcriptHash: sha256(o.transcript), stripped: scrub.stripped, strippedBy: scrub.reasons, intakeStripped: intake?.stripped ?? 0 }, promptKey: "strategy", promptVersion: `${GENERATION_POLICY_VERSION}/strategy.2-scrubbed`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: o.callRecordId ? `strategy:${o.callRecordId}` : null, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 12_000 });
+  const run = await runAiJson<StrategyOut>({ kind: "strategy_draft", enrollmentId: o.enrollmentId, clientId: o.clientId, scope: { callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, transcriptHash: sha256(o.transcript), stripped: scrub.stripped, strippedBy: scrub.reasons, intakeStripped: intake?.stripped ?? 0 }, promptKey: "strategy", promptVersion: `${GENERATION_POLICY_VERSION}/strategy.2-scrubbed`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: o.callRecordId ? `strategy:${o.callRecordId}` : null, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 12_000, claimedRun: o.claimedRun ?? null });
   const out = run.output;
   const doc: StrategyDocument = {
     clientName: out.clientName || built.ctx.clientName, year: etYear(o.callDate ?? new Date()), subtitle: out.subtitle,

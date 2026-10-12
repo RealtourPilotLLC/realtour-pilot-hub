@@ -611,7 +611,19 @@ async function claimQueuedRun(runId: string, leaseBy: string): Promise<boolean> 
  * runs once `topic_refresh` is on. Joining it would have told Jordan "already
  * running" about a job that may never start; running it is what he asked for.
  */
-export async function startTopicRefresh(opts: RefreshRequest & { requestedBy: string; unattended?: boolean; /** Store only the top N new suggestions (a single-suggestion regeneration keeps 1); the prompt itself always asks for the policy's count. */ keep?: number | null }): Promise<{ runId: string; joined: boolean }> {
+export async function startTopicRefresh(opts: RefreshRequest & {
+  requestedBy: string; unattended?: boolean;
+  /** Store only the top N new suggestions (a single-suggestion regeneration keeps 1); the prompt itself always asks for the policy's count. */
+  keep?: number | null;
+  /**
+   * Oct 12 2026: hand the AI half to this (after() in the action) instead of
+   * waiting for it. The run is claimed (RUNNING, under the person's lease)
+   * before this returns, so the page shows it running at once; its outcome —
+   * suggestions, NEEDS_INPUT or FAILED — lands on the run row. A worker killed
+   * mid-run leaves a lease that expires into "Lease expired … Start it again".
+   */
+  background?: (work: () => Promise<void>) => void;
+}): Promise<{ runId: string; joined: boolean }> {
   const plan = await refreshPlan(opts);
   const { dedupeKey, keep } = plan;
   await expireStaleRefreshLeases();
@@ -628,7 +640,9 @@ export async function startTopicRefresh(opts: RefreshRequest & { requestedBy: st
     const row = await prisma.contentTopicRefreshRun.findUnique({ where: { id: queuedWhole.id }, select: { inputsJson: true } });
     let inputs: { pillarId?: string | null; keep?: number | null } = {};
     try { inputs = JSON.parse(row?.inputsJson ?? "{}"); } catch { inputs = {}; }
-    await executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null });
+    const work = () => executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null });
+    if (opts.background) opts.background(() => work().catch(() => {})); // the outcome is on the run row
+    else await work();
     return { runId: queuedWhole.id, joined: false };
   }
   if (active) return { runId: active.id, joined: true };
@@ -651,6 +665,8 @@ export async function startTopicRefresh(opts: RefreshRequest & { requestedBy: st
   }
   if (opts.kind === "RECOMMENDATION") {
     try { await executeRecommendationRun(runId); } catch (e) { await failRefreshRun(runId, e); throw e; }
+  } else if (opts.background) {
+    opts.background(() => executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep }).catch(() => {}));
   } else {
     await executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep });
   }

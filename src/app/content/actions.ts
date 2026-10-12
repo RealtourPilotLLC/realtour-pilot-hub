@@ -1,5 +1,6 @@
 "use server";
 
+import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
@@ -454,40 +455,48 @@ export async function reviseScriptAI(scriptId: string, instructions: string): Pr
 export async function tightenScriptAI(scriptId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
-    const { ensureScriptVersioned } = await import("@/lib/contentScripts");
-    const { tightenInstruction, GENERATION_POLICY } = await import("@/lib/contentPolicy");
-    const head = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true } });
-    if (!head) return { ok: false, message: "That script no longer exists." };
-    // Same rule as every other rewrite path: an import is the record of what was
-    // filmed, and a 126-second archive script is history, not an overrun to fix.
-    if (head.historical) return { ok: false, message: "This is an imported historical script — it is not rewritten. Draft a new script for the topic instead." };
-    const versionId = await ensureScriptVersioned(scriptId);
-    const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { versionNo: true, estimatedSeconds: true, spokenWordCount: true } });
-    if (!v) return { ok: false, message: "That script has no version to tighten." };
-    const [lo, hi] = GENERATION_POLICY.timing.targetSec;
-    const seconds = v.estimatedSeconds, words = v.spokenWordCount;
-    if (seconds == null || words == null) return { ok: false, message: "This version has no spoken-length estimate yet — save or regenerate it once and the estimate is recorded." };
-    // UNDER-TARGET IS NOT "INSIDE THE TARGET" (review, Sep 18 2026). One
-    // `seconds <= hi` test used to answer both of the cases it is not an
-    // overrun, and told a 19-second draft it was "inside the target" (then 20–30 s).
-    // Four live current versions estimate at 19 s (measured against production,
-    // scripts/_fix/CE/probe-under.ts), so four rows were being told something
-    // false about themselves — and the fix for a short script is the opposite
-    // of a tighten, so the wrong words point at the wrong action.
-    if (seconds < lo) {
-      return {
-        ok: false,
-        message: `Version ${v.versionNo} estimates at ≈${seconds} s (${words} words) — that is UNDER the ${lo}–${hi} s target, not over it, and tightening would only make it shorter. Add substance with "Ask AI to revise" or "Edit myself" instead.`,
-      };
-    }
-    if (seconds <= hi) return { ok: false, message: `Version ${v.versionNo} already estimates at ≈${seconds} s, inside the ${lo}–${hi} s target — nothing to tighten.` };
-    const instruction = tightenInstruction({ seconds, words, wordsPerSec: GENERATION_POLICY.timing.wordsPerSec, target: GENERATION_POLICY.timing.targetSec });
+    const plan = await tightenPlan(scriptId);
+    if (!plan.ok) return plan;
+    const { seconds, words, versionNo, lo, hi, instruction } = plan;
     const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
     const me = await actor();
     await reviseScriptWithInstructions(scriptId, instruction, { requestedBy: me.email });
     revalidatePath("/content");
-    return { ok: true, message: `Sent back to be tightened from ≈${seconds} s (${words} words) toward ${lo}–${hi} s — v${v.versionNo} is kept. The new version is waiting in the review queue.` };
+    return { ok: true, message: `Sent back to be tightened from ≈${seconds} s (${words} words) toward ${lo}–${hi} s — v${versionNo} is kept. The new version is waiting in the review queue.` };
   } catch (e) { return fail(e); }
+}
+
+/** The tighten instruction for the CURRENT version, or why there is nothing to tighten (shared by the queued Tighten). */
+async function tightenPlan(scriptId: string): Promise<{ ok: false; message: string } | { ok: true; instruction: string; seconds: number; words: number; versionNo: number; lo: number; hi: number }> {
+  const { ensureScriptVersioned } = await import("@/lib/contentScripts");
+  const { tightenInstruction, GENERATION_POLICY } = await import("@/lib/contentPolicy");
+  const head = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true } });
+  if (!head) return { ok: false, message: "That script no longer exists." };
+  // Same rule as every other rewrite path: an import is the record of what was
+  // filmed, and a 126-second archive script is history, not an overrun to fix.
+  if (head.historical) return { ok: false, message: "This is an imported historical script — it is not rewritten. Draft a new script for the topic instead." };
+  const versionId = await ensureScriptVersioned(scriptId);
+  const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { versionNo: true, estimatedSeconds: true, spokenWordCount: true } });
+  if (!v) return { ok: false, message: "That script has no version to tighten." };
+  const [lo, hi] = GENERATION_POLICY.timing.targetSec;
+  const seconds = v.estimatedSeconds, words = v.spokenWordCount;
+  if (seconds == null || words == null) return { ok: false, message: "This version has no spoken-length estimate yet — save or regenerate it once and the estimate is recorded." };
+  // UNDER-TARGET IS NOT "INSIDE THE TARGET" (review, Sep 18 2026). One
+  // `seconds <= hi` test used to answer both of the cases it is not an
+  // overrun, and told a 19-second draft it was "inside the target" (then 20–30 s).
+  // Four live current versions estimate at 19 s (measured against production,
+  // scripts/_fix/CE/probe-under.ts), so four rows were being told something
+  // false about themselves — and the fix for a short script is the opposite
+  // of a tighten, so the wrong words point at the wrong action.
+  if (seconds < lo) {
+    return {
+      ok: false,
+      message: `Version ${v.versionNo} estimates at ≈${seconds} s (${words} words) — that is UNDER the ${lo}–${hi} s target, not over it, and tightening would only make it shorter. Add substance with "Ask AI to revise" or "Edit myself" instead.`,
+    };
+  }
+  if (seconds <= hi) return { ok: false, message: `Version ${v.versionNo} already estimates at ≈${seconds} s, inside the ${lo}–${hi} s target — nothing to tighten.` };
+  const instruction = tightenInstruction({ seconds, words, wordsPerSec: GENERATION_POLICY.timing.wordsPerSec, target: GENERATION_POLICY.timing.targetSec });
+  return { ok: true, instruction, seconds, words, versionNo: v.versionNo, lo, hi };
 }
 
 export async function saveScriptText(scriptId: string, body: string): Promise<Result> {
@@ -1120,10 +1129,15 @@ export async function runTopicRefresh(enrollmentId: string, kind: "REFRESH" | "R
   try {
     const me = await actor();
     const { startTopicRefresh } = await import("@/lib/contentTopics");
-    const r = await startTopicRefresh({ enrollmentId, kind, requestedBy: me.email, monthId: monthId ?? null });
+    // Oct 12 2026: a REFRESH is a 16k-token model call — it runs in the
+    // background and the click answers once the run is claimed. Ranking
+    // (RECOMMENDATION) is no AI and stays in hand.
+    const background = kind === "REFRESH" ? (work: () => Promise<void>) => { try { after(work); } catch { void work(); } } : undefined;
+    const r = await startTopicRefresh({ enrollmentId, kind, requestedBy: me.email, monthId: monthId ?? null, background });
     const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: r.runId }, select: { status: true, generatedCount: true, changeSummary: true, missingContextJson: true } });
     path(enrollmentId);
     if (r.joined) return { ok: true, message: "That refresh is already running — its suggestions will appear below." };
+    if (background && run?.status === "RUNNING") return { ok: true, message: "Refreshing topics in the background — new suggestions appear below when they're ready (a minute or two)." };
     if (run?.status === "NEEDS_INPUT") {
       let missing: string[] = [];
       try { const mc = run.missingContextJson ? (JSON.parse(run.missingContextJson) as { missing?: string[]; gaps?: string[] }) : null; missing = [...(mc?.missing ?? []), ...(mc?.gaps ?? [])]; } catch { /* none */ }
@@ -1360,6 +1374,200 @@ export async function generateScriptForTopicAction(topicId: string, monthId: str
     const r = await generateScriptForTopic({ topicId, monthId, requestedBy: me.email, unattended: false });
     revalidatePath("/content");
     return { ok: true, message: `Drafted as v${r.versionNo} — ${r.ok ? "passes the format check" : `${r.findings} format finding${r.findings === 1 ? "" : "s"}`}, ${r.gaps} gap${r.gaps === 1 ? "" : "s"} listed (never filled in). Review it on the Scripts tab.` };
+  } catch (e) { return fail(e); }
+}
+
+// ---- the AI queue: every slow AI button answers at once (Oct 12 2026) -------------------
+//
+// Jordan: "When I click Draft Script on a video topic, I want a message to pop
+// up to confirm it's been sent for scripting … I want it done in the
+// background so I can continue clicking Draft Script for all of the other
+// topics." Each action below validates, writes ONE queued ProgramAiRun (the
+// durable "drafting" marker, holding the generator's own dedupe key) and
+// answers; a worker in after() does the AI (aiQueue.ts: at most three at once,
+// the rest wait QUEUED, stranded ones come back). The synchronous actions above
+// stay for callers that want the result in hand (scripts, journeys, a tab on an
+// old bundle). Owner or admin, exactly like the buttons they replace.
+// ------------------------------------------------------------------------------------------
+
+type QueueResult = Result & { runId?: string };
+
+/** Start a worker after the response — or, outside a request (a script, a drill), now. */
+function kickQueue(origin: string): void {
+  const work = async () => {
+    const { drainAiQueue } = await import("@/lib/aiQueue");
+    await drainAiQueue({ origin }).catch((e) => console.error("[aiQueue] worker failed:", e));
+  };
+  try { after(work); } catch { void work(); }
+}
+
+/** One topic's draft, checked and queued. Shared by "Draft script" and its "Try again". */
+async function queueTopicDraft(topicId: string, monthId: string, by: string): Promise<QueueResult> {
+  const [topic, month] = await Promise.all([
+    prisma.contentTopic.findUnique({ where: { id: String(topicId ?? "") }, select: { id: true, title: true, enrollmentId: true, monthId: true } }),
+    prisma.contentMonth.findUnique({ where: { id: String(monthId ?? "") }, select: { id: true, enrollmentId: true, clientId: true, historical: true } }),
+  ]);
+  if (!topic) return { ok: false, message: "That topic no longer exists." };
+  if (!month || month.enrollmentId !== topic.enrollmentId) return { ok: false, message: "That month isn't this client's — reload the page." };
+  if (month.historical) return { ok: false, message: "That month is imported history — nothing is drafted for it." };
+  const onMonth = topic.monthId === month.id
+    || !!(await prisma.contentTopicSelection.findFirst({ where: { topicId: topic.id, monthId: month.id, status: { in: ["SELECTED", "RECONCILED", "CARRIED"] } }, select: { id: true } }));
+  if (!onMonth) return { ok: false, message: `“${topic.title}” isn't on this month's plan any more — reload the page.` };
+  if (await prisma.contentScript.findFirst({ where: { topicId: topic.id, monthId: month.id, historical: false }, select: { id: true } })) {
+    return { ok: false, message: `“${topic.title}” already has a script — it's on the Scripts tab.` };
+  }
+  const { assertWeWriteFor } = await import("@/lib/programStyle");
+  await assertWeWriteFor(topic.enrollmentId);
+  const { enqueueAiJob, settleStaleRuns } = await import("@/lib/aiQueue");
+  await settleStaleRuns();
+  // The same topic through its written answers (or a sweep's run) counts as already drafting.
+  const viaAnswers = await prisma.programAiRun.findFirst({ where: { status: { in: ["QUEUED", "RUNNING"] }, scopeJson: { contains: `"topicId":"${topic.id}"` }, AND: [{ scopeJson: { contains: `"monthId":"${month.id}"` } }] }, select: { id: true } });
+  if (viaAnswers) return { ok: false, message: "That topic is already being drafted — it'll appear on the Scripts tab when it's ready.", runId: viaAnswers.id };
+  const q = await enqueueAiJob({ job: { job: "script_topic", topicId: topic.id, monthId: month.id }, enrollmentId: topic.enrollmentId, clientId: month.clientId, requestedBy: by, title: topic.title });
+  if (!q.ok) return { ok: false, message: q.message, runId: q.runId ?? undefined };
+  return { ok: true, message: `Sent for scripting — ${topic.title}. It'll appear on the Scripts tab when it's ready.`, runId: q.runId };
+}
+
+/** "Draft script" on one topic of the month: queued, answered at once. */
+export async function queueScriptDraftAction(topicId: string, monthId: string): Promise<QueueResult> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const r = await queueTopicDraft(topicId, monthId, me.email);
+    if (r.ok) { kickQueue("click"); revalidatePath("/content"); }
+    return r;
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * "Draft what's ready" / "Draft from the topic alone" (Scripts tab): every
+ * owed topic the old button would have drafted, queued one by one — the
+ * client's answers through the written-answer path, call excerpts and the
+ * topic line through the topic path — never one with a script already.
+ */
+export async function queueOwedScriptsAction(monthId: string, includeThin = false): Promise<QueueResult & { queued?: number; already?: number }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const month = await prisma.contentMonth.findUnique({ where: { id: String(monthId ?? "") }, select: { id: true, enrollmentId: true, clientId: true, historical: true } });
+    if (!month || month.historical) return { ok: false, message: "That month can't be drafted — reload the page." };
+    const { assertWeWriteFor } = await import("@/lib/programStyle");
+    await assertWeWriteFor(month.enrollmentId);
+    const { scriptWorkForMonth, isAutoDraftable } = await import("@/lib/contentDrafting");
+    const work = await scriptWorkForMonth(month.id);
+    const todo = work.filter((w) => (includeThin ? w.readiness === "THIN" || w.readiness === "THIN_ANSWERS" || isAutoDraftable(w.readiness) : isAutoDraftable(w.readiness))).slice(0, 20);
+    if (!todo.length) return { ok: true, message: includeThin ? "Nothing left to draft." : "Nothing is ready to draft — the rest are waiting on answers, on reconciling, or have no evidence yet.", queued: 0, already: 0 };
+    const { enqueueAiJob } = await import("@/lib/aiQueue");
+    let queued = 0, already = 0;
+    let refused: string | null = null;
+    for (const w of todo) {
+      const job = (w.readiness === "FROM_ANSWERS" || w.readiness === "THIN_ANSWERS") && w.interviewId
+        ? { job: "script_interview" as const, topicId: w.topicId, monthId: w.monthId, interviewId: w.interviewId }
+        : { job: "script_topic" as const, topicId: w.topicId, monthId: w.monthId, callRecordId: w.callRecordId, selectedOnCall: w.readiness === "FROM_CALL" };
+      const q = await enqueueAiJob({ job, enrollmentId: month.enrollmentId, clientId: month.clientId, requestedBy: me.email, title: w.title });
+      if (q.ok) queued++;
+      else if (q.runId) already++;
+      else { refused = q.message; break; } // a quota: every later one would refuse the same way
+    }
+    if (queued) {
+      // One worker per job up to the cap, so "Draft what's ready (4)" runs three
+      // at once rather than one after another inside a single worker's budget.
+      const { QUEUE_CONCURRENCY } = await import("@/lib/aiQueue");
+      for (let i = 0; i < Math.min(queued, QUEUE_CONCURRENCY); i++) kickQueue("click");
+      revalidatePath("/content");
+    }
+    const parts: string[] = [];
+    if (queued) parts.push(`Sent ${queued} for scripting`);
+    if (already) parts.push(`${already} already being drafted`);
+    if (refused) parts.push(`stopped: ${refused}`);
+    return { ok: queued > 0 || already > 0, message: `${parts.join(" · ")}.${queued ? " Each one appears below as it's ready — nothing is approved or shared." : ""}`, queued, already };
+  } catch (e) { return fail(e); }
+}
+
+/** "Ask AI to revise" (instructions) or "Tighten" (instruction built from the current version's estimate): queued; the current version is kept. */
+export async function queueScriptRevisionAction(scriptId: string, mode: "revise" | "tighten", instructions = ""): Promise<QueueResult> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const s = await prisma.contentScript.findUnique({ where: { id: String(scriptId ?? "") }, select: { id: true, title: true, historical: true, enrollmentId: true, clientId: true } });
+    if (!s) return { ok: false, message: "That script no longer exists." };
+    if (s.historical) return { ok: false, message: "This is an imported historical script — it is not rewritten. Draft a new script for the topic instead." };
+    let instruction: string;
+    let sent: string;
+    if (mode === "tighten") {
+      const plan = await tightenPlan(s.id);
+      if (!plan.ok) return plan;
+      instruction = plan.instruction;
+      sent = `Sent to be tightened from ≈${plan.seconds} s toward ${plan.lo}–${plan.hi} s — v${plan.versionNo} is kept. The new version appears here when it's ready.`;
+    } else {
+      instruction = String(instructions ?? "").trim().slice(0, 2000);
+      if (!instruction) return { ok: false, message: "Tell the AI what to change first." };
+      sent = "Sent for revision — the new version appears here when it's ready; the current one is kept.";
+    }
+    const { enqueueAiJob } = await import("@/lib/aiQueue");
+    const q = await enqueueAiJob({ job: { job: "script_revise", scriptId: s.id, instruction, label: mode }, enrollmentId: s.enrollmentId, clientId: s.clientId, requestedBy: me.email, title: s.title });
+    if (!q.ok) return { ok: false, message: q.message, runId: q.runId ?? undefined };
+    kickQueue("click");
+    revalidatePath("/content");
+    return { ok: true, message: sent, runId: q.runId };
+  } catch (e) { return fail(e); }
+}
+
+/** "Draft from the discovery call": every check the draft makes, at once; the AI in the background. STRATEGY duty owner only, as before. */
+export async function queueStrategyDraftAction(enrollmentId: string): Promise<QueueResult> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    await assertDutyOwner("STRATEGY", enrollmentId, null, me);
+    const { strategyDraftInputs } = await import("@/lib/programOnboarding");
+    const inputs = await strategyDraftInputs(enrollmentId);
+    const { enqueueAiJob } = await import("@/lib/aiQueue");
+    const q = await enqueueAiJob({ job: { job: "strategy_draft", callRecordId: inputs.call.id }, enrollmentId, clientId: inputs.call.clientId, requestedBy: me.email, title: "Strategy from the discovery call" });
+    if (!q.ok) return { ok: false, message: q.message, runId: q.runId ?? undefined };
+    kickQueue("click");
+    path(enrollmentId);
+    const early = inputs.analysed ? "" : " The call's analysis hasn't run yet, so only lines marked or said in confidence are held back — read the draft with that in mind.";
+    return { ok: true, message: `Sent for drafting — the strategy from the discovery call appears under Strategy versions when it's ready (a minute or two).${early}`, runId: q.runId };
+  } catch (e) { return fail(e); }
+}
+
+/** "Try again" on a queued job that failed: the same request, checked again and queued again. */
+export async function retryAiJobAction(runId: string): Promise<QueueResult> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { queuedJobOf, enqueueAiJob } = await import("@/lib/aiQueue");
+    const prev = await queuedJobOf(String(runId ?? ""));
+    if (!prev || !prev.enrollmentId || !prev.clientId) return { ok: false, message: "That job isn't on file any more — reload the page." };
+    const j = prev.job;
+    let r: QueueResult;
+    if (j.job === "script_topic") r = await queueTopicDraft(j.topicId, j.monthId, me.email);
+    else if (j.job === "strategy_draft") return queueStrategyDraftAction(prev.enrollmentId);
+    else if (j.job === "script_revise") return queueScriptRevisionAction(j.scriptId, j.label === "tighten" ? "tighten" : "revise", j.instruction);
+    else {
+      if (await prisma.contentScript.findFirst({ where: { topicId: j.topicId, monthId: j.monthId, historical: false }, select: { id: true } })) return { ok: false, message: "It already has a script — it's on the Scripts tab." };
+      const q = await enqueueAiJob({ job: j, enrollmentId: prev.enrollmentId, clientId: prev.clientId, requestedBy: me.email, title: prev.title });
+      r = q.ok ? { ok: true, message: `Sent for scripting — ${prev.title ?? "the topic"}. It'll appear on the Scripts tab when it's ready.`, runId: q.runId } : { ok: false, message: q.message, runId: q.runId ?? undefined };
+    }
+    if (r.ok) { kickQueue("click"); revalidatePath("/content"); }
+    return r;
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * What the page polls while anything is drafting: the run ids still queued
+ * or running for this client. It also restarts the queue when work is
+ * waiting and a slot is free — a worker killed mid-draft (after()'s ceiling, a
+ * deploy) is picked up the next time someone has the page open.
+ */
+export async function aiQueueStatusAction(enrollmentId: string): Promise<Result & { active?: string[] }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { activeQueueRuns, queueWantsWorker, recoverStaleQueuedRuns } = await import("@/lib/aiQueue");
+    await recoverStaleQueuedRuns();
+    if (await queueWantsWorker()) kickQueue("poll");
+    const active = await activeQueueRuns(String(enrollmentId ?? ""));
+    return { ok: true, message: `${active.length} in progress`, active };
   } catch (e) { return fail(e); }
 }
 

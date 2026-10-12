@@ -43,8 +43,9 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
       <div className="space-y-5">
         {sub}
         <MonthHeader ctx={ctx} tab="plan" view="topics" title={`Topics — ${monthName}`} />
-        <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
-          suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} held={d.held} />
+        <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort, key: month.monthKey } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
+          suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} held={d.held}
+          drafts={d.drafts} queueActive={d.queueActive} />
       </div>
     );
   }
@@ -66,7 +67,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
           <ScriptUploadPanel enrollmentId={id} monthId={uploadMonth.id} monthName={monthShort} clientName={client.name.split(" ")[0] || client.name} batches={uploads.batches} monthHasScripts={uploads.monthHasScripts} />
         )}
         <ScriptRequestsPanel groups={requests} />
-        <ScriptsPanel scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} />
+        <ScriptsPanel enrollmentId={id} scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} revising={d.revising} drafting={d.drafting} queueActive={d.queueActive} />
       </div>
     );
   }
@@ -79,7 +80,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
     return (
       <div className="space-y-5">
         {sub}
-        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} discovery={d.discovery} />
+        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} discovery={d.discovery} queueActive={d.queueActive} />
       </div>
     );
   }

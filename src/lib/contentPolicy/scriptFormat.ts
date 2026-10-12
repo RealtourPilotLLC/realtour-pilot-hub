@@ -957,13 +957,71 @@ export function tightenInstruction(estimate: Pick<SpokenEstimate, "seconds" | "w
   const [lo, hi] = estimate.target;
   const targetWords = Math.round(hi * estimate.wordsPerSec);
   const cut = Math.max(0, estimate.words - targetWords);
+  // Oct 12 2026: no dash used as punctuation here, and the punctuation rule
+  // restated: the model mirrors the instruction's own style.
   return [
-    `This version estimates at about ${estimate.seconds} seconds — ${estimate.words} spoken words at ${estimate.wordsPerSec} words per second — against the ${lo}–${hi} second target.`,
+    `This version estimates at about ${estimate.seconds} seconds (${estimate.words} spoken words at ${estimate.wordsPerSec} words per second) against the ${lo}–${hi} second target.`,
     cut > 0
-      ? `Cut roughly ${cut} spoken word${cut === 1 ? "" : "s"} to land at or under ${targetWords} words. Tighten by removing hedges, repeated setup and any sentence that restates the point before it — not by writing for a faster read.`
-      : `Tighten the delivery so a natural read lands inside ${lo}–${hi} seconds — by removing words, not by writing for a faster read.`,
+      ? `Cut roughly ${cut} spoken word${cut === 1 ? "" : "s"} to land at or under ${targetWords} words. Tighten by removing hedges, repeated setup and any sentence that restates the point before it, not by writing for a faster read.`
+      : `Tighten the delivery so a natural read lands inside ${lo}–${hi} seconds, by removing words and not by writing for a faster read.`,
     `Keep the same idea, the same specifics and the client's voice. Keep the hook, exactly three talking points in the order Re-hook, Build up, Payoff, and the close: a shorter script that loses any of those is worse, not better.`,
+    GENERATION_POLICY.punctuation.rule,
   ].join(" ");
+}
+
+// ---------------------------------------------------------------------------
+// NO DASHES IN A SCRIPT (Jordan, Oct 12 2026: "Make sure no em dashes are ever
+// written into the scripts"). The prompts say so (SCRIPT_PUNCTUATION_RULE);
+// this is the deterministic half: contentScripts.createScriptVersion runs every
+// NEW version's spoken parts through stripScriptDashes (AI drafts, revisions,
+// Tighten, staff edits, uploads, applied client suggestions — never an
+// imported historical record), and validateNewScript reports one that gets
+// through as a finding. Stored versions are never rewritten.
+//
+// The em dash (U+2014), the en dash (U+2013), the figure dash and the
+// horizontal bar, and "--" typed for one. A hyphen inside a word
+// ("first-time") is a hyphen, not a dash, and is never touched.
+// ---------------------------------------------------------------------------
+const DASH_CHARS = "\u2012\u2013\u2014\u2015";
+const DASH = `(?:[${DASH_CHARS}]|--)`;
+const DASH_TEST = new RegExp(DASH);
+
+/** True when the text carries a dash used as punctuation. */
+export function hasScriptDash(text: string | null | undefined): boolean {
+  return !!text && DASH_TEST.test(text);
+}
+
+/**
+ * A dash, rewritten as plain spoken punctuation — simple and readable:
+ *   "the price — not the photos — sells it" → "the price, not the photos, sells it"
+ *   "it worked — Buyers lined up" (a new sentence after it) → "it worked. Buyers lined up"
+ *   "a range of 30–50 seconds" / "$400–$500" → "30 to 50 seconds" / "$400 to $500"
+ *   "wait, — here's why" → "wait, here's why"  (beside other punctuation it just goes)
+ *   "Here's the thing —" (at the end of a line) → "Here's the thing."
+ *   "— a bullet" (at the start of a line) → "a bullet"
+ * A TITLE takes a colon instead ("Spring Market — What Sellers Miss" →
+ * "Spring Market: What Sellers Miss"). Pure; idempotent; line breaks kept.
+ */
+export function stripScriptDashes(text: string, opts?: { title?: boolean }): string;
+export function stripScriptDashes(text: string | null, opts?: { title?: boolean }): string | null;
+export function stripScriptDashes(text: string | null, opts: { title?: boolean } = {}): string | null {
+  if (text == null || !DASH_TEST.test(text)) return text;
+  // A number range is said "to".
+  let out = text.replace(new RegExp(`(\\d[\\d,.]*%?)\\s*${DASH}+\\s*(?=[$£€]?\\d)`, "g"), "$1 to ");
+  out = out.split("\n").map((raw) => {
+    let line = raw;
+    line = line.replace(new RegExp(`^(\\s*)${DASH}+\\s*`), "$1"); // a leading dash (a bullet)
+    line = line.replace(new RegExp(`([,.;:!?…])\\s*${DASH}+\\s*`, "g"), "$1 "); // beside punctuation: it just goes
+    line = line.replace(new RegExp(`\\s*${DASH}+\\s*(?=[,.;:!?…)\\]"”’'])`, "g"), ""); // before closing punctuation / quotes
+    line = line.replace(new RegExp(`\\s*${DASH}+\\s*$`), opts.title ? "" : "."); // a trailing dash ends the sentence
+    if (opts.title) line = line.replace(new RegExp(`\\s*${DASH}+\\s*`, "g"), ": ");
+    else {
+      line = line.replace(new RegExp(`(?<=[a-z0-9%)"”’'])\\s*${DASH}+\\s*(?=[A-Z])`, "g"), ". "); // a new sentence after it
+      line = line.replace(new RegExp(`\\s*${DASH}+\\s*`, "g"), ", "); // between words: a comma
+    }
+    return line.replace(/ {2,}/g, " ").replace(/ +$/, "").replace(/,\s*,/g, ",").replace(/([.!?…])\.$/, "$1");
+  }).join("\n");
+  return out;
 }
 
 export function validateNewScript(script: CanonicalScript, opts: ValidateScriptOptions = {}): ScriptValidation {
@@ -1083,6 +1141,17 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
         push("pillar.unmapped", "info", `Category “${ref.categoryAsDelivered}” resolves to “${match.name}” but carries no pillar id yet — it is stamped when the version is written.`, "pillarRef.pillarId");
       }
     }
+  }
+
+  // Oct 12 2026: no dash in anything the script says or shows (Jordan). The
+  // save path strips them, so this fires only for one that got through.
+  const spoken: [string, string | null][] = [
+    ["title", script.title], ["hook", script.hook?.text ?? null], ...script.points.map((p, i): [string, string | null] => [`talking point ${i + 1}`, p.text]),
+    ["close", script.close?.text ?? null], ["caption CTA", script.captionCta],
+  ];
+  const dashed = spoken.filter(([, t]) => hasScriptDash(t)).map(([where]) => where);
+  if (dashed.length) {
+    push("punctuation.dash", "warn", `The ${dashed.join(", ")} ${dashed.length === 1 ? "contains" : "contain"} an em dash or en dash. Scripts use none: a comma, a period or "and" instead.`, "spoken", { where: dashed.join(",") });
   }
 
   // Unsupported-claim gaps the generator emitted stay visible; note them.

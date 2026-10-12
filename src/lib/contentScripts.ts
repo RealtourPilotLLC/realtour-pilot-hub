@@ -4,7 +4,7 @@ import { sha256, setRunDisposition } from "@/lib/aiRuns";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import {
-  parseDeliveredScript, renderScript, estimateSpokenSeconds, makeBlock, emptyInternal, validateNewScript, TALKING_POINT_ROLES, roleFromLabel,
+  parseDeliveredScript, renderScript, estimateSpokenSeconds, makeBlock, emptyInternal, validateNewScript, TALKING_POINT_ROLES, roleFromLabel, stripScriptDashes,
   type ApprovedPillar, type CanonicalScript, type Finding, type Gap, type TalkingPointRole,
 } from "@/lib/contentPolicy";
 
@@ -80,11 +80,35 @@ function bodyFor(parts: VersionParts, forStaff = false): string {
   return renderScript(canonicalFromParts(parts), { includeInternal: forStaff }).trim();
 }
 
+/**
+ * NO DASHES IN A NEW VERSION (Jordan, Oct 12 2026: "Make sure no em dashes
+ * are ever written into the scripts"). Everything the script says or shows —
+ * title, hook, points, close, caption CTA, the alternate hooks — goes through
+ * scriptFormat.stripScriptDashes. Internal notes are left as written.
+ */
+export function sanitizeScriptParts(p: VersionParts): VersionParts {
+  return {
+    ...p,
+    title: stripScriptDashes(p.title, { title: true }), hook: stripScriptDashes(p.hook), close: stripScriptDashes(p.close),
+    points: p.points.map((pt) => ({ ...pt, text: stripScriptDashes(pt.text) })),
+    captionCta: p.captionCta == null ? p.captionCta : stripScriptDashes(p.captionCta),
+    alternateHooks: p.alternateHooks?.map((h) => stripScriptDashes(h)),
+  };
+}
+
 /** Create the next version of a script (creating the script identity when scriptId is null). */
 export async function createScriptVersion(opts: NewVersionOpts): Promise<{ scriptId: string; versionId: string; versionNo: number }> {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: opts.enrollmentId }, select: { clientId: true } });
   if (!e) throw new Error("Enrollment not found.");
-  const parts = opts.parts;
+  // THE SAVE CHOKE POINT for script words: every AI draft, AI revision and
+  // Tighten, staff edit, upload and applied client suggestion lands here, so
+  // this is where a dash is taken out (Oct 12 2026). An IMPORT is the record
+  // of what was filmed and is kept word for word. The caller validated the
+  // words before this — a dash finding it recorded no longer describes the
+  // version written, so it goes too.
+  const keepWords = opts.source === "IMPORT" || !!opts.historical;
+  const parts = keepWords ? opts.parts : sanitizeScriptParts(opts.parts);
+  if (!keepWords && opts.validation) opts = { ...opts, validation: { ...opts.validation, findings: opts.validation.findings.filter((f) => f.code !== "punctuation.dash") } };
   const title = parts.title.trim().slice(0, 200) || "(untitled)";
   const canonical = canonicalFromParts(parts);
   const body = bodyFor(parts);

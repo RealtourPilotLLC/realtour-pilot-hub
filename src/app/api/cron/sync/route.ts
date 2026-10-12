@@ -397,6 +397,17 @@ export async function GET(req: NextRequest) {
     // 45s (was 30s): the A42 check can rebuild a client's library, which is a
     // few seconds each on the rare hour one is missing a cut.
   }, { maxMs: 45_000 });
+  // Oct 12 2026: the AI queue's safety net. A person's "Draft script" (and the
+  // other queued AI buttons) run in after() the moment they are clicked; a
+  // worker killed mid-draft (the 300 s ceiling, a deploy) leaves its row to
+  // come back as QUEUED, and the open page's poll restarts it. This drains
+  // what is still waiting when nobody has the page open. Attended work — a
+  // person asked for each one — so no automation switch gates it; the queue's
+  // cap (three at once) and the daily AI quotas still hold.
+  await step("aiQueue", async () => {
+    const { drainAiQueueInParallel } = await import("@/lib/aiQueue");
+    return drainAiQueueInParallel({ origin: "cron", budgetMs: 30_000 });
+  }, { maxMs: 90_000 });
   await step("scriptDrafting", async () => {
     const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
     // Questions first: phrasing them for the topic has to happen BEFORE the

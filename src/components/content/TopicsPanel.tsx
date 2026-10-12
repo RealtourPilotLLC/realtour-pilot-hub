@@ -1,18 +1,23 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { Ban, Check, ClipboardCopy, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import Link from "next/link";
+import { AlertTriangle, Ban, Check, ClipboardCopy, FileText, History, Lightbulb, Loader2, MessageSquare, PauseCircle, Pencil, Plus, RefreshCw, Sparkles, Star, Undo2, X } from "lucide-react";
 import type { PillarStock } from "@/lib/contentTopics";
+import type { QueueItemUi } from "@/lib/aiQueue";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { useToast } from "@/components/ui/Toast";
 import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
+import { contentHref } from "@/lib/contentNav";
 import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy/topicBank";
 import {
-  addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, generateScriptForTopicAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
+  addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, queueScriptDraftAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
   startInterview, suggestionAction, topicDecision, undeclineTopicAction,
   suggestionBulkAction, releaseSuggestionHoldAction, setSuggestionReasonAction,
 } from "@/app/content/actions";
 import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
+import { useAiQueueWatch } from "./useAiQueueWatch";
 
 // ---------------------------------------------------------------------------
 // Video Topics (spec §5/§18/§27) — the bank by pillar (Arielle's
@@ -31,6 +36,14 @@ import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
 // 6.3 (Sep 25 2026): the recommendation's CLIENT line (what the client reads
 // on Your Month, editable here) apart from the staff "why now"; approve all
 // shown; hold / regenerate the selected suggestions; the held list with Release.
+//
+// Oct 12 2026 (Jordan: "I want it done in the background so I can continue
+// clicking Draft Script for all of the other topics"): "Draft script" queues
+// the draft (aiQueue.ts) and answers at once with a pop-up; that ONE topic
+// reads "Drafting…" — across refreshes, from the queued run — while every
+// other button stays live, and the page polls until it turns into "Script
+// drafted → View" or "Drafting failed — Try again" with the reason. "Refresh
+// topics" runs in the background the same way.
 // ---------------------------------------------------------------------------
 
 export type TopicUi = {
@@ -51,17 +64,49 @@ const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
 const fmt = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 
-export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [] }: {
-  enrollmentId: string; month: { id: string; label: string; short: string } | null; capacity: { owed: number; selected: number; overflow: number } | null;
+/** A click whose server answer has not been rendered yet: "pending" while the call is out, then the run it queued. */
+type SentDraft = { runId: string | null };
+
+export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, monthTopics, suggestions, recommended, runs, interviews, histories, pillars, topicsPerPillar, isOwner, archivedCount, declined = [], stock = [], held = [], drafts = {}, queueActive = [] }: {
+  enrollmentId: string; month: { id: string; label: string; short: string; key?: string | null } | null; capacity: { owed: number; selected: number; overflow: number } | null;
   groups: GroupUi[]; proposed: ProposedUi[]; monthTopics: TopicUi[]; suggestions: SuggestionUi[]; recommended: SuggestionUi[]; runs: RunUi[];
   interviews: Record<string, InterviewUi>; histories: Record<string, EventUi[]>; pillars: { id: string; name: string }[]; topicsPerPillar: number; isOwner: boolean; archivedCount: number;
   declined?: TopicUi[]; stock?: PillarStock[];
   /** 6.3: suggestions on hold — off the review list, the client's pages and every refresh until released. */
   held?: SuggestionUi[];
+  /** Oct 12: the month's queued / drafting / failed script drafts, by topic id (aiQueue.queueStateFor). */
+  drafts?: Record<string, QueueItemUi>;
+  /** The run ids still queued or running (drafts and a background refresh) — what the poll watches. */
+  queueActive?: string[];
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
+  const { toast, show } = useToast();
+  useAiQueueWatch(enrollmentId, queueActive);
+  // "Draft script" never takes the panel's shared `busy`: each topic keeps its
+  // own state, so the next topic's button is live the moment this one is sent.
+  const [sent, setSent] = useState<Record<string, SentDraft>>({});
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => { const m = timers.current; return () => { for (const t of m.values()) clearTimeout(t); }; }, []);
+  const forget = (topicId: string, afterMs: number) => {
+    const m = timers.current;
+    const prev = m.get(topicId); if (prev) clearTimeout(prev);
+    // By then the server's own answer (the queued run) has been rendered and speaks for the topic.
+    m.set(topicId, setTimeout(() => { m.delete(topicId); setSent((cur) => { const next = { ...cur }; delete next[topicId]; return next; }); }, afterMs));
+  };
+  const draftScript = async (t: TopicUi) => {
+    if (!month) return;
+    setSent((cur) => ({ ...cur, [t.id]: { runId: null } }));
+    let r: { ok: boolean; message: string; runId?: string };
+    try { r = await queueScriptDraftAction(t.id, month.id); } catch { r = { ok: false, message: "Couldn't reach the server — try again." }; }
+    if (r.runId) { setSent((cur) => ({ ...cur, [t.id]: { runId: r.runId ?? null } })); forget(t.id, 15_000); }
+    else forget(t.id, 0);
+    // "Already being drafted" is not an error: the topic is drafting.
+    show(r.ok || r.runId ? "ok" : "err", r.message);
+  };
+  const scriptsHref = contentHref(enrollmentId, { tab: "plan", view: "scripts", month: month?.key ?? null });
+  const refreshing = runs.some((r) => (r.kind === "REFRESH" || r.kind === "BANK") && r.status === "RUNNING");
   const [n, setN] = useState(topicsPerPillar);
   const [carryPreview, setCarryPreview] = useState<number | null>(null);
   const checkCarry = () => start(async () => { const r = await carryNowAction(enrollmentId, true); setNote(r.message); setCarryPreview(r.ok ? r.candidates?.length ?? 0 : null); });
@@ -73,6 +118,7 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
 
   return (
     <div className="space-y-5">
+      {toast}
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
 
       {/* Call-proposed selections — a person confirms */}
@@ -111,7 +157,8 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
           }>
           <div className="divide-y divide-border">
             {monthTopics.map((t) => (
-              <TopicRow key={t.id} t={t} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} inMonth run={run} />
+              <TopicRow key={t.id} t={t} busy={busy} month={month} pillars={pillars} history={histories[t.id] ?? []} interview={interviews[t.id] ?? null} inMonth run={run}
+                draft={{ server: drafts[t.id] ?? null, sent: sent[t.id] ?? null, onDraft: () => draftScript(t), scriptsHref }} />
             ))}
             {monthTopics.length === 0 && <p className="px-5 py-3 text-sm text-muted">Nothing planned yet — pick from the bank below, or confirm the call&rsquo;s proposals.</p>}
           </div>
@@ -165,7 +212,11 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
         action={
           <span className="flex items-center gap-2">
             {isOwner && <label className="text-[11px] text-muted-2">per pillar <input type="number" min={10} max={15} value={n} onChange={(e) => setN(Number(e.target.value))} onBlur={() => { if (n !== topicsPerPillar) run(() => setTopicsPerPillarAction(n)); }} className="w-12 rounded border border-border bg-surface-2 px-1 text-[11px]" /></label>}
-            <button disabled={busy} onClick={() => run(() => runTopicRefresh(enrollmentId, "REFRESH"))} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline disabled:opacity-50"><Sparkles className="size-3.5" />Refresh topics</button>
+            {refreshing ? (
+              <span className="inline-flex items-center gap-1 text-xs font-medium text-muted" title="Runs in the background — new suggestions appear here when it's done."><Loader2 className="size-3.5 animate-spin" />Refreshing topics…</span>
+            ) : (
+              <button disabled={busy} onClick={() => start(async () => { const r = await runTopicRefresh(enrollmentId, "REFRESH"); show(r.ok ? "ok" : "err", r.message); })} className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline disabled:opacity-50"><Sparkles className="size-3.5" />Refresh topics</button>
+            )}
           </span>
         }>
         {stock.length > 0 && (
@@ -240,7 +291,43 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
   );
 }
 
-function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
+type DraftCtl = { server: QueueItemUi | null; sent: SentDraft | null; onDraft: () => void; scriptsHref: string };
+
+/**
+ * One topic's script state, newest word first: a script on file → "Script
+ * drafted → View"; a click still on its way, or a queued/running draft →
+ * "Drafting…"; a failed draft → "Drafting failed — Try again" (unless the
+ * click just sent a new one). Derived from the queued run, so it survives a
+ * refresh; the local click only bridges the moment before the server answers.
+ */
+export function draftStateOf(t: { scriptId: string | null }, d: { server: QueueItemUi | null; sent: SentDraft | null }): "drafted" | "drafting" | "failed" | "idle" {
+  if (t.scriptId) return "drafted";
+  if (d.sent && d.sent.runId === null) return "drafting";
+  if (d.server && (!d.sent || d.server.runId === d.sent.runId || d.server.state !== "failed")) return d.server.state === "failed" ? "failed" : "drafting";
+  if (d.sent) return "drafting";
+  return "idle";
+}
+
+function DraftButton({ t, draft }: { t: TopicUi; draft: DraftCtl }) {
+  const state = draftStateOf(t, draft);
+  if (state === "drafted") {
+    return <Link href={draft.scriptsHref} className="inline-flex items-center gap-1 rounded-md border border-success/40 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success-soft"><FileText className="size-3" />Script drafted → View</Link>;
+  }
+  if (state === "drafting") {
+    const queued = draft.server?.state === "queued";
+    return (
+      <button disabled aria-busy="true" title={queued ? "Waiting its turn — up to three drafts run at once; this one starts when a slot frees up." : "The AI is writing it — usually under a minute."} className={`${btn} inline-flex items-center bg-brand text-white`}>
+        <Loader2 className="mr-1 size-3 animate-spin" />Drafting…
+      </button>
+    );
+  }
+  if (state === "failed") {
+    return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center border border-danger/40 text-danger hover:bg-danger-soft`}><AlertTriangle className="mr-1 size-3" />Drafting failed — Try again</button>;
+  }
+  return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center bg-brand text-white`}><Sparkles className="mr-1 size-3" />Draft script</button>;
+}
+
+function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl }) {
   const [open, setOpen] = useState<"none" | "edit" | "history" | "discuss" | "interview">(interview && inMonth ? "interview" : "none");
   const [form, setForm] = useState({ title: t.title, concept: t.concept ?? "", pillarId: t.pillarId ?? "", audienceNeed: t.audienceNeed ?? "", businessGoal: t.businessGoal ?? "", intendedMessage: t.intendedMessage ?? "" });
   const [disc, setDisc] = useState("");
@@ -274,13 +361,14 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           {(t.audienceNeed || t.businessGoal || t.intendedMessage) && (
             <p className="mt-0.5 text-[11px] text-muted-2">{[t.audienceNeed && `need: ${t.audienceNeed}`, t.businessGoal && `goal: ${t.businessGoal}`, t.intendedMessage && `message: ${t.intendedMessage}`].filter(Boolean).join(" · ")}</p>
           )}
+          {draft && draftStateOf(t, draft) === "failed" && draft.server?.error && <p className="mt-1 text-[12px] text-danger">Why it failed: {draft.server.error}</p>}
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {!inMonth && month && (!inProduction || parkedScript) && t.monthId !== month.id && (
             <button disabled={busy} onClick={() => run(() => setTopicStatus(t.id, "SELECTED", month.id))} className="rounded-lg border border-brand/40 px-2.5 py-1 text-xs font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">{parkedScript ? `Use its script for ${month.short}` : `Use for ${month.short}`}</button>
           )}
           {inMonth && month && !inProduction && <button disabled={busy} title="Back to the bank" onClick={() => run(() => setTopicStatus(t.id, "SAVED", null))} className={quiet}><X className="size-3" /></button>}
-          {inMonth && month && !t.scriptId && <button disabled={busy} onClick={() => run(() => generateScriptForTopicAction(t.id, month.id))} className={`${btn} bg-brand text-white`}><Sparkles className="mr-1 inline size-3" />Draft script</button>}
+          {inMonth && month && draft && <DraftButton t={t} draft={draft} />}
           {inMonth && month && !interview && <button disabled={busy} onClick={() => run(() => startInterview(t.id, month.id))} className={quiet}>Written answers</button>}
           {t.approvalState !== "APPROVED" && !inProduction && <button disabled={busy} title="Approve this topic" onClick={() => run(() => topicDecision(t.id, "APPROVE", ""))} className={quiet}><Check className="size-3" /></button>}
           {!inProduction && <button disabled={busy} title="Reject" onClick={() => { const r = window.prompt("Why? (kept internally so it is never re-suggested)") ?? ""; run(() => topicDecision(t.id, "REJECT", r)); }} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"><X className="size-3" /></button>}

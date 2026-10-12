@@ -1,9 +1,12 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, CircleDashed, FileText, History, Loader2, PenLine, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
+import { AlertTriangle, Check, CircleDashed, FileText, History, Loader2, PenLine, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
+import type { QueueItemUi } from "@/lib/aiQueue";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { useToast } from "@/components/ui/Toast";
+import { useAiQueueWatch } from "@/components/content/useAiQueueWatch";
 import { ScriptView } from "@/components/script/ScriptView";
 // policy.ts is pure data with no imports of its own ("no node:crypto so this
 // file can be imported from client components") — the 30–50 s target and the
@@ -12,13 +15,19 @@ import { ScriptView } from "@/components/script/ScriptView";
 // (Oct 6 2026: prompts.ts's prior-scripts line, once a "20–30 s" literal, now
 // reads the policy too.)
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
-import { approveScriptVersionAction, draftOwedScriptsAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText, tightenScriptAI } from "@/app/content/actions";
+import { approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
 // version trail per script (regenerate/revise/edit never erase — they add a
 // version), explicit attributable approve, release as a separate act, and
 // the validator's findings + the generator's gaps shown, never filled.
+//
+// Oct 12 2026: the AI buttons here answer at once and work in the background
+// (aiQueue.ts) — "Draft what's ready", "Ask AI to revise" and "Tighten". The
+// script being revised says so ("Revising…") across refreshes while every
+// other script stays usable, and the page polls until the new version lands
+// (or the failure, with its reason and Try again).
 // ---------------------------------------------------------------------------
 
 export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[] };
@@ -52,26 +61,60 @@ function band(seconds: number | null): "under" | "on" | "over" | null {
   return seconds > WARN_HI ? "over" : seconds < WARN_LO ? "under" : "on";
 }
 
-export function ScriptsPanel({ scripts, queueCount, scriptOwner, owed = [] }: { scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[] }) {
+type QueueResult = { ok: boolean; message: string; runId?: string };
+/** A script's revision as the row shows it: the queued run, or a click whose answer has not been rendered yet. */
+type RevCtl = { server: QueueItemUi | null; sending: boolean; onRevise: (mode: "revise" | "tighten", instructions?: string) => void; onRetry: () => void };
+
+export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [] }: {
+  enrollmentId?: string; scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[];
+  /** Oct 12: queued / running / failed AI revisions, by script id (aiQueue.queueStateFor). */
+  revising?: Record<string, QueueItemUi>;
+  /** Oct 12: the month's queued / drafting / failed script drafts, by topic id. */
+  drafting?: Record<string, QueueItemUi>;
+  /** Everything in flight for the client — the poll watches it. */
+  queueActive?: string[];
+}) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
+  const { toast, show } = useToast();
+  useAiQueueWatch(enrollmentId, queueActive);
+  // Per-script "sending": a revision click never takes the panel's shared busy.
+  const [sending, setSending] = useState<Set<string>>(new Set());
+  const mark = (id: string, on: boolean) => setSending((cur) => { const next = new Set(cur); if (on) next.add(id); else next.delete(id); return next; });
+  const send = async (id: string, fn: () => Promise<QueueResult>) => {
+    mark(id, true);
+    let r: QueueResult;
+    try { r = await fn(); } catch { r = { ok: false, message: "Couldn't reach the server — try again." }; }
+    show(r.ok || r.runId ? "ok" : "err", r.message);
+    // Once the server's answer is rendered, the queued run speaks for the row.
+    setTimeout(() => mark(id, false), r.ok || r.runId ? 15_000 : 0);
+  };
+  const revCtl = (s: ScriptUi): RevCtl => {
+    const server = revising[s.id] ?? null;
+    return {
+      server, sending: sending.has(s.id),
+      onRevise: (mode, instructions = "") => void send(s.id, () => queueScriptRevisionAction(s.id, mode, instructions)),
+      onRetry: () => { if (server) void send(s.id, () => retryAiJobAction(server.runId)); },
+    };
+  };
   const queue = scripts.filter((s) => !s.historical && s.versions[0] && (s.versions[0].status === "DRAFT" || s.versions[0].status === "INTERNAL_REVIEW"));
   const rest = scripts.filter((s) => !queue.includes(s) && !s.historical);
   const historical = scripts.filter((s) => s.historical);
   return (
     <div className="space-y-5">
+      {toast}
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
-      <OwedScripts owed={owed} busy={busy} run={run} />
+      <OwedScripts owed={owed} drafting={drafting} sending={sending.has("owed")} onDraft={(includeThin) => void send("owed", () => queueOwedScriptsAction(owed[0]?.monthId ?? "", includeThin))} />
       <Section icon={FileText} title="Review queue" count={queueCount} flush action={<span className="text-[11px] text-muted-2">approval owner: {scriptOwner} · call-derived and written-answer drafts land here alike</span>}>
         <div className="divide-y divide-border">
-          {queue.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} open />)}
+          {queue.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} rev={revCtl(s)} open />)}
           {queue.length === 0 && <p className="px-5 py-4 text-sm text-muted">Nothing waiting on you.</p>}
         </div>
       </Section>
       <Section icon={Check} title="Approved and released" count={rest.length} flush>
         <div className="divide-y divide-border">
-          {rest.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} />)}
+          {rest.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} rev={revCtl(s)} />)}
           {rest.length === 0 && <p className="px-5 py-3 text-sm text-muted">No approved scripts on this month yet.</p>}
         </div>
       </Section>
@@ -84,7 +127,7 @@ export function ScriptsPanel({ scripts, queueCount, scriptOwner, owed = [] }: { 
   );
 }
 
-function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; open?: boolean }) {
+function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; open?: boolean; rev?: RevCtl }) {
   const [showVersions, setShowVersions] = useState(false);
   const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
   const cur = s.versions[0] ?? null;
@@ -108,6 +151,9 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
   // THE CLIENT'S OWN VERDICT (F09). Separate from every chip above, because our
   // approval and their willingness to say these words on camera are different
   // facts and the second one decides whether this belongs on a call sheet.
+  // Oct 12: an AI revision of THIS script in the queue (the rest stay usable).
+  const revBusy = !!rev && (rev.server?.state === "queued" || rev.server?.state === "running" || (rev.sending && rev.server?.state !== "failed"));
+  const revFailed = !!rev && !revBusy && rev.server?.state === "failed" ? rev.server : null;
   const verdict =
     s.clientVerdict === "APPROVED" ? { label: "client signed off", cls: "bg-success-soft text-success" }
     : s.clientVerdict === "CHANGES_REQUESTED" ? { label: "client asked for changes", cls: "bg-warning-soft text-warning" }
@@ -136,8 +182,16 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
         {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
         {s.answersChanged && <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning" title="The client edited an answer after this draft. Revise it, or draft again from the answers.">answers changed since this draft</span>}
+        {revBusy && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"><Loader2 className="size-3 animate-spin" />{rev?.server?.label === "tighten" ? "tightening…" : "revising…"}</span>}
       </summary>
       <div className="mt-2">
+        {revBusy && <p className="mb-1.5 text-[12px] text-muted"><Loader2 className="mr-1 inline size-3 animate-spin" />{rev?.server?.label === "tighten" ? "Tightening" : "Revising"} in the background — the new version appears here when it&rsquo;s ready{cur ? `; v${cur.versionNo} is kept` : ""}.</p>}
+        {revFailed && (
+          <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[12px] text-danger">
+            <AlertTriangle className="size-3.5" />{revFailed.label === "tighten" ? "Tightening" : "The revision"} failed: {revFailed.error}
+            <button onClick={rev?.onRetry} className="rounded-md border border-danger/40 px-2 py-0.5 text-[11px] font-semibold hover:bg-danger-soft">Try again</button>
+          </p>
+        )}
         {cur && (
           <p className="text-[11px] text-muted-2">
             {cur.changeSummary ?? cur.source.toLowerCase()} · {fmt(cur.createdAt)}{cur.createdBy ? ` by ${cur.createdBy}` : ""}
@@ -161,7 +215,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
             {pace === "over" && (
               <p className="flex flex-wrap items-center gap-1.5 text-warning">
                 <span>Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) — well over a minute; the target is {TARGET_LO}–{TARGET_HI}s. It can still be approved — this is an estimate from a word count, not a rejection.</span>
-                <button disabled={busy} onClick={() => run(() => tightenScriptAI(s.id))} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">
+                <button disabled={revBusy} onClick={() => rev?.onRevise("tighten")} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">
                   <Scissors className="size-3" />Tighten to {TARGET_LO}–{TARGET_HI}s
                 </button>
               </p>
@@ -193,7 +247,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
           <div className="mt-2">
             <AutoTextarea value={instr} onChange={(e) => setInstr(e.target.value)} minRows={2} placeholder="Tell the AI what to change — the current version is kept as is" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs" />
             <div className="mt-1.5 flex gap-1.5">
-              <button disabled={busy || !instr.trim()} onClick={() => { run(() => reviseScriptAI(s.id, instr)); setInstr(""); setMode("read"); }} className={`${btn} inline-flex items-center gap-1 bg-brand text-white`}><Sparkles className="size-3" /> Regenerate as new version</button>
+              <button disabled={revBusy || !instr.trim()} onClick={() => { rev?.onRevise("revise", instr); setInstr(""); setMode("read"); }} className={`${btn} inline-flex items-center gap-1 bg-brand text-white`}><Sparkles className="size-3" /> Regenerate as new version</button>
               <button onClick={() => setMode("read")} className={quiet}>Cancel</button>
             </div>
           </div>
@@ -215,7 +269,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
               return r;
             })} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{cur.versionNo}</button>}
             {approvedLive && s.sharedVersionId !== s.approvedVersionId && <button disabled={busy} onClick={() => run(() => releaseScriptAction(s.id))} className={`${btn} bg-brand text-white`}><Send className="mr-1 inline size-3" />Release to the portal</button>}
-            <button onClick={() => setMode("revise")} className={quiet}><Sparkles className="mr-1 inline size-3" />Ask AI to revise</button>
+            <button disabled={revBusy} onClick={() => setMode("revise")} className={quiet}><Sparkles className="mr-1 inline size-3" />Ask AI to revise</button>
             <button onClick={() => setMode("edit")} className={quiet}>Edit myself</button>
             {(s.approvedVersionId || s.sharedVersionId) && <button disabled={busy} onClick={() => run(() => returnScriptAction(s.id, ""))} className={quiet}><Undo2 className="mr-1 inline size-3" />Back to the queue</button>}
           </div>
@@ -272,11 +326,13 @@ const LABEL: Record<string, string> = {
   THIN: "No evidence yet",
 };
 
-function OwedScripts({ owed, busy, run }: { owed: OwedUi[]; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void }) {
+function OwedScripts({ owed, drafting = {}, sending = false, onDraft }: { owed: OwedUi[]; drafting?: Record<string, QueueItemUi>; sending?: boolean; onDraft: (includeThin: boolean) => void }) {
   if (!owed.length) return null;
-  const monthId = owed[0].monthId;
-  const ready = owed.filter((o) => READY.has(o.readiness));
-  const thin = owed.filter((o) => o.readiness === "THIN");
+  // Oct 12: a topic already queued or with the model is not offered again.
+  const inFlight = (o: OwedUi) => drafting[o.topicId]?.state === "queued" || drafting[o.topicId]?.state === "running";
+  const ready = owed.filter((o) => READY.has(o.readiness) && !inFlight(o));
+  const thin = owed.filter((o) => o.readiness === "THIN" && !inFlight(o));
+  const draftingNow = owed.filter(inFlight).length;
   return (
     <Section
       icon={CircleDashed}
@@ -285,13 +341,14 @@ function OwedScripts({ owed, busy, run }: { owed: OwedUi[]; busy: boolean; run: 
       flush
       action={
         <span className="flex flex-wrap items-center gap-2">
+          {(draftingNow > 0 || sending) && <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Loader2 className="size-3 animate-spin" />Drafting{draftingNow ? ` ${draftingNow}` : ""}…</span>}
           {ready.length > 0 && (
-            <button disabled={busy} onClick={() => run(() => draftOwedScriptsAction(monthId, false))} className={`${btn} bg-brand text-white`}>
+            <button disabled={sending} onClick={() => onDraft(false)} className={`${btn} bg-brand text-white`}>
               <Sparkles className="mr-1 inline size-3" />Draft what&rsquo;s ready ({ready.length})
             </button>
           )}
           {thin.length > 0 && ready.length === 0 && (
-            <button disabled={busy} onClick={() => run(() => draftOwedScriptsAction(monthId, true))} className={quiet}>
+            <button disabled={sending} onClick={() => onDraft(true)} className={quiet}>
               <PenLine className="mr-1 inline size-3" />Draft from the topic alone ({thin.length})
             </button>
           )}
@@ -304,6 +361,8 @@ function OwedScripts({ owed, busy, run }: { owed: OwedUi[]; busy: boolean; run: 
             <span className="text-sm font-medium">{o.title}</span>
             <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${TONE[o.readiness] ?? "border-border bg-surface-2"}`}>{LABEL[o.readiness] ?? o.readiness}</span>
             <span className="text-[12px] text-muted">{o.why}</span>
+            {inFlight(o) && <span className="inline-flex items-center gap-1 text-[12px] font-medium text-brand"><Loader2 className="size-3 animate-spin" />Drafting…</span>}
+            {drafting[o.topicId]?.state === "failed" && <span className="text-[12px] text-danger">Drafting failed: {drafting[o.topicId]?.error}</span>}
           </li>
         ))}
       </ul>

@@ -10,6 +10,7 @@ import { scriptsAwaitingReview } from "@/lib/contentScripts";
 import { factsForReview, factCounts } from "@/lib/clientFacts";
 import { importBatches, importReviewItems } from "@/lib/contentImport";
 import { activePolicyVersion } from "@/lib/aiRuns";
+import { queueStateFor, type QueueItemUi } from "@/lib/aiQueue";
 import type { VersionRow, ProposalRow, PillarRowUi, MappingRowUi, OwnerUi, DiscoveryUi } from "@/components/content/StrategyPanel";
 import type { GroupUi, ProposedUi, SuggestionUi, RunUi, EventUi, TopicUi } from "@/components/content/TopicsPanel";
 import type { InterviewUi } from "@/components/content/InterviewPanel";
@@ -42,12 +43,17 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
     };
   });
   const discovery = await loadDiscoveryUi(enrollmentId, versions).catch(() => null);
+  // Oct 12: "Draft from the discovery call" runs in the background (aiQueue.ts).
+  const queue = await queueStateFor(enrollmentId).catch(() => ({ topics: {}, scripts: {}, strategy: null, active: [] as string[] }));
+  const newestVersionAt = versions.reduce<string | null>((m, v) => { const at = v.createdAt.toISOString(); return !m || at > m ? at : m; }, null);
+  const strategyDraft = queue.strategy && !(queue.strategy.state === "failed" && newestVersionAt && newestVersionAt > queue.strategy.at) ? queue.strategy : null;
+  if (discovery) discovery.drafting = strategyDraft;
   const prows: ProposalRow[] = proposals.map((p) => ({ id: p.id, kind: p.kind, summary: p.summary, impact: p.impact, sourceKind: p.sourceKind, sourceRef: p.sourceRef, createdAt: p.createdAt.toISOString() }));
   const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status }));
   const mapping: MappingRowUi[] = mappingRaw.filter((m) => !dismissed.has(m.label));
   const ow: OwnerUi[] = Object.values(owners).map((o) => ({ duty: o.duty, label: o.label, scope: o.scope, appUserId: o.appUserId }));
   return {
-    discovery,
+    discovery, queueActive: queue.active,
     versions: vrows, proposals: prows, pillars: pil, mapping, owners: ow, staff: staff.map((s) => ({ id: s.id, name: s.name ?? s.email })),
     month: month ? { id: month.id, label: monthLabel(month.monthKey), priorities: monthPriorities(month.prioritiesJson), sourceRef: month.prioritiesSourceRef } : null,
   };
@@ -80,10 +86,12 @@ async function loadDiscoveryUi(enrollmentId: string, versions: { versionNo: numb
 }
 
 export async function loadTopicsTab(enrollmentId: string, month: { id: string; monthKey: string } | null) {
-  const [bank, suggestions, runs, pillars, policy, capacity, stock] = await Promise.all([
+  const [bank, suggestions, runs, pillars, policy, capacity, stock, queue] = await Promise.all([
     topicBankByPillar(enrollmentId), pendingSuggestions(enrollmentId), refreshRuns(enrollmentId, 5), listPillars(enrollmentId), activePolicyVersion(), month ? monthCapacity(month.id) : Promise.resolve(null),
     // CP-07: usable stock per pillar against the target, pending shown apart.
     bankStock(enrollmentId).catch(() => []),
+    // Oct 12: the month's queued / drafting / failed script drafts (aiQueue.ts).
+    queueStateFor(enrollmentId, { monthId: month?.id ?? null }).catch(() => ({ topics: {}, scripts: {}, strategy: null, active: [] as string[] })),
   ]);
   const scriptTopics = new Map((await prisma.contentScript.findMany({ where: { enrollmentId, historical: false, topicId: { not: null }, ...(month ? { monthId: month.id } : {}) }, select: { id: true, topicId: true } })).map((s) => [s.topicId!, s.id]));
   // CP-07: where a month's topic was carried from, and the internal alignment
@@ -141,7 +149,7 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
       };
     }
   }
-  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock };
+  return { groups, proposed, monthTopics, suggestions: bankSugg, recommended, held, runs: runRows, interviews, histories, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), topicsPerPillar: policy.topicsPerPillar, capacity, archivedCount: bank.archived, declined, stock, drafts: queue.topics, queueActive: queue.active };
 }
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {
@@ -188,7 +196,17 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
   // What the month still OWES, and why each one is or is not ready to draft
   // (F07/F08). Read-only; the doing lives in src/lib/contentDrafting.ts.
   const owed = month ? await scriptWorkForMonth(month.id).catch(() => []) : [];
-  return { scripts: rows, queueCount: queue.filter((q) => !month || q.monthId === month.id).length, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT") };
+  // Oct 12: what the AI queue is doing for this month's scripts — a revision
+  // per script (a failure only until a newer version supersedes it), and the
+  // owed topics being drafted.
+  const aq = await queueStateFor(enrollmentId, { monthId: month?.id ?? null }).catch(() => ({ topics: {}, scripts: {}, strategy: null, active: [] as string[] }));
+  const revising: Record<string, QueueItemUi> = {};
+  for (const [scriptId, item] of Object.entries(aq.scripts)) {
+    const newest = rows.find((r) => r.id === scriptId)?.versions[0]?.createdAt ?? null;
+    if (item.state === "failed" && newest && newest > item.at) continue;
+    revising[scriptId] = item;
+  }
+  return { scripts: rows, queueCount: queue.filter((q) => !month || q.monthId === month.id).length, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active };
 }
 
 export async function loadFactsTab(clientId: string, enrollmentId: string) {

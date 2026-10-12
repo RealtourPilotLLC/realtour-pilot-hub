@@ -31,7 +31,11 @@
 // Sep 16 20–30 s ruling), warn only under 25 s / over 65 s, part budgets and
 // the word heuristic rescaled to match; client-specific direction from a
 // document's own framework parts is carried into its Client style notes.
-export const GENERATION_POLICY_VERSION = "2026-10-06.2";
+// 2026-10-12.1: no dashes in a script (Jordan, Oct 12 2026: "Make sure no em
+// dashes are ever written into the scripts") — the punctuation rule every
+// prompt carries; scriptFormat.stripScriptDashes enforces it where a version
+// is written and validateNewScript reports one that gets through.
+export const GENERATION_POLICY_VERSION = "2026-10-12.1";
 
 /** The three roles, in order. Stored as roles; the label style is a rendering choice (C-A3). */
 export type TalkingPointRole = "re-hook" | "build-up" | "payoff";
@@ -272,6 +276,16 @@ Talking Point 3: Payoff
 Close / Call to action
 Optional Caption CTA`;
 
+/**
+ * NO DASHES IN A SCRIPT (Jordan, Oct 12 2026): "Make sure no em dashes are
+ * ever written into the scripts." Every prompt carries this (policyRulesText);
+ * the script, revise and caption prompts repeat it beside their own rules. It
+ * names the two characters but uses neither as punctuation, on purpose: a
+ * model mirrors the punctuation of the instructions it reads.
+ */
+export const SCRIPT_PUNCTUATION_RULE =
+  "Never write an em dash (\u2014) or an en dash (\u2013) in a script: not in the title, the hook, a talking point, the close or the caption CTA. Where a dash would go, use a comma, a period or the word \"and\". Write a number range with \"to\" (30 to 50).";
+
 /** Hook types the policy names: the GPT's four + Arielle §4 + the spec's devices. */
 export const HOOK_TYPES: readonly { name: string; source: string; note: string }[] = [
   { name: "Contrarian statement", source: "GPT", note: "Say the opposite of what the viewer assumes." },
@@ -390,6 +404,8 @@ export type GenerationPolicy = {
   canonicalPresentation: string;
   /** The strategy template's four numbered sections, in order (manifest §3.1). */
   strategySections: readonly string[];
+  /** Oct 12 2026: what a script may not contain, typographically. */
+  punctuation: { noDashes: true; rule: string };
 };
 
 export const GENERATION_POLICY: GenerationPolicy = {
@@ -414,6 +430,7 @@ export const GENERATION_POLICY: GenerationPolicy = {
     "The archive is the benchmark for voice and specificity; structure and length come from the policy. Historical examples establish the client’s voice and style, the current policy controls the format.",
   canonicalPresentation: CANONICAL_SCRIPT_PRESENTATION,
   strategySections: ["1. Brand Overview", "2. Content Goals", "3. Content Pillars", "4. Video Structure Framework"],
+  punctuation: { noDashes: true, rule: SCRIPT_PUNCTUATION_RULE },
 };
 
 // ---------------------------------------------------------------------------
@@ -463,6 +480,9 @@ export function policyRulesText(policy: GenerationPolicy = GENERATION_POLICY): s
     "",
     "=== CANONICAL SCRIPT PRESENTATION ===",
     policy.canonicalPresentation,
+    "",
+    "=== PUNCTUATION (Jordan, Oct 12 2026) ===",
+    policy.punctuation.rule,
   ].join("\n");
 }
 
