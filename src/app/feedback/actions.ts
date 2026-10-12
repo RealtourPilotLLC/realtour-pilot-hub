@@ -4,8 +4,26 @@ import { requireAdmin, requireOwner, requireRole } from "@/lib/auth/guards";
 import { appBase } from "@/lib/appUrl";
 
 import { prisma } from "@/lib/prisma";
-import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { notifyOwnerEmail } from "@/lib/integrations/google";
+import { notifyInApp, opsAlert } from "@/lib/notify";
+
+// ---------------------------------------------------------------------------
+// ANSWER FIRST, NOTIFY AFTER (Oct 12 2026). Jordan pressed Approve on Kyle's
+// two bug cards and both spun until he reloaded, though both rows had saved
+// (decidedAt 18:43:07 / 18:43:13 UTC). The decision awaited a Slack post
+// before answering, and revalidatePath("/feedback") made the browser drop its
+// whole prefetch cache and re-render every sidebar page (~20 dynamic renders
+// per click, in the logs) while the button's transition waited on the
+// refresh. Now: the row is written, the answer goes back at once, and the
+// Slack/email/bell work runs after the response. The board updates its own
+// card from the answer (it is a force-dynamic page — every visit reads fresh),
+// so no path is revalidated here.
+// ---------------------------------------------------------------------------
+async function later(fn: () => Promise<unknown>): Promise<void> {
+  const safe = () => fn().then(() => undefined, () => undefined);
+  try { after(safe); } catch { await safe(); }
+}
 
 // A platform user submits feedback / a feature request / a bug. We record it and
 // best-effort email Jordan so he can approve it (in-app). Never throws on the
@@ -48,43 +66,50 @@ export async function submitPlatformFeedback(input: {
       ? input.screenshot
       : null;
 
-  const fb = await prisma.platformFeedback.create({
-    data: {
-      kind,
-      title: title.slice(0, 200),
-      body: input.body?.trim()?.slice(0, 4000) || null,
-      submittedBy,
-      page: input.page?.slice(0, 200) || null,
-      screenshot,
-    },
-  });
+  let fb;
+  try {
+    fb = await prisma.platformFeedback.create({
+      data: {
+        kind,
+        title: title.slice(0, 200),
+        body: input.body?.trim()?.slice(0, 4000) || null,
+        submittedBy,
+        page: input.page?.slice(0, 200) || null,
+        screenshot,
+      },
+    });
+  } catch {
+    return { ok: false, message: "That didn't save. Try again in a moment." };
+  }
 
   const base = appBase();
   const label = kind === "bug" ? "🐞 Bug report" : kind === "feedback" ? "💬 Feedback" : "✨ Feature request";
-  const emailed = await notifyOwnerEmail(
-    `${label}: ${title}`,
-    [
-      `${label} submitted to the Realtour hub${submittedBy ? ` by ${submittedBy}` : ""}.`,
-      "",
-      `Title: ${title}`,
-      input.body ? `\nDetails:\n${input.body}` : "",
-      input.page ? `\nWhere: ${input.page}` : "",
-      screenshot ? "\n📎 Screenshot attached — view it on the board." : "",
-      "",
-      `Review & approve here: ${base}/feedback`,
-      "",
-      "Approve it there and it goes into the build queue.",
-    ].join("\n"),
-  );
+  const filedBy = fb.submittedBy;
+  const fbId = fb.id;
+  // After the answer: the submitter is never kept waiting on Gmail or Slack.
+  await later(async () => {
+    const emailed = await notifyOwnerEmail(
+      `${label}: ${title}`,
+      [
+        `${label} submitted to the Realtour hub${submittedBy ? ` by ${submittedBy}` : ""}.`,
+        "",
+        `Title: ${title}`,
+        input.body ? `\nDetails:\n${input.body}` : "",
+        input.page ? `\nWhere: ${input.page}` : "",
+        screenshot ? "\n📎 Screenshot attached — view it on the board." : "",
+        "",
+        `Review & approve here: ${base}/feedback`,
+        "",
+        "Approve it there and it goes into the build queue.",
+      ].join("\n"),
+    ).catch(() => false);
 
-  // The email notify fails SILENTLY today (Gmail send scope isn't connected), so
-  // a bug filed from a phone reached nobody — the board was a black hole (audit
-  // crack #36). Slack is the reliable channel: always ping ops, and say so when
-  // the email didn't go out. Best-effort, never blocks the submission.
-  try {
-    const { opsAlert, notifyInApp } = await import("@/lib/notify");
+    // The email notify fails SILENTLY today (Gmail send scope isn't connected), so
+    // a bug filed from a phone reached nobody — the board was a black hole (audit
+    // crack #36). Slack is the reliable channel: always ping ops, and say so when
+    // the email didn't go out. Best-effort, never blocks the submission.
     await opsAlert(
-      `${label}: “${title}”${fb.submittedBy ? ` — from ${fb.submittedBy}` : ""}${emailed ? "" : " (owner email failed — Gmail send not connected)"} → ${base}/feedback`,
+      `${label}: “${title}”${filedBy ? ` — from ${filedBy}` : ""}${emailed ? "" : " (owner email failed — Gmail send not connected)"} → ${base}/feedback`,
     );
     // Bell: put the submission in Jordan's in-app field of view too (the email
     // path is still broken separately — Gmail send scope isn't connected).
@@ -93,48 +118,60 @@ export async function submitPlatformFeedback(input: {
       title: `Platform feedback — ${title.slice(0, 60)}`,
       href: "/feedback",
       targets: [{ roles: ["OWNER"] }],
-      dedupeKey: `pf-${fb.id}`,
+      dedupeKey: `pf-${fbId}`,
     });
-  } catch { /* non-fatal */ }
+  });
 
-  revalidatePath("/feedback");
   return { ok: true, message: "Thanks! Sent to Jordan for review." };
 }
 
 // Jordan approves / declines / marks done — in-app. Approved items are the queue
 // Claude implements from.
+export type FeedbackDecision = "APPROVED" | "DECLINED" | "DONE" | "NEW";
+const DECISIONS: readonly FeedbackDecision[] = ["APPROVED", "DECLINED", "DONE", "NEW"];
+
 export async function decidePlatformFeedback(
   id: string,
-  status: "APPROVED" | "DECLINED" | "DONE" | "NEW",
+  status: FeedbackDecision,
   adminNote?: string,
-): Promise<void> {
-  await requireOwner();
-  const fb = await prisma.platformFeedback.update({
-    where: { id },
-    data: {
-      status,
-      adminNote: adminNote?.trim()?.slice(0, 500) || undefined,
-      decidedAt: status === "NEW" ? null : new Date(),
-    },
-  });
+): Promise<{ ok: boolean; message: string; status?: FeedbackDecision }> {
+  // Every failure comes back as words on the card (a thrown error in
+  // production is redacted to a generic digest).
+  try {
+    await requireOwner();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Only Jordan can decide feedback." };
+  }
+  if (!DECISIONS.includes(status)) return { ok: false, message: "That isn't a decision the board knows." };
+  let fb;
+  try {
+    fb = await prisma.platformFeedback.update({
+      where: { id },
+      data: {
+        status,
+        adminNote: adminNote?.trim()?.slice(0, 500) || undefined,
+        decidedAt: status === "NEW" ? null : new Date(),
+      },
+      select: { kind: true, title: true, submittedBy: true },
+    });
+  } catch {
+    return { ok: false, message: "That didn't save. The item may have been removed. Reload the board." };
+  }
   // A decision used to go nowhere beyond the row flip (audit crack #36) — ping
-  // ops so an APPROVED item actually enters someone's field of view. The board
-  // itself already shows the new status (grouped sections). Best-effort.
+  // ops so an APPROVED item actually enters someone's field of view. After the
+  // answer, best-effort.
   if (status !== "NEW") {
-    try {
-      const { opsAlert } = await import("@/lib/notify");
+    await later(async () => {
       const base = appBase();
       const verb = status === "APPROVED" ? "✅ approved — into the build queue" : status === "DONE" ? "🚀 marked shipped" : "🗄 declined";
       // Field flags moved to the quality desk — link people at the board the
       // row is actually ON, or the Slack link lands on a page without it.
       const where = fb.kind === "field_issue" ? "/quality?tab=photographers" : "/feedback";
       await opsAlert(`Feedback “${fb.title}” ${verb}${fb.submittedBy ? ` (filed by ${fb.submittedBy})` : ""} → ${base}${where}`);
-    } catch { /* non-fatal */ }
+    });
   }
-  revalidatePath("/feedback");
-  // Field-issue rows render on the quality desk (see the note on /feedback) —
-  // a decision made there has to refresh there.
-  revalidatePath("/quality");
+  const said = status === "APPROVED" ? "Approved." : status === "DECLINED" ? "Declined." : status === "DONE" ? "Marked shipped." : "Back in review.";
+  return { ok: true, message: said, status };
 }
 
 // ---------------------------------------------------------------------------

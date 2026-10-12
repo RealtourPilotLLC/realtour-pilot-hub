@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
   if (!withinStorage(rel)) return new Response("Forbidden", { status: 403 });
 
   const row = await prisma.uploadedFile
-    .findFirst({ where: { storedPath: rel }, select: { projectId: true } })
+    .findFirst({ where: { storedPath: rel }, select: { projectId: true, originalName: true, mimeType: true } })
     .catch(() => null);
   const projectId = row?.projectId ?? projectIdFromStoragePath(rel);
   if (!projectId) return new Response("Forbidden", { status: 403 });
@@ -41,8 +41,13 @@ export async function GET(req: NextRequest) {
 
   try {
     const data = await readFile(rel);
-    const ext = path.extname(rel).toLowerCase();
-    const type =
+    // The recorded upload knows its real name and type. A staff revision
+    // attachment is stored as "staff-<key>-<sha>.attachment" (a fixed,
+    // collision-proof path), so without this Kyle's .docx downloaded as an
+    // extensionless "….attachment" blob nobody could open (Oct 12).
+    const named = row?.originalName?.trim() || path.basename(rel);
+    const ext = path.extname(named).toLowerCase();
+    const byExt =
       ext === ".pdf"
         ? "application/pdf"
         : ext === ".png"
@@ -50,8 +55,13 @@ export async function GET(req: NextRequest) {
           : ext === ".jpg" || ext === ".jpeg"
             ? "image/jpeg"
             : "application/octet-stream";
-    const disposition = req.nextUrl.searchParams.get("download")
-      ? `attachment; filename="${path.basename(rel)}"`
+    // Only image/PDF types are trusted to render inline; anything else is
+    // served as a download so a stored file can never run as a page here.
+    const inlineSafe = /^(image\/(png|jpeg|gif|webp)|application\/pdf)$/;
+    const type = row?.mimeType && inlineSafe.test(row.mimeType) ? row.mimeType : byExt;
+    const asciiName = named.replace(/[^\x20-\x7e]|["\\]/g, "_");
+    const disposition = req.nextUrl.searchParams.get("download") || !inlineSafe.test(type)
+      ? `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(named)}`
       : "inline";
     return new Response(new Uint8Array(data), {
       // Client work, served to one admitted viewer — never to a shared cache.

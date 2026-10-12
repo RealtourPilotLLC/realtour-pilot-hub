@@ -41,10 +41,12 @@ export function FeedbackWidget() {
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Remember the submitter's name between submissions.
-  useEffect(() => {
-    try { const n = localStorage.getItem("fbName"); if (n) setName(n); } catch {}
-  }, []);
+  // Remember the submitter's name between submissions — read when the panel
+  // opens (an event), not in an effect on every page load.
+  const openPanel = () => {
+    if (!name) { try { const n = localStorage.getItem("fbName"); if (n) setName(n); } catch {} }
+    setOpen(true);
+  };
 
   // Downscale any image to a compact JPEG data URL so the row stays small.
   const toCompactDataUrl = (src: string): Promise<string> =>
@@ -117,14 +119,20 @@ export function FeedbackWidget() {
     setErr(null);
     start(async () => {
       try { if (name.trim()) localStorage.setItem("fbName", name.trim()); } catch {}
-      const r = await submitPlatformFeedback({
-        kind, title, body, submittedBy: name, page: pathname || "the app", screenshot: shot || undefined,
-      });
-      if (r.ok) {
-        setDone(true);
-        reset();
-        setTimeout(() => { setDone(false); setOpen(false); }, 1800);
-      } else setErr(r.message);
+      // A thrown action (lost connection) would otherwise escape the
+      // transition to the page's error screen. Say it on the panel instead.
+      try {
+        const r = await submitPlatformFeedback({
+          kind, title, body, submittedBy: name, page: pathname || "the app", screenshot: shot || undefined,
+        });
+        if (r.ok) {
+          setDone(true);
+          reset();
+          setTimeout(() => { setDone(false); setOpen(false); }, 1800);
+        } else setErr(r.message);
+      } catch {
+        setErr("The hub didn't answer. Your report is still here; try again.");
+      }
     });
   };
 
@@ -136,7 +144,7 @@ export function FeedbackWidget() {
           view on hover. */}
       {!open && (
         <button
-          onClick={() => setOpen(true)}
+          onClick={openPanel}
           title="Send feedback or a feature request"
           aria-label="Send feedback"
           className={cn(

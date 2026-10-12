@@ -401,7 +401,10 @@ export type StaffReceiptIntake = {
   videoLabel: string;
   attachment: null | {
     originalName: string; mimeType: string; size: number; sha256: string; storedPath: string;
-    state: "PENDING" | "UPLOADING" | "UNKNOWN" | "CONFIRMED";
+    /** SKIPPED (Oct 12): staff chose to finish without the file. The identity
+     *  stays for the record; nothing was uploaded and nothing will be. */
+    state: "PENDING" | "UPLOADING" | "UNKNOWN" | "CONFIRMED" | "SKIPPED";
+    skippedBy?: string; skippedAt?: string;
   };
   effects?: {
     taskTitle: string; taskNote: string; assignedKey: string | null; outputOwnerKey: string | null;
@@ -428,7 +431,7 @@ export function staffReceiptIntake(itemsJson: string | null): StaffReceiptIntake
     const intake = JSON.parse(itemsJson!).staffReceipt.intake as StaffReceiptIntake | undefined;
     if (intake?.version !== 1 || typeof intake.videoLabel !== "string") return null;
     const a = intake.attachment;
-    if (a !== null && (!a || typeof a.originalName !== "string" || typeof a.mimeType !== "string" || !Number.isInteger(a.size) || a.size <= 0 || a.size > 5_000_000 || !/^[a-f0-9]{64}$/.test(a.sha256) || typeof a.storedPath !== "string" || !["PENDING", "UPLOADING", "UNKNOWN", "CONFIRMED"].includes(a.state))) return null;
+    if (a !== null && (!a || typeof a.originalName !== "string" || typeof a.mimeType !== "string" || !Number.isInteger(a.size) || a.size <= 0 || a.size > 5_000_000 || !/^[a-f0-9]{64}$/.test(a.sha256) || typeof a.storedPath !== "string" || !["PENDING", "UPLOADING", "UNKNOWN", "CONFIRMED", "SKIPPED"].includes(a.state))) return null;
     return intake;
   } catch { return null; }
 }

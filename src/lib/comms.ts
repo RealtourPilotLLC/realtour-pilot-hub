@@ -959,7 +959,9 @@ export async function applySavedStaffRevision(briefId: string): Promise<void> {
     const receipt = await tx.revisionBrief.findUnique({ where: { id: briefId } });
     const intake = receipt ? staffReceiptIntake(receipt.itemsJson) : null;
     if (!receipt || receipt.source !== "review_room_staff" || !intake || !receipt.submissionId || !receipt.outputId) throw new Error("The saved staff request is incomplete. Ask Kyle to check its receipt.");
-    if (intake.attachment && intake.attachment.state !== "CONFIRMED") throw new Error("The original attachment has not been confirmed. The client's words are saved; retry to check the same attachment.");
+    // SKIPPED is staff's explicit "finish without the file" (Oct 12), not a
+    // pending upload — the handoff may go ahead.
+    if (intake.attachment && intake.attachment.state !== "CONFIRMED" && intake.attachment.state !== "SKIPPED") throw new Error("The original attachment has not been confirmed. The client's words are saved; retry to check the same attachment.");
     const cut = await tx.reviewSubmission.findFirst({ where: { id: receipt.submissionId, projectId: receipt.projectId }, select: { deliverableId: true, slot: true, outputId: true } });
     const output = cut?.deliverableId ? await tx.deliverableOutput.findFirst({ where: { id: receipt.outputId, projectId: receipt.projectId, deliverableId: cut.deliverableId, slot: cut.slot ?? 1 }, select: { id: true } }) : null;
     if (!cut?.deliverableId || !output || (cut.outputId && cut.outputId !== output.id)) throw new Error("The saved request's video no longer belongs to this job or output. Ask Kyle to check the receipt.");

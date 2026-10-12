@@ -10,7 +10,29 @@ import { dropboxUpload, dropboxDownload, dropboxDelete } from "./integrations/dr
 // Everything the app stores lives under ONE app-owned prefix so the /api/file
 // route can hard-scope what it's willing to serve and never reach into the rest
 // of the team's Dropbox.
-export const STORAGE_PREFIX = "/RealTour Pilot/Hub";
+//
+// UNDER /AutoHDR (Oct 12 2026). This used to be "/RealTour Pilot/Hub", and no
+// write there ever landed: the team space's root holds only "Jordan Spackman",
+// "AutoHDR" and "Behind The Scenes Content", and the Dropbox app may not create
+// a new top-level folder in it (path/no_write_permission — the same wall
+// clientFolders.ts hit for "/RealTour Pilot/Clients" on Aug 17). Checked live
+// Oct 12: "/RealTour Pilot" does not exist, and not one UploadedFile row was
+// ever written. So every staff revision attachment (Kyle's .docx for Mike
+// Ciunci's Video 2), every job upload and every month-brief file failed at the
+// provider. /AutoHDR is the tree the app can write (Client Assets, music picks).
+// Nothing was ever stored under the old prefix, so nothing moves.
+export const STORAGE_PREFIX = "/AutoHDR/Hub";
+/** The old, never-writable prefix. Only a saved-but-never-uploaded receipt can
+ *  still name it (staffRevisionIntake.ts re-homes it before uploading). */
+export const LEGACY_STORAGE_PREFIX = "/RealTour Pilot/Hub";
+
+/** The same file under today's prefix, for a path saved under the old one;
+ *  null for anything else. */
+export function rehomedLegacyPath(p: string): string | null {
+  const norm = p.startsWith("/") ? p : "/" + p;
+  if (norm.split("/").includes("..") || !norm.startsWith(LEGACY_STORAGE_PREFIX + "/")) return null;
+  return STORAGE_PREFIX + norm.slice(LEGACY_STORAGE_PREFIX.length);
+}
 
 /**
  * True if a Dropbox path is inside our app-owned storage prefix.

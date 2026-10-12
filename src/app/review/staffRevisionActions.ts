@@ -11,7 +11,8 @@ import { LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
 import { editorMeta } from "@/lib/editors";
 import { createRevisionBrief, staffReceiptTime, staffReceiptIntake, type RevisionItem } from "@/lib/revisionBrief";
 import { TASK_DONE_INCLUDING_LEGACY } from "@/lib/programDeskTasks";
-import { finishStaffAttachment, staffAttachmentManifest } from "@/lib/staffRevisionIntake";
+import { finishStaffAttachment, skipStaffAttachment, staffAttachmentManifest } from "@/lib/staffRevisionIntake";
+import { lockAdvisory } from "@/lib/dbLocks";
 
 export type ApprovedRevisionTarget = {
   submissionId: string;
@@ -100,10 +101,12 @@ async function finishReceipt(projectId: string, briefId: string): Promise<Result
   if (issues.some((issue) => issue.raisedOnSubmissionId !== cut.id || issue.outputId !== output.id)) return reject("The saved request's issues do not match its exact video version. Ask Kyle to check the revision record.");
   await prisma.revisionIssue.updateMany({ where: issueWhere, data: { timeSec: receipt.timeSec } });
   const owner = task.assignedKey === "kyle" ? "Kyle for routing" : task.assignedKey ? `${editorMeta(task.assignedKey)?.name ?? task.assignedKey}'s queue` : "the office for assignment";
+  const attachment = staffReceiptIntake(brief.itemsJson)?.attachment ?? null;
   revalidatePath(`/review/${projectId}`);
   revalidatePath(`/edit/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
-  return { ok: true, message: `Recorded for version ${cut.round}. The original words, contact, attachments and timestamp are saved; ${taskClosed ? "the revision task remains closed" : `the revision task is with ${owner}`}.`, briefId: brief.id };
+  const kept = attachment?.state === "SKIPPED" ? "The original words, contact and timestamp are saved (the attachment was left off)" : "The original words, contact, attachments and timestamp are saved";
+  return { ok: true, message: `Recorded for version ${cut.round}. ${kept}; ${taskClosed ? "the revision task remains closed" : `the revision task is with ${owner}`}.`, briefId: brief.id };
 }
 
 async function resumeReceipt(projectId: string, briefId: string, data: FormData): Promise<Result> {
@@ -131,10 +134,7 @@ export async function requestApprovedCutRevision(data: FormData): Promise<Result
     // The request key belongs to the first saved receipt, even if a form was
     // edited or its cut was superseded before Retry. Auth/preview guards still
     // run; only a genuinely new ask uses the current-version/input guards.
-    const prior = await prisma.revisionBrief.findFirst({
-      where: { projectId, source: "review_room_staff", sourceDetail: { startsWith: "staff-cut:", endsWith: `:${requestKey}` } },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
-    });
+    const prior = await savedReceiptFor(projectId, requestKey);
     if (prior) return await resumeReceipt(projectId, prior.id, data);
     if (data.get("confirmedClientWords") !== "yes") return reject("Confirm these are the client's own words before recording a client request.");
     if (clientContact.length < 2 || clientContact.length > 120) return reject("Name the client contact who asked for this change.");
@@ -171,5 +171,150 @@ export async function requestApprovedCutRevision(data: FormData): Promise<Result
     return await resumeReceipt(projectId, briefId, data);
   } catch (e) {
     return reject(e instanceof Error ? e.message : "Could not record this revision. Try again.");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// THE SAVED REQUEST, SHOWN AND SETTLED (Oct 12 2026).
+//
+// Kyle's request for Mike Ciunci's Video 2 sat as a receipt with no task for
+// five days: its .docx could never upload (storage.ts), and the form offered
+// only "Resume saved request" — which re-showed EMPTY fields (the server never
+// adopts a retry's words anyway) and failed the same way every time. The form
+// now reads what was actually saved and offers three honest ways out: upload
+// the same file and finish, finish without the file, or discard the request.
+// ---------------------------------------------------------------------------
+
+/** The first receipt this browser key made on this job, if any. */
+async function savedReceiptFor(projectId: string, requestKey: string) {
+  return prisma.revisionBrief.findFirst({
+    where: { projectId, source: "review_room_staff", sourceDetail: { startsWith: "staff-cut:", endsWith: `:${requestKey}` } },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
+  });
+}
+
+const KEY_RE = /^[a-f\d-]{36}$/i;
+
+export type SavedStaffRevision =
+  | { found: false }
+  | {
+      found: true;
+      requestKey: string;
+      submissionId: string;
+      recorded: boolean;
+      videoLabel: string;
+      round: number | null;
+      fileName: string | null;
+      contact: string;
+      words: string;
+      savedAtISO: string;
+      attachment: null | { name: string; size: number; state: "PENDING" | "UPLOADING" | "UNKNOWN" | "CONFIRMED" | "SKIPPED" };
+      /** A later version of the same video uploaded since this request was saved. */
+      newerRound: number | null;
+    };
+
+/**
+ * What the server actually holds for a saved request. Read-only. With this
+ * browser's key: that request. With no key (a different browser, a cleared
+ * one): the oldest request on this job that was saved but never handed to an
+ * editor — so a stuck one is visible to whoever opens the form next, not only
+ * on the one laptop that started it.
+ */
+export async function savedStaffRevision(projectId: string, requestKey: string | null): Promise<SavedStaffRevision> {
+  await requireCutReviewer();
+  if (!projectId || (requestKey !== null && !KEY_RE.test(requestKey))) return { found: false };
+  const prior = requestKey
+    ? await savedReceiptFor(projectId, requestKey)
+    : await prisma.revisionBrief.findFirst({
+        where: { projectId, source: "review_room_staff", taskId: null, sourceDetail: { startsWith: "staff-cut:" } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true },
+      });
+  if (!prior) return { found: false };
+  const brief = await prisma.revisionBrief.findUnique({ where: { id: prior.id } });
+  if (!brief) return { found: false };
+  // sourceDetail is staff-cut:<submissionId>:<requestKey> (see the create below).
+  const [, keptSubmission = "", keptKey = ""] = /^staff-cut:([^:]+):([a-f\d-]{36})$/i.exec(brief.sourceDetail ?? "") ?? [];
+  if (!KEY_RE.test(keptKey)) return { found: false };
+  const intake = staffReceiptIntake(brief.itemsJson);
+  const cut = brief.submissionId
+    ? await prisma.reviewSubmission.findFirst({ where: { id: brief.submissionId, projectId }, select: { round: true, fileName: true, deliverableId: true, slot: true } })
+    : null;
+  const newer = cut?.deliverableId
+    ? await prisma.reviewSubmission.findFirst({
+        where: { projectId, deliverableId: cut.deliverableId, slot: cut.slot, round: { gt: cut.round }, withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } },
+        orderBy: { round: "desc" }, select: { round: true },
+      })
+    : null;
+  const contact = /\(on behalf of (.+)\)\s*$/.exec(brief.requestedBy ?? "")?.[1]?.trim() ?? brief.requestedBy ?? "";
+  const a = intake?.attachment ?? null;
+  return {
+    found: true,
+    requestKey: keptKey,
+    submissionId: brief.submissionId ?? keptSubmission,
+    recorded: !!brief.taskId,
+    videoLabel: intake?.videoLabel ?? brief.headline?.replace(/^Changes on /, "") ?? "this video",
+    round: cut?.round ?? null,
+    fileName: cut?.fileName ?? null,
+    contact,
+    words: brief.originalText,
+    savedAtISO: brief.createdAt.toISOString(),
+    attachment: a ? { name: a.originalName, size: a.size, state: a.state } : null,
+    newerRound: newer?.round ?? null,
+  };
+}
+
+/** Finish the saved request without its attachment, then hand it off. */
+export async function finishStaffRevisionWithoutAttachment(projectId: string, requestKey: string): Promise<Result> {
+  try {
+    await requireCutReviewer();
+    const me = await getCurrentUser();
+    if (me?.impersonating) return reject(PREVIEW_REFUSED);
+    if (!projectId || !KEY_RE.test(requestKey)) return reject("Reload the page and try again.");
+    const prior = await savedReceiptFor(projectId, requestKey);
+    if (!prior) return reject("Nothing was saved for this request yet. Fill in the form and record it.");
+    await skipStaffAttachment(prior.id, me?.realName ?? me?.name ?? LOCAL_DEV_AUTHOR);
+    await applySavedStaffRevision(prior.id);
+    return await finishReceipt(projectId, prior.id);
+  } catch (e) {
+    return reject(e instanceof Error ? e.message : "Could not finish this request. Try again.");
+  }
+}
+
+/**
+ * Throw away a saved request that never reached an editor. Refused once a task
+ * exists (that request IS recorded — close the task instead) or once any video
+ * issue was raised from it. The row goes, so no board counts an ask that was
+ * never handed off (its due date fed the reopen clock); a job note keeps who
+ * discarded what, with the words.
+ */
+export async function discardStaffRevision(projectId: string, requestKey: string): Promise<Result> {
+  try {
+    await requireCutReviewer();
+    const me = await getCurrentUser();
+    if (me?.impersonating) return reject(PREVIEW_REFUSED);
+    if (!projectId || !KEY_RE.test(requestKey)) return reject("Reload the page and try again.");
+    const prior = await savedReceiptFor(projectId, requestKey);
+    if (!prior) return { ok: true, message: "Nothing was saved for that request. The form is clear." };
+    const actor = me?.realName ?? me?.name ?? LOCAL_DEV_AUTHOR;
+    const outcome = await prisma.$transaction(async (tx) => {
+      await lockAdvisory(tx, `staff-intake:${prior.id}`);
+      const row = await tx.revisionBrief.findUnique({ where: { id: prior.id }, select: { id: true, taskId: true, originalText: true, itemsJson: true, headline: true } });
+      if (!row) return "gone" as const;
+      if (row.taskId) return "recorded" as const;
+      const issues = await tx.revisionIssue.count({ where: { projectId, sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${row.id}:` } } });
+      if (issues) return "issues" as const;
+      const label = staffReceiptIntake(row.itemsJson)?.videoLabel ?? row.headline?.replace(/^Changes on /, "") ?? "a video";
+      const words = row.originalText.replace(/\s+/g, " ").trim();
+      await tx.revisionBrief.delete({ where: { id: row.id } });
+      await tx.activity.create({ data: { projectId, type: "NOTE", body: `${actor} discarded an unfinished revision request for ${label}. It was never sent to an editor. The words were: “${words.length > 300 ? `${words.slice(0, 299)}…` : words}”` } });
+      return "discarded" as const;
+    });
+    if (outcome === "recorded") return reject("This request was already recorded and sent to the editor, so it can't be discarded here. Close its revision task instead.");
+    if (outcome === "issues") return reject("Video issues were already raised from this request, so it can't be discarded here. Ask Kyle to check it.");
+    revalidatePath(`/edit/${projectId}`);
+    revalidatePath(`/projects/${projectId}`);
+    return { ok: true, message: "Discarded. Nothing was sent to an editor." };
+  } catch (e) {
+    return reject(e instanceof Error ? e.message : "Could not discard this request. Try again.");
   }
 }
