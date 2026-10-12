@@ -331,7 +331,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     downloadStartedAtISO: lastStarted?.createdAt.toISOString() ?? null,
     downloadCompletedAtISO: lastCompleted?.createdAt.toISOString() ?? null,
     download,
-    assistant: { enabled: assistantOn, why: assistantOn ? null : "Caption drafting is switched off until the program launches — we'll write your caption with the script for now, or you can write one below." },
+    assistant: { enabled: assistantOn, why: assistantOn ? null : "Caption drafting is switched off until the program launches. We'll write your caption with the script for now, or you can write one below." },
     access: { download: !!e.file, captions: !!e.captionRef, why, blockedBy: e.blockedBy, basis: e.basis },
   };
 }
@@ -345,7 +345,7 @@ export async function setPostedByClient(viewer: PortalViewer, videoId: string, p
   await prisma.contentVideo.update({ where: { id: v.id }, data: { postedByClientAt: posted ? new Date() : null } });
   // Who said so is the visit row (PortalVisit carries the person / staff id); the video keeps the when.
   await prisma.portalVisit.create({ data: { enrollmentId: viewer.enrollment.id, clientUserId: viewer.actor.kind === "CLIENT" ? viewer.actor.clientUserId : null, staffUserId: viewer.actor.kind === "STAFF" ? viewer.actor.staffUserId : null, via: viewer.via, path: `/portal/posted/${v.id}${posted ? "" : "?undo=1"}` } }).catch(() => {});
-  return { ok: true, message: posted ? "Marked as posted by you. (We don't check the platform — this is your note to yourself and to us.)" : "Unmarked." };
+  return { ok: true, message: posted ? "Marked as posted by you. (We don't check the platform. This is your note to yourself and to us.)" : "Unmarked." };
 }
 
 /** Record a download STARTING as a client fact: a PortalVisit row on the
@@ -461,7 +461,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   // The switch AND the rollout (op caption_assistant) — the same question the
   // kit's button asked, so a client never gets a draft the kit did not offer.
   if (!(await assistantFor(viewer.enrollment.clientId))) {
-    return { ok: false, message: `Caption drafting is switched off until the program launches — write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
+    return { ok: false, message: `Caption drafting is switched off until the program launches. Write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
   }
   const submissionId = target.submissionId;
   const [script, transcript] = await Promise.all([
@@ -469,7 +469,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
     submissionId ? transcriptForCut(submissionId).catch(() => null) : Promise.resolve(null),
   ]);
   const transcriptText = transcript?.text ?? null;
-  if (!script && !transcriptText) return { ok: false, message: "There's nothing factual to draft from yet — no transcript of the final cut and no script linked to this video." };
+  if (!script && !transcriptText) return { ok: false, message: "There's nothing factual to draft from yet: no transcript of the final video and no script linked to it." };
   const { buildClientContext } = await import("@/lib/contentGeneration");
   const { runAiJson } = await import("@/lib/aiRuns");
   const built = await buildClientContext(v.enrollmentId, { monthId: v.monthId, projectId: v.projectId });
@@ -485,12 +485,12 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   try {
     bundle = buildCaptionPrompt(built.ctx, canonical);
   } catch {
-    return { ok: false, message: `We can't draft this one automatically — the records behind this video don't line up. ${TEXT_KYLE_START} and we'll write the caption with you.` };
+    return { ok: false, message: `We can't draft this one automatically, because the records behind this video don't line up. ${TEXT_KYLE_START} and we'll write the caption with you.` };
   }
   const scriptWord = script?.historical ? "an earlier script we have on file" : "the script";
   const sourceNote = transcriptText
     ? `Drafted from the transcript of the final cut, with ${scriptWord} as supporting context.`
-    : `Drafted from ${scriptWord} — no transcript yet${transcript?.gap ? ` (${transcript.gap})` : ""}.`;
+    : `Drafted from ${scriptWord}, with no transcript yet${transcript?.gap ? ` (${transcript.gap})` : ""}.`;
   // The CTA may only offer what the approved strategy offers (grounding).
   const hasExamples = (built.ctx.strategy?.document?.captionCtaExamples?.items ?? []).length > 0;
   const ctaRule = hasExamples
@@ -518,7 +518,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
     });
     out = r.output; runId = r.runId;
   } catch (e) {
-    return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit — try again tomorrow, or write one below." : "The caption assistant couldn't draft just now — try again in a moment, or write one below." };
+    return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit. Try again tomorrow, or write one below." : "The caption assistant couldn't draft just now — try again in a moment, or write one below." };
   }
   const draftSubmissionId = target.ref;
   // No invented offers, whatever the model wrote (see INVENTED_OFFER).
@@ -542,5 +542,5 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
       },
     }).then(() => drafted++).catch(() => {});
   }
-  return { ok: true, message: `${drafted} draft${drafted === 1 ? "" : "s"} ready — ${sourceNote} Edit anything before you use it.`, drafted };
+  return { ok: true, message: `${drafted} draft${drafted === 1 ? "" : "s"} ready. ${sourceNote} Edit anything before you use it.`, drafted };
 }

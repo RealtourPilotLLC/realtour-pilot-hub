@@ -36,7 +36,7 @@ export default async function SharedLessonPage({ params }: { params: Promise<{ t
     <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
         <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-brand">
-          <GraduationCap className="size-4" /> RealTour Pilot · Training
+          <GraduationCap className="size-4" /> Realtour Pilot · Training
         </div>
         <h1 className="text-2xl font-semibold tracking-tight">{lesson.title}</h1>
         <p className="mt-1 text-sm text-muted">{lesson.volume}{lesson.course ? ` · ${lesson.course}` : ""}</p>
@@ -61,7 +61,7 @@ export default async function SharedLessonPage({ params }: { params: Promise<{ t
         </div>
 
         <p className="mt-10 border-t border-border pt-4 text-[11px] text-muted-2">
-          Shared privately by RealTour Pilot. Please don&apos;t redistribute this link.
+          Shared privately by Realtour Pilot. Please don&apos;t redistribute this link.
         </p>
       </div>
     </div>

@@ -156,7 +156,7 @@ async function authorNames(rows: { clientUserId: string | null; staffUserId: str
     client: new Map(cs.map((c) => [c.id, c.name || c.email])),
     // Our own staff: the login's name, else their roster row's (Sep 28) —
     // never an email on a page the client reads.
-    staff: new Map(ss.map((s) => [s.id, s.name || (s.teamMemberId ? roster.get(s.teamMemberId) : null) || "RealTour Pilot"])),
+    staff: new Map(ss.map((s) => [s.id, s.name || (s.teamMemberId ? roster.get(s.teamMemberId) : null) || "Realtour Pilot"])),
   };
 }
 
@@ -173,7 +173,7 @@ function staffViewLabel(
   clientName: string,
   visitor?: number | null,
 ): string {
-  if (r.staffUserId) return `${names.staff.get(r.staffUserId) ?? "RealTour Pilot staff"} (on behalf of ${clientName})`;
+  if (r.staffUserId) return `${names.staff.get(r.staffUserId) ?? "Realtour Pilot staff"} (on behalf of ${clientName})`;
   if (r.clientUserId) return names.client.get(r.clientUserId) ?? clientName;
   return `${clientName} (portal)${visitor ? `, link visitor ${visitor}` : ""}`;
 }
@@ -338,7 +338,7 @@ export async function commentsForSubmissions(viewer: PortalViewer, submissionIds
   const clientName = viewer.enrollment.clientName || "Client";
   const view = (r: (typeof rows)[number]): CommentView => ({
     id: r.id, timeSec: r.timeSec, body: r.body, status: r.status, createdAtISO: r.createdAt.toISOString(),
-    author: r.staffUserId ? `${names.staff.get(r.staffUserId) ?? "RealTour Pilot"} (RealTour Pilot)` : r.clientUserId ? names.client.get(r.clientUserId) ?? clientName : `${clientName} (portal link)`,
+    author: r.staffUserId ? `${names.staff.get(r.staffUserId) ?? "Realtour Pilot"} (Realtour Pilot)` : r.clientUserId ? names.client.get(r.clientUserId) ?? clientName : `${clientName} (portal link)`,
     byStaff: !!r.staffUserId, mine: isMine(viewer, r),
     resolvedAtISO: r.resolvedAt?.toISOString() ?? null, resolvedBy: r.resolvedBy, decisionId: r.decisionId, replies: [],
   });

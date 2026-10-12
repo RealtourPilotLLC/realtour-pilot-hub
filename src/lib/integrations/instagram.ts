@@ -60,7 +60,7 @@ export const REQUIREMENTS: ReadonlyArray<{ key: string; label: string; detail: s
   {
     key: "meta_app",
     label: "A Meta app (App ID + App Secret)",
-    detail: "Created at developers.facebook.com under the RealTour Pilot business, with the Instagram product added. Paste the ID and Secret on this card once you have them.",
+    detail: "Created at developers.facebook.com under the Realtour Pilot business, with the Instagram product added. Paste the ID and Secret on this card once you have them.",
   },
   {
     key: "ig_business",

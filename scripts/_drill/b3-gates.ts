@@ -654,7 +654,7 @@ async function main() {
     // =======================================================================
     const terms = code(read("src/components/portal/PortalPage.tsx"));
     c.ok("OLD terms: 'Sessions are booked after your call … a few business days'", /a few business days between the call and the shoot/.test(show("src/components/portal/PortalPage.tsx")));
-    c.ok("NEW terms: both routes, 72 weekday hours, Kyle inside 24 hours", /72 weekday hours \(three weekdays, Monday to Friday\) after your answers were sent or after your call ends/.test(terms) && /Inside 24 hours, call or text Kyle at \(215\) 645-4889/.test(terms) && !/a few business days/.test(terms));
+    c.ok("NEW terms: both routes, 72 weekday hours, Kyle inside 24 hours", /at least three weekdays \(72 weekday hours, Monday to Friday\) after your answers are sent or your call ends/.test(terms) && /Inside 24 hours, call or text Kyle at \(215\) 645-4889/.test(terms) && !/a few business days/.test(terms));
     const choice = code(read("src/components/portal/PlanningChoice.tsx"));
     const sched = code(read("src/components/portal/tabs/ScheduleTab.tsx"));
     c.ok("OLD route card / schedule tab: 'opens a few business days after'", /opens a few business days after/.test(show("src/components/portal/PlanningChoice.tsx")) && /opens a few business days after/.test(show("src/components/portal/tabs/ScheduleTab.tsx")));

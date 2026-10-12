@@ -112,7 +112,7 @@ export function can(viewer: PortalViewer, permission: PortalPermission): boolean
 export function actorLabel(viewer: PortalViewer): string {
   const a = viewer.actor;
   const client = viewer.enrollment.clientName || "Client";
-  if (a.kind === "STAFF") return `${a.staffName?.trim() || "RealTour Pilot staff"} (on behalf of ${client})`;
+  if (a.kind === "STAFF") return `${a.staffName?.trim() || "Realtour Pilot staff"} (on behalf of ${client})`;
   if (a.kind === "CLIENT") return a.name?.trim() || a.email;
   return `${client} (portal)`;
 }
@@ -136,7 +136,7 @@ export function refusalMessage(viewer: PortalViewer, permission: PortalPermissio
   if (viewer.access === "READ_ONLY") {
     return viewer.enrollment.status === "PAUSED"
       ? "Your program is paused, so this is view-only for now. Call or text Kyle at (215) 645-4889 and we'll pick it back up."
-      : "Your program has ended, so this is view-only — your finished content stays here for you.";
+      : "Your program has ended, so this is view-only. Your finished content stays here for you.";
   }
   if (viewer.actor.kind === "CLIENT" && viewer.actor.membershipRole === "VIEWER") return "Your access is view-only. Ask the program owner if you need to make changes.";
   if (permission === "approveEdits") return "Only the program owner can approve.";
@@ -310,17 +310,8 @@ export async function inviteClientUser(
     return { membershipId: membership.id, clientUserId: person.id, emailed: false, note: "Seat created. No email was sent — invitations are switched off until launch." };
   }
   const { sendThroughOutbox, portalInviteKey } = await import("@/lib/outbox");
-  const first = (name ?? "").split(/\s+/)[0] || "there";
-  const body = [
-    `Hi ${first},`,
-    "",
-    `You now have access to the ${target.name} content portal on RealTour Pilot — your videos, your strategy and your schedule in one place.`,
-    "",
-    `Sign in any time with this email address at ${appBase()}/portal/login — we'll send you a one-time link, no password to remember.`,
-    "",
-    "Questions? Just reply to this email.",
-    "— RealTour Pilot",
-  ].join("\n");
+  const { renderPortalInviteEmail } = await import("@/lib/welcomeEmail");
+  const body = renderPortalInviteEmail({ firstName: (name ?? "").split(/\s+/)[0] || "there", clientName: target.name, signInUrl: `${appBase()}/portal/login` });
   const r = await sendThroughOutbox({
     channel: "email", toRef: email, body,
     dedupeKey: portalInviteKey(membership.id, new Date()),
@@ -637,75 +628,95 @@ async function queueWelcome(input: {
  * It points at the DURABLE sign-in page, never a one-time token: §4.5 asks for
  * a link that still works after the 15-minute link in some other email has
  * expired, and /portal/login mints a fresh one on request.
+ *
+ * Oct 12 2026 (Jordan): the brand discovery call is a step only while they
+ * still need one, and the rest is what the portal is for, for how THEIR month
+ * runs. The words are lib/welcomeEmail's (pure); this reads the facts.
  */
 export async function composeWelcomeEmail(input: { name: string | null; clientName: string; reason: "welcome" | "teammate"; clientId?: string | null }): Promise<string> {
-  const first = (input.name ?? "").trim().split(/\s+/)[0] || "there";
-  // CP-14: a client who booked discovery BEFORE the payment was polled must
-  // not be told to book it (the audit's acceptance case). Only a booking the
-  // matcher tied to THIS client counts — a CANDIDATE or an unverified alias is
-  // not a booking we can name to them.
-  const booked = input.clientId && input.reason === "welcome"
-    ? await prisma.programCallRecord
-        .findFirst({
-          where: { clientId: input.clientId, callType: "BRAND_DISCOVERY", status: { notIn: ["CANCELLED", "RESCHEDULED"] }, matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF"] }, scheduledStart: { not: null } },
-          orderBy: { scheduledStart: "desc" },
-          select: { scheduledStart: true },
-        })
+  const { renderWelcomeEmail, renderTeammateWelcomeEmail } = await import("@/lib/welcomeEmail");
+  const firstName = (input.name ?? "").trim().split(/\s+/)[0] || "there";
+  const signInUrl = `${appBase()}/portal/login`;
+  if (input.reason === "teammate") return renderTeammateWelcomeEmail({ firstName, clientName: input.clientName, signInUrl });
+  return renderWelcomeEmail({ firstName, signInUrl, ...(await welcomeFactsFor(input.clientId ?? null, new Date())) });
+}
+
+/**
+ * What the welcome may say about ONE client, read when it is composed (a held
+ * welcome released later reads the discovery booking as it stands then, CP-14).
+ * Every read fails soft: a fact we cannot read is never a reason to fail a
+ * payment's welcome, and an unreadable booking is read as "not booked".
+ */
+export async function welcomeFactsFor(clientId: string | null, now: Date): Promise<Omit<import("@/lib/welcomeEmail").WelcomeFacts, "firstName" | "signInUrl">> {
+  const { discoveryStateOf } = await import("@/lib/welcomeEmail");
+  const enrollment = clientId
+    ? await prisma.contentEnrollment
+        .findUnique({ where: { clientId }, select: { id: true, callMode: true, strategyCallRequired: true, noCallEligible: true, clientSuppliesTopics: true, sessionsPerMonth: true } })
         .catch(() => null)
     : null;
-  const discovery = await prisma.programCalendlyEventMapping
-    .findFirst({ where: { purpose: "BRAND_DISCOVERY", enabled: true, publicUrl: { not: null } }, select: { publicUrl: true } })
-    .catch(() => null);
+  const [booking, strategies, released, onboarding, monthlyHeld, mapping] = await Promise.all([
+    // CP-14: only a booking the matcher tied to THIS client counts — a
+    // CANDIDATE or an unverified alias is not a booking we can name to them.
+    // A no-show is not a held call.
+    clientId
+      ? prisma.programCallRecord
+          .findFirst({
+            where: { clientId, callType: "BRAND_DISCOVERY", status: { notIn: ["CANCELLED", "RESCHEDULED", "NO_SHOW"] }, matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF"] }, scheduledStart: { not: null } },
+            orderBy: { scheduledStart: "desc" },
+            select: { scheduledStart: true },
+          })
+          .catch(() => null)
+      : Promise.resolve(null),
+    // "If we didn't put together a content strategy for them": any strategy on
+    // file, approved or still being written, means discovery is behind them.
+    clientId
+      ? prisma.contentStrategy.count({ where: { clientId, status: { not: "ARCHIVED" } } }).catch(() => 0)
+      : Promise.resolve(0),
+    // Readable in the portal now: the rule portal.portalStrategy shows by.
+    enrollment && clientId
+      ? prisma.contentStrategyVersion.count({ where: { enrollmentId: enrollment.id, clientId, releasedAt: { not: null }, status: { in: ["APPROVED", "SUPERSEDED", "SHARED"] } } }).catch(() => 0)
+      : Promise.resolve(0),
+    enrollment
+      ? prisma.programOnboarding.findUnique({ where: { enrollmentId: enrollment.id }, select: { discoveryRequired: true, discoveryWaivedAt: true, status: true } }).catch(() => null)
+      : Promise.resolve(null),
+    enrollment
+      ? prisma.programCallRecord.count({ where: { enrollmentId: enrollment.id, callType: "MONTHLY_STRATEGY", status: "COMPLETED", matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF"] } } }).catch(() => 0)
+      : Promise.resolve(0),
+    prisma.programCalendlyEventMapping
+      .findFirst({ where: { purpose: "BRAND_DISCOVERY", enabled: true, publicUrl: { not: null } }, select: { publicUrl: true } })
+      .catch(() => null),
+  ]);
+  const clientPlanned = !!enrollment?.clientSuppliesTopics;
+  const waived = onboarding?.discoveryRequired === false || !!onboarding?.discoveryWaivedAt || onboarding?.status === "WAIVED";
+  const hasStrategy = strategies > 0 || released > 0;
   // §6.1 (Sep 25 2026): a booking that MAY be theirs under another address
   // (paid from gmail, booked from the brokerage) is not one we can name to
-  // them, and not one we may tell them to repeat either. The sentence below
-  // covers both without saying which booking we mean.
-  const maybeBooked = !booked && input.clientId && input.reason === "welcome"
+  // them, and not one we may tell them to repeat either. Asked only when the
+  // answer can change the words.
+  const candidate = !booking?.scheduledStart && clientId && !hasStrategy && !waived && !clientPlanned && monthlyHeld === 0
     ? await import("@/lib/contentCallRecords")
-        .then(({ candidateDiscoveryBookingsFor }) => candidateDiscoveryBookingsFor(input.clientId!))
+        .then(({ candidateDiscoveryBookingsFor }) => candidateDiscoveryBookingsFor(clientId))
         .then((rows) => rows.length > 0)
         .catch(() => false)
     : false;
-  const signIn = `${appBase()}/portal/login`;
-  if (input.reason === "teammate") {
-    return [
-      `Hi ${first},`,
-      "",
-      `${input.clientName} added you to their RealTour Pilot content account, so you can work the program with them: topics, scripts, filming dates, and approving the videos when they come back.`,
-      "",
-      `Sign in any time with this email address at ${signIn}. We send you a one time link, so there is no password to set up.`,
-      "",
-      "Anything you do in there shows up under your own name, so the team always knows who asked for what.",
-      "",
-      "If you have a question, just reply to this email and we'll pick it up.",
-      "",
-      "RealTour Pilot",
-    ].join("\n");
-  }
-  return [
-    `Hi ${first},`,
-    "",
-    "You're in, and everything for your content program now lives in one place: your strategy, your topics, your scripts, your filming dates, and every finished video ready to download.",
-    "",
-    `Sign in any time with this email address at ${signIn}. We send you a one time link, so there is no password to set up.`,
-    "",
-    "Here's the way forward:",
-    booked?.scheduledStart
-      ? booked.scheduledStart.getTime() > Date.now()
-        ? `1. Your brand discovery call is booked for ${booked.scheduledStart.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} Eastern. That call is where we build your strategy, so bring anything you want us to know.`
-        : `1. We had your brand discovery call on ${booked.scheduledStart.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" })}, and your strategy is built from it. We'll let you know when it's ready to read.`
-      : maybeBooked
-        ? `1. If you've already booked your brand discovery call, you're all set and we'll confirm it with you. If not, ${discovery?.publicUrl ? `book it at ${discovery.publicUrl}` : "just reply to this email and we'll find a time"}. That call is where we build your strategy, and it only happens once.`
-        : discovery?.publicUrl
-          ? `1. Book your brand discovery call at ${discovery.publicUrl}. That call is where we build your strategy, and it only happens once.`
-          : "1. Book your brand discovery call. That call is where we build your strategy, and it only happens once.",
-    "2. Add your logo, headshot and brand colors in the portal so the editing team matches your look from the very first video.",
-    "3. Pick your topics for the month, and we'll get you on the filming calendar.",
-    "",
-    "None of it is a test. If something looks wrong, reply to this email and we'll sort it out with you.",
-    "",
-    "RealTour Pilot",
-  ].join("\n");
+  const discovery = discoveryStateOf({
+    now, booking: booking?.scheduledStart ? { at: booking.scheduledStart } : null, candidate, hasStrategy, waived, clientPlanned, monthlyCallHeld: monthlyHeld > 0,
+  });
+  // How their month runs (programMonths.callModeOf / effectiveCallMode, read
+  // for the enrollment): an explicit mode wins; the legacy-derived REQUIRED
+  // holds until a first monthly call has been held, then the month may be
+  // planned in writing unless they are switched off the written route.
+  const explicit = enrollment?.callMode === "REQUIRED" || enrollment?.callMode === "OPTIONAL_WRITTEN" || enrollment?.callMode === "NOT_INCLUDED" ? enrollment.callMode : null;
+  const base = explicit ?? (enrollment?.strategyCallRequired === false ? "NOT_INCLUDED" : "REQUIRED");
+  const mode = !explicit && base === "REQUIRED" && monthlyHeld > 0 && enrollment?.noCallEligible !== false ? "OPTIONAL_WRITTEN" : base;
+  const planning = clientPlanned ? "CLIENT_PLANNED" as const
+    : mode === "NOT_INCLUDED" ? "WRITTEN" as const
+    : mode === "OPTIONAL_WRITTEN" && enrollment?.noCallEligible !== false ? "CALL_OR_WRITTEN" as const
+    : "CALL" as const;
+  const setupMissing = enrollment && clientId
+    ? await import("@/lib/portalSetup").then((m) => m.setupMissingWords(enrollment.id, clientId)).catch(() => [] as string[])
+    : [];
+  return { discovery, discoveryUrl: mapping?.publicUrl ?? null, strategyReady: released > 0, planning, strategyCallsOn: mode !== "NOT_INCLUDED", setupMissing, sessionsPerMonth: enrollment?.sessionsPerMonth ?? 1 };
 }
 
 /** Every account we owe but have not opened, oldest debt first. The owner's
@@ -995,16 +1006,8 @@ export async function requestLoginLink(emailRaw: string): Promise<void> {
   }
 
   const { raw, expiresAt } = await mintToken(person.id);
-  const first = (person.name ?? "").split(/\s+/)[0] || "there";
-  const body = [
-    `Hi ${first},`,
-    "",
-    "Here's your one-time link to sign in to your RealTour Pilot content portal:",
-    loginUrl(raw),
-    "",
-    "It works once and expires in 15 minutes. If you didn't ask for it, you can ignore this email — nothing changes.",
-    "— RealTour Pilot",
-  ].join("\n");
+  const { renderSignInLinkEmail } = await import("@/lib/welcomeEmail");
+  const body = renderSignInLinkEmail({ firstName: (person.name ?? "").split(/\s+/)[0] || "there", url: loginUrl(raw) });
   const { sendThroughOutbox, portalLoginKey } = await import("@/lib/outbox");
   try {
     const r = await sendThroughOutbox({ channel: "email", toRef: email, body, dedupeKey: portalLoginKey(person.id, expiresAt), clientId: earning.clientId, requestedBy: "portal-login" });

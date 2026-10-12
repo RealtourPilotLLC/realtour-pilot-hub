@@ -143,16 +143,17 @@ export function lateSessionMessage(i: {
   const planLine: Record<HostPlanning, string | null> = {
     TOPICS: `For ${host} you can pick your topics right in the portal.`,
     CHOOSE: `For ${host} you can pick your topics right in the portal, or book a strategy call if you'd rather talk them through.`,
-    CALL_TO_BOOK: `For ${host}, you can book your strategy call there too.`,
+    CALL_TO_BOOK: `For ${host}, you can book your strategy call in the portal too.`,
     CALL_BOOKED: null,
-    OFFICE: `We'll have your ${host} scripts ready for you there too.`,
+    OFFICE: `We'll have your ${host} scripts ready for you in the portal too.`,
     CLIENT_PLANNED: null,
     PLANNED: null,
   };
   const tail = i.hostSessionBooked ? null : planLine[i.hostPlanning];
   const lateDone = i.lateState !== "TO_BOOK";
   if (lateDone && i.hostSessionBooked) return `${hi} You're all caught up: your ${late} and ${host} sessions are both on the calendar. You can see them here: ${i.link}`;
-  if (lateDone) return [`${hi} Your ${late} session is on the calendar. To get you caught back up we also need to schedule ${host}. You can book it here: ${i.link}.`, tail].filter(Boolean).join(" ");
-  if (i.hostSessionBooked) return `${hi} We still need to get your ${late} content session on the calendar. You can book it here: ${i.link}.`;
-  return [`${hi} We still need to get your ${late} content session on the calendar, and to get you caught back up we also need to schedule ${host}. You can book both here: ${i.link}.`, tail].filter(Boolean).join(" ");
+  // The link ends the message (Oct 12 2026): a period straight after a URL breaks it in some apps.
+  if (lateDone) return [`${hi} Your ${late} session is on the calendar. To get you caught back up we also need to schedule ${host}.`, tail, `You can book it here: ${i.link}`].filter(Boolean).join(" ");
+  if (i.hostSessionBooked) return `${hi} We still need to get your ${late} content session on the calendar. You can book it here: ${i.link}`;
+  return [`${hi} We still need to get your ${late} content session on the calendar, and to get you caught back up we also need to schedule ${host}.`, tail, `You can book both here: ${i.link}`].filter(Boolean).join(" ");
 }

@@ -290,7 +290,7 @@ async function main() {
       const before = sent.length;
       await GET(new NextRequest("http://127.0.0.1/api/cron/gmail", { headers: { authorization: `Bearer ${CRON_SECRET}` } }));
       const row = await prisma.outboxMessage.findUniqueOrThrow({ where: { id: pending.id } });
-      c.ok("(the cron's recovery drain sends the stranded press once — the existing outbox behaviour)", row.state === "accepted" && sent.length === before + 1 && sent[sent.length - 1].subject === "Book your RealTour Pilot strategy call", `${row.state} ${sent.length - before}`);
+      c.ok("(the cron's recovery drain sends the stranded press once — the existing outbox behaviour)", row.state === "accepted" && sent.length === before + 1 && sent[sent.length - 1].subject === "Book your Realtour Pilot strategy call", `${row.state} ${sent.length - before}`);
       const rec = await ob.readOnboardingRecord(D.id);
       const logged = rec.log.filter((e) => e.outboxId === pending.id && e.kind === "sent");
       c.ok("NEW: the recovered send is written in D's onboarding log, as Jordan's press, saying the hub sent it after an interruption",

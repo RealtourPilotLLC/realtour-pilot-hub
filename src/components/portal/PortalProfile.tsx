@@ -63,20 +63,20 @@ export function PortalProfile({
   const byType = (t: string) => files.filter((f) => f.type === t);
   return (
     <div className="space-y-4">
-      {readOnly && <p className="rounded-2xl border border-border bg-surface/70 p-3 text-xs text-muted-2">View-only — the program owner can change these.</p>}
+      {readOnly && <p className="rounded-2xl border border-border bg-surface/70 p-3 text-xs text-muted-2">View-only. The program owner can change these.</p>}
       <ColorsSection initial={initialColors} suggested={view.columns.brandColors == null && !!suggested.brandColors} readOnly={readOnly} />
-      <FilesSection id="logo" title="Logo" hint="Your logo in the best quality you have — a PNG with a transparent background or an SVG is ideal." kind="LOGO" accept="image/*,.svg,.pdf,.zip" files={byType("LOGO")} setFiles={setFiles} readOnly={readOnly} />
+      <FilesSection id="logo" title="Logo" hint="Your logo in the best quality you have. A PNG with a transparent background or an SVG is ideal." kind="LOGO" accept="image/*,.svg,.pdf,.zip" files={byType("LOGO")} setFiles={setFiles} readOnly={readOnly} />
       <FilesSection id="headshot" title="Headshot" hint="A recent, well-lit photo of you. We use it on thumbnails and end cards." kind="HEADSHOT" accept="image/*" files={byType("HEADSHOT")} setFiles={setFiles} readOnly={readOnly} />
       <FontsSection initial={view.slots.fonts} files={byType("FONT")} setFiles={setFiles} readOnly={readOnly} />
       <LinksSection website={view.slots.website} social={view.slots.social} readOnly={readOnly} />
       <TextSection
         id="music" icon={Music} title="Music" field={{ slot: "music" }} initial={view.slots.music ?? ""} rows={2} readOnly={readOnly}
-        placeholder="The feel you want — upbeat acoustic, calm piano, no lyrics… or an artist or song you love."
+        placeholder="The feel you want: upbeat acoustic, calm piano, no lyrics… or an artist or song you love."
       />
       <TextSection
         id="style" icon={Sparkles} title="Video style & look" field={{ column: "videoStyle" }} initial={view.columns.videoStyle ?? suggested.videoStyle}
         suggested={view.columns.videoStyle == null && !!suggested.videoStyle} rows={3} readOnly={readOnly}
-        placeholder="How you like your videos to feel — pacing, text style, captions, colors, energy…"
+        placeholder="How you like your videos to feel: pacing, text style, captions, colors, energy…"
       />
       <TextSection
         id="preferences" icon={UserRound} title="Working preferences" field={{ column: "preferences" }} initial={view.columns.preferences ?? suggested.preferences}
@@ -106,7 +106,7 @@ function FolderFiles({ files, readOnly }: { files: PortalBrandView["folderOnly"]
   const [filed, setFiled] = useState<Record<string, string>>({});
   const use = (name: string, kind: "LOGO" | "HEADSHOT") =>
     start(async () => {
-      const r = await portalUseFolderFile(portalAuthFromLocation(), name, kind).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await portalUseFolderFile(portalAuthFromLocation(), name, kind).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
       setMsg({ ok: r.ok, text: r.message });
       if (r.ok) setFiled((cur) => ({ ...cur, [name]: kind === "LOGO" ? "your logo" : "your headshot" }));
     });
@@ -158,7 +158,7 @@ function useSaver() {
   const save = (patch: BrandPatch, after?: () => void) =>
     start(async () => {
       setStatus({ state: "saving" });
-      const r = await portalSaveProfile(portalAuthFromLocation(), patch).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await portalSaveProfile(portalAuthFromLocation(), patch).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
       if (r.ok) { setStatus({ state: "saved", message: r.message }); after?.(); } else setStatus({ state: "failed", message: r.message });
     });
   return { status, save, busy: status.state === "saving" };
@@ -188,7 +188,7 @@ function ColorsSection({ initial, suggested, readOnly }: { initial: string; sugg
   const { status, save, busy } = useSaver();
   const value = [colors.join(", "), words].filter(Boolean).join(", ");
   return (
-    <Section id="colors" icon={Palette} title="Brand colors" hint={suggested ? "We filled these in from what we already know — keep, change or clear them, then Save." : "Pick your colors — your editor matches text, graphics and end cards to them."}>
+    <Section id="colors" icon={Palette} title="Brand colors" hint={suggested ? "We filled these in from what we already know. Keep, change or clear them, then Save." : "Pick your colors. Your editor matches text, graphics and end cards to them."}>
       <div className="flex flex-wrap items-center gap-2">
         {colors.map((c) => (
           <span key={c} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2/60 py-1 pl-1.5 pr-2 text-xs font-medium">
@@ -236,7 +236,7 @@ function TextSection({
   const { status, save, busy } = useSaver();
   const patchFor = (v: string | null): BrandPatch => ("column" in field ? { [field.column]: v } : { slots: { [field.slot]: v } });
   return (
-    <Section id={id} icon={icon} title={title} hint={suggested ? "We filled this in from what we already know — edit it and Save, or Clear it." : undefined}>
+    <Section id={id} icon={icon} title={title} hint={suggested ? "We filled this in from what we already know. Edit it and Save, or Clear it." : undefined}>
       <textarea value={text} readOnly={readOnly} onChange={(e) => setText(e.target.value)} rows={rows} placeholder={placeholder} className={input} aria-label={title} />
       <SaveRow
         readOnly={readOnly} busy={busy} status={status} canClear={!!text.trim()}
@@ -253,7 +253,7 @@ function LinksSection({ website, social, readOnly }: { website: string | null; s
   const { status, save, busy } = useSaver();
   const any = !!site.trim() || SOCIAL.some((s) => links[s.key].trim());
   return (
-    <Section id="links" icon={Globe} title="Website & social links" hint="Where people find you — your editor uses these for end cards and handles.">
+    <Section id="links" icon={Globe} title="Website & social links" hint="Where people find you. Your editor uses these for end cards and handles.">
       <label className="block text-xs text-muted">Website
         <input value={site} readOnly={readOnly} onChange={(e) => setSite(e.target.value)} placeholder="https://" className={input} />
       </label>
@@ -276,8 +276,8 @@ function LinksSection({ website, social, readOnly }: { website: string | null; s
 function FontsSection({ initial, files, setFiles, readOnly }: { initial: string | null; files: PortalBrandFile[]; setFiles: React.Dispatch<React.SetStateAction<PortalBrandFile[]>>; readOnly: boolean }) {
   return (
     <div id="fonts" className="scroll-mt-24 space-y-2">
-      <TextSection id="fonts-names" icon={Type} title="Fonts" field={{ slot: "fonts" }} initial={initial ?? ""} rows={2} readOnly={readOnly} placeholder="The names of your brand fonts — e.g. Montserrat for headings, Lato for body text." />
-      <FilesSection id="fonts-files" title="Font files" hint="Optional — upload the font files if you have them (.otf, .ttf, .woff)." kind="FONT" accept=".otf,.ttf,.woff,.woff2,.zip" files={files} setFiles={setFiles} readOnly={readOnly} />
+      <TextSection id="fonts-names" icon={Type} title="Fonts" field={{ slot: "fonts" }} initial={initial ?? ""} rows={2} readOnly={readOnly} placeholder="The names of your brand fonts, e.g. Montserrat for headings, Lato for body text." />
+      <FilesSection id="fonts-files" title="Font files" hint="Optional: upload the font files if you have them (.otf, .ttf, .woff)." kind="FONT" accept=".otf,.ttf,.woff,.woff2,.zip" files={files} setFiles={setFiles} readOnly={readOnly} />
     </div>
   );
 }
@@ -309,13 +309,13 @@ function FilesSection({
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/portal/upload");
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) patch(u.id, { progress: Math.round((e.loaded / e.total) * 100) }); };
-    xhr.onerror = () => patch(u.id, { state: "failed", message: "That upload didn't stick — check your connection and retry." });
+    xhr.onerror = () => patch(u.id, { state: "failed", message: "That upload didn't go through. Check your connection and try again." });
     xhr.onload = () => {
       let j: { ok?: boolean; message?: string; assetId?: string; versionId?: string; fileName?: string; tooBig?: boolean } = {};
       try { j = JSON.parse(xhr.responseText); } catch { /* handled below */ }
       // 413 from the platform itself carries no JSON: say the limit, offer no Retry.
       if (xhr.status === 413 || j.tooBig) { patch(u.id, { state: "failed", tooBig: true, message: j.message || portalUploadTooBig(u.file.size) || `Files up to ${PORTAL_UPLOAD_MAX_LABEL} upload here.` }); return; }
-      if (!j.ok) { patch(u.id, { state: "failed", message: j.message || "That upload didn't stick — retry." }); return; }
+      if (!j.ok) { patch(u.id, { state: "failed", message: j.message || "That upload didn't go through. Try again." }); return; }
       patch(u.id, { state: "done", progress: 100, message: j.message ?? "Uploaded." });
       if (j.assetId) {
         const row: PortalBrandFile = { assetId: j.assetId, type: u.kind, typeWord: title, name: j.fileName ?? u.file.name, fileName: j.fileName ?? u.file.name, url: null, versionNo: 1, updatedAtISO: new Date().toISOString() };
@@ -403,7 +403,7 @@ export function SetupCard({ d }: { d: SetupCardData }) {
   const [err, setErr] = useState<string | null>(null);
   const toggle = (key: string, skip: boolean) =>
     start(async () => {
-      const r = await portalSkipSetupItem(portalAuthFromLocation(), key, skip).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await portalSkipSetupItem(portalAuthFromLocation(), key, skip).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
       if (!r.ok) { setErr(r.message); return; }
       setErr(null);
       setItems((cur) => cur.map((i) => (i.key === key ? { ...i, skippedAtISO: skip ? new Date().toISOString() : null } : i)));

@@ -184,7 +184,7 @@ export const DEFAULT_AFTER_HOURS_REPLY =
 export const DEFAULT_WELCOME_TEXT =
   // Jordan, Sep 7: "The welcome text should mention the portal - they can access
   // their account there, view invoices, content, and place orders, and reschedule."
-  "Hey {first}, welcome to RealTour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. Your client portal is {portal}: that's your account, where you can see invoices and your content, place orders and reschedule. You can also book a free strategy call any time: {strategyCallLink}. Everything about what we do is at {website}.";
+  "Hey {first}, welcome to Realtour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. Your client portal is {portal}: that's your account, where you can see invoices and your content, place orders and reschedule. You can also book a free strategy call any time: {strategyCallLink}. Everything about what we do is at {website}.";
 
 // Jordan, Oct 1 2026: the general welcome offers this strategy call. Monthly
 // content planning keeps its dedicated event type in integrations/calendly.

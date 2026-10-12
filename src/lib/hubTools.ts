@@ -116,7 +116,7 @@ export const HUB_TOOLS: HubTool[] = [
   },
   {
     name: "search_business_knowledge",
-    description: "Search Jordan's distilled business knowledge: his preferences, decisions and their outcomes, goals, the recurring problems he has been working through, pricing/financial logic, client-handling rules, and how RealTour Pilot actually operates (learned from his history). Ground your judgment here whenever a question involves 'how do we / should we', pricing, a client situation, strategy, a recommendation, or what Jordan would want. Results are already filtered to what the current viewer is allowed to see, and money knowledge (pricing, fees, financials) is OWNER-only — for anyone else it is absent and figures elsewhere are withheld.",
+    description: "Search Jordan's distilled business knowledge: his preferences, decisions and their outcomes, goals, the recurring problems he has been working through, pricing/financial logic, client-handling rules, and how Realtour Pilot actually operates (learned from his history). Ground your judgment here whenever a question involves 'how do we / should we', pricing, a client situation, strategy, a recommendation, or what Jordan would want. Results are already filtered to what the current viewer is allowed to see, and money knowledge (pricing, fees, financials) is OWNER-only — for anyone else it is absent and figures elsewhere are withheld.",
     input_schema: {
       type: "object",
       properties: {

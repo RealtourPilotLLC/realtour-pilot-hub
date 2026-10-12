@@ -126,7 +126,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
     <div className="mt-6 space-y-4">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Content Library</h1>
-        <p className="mt-0.5 text-xs text-muted">All program months. Every video we&rsquo;ve made for you, with anything waiting on your review first. Your selected planning month is kept when you return to Your Month or Schedule.</p>
+        <p className="mt-0.5 text-xs text-muted">Every video we&rsquo;ve made for you, with anything waiting on your review first.</p>
       </div>
 
       {!nothingAtAll && (
@@ -158,7 +158,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
       )}
 
       {nothingAtAll ? (
-        <Empty icon={Clapperboard}>No videos yet. They land here as each session is delivered — <Link href={href("schedule")} className="font-medium text-brand hover:underline">book your session</Link> to get the first one moving.</Empty>
+        <Empty icon={Clapperboard}>No videos yet. They land here once each session is filmed and edited. <Link href={href("schedule")} className="font-medium text-brand hover:underline">Book your session</Link> to get the first one moving.</Empty>
       ) : view.matched === 0 ? (
         <Empty icon={Search}>
           {view.q ? <>Nothing matches &ldquo;{view.q}&rdquo;{view.st !== "all" ? ` under “${filterLabel}”` : ""}. <Link href={q({})} className="font-medium text-brand hover:underline">Show every video</Link></> : <>No videos under &ldquo;{filterLabel}&rdquo; right now. <Link href={q({})} className="font-medium text-brand hover:underline">Show every video</Link></>}
@@ -170,7 +170,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
         <section aria-labelledby="needs-review">
           <Card tone="brand">
             <h2 id="needs-review" className="flex items-center gap-2 text-base font-semibold"><PlayCircle className="size-4 text-brand" aria-hidden /> Needs your review ({view.review.length})</h2>
-            <p className="mt-0.5 text-xs text-muted">Watch each one, pause where you&rsquo;d change something and leave a note — or approve it.</p>
+            <p className="mt-0.5 text-xs text-muted">Watch each one. Pause where you&rsquo;d change something and leave a note, or approve it.</p>
             <ul className="mt-2 divide-y divide-border">
               {view.review.map((v) => <VideoRowV2 key={v.id} v={v} to={q({ v: v.id })} deadline={d.deadlines[v.id] ?? null} previous={v.section === "PREVIOUS"} />)}
             </ul>
@@ -232,7 +232,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
         <h1 className="break-words text-xl font-semibold tracking-tight">{d.video.title}</h1>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <StatusChip word={VIDEO_WORDS[d.video.state]} />
-          {d.video.kind !== "PROGRAM" && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">{d.video.kind === "LISTING" ? "Listing video — not part of your monthly program" : d.video.kind === "EXTRA" ? "Extra" : d.video.kind.toLowerCase()}</span>}
+          {d.video.kind !== "PROGRAM" && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">{d.video.kind === "LISTING" ? "Listing video, not part of your monthly program" : d.video.kind === "EXTRA" ? "Extra" : d.video.kind.toLowerCase()}</span>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
           {d.video.pillarName && <span>Pillar: {d.video.pillarName}</span>}
@@ -249,7 +249,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           <div className="mt-2"><LoadFailed what="this video's versions" /></div>
         ) : hasCut ? (
           <div className="mt-2">
-            {d.perms.request && !d.readOnly && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note; send them all as one change request — or approve this version.</p>}
+            {d.perms.request && !d.readOnly && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note. Send them all as one change request, or approve this version.</p>}
             <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} />
           </div>
         ) : d.delivered ? (
@@ -257,7 +257,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
         ) : d.finishing ? (
           <p className="mt-2 text-sm text-muted">This video is being finished. It will be ready to watch here shortly.</p>
         ) : (
-          <p className="mt-2 text-sm text-muted">Nothing to watch yet — the first cut appears here after filming and editing.</p>
+          <p className="mt-2 text-sm text-muted">Nothing to watch yet. The first version appears here after filming and editing.</p>
         )}
       </Card>
 
@@ -298,13 +298,13 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
             {d.kit?.script && (
               <details className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
                 <summary className={cn("cursor-pointer text-sm font-bold", focus)}>{d.kit.script.title} <span className="ml-1 text-[11px] font-normal text-muted-2">{d.kit.script.historical ? "from your script history" : d.kit.script.versionLabel ? `script ${d.kit.script.versionLabel}` : "script"}</span></summary>
-                {d.kit.script.historical && <p className="mt-2 text-xs text-muted">This is an earlier script we have on file for this topic — kept as history, not the script this video was made from.</p>}
+                {d.kit.script.historical && <p className="mt-2 text-xs text-muted">This is an earlier script we have on file for this topic. It&rsquo;s kept as history and isn&rsquo;t the script this video was made from.</p>}
                 <ScriptView body={d.kit.script.body} fileTitle={d.kit.script.title} />
               </details>
             )}
             {d.kit?.transcript.text && (
               <details className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
-                <summary className={cn("cursor-pointer text-sm font-bold", focus)}>Transcript of the final cut <span className="ml-1 text-[11px] font-normal text-muted-2">{d.kit.transcript.source === "corrected" ? "checked by us" : "automatic"}</span></summary>
+                <summary className={cn("cursor-pointer text-sm font-bold", focus)}>Transcript of the final video <span className="ml-1 text-[11px] font-normal text-muted-2">{d.kit.transcript.source === "corrected" ? "checked by us" : "automatic"}</span></summary>
                 <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/85">{d.kit.transcript.text}</p>
               </details>
             )}

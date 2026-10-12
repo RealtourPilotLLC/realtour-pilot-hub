@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 // provider writes of up to 20 s each. The platform must not cut it off first.
 export const maxDuration = 90;
 export const metadata = {
-  title: "Your Content Program — RealTour Pilot",
+  title: "Your Content Program | Realtour Pilot",
   robots: { index: false, follow: false },
 };
 
@@ -41,7 +41,7 @@ function Picker({ name, seats }: { name: string; seats: { enrollmentId: string; 
     <div className="portal-light fixed inset-0 flex items-center justify-center overflow-y-auto bg-background p-6 text-foreground">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex justify-center"><BrandWordmark variant="onLight" className="h-5" /></div>
-        <h1 className="text-center text-xl font-semibold tracking-tight">Hi {name.split(/\s+/)[0]} — which program?</h1>
+        <h1 className="text-center text-xl font-semibold tracking-tight">Hi {name.split(/\s+/)[0]}, which program?</h1>
         <div className="mt-4 space-y-2">
           {seats.map((s) => (
             <Link key={s.enrollmentId} href={`/portal/me?e=${encodeURIComponent(s.enrollmentId)}`}

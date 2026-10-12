@@ -264,7 +264,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     <aside className="relative flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
       <div className="flex items-center gap-3 px-5 py-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl shadow-lg bg-white p-1" />
+<img src="/brand/mark.svg" alt="Realtour Pilot" className="flex size-9 rounded-xl shadow-lg bg-white p-1" />
         <div className="leading-tight">
           <div className="text-sm font-semibold tracking-tight">
             <BrandWordmark className="h-4" />

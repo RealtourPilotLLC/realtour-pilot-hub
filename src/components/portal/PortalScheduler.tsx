@@ -439,7 +439,8 @@ export function PortalScheduler({
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-brand/25 bg-brand-soft/30 p-3.5">
                 <div className="flex items-center gap-2 text-sm font-medium">
-                  <CalendarClock className="size-4 shrink-0 text-brand" /> We plan your month on a strategy call. Book it first.
+                  {/* Oct 12 2026: an undecided month may also be planned in writing, so don't say the call is the only way. */}
+                  <CalendarClock className="size-4 shrink-0 text-brand" /> {month.planningMode === "UNDECIDED" ? "Plan this month on a strategy call, or pick your topics in Your Month instead." : "We plan your month on a strategy call. Book it first."}
                 </div>
                 <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
@@ -537,7 +538,7 @@ export function PortalScheduler({
                     {/* Step 2: when, from that address. A19: when the preparation
                         window is why the first day is later than tomorrow, say so. */}
                     {!needsAddress && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted">
-                      <p className="min-w-0 flex-1 basis-64">We search {PROGRAM_SLOT_HORIZON_DAYS} calendar days from the first eligible filming day. Need a later date? Kyle can help. Calendar results can be cached for a few minutes; booking rechecks the time.</p>
+                      <p className="min-w-0 flex-1 basis-64">We show times for {PROGRAM_SLOT_HORIZON_DAYS} days from your first filming day. Need a later date? Kyle can help. Times can be a few minutes old, so we check again when you book.</p>
                       <button type="button" disabled={busy} onClick={() => { setSlot(null); setDay(null); setCreative(null); setReload((n) => n + 1); }} className="min-h-11 rounded-xl border border-border px-3 font-medium">Reload times</button>
                     </div>}
                     {!needsAddress && res.preparation && (

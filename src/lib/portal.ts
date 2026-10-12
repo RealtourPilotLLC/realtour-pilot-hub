@@ -1912,7 +1912,7 @@ export function readOnlyNotice(status: string): ReadOnlyNotice {
   const paused = status === "PAUSED";
   return {
     title: paused ? "Your program is paused" : "Your program has ended",
-    body: `Everything we\u2019ve delivered stays here for you to watch and download. New requests, notes, captions and bookings are off until it ${paused ? "resumes" : "restarts"} — ${TEXT_KYLE} any time.`,
+    body: `Everything we\u2019ve delivered stays here for you to watch and download. New requests, notes, captions and bookings are off until it ${paused ? "resumes" : "restarts"}. You can ${TEXT_KYLE} any time.`,
     cta: { label: paused ? "Resume your program" : "Restart your program", href: RESUBSCRIBE_URL },
   };
 }

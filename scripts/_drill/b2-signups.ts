@@ -298,7 +298,7 @@ async function main() {
     const rec1 = await prisma.programCallRecord.findUniqueOrThrow({ where: { id: rec0.id } });
     c.ok("activation did NOT match the booking — a different address is not proof", rec1.matchState === "UNMATCHED_INVITEE" && rec1.clientId === null);
     const w = mailsTo("jane.doe@gmail.example");
-    c.ok("ONE welcome, and step 1 is the conditional wording", w.length === 1 && lineOne(w[0]).startsWith("1. If you've already booked your brand discovery call, you're all set and we'll confirm it with you. If not, book it at https://calendly.com/realtourpilot-info/brand-discovery-call"), lineOne(w[0]));
+    c.ok("ONE welcome, and step 1 is the conditional wording", w.length === 1 && lineOne(w[0]).startsWith("1. If you've already booked your brand discovery call, you're all set and we'll confirm it with you. If not, book it here: https://calendly.com/realtourpilot-info/brand-discovery-call"), lineOne(w[0]));
     c.ok("… never the bare 'Book your brand discovery call', and no booking named", !w[0].body.includes("Book your brand discovery call") && !w[0].body.includes("brokerage") && !w[0].body.includes("is booked for"));
     const t = await discoveryTask(e!.id);
     c.ok("Kyle's task asks him to CONFIRM the booking, on the same key", t?.status === "OPEN" && t.title === "Confirm the discovery booking is Jane Doe's", t?.title);
@@ -331,7 +331,8 @@ async function main() {
     const e = await enrollmentFor("pat.payer@example.com");
     const cl = (await clientsWith("pat.payer@example.com"))[0];
     const w = mailsTo("pat.payer@example.com");
-    c.ok("a stranger's booking and a first-name-only booking are not candidates: bare 'Book your…'", w.length === 1 && lineOne(w[0]).startsWith("1. Book your brand discovery call at"), lineOne(w[0]));
+    // Oct 12 2026 (Jordan): clients book discovery right after paying, so "not booked yet" is said as a condition.
+    c.ok("a stranger's booking and a first-name-only booking are not candidates: 'If you haven't booked…, book it here'", w.length === 1 && lineOne(w[0]).startsWith("1. If you haven't booked your brand discovery call yet, book it here: https://"), lineOne(w[0]));
     c.ok("… Kyle gets the ordinary 'Book the brand discovery call' task", (await discoveryTask(e!.id))?.title.startsWith("Book the brand discovery call") === true);
     c.ok("… and no alias was proposed for either address", (await prisma.clientEmailAlias.count({ where: { clientId: cl.id } })) === 0);
   }

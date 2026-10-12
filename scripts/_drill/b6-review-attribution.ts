@@ -613,9 +613,9 @@ async function main() {
       c.ok("replies nest under their note, each named — Pat, then link visitors 1 and 2", repliesAuthors.length === 3 && repliesAuthors[0] === "Pat Client" && repliesAuthors[1] === `${P.f.clientName} (portal), link visitor 1` && repliesAuthors[2] === `${P.f.clientName} (portal), link visitor 2`, repliesAuthors.join(" | "));
       const staffNote = all.find((n) => n.body === "Add the phone number at the end");
       c.ok("our staff's note is flagged as on the client's behalf", staffNote?.onBehalf === true && staffNote.author === `Jordan Spackman (on behalf of ${P.f.clientName})`, staffNote?.author);
-      // The client's own page is unchanged: staff read "(RealTour Pilot)".
+      // The client's own page is unchanged: staff read "(Realtour Pilot)".
       const mine = await cd.commentsForSubmissions(P.owner, [p3]);
-      c.ok("the client's own page still reads our staff as \"Jordan Spackman (RealTour Pilot)\"", mine.get(p3)?.[0]?.author === "Jordan Spackman (RealTour Pilot)", mine.get(p3)?.[0]?.author);
+      c.ok("the client's own page still reads our staff as \"Jordan Spackman (Realtour Pilot)\"", mine.get(p3)?.[0]?.author === "Jordan Spackman (Realtour Pilot)", mine.get(p3)?.[0]?.author);
     }
 
     // =========================================================================

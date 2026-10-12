@@ -75,7 +75,7 @@ export async function draftFeedbackReply(feedbackId: string): Promise<{ ok: bool
   const answer =
     !ask ? null
     : fb.attribution === "OPERATIONS"
-      ? `You mentioned: “${ask}”\n\nThat one is on us in post-production, not on the crew who shot the property, and it is the right thing to raise. I have taken it to our editing side directly — we are tightening the turnaround on reels and adding a second read on every title card and caption before anything goes out.`
+      ? `You mentioned: “${ask}”\n\nThat one is on us in post-production, not on the crew who shot the property, and it is the right thing to raise. I have taken it to our editing side directly. We are tightening the turnaround on reels and adding a second read on every title card and caption before anything goes out.`
     : fb.attribution === "ONSITE"
       ? `You mentioned: “${ask}”\n\nI have taken that straight to the photographer who shot ${street}, and it is going into how we brief the next one for you.`
       : `You mentioned: “${ask}”\n\nI have taken that back to the team, and it is going into how we run the next one for you.`;
@@ -83,18 +83,18 @@ export async function draftFeedbackReply(feedbackId: string): Promise<{ ok: bool
   const body = [
     `Hi ${first},`,
     "",
-    `Thank you for taking the time to send that back to us on ${street} — the notes are genuinely useful, and I read every one of them myself.`,
-    ...(praise ? ["", `I passed on what you said about the shoot itself — that gets to the person who earned it.`] : []),
+    `Thank you for taking the time to send that back to us on ${street}. The notes are genuinely useful, and I read every one of them myself.`,
+    ...(praise ? ["", `I passed on what you said about the shoot itself, so it gets to the person who earned it.`] : []),
     ...(answer ? ["", answer] : []),
     "",
     "If anything else comes up on this one, reply straight to this email and it comes to me.",
     "",
     "Thanks again,",
     "Jordan",
-    "RealTour Pilot",
+    "Realtour Pilot",
   ].join("\n");
 
-  return { ok: true, to, subject: `Thank you for your feedback — ${street}`, body };
+  return { ok: true, to, subject: `Thank you for your feedback on ${street}`, body };
 }
 
 /** Send it, and record that we did. */

@@ -157,7 +157,7 @@ async function main() {
       c.ok("…the messages are composed for reading: the welcome greets Erica, the strategy call carries Jordan's link, the subjects are set",
         /^Hi Erica,/.test(d.messages.find((m) => m.key === "welcome")!.body.email) &&
         d.messages.find((m) => m.key === "strategy_call")!.body.email.includes("https://calendly.com/realtourpilot-info/strategy-call") &&
-        obc.messageOf("strategy_call").subject === "Book your RealTour Pilot strategy call");
+        obc.messageOf("strategy_call").subject === "Book your Realtour Pilot strategy call");
       c.ok("…the recipients are the addresses on file (email and text), never a typed one",
         JSON.stringify(d.messages[0].recipients.map((r) => [r.channel, r.toRef])) === JSON.stringify([["email", "erica@example.test"], ["sms", "6105550101"]]));
       const dt = (await ob.loadOnboardingDetail(T.id))!;
@@ -257,7 +257,7 @@ async function main() {
       const s1 = await A_.sendOnboardingMessageAction({ clientId: A.id, message: "strategy_call", channel: "email", toRef: "erica@example.test", body: `  ${EDITED}\n\n`, intentId: intent });
       const row = await prisma.outboxMessage.findFirst({ orderBy: { createdAt: "desc" } });
       c.ok("sent: one provider call, to erica@example.test, with the edited words exactly, under the message's subject",
-        s1.ok && sent.length === 1 && sent[0].channel === "email" && sent[0].to === "erica@example.test" && sent[0].body === EDITED && sent[0].subject === "Book your RealTour Pilot strategy call", JSON.stringify({ s1, sent }));
+        s1.ok && sent.length === 1 && sent[0].channel === "email" && sent[0].to === "erica@example.test" && sent[0].body === EDITED && sent[0].subject === "Book your Realtour Pilot strategy call", JSON.stringify({ s1, sent }));
       c.ok("…through the outbox as the 'onboarding' kind, accepted, naming the client", row?.state === "accepted" && row.dedupeKey === `onboarding:strategy_call:${A.id}:${intent}` && row.toRef === "erica@example.test" && row.clientId === A.id && row.body === EDITED && row.requestedBy === `onboarding:${owner.email}`);
       const rec = await ob.readOnboardingRecord(A.id);
       const last = rec.log[rec.log.length - 1];
@@ -274,7 +274,7 @@ async function main() {
       const sms = await A_.sendOnboardingMessageAction({ clientId: A.id, message: "video_ready", channel: "sms", toRef: "6105550101", body: "Hi Erica, a new video is waiting in your portal.", intentId: "press-0005-sms" });
       c.ok("a text goes to A's phone on file, with the edited words", sms.ok && sent.length === 2 && sent[1].channel === "sms" && sent[1].to === "+16105550101" && sent[1].body === "Hi Erica, a new video is waiting in your portal.", JSON.stringify(sent[1]));
       const welcome = await A_.sendOnboardingMessageAction({ clientId: A.id, message: "welcome", channel: "email", toRef: "erica@example.test", body: "Welcome, Erica.", intentId: "press-0006-welcome" });
-      c.ok("the welcome (Portal account on for A) goes, under the welcome subject", welcome.ok && sent.length === 3 && sent[2].subject === "Welcome to your RealTour Pilot content portal");
+      c.ok("the welcome (Portal account on for A) goes, under the welcome subject", welcome.ok && sent.length === 3 && sent[2].subject === "Welcome to your Realtour Pilot content portal");
       const tReal = await A_.sendOnboardingMessageAction({ clientId: T.id, message: "note", channel: "email", toRef: "someone@example.test", body: "x", intentId: "press-0007-treal" });
       const tOk = await A_.sendOnboardingMessageAction({ clientId: T.id, message: "note", channel: "email", toRef: "info+onboard@realtourpilot.com", body: "Test note", intentId: "press-0008-tok" });
       c.ok("the TEST client: a real address ON FILE is refused by the TEST floor; its verified test inbox is sent", !tReal.ok && /verified test inbox/.test(tReal.message) && tOk.ok && sent.length === 4 && sent[3].to === "info+onboard@realtourpilot.com", `${tReal.message} | ${tOk.message}`);

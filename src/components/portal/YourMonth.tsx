@@ -73,7 +73,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
   const planning = p?.planning ?? month?.planning ?? null;
   if (d.planningFailed || (p && !planning)) return <LoadFailed what="this month's plan" />;
   if (!p || !month || !planning) {
-    return <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Your next program month isn&rsquo;t open yet — we&rsquo;ll set it up and it will show here.</p>;
+    return <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Your next program month isn&rsquo;t open yet. We&rsquo;ll set it up and it will show here.</p>;
   }
   const s = d.schedule;
   const steps = yourMonthSteps({

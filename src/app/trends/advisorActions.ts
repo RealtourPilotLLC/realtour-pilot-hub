@@ -18,7 +18,7 @@ import { revalidatePath } from "next/cache";
 export type AdvisorTurn = { role: "user" | "assistant"; content: string };
 export type TrendsAnswer = { answer: string; toolsUsed: string[] };
 
-const CONTEXT = `THE BUSINESS: RealTour Pilot LLC — real-estate media agency in Lititz PA (photos, video, drone, floor plans, social reels). Owner Jordan Spackman. Clients are individual real-estate agents and small teams who rebook on their own personal rhythm.
+const CONTEXT = `THE BUSINESS: Realtour Pilot LLC — real-estate media agency in Lititz PA (photos, video, drone, floor plans, social reels). Owner Jordan Spackman. Clients are individual real-estate agents and small teams who rebook on their own personal rhythm.
 - Capacity: two photographers (Harrison Wells, James Livingston — James is being promoted to Creative Manager) plus Jordan, who is deliberately working himself OUT of the field. Moves that need many more shoot days are expensive; moves that raise the ticket on shoots already booked are cheap.
 - Editing is outsourced at known rates (Luma $299/premium reel, Kim ~$120/monthly social video, in-house ~$40/standard video, AutoHDR $0.50/finished photo), so add-ons needing no extra shoot time (virtual staging, virtual twilight, floor plans) are high-margin.
 - Products sell as bundles (BRONZE/SILVER/GOLD/PLATINUM/EVERYTHING) plus à la carte add-ons.
@@ -26,7 +26,7 @@ const CONTEXT = `THE BUSINESS: RealTour Pilot LLC — real-estate media agency i
 - THERE ARE TWO REVENUE RAILS. Per-listing work is invoiced through Aryeo, and that is what every figure on the Trends page counts. Separately, monthly social-content clients (Video Starter 2HR, Video Accelerator 4HR, VIDEO PRO 8HR) pay a RECURRING QuickBooks invoice of roughly $1,099-$2,500 a month; their Aryeo order is deliberately priced at $0 so they can schedule a session they have already paid for without paying twice. Call recurring_revenue to see that rail. Never tell Jordan a retainer client is small or shrinking from their Aryeo total alone, and never suggest "fixing" a $0 session order — it is intentional.`;
 
 function systemPrompt(): string {
-  return `You are the growth advisor for RealTour Pilot, working directly for Jordan, the owner. Today is ${etFullDate(new Date())} (Eastern Time).
+  return `You are the growth advisor for Realtour Pilot, working directly for Jordan, the owner. Today is ${etFullDate(new Date())} (Eastern Time).
 ${CONTEXT}
 
 YOUR JOB: answer anything about demand and growth — booking pace, what is selling, what each package earns, which clients are growing or drifting, pricing, bundling, promotions, win-backs — using the TOOLS. Never invent a number: call a tool and quote what it returns. For relative dates call current_datetime first.

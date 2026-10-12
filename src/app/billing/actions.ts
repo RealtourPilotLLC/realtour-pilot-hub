@@ -31,9 +31,10 @@ function nudgeTemplate(p: {
   const delivered = p.deliveredAt ? ` delivered ${etDate(p.deliveredAt)}` : "";
   const link = p.paymentUrl || p.invoiceUrl;
   return [
-    `Hi ${first}! Quick friendly note from RealTour Pilot — the media for ${street}${delivered} still shows ${amount} outstanding on the invoice.`,
+    `Hi ${first}! Quick friendly note from Realtour Pilot: the media for ${street}${delivered} still shows ${amount} outstanding on the invoice.`,
+    `Thanks so much, and shout if anything looks off on our end!`,
+    // The link ends the text: a period straight after a URL breaks it on some phones.
     link ? `You can settle it here whenever convenient: ${link}` : `Let us know if you need the invoice re-sent.`,
-    `Thanks so much — and shout if anything looks off on our end!`,
   ].join(" ");
 }
 

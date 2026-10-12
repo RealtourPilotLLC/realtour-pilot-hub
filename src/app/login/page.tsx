@@ -24,7 +24,7 @@ export default async function LoginPage({
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand/[0.08] via-surface to-surface p-6">
       <div className="panel-shadow w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-12 rounded-xl bg-white p-1" />
+<img src="/brand/mark.svg" alt="Realtour Pilot" className="flex size-12 rounded-xl bg-white p-1" />
         <h1 className="text-lg font-semibold tracking-tight">
           <BrandWordmark className="h-5" />
         </h1>

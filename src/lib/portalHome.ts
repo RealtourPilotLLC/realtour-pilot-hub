@@ -215,7 +215,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     }
     // Optional, so it is the last thing on the list — never ahead of booking filming.
     if (cp && !cp.briefIn && i.perms.suggest) {
-      add({ kind: "ADD_BRIEF", count: 1, title: `Add your creative brief for ${cp.monthLabel}`, detail: "Optional — upload your plan or paste notes for your crew.", cta: "Add your brief", dest: "plan", step: "brief" });
+      add({ kind: "ADD_BRIEF", count: 1, title: `Add your creative brief for ${cp.monthLabel}`, detail: "Optional: upload your plan or paste notes for your crew.", cta: "Add your brief", dest: "plan", step: "brief" });
     }
     if (i.ready.count > 0 && i.ready.withFile) {
       add({

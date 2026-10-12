@@ -25,7 +25,7 @@ export default async function PhotographySopPage() {
         <BackLink href="/resources" label="Resources & SOPs" />
       </div>
       <PageHeader
-        eyebrow="The RealTour Pilot standard"
+        eyebrow="The Realtour Pilot standard"
         title="Photography SOP"
         subtitle={`Shooting, on-site preparation, culling & upload standards · updated ${sop.updatedAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric", year: "numeric" })}`}
         actions={

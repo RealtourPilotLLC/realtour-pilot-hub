@@ -60,13 +60,13 @@ export function digestText(firstName: string, streets: string[], opts?: { newPro
   const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
   if (opts?.newProcess === false) {
     return (
-      `Hi ${firstName} — RealTour Pilot here.\n\n` +
+      `Hi ${firstName}, Realtour Pilot here.\n\n` +
       `Tonight's shoots to upload:\n${list}\n\n` +
       `Files in Dropbox, then finish each shoot's checklist:\n${APP_URL}/upload`
     );
   }
   return (
-    `Hi ${firstName} — RealTour Pilot here.\n\n` +
+    `Hi ${firstName}, Realtour Pilot here.\n\n` +
     `Heads up: uploads work a new way starting today.\n\n` +
     `Tonight's shoots to upload:\n${list}\n\n` +
     `Upload to Dropbox like always, then finish each shoot's checklist here:\n` +
@@ -79,7 +79,7 @@ export function digestText(firstName: string, streets: string[], opts?: { newPro
 // goes to every ACTIVE photographer with a phone — once ever, marker-guarded).
 export function introUploadProcessText(firstName: string): string {
   return (
-    `Hi ${firstName} — RealTour Pilot here.\n\n` +
+    `Hi ${firstName}, Realtour Pilot here.\n\n` +
     `Starting today: every shoot now finishes on its UPLOAD PAGE. This is required for every shoot going forward.\n\n` +
     `Nothing changes about Dropbox — files go there like always. The page is the wrap-up: confirm your cull, note the shot order, flag anything for the editor, hit submit. A few minutes per shoot.\n\n` +
     `Worth knowing:\n` +
@@ -138,7 +138,7 @@ export type SplitNag = { street: string; url: string };
  *  (sendSplitNoticeIfChaserPassed) both claim it, so it never goes twice. */
 export const splitNoticeKey = (projectId: string) => `upload-split-${projectId}`;
 export function nagText(firstName: string, streets: string[], split: SplitNag[] = []): string {
-  const parts: string[] = [`Hi ${firstName} — RealTour Pilot here.`];
+  const parts: string[] = [`Hi ${firstName}, Realtour Pilot here.`];
   if (streets.length > 0) {
     const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
     parts.push(

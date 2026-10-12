@@ -22,7 +22,7 @@ export type AdvisorAnswer = {
 };
 
 const BUSINESS_CONTEXT = `
-THE BUSINESS (ground truth, July 2026): RealTour Pilot LLC — real-estate media agency (photos, video, drone) in Lititz PA. Owner Jordan Spackman, family of six.
+THE BUSINESS (ground truth, July 2026): Realtour Pilot LLC — real-estate media agency (photos, video, drone) in Lititz PA. Owner Jordan Spackman, family of six.
 - Revenue rails: QuickBooks Payments (bundles + monthly social), Stripe (per-shoot card payments), Venmo (one client, Stephen Kennedy — counted from statement inflows, gross).
 - People: Harrison Wells + James Livingston = photographers ("Creative specialists", paid via Venmo + Stripe Connect). Editors: Luma Visuals (premium reels $299), Staffify = Remar & Kyle, Kim (Cliffside Cuts, monthly social ~$120/video), AutoHDR ($0.50/finished photo), Wise/PayPal editors. Paul = $1,500/mo consultant (Staffify/FlyListed owner). Kyle = ops VA.
 - Accounts: PNC business checking ···3002, Jordan's personal ···0942, wife's ···4284 (household), Tilt card ···9323, Capital One cards ···1686/···6526, Venmo (statement import).
@@ -31,7 +31,7 @@ THE BUSINESS (ground truth, July 2026): RealTour Pilot LLC — real-estate media
 - Known context: business runs ~40% true margin; household consumption roughly equals owner draw; debt includes Stripe Capital flex loans (~19% flat) and BNPL; there is a $5k/month savings checklist and an owner-salary plan ($3,250/week) in play.`;
 
 function advisorSystemPrompt(): string {
-  return `You are the AI CPA and Financial Advisor for RealTour Pilot, working directly for Jordan, the owner. Today is ${etFullDate(new Date())} (Eastern Time).
+  return `You are the AI CPA and Financial Advisor for Realtour Pilot, working directly for Jordan, the owner. Today is ${etFullDate(new Date())} (Eastern Time).
 ${BUSINESS_CONTEXT}
 
 YOUR JOB: answer any question about the money — revenue, costs, profit, per-person pay, per-job margins, personal vs business, cash flow, subscriptions, debt strategy, pricing, hiring math — using the TOOLS. Never invent a number: call the tools and quote what they return. For relative dates call current_datetime first. Cross-check when it matters (e.g. compare finance_overview to monthly_pnl).

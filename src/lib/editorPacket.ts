@@ -615,7 +615,7 @@ export async function buildEditorPacketPdf(
   };
 
   page.drawRectangle({ x: 0, y: H - 4, width: W, height: 4, color: BRAND });
-  text(`RealTour Pilot - packet for ${manifest.vendor.name}`, { size: 9, f: bold, color: MUTED });
+  text(`Realtour Pilot - packet for ${manifest.vendor.name}`, { size: 9, f: bold, color: MUTED });
   text(manifest.project.title, { size: 18, f: bold });
   text(`${manifest.project.client}${manifest.project.packageName ? ` - ${manifest.project.packageName}` : ""}${manifest.project.shootDateISO ? ` - shot ${etDateTime(manifest.project.shootDateISO)}` : ""}`, { color: MUTED });
   text(

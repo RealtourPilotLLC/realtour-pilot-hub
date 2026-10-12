@@ -49,7 +49,7 @@ function continuePage(action: string, next: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="same-origin">
-<title>Sign in · RealTour Pilot</title>
+<title>Sign in | Realtour Pilot</title>
 <style>
   :root { --bg: #f6f7f9; --card: #ffffff; --text: #111827; --muted: #4b5563; --brand: #ea580c; --brand-fg: #ffffff; --border: #e5e7eb; }
   @media (prefers-color-scheme: dark) { :root { --bg: #0b0f14; --card: #131a22; --text: #f3f4f6; --muted: #9ca3af; --brand: #f97316; --brand-fg: #111827; --border: #263040; } }

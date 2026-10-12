@@ -128,7 +128,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
     const body = note.trim();
     if (!body) return;
     start(async () => {
-      const r = await portalAddComment(portalAuthFromLocation(), current.submissionId, t, body).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await portalAddComment(portalAuthFromLocation(), current.submissionId, t, body).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
       if (r.ok) setNote("");
       done(r);
     });
@@ -137,7 +137,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
     const body = reply.trim();
     if (!body) return;
     start(async () => {
-      const r = await portalAddComment(portalAuthFromLocation(), current.submissionId, null, body, parentId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await portalAddComment(portalAuthFromLocation(), current.submissionId, null, body, parentId).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
       if (r.ok) { setReply(""); setReplyTo(null); }
       done(r);
     });
@@ -152,7 +152,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
     done(r);
   });
   const approve = () => start(async () => {
-    const r = await portalApproveCut(portalAuthFromLocation(), current.submissionId, open.length ? (choice ?? "NONE") : "NONE").catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalApproveCut(portalAuthFromLocation(), current.submissionId, open.length ? (choice ?? "NONE") : "NONE").catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     if (r.ok) setApproving(false);
     done(r);
   });
@@ -199,7 +199,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 {d.basis === "AUTO_EXPIRY"
                   ? <><span className="font-semibold">Approved automatically</span> on {fmtWhen(d.decidedAtISO)} · {d.actorLabel}</>
                   : <><span className="font-semibold">{d.decision === "APPROVE" ? "Approved" : "Change request sent"}</span> by {d.actorLabel} on {fmtWhen(d.decidedAtISO)}</>}
-                {d.decision === "REQUEST_CHANGES" && <span className="text-muted"> · {d.receiptState === "DONE" ? "done — see the newer version" : d.receiptState === "SUPERSEDED" ? "a newer version replaced this one" : d.receiptState === "ROUTED" || d.receiptState === "IN_PROGRESS" ? "with your editor" : "received"}</span>}
+                {d.decision === "REQUEST_CHANGES" && <span className="text-muted"> · {d.receiptState === "DONE" ? "done, see the newer version" : d.receiptState === "SUPERSEDED" ? "a newer version replaced this one" : d.receiptState === "ROUTED" || d.receiptState === "IN_PROGRESS" ? "with your editor" : "received"}</span>}
                 {d.decision === "APPROVE" && d.openNotesChoice === "INCLUDE" && <span className="text-muted"> · notes sent along</span>}
                 {d.decision === "APPROVE" && d.openNotesChoice === "DISCARD" && <span className="text-muted"> · open notes resolved</span>}
               </span>
@@ -245,7 +245,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
       {canWrite && (
         <div>
           <div className="flex items-start gap-2">
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change — or a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change, or leave a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
             <button type="button" onClick={add} disabled={busy || !note.trim()} className="min-h-11 shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
               {busy ? <Loader2 className="size-4 animate-spin" /> : "Save note"}
             </button>
@@ -253,7 +253,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-2">
             <input type="checkbox" checked={atTime && !playerFailed} disabled={playerFailed} onChange={(e) => setAtTime(e.target.checked)} className="accent-[var(--brand)] disabled:opacity-40" /> pin this note to the paused moment
           </label>
-          <p className="mt-0.5 text-[11px] text-muted-2">{playerFailed ? "This version isn't playing, so notes are saved as general notes." : "Play the video first — until you do, a note is saved as a general note."}</p>
+          <p className="mt-0.5 text-[11px] text-muted-2">{playerFailed ? "This version isn't playing, so notes are saved as general notes." : "Play the video first. Until you do, a note is saved as a general note."}</p>
         </div>
       )}
 
@@ -284,7 +284,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           )}
           {asking && (
             <div className="space-y-2">
-              <p className="text-xs text-muted">Your {open.length} open note{open.length === 1 ? " goes" : "s go"} with this request as one change list for your editor.{requested ? " A request is already open on this version — new notes join it." : ""}</p>
+              <p className="text-xs text-muted">Your {open.length} open note{open.length === 1 ? " goes" : "s go"} with this request as one change list for your editor.{requested ? " A request is already open on this version, so new notes join it." : ""}</p>
               <textarea value={overall} onChange={(e) => setOverall(e.target.value)} placeholder="Anything overall? (optional)" rows={2} aria-label="Overall note" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
               {needsAck && ackText && (review?.mayAcknowledge ?? perms.approve) && (
                 <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-soft/30 p-2.5 text-xs">
@@ -304,12 +304,12 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           {approving && (
             <div className="space-y-2 rounded-xl border border-success/30 bg-success-soft/30 p-3">
               <p className="text-sm font-medium">Approve version {current.clientVersion} as final?</p>
-              <p className="text-xs text-muted">This records your approval on exactly this cut. If a newer cut ever replaces it, that one will need its own approval.</p>
+              <p className="text-xs text-muted">This records your approval of exactly this version. If a newer version ever replaces it, that one will need its own approval.</p>
               {open.length > 0 && (
                 <fieldset className="space-y-1.5 text-sm">
-                  <legend className="text-xs font-semibold">You have {open.length} open note{open.length === 1 ? "" : "s"} — what should we do with {open.length === 1 ? "it" : "them"}?</legend>
-                  <label className="flex items-start gap-2"><input type="radio" name="notes" checked={choice === "DISCARD"} onChange={() => setChoice("DISCARD")} className="mt-1 accent-[var(--brand)]" /> <span>Nothing needs changing — mark {open.length === 1 ? "it" : "them"} resolved</span></label>
-                  <label className="flex items-start gap-2"><input type="radio" name="notes" checked={choice === "INCLUDE"} onChange={() => setChoice("INCLUDE")} className="mt-1 accent-[var(--brand)]" /> <span>Send {open.length === 1 ? "it" : "them"} along as notes for the team (no new cut)</span></label>
+                  <legend className="text-xs font-semibold">You have {open.length} open note{open.length === 1 ? "" : "s"}. What should we do with {open.length === 1 ? "it" : "them"}?</legend>
+                  <label className="flex items-start gap-2"><input type="radio" name="notes" checked={choice === "DISCARD"} onChange={() => setChoice("DISCARD")} className="mt-1 accent-[var(--brand)]" /> <span>Nothing needs changing, so mark {open.length === 1 ? "it" : "them"} resolved</span></label>
+                  <label className="flex items-start gap-2"><input type="radio" name="notes" checked={choice === "INCLUDE"} onChange={() => setChoice("INCLUDE")} className="mt-1 accent-[var(--brand)]" /> <span>Send {open.length === 1 ? "it" : "them"} along as notes for the team (no new version)</span></label>
                   {choice === null && <p className="text-xs text-muted-2">Pick one before you approve.</p>}
                 </fieldset>
               )}
@@ -364,7 +364,7 @@ function Note({ c, onSeek }: { c: CommentView; onSeek: (t: number) => void }) {
       )}
       <span className="min-w-0 flex-1 leading-snug">
         <span className={cn(c.resolvedAtISO ? "text-muted-2 line-through" : "text-foreground/90")}>{c.body}</span>
-        <span className="ml-1.5 text-[11px] text-muted-2">— {c.author}, {fmtWhen(c.createdAtISO)}</span>
+        <span className="ml-1.5 text-[11px] text-muted-2">· {c.author}, {fmtWhen(c.createdAtISO)}</span>
       </span>
     </div>
   );

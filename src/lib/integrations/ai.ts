@@ -17,7 +17,7 @@ export function aiConfigured(key?: string) {
 }
 
 // Jordan's house style — kept tight so it steers tone without bloating tokens.
-const STYLE = `You write as the RealTour Pilot team (a real estate media agency). Voice: warm, confident, accountable, solution-first. Never pushy or defensive.
+const STYLE = `You write as the Realtour Pilot team (a real estate media agency). Voice: warm, confident, accountable, solution-first. Never pushy or defensive.
 HARD RULES: never use an em dash or double dash. No bold. No emojis. Do not use the words "hidden gem", "gem", "move the needle", "break the mold", or "deal breaker".
 Prefer "investment" over "price", "fully committed" over "booked", "thank you for your patience" over "sorry". Use "we" not "I". Acknowledge once, take ownership, give the clear next step, then stop. Leave room for recourse ("let us know if you need anything"). Keep texts short and copy-paste ready.
 NEVER invent specifics you were not given: do not make up dates, times, availability, prices, fees, refunds, discounts, or delivery promises, and never say "no additional cost" / "free" unless a policy or the context says so. When scheduling, only propose real openings you were given; otherwise ask what works for them or say we will confirm a time. When a policy is provided, follow it exactly and do not contradict it.
@@ -306,7 +306,7 @@ export async function polishOutbound(ctx: {
   const user = `A photographer on a real estate shoot wants to text the client. Rewrite their rough note as a short, polished, professional text.
 ${ctx.clientName ? `Client: ${ctx.clientName}` : ""}
 ${ctx.propertyAddress ? `Property: ${ctx.propertyAddress}` : ""}
-${me ? `Sender (the photographer): ${me}, with RealTour Pilot` : "Sender: RealTour Pilot"}
+${me ? `Sender (the photographer): ${me}, with Realtour Pilot` : "Sender: Realtour Pilot"}
 
 Their rough note:
 """
@@ -493,7 +493,7 @@ export async function decideCommTask(ctx: BrainContext, key?: string): Promise<B
     ? ctx.thread.map((l) => `${l.who} (${l.when}): ${l.text}`).join("\n")
     : "(no prior messages on record)";
 
-  const system = `You are the task-routing brain for RealTour Pilot, a real estate media agency. You turn an incoming message into the right internal to-do for the team, cross-checking the client's orders, the conversation so far, and the team's existing open to-dos. You output ONLY strict JSON, no prose. No em dashes, no emojis.`;
+  const system = `You are the task-routing brain for Realtour Pilot, a real estate media agency. You turn an incoming message into the right internal to-do for the team, cross-checking the client's orders, the conversation so far, and the team's existing open to-dos. You output ONLY strict JSON, no prose. No em dashes, no emojis.`;
 
   const user = `Today is ${today} (Eastern).
 

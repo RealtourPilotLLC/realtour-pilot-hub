@@ -32,7 +32,7 @@ export function shootStatusText(kind: ShootStatusKind, ctx: StatusCtx): string {
   const first = firstNameOf(ctx.clientName);
   const street = streetOf(ctx.propertyTitle);
   const me = (ctx.photographerName || "").trim().split(/\s+/)[0];
-  const intro = me ? `This is ${me} with RealTour Pilot` : "This is RealTour Pilot";
+  const intro = me ? `This is ${me} with Realtour Pilot` : "This is Realtour Pilot";
 
   switch (kind) {
     case "on_my_way":

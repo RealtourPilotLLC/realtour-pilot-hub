@@ -460,14 +460,14 @@ Raw video always comes from Dropbox. Finished cuts do not have to: uploading thr
       id: "music",
       icon: Music,
       title: "Music",
-      body: `The **Music** card sits right under What to make. It is Epidemic Sound, inside the brief — licensed under RealTour Pilot's Epidemic Sound agreement, so nothing you take from it needs clearing.
+      body: `The **Music** card sits right under What to make. It is Epidemic Sound, inside the brief — licensed under Realtour Pilot's Epidemic Sound agreement, so nothing you take from it needs clearing.
 
 - **Recommended for this edit** sits at the top and loads by itself when the brief opens: the hub reads the edit instructions (the spec, the photographer's vision and summary, the video type and the client's brand notes), then runs two or three searches for you with a BPM range and an instrumental-or-any setting to match — the line under the heading says why. It is a starting point, not the pick: listen first. **Refresh** reads the instructions again; **Use these filters** copies its BPM, vocals and moods into the search controls so you can keep digging from there.
 - **Search** describes the scene, not a song title: "calm morning at a hilltop home", "upbeat city loft tour". **Instrumental / With vocals** is the one hard filter; **BPM** is the two-handle slider (40–200) with **Slow · Mid · Upbeat · Fast · Any** presets — it applies to searches and to browsing by chips alike, and every row still shows its own BPM; **Moods & genres** adds chips; **Collections** lists the curated sets (on some agreements that is the whole catalogue — the card tells you if search is not open to us). Length cannot be filtered, so every row shows the duration; **Similar** finds tracks that sound like one you like.
 - **Play** previews the track right there. **Use this track** puts it on the brief — the Edit instructions spec and the brief PDF show it, and the job's timeline records who picked it. One pick per job; picking again replaces it.
 - **Download to the job folder** puts the MP3 in the job's Dropbox folder at **02-RAW-Video/Music/Artist - Title.mp3** and marks the pick "in the job folder", so the file is beside the footage when you open the RAW folder. Pull it from there.
 
-Use these files for client deliverables only — never for anything outside a RealTour Pilot job, and never pass them on. Every download is reported to Epidemic Sound under the agreement. If the card says Epidemic Sound is rate limiting us, wait a minute and try again; if it says the catalogue is limited, that is the agreement, not a fault — use the collections.`,
+Use these files for client deliverables only — never for anything outside a Realtour Pilot job, and never pass them on. Every download is reported to Epidemic Sound under the agreement. If the card says Epidemic Sound is rate limiting us, wait a minute and try again; if it says the catalogue is limited, that is the agreement, not a fault — use the collections.`,
     },
     {
       id: "upload-cut",

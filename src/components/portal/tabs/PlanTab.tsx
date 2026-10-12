@@ -71,7 +71,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
   ].filter((t) => !d.clientPlanned || t.key === "month" || t.key === "strategy" || t.key === d.view);
   const intro = {
     month: d.clientPlanned
-      ? { title: "Your Month", detail: "You plan the videos — add your brief if you like, then book your filming time." }
+      ? { title: "Your Month", detail: "You plan the videos. Add your brief if you like, then book your filming time." }
       : { title: "Your Month", detail: "Plan this month's videos step by step, then book the filming time that fits." },
     scripts: { title: "Scripts to review", detail: "All program months. Each script shows the month it belongs to and the version waiting for your decision." },
     bank: { title: "Topic bank", detail: "Ideas not yet placed on an open month. Choose one when your monthly plan has room." },
@@ -138,7 +138,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
     <div className="space-y-4">
       {cards.length === 0 ? (
         <Empty icon={ScrollText}>
-          No scripts are waiting on you. When we share one, it lands here for your read-through — <Link href={monthHref} className="font-medium text-brand hover:underline">see this month&rsquo;s topics</Link>.
+          No scripts are waiting on you. When we share one, it lands here for your read-through. <Link href={monthHref} className="font-medium text-brand hover:underline">See this month&rsquo;s topics</Link>.
         </Empty>
       ) : (
         cards.map((t) => (
@@ -179,8 +179,8 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
       {plan.monthTopics.length > 0 && (
         <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
           <CheckCheck className="size-3.5" aria-hidden />
-          <span>This month: {plan.month ? `${plan.month.selected} of ${plan.month.owed}` : plan.monthTopics.length} topic{(plan.month?.owed ?? plan.monthTopics.length) === 1 ? "" : "s"} chosen —</span>
-          <Link href={monthHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">open the month <ChevronRight className="size-3" aria-hidden /></Link>
+          <span>This month: {plan.month ? `${plan.month.selected} of ${plan.month.owed}` : plan.monthTopics.length} topic{(plan.month?.owed ?? plan.monthTopics.length) === 1 ? "" : "s"} chosen.</span>
+          <Link href={monthHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">Open the month <ChevronRight className="size-3" aria-hidden /></Link>
           {plan.toAnswer.length > 0 && <span className="inline-flex items-center gap-1"><PencilLine className="size-3" aria-hidden /> {plan.toAnswer.length} still need{plan.toAnswer.length === 1 ? "s" : ""} your answers</span>}
         </p>
       )}

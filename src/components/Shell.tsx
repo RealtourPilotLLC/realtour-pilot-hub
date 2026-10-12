@@ -169,7 +169,7 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
           </button>
           <div className="flex items-center gap-2">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-7 rounded-lg bg-white p-1" />
+<img src="/brand/mark.svg" alt="Realtour Pilot" className="flex size-7 rounded-lg bg-white p-1" />
             <span className="text-sm font-semibold tracking-tight">
               <BrandWordmark className="h-4" />
             </span>

@@ -12,7 +12,7 @@ import type { PortalViewer } from "@/lib/portal";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
-import { TEXT_KYLE } from "@/lib/portalWords";
+import { TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE BRAND PROFILE — one spine for every change to what a client's videos
@@ -280,7 +280,7 @@ export async function saveClientBrandProfile(viewer: PortalViewer, patch: BrandP
   const changeIds: string[] = [];
 
   const onFile = await prisma.client.findUnique({ where: { id: clientId }, select: { brandColors: true, portalVideoStyle: true, portalPreferences: true } });
-  if (!onFile) return { ok: false, message: `We couldn't find your account — ${TEXT_KYLE} and we'll sort it out.`, ...none };
+  if (!onFile) return { ok: false, message: `We couldn't find your account. ${TEXT_KYLE_START} and we'll sort it out.`, ...none };
   const data: Record<string, string> = {};
   const rows: BrandChangeInput[] = [];
   for (const f of COLUMN_FIELDS) {
@@ -315,7 +315,7 @@ export async function saveClientBrandProfile(viewer: PortalViewer, patch: BrandP
     if (r.changeId) changeIds.push(r.changeId);
   }
   if (changeIds.length) await alertBrandChanges(clientId).catch((e) => console.warn("brand alert failed (the change is saved)", e));
-  if (!saved.length && !cleared.length) return { ok: true, message: "Nothing changed — that's already what we have on file.", ...none };
+  if (!saved.length && !cleared.length) return { ok: true, message: "Nothing changed. That's already what we have on file.", ...none };
   const parts = [saved.length ? `Saved ${saved.join(", ")}` : null, cleared.length ? `Cleared ${cleared.join(", ")}` : null].filter(Boolean);
   return { ok: true, message: `${parts.join(" · ")}. Your editor sees this on every job.`, saved, cleared, changeIds };
 }
@@ -354,7 +354,7 @@ export async function recordPortalAssetUpload(
   let fromName: string | null = null;
   if (input.replaceAssetId) {
     const target = await replaceableAsset(clientId, input.replaceAssetId);
-    if (!target) return { ok: false, message: "That file isn't on your profile any more — upload it as a new one instead." };
+    if (!target) return { ok: false, message: "That file isn't on your profile any more. Upload it as a new one instead." };
     const prev = await prisma.clientAsset.findUnique({ where: { id: target.id }, select: { activeVersionId: true } });
     fromName = prev?.activeVersionId ? (await prisma.clientAssetVersion.findUnique({ where: { id: prev.activeVersionId }, select: { fileName: true } }))?.fileName ?? null : null;
     assetId = target.id;
@@ -371,7 +371,7 @@ export async function recordPortalAssetUpload(
     fromText: fromName, toText: input.fileName, assetId, assetVersionId: versionId, source: "client_portal", ...who, actorLabel: actorLabel(viewer),
   });
   await alertBrandChanges(clientId).catch((e) => console.warn("brand alert failed (the file is saved)", e));
-  return { ok: true, message: input.replaceAssetId ? `${input.fileName} replaced your ${word.toLowerCase()} — your editor uses it from here on.` : `${input.fileName} added to your brand kit.`, assetId, versionId, changeId };
+  return { ok: true, message: input.replaceAssetId ? `${input.fileName} replaced your ${word.toLowerCase()}. Your editor uses it from here on.` : `${input.fileName} added to your brand kit.`, assetId, versionId, changeId };
 }
 
 /**

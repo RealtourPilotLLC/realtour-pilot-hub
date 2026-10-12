@@ -40,7 +40,7 @@ export function PortalSuggestBox({ scriptId }: { scriptId: string }) {
         <button
           onClick={() =>
             start(async () => {
-              const r = await portalSuggestScript(portalAuthFromLocation(), scriptId, text).catch(() => ({ ok: false, message: "That didn't send — try again." }));
+              const r = await portalSuggestScript(portalAuthFromLocation(), scriptId, text).catch(() => ({ ok: false, message: "That didn't send. Try again." }));
               if (r.ok) setDone(r.message);
               else setErr(r.message);
             })

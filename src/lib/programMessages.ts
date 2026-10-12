@@ -360,7 +360,7 @@ export async function postStaffMessage(
     ? await prisma.programMessage.findFirst({ where: { id: replyToId, enrollmentId }, select: { id: true } })
     : null;
   const staffUser = me.id ? await prisma.appUser.findUnique({ where: { id: me.id }, select: { name: true, email: true } }) : null;
-  const label = (me.name || staffUser?.name || me.email || staffUser?.email || "RealTour Pilot").slice(0, 120);
+  const label = (me.name || staffUser?.name || me.email || staffUser?.email || "Realtour Pilot").slice(0, 120);
   const row = await prisma.programMessage.create({
     data: {
       enrollmentId, clientId: e.clientId, authorKind: "STAFF",
@@ -483,13 +483,13 @@ export function composeReplyNotice(input: { name: string | null; staffName: stri
   return [
     `Hi ${first},`,
     "",
-    `${staffFirst} replied to your message in your RealTour Pilot content portal:`,
+    `${staffFirst} replied to your message in your Realtour Pilot content portal:`,
     "",
     `"${clip(input.body.replace(/\s*[—–]\s*/g, ", "), 600)}"`,
     "",
-    `Sign in at ${appBase()}/portal/login to read the whole conversation and reply there. We send you a one time link, so there is no password to remember.`,
+    `To read the whole conversation and reply, sign in at ${appBase()}/portal/login. We'll email you a one-time link, so there's no password to remember.`,
     "",
-    "RealTour Pilot",
+    "The Realtour Pilot team",
   ].join("\n");
 }
 

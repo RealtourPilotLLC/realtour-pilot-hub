@@ -195,7 +195,7 @@ export async function creativeStatementHtml(
 <body>
   <div class="btn" style="text-align:center"><button onclick="window.print()">Print / Save as PDF</button></div>
   <div class="sheet">
-    <div class="brand">RealTour Pilot</div>
+    <div class="brand">Realtour Pilot</div>
     <h1>Payout Statement</h1>
     <div class="meta">
       <div><b>${esc(p.member.name)}</b></div>
@@ -213,7 +213,7 @@ export async function creativeStatementHtml(
       ${p.adjustmentTotal !== 0 ? `<div class="row"><span>Adjustments</span><span>${p.adjustmentTotal < 0 ? "−" : "+"}${usd(Math.abs(p.adjustmentTotal))}</span></div>` : ""}
       <div class="row grand"><span>Total payout</span><span>${usd(p.total)}</span></div>
     </div>
-    <div class="foot">RealTour Pilot · ${rangeLabel}</div>
+    <div class="foot">Realtour Pilot · ${rangeLabel}</div>
   </div>
 </body></html>`;
 

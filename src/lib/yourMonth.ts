@@ -115,7 +115,7 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
 
   // ---- 1 · the route -------------------------------------------------------
   if (route === "UNDECIDED") {
-    steps.push({ key: "route", status: actSession ? "action" : "waiting", title: "How would you like to plan this month's videos?", detail: "Choose your topics here, or talk them through on a call. You can switch later — nothing you've done is lost.", cta: null });
+    steps.push({ key: "route", status: actSession ? "action" : "waiting", title: "How would you like to plan this month's videos?", detail: "Choose your topics here, or talk them through on a call. You can switch later, and nothing you've done is lost.", cta: null });
   } else {
     const first = i.planning.callMode === "REQUIRED" && route === "CALL";
     const held = route === "CALL" && i.month.call === "HELD";
@@ -126,7 +126,7 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     steps.push({
       key: "route", status: "done",
       title: office ? "We planned this month's videos for you" : route === "WRITTEN" ? "You're choosing your topics here" : held ? "You planned this month on your strategy call" : first ? "This month is planned on a strategy call" : "You're talking your topics through on a call",
-      detail: office ? null : i.planning.noCallEligible && actSession && !held && !filmingBooked ? "You can switch any time — nothing you've done is lost." : null,
+      detail: office ? null : i.planning.noCallEligible && actSession && !held && !filmingBooked ? "You can switch any time, and nothing you've done is lost." : null,
       cta: null,
     });
   }
@@ -168,7 +168,7 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     } else if (owedAnswers > 0) {
       steps.push({ ...answersAsk, detail: m.call === "BOOKED" ? `${bookedWords}. These are the questions still open.` : "These are the questions still open." });
     } else if (m.call === "BOOKED") {
-      steps.push({ key: "call", status: "waiting", title: bookedWords, detail: "Filming can be booked now — you don't need to wait for the call.", cta: null });
+      steps.push({ key: "call", status: "waiting", title: bookedWords, detail: "You can book filming now. You don't need to wait for the call.", cta: null });
     } else {
       // W03: "#step-call" when the booking sits inside this page; a Calendly
       // address opens in a new tab only when that is all there is.
@@ -233,7 +233,7 @@ function filmingStep(i: YourMonthInput, o: { actSession: boolean; dayOnly: (iso:
       key: "filming", status: i.planning.deferredAtISO ? "deferred" : "action",
       title: s.sessionsRequired > 1 && booked > 0 ? `Book your next filming session (${booked} of ${s.sessionsRequired} booked)` : CTA_WORDS.BOOK,
       detail: i.planning.deferredAtISO
-        ? "You chose to schedule later — book any time."
+        ? "You chose to schedule later. Book any time."
         : s.earliestISO ? `Sessions start on or after ${dayOnly(s.earliestISO)}.` : null,
       // The picker sits inside this step; the page's next-step button jumps to it.
       cta: { label: CTA_WORDS.BOOK, href: "#step-filming" },
@@ -264,8 +264,8 @@ function clientPlannedSteps(i: YourMonthInput, cp: { briefFiles: number; briefNo
   if (i.planning.callMode !== "NOT_INCLUDED" && i.planning.callStatus !== "NOT_REQUIRED") {
     const held = i.month.call === "HELD";
     if (held) steps.push({ key: "call", status: "done", title: "Strategy call held", detail: null, cta: null });
-    else if (i.month.call === "BOOKED") steps.push({ key: "call", status: "waiting", title: i.planning.callAtISO ? `Your call is booked for ${callWhenWords(i.planning.callAtISO, o.tz, o.now)}` : "Your call is booked", detail: "You can book filming now — you don't need to wait for the call.", cta: null });
-    else steps.push({ key: "call", status: o.actSession ? "action" : "waiting", title: "Book your strategy call", detail: "Filming isn't held up by it — book both whenever suits you.", cta: o.actSession ? { label: "Book the call", href: i.hrefs.bookingUrl, external: /^https?:/i.test(i.hrefs.bookingUrl) } : null });
+    else if (i.month.call === "BOOKED") steps.push({ key: "call", status: "waiting", title: i.planning.callAtISO ? `Your call is booked for ${callWhenWords(i.planning.callAtISO, o.tz, o.now)}` : "Your call is booked", detail: "You can book filming now. You don't need to wait for the call.", cta: null });
+    else steps.push({ key: "call", status: o.actSession ? "action" : "waiting", title: "Book your strategy call", detail: "Filming isn't held up by it. Book both whenever suits you.", cta: o.actSession ? { label: "Book the call", href: i.hrefs.bookingUrl, external: /^https?:/i.test(i.hrefs.bookingUrl) } : null });
   }
   const dayOnly = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: o.tz, weekday: "long", month: "long", day: "numeric" });
   steps.push(filmingStep(i, { actSession: o.actSession, dayOnly }));

@@ -22,8 +22,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RealTour Pilot — Operations Hub",
-  description: "Single source of truth for RealTour Pilot, your real estate media agency.",
+  title: "Realtour Pilot — Operations Hub",
+  description: "Single source of truth for Realtour Pilot, your real estate media agency.",
 };
 
 export default async function RootLayout({

@@ -458,7 +458,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
         ? (fromTeamPhone ? sender?.name ?? "Us" : "Us")
         : effIncoming
           ? sender?.name ?? match?.clientName ?? (fromPhone.length === 10 ? prettyPhone(fromPhone) : null)
-          : "RealTour Pilot",
+          : "Realtour Pilot",
       body: text,
       // OpenPhone's own missed-call greeting is OUR outbound, but no person
       // wrote it (§9, Sep 26 2026): stamped `auto-*` here, at ingest, so every

@@ -294,7 +294,7 @@ async function main() {
     const rows = await noticeRows();
     c.ok("on, a weekday: exactly one email, kind program_message, to the seat", on.sent === 1 && rows.length === 1 && rows[0].toRef === seatEmail && rows[0].dedupeKey?.startsWith("program_message:") === true && rows[0].state === "accepted", JSON.stringify(on));
     const mail = mails.find((m) => m.to === seatEmail);
-    c.ok("…under its own subject, with the reply and the sign-in page, no em dashes", !!mail && mail.subject === "New reply in your RealTour Pilot portal" && mail.body.includes("Moved it to October") && mail.body.includes("/portal/login") && !/[—–]/.test(mail.body), mail?.subject);
+    c.ok("…under its own subject, with the reply and the sign-in page, no em dashes", !!mail && mail.subject === "New reply in your Realtour Pilot portal" && mail.body.includes("Moved it to October") && mail.body.includes("/portal/login") && !/[—–]/.test(mail.body), mail?.subject);
     const again = await pm.sweepProgramMessageNotices({ now: new Date(T.getTime() + 3_600_000) });
     c.ok("the next hourly tick sends nothing more", again.sent === 0 && (await noticeRows()).length === 1);
     await pm.markThreadRead(mara.enrollmentId, `cu:${mara.clientUserId}`, new Date(T.getTime() + 2 * 3_600_000));

@@ -452,17 +452,19 @@ export function realOutboxProvider(): OutboxProvider {
  *  no phone), so the kind names it. */
 export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): string {
   switch (kind) {
-    case "welcome": return "Welcome to RealTour Pilot";
-    case "portal_login": return "Your RealTour Pilot sign-in link";
-    case "portal_invite": return "You've been added to your RealTour Pilot content portal";
+    case "welcome": return "Welcome to Realtour Pilot";
+    case "portal_login": return "Your Realtour Pilot sign-in link";
+    // Oct 12 2026: a seat's one welcome (portalWelcomeKey, `…:welcome`) is a
+    // welcome; a later invitation to an existing portal says they were added.
+    case "portal_invite": return dedupeKey?.endsWith(":welcome") ? "Welcome to your Realtour Pilot content portal" : "You've been added to your Realtour Pilot content portal";
     case "program_reminder": return programReminderSubject(dedupeKey ?? null);
-    case "script_share": return "Your scripts are ready in your RealTour Pilot portal";
+    case "script_share": return "Your scripts are ready in your Realtour Pilot portal";
     // Jordan's wording for the strategy notice (6.2, Sep 25 2026).
     case "strategy_ready": return "Your Content Strategy is Ready + Next Steps";
-    case "program_message": return "New reply in your RealTour Pilot portal";
+    case "program_message": return "New reply in your Realtour Pilot portal";
     // Oct 5 2026: the onboarding message names its own subject (its key carries it).
     case "onboarding": return onboardingSubject(dedupeKey);
-    default: return "RealTour Pilot";
+    default: return "Realtour Pilot";
   }
 }
 

@@ -302,7 +302,7 @@ export async function recordDrainedSend(
     clientId,
     clientName: client?.name ?? null,
     ...(projectId ? { projectId } : {}),
-    ...(row.channel === "email" ? {} : { contactName: client?.name ?? "RealTour Pilot", fromPhone: row.toRef }),
+    ...(row.channel === "email" ? {} : { contactName: client?.name ?? "Realtour Pilot", fromPhone: row.toRef }),
     body: row.body,
     source:
       kind === "confirmation" ? "auto-confirmation"
@@ -1532,7 +1532,7 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
       await logComm({
         channel: "text", direction: "out", minRole: "ADMIN",
         clientId, clientName: client?.name ?? msg.name ?? null,
-        contactName: "RealTour Pilot", fromPhone: msg.phone, body,
+        contactName: "Realtour Pilot", fromPhone: msg.phone, body,
         source: "auto-afterhours",
         externalId: res.providerId ? `op-${res.providerId}` : marker,
       }).catch(() => {});

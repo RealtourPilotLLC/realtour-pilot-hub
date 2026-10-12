@@ -155,14 +155,14 @@ function Notices({ n, clientName }: { n: ShellNotices; clientName: string | null
         <div className="mt-5 flex flex-wrap items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
           <Eye className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
           <div className="min-w-0 flex-1 basis-56 text-xs">
-            You&rsquo;re viewing this as <span className="font-semibold">{n.staff.who}</span>, on {clientName ?? n.staff.clientName}&rsquo;s behalf. Anything you submit here is recorded as <span className="font-semibold">you, on their behalf</span> — never as them.
+            You&rsquo;re viewing this as <span className="font-semibold">{n.staff.who}</span>, on {clientName ?? n.staff.clientName}&rsquo;s behalf. Anything you submit here is recorded as <span className="font-semibold">you, on their behalf</span>, never as them.
           </div>
         </div>
       )}
       {n.offerSignIn && (
         <div className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-3.5 text-sm">
           <KeyRound className="size-4 shrink-0 text-brand" aria-hidden />
-          <span className="min-w-0 flex-1 basis-48 text-xs">Set up your sign-in — a personal link by email, so this page is yours wherever you open it. This link keeps working too.</span>
+          <span className="min-w-0 flex-1 basis-48 text-xs">Set up your sign-in: a personal link by email, so this page is yours wherever you open it. This link keeps working too.</span>
           <Link href="/portal/login" className={cn("inline-flex min-h-11 items-center rounded-lg bg-brand-action px-3 text-xs font-semibold text-white", focus)}>Sign in with email</Link>
         </div>
       )}

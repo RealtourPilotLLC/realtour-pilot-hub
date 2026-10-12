@@ -218,7 +218,7 @@ export type MonthPlanning = {
 const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
 
 /** The month's one sentence when the client plans their own content. */
-export const CLIENT_PLANNED_HEADLINE = "You're planning this month's videos — book your filming when you're ready";
+export const CLIENT_PLANNED_HEADLINE = "You're planning this month's videos. Book your filming when you're ready";
 
 export function emptyCounts(): Record<PlanStep, number> {
   return Object.fromEntries(PLAN_STEPS.map((s) => [s, 0])) as Record<PlanStep, number>;
@@ -270,7 +270,7 @@ function headlineFor(m: { route: PlanningRoute; call: CallState; owed: number; c
     return h(c.NEEDS_ANSWERS > 0 ? "NEEDS_ANSWERS" : "NEEDS_MORE", `We need your answers for ${n(m.answersOwed, "topic")}`);
   }
   if (c.CHOSEN > 0) return h("CHOSEN", "Choose how you'd like to plan this month");
-  if (m.route === "CALL" && m.call === "NONE" && m.chosen < Math.max(1, m.owed)) return h("ON_CALL", "Book your strategy call — we'll choose your topics on it");
+  if (m.route === "CALL" && m.call === "NONE" && m.chosen < Math.max(1, m.owed)) return h("ON_CALL", "Book your strategy call. We'll choose your topics on it");
   if (m.owed > 0 && m.chosen === 0) {
     return m.route === "CALL" ? h("ON_CALL", "We'll choose your topics together on your call") : h("PICK", `Choose ${n(m.owed, "topic")} for this month`);
   }
@@ -283,5 +283,5 @@ function headlineFor(m: { route: PlanningRoute; call: CallState; owed: number; c
   if (c.ON_CALL > 0) return h("ON_CALL", "We'll plan these on your call");
   if (m.chosen === 0) return h("EMPTY", "Nothing planned for this month yet");
   const filmedAll = c.FILMED > 0 && c.APPROVED === 0;
-  return h("DONE", filmedAll ? "Filmed — we're editing your videos" : `All ${n(m.chosen, "script")} approved`);
+  return h("DONE", filmedAll ? "Filmed, and we're editing your videos" : `All ${n(m.chosen, "script")} approved`);
 }

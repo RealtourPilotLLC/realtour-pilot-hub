@@ -26,7 +26,7 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
   if (!strategy) {
     return (
       <div className="mt-6">
-        <Empty icon={Compass}>Your strategy hasn&rsquo;t been shared here yet. It appears after your brand discovery and first strategy call.</Empty>
+        <Empty icon={Compass}>Your strategy hasn&rsquo;t been shared here yet. We build it from your brand discovery call, and it will show here once it&rsquo;s ready.</Empty>
       </div>
     );
   }
@@ -34,7 +34,8 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
   return (
     <div className="mt-6 space-y-4">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">My Strategy</h1>
+        {/* PlanTab's heading names this page ("Content strategy"); this is the released version's own line. */}
+        <h2 className="text-xl font-semibold tracking-tight">Your strategy</h2>
         <p className="mt-0.5 text-xs text-muted">Version {strategy.versionNo}{strategy.approvedAtISO ? ` · approved ${fmtShort(strategy.approvedAtISO)}` : ""} · shared {fmtShort(strategy.releasedAtISO)}{strategy.newerPending ? " · an updated version is being prepared" : ""}</p>
       </div>
 
@@ -47,7 +48,7 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
             {s.brandVoice && <div><dt className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Voice</dt><dd className="mt-0.5 leading-relaxed text-foreground/90">{s.brandVoice}</dd></div>}
             {s.audience.length > 0 && <div><dt className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Who it&rsquo;s for</dt><dd className="mt-0.5 leading-relaxed text-foreground/90">{s.audience.join(" · ")}</dd></div>}
             {s.goals.length > 0 && <div><dt className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Goals</dt><dd className="mt-0.5"><ul className="space-y-0.5">{s.goals.map((g, i) => <li key={i} className="flex gap-2 leading-relaxed text-foreground/90"><span className="text-brand">·</span><span>{g}</span></li>)}</ul></dd></div>}
-            {s.pillars.length > 0 && <div><dt className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Content pillars</dt><dd className="mt-0.5"><ul className="space-y-1">{s.pillars.map((p, i) => <li key={i} className="leading-relaxed text-foreground/90"><span className="font-semibold">{p.name}</span>{p.purpose ? <span className="text-muted"> — {p.purpose}</span> : null}</li>)}</ul></dd></div>}
+            {s.pillars.length > 0 && <div><dt className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Content pillars</dt><dd className="mt-0.5"><ul className="space-y-1">{s.pillars.map((p, i) => <li key={i} className="leading-relaxed text-foreground/90"><span className="font-semibold">{p.name}</span>{p.purpose ? <span className="text-muted">: {p.purpose}</span> : null}</li>)}</ul></dd></div>}
           </dl>
         </Card>
       )}
@@ -58,7 +59,7 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
         {priorities.length > 0 ? (
           <ul className="mt-2 space-y-1">{priorities.map((p, i) => <li key={i} className="flex gap-2 text-sm leading-relaxed text-foreground/90"><span className="text-brand">·</span><span>{p}</span></li>)}</ul>
         ) : (
-          <p className="mt-2 text-sm text-muted">No priorities set for this month yet — they come out of your strategy call (or your written answers).</p>
+          <p className="mt-2 text-sm text-muted">No priorities set for this month yet. They come from your strategy call or your written answers.</p>
         )}
       </Card>
 
@@ -75,7 +76,7 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
         </div>
         {canSuggest && !readOnly && (
           <div className="mt-4 border-t border-border pt-3">
-            <p className="mb-2 text-xs text-muted">Something changed, or something&rsquo;s not quite right? Tell us — we review every correction before it changes your strategy.{strategy.proposalsOpen ? ` (${strategy.proposalsOpen} of yours waiting for review.)` : ""}</p>
+            <p className="mb-2 text-xs text-muted">Something changed, or something&rsquo;s not quite right? Tell us. We review every correction before it changes your strategy.{strategy.proposalsOpen ? ` (${strategy.proposalsOpen} of yours waiting for review.)` : ""}</p>
             <ProposeCorrection sections={strategy.sections.map((s) => ({ id: s.id, heading: s.heading }))} />
           </div>
         )}

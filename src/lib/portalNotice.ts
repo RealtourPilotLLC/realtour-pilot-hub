@@ -26,7 +26,7 @@ export const PORTAL_MIGRATION_NOTICE = {
   /** The per-browser "Got it" key. A new id = a new notice everyone sees again. */
   id: "rtp-portal-notice:migration-2026-10",
   title: "Welcome to your new content portal",
-  body: "We're still moving your past scripts and videos over and smoothing out a few rough edges. Your feedback really helps — if anything looks off or is confusing, let us know.",
+  body: "We're still moving your past scripts and videos over and smoothing out a few rough edges. Your feedback really helps, so if anything looks off or is confusing, let us know.",
   cta: "Tell us",
   dismiss: "Got it",
   /** The footer link that stays after "Got it". */

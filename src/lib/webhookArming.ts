@@ -716,6 +716,6 @@ export function aryeoSupportMessage(opts: { url: string; silentSince: Date | nul
     "",
     "Thank you,",
     "Jordan Spackman",
-    "RealTour Pilot",
+    "Realtour Pilot",
   ].join("\n");
 }

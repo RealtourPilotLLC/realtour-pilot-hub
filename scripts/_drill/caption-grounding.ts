@@ -234,9 +234,9 @@ async function main() {
     c.ok("…and its Caption CTA Examples", s.system.includes("DM me PRICE.") && /CAPTION CTA EXAMPLES FROM THE APPROVED STRATEGY/.test(s.system));
     const rows = await draftsOf(ada.video.id);
     c.ok("drafts saved (caption, short, CTA, cover title)", rows.length === 4, rows.map((d) => d.kind).join(","));
-    c.ok("EVERY row says it was drafted from the script, with no transcript", rows.every((d) => /^Drafted from the script — no transcript yet/.test(noteOf(d))), noteOf(rows[0]));
+    c.ok("EVERY row says it was drafted from the script, with no transcript", rows.every((d) => /^Drafted from the script, with no transcript yet/.test(noteOf(d))), noteOf(rows[0]));
     c.ok("every row is tied to the entitled cut", rows.every((d) => d.submissionId === ada.sub));
-    c.ok("the caller is told the same, in the message", /Drafted from the script — no transcript yet/.test(r.message));
+    c.ok("the caller is told the same, in the message", /Drafted from the script, with no transcript yet/.test(r.message));
     const kit = await pk.postingKitFor(ada.viewer, ada.video);
     c.ok("the posting kit shows the client that note", kit.captions.some((x) => /no transcript yet/.test(x.sourceNote ?? "")));
     c.ok("…and the transcript gap in its own words", !kit.transcript.text && !!kit.transcript.gap, kit.transcript.gap ?? "");

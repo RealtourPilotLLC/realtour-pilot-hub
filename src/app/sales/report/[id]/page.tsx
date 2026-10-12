@@ -39,7 +39,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
       <ReportToolbar />
       <article className="print-report rounded-2xl border border-border bg-surface p-6 sm:p-10">
         <header className="mb-6 border-b border-border pb-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-brand">RealTour Pilot LLC</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-brand">Realtour Pilot LLC</p>
           <h1 className="mt-1 text-2xl font-bold">{report.title}</h1>
           <p className="mt-1 text-sm text-muted">
             Period: {report.startKey} through {report.endKey} · Generated {generated}
@@ -47,7 +47,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
         </header>
         <Markdown content={report.markdown} className="report-body text-[15px] leading-relaxed" />
         <footer className="mt-8 border-t border-border pt-3 text-[11px] text-muted-2">
-          Prepared by the RealTour Pilot Operations Hub from the live audited ledger (bank, card, Venmo, Stripe, QuickBooks). Figures drift as new
+          Prepared by the Realtour Pilot Operations Hub from the live audited ledger (bank, card, Venmo, Stripe, QuickBooks). Figures drift as new
           transactions post or categories are re-tagged. Not a substitute for review by a licensed CPA.
         </footer>
       </article>

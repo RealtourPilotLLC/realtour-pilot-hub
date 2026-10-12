@@ -351,7 +351,7 @@ function autoBookingProblems(
 
 // ---- the messages, composed (never sent here) --------------------------------------
 
-const SIGN = "Jordan and the RealTour Pilot team\n(Reply to this email and it comes straight to us.)";
+const SIGN = "Jordan and the Realtour Pilot team\n(Reply to this email and it comes straight to us.)";
 
 async function composeMessages(a: {
   clientId: string; enrollmentId: string; clientName: string; isTest: boolean; portalLink: string; monthKey: string; monthId: string | null;
@@ -367,44 +367,54 @@ async function composeMessages(a: {
     firstName: first, month, portalLink: a.portalLink, bookCallLink: null, noCallEligible: false, answersStarted: false, sessionNote: null,
     earliestSession: null, itemCount: 1, titles: [] as string[], updatedTitles: [] as string[], deadline: null,
   };
-  const [welcome, strategyVars, scripts, monthlyMapping] = await Promise.all([
+  const [welcome, strategyVars, scripts, monthlyMapping, style] = await Promise.all([
     import("@/lib/portalAccess").then((m) => m.composeWelcomeEmail({ name: a.clientName, clientName: a.clientName, reason: "welcome", clientId: a.clientId })).catch(() => null),
     a.approvedId ? import("@/lib/scriptShare").then((m) => m.strategyReadyVars(a.enrollmentId, a.clientId, a.now, a.approvedId)).catch(() => null) : Promise.resolve(null),
     a.monthId ? prisma.contentScript.findMany({ where: { monthId: a.monthId, sharedVersionId: { not: null } }, orderBy: { createdAt: "asc" }, select: { title: true } }) : Promise.resolve([] as { title: string }[]),
     prisma.programCalendlyEventMapping.findFirst({ where: { purpose: "MONTHLY_STRATEGY", enabled: true }, select: { publicUrl: true } }).catch(() => null),
+    prisma.contentEnrollment.findUnique({ where: { id: a.enrollmentId }, select: { callMode: true, strategyCallRequired: true, clientSuppliesTopics: true } }).catch(() => null),
   ]);
+  // Jordan's general strategy-call link (Oct 5 2026). It is mapped as a
+  // STRATEGY_CANDIDATE, so a program client's booking on it is still filed on
+  // their month once their identity verifies.
+  const callLink = GENERAL_STRATEGY_CALL_BOOKING_URL;
+  const callsOff = style?.callMode === "NOT_INCLUDED" || (!style?.callMode && style?.strategyCallRequired === false);
   const titles = scripts.map((s) => s.title).filter(Boolean);
   const render = (id: string, extra: Partial<TemplateVars> = {}) => renderReminder(reminderTemplate(id), { ...base, ...extra });
 
   const bodies: Record<OnboardingMessageKey, { email: string; sms: string; note: string | null }> = {
     welcome: {
-      email: welcome ?? [`Hi ${first},`, "", `Your RealTour Pilot content portal is ready: ${a.portalLink}`, "", SIGN].join("\n"),
-      sms: `Hi ${first}, it's Jordan at RealTour Pilot. Your content portal is ready: ${a.portalLink} Your strategy, scripts, filming dates and finished videos all live there.`,
+      email: welcome ?? [`Hi ${first},`, "", `Your Realtour Pilot content portal is ready: ${a.portalLink}`, "", SIGN].join("\n"),
+      // The link ends the text (a period straight after a URL breaks it on some phones).
+      sms: `Hi ${first}, it's Jordan at Realtour Pilot. Your content portal is ready. It's where you book your calls and filming, pick your video topics and review your videos: ${a.portalLink}`,
       note: a.signInByEmail ? null : `The welcome tells them to sign in with their email, but ${a.signInWhyNot}. Until then, send them the portal link (step 4) instead.`,
     },
     strategy_call: {
-      email: render("reminder.book_call.v1", { bookCallLink: GENERAL_STRATEGY_CALL_BOOKING_URL }),
-      sms: `Hi ${first}, it's Jordan at RealTour Pilot. Grab a time for your strategy call here: ${GENERAL_STRATEGY_CALL_BOOKING_URL}`,
-      note: `Inside their portal, "Book a call" uses the monthly strategy-call event (${monthlyMapping?.publicUrl ?? STRATEGY_CALL_BOOKING_URL}) instead of this link.`,
+      email: render("reminder.book_call.v1", { bookCallLink: callLink }),
+      sms: `Hi ${first}, it's Jordan at Realtour Pilot. Grab a time for your ${month} strategy call here: ${callLink}`,
+      note: style?.clientSuppliesTopics
+        ? `${a.clientName} plans their own content, so a strategy call is optional for them.`
+        : callsOff ? `Strategy calls are switched off for ${a.clientName} (Program style), so this message doesn't apply to them.`
+        : `Inside their portal, "Book a call" uses the monthly strategy-call event (${monthlyMapping?.publicUrl ?? STRATEGY_CALL_BOOKING_URL}) instead of this link.`,
     },
     strategy_ready: {
-      email: strategyVars ? render("strategy_ready.v2", strategyVars) : render("strategy_ready.v2", { callLink: GENERAL_STRATEGY_CALL_BOOKING_URL, setupMissing: [], strategyUpdate: false }),
-      sms: `Hi ${first}, your content strategy is ready in your RealTour Pilot portal: ${a.portalLink}`,
+      email: strategyVars ? render("strategy_ready.v2", strategyVars) : render("strategy_ready.v2", { callLink: callsOff ? null : callLink, setupMissing: [], strategyUpdate: false, strategyCallsOff: callsOff }),
+      sms: `Hi ${first}, your content strategy is ready to read in your Realtour Pilot portal: ${a.portalLink}`,
       note: a.approvedId ? null : "No approved strategy yet: approve and release it in step 2 before telling them it is ready.",
     },
     scripts_ready: {
       email: render("scripts_ready.v1", { titles: titles.length ? titles : ["(your scripts)"] }),
-      sms: `Hi ${first}, your ${month} scripts are ready to read in your RealTour Pilot portal: ${a.portalLink}`,
+      sms: `Hi ${first}, your ${month} scripts are ready to read in your Realtour Pilot portal: ${a.portalLink}`,
       note: titles.length ? null : `No script for ${month} is released to their portal yet, so the list in the email is a placeholder. Edit it before sending.`,
     },
     video_ready: {
       email: render("reminder.review_work.v2"),
-      sms: `Hi ${first}, a new video is waiting for your review in your RealTour Pilot portal: ${a.portalLink}`,
+      sms: `Hi ${first}, a new video is waiting for your review in your Realtour Pilot portal: ${a.portalLink}`,
       note: null,
     },
     note: {
       email: [`Hi ${first},`, "", "", "", SIGN].join("\n"),
-      sms: `Hi ${first}, it's Jordan at RealTour Pilot. `,
+      sms: `Hi ${first}, it's Jordan at Realtour Pilot. `,
       note: null,
     },
   };

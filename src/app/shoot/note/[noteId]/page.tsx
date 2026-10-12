@@ -101,7 +101,7 @@ export default async function ShootNotePage({ params }: { params: Promise<{ note
         <div className="eyebrow mb-1">Feedback note</div>
         <h1 className="text-xl font-semibold tracking-tight">{street}</h1>
         <p className="mt-0.5 text-sm text-muted">
-          {note.authorName ?? "RealTour"} · {etDateTime(note.createdAt)}
+          {note.authorName ?? "Realtour"} · {etDateTime(note.createdAt)}
         </p>
       </div>
       {/* The exact card family the shoot page renders — badges, the pinned

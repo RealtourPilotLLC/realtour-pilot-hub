@@ -21,7 +21,7 @@ export default function GlobalError({ error, unstable_retry }: { error: Error & 
   return (
     <html lang="en">
       <body className="min-h-full bg-background text-foreground">
-        <title>Something went wrong — RealTour Pilot</title>
+        <title>Something went wrong | Realtour Pilot</title>
         <div className="flex min-h-[70vh] items-center justify-center p-6">
           <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6">
             <h1 className="text-lg font-semibold tracking-tight">The hub hit a problem</h1>

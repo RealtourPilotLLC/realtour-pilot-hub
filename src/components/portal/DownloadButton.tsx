@@ -47,12 +47,12 @@ const HINT: Record<Platform, { redirect: string; share: string; file: string }> 
   ios: {
     redirect: "If the video opens, tap Share → Save Video. If Safari asks, tap Download, then open it in the Files app and share it to Photos.",
     share: "Tap Share / save, then choose Save Video to put it in Photos.",
-    file: "Safari saves it to the Files app (Downloads) — open it there and share it to Photos.",
+    file: "Safari saves it to the Files app (Downloads). Open it there and share it to Photos.",
   },
   android: {
-    redirect: "It saves to Downloads — open it from Files or Gallery. If it plays instead, use the ⋮ menu → Download.",
+    redirect: "It saves to Downloads. Open it from Files or Gallery. If it plays instead, use the ⋮ menu → Download.",
     share: "Tap Share / save to send it to an app or save it.",
-    file: "It saved to Downloads — open it from Files or Gallery.",
+    file: "It saved to Downloads. Open it from Files or Gallery.",
   },
   desktop: {
     redirect: "It saves to your Downloads folder. If it plays in a new tab instead, right-click the video → Save video as.",
@@ -234,7 +234,7 @@ export function DownloadButton({ videoId, href, plan, label, title }: {
     const pct = pctOf(state.received, state.total);
     return (
       <div className="space-y-1.5" role="status">
-        <p className="text-sm text-danger">{pct !== null && state.received > 0 ? `Stopped at ${pct}%` : "The download didn't finish"} — {state.message}</p>
+        <p className="text-sm text-danger">{pct !== null && state.received > 0 ? `Stopped at ${pct}%` : "The download didn't finish"}. {state.message}</p>
         <div className="flex flex-wrap items-center gap-3">
           <button type="button" onClick={() => void run()} className={primary}><RotateCcw className="size-4" /> Try again</button>
           {openInstead}
@@ -247,7 +247,7 @@ export function DownloadButton({ videoId, href, plan, label, title }: {
     const file = state.file;
     return (
       <div className="space-y-1.5" role="status">
-        <p className="inline-flex items-center gap-1.5 text-sm font-semibold text-success"><CheckCircle2 className="size-4" /> Downloaded — {mb(file.size)} MB</p>
+        <p className="inline-flex items-center gap-1.5 text-sm font-semibold text-success"><CheckCircle2 className="size-4" /> Downloaded ({mb(file.size)} MB)</p>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => share(file)} className={primary}><Share2 className="size-4" /> Share / save</button>
           <button type="button" onClick={() => { saveAsFile(file); finished(); setState({ kind: "saved", how: "file" }); }} className={secondary}><Download className="size-4" /> Save as a file</button>

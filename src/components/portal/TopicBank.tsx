@@ -151,14 +151,14 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   /** The bank view's pointer to what is chosen: those topics live on the month view. */
   const chosenThisMonth = view === "bank" && month ? active.reduce((n, g) => n + g.topics.filter((t) => !t.scriptedNotFilmed && t.selection?.monthId === month.id).length, 0) : 0;
 
-  const select = (topicId: string) => { if (!month) return; act(topicId, async () => done(await portalSelectTopic(portalAuthFromLocation(), topicId, month.id).catch(() => ({ ok: false, message: "That didn't save — try again." })), topicId)); };
-  const remove = (t: PortalTopic) => { if (!t.selection) return; act(t.id, async () => done(await portalRemoveSelection(portalAuthFromLocation(), t.id, t.selection!.monthId).catch(() => ({ ok: false, message: "That didn't save — try again." })), t.id)); };
-  const discuss = (topicId: string) => act(topicId, async () => { const r = await portalDiscussTopic(portalAuthFromLocation(), topicId, note).catch(() => ({ ok: false, message: "That didn't send — try again." })); if (r.ok) { setNote(""); setOpenTopic(null); } done(r, topicId); });
+  const select = (topicId: string) => { if (!month) return; act(topicId, async () => done(await portalSelectTopic(portalAuthFromLocation(), topicId, month.id).catch(() => ({ ok: false, message: "That didn't save. Try again." })), topicId)); };
+  const remove = (t: PortalTopic) => { if (!t.selection) return; act(t.id, async () => done(await portalRemoveSelection(portalAuthFromLocation(), t.id, t.selection!.monthId).catch(() => ({ ok: false, message: "That didn't save. Try again." })), t.id)); };
+  const discuss = (topicId: string) => act(topicId, async () => { const r = await portalDiscussTopic(portalAuthFromLocation(), topicId, note).catch(() => ({ ok: false, message: "That didn't send. Try again." })); if (r.ok) { setNote(""); setOpenTopic(null); } done(r, topicId); });
   const openQuestions = (t: PortalTopic) => {
     const mId = t.selection?.monthId ?? month?.id;
     if (!mId) return;
     act(t.id, async () => {
-      const r = await portalOpenInterview(portalAuthFromLocation(), t.id, mId).catch(() => ({ ok: false, message: "Couldn't open the questions — try again." }));
+      const r = await portalOpenInterview(portalAuthFromLocation(), t.id, mId).catch(() => ({ ok: false, message: "Couldn't open the questions. Try again." }));
       if (r.ok && "id" in r && r.id) router.push(`${tabHref}&iv=${encodeURIComponent(r.id)}`);
       else setMsg({ ok: false, text: r.message, topicId: t.id });
     });
@@ -166,7 +166,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   // R1 — the script decision lives in ScriptApprovalCard, which sends the
   // version THIS PAGE rendered; the bank only lends it its status line.
   const suggest = () => act(null, async () => {
-    const r: { ok: boolean; message: string; id?: string; monthId?: string | null; selected?: boolean } = await portalSuggestTopic(portalAuthFromLocation(), { title: idea.title, concept: idea.concept, pillarId: idea.pillarId || null, monthId: useForMonth && month ? month.id : null }).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r: { ok: boolean; message: string; id?: string; monthId?: string | null; selected?: boolean } = await portalSuggestTopic(portalAuthFromLocation(), { title: idea.title, concept: idea.concept, pillarId: idea.pillarId || null, monthId: useForMonth && month ? month.id : null }).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     if (r.ok) { setIdea({ title: "", concept: "", pillarId: "" }); setSuggesting(false); }
     setJustAdded(r.ok && r.selected && r.id && r.monthId ? { topicId: r.id, monthId: r.monthId } : null);
     done(r);
@@ -174,20 +174,20 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
   const answerJustAdded = () => {
     if (!justAdded) return;
     act(null, async () => {
-      const r = await portalOpenInterview(portalAuthFromLocation(), justAdded.topicId, justAdded.monthId).catch(() => ({ ok: false, message: "Couldn't open the questions — try again." }));
+      const r = await portalOpenInterview(portalAuthFromLocation(), justAdded.topicId, justAdded.monthId).catch(() => ({ ok: false, message: "Couldn't open the questions. Try again." }));
       if (r.ok && "id" in r && r.id) router.push(`${tabHref}&iv=${encodeURIComponent(r.id)}`);
       else setMsg({ ok: false, text: r.message });
     });
   };
   const decline = (topicId: string) => act(topicId, async () => {
-    const r = await portalDeclineTopic(portalAuthFromLocation(), topicId, declineReason).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalDeclineTopic(portalAuthFromLocation(), topicId, declineReason).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     if (r.ok) { setDeclining(null); setDeclineReason(""); }
     // A topic set aside leaves the list, so its result has no card to sit in.
     done(r, r.ok ? null : topicId);
   });
-  const undecline = (topicId: string) => act(null, async () => done(await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
+  const undecline = (topicId: string) => act(null, async () => done(await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save. Try again." }))));
   const swap = (selectionId: string, topicId: string) => act(topicId, async () => {
-    const r = await portalSwapCarriedTopic(portalAuthFromLocation(), selectionId, swapTo).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalSwapCarriedTopic(portalAuthFromLocation(), selectionId, swapTo).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     if (r.ok) { setSwapping(null); setSwapTo(""); }
     done(r, r.ok ? null : topicId);
   });
@@ -225,7 +225,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
             const waiting = month.overflow;
             return (
               <p className="mt-1.5 text-sm">
-                <span className="font-semibold">{monthLabel(month.monthKey)}</span> — {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
+                <span className="font-semibold">{monthLabel(month.monthKey)}</span>: {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
                 {carriedHere > 0 && <span className="text-muted"> · {carriedHere} carried over</span>}
                 {waiting > 0 && <span className="text-muted"> · {waiting} more waiting (your package covers {month.owed} a month; extras stay in line, nothing is thrown away)</span>}
                 {month.selected < month.owed && <span className="text-muted"> · pick {month.owed - month.selected} more</span>}
@@ -283,7 +283,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
           )}
         </section>
       )}
-      {months.length === 0 && <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Your next program month isn&rsquo;t open yet — you can still read and discuss your topics; selecting opens when the month does.</p>}
+      {months.length === 0 && <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Your next program month isn&rsquo;t open yet. You can still read and discuss your topics, and choosing opens when the month does.</p>}
 
       {/* Filters (the month view is one month's plan: nothing to filter) */}
       {view !== "month" && (
@@ -295,13 +295,13 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
             {f.label} · {counts[f.key] ?? 0}
           </button>
         ))}
-        {archivedCount > 0 && <span className="self-center text-[11px] text-muted-2">{archivedCount} set aside — we keep those so we never re-suggest them</span>}
+        {archivedCount > 0 && <span className="self-center text-[11px] text-muted-2">{archivedCount} set aside. We keep those so we never suggest them again.</span>}
       </div>
       )}
       {chosenThisMonth > 0 && month && (
         <p className="text-xs text-muted">
-          {chosenThisMonth} chosen for {monthLabel(month.monthKey)} —{" "}
-          <Link href={tabHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">see them on this month <ChevronRight className="size-3" aria-hidden /></Link>
+          {chosenThisMonth} chosen for {monthLabel(month.monthKey)}.{" "}
+          <Link href={tabHref} className="inline-flex items-center gap-0.5 font-medium text-brand hover:underline">See them on this month <ChevronRight className="size-3" aria-hidden /></Link>
         </p>
       )}
 
@@ -362,9 +362,9 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
         </div>
       ) : visible.length === 0 ? (
         view === "month" ? (
-          <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">{month ? <>No topics chosen for {monthLabel(month.monthKey)} yet{canAct && !readOnly ? " — pick them from your topic bank, or suggest your own idea below." : "."}</> : "Your next program month isn’t open yet."}</p>
+          <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">{month ? <>No topics chosen for {monthLabel(month.monthKey)} yet.{canAct && !readOnly ? " Pick them from your topic bank, or suggest your own idea below." : ""}</> : "Your next program month isn’t open yet."}</p>
         ) : (
-          <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Nothing under &ldquo;{filters.find((f) => f.key === effFilter)?.label}&rdquo; yet{effFilter !== "ALL" ? " — try All, or suggest an idea of your own below." : "."}</p>
+          <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Nothing under &ldquo;{filters.find((f) => f.key === effFilter)?.label}&rdquo; yet.{effFilter !== "ALL" ? " Try All, or suggest an idea of your own below." : ""}</p>
         )
       ) : (
         visible.map((g) => (
@@ -405,7 +405,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                             </dl>
                             {t.history.length > 0 && (
                               <ul className="mt-1 space-y-0.5 text-[11px] text-muted-2">
-                                {t.history.map((h, j) => <li key={j}>{h.kind.toLowerCase()}{h.monthKey ? ` · ${shortMonth(h.monthKey)}` : ""} · {new Date(h.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{h.note ? ` — ${h.note}` : ""}</li>)}
+                                {t.history.map((h, j) => <li key={j}>{h.kind.toLowerCase()}{h.monthKey ? ` · ${shortMonth(h.monthKey)}` : ""} · {new Date(h.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{h.note ? ` · ${h.note}` : ""}</li>)}
                               </ul>
                             )}
                           </details>
@@ -427,7 +427,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                                 {t.scriptText.strategyLabel ? ` · strategy ${t.scriptText.strategyLabel}` : ""}
                               </span>
                             </summary>
-                            {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history — a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
+                            {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history. It&rsquo;s a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
                             <ScriptView body={t.scriptText.body} parts={t.scriptText.parts ?? null} pillarName={t.scriptText.pillarName ?? null} size="xs" fileTitle={t.title} />
                             {/* THE CLIENT'S OWN VERDICT (F09). Only on a script
                                 that is genuinely shared with them — an import we
@@ -442,7 +442,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
                           {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
                           {t.selection && t.selection.removable && canAct && !readOnly && <button type="button" onClick={() => remove(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-danger disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><X className="size-3" /> Remove from {shortMonth(t.selection.monthKey)}</button>}
-                          {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> committed — send us a message to change it</span>}
+                          {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> Locked in. Send us a message to change it.</span>}
                           {/* R01: no questions offered for what nobody owes — an extra waiting
                               its turn, a topic the booked call covers, a call's proposal —
                               unless they already started them. */}
@@ -459,13 +459,13 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                         {cardStatus(t.id)}
                         {declining === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
-                            <input value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="Why not? (optional — it helps us suggest better)" aria-label="Why this topic isn't for you (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
+                            <input value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} placeholder="Why not? (optional, it helps us suggest better)" aria-label="Why this topic isn't for you (optional)" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
                             <button type="button" onClick={() => decline(t.id)} disabled={busy} className={cn("shrink-0 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", "min-h-11 sm:min-h-0")}>Set aside</button>
                           </div>
                         )}
                         {openTopic === t.id && (
                           <div className="mt-1.5 flex items-start gap-2">
-                            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="A thought on this topic — an angle, a story, a doubt…" aria-label="Note on this topic" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
+                            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="A thought on this topic: an angle, a story, a doubt…" aria-label="Note on this topic" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
                             <button type="button" onClick={() => discuss(t.id)} disabled={busy || note.trim().length < 2} className={cn("shrink-0 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", "min-h-11 sm:min-h-0")}>Send</button>
                           </div>
                         )}
@@ -482,7 +482,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       {/* What they set aside — kept, with undo */}
       {setAside.length > 0 && (
         <details className="rounded-2xl border border-border bg-surface/70 p-4 text-sm">
-          <summary className="cursor-pointer text-xs font-semibold text-muted">You set aside {setAside.length} topic{setAside.length === 1 ? "" : "s"} — we won&rsquo;t suggest {setAside.length === 1 ? "it" : "them"} again</summary>
+          <summary className="cursor-pointer text-xs font-semibold text-muted">You set aside {setAside.length} topic{setAside.length === 1 ? "" : "s"}. We won&rsquo;t suggest {setAside.length === 1 ? "it" : "them"} again.</summary>
           <ul className="mt-2 space-y-1.5">
             {setAside.map((t) => (
               <li key={t.id} className="flex items-start gap-2">
@@ -505,7 +505,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
           ) : (
             <div className="space-y-2">
               <div className="text-sm font-semibold">Your idea</div>
-              <input value={idea.title} onChange={(e) => setIdea({ ...idea, title: e.target.value })} placeholder="Title — e.g. Why I tell sellers to skip the kitchen remodel" aria-label="Idea title" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
+              <input value={idea.title} onChange={(e) => setIdea({ ...idea, title: e.target.value })} placeholder="Title, e.g. Why I tell sellers to skip the kitchen remodel" aria-label="Idea title" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
               <textarea value={idea.concept} onChange={(e) => setIdea({ ...idea, concept: e.target.value })} rows={2} placeholder="One line on the angle (optional)" aria-label="Idea concept" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
               {groups.some((g) => g.pillarId) && (
                 <select value={idea.pillarId} onChange={(e) => setIdea({ ...idea, pillarId: e.target.value })} aria-label="Pillar" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand">
@@ -516,7 +516,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
               {month && (
                 <label className="flex items-center gap-2 text-xs text-muted">
                   <input type="checkbox" checked={useForMonth} onChange={(e) => setUseForMonth(e.target.checked)} className="size-3.5 accent-brand" />
-                  Use it for {monthLabel(month.monthKey)}{month.selected >= month.owed ? " (as an extra — that month is full)" : ""}
+                  Use it for {monthLabel(month.monthKey)}{month.selected >= month.owed ? " (as an extra, since that month is full)" : ""}
                 </label>
               )}
               <div className="flex gap-2">

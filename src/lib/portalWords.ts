@@ -46,12 +46,12 @@ export const TOPIC_WORDS: Record<PortalTopicState, Word> = {
  */
 export const PLAN_STEP_WORDS: Record<PlanStep, Word> = {
   FILMED: { label: "Filmed", tone: "success", icon: "filmed" },
-  EXTRA: { label: "Extra — waits its turn", tone: "muted", icon: "clock" },
+  EXTRA: { label: "Extra, waits its turn", tone: "muted", icon: "clock" },
   APPROVED: { label: "Script approved", tone: "success", icon: "check" },
   CHANGES_REQUESTED: { label: "We're making your changes", tone: "warning", icon: "changes" },
   READY_FOR_YOU: { label: "Ready for your review", tone: "brand", icon: "script" },
   TEAM_REVIEW: { label: "Our team is reviewing", tone: "muted", icon: "preparing" },
-  CONFIRMING: { label: "From your call — confirming", tone: "muted", icon: "clock" },
+  CONFIRMING: { label: "From your call, confirming", tone: "muted", icon: "clock" },
   WRITING: { label: "We're writing your script", tone: "warning", icon: "preparing" },
   NEEDS_MORE: { label: "We need one more answer", tone: "brand", icon: "alert" },
   ON_CALL: { label: "We'll cover this on your call", tone: "muted", icon: "calendar" },

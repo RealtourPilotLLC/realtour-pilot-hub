@@ -99,7 +99,7 @@ export async function createLinkToken(userId: string): Promise<string> {
   const redirectUri = base.startsWith("https://") ? `${base}/connections/banks` : undefined;
   const resp = await api.linkTokenCreate({
     user: { client_user_id: userId },
-    client_name: "RealTour Pilot",
+    client_name: "Realtour Pilot",
     products: [Products.Transactions],
     country_codes: [CountryCode.Us],
     language: "en",

@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // to: the session's date and time, the area on file, the form. noindex, like
 // the portal itself.
 export const metadata = {
-  title: "Your filming address — RealTour Pilot",
+  title: "Your filming address | Realtour Pilot",
   robots: { index: false, follow: false },
 };
 

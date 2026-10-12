@@ -18,7 +18,7 @@ const REASONS: Record<string, string> = {
   // A token no enrollment carries: it may have been replaced, or it may never
   // have existed. We cannot tell, so we claim neither.
   unknown: "That link isn't working any more. Sign in with your email to continue.",
-  invalid: "That sign-in link is no longer valid — each link works once, for a limited time. Request a fresh one below.",
+  invalid: "That sign-in link is no longer valid. Each link works once, for a limited time. Request a fresh one below.",
   signedout: "You're signed out.",
   noaccess: "This email doesn't have access to a program right now. Reply to any text or email from us and we'll sort it.",
   revoked: "This portal is no longer available. Reply to any text or email from us if that's unexpected.",
@@ -103,7 +103,7 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
                 value={email} onChange={(e) => { emailRef.current = e.target.value; setEmail(e.target.value); }} placeholder="you@example.com" />
               <Button type="submit" busy={attempt.pending} disabled={attempt.blocked || !email.trim()} className="w-full">Email me a sign-in link</Button>
               {receipt && <p role="status" className="text-sm leading-relaxed text-muted">{receipt.message} This response is for your earlier request; your newer email has been kept.</p>}
-              <p className="text-center text-sm text-muted">No password — available sign-in links work once and expire in 15 minutes.</p>
+              <p className="text-center text-sm text-muted">No password needed. Sign-in links work once and expire in 15 minutes.</p>
             </form>
           )}
           {attempt.localError && <p role="alert" className="mt-3 text-sm text-danger">{attempt.localError}</p>}

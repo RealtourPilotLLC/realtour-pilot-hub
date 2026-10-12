@@ -32,7 +32,7 @@ export type PortalAuth = { token?: string | null; enrollmentId?: string | null }
 type R = { ok: boolean; message: string };
 type RId = { ok: boolean; message: string; id?: string };
 const fail = (m: string): R => ({ ok: false, message: m });
-const LINK_DEAD = "This link is no longer active — sign in with your email to continue.";
+const LINK_DEAD = "This link is no longer active. Sign in with your email to continue.";
 
 const OPEN_COMMENT_CAP = 30; // per enrollment — a review session, not a firehose
 const OPEN_SUGGESTION_CAP = 15;
@@ -73,7 +73,7 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
   const open = await prisma.scriptSuggestion.count({
     where: { enrollmentId: enrollment.id, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
   });
-  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already — we're on them! If it's urgent, send us a message on the Messages page.");
+  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already, and we're on them. If it's urgent, send us a message on the Messages page.");
   await prisma.scriptSuggestion.create({
     data: { scriptId, enrollmentId: enrollment.id, body: clip(text, 2000), ...stamp(v) },
   });
@@ -91,7 +91,7 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
     `portal-sugg-${enrollment.id}-${new Date().toISOString().slice(0, 13)}`,
   );
   revalidatePath(`/content/${enrollment.id}`);
-  return { ok: true, message: "Got it — we'll take a look and update the script." };
+  return { ok: true, message: "Got it. We'll take a look and update the script." };
 }
 
 /**
@@ -150,7 +150,7 @@ export async function portalAddComment(auth: PortalAuth, submissionId: string, t
   const open = await prisma.portalComment.count({
     where: { enrollmentId: enrollment.id, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
   });
-  if (open >= OPEN_COMMENT_CAP) return fail("That's a lot of notes — send them over with the button below and we'll get started.");
+  if (open >= OPEN_COMMENT_CAP) return fail("That's a lot of notes. Send them over with the button below and we'll get started.");
   const t = typeof timeSec === "number" && isFinite(timeSec) && timeSec >= 0 ? Math.round(timeSec * 10) / 10 : null;
   const created = await prisma.portalComment.create({
     data: { submissionId, projectId: sub.projectId, enrollmentId: enrollment.id, timeSec: t, body: clip(text, 1000), ...stamp(v) },
@@ -179,7 +179,7 @@ export async function portalDeleteComment(auth: PortalAuth, commentId: string): 
   const c = await prisma.portalComment.findUnique({ where: { id: commentId }, select: { enrollmentId: true, status: true, clientUserId: true, staffUserId: true } });
   if (!c || c.enrollmentId !== v.enrollment.id) return fail("That note isn't yours to remove.");
   // Same enrollment is not the same person: only the author removes a note.
-  if (!isMine(v, c)) return fail("That note was written by someone else on your program — only they can remove it.");
+  if (!isMine(v, c)) return fail("That note was written by someone else on your program, so only they can remove it.");
   if (c.status !== "OPEN") return fail("That note was already sent to the editor.");
   await prisma.portalComment.delete({ where: { id: commentId } });
   return { ok: true, message: "Removed." };
@@ -311,7 +311,7 @@ export async function portalUseFolderFile(auth: PortalAuth, name: string, kind: 
     if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
     return { ok: r.ok, message: r.message };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -648,11 +648,11 @@ export async function portalSelectTopic(auth: PortalAuth, topicId: string, month
     return {
       ok: true, overflow: r.overflow, capacity: r.capacity,
       message: r.overflow
-        ? `Added to ${monthLabel(month.monthKey)} as an extra — your package covers ${month.videosOwed} video${month.videosOwed === 1 ? "" : "s"} that month, so this one waits its turn (nothing is thrown away).`
+        ? `Added to ${monthLabel(month.monthKey)} as an extra. Your package covers ${month.videosOwed} video${month.videosOwed === 1 ? "" : "s"} that month, so this one waits its turn (nothing is thrown away).`
         : `Selected for ${monthLabel(month.monthKey)}.`,
     };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -668,9 +668,9 @@ export async function portalRemoveSelection(auth: PortalAuth, topicId: string, m
   try {
     await deselectTopic(topic.id, month.id, topicActor(v));
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Removed from that month — it's back in your bank." };
+    return { ok: true, message: "Removed from that month. It's back in your bank." };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -693,7 +693,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
     pillarId = p?.id ?? null;
   }
   const recent = await prisma.contentTopic.count({ where: { enrollmentId: v.enrollment.id, source: "client", createdAt: { gte: new Date(Date.now() - 86_400_000) } } });
-  if (recent >= 20) return fail("That's a lot of ideas for one day — we love it, but let's talk them through. Send us a message on the Messages page!");
+  if (recent >= 20) return fail("That's a lot of ideas for one day. We love it, but let's talk them through. Send us a message on the Messages page.");
   const { createTopic, selectTopicForMonth, undeclineTopicForClient, flagClientTopicAlignment, adoptTopicAsClientIdea } = await import("@/lib/contentTopics");
   const month = input.monthId ? await openMonthForEnrollment(v.enrollment.id, input.monthId) : null;
   if (input.monthId && !month) return fail("Pick one of your open program months.");
@@ -712,7 +712,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
       if (prior && (prior.status === "REJECTED" || prior.status === "ARCHIVED" || prior.approvalState === "REJECTED" || prior.approvalState === "ARCHIVED")) {
         const { discussTopic } = await import("@/lib/contentTopics");
         await discussTopic(r.id, `The client suggested this again on the portal (${actorLabel(v)}) — it was set aside earlier; reintroduce it if that changed`, { kind: "SYSTEM" }, "portal");
-        return { ok: true, message: "We set that one aside earlier — we'll talk it through with you.", id: r.id };
+        return { ok: true, message: "We set that one aside earlier. We'll talk it through with you.", id: r.id };
       }
       // A call's or the AI's topic they cannot see yet: their typing it makes
       // it theirs (usable without approval), rather than "already on your list"
@@ -725,7 +725,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
       await flagClientTopicAlignment(r.id).catch(() => null);
     }
     let selected = false;
-    let message = r.existed && !adopted ? "It's back in your bank." : "Added to your bank — it's yours to use.";
+    let message = r.existed && !adopted ? "It's back in your bank." : "Added to your bank. It's yours to use.";
     if (month) {
       const { monthLabel } = await import("@/lib/contentProgram");
       try {
@@ -734,7 +734,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
         else {
           selected = true;
           message = sel.overflow
-            ? `Added for ${monthLabel(month.monthKey)} as an extra — your package covers ${month.videosOwed} video${month.videosOwed === 1 ? "" : "s"} that month, so this one waits its turn (nothing is thrown away).`
+            ? `Added for ${monthLabel(month.monthKey)} as an extra. Your package covers ${month.videosOwed} video${month.videosOwed === 1 ? "" : "s"} that month, so this one waits its turn (nothing is thrown away).`
             : `Added and selected for ${monthLabel(month.monthKey)}.`;
         }
       } catch (e) {
@@ -745,7 +745,7 @@ export async function portalSuggestTopic(auth: PortalAuth, input: { title: strin
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return { ok: true, message, id: r.id, monthId: selected ? month!.id : null, selected };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -761,9 +761,9 @@ export async function portalDeclineTopic(auth: PortalAuth, topicId: string, reas
     await declineTopicForClient(topic.id, topicActor(v), why);
     await ownerBell("portal_topic_declined", `Topic set aside — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: not interested in "${clip(topic.title, 100)}"${why ? ` — ${clip(why, 120)}` : ""}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-declined-${topic.id}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Set aside — we won't suggest it again. You can undo this below." };
+    return { ok: true, message: "Set aside. We won't suggest it again. You can undo this below." };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -779,7 +779,7 @@ export async function portalUndeclineTopic(auth: PortalAuth, topicId: string): P
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return { ok: true, message: "Back in your bank." };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -804,9 +804,9 @@ export async function portalSwapCarriedTopic(auth: PortalAuth, selectionId: stri
     const { monthLabel } = await import("@/lib/contentProgram");
     await ownerBell("portal_topic", `Carried script swapped — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} swapped a carried-over script for "${clip(repl.title, 100)}" in ${month.monthKey}.`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-swap-${sel.id}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: `Swapped — "${clip(repl.title, 80)}" is on ${monthLabel(month.monthKey)} now. The earlier script is kept under "Scripted, not filmed".` };
+    return { ok: true, message: `Swapped. "${clip(repl.title, 80)}" is on ${monthLabel(month.monthKey)} now. The earlier script is kept under "Scripted, not filmed".` };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -821,7 +821,7 @@ export async function portalDiscussTopic(auth: PortalAuth, topicId: string, note
   const { discussTopic } = await import("@/lib/contentTopics");
   await discussTopic(topic.id, text, topicActor(v), "portal");
   await ownerBell("portal_topic_note", `Topic note — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} on "${topic.title}": ${clip(text, 120)}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-note-${topic.id}-${new Date().toISOString().slice(0, 13)}`);
-  return { ok: true, message: "Noted — it's on the topic's history for us to read." };
+  return { ok: true, message: "Noted. It's saved on this topic for us to read." };
 }
 
 /** Opening a topic for a month starts (or resumes) its guided interview. */
@@ -837,7 +837,7 @@ export async function portalOpenInterview(auth: PortalAuth, topicId: string, mon
     const id = await getOrCreateInterview(topic.id, month.id, { clientUserId: a.clientUserId, staffUserId: a.staffUserId });
     return { ok: true, message: "Let's go.", id };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "Couldn't open the questions — try again.");
+    return fail(e instanceof Error ? e.message : "Couldn't open the questions. Try again.");
   }
 }
 
@@ -861,9 +861,9 @@ export async function portalAnswerInterview(auth: PortalAuth, interviewId: strin
     // A suggestion id is only a pointer; answerQuestion re-resolves it on the server.
     const sid = suggestionId && /^[a-f0-9]{10,40}$/i.test(suggestionId) ? suggestionId : null;
     await answerQuestion(iv.id, questionKey, { text: k === "TYPED" ? clip((text ?? "").trim(), 8000) : null, kind: k, actor: { clientUserId: a.clientUserId, staffUserId: a.staffUserId }, questionText: questionText ?? null, suggestionId: sid });
-    return { ok: true, message: k === "TYPED" ? "Saved." : k === "SKIPPED" ? "Skipped." : "Noted — no worries." };
+    return { ok: true, message: k === "TYPED" ? "Saved." : k === "SKIPPED" ? "Skipped." : "Noted. No worries." };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }
 }
 
@@ -897,10 +897,10 @@ export async function portalSubmitInterview(auth: PortalAuth, interviewId: strin
     );
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
     return gaps
-      ? { ok: true, status: r.status, message: "Sent — thank you. It isn't quite enough to write the script yet, so we'll follow up with a question or two. Nothing is drafted until then, and you can add more here any time." }
-      : { ok: true, status: r.status, message: "Sent — we'll draft the script from your answers and share it here for your read-through." };
+      ? { ok: true, status: r.status, message: "Sent, thank you. It isn't quite enough to write the script yet, so we'll follow up with a question or two. Nothing is drafted until then, and you can add more here any time." }
+      : { ok: true, status: r.status, message: "Sent. We'll draft the script from your answers and share it here for your read-through." };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't send — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't send. Try again.");
   }
 }
 
@@ -911,7 +911,7 @@ export async function portalProposeStrategyCorrection(auth: PortalAuth, input: {
   const summary = clip((input.summary ?? "").trim(), 500);
   if (summary.length < 3) return fail("Tell us what to correct.");
   const open = await prisma.contentStrategyProposal.count({ where: { enrollmentId: v.enrollment.id, status: "PROPOSED", sourceKind: "client" } });
-  if (open >= 10) return fail("You have a few corrections in already — we'll go through them with you. If it's urgent, send us a message on the Messages page.");
+  if (open >= 10) return fail("You have a few corrections in already, and we'll go through them with you. If it's urgent, send us a message on the Messages page.");
   const { createStrategyProposal } = await import("@/lib/contentStrategy");
   try {
     const section = clip((input.section ?? "").trim(), 120);
@@ -928,9 +928,9 @@ export async function portalProposeStrategyCorrection(auth: PortalAuth, input: {
     });
     await ownerBell("portal_strategy_proposal", `Strategy correction — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(summary, 120)}`, contentHref(v.enrollment.id, { tab: "plan", view: "strategy" }), `portal-strategy-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Got it — we'll review the correction and update your strategy if it changes anything. Your current version stays as is until then." };
+    return { ok: true, message: "Got it. We'll review the correction and update your strategy if it changes anything. Your current version stays as is until then." };
   } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't send — try again.");
+    return fail(e instanceof Error ? e.message : "That didn't send. Try again.");
   }
 }
 
@@ -948,7 +948,7 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
   const { portalPlanning } = await import("@/lib/portal");
   const p = await portalPlanning(v.enrollment, month.id);
   if (!p) return fail("Pick one of your open program months.");
-  if (!p.noCallEligible) return fail("Your program plans each month on a strategy call — book it and we'll take it from there.");
+  if (!p.noCallEligible) return fail("Your program plans each month on a strategy call. Book it and we'll take it from there.");
   if (p.planningMode === "WRITTEN") return { ok: true, message: "You're already planning this month in writing." };
   // Oct 6: a switch that would orphan work is refused (portal.planningSwitchRefusal).
   if (p.switchBlocked.WRITTEN) return fail(p.switchBlocked.WRITTEN);
@@ -958,7 +958,7 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
   const chose = await choosePlanningMode(month.id, "WRITTEN", choiceBy(v));
   await ownerBell("portal_planning", `Planning in writing — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} chose to plan ${month.monthKey} without a call.${p.callStatus === "SCHEDULED" ? " A call is still booked — cancel it on Calendly if it is no longer needed." : ""}`, `/content/${v.enrollment.id}`, planBellKey("portal-planning", month.id));
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — you're choosing your topics here. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — you're choosing your topics here. Pick your topics and answer the questions; filming opens once your answers are in.", undo: chose ? await sealPlanUndo(v, month.id, chose) : undefined };
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done. You're choosing your topics here. Your booked call is still on the calendar, so cancel it on Calendly if you no longer need it." : "Done. You're choosing your topics here. Pick your topics and answer the questions, and filming opens once your answers are in.", undo: chose ? await sealPlanUndo(v, month.id, chose) : undefined };
 }
 
 /**
@@ -979,14 +979,14 @@ export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Pro
   if (!p.noCallEligible) return fail("Your program already plans each month on a strategy call.");
   // An UNDECIDED month is a real choice too (§6.4's opening prompt), so it is
   // stamped like one; only a month already chosen for the call is a no-op.
-  if (p.planningMode === "CALL" && p.chosenAtISO) return { ok: true, message: "This month is already on the strategy-call path." };
+  if (p.planningMode === "CALL" && p.chosenAtISO) return { ok: true, message: "This month is already planned on a strategy call." };
   if (p.switchBlocked.CALL) return fail(p.switchBlocked.CALL);
   const { choosePlanningMode } = await import("@/lib/programMonths");
   const chose = await choosePlanningMode(month.id, "CALL", choiceBy(v));
   const back = p.planningMode === "WRITTEN";
   await ownerBell("portal_planning", `${back ? "Back to a strategy call" : "Planning on a call"} — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} ${back ? "moved" : "chose to plan"} ${month.monthKey} ${back ? "back to the strategy-call path" : "on a strategy call"}.`, `/content/${v.enrollment.id}`, planBellKey("portal-planning-back", month.id));
   try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — we'll talk your topics through on the call you've booked." : "Done — book your strategy call and we'll plan the month on it. You can book filming as soon as the call is booked.", undo: chose ? await sealPlanUndo(v, month.id, chose) : undefined };
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done. We'll talk your topics through on the call you've booked." : "Done. Book your strategy call and we'll plan the month on it. You can book filming as soon as the call is booked.", undo: chose ? await sealPlanUndo(v, month.id, chose) : undefined };
 }
 
 // ---------------------------------------------------------------------------

@@ -319,12 +319,12 @@ async function main() {
     const copy = await actions.lateSessionMessageAction(sep.id);
     const link = `${appBase()}/portal/${A.portalToken}`;
     c.ok("Jordan's message, filled in with her first name and portal link, October's topics line",
-      copy.ok && copy.body === `Hi Arielle! We still need to get your September content session on the calendar, and to get you caught back up we also need to schedule October. You can book both here: ${link}. For October you can pick your topics right in the portal.`,
+      copy.ok && copy.body === `Hi Arielle! We still need to get your September content session on the calendar, and to get you caught back up we also need to schedule October. For October you can pick your topics right in the portal. You can book both here: ${link}`,
       copy.body ?? copy.message);
     c.ok("…no em dash, the link is the lasting page link, and nothing was queued or sent", !/—/.test(copy.body ?? "") && copy.url === link && (await prisma.outboxMessage.count()) === outboxBefore && /Paste it/.test(copy.message), copy.message);
     c.ok("(the words follow the month: a call to book, a choice, or October already booked)",
-      core.lateSessionMessage({ firstName: "Arielle", lateMonthKey: "2026-09", hostMonthKey: "2026-10", link: "L", lateState: "TO_BOOK", hostSessionBooked: false, hostPlanning: "CALL_TO_BOOK" }).endsWith("For October, you can book your strategy call there too.") &&
-      core.lateSessionMessage({ firstName: "Arielle", lateMonthKey: "2026-09", hostMonthKey: "2026-10", link: "L", lateState: "TO_BOOK", hostSessionBooked: true, hostPlanning: "TOPICS" }) === "Hi Arielle! We still need to get your September content session on the calendar. You can book it here: L.");
+      core.lateSessionMessage({ firstName: "Arielle", lateMonthKey: "2026-09", hostMonthKey: "2026-10", link: "L", lateState: "TO_BOOK", hostSessionBooked: false, hostPlanning: "CALL_TO_BOOK" }).endsWith("For October, you can book your strategy call in the portal too. You can book both here: L") &&
+      core.lateSessionMessage({ firstName: "Arielle", lateMonthKey: "2026-09", hostMonthKey: "2026-10", link: "L", lateState: "TO_BOOK", hostSessionBooked: true, hostPlanning: "TOPICS" }) === "Hi Arielle! We still need to get your September content session on the calendar. You can book it here: L");
 
     // =======================================================================
     c.head("§8 · booking the September slot: filed on September, shoot linked to September");

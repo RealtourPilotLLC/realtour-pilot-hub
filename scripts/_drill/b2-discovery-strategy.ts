@@ -681,7 +681,7 @@ async function main() {
     c.ok("the TEST client's goes to the verified test inbox only", !!sent && sent.to === "info@realtourpilot.com" && gmailSent.length === 1, JSON.stringify(drain.notes));
     c.ok("subject: 'Your Content Strategy is Ready + Next Steps'", sent?.subject === "Your Content Strategy is Ready + Next Steps" && subjectFor("strategy_ready") === "Your Content Strategy is Ready + Next Steps");
     const body = sent?.body ?? "";
-    c.ok("three steps: read it (portal link on this app's origin), book the first call, add the brand setup", /1\. Read your strategy: https:\/\/drill\.invalid\//.test(body) && /2\. Book your first strategy call, where we plan your first month of videos together: https:\/\/\S+$/m.test(body) && /3\. Add your .*logo.*headshot/.test(body), body);
+    c.ok("three steps: read it (portal link on this app's origin), book the first call, add the brand setup", /1\. Read your strategy: https:\/\/drill\.invalid\//.test(body) && /2\. Book your first strategy call, where we plan your first month of videos together: https:\/\/\S+$/m.test(body) && /3\. Fill in your Brand Profile in the portal \(your logo, headshot/.test(body), body);
     c.ok("plain words: no em dash, no money, no internal jargon", !/—|\$|allowance|IN\/OVERFLOW|sourceKind|policy/i.test(body));
     await prisma.programCallRecord.create({ data: { enrollmentId: nova.enrollmentId, clientId: nova.clientId, callType: "MONTHLY_STRATEGY", status: "SCHEDULED", matchState: "MATCHED", scheduledStart: new Date("2026-10-13T18:00:00Z") } });
     const vars = await share.strategyReadyVars(nova.enrollmentId, nova.clientId, pinned);

@@ -128,7 +128,7 @@ export function FeedbackForm({
         </h1>
         <p className="mt-1 text-sm text-muted">{street}</p>
         <p className="mt-2 text-xs text-muted-2">
-          Three quick questions. Answer whichever you like — even one helps.
+          Three quick questions. Answer whichever you like, even one helps.
         </p>
       </div>
 
@@ -173,7 +173,7 @@ export function FeedbackForm({
           name="improveNote"
           minRows={3}
           maxRows={10}
-          placeholder="Anything at all — the shots, the timing, how we keep you posted."
+          placeholder="Anything at all: the shots, the timing, how we keep you posted."
           className={FIELD}
         />
       </div>

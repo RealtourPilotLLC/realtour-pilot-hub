@@ -26,7 +26,7 @@ export function LegalPage({
         <div className="space-y-8">{children}</div>
 
         <footer className="mt-12 border-t border-border pt-6 text-xs text-muted-2">
-          <p>RealTour Pilot LLC · Operations Hub</p>
+          <p>Realtour Pilot LLC · Operations Hub</p>
           <p className="mt-1">
             <Link href="/privacy" className="hover:text-foreground">Privacy Policy</Link>
             {" · "}

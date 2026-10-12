@@ -89,6 +89,22 @@ export async function setupFacts(enrollmentId: string, clientId: string): Promis
   };
 }
 
+/** The required items in a client's words (the strategy notice and the portal welcome). */
+const SETUP_WORDS: Record<string, string> = { colors: "brand colors", logo: "logo", headshot: "headshot", fonts: "fonts", links: "website or social links", music: "music style", style: "video style" };
+/** The order a client reads them in (Oct 12 2026): the three that matter most first. */
+const SETUP_ORDER = ["logo", "headshot", "colors", "fonts", "links", "music", "style"];
+
+/** The required Brand Profile items still missing, in plain words, most important first.
+ *  Empty when the facts can't be read: a missing step is better than a wrong one. */
+export async function setupMissingWords(enrollmentId: string, clientId: string): Promise<string[]> {
+  const facts = await setupFacts(enrollmentId, clientId).catch(() => null);
+  if (!facts) return [];
+  return SETUP_ITEMS.filter((i) => !i.optional && !facts[i.key as Exclude<SetupKey, "team">])
+    .map((i) => i.key as string)
+    .sort((a, b) => SETUP_ORDER.indexOf(a) - SETUP_ORDER.indexOf(b))
+    .map((k) => SETUP_WORDS[k] ?? k);
+}
+
 /**
  * The checklist as THIS viewer sees it. The team item appears only for someone who may manage the team.
  *
@@ -141,5 +157,5 @@ export async function skipSetupItem(viewer: PortalViewer, key: string, skip: boo
     else delete state.skipped[key];
     await tx.contentEnrollment.update({ where: { id: viewer.enrollment.id }, data: { setupStateJson: JSON.stringify(state) } });
   });
-  return { ok: true, message: skip ? "Skipped for now — it stays on your list, and you can do it any time." : "Back on your list." };
+  return { ok: true, message: skip ? "Skipped for now. It stays on your list, and you can do it any time." : "Back on your list." };
 }

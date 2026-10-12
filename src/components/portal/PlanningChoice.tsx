@@ -17,7 +17,7 @@ export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; call
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
   const go = () => start(async () => {
-    const r = await portalPlanWithoutCall(portalAuthFromLocation(), monthId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalPlanWithoutCall(portalAuthFromLocation(), monthId).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     setMsg({ ok: r.ok, text: r.message });
     if (r.ok) { setConfirm(false); router.refresh(); }
   });
@@ -28,7 +28,7 @@ export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; call
       ) : (
         <div className="rounded-xl border border-border bg-surface p-3 text-sm">
           <p>Choose your topics here? You&rsquo;ll pick topics and answer a few short questions per topic. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</p>
-          {callBooked && <p className="mt-1 text-xs text-muted">Your booked call stays on the calendar — cancel it on Calendly separately if you no longer need it.</p>}
+          {callBooked && <p className="mt-1 text-xs text-muted">Your booked call stays on the calendar. Cancel it on Calendly separately if you no longer need it.</p>}
           <div className="mt-2 flex flex-wrap gap-2">
             <Button onClick={go} busy={busy} busyLabel="Saving choice…">Yes, choose them here</Button>
             <Button variant="secondary" onClick={() => setConfirm(false)} disabled={busy}>Keep the call</Button>
@@ -48,7 +48,7 @@ export function PlanWithCall({ monthId }: { monthId: string }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
   const go = () => start(async () => {
-    const r = await portalPlanWithCall(portalAuthFromLocation(), monthId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalPlanWithCall(portalAuthFromLocation(), monthId).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     setMsg({ ok: r.ok, text: r.message });
     if (r.ok) router.refresh();
   });
@@ -252,10 +252,10 @@ export function ScheduleLaterButton({ monthId, deferred, sessionIndex = null }: 
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, start] = useTransition();
   if (deferred) {
-    return <p className="mt-2 flex items-center gap-1.5 text-xs text-muted"><CalendarClock className="size-3.5" aria-hidden /> You chose to schedule later — book any time above.</p>;
+    return <p className="mt-2 flex items-center gap-1.5 text-xs text-muted"><CalendarClock className="size-3.5" aria-hidden /> You chose to schedule later. Book any time above.</p>;
   }
   const go = () => start(async () => {
-    const r = await portalScheduleLater(portalAuthFromLocation(), monthId, sessionIndex).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await portalScheduleLater(portalAuthFromLocation(), monthId, sessionIndex).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     setMsg({ ok: r.ok, text: r.message });
     if (r.ok) router.refresh();
   });

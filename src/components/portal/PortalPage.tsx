@@ -70,19 +70,19 @@ export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string
 // default wholesale (blank lines split paragraphs; "## " starts a heading) —
 // so the owner can rewrite the language without a deploy.
 const DEFAULT_TERMS = `## The program
-Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. We plan each month together on your strategy call, film it at your session, and deliver finished videos to this portal.
+Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. Each month we plan your videos with you, film them at your session, and deliver the finished videos here in your portal.
 
 ## Scheduling
-Each month you choose how to plan it: pick your topics and answer a few questions here, or talk them through on a strategy call. Filming can be booked as soon as your answers are sent or your call is booked, for a time at least 72 weekday hours (three weekdays, Monday to Friday) after your answers were sent or after your call ends, so your scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss. Inside 24 hours, call or text Kyle at (215) 645-4889.
+Each month is planned either on a strategy call or here in the portal, where you pick your topics and answer a few short questions. Filming can be booked as soon as your answers are sent or your call is booked. Sessions start at least three weekdays (72 weekday hours, Monday to Friday) after your answers are sent or your call ends, so your scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss. Inside 24 hours, call or text Kyle at (215) 645-4889.
 
 ## Revisions
-Every video comes with revision rounds to get it right. Ask right here in the portal — pause the video, tell us what to change, and it goes straight to your editor.
+Every video comes with revision rounds to get it right. Ask right here in the portal: pause the video, tell us what to change, and it goes straight to your editor.
 
 ## Your content
 Finished videos are yours to post, share and run ads with. Raw footage stays with us. We may feature finished work in our own portfolio unless you ask us not to.
 
 ## Cancellation
-Month-to-month plans can cancel with notice before the next billing date. Annual commitments run their term as agreed. Questions about billing? Text Jordan directly — this portal never handles payment details.`;
+Month-to-month plans can cancel with notice before the next billing date. Annual commitments run their term as agreed. Questions about billing? Text Jordan directly. This portal never handles payment details.`;
 
 const ID_RE = /^[a-z0-9]{10,40}$/i;
 /** try/catch as a value: ok with the data, or failed (logged) — the tabs render both honestly. */

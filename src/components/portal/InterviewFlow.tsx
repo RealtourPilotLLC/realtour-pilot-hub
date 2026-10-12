@@ -121,7 +121,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
     catch { setDraftState("failed"); }
   };
   const run = (fn: () => Promise<{ ok: boolean; message: string }>, onSaved?: () => void) => start(async () => {
-    const r = await fn().catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    const r = await fn().catch(() => ({ ok: false, message: "That didn't save. Try again." }));
     setMsg({ ok: r.ok, text: r.message });
     if (r.ok) { onSaved?.(); setText(""); setTextKey(null); setEditKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); setDraftState("empty"); router.refresh(); }
   });
@@ -148,7 +148,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
         <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-2">
           <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-semibold">{iv.mode === "GAPS_ONLY" ? `${iv.progress.substantiveAnswered} answered` : `${iv.progress.substantiveAnswered}/${iv.progress.substantiveTotal} answered`}</span>
           {submitted && <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3" /> sent {iv.submittedAtISO ? new Date(iv.submittedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : ""}</span>}
-          {sentWithGaps && <span className="inline-flex items-center gap-1 text-warning"><CheckCircle2 className="size-3" /> sent with gaps {callDay(iv.sentWithGapsAtISO) ?? ""} — we&rsquo;ll follow up</span>}
+          {sentWithGaps && <span className="inline-flex items-center gap-1 text-warning"><CheckCircle2 className="size-3" /> sent with gaps {callDay(iv.sentWithGapsAtISO) ?? ""} · we&rsquo;ll follow up</span>}
           {iv.strategyLabel && <span>· strategy version {iv.strategyLabel}</span>}
         </div>
       </div>
@@ -174,7 +174,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
         <div className="panel-shadow rounded-2xl border border-brand/30 bg-surface/80 p-4 backdrop-blur">
           <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{editKey ? "Change your answer" : iv.nextIsGap || iv.mode === "GAPS_ONLY" ? "One more, so we can write it" : iv.next.isFollowUp ? "One follow-up" : `Question ${Math.min(answeredKeys + 1, iv.progress.substantiveTotal + 1)}`}</div>
           <p className="mt-1 text-base font-medium">{activePrompt}</p>
-          {iv.next.isFollowUp && !editKey && <p className="mt-0.5 text-[11px] text-muted-2">{iv.nextIsGap ? "We ask only because nothing we have covers this yet — two at most." : "Asked once, only because something important was missing."}</p>}
+          {iv.next.isFollowUp && !editKey && <p className="mt-0.5 text-[11px] text-muted-2">{iv.nextIsGap ? "We ask only because nothing we have covers this yet. Two at most." : "Asked once, only because something important was missing."}</p>}
           <textarea autoFocus value={visibleText} onChange={(e) => { updateText(e.target.value); setReplacedDraft(null); }} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand" />
           <p role="status" className={cn("mt-1 text-xs", draftState === "failed" ? "text-danger" : "text-muted")}>
             {draftState === "saved" ? `Draft kept in this tab through a refresh. Use ${editKey ? "Save new answer" : "Save & next"} to send it to the team.` : draftState === "failed" ? `This tab couldn't access your draft. Try again; ${editKey ? "Save new answer" : "Save & next"} sends the words currently shown to the team.` : editKey ? "These are your saved words. Use Save new answer to send a change." : "This answer has not been sent yet."}
@@ -221,7 +221,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
             {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Cancel</button>}
           </div>
-          <p className="mt-2 text-xs text-muted">Only {editKey ? "Save new answer" : "Save & next"} records your answer for the team. The draft survives a refresh in this tab, but may be lost when the tab closes. It does not start script writing or the filming preparation clock.</p>
+          <p className="mt-2 text-xs text-muted">Only {editKey ? "Save new answer" : "Save & next"} records your answer for the team. The draft survives a refresh in this tab, but may be lost when the tab closes. A draft on its own doesn&rsquo;t start your script or open filming.</p>
         </div>
       )}
 
@@ -239,7 +239,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           {canAct && !iv.ready && iv.canSendWithGaps && (
             <>
               <p className="mt-2 text-xs text-muted">Edit any answer above to fill a gap. Or send what you have: we&rsquo;ll follow up with a question or two, and nothing is drafted until then.</p>
-              <button type="button" onClick={() => submit(true)} disabled={busy} className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/40 px-3 py-2 text-sm font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send what I have — we&rsquo;ll follow up</button>
+              <button type="button" onClick={() => submit(true)} disabled={busy} className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/40 px-3 py-2 text-sm font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"><Send className="size-3.5" /> Send what I have</button>
             </>
           )}
           {/* "We draft from these" only when they CAN carry a script: a row
@@ -253,7 +253,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           {submitted && iv.ready && iv.script.stage !== "released" && <p className="mt-2 text-xs text-muted">Sent. We write the script from these answers. If you change an answer, we&rsquo;ll see it and update the script before it reaches you.</p>}
           {submitted && iv.ready && iv.script.stage === "released" && <p className="mt-2 text-xs text-muted">Sent. Your script is written from these answers. Changing an answer here won&rsquo;t change it: to change the script, choose Request changes on it.</p>}
           {submitted && !iv.ready && <p className="mt-2 text-xs text-muted">Sent. We&rsquo;ll be in touch with a question or two before we write it. Add to any answer here and it counts right away.</p>}
-          {sentWithGaps && <p className="mt-2 text-xs text-muted">Sent with gaps — we&rsquo;ll be in touch with a question or two. Add to any answer here and it counts right away.</p>}
+          {sentWithGaps && <p className="mt-2 text-xs text-muted">Sent with gaps. We&rsquo;ll be in touch with a question or two. Add to any answer here and it counts right away.</p>}
           {/* A18: sending the answers is what opens filming on this route, so
               the next step is right here — the month's "Book filming" step
               (it opens once every topic in the session has its answers in). */}

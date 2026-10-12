@@ -158,7 +158,7 @@ export async function createBlock(input: {
     method: "POST",
     body: JSON.stringify({
       summary: input.title,
-      description: input.description ?? "Blocked by the RealTour Pilot hub. Change or remove it on My Day.",
+      description: input.description ?? "Blocked by the Realtour Pilot hub. Change or remove it on My Day.",
       start: { dateTime: input.start.toISOString() },
       end: { dateTime: input.end.toISOString() },
       // The entire point: Calendly must read this as busy.

@@ -676,7 +676,7 @@ export async function setErrorStatus(id: string, status: ErrorStatus, by: string
  *  and the stack — already scrubbed, nothing else. */
 export function claudeReport(r: ErrorRowView): string {
   const lines = [
-    `Please investigate and fix this error from the RealTour Pilot hub (tracked on /settings/errors).`,
+    `Please investigate and fix this error from the Realtour Pilot hub (tracked on /settings/errors).`,
     ``,
     `Error: ${r.errorName ? `${r.errorName}: ` : ""}${r.message}`,
     `Source: ${r.source}`,

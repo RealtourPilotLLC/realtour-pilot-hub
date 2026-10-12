@@ -72,12 +72,12 @@ export function ScriptApprovalCard({ script, onResult, run, busy: parentBusy, la
   const approve = () =>
     start(async () => {
       setOwn(null);
-      done(await portalApproveScript(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "").catch((): Outcome => ({ ok: false, message: "That didn't save — try again.", transport: true })), approve);
+      done(await portalApproveScript(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "").catch((): Outcome => ({ ok: false, message: "That didn't save. Try again.", transport: true })), approve);
     });
   const sendChanges = () =>
     start(async () => {
       setOwn(null);
-      const r: Outcome = await portalRequestScriptChanges(portalAuthFromLocation(), script.id, changeNote, script.sharedVersionId ?? "").catch((): Outcome => ({ ok: false, message: "That didn't send — try again.", transport: true }));
+      const r: Outcome = await portalRequestScriptChanges(portalAuthFromLocation(), script.id, changeNote, script.sharedVersionId ?? "").catch((): Outcome => ({ ok: false, message: "That didn't send. Try again.", transport: true }));
       // A stale refusal keeps their words in the box: they are about to read a
       // new version and may well want to say the same thing about it.
       if (r.ok) { setChangeNote(""); setChanging(false); }
@@ -90,10 +90,10 @@ export function ScriptApprovalCard({ script, onResult, run, busy: parentBusy, la
       {script.decision === "APPROVED" ? (
         <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><CheckCheck className="size-3.5" /> You signed off on this one{script.decidedAtISO ? ` on ${new Date(script.decidedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}.</p>
       ) : script.decision === "CHANGES_REQUESTED" ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes — we&rsquo;re reworking it and the new version lands here.</p>
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes. We&rsquo;re reworking it and the new version lands here.</p>
       ) : (
         <>
-          {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it — have another read.</p>}
+          {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it. Have another read.</p>}
           <div className="flex flex-wrap items-center gap-1.5">
             <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>
             <button type="button" onClick={() => setChanging(!changing)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> {CTA_WORDS.CHANGES}</button>

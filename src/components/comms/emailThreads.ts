@@ -162,7 +162,7 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
       messages: [...msgs].reverse().map((m) => ({
         id: m.id,
         direction: m.direction === "out" ? "out" : "in",
-        sender: m.direction === "out" ? m.contactName || "RealTour Pilot" : m.contactName || m.clientName || "Unknown sender",
+        sender: m.direction === "out" ? m.contactName || "Realtour Pilot" : m.contactName || m.clientName || "Unknown sender",
         body: decodeEntities(m.body),
         atLabel: etDateTime(m.occurredAt),
         ago: formatDistanceToNow(m.occurredAt, { addSuffix: true }),

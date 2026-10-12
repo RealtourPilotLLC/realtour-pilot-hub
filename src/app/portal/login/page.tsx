@@ -5,7 +5,7 @@ import { portalLoginEmailEnabled } from "@/lib/portalAccess";
 
 export const dynamic = "force-dynamic";
 export const metadata = {
-  title: "Sign in — RealTour Pilot",
+  title: "Sign in | Realtour Pilot",
   robots: { index: false, follow: false },
 };
 

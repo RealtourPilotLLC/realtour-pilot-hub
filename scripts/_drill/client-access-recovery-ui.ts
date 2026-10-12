@@ -93,8 +93,8 @@ async function main() {
     response = deferred(); click("Send invitation"); response.reject(new Error("lost invite response")); await until(() => contains(tree(), "access change is unconfirmed"));
     const teamLost = writes.length; click("Send invitation");
     c.ok("unknown client invitation prevents blind replay and gives account/invitation inspection context", writes.length === teamLost && field("teammateEmail").value === "valid@example.test" && contains(tree(), "access and invitation history") && !contains(tree(), "didn't go through"));
-    await mount(() => TeamSettings({ seats: [], invitationsOn: false })); click("Save — invite later");
-    c.ok("team refresh preserves held guard and rollout wording without creating another invite", writes.length === teamLost && button("Save — invite later").disabled === true && contains(tree(), "account is set up for it"));
+    await mount(() => TeamSettings({ seats: [], invitationsOn: false })); click("Save and invite later");
+    c.ok("team refresh preserves held guard and rollout wording without creating another invite", writes.length === teamLost && button("Save and invite later").disabled === true && contains(tree(), "account is set up for it"));
     storage.clear();
     const props = { enrollmentId: "fixture-staff", clientName: "Fixture Client", isTestClient: true, status: "ACTIVE", link: { issued: false, url: null, issuedAtISO: null, expiresAtISO: null, rotatedAtISO: null, expired: false }, accessRevokedAtISO: null, people: [{ membershipId: "fixture-person", email: "existing@example.test", name: "Existing Person", role: "OWNER" as const, invitedAtISO: "2026-10-01T10:00:00Z", acceptedAtISO: null, revokedAtISO: null, lastLoginAtISO: null }], lastOpened: null, visits: 0, switches: { invites: true, loginEmail: true } };
     await mount(() => PortalAccessControls(props));

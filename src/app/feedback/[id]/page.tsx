@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 // what an agent should read in the tab of a form we texted them. Own it here,
 // and keep the form out of search results: it names a real client's address.
 export const metadata = {
-  title: "How did we do? — RealTour Pilot",
+  title: "How did we do? | Realtour Pilot",
   robots: { index: false, follow: false },
 };
 
@@ -49,7 +49,7 @@ export default async function FeedbackPage({ params }: { params: Promise<{ id: s
       <div className="w-full max-w-md py-2">
         <div className="mb-6 flex items-center justify-center gap-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl bg-white p-1" />
+          <img src="/brand/mark.svg" alt="Realtour Pilot" className="flex size-9 rounded-xl bg-white p-1" />
           <div className="text-sm font-semibold tracking-tight">
             <BrandWordmark className="h-4" />
           </div>

@@ -34,15 +34,15 @@ export type SettingsData = {
 };
 
 const ROLE_WORDS: Record<string, string> = {
-  OWNER: "Full access — including approving videos",
-  COLLABORATOR: "Collaborator — can plan, comment and request changes",
+  OWNER: "Full access, including approving videos",
+  COLLABORATOR: "Collaborator: can plan, comment and request changes",
   VIEWER: "View only",
 };
 
 export function SettingsTab({ d }: { d: SettingsData }) {
   return (
     <div className="mt-6 space-y-4">
-      <h1 className="text-xl font-semibold tracking-tight">Settings &amp; team</h1>
+      <h1 className="text-xl font-semibold tracking-tight">Settings &amp; Team</h1>
 
       <Card>
         <CardTitle icon={UserRound}>Your account</CardTitle>
@@ -83,7 +83,7 @@ export function SettingsTab({ d }: { d: SettingsData }) {
         </Card>
       </section>
 
-      <RowLink href={d.profileHref} icon={Palette}>{d.profileLabel} — colors, logo, fonts, links, music</RowLink>
+      <RowLink href={d.profileHref} icon={Palette}>{d.profileLabel}: colors, logo, fonts, links, music</RowLink>
     </div>
   );
 }

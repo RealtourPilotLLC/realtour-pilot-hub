@@ -200,7 +200,7 @@ export function NoteCard({ note, readOnly, replyOnly, patch }: {
           </div>
           <p className="mt-1.5 text-sm leading-snug text-foreground/90">{note.body}</p>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-2">
-            <span>{note.authorName ?? "RealTour"} · {etDate(note.createdAt)}</span>
+            <span>{note.authorName ?? "Realtour"} · {etDate(note.createdAt)}</span>
             <button onClick={() => setPreview(true)} className="font-medium text-brand hover:underline">
               {note.assetType === "video"
                 ? note.timeSec != null ? `Watch at ${timeLabel(note.timeSec)} →` : "Watch the video →"

@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 
 export function BrandMark({ className = "size-9" }: { className?: string }) {
   // eslint-disable-next-line @next/next/no-img-element
-  return <img src="/brand/mark.svg" alt="RealTour Pilot" className={cn("shrink-0 rounded-xl bg-white p-1", className)} />;
+  return <img src="/brand/mark.svg" alt="Realtour Pilot" className={cn("shrink-0 rounded-xl bg-white p-1", className)} />;
 }
 
 // The REAL wordmark files (Jordan, Sep 1 — brand kit: white REAL/PILOT +
@@ -24,7 +24,7 @@ export function BrandWordmark({ className = "h-4", variant = "auto" }: { classNa
     return (
       <img
         src={variant === "onLight" ? "/brand/wordmark-dark.png" : "/brand/wordmark-white.png"}
-        alt="RealTour Pilot"
+        alt="Realtour Pilot"
         className={cn("w-auto select-none", className)}
       />
     );
@@ -32,7 +32,7 @@ export function BrandWordmark({ className = "h-4", variant = "auto" }: { classNa
   return (
     <>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src="/brand/wordmark-white.png" alt="RealTour Pilot" className={cn("w-auto select-none light:hidden", className)} />
+      <img src="/brand/wordmark-white.png" alt="Realtour Pilot" className={cn("w-auto select-none light:hidden", className)} />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src="/brand/wordmark-dark.png" alt="" aria-hidden className={cn("hidden w-auto select-none light:block", className)} />
     </>

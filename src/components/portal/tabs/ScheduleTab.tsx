@@ -56,9 +56,9 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
       <Card>
         <CardTitle icon={CalendarClock}>Schedule strategy call</CardTitle>
         {planningFailed ? (
-          <div className="mt-2"><LoadFailed what="your planning state" /></div>
+          <div className="mt-2"><LoadFailed what="your strategy call" /></div>
         ) : !p ? (
-          <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet — we&rsquo;ll set it up and it will show here.</p>
+          <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet. We&rsquo;ll set it up and it will show here.</p>
         ) : (
           <div className="mt-2 space-y-1.5 text-sm">
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{monthLabel(p.monthKey)}</div>
@@ -67,38 +67,38 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             {p.catchUp?.nextCallISO && <p className="text-xs text-muted">Your call to plan the {p.catchUp.label} videos is booked for {fmtDate(p.catchUp.nextCallISO, tz)} at {fmtTime(p.catchUp.nextCallISO, tz)} {zoneOf(p.catchUp.nextCallISO)}.</p>}
             {p.clientPlanned && p.callStatus === "NOT_REQUIRED" ? (
               // Oct 8 2026: they plan their own videos and have no strategy call.
-              <p className="text-muted">Your program doesn&rsquo;t include a strategy call — you plan your videos and we film them.</p>
+              <p className="text-muted">Your program doesn&rsquo;t include a strategy call. You plan your videos and we film them.</p>
             ) : p.planningMode === "WRITTEN" && !p.clientPlanned && p.officePlanned ? (
               // Oct 12 2026: the office planned the month by writing its scripts — no route to switch.
               <>
-                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> No call this month — we planned it for you</div>
-                <p className="text-xs text-muted">We wrote this month&rsquo;s scripts. Read them in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>; filming opens once they&rsquo;re ready.</p>
+                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> No call this month</div>
+                <p className="text-xs text-muted">We planned this month and wrote your scripts. Read them in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>. Filming opens once they&rsquo;re ready.</p>
               </>
             ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
               <>
-                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>
-                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</>}</p>
-                {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {zoneOf(p.callAtISO)} — cancel it on Calendly if you no longer need it.</p>}
+                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing: no call this month</div>
+                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in, so filming is open to book." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</>}</p>
+                {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {zoneOf(p.callAtISO)}. Cancel it on Calendly if you no longer need it.</p>}
                 {/* Not a one-way door: the same eligibility that offered the
                     written path offers the call back (review, Sep 17). */}
                 {switchLink("Change how you plan this month")}
               </>
             ) : p.callStatus === "COMPLETED" ? (
-              <div className="flex items-center gap-1.5 text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtDate(p.callAtISO, tz)}` : ""} — the month is planned.</div>
+              <div className="flex items-center gap-1.5 text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtDate(p.callAtISO, tz)}` : ""}. The month is planned.</div>
             ) : p.callStatus === "SCHEDULED" && p.callAtISO ? (
               <>
                 <div><span className="rounded-md bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">Booked</span></div>
                 <div className="font-medium">{fmtDate(p.callAtISO, tz)}</div>
                 <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {zoneOf(p.callAtISO)}</div>
-                {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <div className="text-xs text-muted-2">Video call — the link is in your calendar invite.</div>}
-                <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email — the change shows here within the hour.</p>
+                {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <div className="text-xs text-muted-2">Video call. The link is in your calendar invite.</div>}
+                <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email. The change shows here within the hour.</p>
                 {/* §3: filming opens the moment the call is booked, measured from the call's end. */}
                 <p className="text-xs text-muted">You can book filming now, before the call. Sessions start at least three weekdays (72 weekday hours) after the call ends.</p>
                 {switchLink("Change how you plan this month")}
               </>
             ) : p.callStatus === "NOT_REQUIRED" ? (
               // NOT_REQUIRED = the program has no strategy call at all.
-              <p className="text-muted">Your program doesn&rsquo;t include a strategy call — we plan the month from your topics and answers.</p>
+              <p className="text-muted">Your program doesn&rsquo;t include a strategy call. We plan the month from your topics and answers.</p>
             ) : p.callStatus === "SKIPPED" ? (
               // SKIPPED = no call exists for THIS month. A card headed
               // "Schedule strategy call" that offers no way to schedule one is
@@ -112,7 +112,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
               </>
             ) : (
               <>
-                <div className="text-muted">Not booked yet — we plan {monthLabel(p.monthKey)} on this call, then film it.</div>
+                <div className="text-muted">Not booked yet. We plan {monthLabel(p.monthKey)} on this call, then film it.</div>
                 {!readOnly && (
                   <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
                 )}

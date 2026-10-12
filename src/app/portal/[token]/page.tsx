@@ -16,7 +16,7 @@ export const maxDuration = 90;
 // if a client ever pastes it somewhere a crawler can reach, it must not become
 // a search result. (Page metadata wins over the root layout's.)
 export const metadata = {
-  title: "Your Content Program — RealTour Pilot",
+  title: "Your Content Program | Realtour Pilot",
   robots: { index: false, follow: false },
 };
 

@@ -87,13 +87,13 @@ export const PortalPlayer = forwardRef<PortalPlayerHandle, { src: string; poster
       }
       loadHls()
         .then(() => {
-          if (cancelled || !window.Hls?.isSupported()) { if (!cancelled) fail(`This browser can't play this video — try Safari, or ${contactLine()} and we'll get you the file.`); return; }
+          if (cancelled || !window.Hls?.isSupported()) { if (!cancelled) fail(`This browser can't play this video. Try Safari, or ${contactLine()} and we'll get you the file.`); return; }
           hls = new window.Hls({ enableWorker: true });
-          hls.on(window.Hls.Events.ERROR, (_e, data) => { if (data?.fatal) fail(`The video stream stopped — reload the page to try again, or ${contactLine()} and we'll get you the file.`); });
+          hls.on(window.Hls.Events.ERROR, (_e, data) => { if (data?.fatal) fail(`The video stream stopped. Reload the page to try again, or ${contactLine()} and we'll get you the file.`); });
           hls.loadSource(url);
           hls.attachMedia(el);
         })
-        .catch(() => fail(`The video player couldn't load — check your connection and try again, or ${contactLine()} and we'll get you the file.`));
+        .catch(() => fail(`The video player couldn't load. Check your connection and try again, or ${contactLine()} and we'll get you the file.`));
       return () => { cancelled = true; hls?.destroy(); };
     }, [src, onError]);
 
@@ -102,7 +102,7 @@ export const PortalPlayer = forwardRef<PortalPlayerHandle, { src: string; poster
         <video ref={videoRef} poster={poster ?? undefined} controls playsInline preload="metadata" autoPlay={autoPlay} className="mx-auto block max-h-[min(70vh,760px)] w-full rounded-lg bg-black object-contain"
           onPlay={() => { played.current = true; }} onSeeked={() => { played.current = true; }}
           onTimeUpdate={() => { if ((videoRef.current?.currentTime ?? 0) > 0) played.current = true; }}
-          onError={() => { if (!isHls(src)) { setFailed(`This video couldn't be played — reload to try again, or ${contactLine()} and we'll get you the file.`); onError?.("play-error"); } }} />
+          onError={() => { if (!isHls(src)) { setFailed(`This video couldn't be played. Reload to try again, or ${contactLine()} and we'll get you the file.`); onError?.("play-error"); } }} />
         {failed && <p role="alert" className="mt-2 text-xs text-danger">{failed}</p>}
       </div>
     );

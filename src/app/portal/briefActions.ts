@@ -27,7 +27,7 @@ async function portalBy(auth: PortalAuth, monthId: string): Promise<{ by: BriefB
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, historical: true } });
   if (!month || month.historical) return "That month isn't open for a brief.";
   const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? month.enrollmentId });
-  if (!r.ok) return r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : "This link is no longer active — sign in with your email to continue.";
+  if (!r.ok) return r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : "This link is no longer active. Sign in with your email to continue.";
   if (r.viewer.enrollment.id !== month.enrollmentId) return "That month isn't on your page.";
   if (!can(r.viewer, "suggest")) return refusalMessage(r.viewer, "suggest");
   const a = r.viewer.actor;
@@ -47,7 +47,7 @@ export async function portalRemoveBriefFile(auth: PortalAuth, monthId: string, f
   const hit = await briefFileFor(monthId, String(fileId ?? ""));
   if (!hit) return { ok: false, message: "That file isn't on this brief." };
   // A client takes back what a client added; a file our team added stays until we remove it.
-  if (v.by.kind === "client" && hit.file.by.kind !== "client") return { ok: false, message: "Our team added that file — ask us in Messages if it should go." };
+  if (v.by.kind === "client" && hit.file.by.kind !== "client") return { ok: false, message: "Our team added that file. Ask us in Messages if it should go." };
   const r = await removeBriefFile(monthId, hit.file.id);
   return { ok: r.ok, message: r.message };
 }
@@ -55,7 +55,7 @@ export async function portalRemoveBriefFile(auth: PortalAuth, monthId: string, f
 async function staffBy(): Promise<BriefBy> {
   const { getCurrentUser } = await import("@/lib/auth/user");
   const u = await getCurrentUser().catch(() => null);
-  return { kind: "staff", label: u?.name || u?.email || "RealTour Pilot staff", id: u?.id ?? null };
+  return { kind: "staff", label: u?.name || u?.email || "Realtour Pilot staff", id: u?.id ?? null };
 }
 
 async function touch(monthId: string) {

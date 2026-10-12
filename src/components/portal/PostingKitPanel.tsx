@@ -58,10 +58,10 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
   const chosenOrLatest = (kind: string) => captions.find((c) => c.kind === kind && c.status === "CHOSEN") ?? captions.find((c) => c.kind === kind && c.status !== "STALE") ?? captions.find((c) => c.kind === kind) ?? null;
   const kinds = ["CAPTION", "SHORT_CAPTION", "CTA", "COVER_TITLE"].filter((k) => k === "CAPTION" || captions.some((c) => c.kind === k));
 
-  const copy = async (text: string, id: string) => { try { await navigator.clipboard.writeText(text); setCopied(id); setTimeout(() => setCopied(null), 1500); } catch { setMsg({ ok: false, text: "Couldn't copy — select the text and copy it by hand." }); } };
-  const save = () => { if (!editing) return; start(async () => { const r = await portalSaveCaption(portalAuthFromLocation(), videoId, editing).catch(() => ({ ok: false, message: "That didn't save — try again." })); if (r.ok) setEditing(null); done(r); }); };
-  const draft = () => start(async () => done(await portalDraftCaption(portalAuthFromLocation(), videoId).catch(() => ({ ok: false, message: "The assistant couldn't run just now — try again in a moment." }))));
-  const mark = (posted: boolean) => start(async () => done(await portalMarkPosted(portalAuthFromLocation(), videoId, posted).catch(() => ({ ok: false, message: "That didn't save — try again." }))));
+  const copy = async (text: string, id: string) => { try { await navigator.clipboard.writeText(text); setCopied(id); setTimeout(() => setCopied(null), 1500); } catch { setMsg({ ok: false, text: "Couldn't copy. Select the text and copy it by hand." }); } };
+  const save = () => { if (!editing) return; start(async () => { const r = await portalSaveCaption(portalAuthFromLocation(), videoId, editing).catch(() => ({ ok: false, message: "That didn't save. Try again." })); if (r.ok) setEditing(null); done(r); }); };
+  const draft = () => start(async () => done(await portalDraftCaption(portalAuthFromLocation(), videoId).catch(() => ({ ok: false, message: "The assistant couldn't run just now. Try again in a moment." }))));
+  const mark = (posted: boolean) => start(async () => done(await portalMarkPosted(portalAuthFromLocation(), videoId, posted).catch(() => ({ ok: false, message: "That didn't save. Try again." }))));
 
   return (
     <div className="space-y-4">
@@ -101,7 +101,7 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
         ) : !assistant.enabled && <p className="mt-1 text-[11px] text-muted-2">{assistant.why}</p>}
         {/* Only say what a draft was made from when a draft exists — otherwise
             this claimed a drafting that never happened, above "No caption yet". */}
-        {transcriptGap && captions.some((c) => c.authorKind === "AI") && <p className="mt-1 text-[11px] text-muted-2">These drafts were made from the script — no transcript yet ({transcriptGap}).</p>}
+        {transcriptGap && captions.some((c) => c.authorKind === "AI") && <p className="mt-1 text-[11px] text-muted-2">These drafts were made from the script because there&rsquo;s no transcript yet ({transcriptGap}).</p>}
         <div className="mt-2 space-y-2">
           {kinds.map((k) => {
             const c = chosenOrLatest(k);
@@ -110,7 +110,7 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
               <div key={k} className="rounded-lg border border-border bg-surface-2/40 p-2.5">
                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-2">
                   <span className="font-semibold text-foreground">{KIND_LABEL[k] ?? k}</span>
-                  {c && <span>v{c.versionNo} · {c.authorKind === "AI" ? "drafted" : c.authorKind === "CLIENT" ? "your words" : "written by the team"}{c.status === "STALE" ? " · from an older cut" : ""}</span>}
+                  {c && <span>v{c.versionNo} · {c.authorKind === "AI" ? "drafted" : c.authorKind === "CLIENT" ? "your words" : "written by the team"}{c.status === "STALE" ? " · from an older version" : ""}</span>}
                   {c?.sourceNote && <span>· {c.sourceNote}</span>}
                 </div>
                 {isEditing ? (
@@ -157,7 +157,7 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
             <span className="text-sm text-muted">Not marked as posted.</span>
           )}
         </div>
-        <p className="mt-1 text-[11px] text-muted-2">Your note to yourself and to us — we don&rsquo;t check the platform, so this is never a verified publication.</p>
+        <p className="mt-1 text-[11px] text-muted-2">A note for you and for us. We don&rsquo;t check the platform, so this only records what you tell us.</p>
       </div>
       {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>

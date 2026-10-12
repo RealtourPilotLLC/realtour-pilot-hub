@@ -64,7 +64,7 @@ export async function submitPlatformFeedback(input: {
   const emailed = await notifyOwnerEmail(
     `${label}: ${title}`,
     [
-      `${label} submitted to the RealTour hub${submittedBy ? ` by ${submittedBy}` : ""}.`,
+      `${label} submitted to the Realtour hub${submittedBy ? ` by ${submittedBy}` : ""}.`,
       "",
       `Title: ${title}`,
       input.body ? `\nDetails:\n${input.body}` : "",

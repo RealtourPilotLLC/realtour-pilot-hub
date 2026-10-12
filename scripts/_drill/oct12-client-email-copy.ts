@@ -359,7 +359,7 @@ async function main() {
       const client = out.find((m) => m.to === "lena@example.test");
       const copy = out.find((m) => m.to === MONITOR);
       const tok = client ? /portal\/auth\/([A-Za-z0-9_-]{30,80})/.exec(client.body)?.[1] ?? null : null;
-      c.ok("requestLoginLink: the client gets their one-time link, no Bcc on it", !!client && !!tok && client.bccLines === 0 && client.subject === "Your RealTour Pilot sign-in link", `n=${out.length} ${out.map((m) => m.to).join(",")}`);
+      c.ok("requestLoginLink: the client gets their one-time link, no Bcc on it", !!client && !!tok && client.bccLines === 0 && client.subject === "Your Realtour Pilot sign-in link", `n=${out.length} ${out.map((m) => m.to).join(",")}`);
       c.ok("…Jordan gets a separate copy after it, same subject, link removed", !!copy && out.indexOf(copy) > out.indexOf(client!) && copy.subject === client?.subject && copy.body.includes(M.SIGN_IN_LINK_REMOVED) && !!tok && !copy.body.includes(tok) && !copy.body.includes("/portal/auth/"), copy?.body.slice(0, 200));
       const consumed = tok ? await pa.consumeLoginToken(tok) : null;
       c.ok("…and the client's link STILL signs the client in (Jordan's copy spent nothing)", !!consumed?.ok, JSON.stringify(consumed));
@@ -372,7 +372,7 @@ async function main() {
       const i = mails.length;
       const res = await sweepProgramMessageNotices({ now: new Date(PINNED) });
       const out = since(i);
-      c.ok("office-replied notice: each seat's email carries Bcc info@", res.sent >= 1 && out.length === res.sent && out.every((m) => m.bcc === MONITOR && m.subject === "New reply in your RealTour Pilot portal"), `sent=${res.sent} ${JSON.stringify(res.notes)} ${out.map((m) => `${m.to}/${m.bcc}`).join(",")}`);
+      c.ok("office-replied notice: each seat's email carries Bcc info@", res.sent >= 1 && out.length === res.sent && out.every((m) => m.bcc === MONITOR && m.subject === "New reply in your Realtour Pilot portal"), `sent=${res.sent} ${JSON.stringify(res.notes)} ${out.map((m) => `${m.to}/${m.bcc}`).join(",")}`);
     }
     {
       // (e) the /quality feedback reply.

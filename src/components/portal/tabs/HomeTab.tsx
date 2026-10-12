@@ -86,7 +86,7 @@ export function AppointmentCards({ d, href, plan }: {
       <Card>
         <CardTitle icon={CalendarClock}>Strategy call</CardTitle>
         {d.planningFailed ? (
-          <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load this month&rsquo;s planning state — refresh to try again.</p>
+          <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load this month&rsquo;s plan. Refresh to try again.</p>
         ) : !p ? (
           <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
         ) : p.clientPlanned && (p.callStatus === "NOT_REQUIRED" || p.callMode === "NOT_INCLUDED") ? (
@@ -101,12 +101,12 @@ export function AppointmentCards({ d, href, plan }: {
         ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
           <div className="mt-2 text-sm">
             <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing</div>
-            <p className="mt-0.5 text-xs text-muted">{p.answersSubmitted ? "Your answers are in — we're preparing the month." : "No call this month — answer the questions in Your Month."}</p>
+            <p className="mt-0.5 text-xs text-muted">{p.answersSubmitted ? "Your answers are in. We're preparing the month." : "No call this month. Answer the questions in Your Month."}</p>
             <Link href={plan.href} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">{plan.label} <ChevronRight className="size-3" /></Link>
           </div>
         ) : p.callStatus === "COMPLETED" ? (
           <div className="mt-2 text-sm">
-            <div className="flex items-center gap-1.5 font-medium text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` — ${fmtShort(p.callAtISO, tz)}` : ""}</div>
+            <div className="flex items-center gap-1.5 font-medium text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtShort(p.callAtISO, tz)}` : ""}</div>
             <p className="mt-0.5 text-xs text-muted">{monthLabel(p.monthKey)} is planned.</p>
           </div>
         ) : p.callStatus === "SCHEDULED" && p.callAtISO ? (
@@ -114,7 +114,7 @@ export function AppointmentCards({ d, href, plan }: {
             <div className="rounded-md bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">Booked</div>
             <div className="mt-1 font-medium">{fmtDate(p.callAtISO, tz)}</div>
             <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {zoneOf(p.callAtISO)}</div>
-            {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <span className="mt-1 block text-xs text-muted-2">Video call — the link is in your calendar invite.</span>}
+            {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <span className="mt-1 block text-xs text-muted-2">Video call. The link is in your calendar invite.</span>}
             {!d.readOnly && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Need to move it? →</Link>}
           </div>
         ) : p.callStatus === "NOT_REQUIRED" ? (
@@ -139,7 +139,7 @@ export function AppointmentCards({ d, href, plan }: {
       {d.scheduleFailed || (!d.progress && d.countsFailed) ? (
         <Card>
           <CardTitle icon={Camera}>Content session</CardTitle>
-          <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your session state — refresh to try again.</p>
+          <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your filming sessions. Refresh to try again.</p>
         </Card>
       ) : !d.schedule && sv.cards.length === 0 ? (
         <Card>
@@ -166,7 +166,7 @@ export function AppointmentCards({ d, href, plan }: {
           })}
           {sv.missing > 0 && (
             <Card>
-              <CardTitle icon={Camera}>{sv.required > 1 ? (sv.missing === 1 ? `Content session ${sv.required} of ${sv.required}` : `Content sessions — ${sv.missing} of ${sv.required} to book`) : "Content session"}</CardTitle>
+              <CardTitle icon={Camera}>{sv.required > 1 ? (sv.missing === 1 ? `Content session ${sv.required} of ${sv.required}` : `Content sessions: ${sv.missing} of ${sv.required} to book`) : "Content session"}</CardTitle>
               {pendingAsks.length ? (
                 <div className="mt-2 text-sm">
                   <div className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">{pendingAsks[0].label}</div>
@@ -307,7 +307,7 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
       {d.planning?.late && d.planning.monthKey === d.monthKey && <p className="mt-1 text-sm font-medium text-brand">{d.planning.late.line}</p>}
       {/* A count that failed to load is unknown, not zero. */}
       {d.countsFailed || !d.program ? (
-        <p className="mt-2 text-xs text-warning">We couldn&rsquo;t count this month&rsquo;s videos just now — refresh to try again, or open your Content Library to see them.</p>
+        <p className="mt-2 text-xs text-warning">We couldn&rsquo;t count this month&rsquo;s videos just now. Refresh to try again, or open your Content Library to see them.</p>
       ) : (
         <>
           <div className="mt-2 flex items-baseline justify-between gap-2 text-sm">
@@ -320,7 +320,7 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
           <ul className="mt-2 space-y-0.5 text-xs text-muted">
             {prod && prod.awaitingYou > 0 && <li><Link href={href("videos", "st=review")} className="font-medium text-brand hover:underline">{prod.awaitingYou === 1 ? "1 video is" : `${prod.awaitingYou} videos are`} waiting on your review</Link></li>}
             {d.program.total > d.program.delivered && <li>{d.program.total - d.program.delivered} in production or review</li>}
-            {prod && !prod.known && <li>We&rsquo;re still adding this month&rsquo;s delivered videos to your library — this count will catch up shortly.</li>}
+            {prod && !prod.known && <li>We&rsquo;re still adding this month&rsquo;s delivered videos to your library. This count will catch up shortly.</li>}
           </ul>
         </>
       )}
@@ -329,13 +329,13 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
         <p className="mt-3 text-sm text-muted">
           You plan this month&rsquo;s videos.{" "}
           {d.brief && (d.brief.files > 0 || d.brief.notes)
-            ? <>Your brief is in — <Link href={d.brief.href} className="font-medium text-brand hover:underline">see it or add more</Link>.</>
+            ? <>Your brief is in. <Link href={d.brief.href} className="font-medium text-brand hover:underline">See it or add more</Link>.</>
             : !d.readOnly && d.perms.suggest ? <Link href={d.brief?.href ?? `${href("plan")}#step-brief`} className="font-medium text-brand hover:underline">Add your creative brief (optional)</Link> : null}
         </p>
       ) : d.topicsFailed ? (
-        <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your topics — refresh to try again.</p>
+        <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your topics. Refresh to try again.</p>
       ) : topicHistoryNeedsReview ? (
-        <p className="mt-3 text-sm text-muted">Your filming and video work is on file. We&rsquo;re checking how earlier topics connect to this month; you don&rsquo;t need to choose those topics again.</p>
+        <p className="mt-3 text-sm text-muted">Your filming and videos for this month are on file. We&rsquo;re still linking your earlier topics to it, so you don&rsquo;t need to choose them again.</p>
       ) : selected.length > 0 ? (
         <div className="mt-3">
           {/* The heading counts within the allowance; the surplus is said out
@@ -355,7 +355,7 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
           </ul>
         </div>
       ) : d.topics ? (
-        <p className="mt-3 text-sm text-muted">No topics chosen for {monthLabel(d.monthKey)} yet{d.perms.suggest && !d.readOnly ? <> — <Link href={href("topics")} className="font-medium text-brand hover:underline">pick from your topic bank</Link>.</> : "."}</p>
+        <p className="mt-3 text-sm text-muted">No topics chosen for {monthLabel(d.monthKey)} yet.{d.planning?.monthKey === d.monthKey && d.planning.planningMode === "CALL" ? (d.planning.callStatus === "COMPLETED" ? " We're confirming them from your call." : " We'll choose them together on your call.") : d.perms.suggest && !d.readOnly ? <> <Link href={href("topics")} className="font-medium text-brand hover:underline">Pick from your topic bank</Link>.</> : null}</p>
       ) : null}
     </Card>
   );

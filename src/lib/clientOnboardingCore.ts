@@ -170,12 +170,12 @@ export type OnboardingMessage = {
 const MANUAL = { ops: ["manual_messages"] as ProgramReachOp[], toggles: ["messages"] as OnboardingToggleKey[] };
 
 export const ONBOARDING_MESSAGES: readonly OnboardingMessage[] = [
-  { key: "welcome", label: "Welcome and how to sign in", ops: ["manual_messages", "portal_invites"], toggles: ["messages", "accounts"], subject: "Welcome to your RealTour Pilot content portal" },
-  { key: "strategy_call", label: "Book your strategy call", ...MANUAL, subject: "Book your RealTour Pilot strategy call" },
+  { key: "welcome", label: "Welcome and how to sign in", ops: ["manual_messages", "portal_invites"], toggles: ["messages", "accounts"], subject: "Welcome to your Realtour Pilot content portal" },
+  { key: "strategy_call", label: "Book your strategy call", ...MANUAL, subject: "Book your Realtour Pilot strategy call" },
   { key: "strategy_ready", label: "Your strategy is ready", ...MANUAL, subject: "Your Content Strategy is Ready + Next Steps" },
-  { key: "scripts_ready", label: "Your scripts are ready", ...MANUAL, subject: "Your scripts are ready in your RealTour Pilot portal" },
+  { key: "scripts_ready", label: "Your scripts are ready", ...MANUAL, subject: "Your scripts are ready in your Realtour Pilot portal" },
   { key: "video_ready", label: "Your video is ready", ...MANUAL, subject: "Your videos are ready to review" },
-  { key: "note", label: "Your own note", ...MANUAL, subject: "A note from RealTour Pilot" },
+  { key: "note", label: "Your own note", ...MANUAL, subject: "A note from Realtour Pilot" },
 ];
 
 /** The toggles a message still needs, given what reaches the client ("ok" = reached for that op). */
@@ -211,7 +211,7 @@ export function parseOnboardingKey(dedupeKey: string | null | undefined): { mess
 /** The subject an onboarding email goes out under (outbox.subjectFor). */
 export const onboardingSubject = (dedupeKey: string | null | undefined): string => {
   const k = parseOnboardingKey(dedupeKey);
-  return k ? messageOf(k.message).subject : "RealTour Pilot";
+  return k ? messageOf(k.message).subject : "Realtour Pilot";
 };
 /** A browser-minted press id: letters, digits, dash, underscore, 8–64 long. */
 export const isIntentId = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(s);

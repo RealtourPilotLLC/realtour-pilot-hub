@@ -5,7 +5,7 @@
 @custom-variant light (&:where(html.light, html.light *));
 
 /* ---------------------------------------------------------------------------
-   RealTour Pilot — Operations Hub design tokens
+   Realtour Pilot — Operations Hub design tokens
    Dark, elegant, high-tech — matched to realtourpilot.com:
    near-black canvas, hairline borders, burnt-orange (#e96320) accent, Inter.
 --------------------------------------------------------------------------- */

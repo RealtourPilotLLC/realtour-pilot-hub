@@ -451,7 +451,7 @@ async function main() {
     c.ok("  …and both say delivered work stays", /watch and download/.test(n.body) && /watch and download/.test(p.body));
 
     const auth = { token: bea.portalToken };
-    const ended = "Your program has ended, so this is view-only — your finished content stays here for you.";
+    const ended = "Your program has ended, so this is view-only. Your finished content stays here for you.";
     const sess = await actions.portalRequestSession(auth, { monthId: bea.monthId, location: "12 Oak Lane" });
     c.ok("ENDED: portalRequestSession refuses with the ended sentence", sess.ok === false && sess.message === ended, sess.message);
     const cap = await actions.portalDraftCaption(auth, vA.id);

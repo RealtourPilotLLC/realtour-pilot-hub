@@ -16,7 +16,7 @@ import { ownersFor, type OwnerDuty } from "@/lib/programOwners";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import { lateMonthName, lateSessionOf } from "@/lib/lateSession";
 import {
-  templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS,
+  templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS, SIGN_OFF_FIRST_LINE,
   type ReminderAction, type TemplateVars,
 } from "@/lib/reminderTemplates";
 
@@ -1040,7 +1040,8 @@ export async function resolvePortalLink(e: Pick<EnrollmentRow, "id" | "portalTok
 export function withExtraParagraph(body: string, paragraph: string | null): string {
   if (!paragraph) return body;
   const lines = body.split("\n");
-  const at = lines.findIndex((l) => l.startsWith("— Jordan"));
+  // The sign-off's first line (reminderTemplates.SIGN_OFF_FIRST_LINE since Oct 12 2026; "— Jordan" before).
+  const at = lines.findIndex((l) => l.startsWith(SIGN_OFF_FIRST_LINE) || l.startsWith("— Jordan"));
   if (at < 0) return `${body}\n\n${paragraph}`;
   const before = lines.slice(0, at);
   while (before.length && before[before.length - 1].trim() === "") before.pop();

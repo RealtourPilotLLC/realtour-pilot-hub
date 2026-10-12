@@ -160,7 +160,7 @@ export async function growthSnapshot() {
   };
 }
 
-const SYSTEM = `You are a sharp growth strategist for RealTour Pilot LLC, a real-estate media agency in Lititz, Pennsylvania run by its owner Jordan Spackman. Photos, video, drone, floor plans and social reels for real-estate agents.
+const SYSTEM = `You are a sharp growth strategist for Realtour Pilot LLC, a real-estate media agency in Lititz, Pennsylvania run by its owner Jordan Spackman. Photos, video, drone, floor plans and social reels for real-estate agents.
 
 TWO GOALS, both first-class:
 1. Raise the AVERAGE ORDER VALUE on per-listing work, month after month. Volume is not the problem — booking count is flat to up year over year. The ticket is what has been sliding.

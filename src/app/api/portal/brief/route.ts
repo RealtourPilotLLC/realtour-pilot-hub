@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     const { getCurrentUser } = await import("@/lib/auth/user");
     const u = await getCurrentUser().catch(() => null);
     if (authEnforced() && (!u || u.impersonating || (u.realRole !== "OWNER" && u.realRole !== "ADMIN"))) return json(403, { ok: false, message: "Only the owner or an admin can add a brief here." });
-    by = { kind: "staff", label: u?.name || u?.email || "RealTour Pilot staff", id: u?.id ?? null };
+    by = { kind: "staff", label: u?.name || u?.email || "Realtour Pilot staff", id: u?.id ?? null };
   } else {
     const token = String(form.get("token") ?? "");
     const r = await resolvePortalViewer({ token: token || null, enrollmentId: String(form.get("enrollmentId") ?? "") || month.enrollmentId, cookies: req.cookies });

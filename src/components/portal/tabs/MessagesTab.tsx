@@ -36,7 +36,7 @@ export function MessagesTab({ d, failed }: { d: MessagesTabData | null; failed: 
     <div className="mt-6 space-y-4">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Messages</h1>
-        <p className="mt-0.5 text-xs text-muted">Your conversation with {d.ownerFirst} and the RealTour Pilot team. Replies come back here.</p>
+        <p className="mt-0.5 text-xs text-muted">Your conversation with {d.ownerFirst} and the Realtour Pilot team. Replies come back here.</p>
       </div>
       <Card>
         {d.messages.length === 0 ? (
@@ -55,7 +55,7 @@ export function MessagesTab({ d, failed }: { d: MessagesTabData | null; failed: 
                     {m.body}
                   </div>
                   <div className="mt-1 px-1 text-[11px] text-muted-2">
-                    {office ? `${m.authorLabel.split(/\s+/)[0]} · RealTour Pilot` : m.authorLabel} · {when(m.createdAtISO)}
+                    {office ? `${m.authorLabel.split(/\s+/)[0]} · Realtour Pilot` : m.authorLabel} · {when(m.createdAtISO)}
                   </div>
                 </li>
               );

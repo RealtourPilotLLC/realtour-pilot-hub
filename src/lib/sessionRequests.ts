@@ -6,7 +6,7 @@ import { monthSessionCount, monthSessionIndexes, recalcProgramMonth, replacesPen
 import { isTestClientName } from "@/lib/testClients";
 import { sessionsForMonth } from "@/lib/catchUp";
 import { aryeoProductFor, etMonthKey } from "@/lib/contentProgram";
-import { TEXT_KYLE } from "@/lib/portalWords";
+import { TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // SESSION REQUESTS (spec §4), Sep 16 2026.
@@ -164,14 +164,14 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   if (!enrollment) return { ok: false, reason: "This program membership is not active." };
   if (!month || month.enrollmentId !== enrollment.id) return { ok: false, reason: "Pick one of your program months." };
   if (month.historical) return { ok: false, reason: "That month is closed." };
-  if (enrollment.status !== "ACTIVE") return { ok: false, reason: `Your program is paused — ${TEXT_KYLE} and we'll sort the next session together.` };
+  if (enrollment.status !== "ACTIVE") return { ok: false, reason: `Your program is paused. ${TEXT_KYLE_START} and we'll sort the next session together.` };
 
   const start = input.slot.startISO ? new Date(input.slot.startISO) : null;
   if (input.slot.startISO && (!start || !Number.isFinite(start.getTime()))) return { ok: false, reason: "Pick a time from the list." };
   const end = input.slot.endISO ? new Date(input.slot.endISO) : null;
   const when = (input.slot.when ?? "").trim();
   if (!start && !when) return { ok: false, reason: "Pick a time from the list, or tell us what works." };
-  if (start && start < new Date()) return { ok: false, reason: "That time has passed — pick a later one." };
+  if (start && start < new Date()) return { ok: false, reason: "That time has passed. Pick a later one." };
   const location = clip((input.slot.locationText ?? "").trim(), 300);
 
   const kind = input.kind ?? "CONTENT_SESSION";
@@ -363,7 +363,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   }, { timeout: 20_000 });
 
   if (settled.kind === "duplicate") {
-    return { ok: true, id: settled.id, status: settled.status, duplicate: true, capacity: settled.capacity, message: "We already have this request — it shows as requested until we confirm it." };
+    return { ok: true, id: settled.id, status: settled.status, duplicate: true, capacity: settled.capacity, message: "We already have this request. It shows as requested until we confirm it." };
   }
   if (settled.kind === "taken") {
     return { ok: false, reason: "That session is already requested or booked. It shows on your page, and you can change its time there.", capacity: settled.capacity };
@@ -373,7 +373,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     // Jordan, Sep 21: "One booking should still show one session remaining."
     // The refusal says which session is missing rather than "your month is full",
     // because on Pro those are different sentences.
-    return { ok: false, reason: `This month's ${c.allowed} session${c.allowed === 1 ? " is" : "s are"} already booked or requested — ask us about an extra session.`, capacity: c };
+    return { ok: false, reason: `This month's ${c.allowed} session${c.allowed === 1 ? " is" : "s are"} already booked or requested. Ask us about an extra session.`, capacity: c };
   }
   // The plan remembers the request it became (its address now changes on the
   // booked session, not on the plan).

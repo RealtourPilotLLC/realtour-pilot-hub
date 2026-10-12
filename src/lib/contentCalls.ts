@@ -494,8 +494,8 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number; close
         title: `Send ${name} their ${monthName} strategy-call booking link`,
         description:
           `Draft (review, then send from your phone or the client's thread):\n\n` +
-          `"Hi ${firstName}! Time to plan your ${monthName} content — grab a time for your strategy call here: ${STRATEGY_CALL_BOOKING_URL} ` +
-          `Once you book, everything else falls into place on our end."`,
+          `"Hi ${firstName}! Time to plan your ${monthName} content. Once you book your strategy call, everything else falls into place on our end. ` +
+          `Grab a time here: ${STRATEGY_CALL_BOOKING_URL}"`,
         taskType: "comms_followup",
         status: "OPEN",
         source: "content_program",

@@ -20,7 +20,7 @@ import type { TeamSeat } from "@/lib/portalTeam";
 
 const ROLES = [
   { key: "OWNER", label: "Full access", detail: "Everything you can do, including approving videos" },
-  { key: "COLLABORATOR", label: "Collaborator", detail: "Can plan, comment and request changes — you keep the approvals" },
+  { key: "COLLABORATOR", label: "Collaborator", detail: "Can plan, comment and request changes. You keep the approvals" },
   { key: "VIEWER", label: "View only", detail: "Can watch and download, nothing else" },
 ] as const;
 const roleLabel = (r: string) => ROLES.find((x) => x.key === r)?.label ?? r;
@@ -80,9 +80,9 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
               <div className="mt-0.5 flex flex-wrap gap-1.5 text-sm">
                 <span className="rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-muted">{roleLabel(s.role)}</span>
                 {s.held ? (
-                  <span className="rounded-md bg-warning-soft px-1.5 py-0.5 font-medium text-warning">Held — we&rsquo;ll send their sign-in when invitations open</span>
+                  <span className="rounded-md bg-warning-soft px-1.5 py-0.5 font-medium text-warning">Held: we&rsquo;ll send their sign-in when invitations open</span>
                 ) : s.pending ? (
-                  <span className="rounded-md bg-brand-soft px-1.5 py-0.5 font-medium text-brand">Invited — hasn&rsquo;t signed in yet</span>
+                  <span className="rounded-md bg-brand-soft px-1.5 py-0.5 font-medium text-brand">Invited, hasn&rsquo;t signed in yet</span>
                 ) : null}
               </div>
             </div>
@@ -126,7 +126,7 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
           {ROLES.map((r) => (
             <label key={r.key} className="flex min-h-11 cursor-pointer items-start gap-2 rounded-lg p-2 text-sm focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand">
               <input type="radio" name="team-role" value={r.key} checked={role === r.key} onChange={() => { draft.current.role = r.key; setRole(r.key); }} className="mt-1 accent-[var(--brand)]" />
-              <span><span className="font-medium">{r.label}</span> <span className="text-sm text-muted">— {r.detail}</span></span>
+              <span><span className="font-medium">{r.label}</span> <span className="text-sm text-muted">· {r.detail}</span></span>
             </label>
           ))}
         </fieldset>
@@ -136,7 +136,7 @@ export function TeamSettings({ seats, invitationsOn }: { seats: TeamSeat[]; invi
           onClick={invite}
           className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
         >
-          <Mail className="size-4" /> {invitationsOn ? "Send invitation" : "Save — invite later"}
+          <Mail className="size-4" /> {invitationsOn ? "Send invitation" : "Save and invite later"}
         </Button>
       </div>
 

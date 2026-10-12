@@ -91,6 +91,10 @@ export type TemplateVars = {
   /** STRATEGY_READY v2: an UPDATED strategy for a client who already had one
    *  released — no "first strategy call" step (that was long ago). */
   strategyUpdate?: boolean;
+  /** STRATEGY_READY v2 (Oct 12 2026): strategy calls are switched off for this
+   *  client (call mode NOT_INCLUDED), so the next step is choosing topics in the
+   *  portal, never "book your first strategy call". */
+  strategyCallsOff?: boolean;
 };
 
 export type ReminderTemplate = {
@@ -102,14 +106,19 @@ export type ReminderTemplate = {
   render: (v: TemplateVars) => string;
 };
 
-const SIGN_OFF = "— Jordan & the RealTour Pilot team\n(Reply to this email and it comes straight to us.)";
+/** The first line of every program email's sign-off. programReminders.withExtraParagraph
+ *  finds the sign-off by it, so a milestone paragraph lands above it. */
+export const SIGN_OFF_FIRST_LINE = "Jordan and the Realtour Pilot team";
+// Oct 12 2026 (Jordan): the brand is "Realtour Pilot" (lowercase t), and no em
+// dashes in anything a client reads, the sign-off included.
+const SIGN_OFF = `${SIGN_OFF_FIRST_LINE}\n(Reply to this email and it comes straight to us.)`;
 /** Kyle's line (Jordan, Sep 24 2026). A literal here because this module stays
  *  pure (no server imports); the same number is reviewWindows.URGENT_CONTACT. */
 const KYLE_LINE = "(215) 645-4889";
 
 const noCallLine = (v: TemplateVars) =>
   v.noCallEligible
-    ? " Or, if you'd rather skip the call this month, you can choose your topics and answer the preparation questions in your portal instead."
+    ? " Or, if you'd rather skip the call this month, choose your video topics and answer a few short questions about each in your portal instead."
     : "";
 
 const deadlineLine = (v: TemplateVars) => (v.deadline ? ` We'd love to have it planned by ${v.deadline} so your filming session lands on time.` : "");
@@ -128,7 +137,10 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
       [
         `Hi ${v.firstName},`,
         "",
-        `We still need to plan your ${v.month} content. You can book your strategy call${v.bookCallLink ? ` here: ${v.bookCallLink}` : " from your portal"}.${noCallLine(v)}${deadlineLine(v)}`,
+        // The link ends its line: a period straight after a URL breaks it in some mail apps.
+        `We still need to plan your ${v.month} content.${deadlineLine(v)}`,
+        v.bookCallLink ? `Book your strategy call here: ${v.bookCallLink}` : "You can book your strategy call from your portal.",
+        ...(v.noCallEligible ? ["", noCallLine(v).trim()] : []),
         "",
         `Your portal: ${v.portalLink}${sessionParagraph(v)}`,
         "",
@@ -144,7 +156,8 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
       [
         `Hi ${v.firstName},`,
         "",
-        `We still need to plan your ${v.month} content — grab a time for your strategy call${v.bookCallLink ? ` here: ${v.bookCallLink}` : " from your portal"}.${deadlineLine(v)}`,
+        `We still need to plan your ${v.month} content.${deadlineLine(v)}`,
+        v.bookCallLink ? `Grab a time for your strategy call here: ${v.bookCallLink}` : "Grab a time for your strategy call from your portal.",
         "",
         `You can see where ${v.month} stands in your portal: ${v.portalLink}${sessionParagraph(v)}`,
         "",
@@ -161,8 +174,8 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
         `Hi ${v.firstName},`,
         "",
         v.answersStarted
-          ? `Your ${v.month} preparation questions are part-way done — they're the last step before we write your scripts, and they pick up right where you left off: ${v.portalLink}${deadlineLine(v)}${sessionParagraph(v)}`
-          : `The next step for ${v.month} is choosing your topics and answering the short preparation questions in your portal — about ten minutes, and we write your scripts from them: ${v.portalLink}${deadlineLine(v)}${sessionParagraph(v)}`,
+          ? `Your ${v.month} questions are part-way done. They're the last step before we write your scripts, and they pick up right where you left off: ${v.portalLink}${deadlineLine(v)}${sessionParagraph(v)}`
+          : `The next step for ${v.month} is choosing your video topics and answering a few short questions about each in your portal. It takes about ten minutes, and we write your scripts from your answers: ${v.portalLink}${deadlineLine(v)}${sessionParagraph(v)}`,
         "",
         SIGN_OFF,
       ].join("\n"),
@@ -176,7 +189,7 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
       [
         `Hi ${v.firstName},`,
         "",
-        `Your ${v.month} content is planned — the next step is booking your filming session.${v.earliestSession ? ` The earliest slot we can film is ${v.earliestSession} (that gives us time to finish your scripts).` : ""} Pick a time in your portal and we'll confirm it: ${v.portalLink}`,
+        `Your ${v.month} content is planned, so the next step is booking your filming session.${v.earliestSession ? ` The earliest we can film is ${v.earliestSession}, which gives us time to finish your scripts.` : ""} Pick a time in your portal and we'll confirm it: ${v.portalLink}`,
         "",
         SIGN_OFF,
       ].join("\n"),
@@ -190,7 +203,7 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
       [
         `Hi ${v.firstName},`,
         "",
-        `${v.itemCount === 1 ? "A new cut is" : `${v.itemCount} new cuts are`} waiting for your review in your portal — approve ${v.itemCount === 1 ? "it" : "them"} or tell us what to change, and we'll take it from there: ${v.portalLink}`,
+        `${v.itemCount === 1 ? "A new video is" : `${v.itemCount} new videos are`} waiting for your review in your portal. Approve ${v.itemCount === 1 ? "it" : "them"} or tell us what to change, and we'll take it from there: ${v.portalLink}`,
         "",
         SIGN_OFF,
       ].join("\n"),
@@ -208,7 +221,7 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
       [
         `Hi ${v.firstName},`,
         "",
-        `${v.itemCount === 1 ? "A new cut is" : `${v.itemCount} new cuts are`} waiting for your review in your portal. Approve ${v.itemCount === 1 ? "it" : "them"} or tell us what to change, and we'll take it from there: ${v.portalLink}`,
+        `${v.itemCount === 1 ? "A new video is" : `${v.itemCount} new videos are`} waiting for your review in your portal. Approve ${v.itemCount === 1 ? "it" : "them"} or tell us what to change, and we'll take it from there: ${v.portalLink}`,
         ...(v.reviewDeadline
           ? ["", `Please review by ${v.reviewDeadline} (review windows count business days, Monday to Friday).${v.reviewAutoApprove ? ` If we haven't heard from you by then, ${v.itemCount === 1 ? "that version is" : "those versions are"} approved automatically.` : ""}`]
           : []),
@@ -251,8 +264,7 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
         "",
         `If anything changes within 24 hours of the session, call or text Kyle at ${KYLE_LINE}.`,
         "",
-        "Jordan and the RealTour Pilot team",
-        "(Reply to this email and it comes straight to us.)",
+        SIGN_OFF,
       ].join("\n"),
   },
   "strategy_ready.v1": {
@@ -274,6 +286,14 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
 /** "logo, headshot and brand colors" — a plain list for a sentence. */
 const andList = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
+/** The Brand Profile step, while anything is missing (Oct 12 2026: named the
+ *  way the portal names the page; a long list is cut to three and "the rest"). */
+export function brandProfileStep(missing: readonly string[], firstVideos: boolean): string | null {
+  if (!missing.length) return null;
+  const what = missing.length > 3 ? `your ${missing.slice(0, 3).join(", ")} and the rest` : `your ${andList([...missing])}`;
+  return `Fill in your Brand Profile in the portal (${what}) so your ${firstVideos ? "first " : ""}videos match your look. It only takes a few minutes.`;
+}
+
 // v2 (6.2, Sep 25 2026): Jordan's "Your Content Strategy is Ready + Next
 // Steps" (the subject is outbox.subjectFor's). Numbered next steps: read it and
 // suggest changes on the page; the first strategy call, booked or to book; and
@@ -287,7 +307,9 @@ REMINDER_TEMPLATES["strategy_ready.v2"] = {
   version: "2",
   purpose: "The approved content strategy was released to the client's portal, with the next steps: read it, the first strategy call, and brand setup.",
   render: (v) => {
-    const call = v.strategyUpdate
+    const call = v.strategyCallsOff
+      ? (v.strategyUpdate ? [] : ["Choose your first month's video topics in your portal and answer a few short questions about each. We write your scripts from your answers."])
+      : v.strategyUpdate
       ? (v.firstCallAtET ? [`Your next strategy call is booked for ${v.firstCallAtET}.`] : [])
       : [v.firstCallAtET
         ? `Your first strategy call is booked for ${v.firstCallAtET}. That's where we plan your first month of videos together.`
@@ -296,7 +318,7 @@ REMINDER_TEMPLATES["strategy_ready.v2"] = {
     const steps = [
       `Read your strategy: ${v.portalLink}\n   If anything needs adjusting, suggest it right on that page and we'll take care of it.`,
       ...call,
-      ...(v.setupMissing?.length ? [`Add your ${andList(v.setupMissing)} in your portal so your ${v.strategyUpdate ? "" : "first "}videos match your look. It only takes a few minutes.`] : []),
+      ...(brandProfileStep(v.setupMissing ?? [], !v.strategyUpdate) ? [brandProfileStep(v.setupMissing ?? [], !v.strategyUpdate)!] : []),
     ];
     return [
       `Hi ${v.firstName},`,
@@ -306,8 +328,7 @@ REMINDER_TEMPLATES["strategy_ready.v2"] = {
       "Here's what's next:",
       "",
       ...steps.flatMap((t, i) => [`${i + 1}. ${t}`, ""]),
-      "Jordan and the RealTour Pilot team",
-      "(Reply to this email and it comes straight to us.)",
+      SIGN_OFF,
     ].join("\n");
   },
 };
@@ -331,8 +352,7 @@ REMINDER_TEMPLATES["reminder.approve_scripts.v1"] = {
       "",
       `We film either way. Approving now means the video matches the words you chose, and if something should change, tell us on the same page: ${v.portalLink}`,
       "",
-      "Jordan and the RealTour Pilot team",
-      "(Reply to this email and it comes straight to us.)",
+      SIGN_OFF,
     ].join("\n"),
 };
 
@@ -360,8 +380,7 @@ REMINDER_TEMPLATES["reminder.book_session.v2"] = {
       "",
       `${lead}${earliest} Pick a time in your portal and we'll confirm it: ${v.portalLink}`,
       "",
-      "Jordan and the RealTour Pilot team",
-      "(Reply to this email and it comes straight to us.)",
+      SIGN_OFF,
     ].join("\n");
   },
 };

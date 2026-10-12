@@ -13,12 +13,12 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand/[0.08] via-surface to-surface p-6">
       <div className="panel-shadow w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-12 rounded-xl bg-white p-1" />
+<img src="/brand/mark.svg" alt="Realtour Pilot" className="flex size-12 rounded-xl bg-white p-1" />
         {valid && u ? (
           <>
             <h1 className="text-lg font-semibold tracking-tight">You&rsquo;re invited</h1>
             <p className="mt-1 text-sm text-muted">
-              Join RealTour Pilot as <span className="font-medium text-foreground">{ROLE_LABEL[u.role] ?? u.role}</span>.
+              Join Realtour Pilot as <span className="font-medium text-foreground">{ROLE_LABEL[u.role] ?? u.role}</span>.
             </p>
             <p className="mt-3 rounded-lg bg-surface-2/60 px-3 py-2 text-xs text-muted-2">
               For <span className="font-medium text-foreground">{u.email}</span> — choose a password below, or use the

@@ -1,8 +1,8 @@
 import { LegalPage, LegalSection } from "@/components/legal/LegalPage";
 
 export const metadata = {
-  title: "Terms of Service — RealTour Pilot Operations Hub",
-  description: "End-user license agreement and terms of service for the RealTour Pilot Operations Hub.",
+  title: "Terms of Service — Realtour Pilot Operations Hub",
+  description: "End-user license agreement and terms of service for the Realtour Pilot Operations Hub.",
 };
 
 // Public page. Serves as the end-user license agreement (EULA) that Intuit and
@@ -12,15 +12,15 @@ export default function TermsPage() {
     <LegalPage title="Terms of Service &amp; End-User License Agreement" updated="July 21, 2026">
       <LegalSection title="1. Agreement">
         <p>
-          These terms govern use of the RealTour Pilot Operations Hub (&ldquo;the Hub&rdquo;), software
-          operated by <strong>RealTour Pilot LLC</strong> (&ldquo;we&rdquo;, &ldquo;us&rdquo;). By accessing
+          These terms govern use of the Realtour Pilot Operations Hub (&ldquo;the Hub&rdquo;), software
+          operated by <strong>Realtour Pilot LLC</strong> (&ldquo;we&rdquo;, &ldquo;us&rdquo;). By accessing
           the Hub you agree to these terms. If you do not agree, do not use it.
         </p>
       </LegalSection>
 
       <LegalSection title="2. Who may use it">
         <p>
-          The Hub is <strong>private, internal business software</strong>. Access is limited to RealTour
+          The Hub is <strong>private, internal business software</strong>. Access is limited to Realtour
           Pilot LLC personnel and contractors who have been explicitly authorized by the company owner. It
           is not offered to the public, not sold or sublicensed, and there is no public sign-up. Accounts
           are granted, and may be revoked, at the company&rsquo;s discretion.
@@ -30,7 +30,7 @@ export default function TermsPage() {
       <LegalSection title="3. License">
         <p>
           Authorized users receive a limited, non-exclusive, non-transferable, revocable license to use the
-          Hub solely to perform work for RealTour Pilot LLC. You may not copy, redistribute, reverse
+          Hub solely to perform work for Realtour Pilot LLC. You may not copy, redistribute, reverse
           engineer, or use the Hub or its data for any purpose outside that work.
         </p>
       </LegalSection>
@@ -84,7 +84,7 @@ export default function TermsPage() {
 
       <LegalSection title="9. Limitation of liability">
         <p>
-          To the maximum extent permitted by law, RealTour Pilot LLC is not liable for any indirect,
+          To the maximum extent permitted by law, Realtour Pilot LLC is not liable for any indirect,
           incidental, special, consequential, or punitive damages, or for lost profits, revenue, or data,
           arising from use of the Hub.
         </p>
@@ -106,7 +106,7 @@ export default function TermsPage() {
 
       <LegalSection title="12. Contact">
         <p>
-          RealTour Pilot LLC ·{" "}
+          Realtour Pilot LLC ·{" "}
           <a href="mailto:info@realtourpilot.com">info@realtourpilot.com</a>
         </p>
       </LegalSection>

@@ -225,7 +225,7 @@ async function main() {
       signups: await prisma.programSignup.count({ where: { checkoutId } }),
       enrollments: cl ? await prisma.contentEnrollment.count({ where: { clientId: cl.id } }) : 0,
       seats: cl ? await prisma.clientMembership.count({ where: { clientId: cl.id } }) : 0,
-      welcomes: await prisma.outboxMessage.count({ where: { toRef: email.toLowerCase(), body: { contains: "You're in" } } }),
+      welcomes: await prisma.outboxMessage.count({ where: { toRef: email.toLowerCase(), body: { contains: "Welcome to your Realtour Pilot content portal" } } }),
       bells: await prisma.notification.count({ where: { dedupeKey: { startsWith: `signup-${checkoutId}-` } } }),
     };
   };

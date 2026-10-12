@@ -417,8 +417,6 @@ export async function drainShareNotices(opts: { now?: Date; max?: number; reques
 }
 
 /** Plain words for a missing setup item, as the email says them. */
-const SETUP_WORDS: Record<string, string> = { colors: "brand colors", logo: "logo", headshot: "headshot", fonts: "fonts", links: "website or social links", music: "music style", style: "video style" };
-
 /**
  * The STRATEGY_READY next steps for one client, read at send time (6.2):
  *   · the first MONTHLY strategy call on the books (verified, still ahead);
@@ -429,23 +427,26 @@ const SETUP_WORDS: Record<string, string> = { colors: "brand colors", logo: "log
  *   · whether this is an UPDATE (an earlier version was already released) —
  *     then there is no "first strategy call" to book.
  */
-export async function strategyReadyVars(enrollmentId: string, clientId: string, now: Date, strategyVersionId?: string | null): Promise<Pick<TemplateVars, "firstCallAtET" | "callLink" | "setupMissing" | "strategyUpdate">> {
+export async function strategyReadyVars(enrollmentId: string, clientId: string, now: Date, strategyVersionId?: string | null): Promise<Pick<TemplateVars, "firstCallAtET" | "callLink" | "setupMissing" | "strategyUpdate" | "strategyCallsOff">> {
   // An earlier version already released = this is an update, not the first strategy.
   const sv = strategyVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: strategyVersionId }, select: { versionNo: true } }) : null;
   const strategyUpdate = !!sv && (await prisma.contentStrategyVersion.count({ where: { enrollmentId, releasedAt: { not: null }, versionNo: { lt: sv.versionNo } } })) > 0;
-  const [call, monthly, facts] = await Promise.all([
+  const [call, monthly, setupMissing, enrollment] = await Promise.all([
     prisma.programCallRecord.findFirst({ where: { enrollmentId, callType: "MONTHLY_STRATEGY", matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF"] }, status: "SCHEDULED", scheduledStart: { gt: now } }, orderBy: { scheduledStart: "asc" }, select: { scheduledStart: true } }),
     prisma.programCalendlyEventMapping.findFirst({ where: { purpose: "MONTHLY_STRATEGY", enabled: true }, select: { publicUrl: true } }),
-    import("@/lib/portalSetup").then((m) => m.setupFacts(enrollmentId, clientId)).catch(() => null),
+    import("@/lib/portalSetup").then((m) => m.setupMissingWords(enrollmentId, clientId)).catch(() => [] as string[]),
+    prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { callMode: true, strategyCallRequired: true } }).catch(() => null),
   ]);
   const { STRATEGY_CALL_BOOKING_URL } = await import("@/lib/integrations/calendly");
-  const { SETUP_ITEMS } = await import("@/lib/portalSetup");
   const at = call?.scheduledStart ?? null;
   const firstCallAtET = at ? `${at.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" })} at ${at.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })} ET` : null;
-  const setupMissing = facts
-    ? SETUP_ITEMS.filter((i) => !i.optional).filter((i) => !facts[i.key]).map((i) => SETUP_WORDS[i.key] ?? i.key)
-    : [];
-  return { firstCallAtET, callLink: firstCallAtET ? null : monthly?.publicUrl ?? STRATEGY_CALL_BOOKING_URL, setupMissing, strategyUpdate };
+  // Oct 12 2026: strategy calls switched off for this client (Program style) =
+  // no "book your first strategy call" step; they choose topics in the portal.
+  const mode = enrollment?.callMode === "REQUIRED" || enrollment?.callMode === "OPTIONAL_WRITTEN" || enrollment?.callMode === "NOT_INCLUDED"
+    ? enrollment.callMode
+    : enrollment?.strategyCallRequired === false ? "NOT_INCLUDED" : "REQUIRED";
+  const strategyCallsOff = mode === "NOT_INCLUDED";
+  return { firstCallAtET, callLink: firstCallAtET || strategyCallsOff ? null : monthly?.publicUrl ?? STRATEGY_CALL_BOOKING_URL, setupMissing, strategyUpdate, strategyCallsOff };
 }
 
 function readJson(s: string | null | undefined): Record<string, unknown> { try { const v = JSON.parse(s ?? "{}"); return v && typeof v === "object" ? (v as Record<string, unknown>) : {}; } catch { return {}; } }

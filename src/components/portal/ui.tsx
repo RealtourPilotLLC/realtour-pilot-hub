@@ -31,7 +31,7 @@ export function LoadFailed({ what }: { what: string }) {
   return (
     <div role="alert" className="flex items-start gap-2 rounded-2xl border border-warning/30 bg-warning-soft/40 p-3.5 text-sm">
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
-      <span className="text-ui-secondary leading-relaxed">We couldn&rsquo;t load {what} just now — refresh to try again. If it keeps happening, {contactLine()}.</span>
+      <span className="text-ui-secondary leading-relaxed">We couldn&rsquo;t load {what} just now. Refresh to try again. If it keeps happening, {contactLine()}.</span>
     </div>
   );
 }
