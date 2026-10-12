@@ -99,10 +99,17 @@ export function ScriptApprovalCard({ script, onResult, run, busy: parentBusy, la
             <button type="button" onClick={() => setChanging(!changing)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> {CTA_WORDS.CHANGES}</button>
             {!onResult && busy && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</span>}
           </div>
+          {/* Oct 12 2026: the change box says what it's for, takes a few
+              lines, and stacks on a phone — Submit and Cancel under the words. */}
           {changing && (
-            <div className="mt-1.5 flex items-start gap-2">
-              <textarea value={changeNote} onChange={(e) => { setChangeNote(e.target.value); setRetry(null); setOwn(null); }} rows={2} placeholder="What should change? A line, a word, the whole angle&hellip;" aria-label="What should change about this script" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
-              <button type="button" onClick={sendChanges} disabled={busy || changeNote.trim().length < 3} className={cn("shrink-0 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11" : "")}>Send</button>
+            <div className="mt-2 rounded-lg border border-border bg-surface-2/40 p-2.5">
+              <label htmlFor={`script-changes-${script.id}`} className="block text-xs font-semibold">What would you like changed?</label>
+              <p className="mt-0.5 text-[11px] text-muted">A line, a word, or the whole angle. We&rsquo;ll rework it and share the new version here.</p>
+              <textarea id={`script-changes-${script.id}`} value={changeNote} onChange={(e) => { setChangeNote(e.target.value); setRetry(null); setOwn(null); }} rows={large ? 4 : 3} placeholder="For example: make the hook about first-time buyers" className="mt-1.5 block w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base outline-none focus:border-brand sm:text-sm" />
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <button type="button" onClick={sendChanges} disabled={busy || changeNote.trim().length < 3} className={cn("rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11 px-4 text-sm" : "")}>Submit changes</button>
+                <button type="button" onClick={() => setChanging(false)} disabled={busy} className={cn("rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11 px-4 text-sm" : "")}>Cancel</button>
+              </div>
             </div>
           )}
         </>

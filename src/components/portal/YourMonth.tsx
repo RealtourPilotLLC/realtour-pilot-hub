@@ -68,7 +68,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
   const s = d.schedule;
   const steps = yourMonthSteps({
     monthLabel: monthLabel(month.monthKey).split(" ")[0],
-    planning: { callMode: p.callMode, planningMode: p.planningMode, callStatus: p.callStatus, callAtISO: p.callAtISO, noCallEligible: p.noCallEligible, chosenAtISO: p.chosenAtISO, deferredAtISO: p.deferredAtISO },
+    planning: { callMode: p.callMode, planningMode: p.planningMode, callStatus: p.callStatus, callAtISO: p.callAtISO, noCallEligible: p.noCallEligible, chosenAtISO: p.chosenAtISO, deferredAtISO: p.deferredAtISO, officePlanned: p.officePlanned },
     month: planning,
     schedule: s ? {
       locked: s.locked, reason: s.reason, earliestISO: s.earliestISO, sessionsRequired: s.sessionsRequired, sessionsMissing: s.sessionsMissing,
@@ -82,7 +82,8 @@ export function YourMonth({ d }: { d: YourMonthData }) {
   });
   const clientPlanned = p.clientPlanned;
   const route = p.planningMode === "WRITTEN" ? "WRITTEN" : p.planningMode === "CALL" ? "CALL" : "UNDECIDED";
-  const canChoose = p.noCallEligible && d.can.session && !d.readOnly;
+  // Oct 12 2026: a month the office planned (its scripts uploaded) has no route for the client to choose.
+  const canChoose = p.noCallEligible && d.can.session && !d.readOnly && !p.officePlanned;
   const current = steps.find((x) => x.state === "current") ?? null;
   const topicsAreCurrent = current?.key === "topics" || current?.key === "answers" || (current?.key === "call" && planning.call === "HELD");
 

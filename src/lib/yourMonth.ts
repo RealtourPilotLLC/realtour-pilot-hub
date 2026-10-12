@@ -45,6 +45,8 @@ export type YourMonthInput = {
     noCallEligible: boolean;
     chosenAtISO: string | null;
     deferredAtISO: string | null;
+    /** Oct 12 2026: the office planned the month by uploading its scripts — nothing to choose or answer. */
+    officePlanned?: boolean;
   };
   month: MonthPlanning;
   /** The month's scheduling card (portalScheduleMonths), or null when the month is not open for booking. */
@@ -120,10 +122,11 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
     // A switch is refused once the call was held or filming is booked
     // (portal.planningSwitchRefusal), so the step stops promising one.
     const filmingBooked = !!i.schedule && (i.schedule.pendingRequest || (i.schedule.sessionsRequired > 0 && i.schedule.sessionsMissing < i.schedule.sessionsRequired));
+    const office = !!i.planning.officePlanned && route === "WRITTEN";
     steps.push({
       key: "route", status: "done",
-      title: route === "WRITTEN" ? "You're choosing your topics here" : held ? "You planned this month on your strategy call" : first ? "This month is planned on a strategy call" : "You're talking your topics through on a call",
-      detail: i.planning.noCallEligible && actSession && !held && !filmingBooked ? "You can switch any time — nothing you've done is lost." : null,
+      title: office ? "We planned this month's videos for you" : route === "WRITTEN" ? "You're choosing your topics here" : held ? "You planned this month on your strategy call" : first ? "This month is planned on a strategy call" : "You're talking your topics through on a call",
+      detail: office ? null : i.planning.noCallEligible && actSession && !held && !filmingBooked ? "You can switch any time — nothing you've done is lost." : null,
       cta: null,
     });
   }
@@ -180,6 +183,9 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
         detail: "We write each script from your answers. Your progress saves as you go.",
         cta: actSuggest ? { label: answerCta(oneGap), href: i.hrefs.month } : null,
       });
+    } else if (inputsReady && m.counts.CHOSEN === 0 && route === "WRITTEN" && i.planning.officePlanned) {
+      // Oct 12 2026: the office wrote the month's scripts — there were no questions.
+      steps.push({ key: "answers", status: "done", title: "Nothing to answer this month", detail: "We wrote these scripts for you. You'll review each one here.", cta: null });
     } else if (inputsReady && m.counts.CHOSEN === 0 && route === "WRITTEN") {
       steps.push({ key: "answers", status: "done", title: "Your answers are in", detail: "Our team uses your answers to write the scripts. You'll review each released version here.", cta: null });
     } else {

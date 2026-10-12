@@ -315,6 +315,15 @@ export type TopicMaterialInput = {
    * preparation clock. Omitted/null = no reading on the row (not a veto).
    */
   interviewSufficient?: boolean | null;
+  /**
+   * Oct 12 2026 ("upload this month's scripts"): a live (non-historical)
+   * script for this topic is on the month, in ANY state — the office wrote it.
+   * Nothing is left for the client to answer about the topic, so the written
+   * route reads "preparing scripts", never "waiting on answers". It does NOT
+   * open the gate: that still takes an approved script (topicMaterialReady).
+   * Omitted = not known (every caller before this one).
+   */
+  scriptWritten?: boolean;
 };
 
 export type SessionReadiness = {
@@ -970,6 +979,8 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   for (const i of input.interviews) if (i.topicId) byTopic.set(i.topicId, { status: i.status, submittedAt: i.submittedAt });
 
   const sessions: SessionReadiness[] = [];
+  /** Sessions whose every planned topic has a script written (Oct 12 2026) — see TopicMaterialInput.scriptWritten. */
+  const scriptedSessions = new Set<number>();
   if (sessionsKnown && topics && plan) {
     for (const s of planSessions(topics, plan)) {
       const notes: string[] = [];
@@ -978,6 +989,10 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       // A session with no planned topic has nothing to be sufficient ABOUT. It
       // is not "ready"; it is unplanned, and that is Kyle's follow-up.
       const sufficient = s.topics.length > 0 && missing.length === 0;
+      // Every topic the session plans has a script on the month (the office
+      // wrote them — an uploaded batch): there is nothing to ask the client.
+      const scripted = s.topics.length > 0 && s.topics.length >= s.plannedVideos && s.topics.every((t) => t.scriptWritten === true || topicMaterialReady(t));
+      if (scripted) scriptedSessions.add(s.index);
       for (const t of s.topics) {
         const iv = byTopic.get(t.topicId);
         if (iv && iv.submittedAt && iv.status !== "SUBMITTED") {
@@ -998,7 +1013,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
         notes.push(`${s.topics.length} of ${s.plannedVideos} planned videos have a topic`);
         followUps.push({ kind: "UNDER_PLANNED_SESSION", owner: "KYLE", sessionIndex: s.index, reason: `Session ${s.index} has ${s.topics.length} of ${s.plannedVideos} topics chosen.` });
       }
-      if (!sufficient && missing.length > 0) {
+      if (!sufficient && missing.length > 0 && !scripted) {
         followUps.push({ kind: "UNFINISHED_ANSWERS", owner: "KYLE", sessionIndex: s.index, reason: `Session ${s.index} still needs material for ${missing.length} of ${s.topics.length} topics.` });
       }
       // The CALL path is gated by the call, not by the answers: §8 says missing
@@ -1022,7 +1037,8 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       } else if (s.topics.length === 0 || s.topics.length < s.plannedVideos) {
         lock = planningMode === "UNDECIDED" ? "CHOOSE_ROUTE" : "UNDER_PLANNED";
       } else if (!sufficient || !materialReadyAt) {
-        lock = planningMode === "UNDECIDED" ? "CHOOSE_ROUTE" : sufficient ? "PREPARING" : "ANSWERS";
+        // Scripts written for every topic (Oct 12): the office is preparing — never "send your answers".
+        lock = planningMode === "UNDECIDED" ? "CHOOSE_ROUTE" : sufficient || scripted ? "PREPARING" : "ANSWERS";
       } else {
         // The last piece of material to land names the anchor, so answers sent
         // again (a reopen and resubmit) are a different anchor.
@@ -1174,6 +1190,9 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   else if (planningMode === "CALL") preparationStatus = callHeld || scripts.length > 0 ? afterPrep() : "CALL_PLANNED";
   else if (planningMode === "WRITTEN") {
     if (preparationSufficient) preparationStatus = afterPrep();
+    // Oct 12 2026: the office wrote the month's scripts (an upload) — every
+    // planned topic has one, so the month is at script approval, not answers.
+    else if (sessions.length > 0 && sessions.every((s) => scriptedSessions.has(s.index))) preparationStatus = afterPrep();
     else preparationStatus = input.interviews.length > 0 ? "AWAITING_ANSWERS" : "WRITTEN_SELECTED";
   } else if (scripts.length > 0) {
     // UNDECIDED (§3, Sep 25 2026: a month after the first held call may go
@@ -1185,7 +1204,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
 
   // Missing post-call information: a warning and a chase, never a closed gate
   // and never a restarted clock (spec §8).
-  if (planningMode === "CALL" && callHeld && !preparationSufficient && !clientPlanned) {
+  if (planningMode === "CALL" && callHeld && !preparationSufficient && !clientPlanned && !(sessions.length > 0 && sessions.every((s) => scriptedSessions.has(s.index)))) {
     const gaps = sessions.filter((s) => !s.sufficient).map((s) => s.index);
     followUps.push({
       kind: "MISSING_POST_CALL_INFO", owner: "KYLE", sessionIndex: gaps[0] ?? null,
@@ -1512,6 +1531,8 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     scriptByTopic.set(s.topicId, { approved: (prev?.approved ?? false) || isApproved, approvedAt: prev?.approvedAt ?? s.approvedAt ?? null });
   }
   const interviewByTopic = new Map(interviews.map((i) => [i.topicId, i]));
+  // Oct 12 2026: a live script written for the topic on this month, in any state.
+  const writtenTopics = new Set(scripts.filter((s) => s.topicId && s.historical !== true).map((s) => s.topicId as string));
   const topics: TopicMaterialInput[] = monthTopics.map((t) => {
     const script = scriptByTopic.get(t.id);
     const iv = interviewByTopic.get(t.id);
@@ -1520,6 +1541,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
       scriptApproved: script?.approved ?? false, scriptApprovedAt: script?.approvedAt ?? null,
       interviewStatus: iv?.status ?? null, interviewSubmittedAt: iv?.submittedAt ?? null,
       interviewSufficient: storedSufficiency(iv?.sufficiencyJson ?? null),
+      scriptWritten: writtenTopics.has(t.id),
     };
   });
   const after = deriveMonthState({

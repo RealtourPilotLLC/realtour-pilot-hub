@@ -67,6 +67,12 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             {p.clientPlanned && p.callStatus === "NOT_REQUIRED" ? (
               // Oct 8 2026: they plan their own videos and have no strategy call.
               <p className="text-muted">Your program doesn&rsquo;t include a strategy call — you plan your videos and we film them.</p>
+            ) : p.planningMode === "WRITTEN" && !p.clientPlanned && p.officePlanned ? (
+              // Oct 12 2026: the office planned the month by writing its scripts — no route to switch.
+              <>
+                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> No call this month — we planned it for you</div>
+                <p className="text-xs text-muted">We wrote this month&rsquo;s scripts. Read them in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>; filming opens once they&rsquo;re ready.</p>
+              </>
             ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>

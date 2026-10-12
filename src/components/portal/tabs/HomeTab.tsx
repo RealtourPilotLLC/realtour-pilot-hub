@@ -91,6 +91,13 @@ export function AppointmentCards({ d, href, plan }: {
           <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
         ) : p.clientPlanned && (p.callStatus === "NOT_REQUIRED" || p.callMode === "NOT_INCLUDED") ? (
           <p className="mt-2 text-sm text-muted">Your program doesn&rsquo;t include a strategy call.</p>
+        ) : p.planningMode === "WRITTEN" && !p.clientPlanned && p.officePlanned ? (
+          // Oct 12 2026: the office planned the month by writing its scripts.
+          <div className="mt-2 text-sm">
+            <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> No call this month</div>
+            <p className="mt-0.5 text-xs text-muted">We planned {monthLabel(p.monthKey)} and wrote your scripts. You&rsquo;ll review them in Your Month.</p>
+            <Link href={plan.href} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">{plan.label} <ChevronRight className="size-3" /></Link>
+          </div>
         ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
           <div className="mt-2 text-sm">
             <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing</div>

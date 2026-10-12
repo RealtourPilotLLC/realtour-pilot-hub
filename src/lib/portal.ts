@@ -807,6 +807,8 @@ export type PortalScheduleMonth = {
   deferredAtISO: string | null;
   /** Oct 8 2026: the client plans their own content — no planning step gates filming. */
   clientPlanned?: boolean;
+  /** Oct 12 2026: the office planned this month by uploading its scripts (no call, no answers). */
+  officePlanned?: boolean;
 };
 
 export type PortalScheduleSession = {
@@ -840,7 +842,7 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
     where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
     orderBy: { monthKey: "asc" },
     take: 3,
-    select: { id: true, monthKey: true, schedulingDeferredAt: true },
+    select: { id: true, monthKey: true, schedulingDeferredAt: true, planningChosenBy: true },
   });
   if (months.length === 0) return [];
   // A21: "Schedule later" is per session (ProgramSessionPlan); the month's own
@@ -898,6 +900,7 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
       callAtISO: gate.callAt ? gate.callAt.toISOString() : null,
       planningMode: gate.planningMode,
       clientPlanned: gate.preparation?.anchor?.kind === "CLIENT_PLANNED",
+      officePlanned: gate.planningMode === "WRITTEN" && !!m.planningChosenBy?.startsWith("office:"),
       capacity: { allowed: capacity.allowed, used: capacity.used, remaining: capacity.remaining },
       requests: shown.map((r) => ({
         id: r.id, status: r.status, label: r.label, bookingState: r.bookingState, creativeName: r.creativeName,
@@ -1693,6 +1696,8 @@ export type PortalPlanning = {
   catchUp: { missedMonthKey: string; label: string; line: string; nextCallISO: string | null } | null;
   /** Oct 8: the client plans their own content — the month is "add your brief (optional) → book filming". */
   clientPlanned: boolean;
+  /** Oct 12: the office planned this month by uploading its scripts (planningChosenBy "office:…") — no route to choose, no answers to give. */
+  officePlanned: boolean;
 };
 
 /** Steps past the answers stage: the material is in, or the script is. */
@@ -1749,6 +1754,9 @@ export function planningSwitchRefusal(i: { to: "CALL" | "WRITTEN"; callStatus: s
   return null;
 }
 
+/** Oct 12 2026: the client's words when the office planned the month by uploading its scripts. No em dashes (a client reads it). */
+export const OFFICE_PLANNED_SWITCH = "We've already written this month's scripts for you. If you'd like to talk them through, send us a message.";
+
 export function planningUndoRefusal(i: { callStatus: string; planningMode: string; scriptsStarted: boolean; filmingBooked: boolean }): string | null {
   if (i.callStatus === "COMPLETED") return "Your strategy call for this month has already happened, so this month's plan stays as it is.";
   if (i.scriptsStarted) return "We've already started writing your scripts for this month, so this choice can't be undone now.";
@@ -1788,6 +1796,7 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
   // the derivation's, so this card and the reminder evaluator agree.
   const mode = d.callMode;
   const planning = pf?.planning ?? null;
+  const officePlanned = !!pf?.chosenBy?.startsWith("office:");
   const inAllowance = planning?.topics.filter((t) => t.inAllowance) ?? [];
   const filmingBooked = liveRequests > 0 || d.sessionsAccountedFor > 0;
   // The planning reader knows which scripts belong to the allowance (an
@@ -1811,7 +1820,9 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
     planning,
     filmingBooked,
     undoBlocked: planningUndoRefusal({ callStatus: d.strategyCallStatus, planningMode: d.planningMode, scriptsStarted, filmingBooked }),
-    switchBlocked: {
+    // Oct 12: a month the office planned (its scripts uploaded) is not the client's to re-route.
+    officePlanned: officePlanned,
+    switchBlocked: officePlanned && d.planningMode === "WRITTEN" ? { CALL: OFFICE_PLANNED_SWITCH, WRITTEN: null } : {
       CALL: planningSwitchRefusal({ to: "CALL", callStatus: d.strategyCallStatus, planningMode: d.planningMode, filmingBooked }),
       WRITTEN: planningSwitchRefusal({ to: "WRITTEN", callStatus: d.strategyCallStatus, planningMode: d.planningMode, filmingBooked }),
     },

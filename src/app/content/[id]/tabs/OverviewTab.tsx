@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardCheck, FileText, MessageSquare, Rocket } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardCheck, FileText, FileUp, MessageSquare, Rocket } from "lucide-react";
 import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 import { Section } from "@/components/ui/Section";
 import { MonthJourney, journeyFromOverview, monthJourneyLinks } from "@/components/content/MonthJourney";
@@ -132,6 +132,18 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
           )
         )}
       </div>
+
+      {/* Oct 12 2026: no scripts on the month yet — the office can upload its own. Owner/admin only. */}
+      {ctx.staffEyes && !month.historical && month.status === "OPEN" && !clientPlanned && !progress?.forfeited && progress?.scripts.total === 0 && (
+        <Link href={contentHref(id, { tab: "plan", view: "scripts", month: mk, anchor: "upload" })} className="panel-shadow flex flex-wrap items-center gap-3 rounded-2xl border border-dashed border-brand/40 bg-surface px-4 py-3 hover:bg-surface-2">
+          <FileUp className="size-5 shrink-0 text-brand" aria-hidden />
+          <span className="min-w-0 flex-1 basis-56">
+            <span className="block text-sm font-semibold">No scripts for {monthLabel(mk).split(" ")[0]} yet</span>
+            <span className="block text-[13px] text-muted">Wrote them yourself? Upload this month&rsquo;s scripts — they set the month&rsquo;s topics and go to the client for review.</span>
+          </span>
+          <span className="text-sm font-semibold text-brand">Upload scripts →</span>
+        </Link>
+      )}
 
       {/* THE CLIENT'S CREATIVE BRIEF (Oct 8 2026) — what they planned for this month. */}
       {showBrief && brief && (

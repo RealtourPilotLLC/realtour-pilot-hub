@@ -9,6 +9,7 @@ import { ScriptsPanel } from "@/components/content/ScriptsPanel";
 import { StrategyPanel } from "@/components/content/StrategyPanel";
 import { FactsPanel } from "@/components/content/FactsPanel";
 import { StrategyCallCard, NotesCard, ScriptRequestsPanel } from "@/components/content/Workspace";
+import { ScriptUploadPanel } from "@/components/content/ScriptUploadPanel";
 import { loadTopicsTab, loadScriptsTab, loadStrategyTab, loadFactsTab, loadCallsTab, loadScriptRequests, loadLegacyNotes } from "../programData";
 import { loadFieldProposals, loadStrategyTargets } from "../workspaceData";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
@@ -49,14 +50,21 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   }
 
   if (v === "scripts") {
-    const [requests, d] = await Promise.all([
+    // Oct 12 2026: "Upload this month's scripts" — owner/admin, an open month
+    // of a client we write for (not imported history, not client-planned).
+    const uploadMonth = ctx.staffEyes && month && !month.historical && month.status === "OPEN" && !ctx.progress?.topics.clientSupplies ? month : null;
+    const [requests, d, uploads] = await Promise.all([
       loadScriptRequests(month ? { id: month.id } : null),
       loadScriptsTab(id, month ? { id: month.id } : null),
+      uploadMonth ? import("@/lib/scriptUpload").then((m) => m.monthUploads(id, uploadMonth.id)).catch(() => null) : Promise.resolve(null),
     ]);
     return (
       <div className="space-y-5">
         {sub}
         <MonthHeader ctx={ctx} tab="plan" view="scripts" title={`Scripts — ${monthName}`} />
+        {uploadMonth && uploads && (
+          <ScriptUploadPanel enrollmentId={id} monthId={uploadMonth.id} monthName={monthShort} clientName={client.name.split(" ")[0] || client.name} batches={uploads.batches} monthHasScripts={uploads.monthHasScripts} />
+        )}
         <ScriptRequestsPanel groups={requests} />
         <ScriptsPanel scripts={d.scripts} queueCount={d.queueCount} scriptOwner={d.scriptOwner} owed={d.owed} />
       </div>

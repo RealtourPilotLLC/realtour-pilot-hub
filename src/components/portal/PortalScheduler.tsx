@@ -399,7 +399,12 @@ export function PortalScheduler({
 
           {/* Strategy call / planning — a slim row when handled, a clear CTA when not. */}
           {!embedded && <div className="mt-3">
-            {writtenPath ? (
+            {writtenPath && month.officePlanned ? (
+              // Oct 12 2026: the office wrote this month's scripts — nothing to answer.
+              <StatusRow icon={month.locked ? Clock : CheckCircle2} tone={month.locked ? "muted" : "ok"}>
+                {month.locked ? "We planned this month for you: session booking opens once your scripts are ready" : "We planned this month for you: your scripts are ready"}
+              </StatusRow>
+            ) : writtenPath ? (
               <StatusRow icon={month.locked ? Clock : CheckCircle2} tone={month.locked ? "muted" : "ok"}>
                 {month.locked ? "Planning in writing: send us your answers and session booking opens" : "Planning in writing: answers received"}
               </StatusRow>
