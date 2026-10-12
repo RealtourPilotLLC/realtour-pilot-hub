@@ -303,6 +303,8 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
     <Card>
       <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
       {d.planning?.catchUp && d.planning.monthKey === d.monthKey && <p className="mt-1 text-sm font-medium text-brand">{d.planning.catchUp.line}</p>}
+      {/* Oct 12 2026: an over month's session booked this month too (lateSession.ts). */}
+      {d.planning?.late && d.planning.monthKey === d.monthKey && <p className="mt-1 text-sm font-medium text-brand">{d.planning.late.line}</p>}
       {/* A count that failed to load is unknown, not zero. */}
       {d.countsFailed || !d.program ? (
         <p className="mt-2 text-xs text-warning">We couldn&rsquo;t count this month&rsquo;s videos just now — refresh to try again, or open your Content Library to see them.</p>

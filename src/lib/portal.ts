@@ -733,9 +733,16 @@ type GateContext = { d: import("@/lib/programMonths").DerivedMonthState; clientI
 
 async function gateContext(enrollmentId: string, monthId: string, now: Date): Promise<GateContext | SessionGate> {
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return closedGate(now, "Pick one of your program months.");
-  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, clientId: true, historical: true } });
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, clientId: true, historical: true, monthKey: true, status: true } });
   if (!month || month.enrollmentId !== enrollmentId) return closedGate(now, "Pick one of your program months.");
   if (month.historical) return closedGate(now, "That month is closed.");
+  // Oct 12 2026: an over month whose session is booked late (lateSession.ts)
+  // opens only once its scripts are ready, and only while its host month runs.
+  // Every other month reads exactly as before (the check is for over months).
+  if (month.monthKey < etMonthKey(now)) {
+    const lock = await import("@/lib/monthLateSession").then((m) => m.lateGateLock(enrollmentId, { id: monthId, monthKey: month.monthKey, status: month.status, historical: month.historical }, now)).catch(() => null);
+    if (lock) return closedGate(now, lock);
+  }
   const { recalcProgramMonth, preparationGate } = await import("@/lib/programMonths");
   const r = await recalcProgramMonth(monthId, { dryRun: true, now });
   if (!r) return closedGate(now, "Pick one of your program months.");
@@ -809,6 +816,14 @@ export type PortalScheduleMonth = {
   clientPlanned?: boolean;
   /** Oct 12 2026: the office planned this month by uploading its scripts (no call, no answers). */
   officePlanned?: boolean;
+  /**
+   * Oct 12 2026 (lateSession.ts): this is an OVER month whose one session is
+   * booked late, alongside `hostMonthKey`'s. Its gate is its own plan's (and
+   * its scripts being ready), never the host month's.
+   */
+  late?: { hostMonthKey: string; scriptsReady: boolean } | null;
+  /** What the month's tab says when a late session sits beside it: "September session (your scripts are ready)" / "October session". */
+  tabLabel?: string | null;
 };
 
 export type PortalScheduleSession = {
@@ -838,13 +853,37 @@ export const OPEN_REQUEST_STATUSES = ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQU
  * reload and a second click lands on the same row.
  */
 export async function portalScheduleMonths(enrollment: { id: string; clientId: string }): Promise<PortalScheduleMonth[]> {
-  const months = await prisma.contentMonth.findMany({
+  const open = await prisma.contentMonth.findMany({
     where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
     orderBy: { monthKey: "asc" },
     take: 3,
     select: { id: true, monthKey: true, schedulingDeferredAt: true, planningChosenBy: true },
   });
-  if (months.length === 0) return [];
+  if (open.length === 0) return [];
+  // Oct 12 2026: an over month whose session is booked late beside one of
+  // these (lateSession.ts) is bookable here too, first, under its own name —
+  // until its session has been filmed.
+  const lateRecs = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } })
+    .then((e) => import("@/lib/lateSession").then((l) => l.readLateSessions(e?.overridesJson).filter((r) => open.some((m) => m.id === r.hostMonthId && m.monthKey === r.hostMonthKey))))
+    .catch(() => []);
+  const lateInfo = new Map<string, { hostMonthKey: string; scriptsReady: boolean; tabLabel: string }>();
+  const hostTab = new Map<string, string>();
+  const lateRows: typeof open = [];
+  if (lateRecs.length) {
+    const { bookableLateRecord, lateScriptsReady, lateMonthState } = await import("@/lib/monthLateSession");
+    const { lateSlotLabel, hostSlotLabel } = await import("@/lib/lateSession");
+    const rows = await prisma.contentMonth.findMany({ where: { id: { in: lateRecs.map((r) => r.lateMonthId) }, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, status: true, historical: true, schedulingDeferredAt: true, planningChosenBy: true } });
+    for (const r of lateRecs) {
+      const row = rows.find((x) => x.id === r.lateMonthId && x.monthKey === r.lateMonthKey);
+      if (!row || !(await bookableLateRecord(enrollment.id, row).catch(() => null))) continue;
+      if ((await lateMonthState(row.id, enrollment.clientId, new Date()).catch(() => null))?.filmed) continue;
+      const scripts = await lateScriptsReady(row.id, r).catch(() => ({ released: 0, ready: r.scriptsSentOutside }));
+      lateInfo.set(row.id, { hostMonthKey: r.hostMonthKey, scriptsReady: scripts.ready, tabLabel: lateSlotLabel(r.lateMonthKey, r.hostMonthKey, scripts.ready) });
+      hostTab.set(r.hostMonthId, hostSlotLabel(r.hostMonthKey));
+      lateRows.push({ id: row.id, monthKey: row.monthKey, schedulingDeferredAt: row.schedulingDeferredAt, planningChosenBy: row.planningChosenBy });
+    }
+  }
+  const months = [...lateRows, ...open].sort((a, b) => a.monthKey.localeCompare(b.monthKey));
   // A21: "Schedule later" is per session (ProgramSessionPlan); the month's own
   // stamp (batch 2) stands for session 1 when no plan row says otherwise.
   const plans = await prisma.programSessionPlan.findMany({ where: { monthId: { in: months.map((m) => m.id) } }, select: { monthId: true, sessionIndex: true, schedulingDeferredAt: true } }).catch(() => []);
@@ -921,6 +960,8 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
       sessionIndex: gate.sessionIndex,
       sessionGates: gates.sessions.map((g, i) => ({ index: g.sessionIndex ?? i + 1, locked: g.locked, reason: g.reason, earliestISO: g.locked ? null : g.earliest.toISOString() })),
       deferredAtISO: deferredAt ? deferredAt.toISOString() : null,
+      late: lateInfo.has(m.id) ? { hostMonthKey: lateInfo.get(m.id)!.hostMonthKey, scriptsReady: lateInfo.get(m.id)!.scriptsReady } : null,
+      tabLabel: lateInfo.get(m.id)?.tabLabel ?? hostTab.get(m.id) ?? null,
     });
   }
   return out;
@@ -1465,6 +1506,24 @@ export async function openMonthForEnrollment(enrollmentId: string, monthId: stri
   return m;
 }
 
+/**
+ * A month this enrollment may book a filming session FOR: an open month
+ * (openMonthForEnrollment), or (Oct 12 2026) an over month whose session the
+ * office approved for booking late in this month or a later one
+ * (monthLateSession.bookableLateRecord). Topics, answers and routes stay on
+ * openMonthForEnrollment: a late month's plan is done.
+ */
+export async function bookableMonthForEnrollment(enrollmentId: string, monthId: string) {
+  const open = await openMonthForEnrollment(enrollmentId, monthId);
+  if (open) return open;
+  if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return null;
+  const m = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true, historical: true, videosOwed: true, status: true } });
+  if (!m || m.enrollmentId !== enrollmentId) return null;
+  const { bookableLateRecord } = await import("@/lib/monthLateSession");
+  if (!(await bookableLateRecord(enrollmentId, m))) return null;
+  return { id: m.id, enrollmentId: m.enrollmentId, monthKey: m.monthKey, historical: m.historical, videosOwed: m.videosOwed };
+}
+
 export type PortalInterviewView = {
   clientId: string;
   enrollmentId: string;
@@ -1698,6 +1757,8 @@ export type PortalPlanning = {
   clientPlanned: boolean;
   /** Oct 12: the office planned this month by uploading its scripts (planningChosenBy "office:…") — no route to choose, no answers to give. */
   officePlanned: boolean;
+  /** Oct 12: an over month's session is booked this month too ("Your September session still needs booking, and October's too."), or null. */
+  late: import("@/lib/monthLateSession").PortalLateSession | null;
 };
 
 /** Steps past the answers stage: the material is in, or the script is. */
@@ -1792,6 +1853,8 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
   const record = recordRows.find((x) => d.strategyCallAt && x.scheduledStart?.getTime() === d.strategyCallAt.getTime()) ?? recordRows[0] ?? null;
   const cu = catchUpInto(e.overridesJson, month.monthKey);
   const cuName = cu ? catchUpMonthName(cu.missedMonthKey, month.monthKey) : null;
+  // Oct 12 2026: an over month's session booked this month too (lateSession.ts).
+  const late = await import("@/lib/monthLateSession").then((m) => m.portalLateSession(enrollment, month.id, { timezone: e.timezone })).catch(() => null);
   // The EFFECTIVE mode (§3: the first call is required, later ones optional) —
   // the derivation's, so this card and the reminder evaluator agree.
   const mode = d.callMode;
@@ -1832,6 +1895,7 @@ export async function portalPlanning(enrollment: { id: string; clientId: string 
       // A second call booked to plan the catch-up batch (the card above names the first).
       nextCallISO: recordRows.filter((x) => x !== record && x.status === "SCHEDULED" && x.scheduledStart && x.scheduledStart > new Date()).sort((a, b) => a.scheduledStart!.getTime() - b.scheduledStart!.getTime())[0]?.scheduledStart?.toISOString() ?? null,
     } : null,
+    late,
   };
 }
 

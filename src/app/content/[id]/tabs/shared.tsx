@@ -63,6 +63,8 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
   // Oct 7 2026: a month in a catch-up (either side) changes only through the catch-up's own Undo.
   const caughtUpIn = ctx.progress?.monthId === m?.id ? ctx.progress?.catchUp.from?.targetMonthKey ?? null : null;
   const inCatchUp = !!caughtUpIn || (ctx.progress?.monthId === m?.id && !!ctx.progress?.catchUp.into);
+  // Oct 12 2026: this over month's session is booked late (lateSession.ts).
+  const lateIn = ctx.progress?.monthId === m?.id ? ctx.progress?.late?.filmingIn?.hostMonthKey ?? null : null;
   // Oct 8 2026: a missed month is forfeited. Staff see the word and the one
   // way back — approving a catch-up session on the next open month.
   const forfeited = !!m && ctx.progress?.monthId === m.id && !!ctx.progress?.forfeited;
@@ -76,6 +78,7 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
           {m?.historical && <span className="ml-2 align-middle text-ui-status font-normal text-muted">imported history</span>}
           {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-ui-status font-normal text-muted">{caughtUpIn ? `caught up in ${monthLabel(caughtUpIn).split(" ")[0]}` : "skipped"}</span>}
           {forfeited && <span className="ml-2 align-middle text-ui-status font-normal text-muted">forfeited</span>}
+          {lateIn && <span className="ml-2 align-middle text-ui-status font-normal text-muted">session booked in {monthLabel(lateIn).split(" ")[0]}</span>}
         </h2>
         {forfeited && m && (
           <p className="mt-1 text-ui-secondary text-muted">

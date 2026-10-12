@@ -282,11 +282,39 @@ export async function attachMonthlyProjects(): Promise<{ attached: number }> {
       // re-examined ~305 unattachable historical shoots on every run (audit).
       shootDate: { gte: new Date("2026-06-01T00:00:00Z") },
     },
-    select: { id: true, clientId: true, shootDate: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } },
+    select: { id: true, clientId: true, shootDate: true, aryeoOrderId: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } },
   });
   let attached = 0;
+  // Oct 12 2026: a shoot that IS a late month's session (lateSession.ts) —
+  // the late month's own live request names it (its project or Aryeo order,
+  // or a slot within two hours) — belongs to the LATE month, not to the month
+  // its date falls in. Read once, only for clients that have such a month.
+  const { readLateSessions } = await import("@/lib/lateSession");
+  const lateBags = await prisma.contentEnrollment.findMany({ where: { id: { in: [...byClient.values()] }, overridesJson: { contains: "lateSessions" } }, select: { id: true, overridesJson: true } });
+  const lateMonthIds = lateBags.flatMap((e) => readLateSessions(e.overridesJson).map((r) => r.lateMonthId));
+  const lateAsks = lateMonthIds.length
+    ? await prisma.programSessionRequest.findMany({
+        where: { monthId: { in: lateMonthIds }, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"] }, bookingState: { not: "CONFLICT" } },
+        select: { monthId: true, clientId: true, projectId: true, aryeoOrderId: true, slotStart: true },
+      })
+    : [];
+  const lateMonthFor = (p: (typeof candidates)[number]): string | null => {
+    const hits = lateAsks.filter((r) => r.clientId === p.clientId && (
+      r.projectId === p.id ||
+      (!!r.aryeoOrderId && r.aryeoOrderId === p.aryeoOrderId) ||
+      (!!r.slotStart && !!p.shootDate && Math.abs(r.slotStart.getTime() - p.shootDate.getTime()) <= 2 * 3600_000)
+    ));
+    const months = [...new Set(hits.map((h) => h.monthId))];
+    return months.length === 1 ? months[0] : null;
+  };
   for (const p of candidates) {
     if (!p.deliverables.some((d) => d.label && MONTHLY_PLAN_RE.test(d.label))) continue;
+    const late = lateAsks.length ? lateMonthFor(p) : null;
+    if (late) {
+      const w = await prisma.project.updateMany({ where: { id: p.id, contentMonthId: null }, data: { contentMonthId: late } });
+      attached += w.count;
+      continue;
+    }
     const monthKey = etMonthKey(p.shootDate!);
     const enrollmentId = byClient.get(p.clientId)!;
     // Find-or-create the month (a shoot may land in a future or past month).

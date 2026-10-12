@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { catchUpFrom, sessionsForMonth } from "@/lib/catchUp";
+import { lateSessionOf } from "@/lib/lateSession";
 import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparationGate, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
@@ -75,6 +76,8 @@ export type OverviewRow = {
   forfeited: boolean;
   /** Oct 8 2026: the client plans their own content ("we show up and shoot"). */
   clientPlanned: boolean;
+  /** Oct 12 2026: this (over) month's session is booked late, in that month (lateSession.ts) — due then, not overdue before. */
+  lateIn: string | null;
   owners: OwnerMap;
 
   planning: {
@@ -582,8 +585,13 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // NEVER fall back to another row's owner map: printing a stranger's name
     // beside a client is worse than printing "unassigned".
     const owner = owners.get(pairKey(e.id, mid)) ?? UNASSIGNED_OWNERS;
-    const deadline = monthEndISO(key);
-    const monthOver = key < thisMonth;
+    // Oct 12 2026: a planned month whose session the office approved to film
+    // late (lateSession.ts) runs on its HOST month's calendar — it is due when
+    // that month ends, and it is not overdue before then.
+    const lateRec = m ? lateSessionOf(e.overridesJson, key) : null;
+    const lateIn = lateRec && lateRec.lateMonthId === mid ? lateRec.hostMonthKey : null;
+    const deadline = monthEndISO(lateIn ?? key);
+    const monthOver = (lateIn ?? key) < thisMonth;
 
     // ---- THE NEXT ACTION: walk the loop; the first unfinished stage speaks. ---------
     // Every link lands on the tab that holds the work (UI-02's contentHref),
@@ -661,6 +669,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: parts.join(" · "), owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
     } else if (sessionState === "REQUESTED") {
       next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
+    } else if (lateIn && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED")) {
+      next = { text: `Filming late, in ${monthLabel(lateIn)}: ${monthLabel(key).split(" ")[0]}'s session isn't booked yet`, owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client", deadlineISO: deadline, href: href("production", "sessions"), cta: "See the session" };
     } else if (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED") {
       next = { text: clientPlanned ? "Client-planned — no filming session on the calendar" : "Scripts are ready — no filming session on the calendar", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Book the session" };
     } else if (ps && sessionState === "CONFIRMED" && ps.missing > 0) {
@@ -735,7 +745,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     rows.push({
       enrollmentId: e.id, clientId: e.clientId, clientName: nameOf.get(e.clientId) ?? "Unknown client",
       pkg: e.package, enrollmentStatus: e.status, trial: e.billingType === "TRIAL",
-      monthId: mid, monthKey: key, monthName: monthLabel(key), monthStatus: m?.status ?? "NONE", historical: !!m?.historical, forfeited, clientPlanned,
+      monthId: mid, monthKey: key, monthName: monthLabel(key), monthStatus: m?.status ?? "NONE", historical: !!m?.historical, forfeited, clientPlanned, lateIn,
       owners: owner,
       planning: {
         callMode, requirementWord: REQUIREMENT_WORD[callMode], planningMode,

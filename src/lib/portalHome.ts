@@ -135,6 +135,8 @@ export type HomeActionsInput = {
   session: { offerBooking: boolean; required: number; missing: number; deferred?: boolean; earliestLabel?: string | null };
   /** Booked sessions still missing an exact filming address (CP-05). */
   addressNeeded: number;
+  /** Oct 12 2026: an over month's session to book this month too (lateSession.ts) — offered once its scripts are ready. */
+  lateSession?: { label: string; open: boolean } | null;
   setup: { complete: boolean; remaining: number } | null;
   ready: { count: number; withFile: boolean; single: { id: string; title: string } | null };
 };
@@ -201,6 +203,9 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       // same action, saying the client chose it, never a second one.
       const detail = i.session.deferred ? "You chose to schedule later. Book any time." : i.session.earliestLabel ? `Sessions can start from ${i.session.earliestLabel}.` : null;
       add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
+    }
+    if (i.lateSession?.open && i.perms.session) {
+      add({ kind: "BOOK_SESSION", count: 1, title: `Book your ${i.lateSession.label} session`, detail: `Your ${i.lateSession.label} scripts are ready. It's filmed this month, beside this month's own session.`, cta: CTA_WORDS.BOOK, dest: "plan", step: "late" });
     }
     if (i.addressNeeded > 0 && i.perms.session) {
       add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So our team arrives at the right door for your filming.", cta: "Add the address", dest: "schedule" });

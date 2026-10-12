@@ -122,10 +122,22 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
     orderBy: { monthKey: "asc" }, take: 3, select: { id: true, monthKey: true },
   }) : [];
-  const selectedMonth = selectedPortalMonth(contextMonths, query.month);
+  // Oct 12 2026: the scheduler may name an over month whose session is booked
+  // late beside one of these (lateSession.ts). The scheduler opens on it; the
+  // page's PLANNING month is its host, so Your Month stays about this month.
+  let lateContext: { id: string; monthKey: string; hostId: string } | null = null;
+  if (portalMonthKey(query.month) && contextMonths.length && !selectedPortalMonth(contextMonths, query.month)) {
+    const bagRow = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } }).catch(() => null);
+    const rec = (await import("@/lib/lateSession")).lateSessionOf(bagRow?.overridesJson, portalMonthKey(query.month));
+    if (rec && contextMonths.some((m) => m.id === rec.hostMonthId)) lateContext = { id: rec.lateMonthId, monthKey: rec.lateMonthKey, hostId: rec.hostMonthId };
+  }
+  const pickedMonth = selectedPortalMonth([...contextMonths, ...(lateContext ? [lateContext] : [])], query.month);
+  const selectedMonth = lateContext && pickedMonth?.id === lateContext.id ? contextMonths.find((m) => m.id === lateContext!.hostId) ?? null : pickedMonth;
+  /** The month the scheduler opens on: a late month's own id, else the selected month's. */
+  const scheduleMonthId = pickedMonth?.id ?? null;
   // The MONTH's sessions (Oct 7 2026): a catch-up month offers its extra session too.
-  const selectedSession = selectedMonth
-    ? portalSessionIndex(query.session, await import("@/lib/programMonths").then((m) => m.sessionsRequiredForMonth(selectedMonth.id)).catch(() => enrollment.sessionsPerMonth))
+  const selectedSession = pickedMonth
+    ? portalSessionIndex(query.session, await import("@/lib/programMonths").then((m) => m.sessionsRequiredForMonth(pickedMonth.id)).catch(() => enrollment.sessionsPerMonth))
     : null;
   const monthKey = selectedMonth?.monthKey ?? etMonthKey();
   const scope = mediaScopeOf(viewer);
@@ -136,7 +148,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // The query every link keeps: `e=` on /portal/me, the selected month and
   // session. `tabHref` answers the old tab-key signature with current
   // addresses (portalNav.v2HrefFor) for the components written against it.
-  const contextBase = [baseQuery, selectedMonth ? `month=${selectedMonth.monthKey}` : "", selectedSession ? `session=${selectedSession}` : ""].filter(Boolean).join("&");
+  const contextBase = [baseQuery, pickedMonth ? `month=${pickedMonth.monthKey}` : "", selectedSession ? `session=${selectedSession}` : ""].filter(Boolean).join("&");
   const tabHref = v2HrefFor(contextBase);
   // W03: "Book the call" goes to the booking inside Your Month —
   // lib/callBooking.portalBookingLinks. Loaded once, only by the pages that
@@ -438,6 +450,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         earliestLabel: home.schedule?.earliestISO ? new Date(home.schedule.earliestISO).toLocaleDateString("en-US", { timeZone: home.planning?.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null,
       },
       addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
+      // Oct 12 2026: an over month's session to book now too, once its scripts are ready.
+      lateSession: home.planning?.late ? { label: home.planning.late.label, open: home.planning.late.state === "TO_BOOK" && home.planning.late.scriptsReady } : null,
       setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
       ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
     }, contextBase);
@@ -469,6 +483,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       attempt("schedule months", () => portalScheduleMonths(enrollment)),
     ]);
     const thisMonth = p.ok && p.data && sm.ok ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? null : null;
+    // Oct 12 2026: an over month's session booked this month too — its card and its released scripts.
+    const lateP = p.ok ? p.data?.late ?? null : null;
+    const lateScripts = lateP ? await import("@/lib/monthLateSession").then((m) => m.portalLateScripts(enrollment, lateP.monthId)).catch(() => []) : [];
     let days: PortalSlotDay[] = [];
     if (thisMonth && perms.session && !readOnly && !thisMonth.locked && (thisMonth.capacity.remaining > 0 || thisMonth.requests.some((r) => r.canChange))) {
       const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
@@ -486,6 +503,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       can: { suggest: perms.suggest, session: perms.session },
       scheduleHref: portalHref(contextBase, "schedule"),
       selectedSessionIndex: selectedSession,
+      late: lateP ? { schedule: sm.ok ? sm.data.find((m) => m.monthId === lateP.monthId) ?? null : null, scripts: lateScripts } : null,
+      selectedScheduleMonthId: scheduleMonthId,
     };
   }
   // Oct 6 2026: the portal notice's "Tell us" and the footer's "Report a
@@ -529,8 +548,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={tabHref} /> : <LibraryV2 d={library} failed={libraryFailed} href={tabHref} />)}
       {route.dest === "schedule" && (
         <ScheduleTab
-          key={`${selectedMonth?.id ?? "default"}:${selectedSession ?? "next"}`}
-          selectedMonthId={selectedMonth?.id} selectedSessionIndex={selectedSession}
+          key={`${scheduleMonthId ?? "default"}:${selectedSession ?? "next"}`}
+          selectedMonthId={scheduleMonthId} selectedSessionIndex={selectedSession}
           planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
           months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
           slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}

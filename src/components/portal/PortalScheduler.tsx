@@ -384,7 +384,7 @@ export function PortalScheduler({
             {months.map((m) => (
               <button key={m.monthId} type="button" role="tab" disabled={busy} aria-selected={m.monthId === month?.monthId} onClick={() => pickMonth(m.monthId)}
                 className={cn("min-h-11 rounded-lg border px-2.5 py-1 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50", m.monthId === month?.monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
-                {monthLabel(m.monthKey)}
+                {m.tabLabel ?? monthLabel(m.monthKey)}
               </button>
             ))}
           </div>
@@ -395,7 +395,13 @@ export function PortalScheduler({
         <p className="mt-3 text-sm text-muted">Your next program month isn&rsquo;t open yet. We&rsquo;ll set it up and it will show here.</p>
       ) : (
         <>
-          {months.length === 1 && <div className="mt-1 text-sm font-semibold">{monthLabel(month.monthKey)}</div>}
+          {months.length === 1 && <div className="mt-1 text-sm font-semibold">{month.tabLabel ?? monthLabel(month.monthKey)}</div>}
+          {/* Oct 12 2026: an over month's session, booked late beside this month's (lateSession.ts). */}
+          {month.late && (
+            <div className="mt-2"><StatusRow icon={Info} tone="muted">
+              Your {monthLabel(month.monthKey).split(" ")[0]} session, filmed in {monthLabel(month.late.hostMonthKey).split(" ")[0]}{month.late.scriptsReady ? ". It uses the scripts we already sent you." : "."}
+            </StatusRow></div>
+          )}
 
           {/* Strategy call / planning — a slim row when handled, a clear CTA when not. */}
           {!embedded && <div className="mt-3">

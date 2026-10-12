@@ -1155,7 +1155,12 @@ export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Da
   const currentKey = etMonthKey(now);
   const current = await prisma.contentMonth.findUnique({ where: { enrollmentId_monthKey: { enrollmentId, monthKey: currentKey } }, select: { id: true, monthKey: true, historical: true, status: true } });
   if (!current || !monthIsOpen(current)) return { candidates: [], carried: 0, skipped: [] };
-  const past = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false, monthKey: { lt: currentKey } }, select: { id: true, monthKey: true } });
+  const pastAll = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false, monthKey: { lt: currentKey } }, select: { id: true, monthKey: true } });
+  // Oct 12 2026: a month whose session is booked late (lateSession.ts) keeps
+  // its scripted topics — they are filmed at that session, on that month.
+  const bagNow = pastAll.length ? (await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } }))?.overridesJson ?? null : null;
+  const { lateSessionOf } = await import("@/lib/lateSession");
+  const past = pastAll.filter((m) => lateSessionOf(bagNow, m.monthKey)?.lateMonthId !== m.id);
   if (!past.length) return { candidates: [], carried: 0, skipped: [] };
   const keyOf = new Map(past.map((m) => [m.id, m.monthKey]));
   const topics = await prisma.contentTopic.findMany({ where: { enrollmentId, status: "SCRIPTED", monthId: { in: past.map((m) => m.id) } }, select: { id: true, title: true, monthId: true } });

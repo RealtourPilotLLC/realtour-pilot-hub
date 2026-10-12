@@ -12,6 +12,8 @@ import { PortalCallPicker } from "@/components/portal/PortalCallPicker";
 import type { PortalCallBookingView } from "@/lib/callBooking";
 import type { MonthBriefView } from "@/lib/monthBriefCore";
 import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
+import { ScriptBody } from "@/components/portal/ScriptBody";
+import type { PortalLateScript } from "@/lib/monthLateSession";
 
 // ---------------------------------------------------------------------------
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
@@ -44,6 +46,14 @@ export type YourMonthData = {
   hrefs: { month: string; bank: string; scripts: string; schedule: string };
   /** Oct 8 2026: a client who plans their own content — this month's creative brief (links scoped to this visit). */
   brief?: MonthBriefView | null;
+  /**
+   * Oct 12 2026 (lateSession.ts): an over month's session booked this month
+   * too — its own scheduling card (gated by ITS plan) and its released
+   * scripts, so the client can prep. Shown when `planning.late` is set.
+   */
+  late?: { schedule: PortalScheduleMonth | null; scripts: PortalLateScript[] } | null;
+  /** The scheduler month the address asked for (a late month's id, or this month's). */
+  selectedScheduleMonthId?: string | null;
 };
 
 const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -110,6 +120,9 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         )}
       </section>
 
+      {/* Oct 12 2026: an over month's session, booked now beside this month's (lateSession.ts). */}
+      {p.late && <LateSessionCard d={d} late={p.late} hostName={monthLabel(month.monthKey).split(" ")[0]} />}
+
       {/* The steps, in the order the month runs. */}
       <ol aria-label="Your month, step by step" className="space-y-2">
         {steps.map((step, i) => (
@@ -165,6 +178,9 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                 {/* Book filming — the Schedule page's own picker, embedded. */}
                 {step.key === "filming" && (d.scheduleFailed ? (
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
+                ) : s && step.state === "current" && !s.locked && p.late ? (
+                  // Both sessions are booked from the one card above.
+                  <Link href="#step-late" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>Book it above, beside your {p.late.label} session <ChevronRight className="size-4" aria-hidden /></Link>
                 ) : s && step.state === "current" && !s.locked ? (
                   <div className="mt-3">
                     <PortalScheduler key={`${s.monthId}:${d.selectedSessionIndex ?? "next"}`} months={[s]} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={p.timezone} selectedMonthId={s.monthId} selectedSessionIndex={d.selectedSessionIndex} embedded />
@@ -201,5 +217,50 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         </details>
       </section>}
     </div>
+  );
+}
+
+/**
+ * "Your September session still needs booking, and October's too" (Oct 12
+ * 2026). One scheduler with both sessions, the way a two-session month books:
+ * the late month's tab is gated by ITS plan (scripts ready), this month's by
+ * this month's own. Its scripts are right here, words in full, to prep from.
+ */
+function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNullable<PortalPlanning["late"]>; hostName: string }) {
+  const s = d.schedule;
+  const months = [d.late?.schedule ?? null, s].filter((m): m is PortalScheduleMonth => !!m);
+  const scripts = d.late?.scripts ?? [];
+  const pick = d.selectedScheduleMonthId && months.some((m) => m.monthId === d.selectedScheduleMonthId) ? d.selectedScheduleMonthId : late.monthId;
+  return (
+    <section id="step-late" aria-labelledby="late-session-line" className="scroll-mt-24 rounded-2xl border border-brand/40 bg-surface/70 p-4 shadow-sm backdrop-blur">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-brand">{late.label} session</div>
+      <h3 id="late-session-line" className="break-words text-base font-semibold leading-snug">{late.line}</h3>
+      <p className="mt-1 text-sm text-muted">
+        {late.scriptsReady ? `Your ${late.label} scripts are ready, so you can book that session now.` : `We're finishing your ${late.label} scripts. That session opens as soon as they're ready.`}
+        {s ? ` ${hostName}'s session follows ${hostName}'s own plan.` : ""}
+      </p>
+      {d.scheduleFailed ? (
+        <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
+      ) : months.length > 0 ? (
+        <div className="mt-3">
+          <PortalScheduler key={`late:${pick}:${d.selectedSessionIndex ?? "next"}`} months={months} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={d.planning?.timezone} selectedMonthId={pick} selectedSessionIndex={pick === s?.monthId ? d.selectedSessionIndex : null} embedded />
+        </div>
+      ) : null}
+      {scripts.length > 0 ? (
+        <details className="mt-3 rounded-xl border border-border bg-surface-2/40 px-3 py-2">
+          <summary className={cn("flex min-h-11 cursor-pointer items-center text-sm font-semibold", focusRing)}>Your {late.label} scripts ({scripts.length})</summary>
+          <ul className="mt-2 space-y-4">
+            {scripts.map((sc, i) => (
+              <li key={sc.topicId ?? i}>
+                <h4 className="break-words text-sm font-semibold">{sc.title}</h4>
+                <div className="mt-1 max-w-[70ch]"><ScriptBody body={sc.body} /></div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : late.sentOutside ? (
+        <p className="mt-3 text-sm text-muted">We sent your {late.label} scripts to you directly. Have them handy for the session.</p>
+      ) : null}
+    </section>
   );
 }

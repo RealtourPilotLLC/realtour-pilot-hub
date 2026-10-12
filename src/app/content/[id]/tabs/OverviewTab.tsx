@@ -10,6 +10,8 @@ import { progressKey, staffMonthView } from "@/lib/monthProgress";
 import { loadOverviewTab } from "../workspaceData";
 import { MonthHeader, type TabCtx } from "./shared";
 import { CatchUpControl } from "@/components/content/CatchUpControl";
+import { LateSessionControl } from "@/components/content/LateSessionControl";
+import { MonthPlanningControl } from "@/components/content/MonthPlanningControl";
 import { monthLabel } from "@/lib/contentProgram";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +50,9 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   // (Oct 8: a missed month is forfeited); shown when this month carries a
   // catch-up, or an earlier month could be caught up here.
   const catchUp = ctx.staffEyes ? await import("@/lib/monthCatchUp").then((m) => m.catchUpPanel(month.id)).catch(() => null) : null;
+  // Oct 12 2026: "Bring September's session into October" — owner/admin only,
+  // an exception: a planned month's session booked late, nothing moved.
+  const late = ctx.staffEyes ? await import("@/lib/monthLateSession").then((m) => m.lateSessionPanel(month.id)).catch(() => null) : null;
   const mk = month.monthKey;
   // Oct 8 2026: the client's creative brief for this month — shown for a
   // client who plans their own content, or whenever one is on file.
@@ -92,6 +97,19 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
           caughtUpNote={catchUp.caughtUpIn ? `Caught up in ${catchUp.caughtUpIn.targetLabel}${catchUp.caughtUpIn.by ? ` by ${catchUp.caughtUpIn.by}` : ""}${catchUp.caughtUpIn.at ? ` on ${new Date(catchUp.caughtUpIn.at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}: its videos are filmed in ${catchUp.caughtUpIn.targetLabel}'s extra session, so nothing is owed or chased here. To reopen it, undo the catch-up on ${catchUp.caughtUpIn.targetLabel}.` : null}
           options={catchUp.options.map((o) => ({ monthId: o.monthId, label: o.label, videosOwed: o.videosOwed, refusal: o.refusal, forfeited: o.forfeited }))}
           initialPick={ctx.catchupPick ?? null}
+        />
+      )}
+      {late && (
+        <LateSessionControl
+          monthId={late.monthId} monthName={late.monthName}
+          carrying={late.carrying ? {
+            lateMonthId: late.carrying.lateMonthId, lateLabel: late.carrying.lateLabel, state: late.carrying.state, filmed: late.carrying.filmed, startsAtISO: late.carrying.startsAtISO,
+            scriptsReleased: late.carrying.scriptsReleased, scriptsReady: late.carrying.scriptsReady, scriptsSentOutside: late.carrying.scriptsSentOutside, lateVideosOwed: late.carrying.lateVideosOwed,
+            by: late.carrying.by, at: late.carrying.at, undoRefusal: late.carrying.undoRefusal, lateHref: contentHref(id, { month: late.carrying.lateMonthKey }),
+          } : null}
+          options={late.options.map((o) => ({ monthId: o.monthId, label: o.label, refusal: o.refusal, scriptsReleased: o.scriptsReleased }))}
+          filmingIn={late.filmingIn ? { hostLabel: late.filmingIn.hostLabel, hostHref: contentHref(id, { month: late.filmingIn.hostMonthKey }), state: late.filmingIn.state, startsAtISO: late.filmingIn.startsAtISO, by: late.filmingIn.by, at: late.filmingIn.at, undoRefusal: late.filmingIn.undoRefusal } : null}
+          offer={late.offer ? { hostMonthId: late.offer.hostMonthId, hostLabel: late.offer.hostLabel, refusal: late.offer.refusal, scriptsReleased: late.offer.scriptsReleased } : null}
         />
       )}
 
@@ -179,6 +197,13 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
                 <p className="text-muted">evidence: {row.strategyCall.evidence ?? "nothing recorded"}</p>
                 {row.strategyCall.problem && <p className="text-warning">{row.strategyCall.problem}</p>}
                 <Link href={planHref("calls")} className="text-[12px] font-medium text-brand hover:underline">Plan › Calls →</Link>
+                {/* Oct 12 2026: how this month is planned, when the client told us (owner/admin). */}
+                {ctx.staffEyes && !month.historical && month.status === "OPEN" && !clientPlanned && !progress?.forfeited && (
+                  <MonthPlanningControl
+                    monthId={month.id}
+                    current={row.planning.planningMode === "CALL" ? "CALL" : row.planning.planningMode === "WRITTEN" ? (month.planningChosenBy?.startsWith("office:") ? "OFFICE" : "TOPICS") : null}
+                  />
+                )}
               </div>
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Filming sessions</p>

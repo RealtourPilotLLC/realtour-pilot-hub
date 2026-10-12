@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, topicForEnrollment, openMonthForEnrollment, type PortalViewer } from "@/lib/portal";
+import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, topicForEnrollment, openMonthForEnrollment, bookableMonthForEnrollment, type PortalViewer } from "@/lib/portal";
 import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/portalAccess";
 import { approveCut, noticeApprovalNotes, requestChangesOnCut, replyToComment, setCommentResolved, isMine, recordLinkComment, type OpenNotesChoice } from "@/lib/clientDecisions";
 import { setPostedByClient, saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
@@ -568,7 +568,8 @@ export async function portalSaveSessionPlanAddress(
 ): Promise<R & { planId?: string; addressVersion?: number; bookable?: boolean }> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
-  const month = await openMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
+  // Oct 12 2026: an over month whose session is booked late is a session month too (portal.bookableMonthForEnrollment).
+  const month = await bookableMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
   if (!month) return fail("Pick one of your open program months.");
   const { saveSessionPlanAddress } = await import("@/lib/sessionAddress");
   const r = await saveSessionPlanAddress({ enrollmentId: v.enrollment.id, monthId: month.id, sessionIndex: Number(sessionIndex), input, by: choiceBy(v) });
@@ -591,7 +592,7 @@ export async function portalSessionSlots(
 ): Promise<import("@/lib/sessionTravel").SessionSlotsResult> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return { ok: false, message: v, days: [] };
-  const month = await openMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
+  const month = await bookableMonthForEnrollment(v.enrollment.id, String(monthId ?? ""));
   if (!month) return { ok: false, message: "Pick one of your open program months.", days: [] };
   const idx = Number(sessionIndex);
   if (!Number.isInteger(idx) || idx < 1 || idx > 10) return { ok: false, message: "Pick one of this month's sessions.", days: [] };

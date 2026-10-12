@@ -67,6 +67,15 @@ export async function forfeitedMonths(months: ForfeitMonthInput[] | string[], op
   const evidence = await forfeitEvidence(candidates.map((m) => m.id), db);
   const out = new Set<string>();
   for (const m of candidates) if (isForfeited(m, evidence.get(m.id) ?? NO_EVIDENCE, now)) out.add(m.id);
+  // Oct 12 2026: a month whose session the office approved for booking late
+  // (lateSession.ts) is not forfeited, whatever its evidence says. Read only
+  // when something was found forfeited, so the usual pass costs nothing more.
+  if (out.size) {
+    const rows = await db.contentMonth.findMany({ where: { id: { in: [...out] } }, select: { id: true, monthKey: true, enrollmentId: true } });
+    const bags = new Map((await prisma.contentEnrollment.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.enrollmentId))] } }, select: { id: true, overridesJson: true } })).map((e) => [e.id, e.overridesJson]));
+    const { lateSessionOf } = await import("@/lib/lateSession");
+    for (const r of rows) if (lateSessionOf(bags.get(r.enrollmentId), r.monthKey)?.lateMonthId === r.id) out.delete(r.id);
+  }
   return out;
 }
 

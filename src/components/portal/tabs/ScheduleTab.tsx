@@ -63,6 +63,7 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
           <div className="mt-2 space-y-1.5 text-sm">
             <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{monthLabel(p.monthKey)}</div>
             {p.catchUp && <p className="font-medium text-brand">{p.catchUp.line}</p>}
+            {p.late && <p className="font-medium text-brand">{p.late.line}</p>}
             {p.catchUp?.nextCallISO && <p className="text-xs text-muted">Your call to plan the {p.catchUp.label} videos is booked for {fmtDate(p.catchUp.nextCallISO, tz)} at {fmtTime(p.catchUp.nextCallISO, tz)} {zoneOf(p.catchUp.nextCallISO)}.</p>}
             {p.clientPlanned && p.callStatus === "NOT_REQUIRED" ? (
               // Oct 8 2026: they plan their own videos and have no strategy call.

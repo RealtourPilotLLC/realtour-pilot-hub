@@ -14,6 +14,7 @@ import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
 import { ownersFor, type OwnerDuty } from "@/lib/programOwners";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
+import { lateMonthName, lateSessionOf } from "@/lib/lateSession";
 import {
   templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS,
   type ReminderAction, type TemplateVars,
@@ -692,6 +693,8 @@ export type ReminderCandidate = {
    *  "reminders", with the policy's own lock) — the tier it reaches them as,
    *  or the refusal code. Both null for a person's copy, which has no scope. */
   audience: RolloutAudience;
+  /** Oct 12 2026: this month's session is booked late, in that month (lateSession.ts) — it runs on that month's calendar. */
+  lateIn?: string | null;
   state: EvaluatedState;
 };
 
@@ -1071,6 +1074,10 @@ export const secondSessionParagraph = (ordinal: number, required: number, videos
   return `${sessionsOpening(required, catchUpOf)} and ${done === 1 ? "one is" : `${done} are`} already on the calendar. This one is about session ${ordinal} of ${required}, which is another ${perSession} video${perSession === 1 ? "" : "s"}. Pick a time in your portal and we'll confirm it.`;
 };
 
+/** Oct 12 2026: a planned month whose session is booked late (lateSession.ts). Client words, no em dashes, ends with the way forward. */
+export const lateSessionParagraph = (lateMonthKey: string, hostMonthKey: string) =>
+  `Your ${lateMonthName(lateMonthKey, hostMonthKey)} session is booking in ${lateMonthName(hostMonthKey)}, alongside ${lateMonthName(hostMonthKey)}'s own. Your ${lateMonthName(lateMonthKey, hostMonthKey)} scripts are ready, so pick a time in your portal and we'll confirm it.`;
+
 /** COMPLETE_ANSWERS for a later session whose own gate is shut (batch-3 review): what that session still needs. No em dashes (client words). */
 export const sessionAnswersParagraph = (ordinal: number, required: number, videosPerMonth: number, catchUpOf?: string | null) => {
   const perSession = Math.max(1, Math.ceil(Math.max(0, videosPerMonth) / Math.max(1, required)) || 1);
@@ -1117,14 +1124,18 @@ async function evaluateMonth(
   // BY ID AS WELL AS NAME (R03): a never-synthetic real row renamed TEST is real.
   const isTest = isSyntheticClientRow({ id: e.clientId, name: e.client.name });
   const reach = reminderReach(rollout, e, now, p);
-  const cal = monthlyCalendar(month.monthKey, p);
+  // Oct 12 2026: a planned month whose session is booked late runs on its
+  // HOST month's calendar ("booking in October"), never on its own, over one.
+  const lateRec = lateSessionOf(e.overridesJson, month.monthKey);
+  const lateIn = lateRec && lateRec.lateMonthId === month.id ? lateRec.hostMonthKey : null;
+  const cal = monthlyCalendar(lateIn ?? month.monthKey, p);
   const base = {
     enrollmentId: e.id, clientId: e.clientId, clientName: e.client.name, isTest, monthId: month.id, monthKey: month.monthKey, audience: audienceOf(reach),
     lane: lane as ReminderLane, milestone: "OFF_CALENDAR" as ReminderMilestone, sessionOrdinal: null as number | null,
     templateKey: null as string | null, attempt: 0, dedupeKey: null as string | null, to: null as string | null, nextEligibleAt: null as Date | null,
     deadlineAt: null as Date | null, quotedDeadlineAt: null as Date | null,
     noCallEligible: false, digestSession: false, answersStarted: false, retryOfId: null as string | null, escalation: null as ReminderCandidate["escalation"],
-    calendar: cal, kyleFollowUp: null as ReminderCandidate["kyleFollowUp"], extraParagraph: null as string | null,
+    calendar: cal, kyleFollowUp: null as ReminderCandidate["kyleFollowUp"], extraParagraph: null as string | null, lateIn,
   };
   // Authoritative month state, derived fresh (never persisted from here).
   const recalc = await recalcProgramMonth(month.id, { now, dryRun: true });
@@ -1240,6 +1251,12 @@ async function evaluateMonth(
     } else if (g.locked) {
       sessionShut = `session ${facts.nextSessionIndex}'s filming calendar is not open yet (${g.reason}) — no booking ask until it opens`;
     }
+  }
+  // Oct 12 2026: a late month's session opens on its scripts being ready (the
+  // portal's gate, monthLateSession.lateGateLock) — no booking ask before then.
+  if (action === "BOOK_SESSION" && lateIn && !sessionShut) {
+    const ready = await import("@/lib/monthLateSession").then((m) => m.lateScriptsReady(month.id, lateRec)).then((r) => r.ready).catch(() => false);
+    if (!ready) sessionShut = `${lateMonthName(month.monthKey, lateIn)}'s session is booking in ${lateMonthName(lateIn)}, but its scripts aren't ready yet — no booking ask until they are`;
   }
   if (action === "BOOK_SESSION") {
     state.nextSessionIndex = facts.nextSessionIndex;
@@ -1395,7 +1412,7 @@ async function evaluateMonth(
   // a day it shares with an ordinary follow-up, because it is the message that
   // carries the roll-over note and Kyle's task — §12: avoid two near-identical
   // messages on one day when the cadences coincide.
-  const midMonthDue = lane === "PRIMARY" && now >= cal.midMonthAt && !midSpent;
+  const midMonthDue = lane === "PRIMARY" && now >= cal.midMonthAt && !midSpent && !lateIn;
   const milestone: ReminderMilestone = midMonthDue
     ? "MID_MONTH"
     : lane === "REVIEW"
@@ -1430,7 +1447,7 @@ async function evaluateMonth(
     const prepAt = d.planningMode === "CALL" ? (callBooked ? d.callBookedAt : d.strategyCallAt) : d.preparationCompletedAt;
     // Never before the 1st, and never before the month was actually planned.
     laneReadyAt = prepAt && prepAt > cal.monthOpenAt ? prepAt : cal.monthOpenAt;
-    deadlineAt = etAt(`${month.monthKey}-${String(Math.min(p.sessionBookingDeadlineDayOfMonth, 28)).padStart(2, "0")}`, 17);
+    deadlineAt = etAt(`${lateIn ?? month.monthKey}-${String(Math.min(p.sessionBookingDeadlineDayOfMonth, 28)).padStart(2, "0")}`, 17);
   } else {
     deadlineAt = cal.planningDeadlineAt;
     quotedDeadlineAt = cal.quotedPlanningDeadlineAt;
@@ -1452,6 +1469,8 @@ async function evaluateMonth(
   const monthVideos = e.videosPerMonth + (monthCatchUp?.extraVideos ?? 0);
   const extraParagraph = milestone === "MID_MONTH"
     ? MID_MONTH_PARAGRAPH
+    : action === "BOOK_SESSION" && lateIn
+      ? lateSessionParagraph(month.monthKey, lateIn)
     : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
       ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, monthVideos, catchUpOf)
       : action === "COMPLETE_ANSWERS" && sessionOrdinal && sessionOrdinal > 1
@@ -1533,8 +1552,9 @@ async function evaluateMonth(
   // same silence: stop and hand it to a person rather than write row 40.
   const rowCeiling = maxAttempts + 5;
   const rowCeilingHit = !failedRetry && laneRows.length >= rowCeiling;
+  const latePrefix = lateIn ? `${lateMonthName(month.monthKey, lateIn)}'s session is booking in ${lateMonthName(lateIn)} (approved late): ` : "";
   const escalation = !escalated && (deadlineNear || laneAttemptsMade >= maxAttempts || rowCeilingHit)
-    ? { due: true, reason: rowCeilingHit ? `${laneRows.length} reminder rows exist for this month and action but only ${laneAttemptsMade} actually sent — the evaluator has stopped` : deadlineNear ? `deadline ${fmtDay(deadlineAt)} is within ${escalateWithin} business day(s)` : `${laneAttemptsMade} reminder(s) sent, no response` }
+    ? { due: true, reason: latePrefix + (rowCeilingHit ? `${laneRows.length} reminder rows exist for this month and action but only ${laneAttemptsMade} actually sent — the evaluator has stopped` : deadlineNear ? `deadline ${fmtDay(deadlineAt)} is within ${escalateWithin} business day(s)` : `${laneAttemptsMade} reminder(s) sent, no response`) }
     : null;
 
   const to = toEarly;
@@ -1645,7 +1665,7 @@ async function escalate(c: ReminderCandidate, p: ReminderPolicy, now: Date, why:
     const task = await prisma.smartTask.create({
       data: {
         taskType: "todo", status: "OPEN", source: "content_program", priority: "HIGH",
-        title: `${c.clientName}: ${c.monthKey} still needs ${actionLabel(c.action)}`.slice(0, 140),
+        title: `${c.clientName}: ${c.monthKey} still needs ${actionLabel(c.action)}${c.lateIn ? ` (booking in ${c.lateIn})` : ""}`.slice(0, 140),
         summary: `${why}. Reminders sent: ${Math.max(0, c.attempt - 1)}. Owner: ${owner.label}.`.slice(0, 500),
         description: `The reminder evaluator stopped nudging the client and handed this to you.\n\n${why}.\nMonth ${c.monthKey} — ${actionLabel(c.action)}.\nLast evaluated state: ${JSON.stringify(c.state)}\n\nOpen the client file on /content/${c.enrollmentId} to call, text, or snooze the reminders.`,
         reasonCreated: "Content-program reminder escalation (spec §24)",

@@ -66,6 +66,9 @@ async function missedMonthRefusal(db: Db, m: { id: string; monthKey: string; sta
     return from ? `${n} is already caught up in ${name(from.targetMonthKey, m.monthKey)}.` : `${n} is already ${m.status === "SKIPPED" ? "marked skipped" : m.status.toLowerCase()}.`;
   }
   if (catchUpInto(overridesJson, m.monthKey)) return `${n} already carries a catch-up of its own.`;
+  // Oct 12 2026: a planned month whose session is booked late keeps its own videos (lateSession.ts).
+  const late = (await import("@/lib/lateSession")).lateSessionOf(overridesJson, m.monthKey);
+  if (late) return `${n}'s session is being booked late, in ${name(late.hostMonthKey, m.monthKey)}. Undo that first.`;
   const [shoots, requests, videos, filmed, selections, scripts, interviews] = await Promise.all([
     db.project.findMany({ where: { contentMonthId: m.id, status: { not: "CANCELLED" } }, select: { shootDate: true }, orderBy: { shootDate: "asc" } }),
     db.programSessionRequest.count({ where: { monthId: m.id, status: { in: LIVE_REQUEST } } }),

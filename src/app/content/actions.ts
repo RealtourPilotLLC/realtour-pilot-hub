@@ -741,6 +741,15 @@ export async function setMonthSkipped(monthId: string, skipped: boolean): Promis
     if (from) return { ok: false, outcome: "refused", message: `This month was caught up in ${catchUpMonthName(from.targetMonthKey, month.monthKey)}. To reopen it, undo the catch-up on ${catchUpMonthName(from.targetMonthKey, month.monthKey)}.` };
     const into = skipped ? catchUpInto(e?.overridesJson, month.monthKey) : null;
     if (into) return { ok: false, outcome: "refused", message: `This month carries the ${catchUpMonthName(into.missedMonthKey, month.monthKey)} catch-up. Undo the catch-up first.` };
+    // Oct 12 2026: a month whose session is booked late, or a month that books
+    // one, changes through that control's own Undo.
+    if (skipped) {
+      const { lateSessionOf, lateSessionsInto, lateMonthName } = await import("@/lib/lateSession");
+      const own = lateSessionOf(e?.overridesJson, month.monthKey);
+      if (own) return { ok: false, outcome: "refused", message: `This month's session is being booked in ${lateMonthName(own.hostMonthKey, month.monthKey)}. Undo that first.` };
+      const hosts = lateSessionsInto(e?.overridesJson, month.monthKey)[0];
+      if (hosts) return { ok: false, outcome: "refused", message: `This month books ${lateMonthName(hosts.lateMonthKey, month.monthKey)}'s session too. Undo that first.` };
+    }
   }
   await prisma.contentMonth.update({
     where: { id: monthId },
@@ -781,6 +790,101 @@ export async function undoCatchUpAction(targetMonthId: string): Promise<Result> 
     revalidatePath("/content");
     return { ok: true, outcome: "confirmed", message: r.message };
   } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
+// ---------------------------------------------------------------------------
+// FILM A LATE MONTH'S SESSION THIS MONTH (Oct 12 2026) — owner/admin only, an
+// exception. The rules and the writes live in src/lib/monthLateSession.ts;
+// these only check who is asking. The message action composes text for the
+// office to copy: it sends nothing.
+// ---------------------------------------------------------------------------
+const ID = /^[a-z0-9]{10,40}$/i;
+
+export async function lateSessionAction(hostMonthId: string, lateMonthId: string, scriptsSentOutside: boolean): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof hostMonthId !== "string" || typeof lateMonthId !== "string" || !ID.test(hostMonthId) || !ID.test(lateMonthId)) return { ok: false, outcome: "refused", message: "Pick the month whose session is booked late." };
+  const who = await actor();
+  try {
+    const { applyLateSession } = await import("@/lib/monthLateSession");
+    const r = await applyLateSession(hostMonthId, lateMonthId, who.name ?? who.email, { scriptsSentOutside: scriptsSentOutside === true });
+    const t = await prisma.contentMonth.findUnique({ where: { id: hostMonthId }, select: { enrollmentId: true } });
+    if (t) revalidatePath(`/content/${t.enrollmentId}`);
+    revalidatePath("/content");
+    return { ok: true, outcome: "confirmed", message: r.message };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
+export async function undoLateSessionAction(lateMonthId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof lateMonthId !== "string" || !ID.test(lateMonthId)) return { ok: false, outcome: "refused", message: "Month not found." };
+  const who = await actor();
+  try {
+    const { undoLateSession } = await import("@/lib/monthLateSession");
+    const r = await undoLateSession(lateMonthId, who.name ?? who.email);
+    const m = await prisma.contentMonth.findUnique({ where: { id: lateMonthId }, select: { enrollmentId: true } });
+    if (m) revalidatePath(`/content/${m.enrollmentId}`);
+    revalidatePath("/content");
+    return { ok: true, outcome: "confirmed", message: r.message };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
+/** Jordan's message to the client, filled in with their portal link. Copy only — never sent from here. */
+export async function lateSessionMessageAction(lateMonthId: string): Promise<Result & { body?: string; url?: string }> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof lateMonthId !== "string" || !ID.test(lateMonthId)) return { ok: false, outcome: "refused", message: "Month not found." };
+  try {
+    const me = await actor();
+    const { lateSessionCopy } = await import("@/lib/monthLateSession");
+    const r = await lateSessionCopy(lateMonthId, me.id);
+    return { ok: true, outcome: "confirmed", message: r.kind === "login" ? "Copied. It carries a one-time sign-in link (good for 15 minutes), so send it now." : "Copied. Paste it into your text or email.", body: r.body, url: r.url };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
+// ---------------------------------------------------------------------------
+// HOW A MONTH IS PLANNED, SET BY STAFF (Oct 12 2026). Jordan: "or pick topics
+// instead (she preferred that)". The client tells us; the office records it.
+// Writes exactly what the portal's own choice writes (programMonths.
+// choosePlanningMode): CALL, or WRITTEN — the client picks topics — or
+// WRITTEN stamped "office:" (we planned it, as the script upload does).
+// Nothing else moves: no booking, call record, topic or script.
+// ---------------------------------------------------------------------------
+export type MonthPlanningChoice = "CALL" | "TOPICS" | "OFFICE";
+
+export async function setMonthPlanningAction(monthId: string, choice: MonthPlanningChoice): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof monthId !== "string" || !ID.test(monthId) || !["CALL", "TOPICS", "OFFICE"].includes(choice)) return { ok: false, outcome: "refused", message: "Pick how this month is planned." };
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true, status: true, historical: true, planningChosenBy: true } });
+  if (!month) return { ok: false, outcome: "refused", message: "Month not found." };
+  const { lateMonthName } = await import("@/lib/lateSession");
+  const n = lateMonthName(month.monthKey);
+  if (month.historical || month.status !== "OPEN") return { ok: false, outcome: "refused", message: `${n} is ${month.historical ? "imported history" : month.status.toLowerCase()}, so its plan can't change.` };
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: month.enrollmentId }, select: { clientSuppliesTopics: true } });
+  if (e?.clientSuppliesTopics) return { ok: false, outcome: "refused", message: "This client plans their own videos (Settings › Program style), so there's no planning route to set." };
+  const { recalcProgramMonth, choosePlanningMode } = await import("@/lib/programMonths");
+  const d = (await recalcProgramMonth(month.id, { dryRun: true }))?.after;
+  if (!d) return { ok: false, outcome: "refused", message: "Couldn't read the month. Reload and try again." };
+  const mode = choice === "CALL" ? "CALL" : "WRITTEN";
+  const office = !!month.planningChosenBy?.startsWith("office:");
+  const current: MonthPlanningChoice | null = d.planningMode === "CALL" ? "CALL" : d.planningMode === "WRITTEN" ? (office ? "OFFICE" : "TOPICS") : null;
+  const words: Record<MonthPlanningChoice, string> = { CALL: "on a strategy call", TOPICS: "by the client picking topics in the portal", OFFICE: "by us (we planned it)" };
+  if (current === choice && !!month.planningChosenBy) return { ok: true, outcome: "confirmed", message: `${n} is already planned ${words[choice]}.` };
+  if (choice === "CALL" && d.callMode === "NOT_INCLUDED") return { ok: false, outcome: "refused", message: "This package has no strategy call." };
+  if (mode === "WRITTEN" && d.planningMode !== "WRITTEN" && d.strategyCallStatus === "COMPLETED") return { ok: false, outcome: "refused", message: `${n}'s strategy call was held, so the month stays planned on it.` };
+  const live = await prisma.programSessionRequest.count({ where: { monthId: month.id, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"] } } });
+  const routeNow = d.planningMode === "UNDECIDED" ? "WRITTEN" : d.planningMode;
+  if ((live > 0 || d.sessionsAccountedFor > 0) && routeNow !== mode) return { ok: false, outcome: "refused", message: `Filming is already booked from how ${n} was planned, so the route can't change now.` };
+  const who = await actor();
+  const by = choice === "OFFICE" ? `office:${who.email}` : `staff:${who.id ?? who.email}`;
+  const r = await choosePlanningMode(month.id, mode, by);
+  if (!r) return { ok: false, outcome: "refused", message: "Month not found." };
+  revalidatePath(`/content/${month.enrollmentId}`);
+  revalidatePath("/content");
+  return {
+    ok: true, outcome: "confirmed",
+    message: choice === "CALL" ? `${n} is planned on a strategy call. Their portal asks them to book it.`
+      : choice === "TOPICS" ? `${n} is planned by the client picking topics. Their portal asks them to choose topics and answer the questions.`
+      : `${n} is marked planned by us. Their portal says we wrote the scripts. Upload them on Plan › Scripts.`,
+  };
 }
 
 // Scripts slip months too (Jordan, Aug 28: "her July scripts were for the

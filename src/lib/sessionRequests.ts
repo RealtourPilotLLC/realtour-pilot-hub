@@ -546,6 +546,16 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   // ("Tuesday afternoon") still tells Kyle the first time he may book.
   const { earliestStartLine } = await import("@/lib/programMonths");
   const earliestLine = mode === "BOOK" || mode === "RESCHEDULE" ? earliestStartLine(r) : null;
+  // Oct 12 2026: a LATE month's session (lateSession.ts) is booked in a later
+  // month but belongs to its own — say so, so the job lands on the right month.
+  const lateRec = month ? await prisma.contentEnrollment.findUnique({ where: { id: r.enrollmentId }, select: { overridesJson: true } })
+    .then(async (e) => (await import("@/lib/lateSession")).lateSessionOf(e?.overridesJson, month.monthKey)).catch(() => null) : null;
+  const lateLine = lateRec
+    ? await import("@/lib/lateSession").then(({ lateMonthName: n }) => {
+        const l = n(lateRec.lateMonthKey, lateRec.hostMonthKey), h = n(lateRec.hostMonthKey);
+        return `This is ${l}'s session, approved to film late in ${h}. It uses ${l}'s scripts. Once it's booked, check the job sits on ${l} (Production › Sessions), not on ${h}.`;
+      })
+    : null;
   const instruction: Record<DeskMode, string> = {
     BOOK: "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
     CANCEL: `The client asked to cancel this session. Cancel ${r.aryeoAppointmentId ? `appointment ${r.aryeoAppointmentId}` : "the appointment"} in Aryeo — the request flips to CANCELLED on its own when Aryeo shows it cancelled.`,
@@ -556,6 +566,7 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   };
   const description = [
     `Content session request for ${month?.monthKey ?? "their month"} (${r.kind === "EXTRA_SESSION" ? "EXTRA session" : "package session"}).`,
+    lateLine,
     ordinalLine,
     `Time: ${when}`,
     earliestLine,
@@ -842,7 +853,7 @@ export type ApptRow = {
 export type SessionMatchKind = "PROVIDER_ID" | "PROVIDER_ORDER" | "MONTH_LINK" | "CONTENT_DELIVERABLE";
 
 /** Is this appointment content-program work, and how do we know? Null = no evidence. */
-function contentEvidence(a: ApptRow, monthId: string, monthKey: string | null): { kind: SessionMatchKind; why: string } | null {
+function contentEvidence(a: ApptRow, monthId: string, monthKey: string | null, hostMonthKey: string | null = null): { kind: SessionMatchKind; why: string } | null {
   if (a.project.contentMonthId === monthId) {
     return { kind: "MONTH_LINK", why: "its project is attached to this content month" };
   }
@@ -851,7 +862,11 @@ function contentEvidence(a: ApptRow, monthId: string, monthKey: string | null): 
   if (a.project.contentMonthId && a.project.contentMonthId !== monthId) return null;
   const monthly = a.project.deliverables.some((d) => d.label && MONTHLY_PLAN_RE.test(d.label));
   if (!monthly) return null;
-  if (monthKey && a.startAt && etMonthKey(a.startAt) !== monthKey) return null;
+  if (monthKey && a.startAt && etMonthKey(a.startAt) !== monthKey) {
+    // Oct 12 2026: a late month's session is filmed in its host month.
+    if (hostMonthKey && etMonthKey(a.startAt) === hostMonthKey) return { kind: "CONTENT_DELIVERABLE", why: `its deliverables read as monthly content and it falls in ${hostMonthKey}, where this month's session was approved to film late` };
+    return null;
+  }
   return { kind: "CONTENT_DELIVERABLE", why: "its deliverables read as monthly content and it falls in the requested month" };
 }
 
@@ -870,7 +885,7 @@ export type SessionMatchDecision = {
  * inside a loop that also writes rows.
  */
 export function chooseSessionAppointment(
-  req: { monthId: string; monthKey: string | null; slotStart: Date | null; createdAt: Date; aryeoOrderId?: string | null },
+  req: { monthId: string; monthKey: string | null; slotStart: Date | null; createdAt: Date; aryeoOrderId?: string | null; /** Oct 12 2026: a late month's host (lateSession.ts) — its dates count too. */ hostMonthKey?: string | null },
   appts: ApptRow[],
   claimed: ReadonlySet<string>,
 ): SessionMatchDecision {
@@ -889,7 +904,7 @@ export function chooseSessionAppointment(
     if (!a.startAt) return false;
     if (req.slotStart) return Math.abs(a.startAt.getTime() - req.slotStart.getTime()) <= 2 * 3600_000;
     // Flex request: inside the requested program month, booked after the ask.
-    return a.project.contentMonthId === req.monthId || (!!req.monthKey && etMonthKey(a.startAt) === req.monthKey && a.startAt > req.createdAt);
+    return a.project.contentMonthId === req.monthId || (!!req.monthKey && (etMonthKey(a.startAt) === req.monthKey || (!!req.hostMonthKey && etMonthKey(a.startAt) === req.hostMonthKey)) && a.startAt > req.createdAt);
   };
   const eligible: SessionMatchDecision["eligible"] = [];
   const nearMisses: SessionMatchDecision["nearMisses"] = [];
@@ -897,7 +912,7 @@ export function chooseSessionAppointment(
     if (claimed.has(a.aryeoId)) continue;
     const fits = timingFits(a);
     if (!fits) continue;
-    const ev = contentEvidence(a, req.monthId, req.monthKey);
+    const ev = contentEvidence(a, req.monthId, req.monthKey, req.hostMonthKey ?? null);
     if (ev) { eligible.push({ a, ...ev }); continue; }
     // Recorded so a person can see WHY nothing confirmed — the listing shoot an
     // hour away is exactly what used to be taken for the session.
@@ -918,6 +933,13 @@ export function chooseSessionAppointment(
  */
 /** Stamped on lastError so a passed, unsettled booking is handed over once, not hourly. */
 const RECOVER_RAISED = "[recover raised]";
+
+/** Oct 12 2026: the late-session record for a request's month, if its session is filmed late (lateSession.ts). */
+async function lateRecordFor(enrollmentId: string, monthKey: string) {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } }).catch(() => null);
+  if (!e?.overridesJson) return null;
+  return (await import("@/lib/lateSession")).lateSessionOf(e.overridesJson, monthKey);
+}
 
 export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promise<{ checked: number; confirmed: number; cancelled: number; expired: number; ambiguous: number }> {
   const now = opts.now ?? new Date();
@@ -1003,6 +1025,8 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
         }
       }
       const month = await prisma.contentMonth.findUnique({ where: { id: r.monthId }, select: { monthKey: true } });
+      // Oct 12 2026: a late month's session is filmed in its host month (lateSession.ts).
+      const lateRec = month ? await lateRecordFor(r.enrollmentId, month.monthKey) : null;
       const appts: ApptRow[] = await prisma.appointment.findMany({
         where: { project: { clientId: r.clientId, status: { not: "CANCELLED" } }, status: { not: "CANCELED" }, startAt: { not: null } },
         select: { id: true, aryeoId: true, startAt: true, projectId: true, project: { select: { contentMonthId: true, aryeoOrderId: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } } } },
@@ -1010,7 +1034,7 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
       });
 
       const decision = chooseSessionAppointment(
-        { monthId: r.monthId, monthKey: month?.monthKey ?? null, slotStart: r.slotStart, createdAt: r.createdAt, aryeoOrderId: r.aryeoOrderId },
+        { monthId: r.monthId, monthKey: month?.monthKey ?? null, slotStart: r.slotStart, createdAt: r.createdAt, aryeoOrderId: r.aryeoOrderId, hostMonthKey: lateRec?.hostMonthKey ?? null },
         appts,
         claimed,
       );
@@ -1027,6 +1051,9 @@ export async function reconcileSessionRequests(opts: { now?: Date } = {}): Promi
             matchState: kind, matchEvidenceJson: JSON.stringify({ chose: a.aryeoId, why, nearMisses }),
           },
         });
+        // A late month's session is its OWN month's shoot: an unlinked job
+        // goes on the late month (never on the month its date falls in).
+        if (lateRec) await prisma.project.updateMany({ where: { id: a.projectId, contentMonthId: null }, data: { contentMonthId: r.monthId } }).catch(() => null);
         await closeDeskTask(r.id, "COMPLETED");
         await closeSuperseded(r.id);
         confirmed++; touched.add(r.monthId);

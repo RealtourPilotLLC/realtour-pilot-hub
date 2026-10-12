@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { countDistinctSessions, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
 import { catchUpFrom, catchUpInto, sessionsForMonth } from "@/lib/catchUp";
+import { lateMonthName, lateSessionOf, lateSessionsInto } from "@/lib/lateSession";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { cutReleasedAt, isDeliveredProgramVideo } from "@/lib/contentVideos";
 import { DELIVERED_STAMP, NOT_A_CUT } from "@/lib/reviewCuts";
@@ -143,6 +144,13 @@ export type MonthProgress = {
     into: { missedMonthKey: string; extraSessions: number; extraVideos: number; by: string | null; at: string } | null;
     from: { targetMonthKey: string; by: string | null; at: string } | null;
   };
+  /**
+   * Oct 12 2026 (lateSession.ts). `filmingIn`: this month's own session is
+   * booked late, alongside that month's. `bringsIn`: this month books an
+   * earlier month's session too. No count changes either way — each month
+   * owes its own session and videos.
+   */
+  late: { filmingIn: { hostMonthKey: string; by: string | null; at: string } | null; bringsIn: { lateMonthKey: string }[] };
   owners: OwnerMap;
   /** `required`/`mode`: the month's EFFECTIVE call mode (programMonths.effectiveCallMode via the planning reader) — the first call is required, later ones optional (§3). */
   call: { status: string; atISO: string | null; required: boolean; mode: string | null };
@@ -652,6 +660,10 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
         into: into ? { missedMonthKey: into.missedMonthKey, extraSessions: into.extraSessions, extraVideos: into.extraVideos, by: into.by, at: into.at } : null,
         from: from && m?.status === "SKIPPED" ? { targetMonthKey: from.targetMonthKey, by: from.by, at: from.at } : null,
       }))(catchUpInto(e.overridesJson, pair.monthKey), catchUpFrom(e.overridesJson, pair.monthKey)),
+      late: ((own, into) => ({
+        filmingIn: own && own.lateMonthId === mid ? { hostMonthKey: own.hostMonthKey, by: own.by, at: own.at } : null,
+        bringsIn: into.filter((r) => r.hostMonthId === mid).map((r) => ({ lateMonthKey: r.lateMonthKey })),
+      }))(lateSessionOf(e.overridesJson, pair.monthKey), lateSessionsInto(e.overridesJson, pair.monthKey)),
       owners,
       call: {
         status: m?.strategyCallStatus ?? (e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED"), atISO: m?.strategyCallAt?.toISOString() ?? null,
@@ -749,6 +761,9 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
     const unverified = s.list.find((f) => f.state === "UNVERIFIED");
     const held = s.list.find((f) => f.state === "HELD_UNCONFIRMED");
     if (s.count.accountedFor === 0) {
+      // Oct 12 2026: a planned month whose session is booked late — the client books it in the host month.
+      const late = p.late.filmingIn;
+      if (late && s.pendingRequests === 0) return { text: `Filming late, in ${lateMonthName(late.hostMonthKey, p.monthKey)}: ${monthShort}'s session isn't booked yet`, cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "client" };
       return s.pendingRequests > 0
         ? { text: "They asked for a session — nothing confirmed", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" }
         : { text: clientPlanned ? "Client-planned — no filming session on the calendar yet" : "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions", owner: o.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us" };
