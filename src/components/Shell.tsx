@@ -78,16 +78,6 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
   }, [open]);
 
 
-  // Count in-app navigations this session so back controls (BackLink) can tell a
-  // real "previous page" from a cold deep link and route accordingly.
-  useEffect(() => {
-    try {
-      sessionStorage.setItem("rtp_nav", String(Number(sessionStorage.getItem("rtp_nav") || "0") + 1));
-    } catch {
-      /* ignore */
-    }
-  }, [pathname]);
-
   // Usage beacon → the owner-only Activity trail. Identity comes from the
   // SESSION server-side; "view as" previews are skipped there too (belt) and
   // here (suspenders) so a preview never pollutes the previewed person's trail.
