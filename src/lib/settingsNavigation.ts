@@ -61,7 +61,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     id: "comms",
     title: "Communication & notifications",
     short: "Communication",
-    summary: "The texts clients receive without anyone pressing send, the words they use, and the team's alerts, coverage hours and quiet time.",
+    summary: "The texts clients receive without anyone pressing send, the words they use, where your copy of every client email goes, and the team's alerts, coverage hours and quiet time.",
   },
   {
     id: "integrations",
@@ -125,6 +125,7 @@ export const SETTINGS_SEARCH_LABELS: Record<SettingsCardKey, string> = {
 };
 
 const GROUP_EXTRA_SEARCH: Partial<Record<SettingsGroupId, string>> = {
+  comms: "Client email copies copy of every client email blind copy bcc monitor inbox",
   program: "Client onboarding welcome portal account invite per client step by step send",
   team: "People access logins permissions passwords team coverage on call",
   integrations: "Connections connected provider Gmail OpenPhone Slack Dropbox Aryeo Calendly Drive Topaz Anthropic API run health sync cron",

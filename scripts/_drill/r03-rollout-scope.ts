@@ -126,6 +126,14 @@ const fence = fenceFetch(async (url, init) => {
   return null;
 });
 const mailsSince = (i: number) => mails.slice(i).map((m) => m.to);
+// Oct 12 2026: a client email carrying a one-time sign-in link now also sends
+// Jordan a SEPARATE, redacted copy (lib/clientEmailMonitor.ts). Who the CLIENTS
+// got is the question these checks ask, so the copies are counted apart — and
+// held to their own promise: to the monitor inbox, no sign-in link in them.
+const COPY_MARK = "Your copy of the email sent to ";
+const clientMailsSince = (i: number) => mails.slice(i).filter((m) => !m.body.startsWith(COPY_MARK)).map((m) => m.to);
+const copiesSince = (i: number) => mails.slice(i).filter((m) => m.body.startsWith(COPY_MARK));
+const copiesAreSafe = (i: number) => copiesSince(i).every((m) => m.to === "info@realtourpilot.com" && !/portal\/auth\//.test(m.body) && m.body.includes("[sign-in link removed from your copy]"));
 
 // ---- the cast, seeded the same way in both trees -------------------------------
 type Fx = { clientId: string; enrollmentId: string; monthId: string; projectId: string | null; clientUserId: string | null; membershipId: string | null; portalToken: string | null; name: string };
@@ -289,7 +297,12 @@ interceptModule(
           const v = Reflect.get(t, k, t);
           if (typeof v !== "function" || typeof k !== "string") return v;
           return (...args: unknown[]) => {
-            if (k.startsWith("find") || k === "count") reads.set(`${name}.${k}`, (reads.get(`${name}.${k}`) ?? 0) + 1);
+            // Oct 12 2026: every client EMAIL reads one setting of its own — where
+            // Jordan's copy goes (lib/clientEmailMonitor.ts). It is not the rollout
+            // or a switch, which is what these counts are about, so it is not counted.
+            const settingKey = (args[0] as { where?: { key?: unknown } } | undefined)?.where?.key;
+            const monitorRead = name === "appSetting" && settingKey === "client-email-monitor";
+            if ((k.startsWith("find") || k === "count") && !monitorRead) reads.set(`${name}.${k}`, (reads.get(`${name}.${k}`) ?? 0) + 1);
             if (name === "client" && faults.client && k.startsWith("find")) throw new Error("injected client read failure");
             return (v as (...a: unknown[]) => unknown).apply(t, args);
           };
@@ -565,8 +578,9 @@ async function main(): Promise<void> {
     let threw = "";
     const live = await R.evaluateReminders({ dryRun: false, now: NOW }).catch((e: Error) => { threw = `${e.name}: ${e.message}`; return null; });
     c.ok("§8: the live tick COMPLETES (no TestClientSendRefusedError abort)", !threw && !!live, threw);
-    const to = mailsSince(i).sort();
+    const to = clientMailsSince(i).sort();
     c.ok("live: exactly T, T3 and P were emailed", JSON.stringify(to) === JSON.stringify(["bobmike0214@gmail.com", "info+rt@realtourpilot.com", "pat@example.test"]), to.join(", "));
+    c.ok("…Jordan's copies of those with a sign-in link went to info@ only, the link removed (Oct 12)", copiesAreSafe(i), copiesSince(i).map((m) => m.to).join(", "));
     const acc = await prisma.outboxMessage.findMany({ where: { dedupeKey: { startsWith: "program_reminder:" }, state: "accepted" }, select: { clientId: true, toRef: true } });
     livePairs = acc.map((r) => `${r.clientId}|${outbox.maskToRef("email", r.toRef)}`).sort();
     c.ok("§9: dry run == dispatch — the {client, masked to} pairs marked send are exactly what went out", JSON.stringify(dryPairs) === JSON.stringify(livePairs), `${dryPairs.join(" ")} vs ${livePairs.join(" ")}`);
@@ -606,7 +620,8 @@ async function main(): Promise<void> {
     c.ok("share dry run: T and P send; X (pending AND failed) suppress not_in_rollout_scope, recipient shown", pv(nT.id)?.decision === "send" && pv(nP.id)?.decision === "send" && pv(nX.id)?.decision === "suppress" && pv(nXf.id)?.decision === "suppress" && /not_in_rollout_scope/.test(pv(nX.id)?.reason ?? "") && pv(nX.id)?.to === outbox.maskToRef("email", "xo@example.test"), dryShare.preview.map((p) => `${nameOf.get(p.clientId)}:${p.decision}`).join(" "));
     const k = mails.length;
     const liveShare = await share.drainShareNotices({ now: NOW, max: 20 });
-    c.ok("share live: T and P emailed, X nothing", JSON.stringify(mailsSince(k).sort()) === JSON.stringify(["info+rt@realtourpilot.com", "pat@example.test"]), `${mailsSince(k).join(",")} ${liveShare.notes.join(" | ")}`);
+    c.ok("share live: T and P emailed, X nothing", JSON.stringify(clientMailsSince(k).sort()) === JSON.stringify(["info+rt@realtourpilot.com", "pat@example.test"]), `${clientMailsSince(k).join(",")} ${liveShare.notes.join(" | ")}`);
+    c.ok("…Jordan's copies of the share notices went to info@ only, the link removed (Oct 12)", copiesAreSafe(k), copiesSince(k).map((m) => m.to).join(", "));
     const xRows = await prisma.programReminder.findMany({ where: { id: { in: [nX.id, nXf.id] } } });
     c.ok("…both X notices SUPPRESSED not_in_rollout_scope", xRows.every((r) => r.state === "SUPPRESSED" && r.suppressionReason === "not_in_rollout_scope"), xRows.map((r) => `${r.state}/${r.suppressionReason}`).join(" "));
 

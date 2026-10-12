@@ -220,8 +220,15 @@ export class OutboxSendError extends Error {
 
 export type OutboxProvider = {
   /** Hand the message over. Resolve with the provider's own id (null when it
-   *  gives none), or throw OutboxSendError. */
-  send(row: Pick<OutboxRow, "channel" | "toRef" | "body" | "dedupeKey" | "extraToRefsJson" | "mediaUrlsJson">): Promise<{ providerId: string | null }>;
+   *  gives none), or throw OutboxSendError.
+   *
+   *  `afterAccepted` (Oct 12 2026) is follow-up work that must only happen once
+   *  the message really left — today, the owner's separate redacted copy of a
+   *  client email that carried a one-use sign-in link (lib/clientEmailMonitor).
+   *  deliver() runs it AFTER the row is marked accepted, so the ledger is never
+   *  waiting on it, and a failure in it is swallowed: it never changes what the
+   *  client's message is recorded as. */
+  send(row: Pick<OutboxRow, "channel" | "toRef" | "body" | "dedupeKey" | "extraToRefsJson" | "mediaUrlsJson">): Promise<{ providerId: string | null; afterAccepted?: () => Promise<unknown> }>;
 };
 
 // ---- the store seam ---------------------------------------------------------
@@ -381,15 +388,32 @@ export function realOutboxProvider(): OutboxProvider {
     async send(row) {
       if (row.channel === "email") {
         const { sendGmailNew } = await import("@/lib/integrations/google");
+        const kind = outboxKind(row.dedupeKey);
+        const subject = subjectFor(kind, row.dedupeKey);
+        // THE OWNER'S COPY (Oct 12 2026). Every email this rail sends is a
+        // client's — the welcome fallback, portal invitations and sign-in
+        // links, the four program emails, the onboarding messages Jordan
+        // sends — except `staff`, which is internal and never copied. A blind
+        // copy rides on this very message; a message with a one-use sign-in
+        // link gets a separate redacted copy instead, after acceptance. The
+        // plan never throws (an unreadable setting = on, to info@).
+        const { planClientEmailCopy, bccOf, sendClientEmailCopy } = await import("@/lib/clientEmailMonitor");
+        const plan = await planClientEmailCopy({ to: row.toRef, body: row.body, internal: kind === "staff" });
         const res = await sendGmailNew({
           mailbox: "info@realtourpilot.com",
           to: row.toRef,
-          subject: subjectFor(outboxKind(row.dedupeKey), row.dedupeKey),
+          subject,
           body: row.body,
           // CP-15: info@ or nothing — never a silent send from another mailbox.
           strict: true,
+          bcc: bccOf(plan),
         });
-        if (res.ok) return { providerId: res.id ?? null };
+        if (res.ok) {
+          return {
+            providerId: res.id ?? null,
+            ...(plan.mode === "copy" ? { afterAccepted: () => sendClientEmailCopy(plan, { subject }) } : {}),
+          };
+        }
         // Gmail answers in words, not exceptions. A refusal we understand (no
         // account, a token that can read but not send, a malformed address) is
         // a clean rejection; a 5xx or a transport failure is not.
@@ -624,13 +648,16 @@ export function createOutbox(deps: {
     const fenced = await store.patch(id, { state: "attempting", leaseBy: workerId }, { bumpAttempts: true });
     if (fenced === 0) return { outcome: "busy", id };
     try {
-      const { providerId } = await provider.send(row);
+      const { providerId, afterAccepted } = await provider.send(row);
       // The mark can MISS: the watchdog may have recovered this row to `unknown`
       // while the provider was answering. Saying "accepted" then would have the
       // caller stamp its marker and complete its task against a row that reads
       // unknown and sits on the unconfirmed list for ever (review, Sep 16). Tell
       // the truth instead — it went out, but the ledger needs a person.
       const recorded = await markAccepted(id, providerId, { leaseBy: workerId });
+      // The provider took it, so its follow-up runs either way (the client got
+      // the message) — after the mark, and never able to change this outcome.
+      if (afterAccepted) await Promise.resolve().then(afterAccepted).catch(() => {});
       if (!recorded) {
         const held = await store.byId(id);
         return {

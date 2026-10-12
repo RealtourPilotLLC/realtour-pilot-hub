@@ -22,7 +22,9 @@ import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck, Zap, EyeOff, Bug, type LucideIcon } from "lucide-react";
+import { CalendarCheck, Zap, EyeOff, Bug, Mail, type LucideIcon } from "lucide-react";
+import { ClientEmailMonitorSettings } from "@/components/settings/ClientEmailMonitorSettings";
+import { clientEmailMonitor } from "@/lib/clientEmailMonitor";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
 import { loadAutomations } from "@/app/settings/programActions";
 import { RemindersPanel } from "@/components/settings/RemindersPanel";
@@ -167,7 +169,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // of six real people, and "0 of 0" automations against thirteen keys; null
   // prints the same honest note the reminders card has always used, and the
   // Section badge is left off rather than asserting a number nobody read.
-  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, automations, reminders, coaching] = await Promise.all([
+  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, automations, reminders, coaching, emailMonitor] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
     payVisibilityRules().then((r) => ({ paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy })),
     // Team notifications (Jordan, Sep 15) — every active person, the owner
@@ -186,6 +188,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // read the row is a lie about who is being audited. The shape is
     // commsCoaching.ts's — that module runs the audit and owns the contract.
     commsCoachingSettings().catch(() => null),
+    // Client email copies (Jordan, Oct 12). Never throws: an unreadable row
+    // reads as the default (on, to info@), and the card says so.
+    clientEmailMonitor(),
   ]);
 
   // THE CARDS, BY NAME (11-settings-grouping). Each is exactly the card it was
@@ -336,6 +341,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // Links, not controls: where access and coverage are actually managed.
   const linkRow = "flex min-h-10 items-center justify-between gap-3 rounded-lg px-2 py-2 text-sm hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand";
   const extras: Partial<Record<SettingsGroupId, React.ReactNode>> = {
+    // CLIENT EMAIL COPIES (Oct 12 2026): "Anytime a client gets an email, I
+    // want to receive that email too." One address, one switch; owner edits.
+    comms: (
+      <Section key="client-email-copies" icon={Mail} title="Client email copies" count={emailMonitor.enabled ? "on" : "off"}>
+        <ClientEmailMonitorSettings
+          initial={{ enabled: emailMonitor.enabled, address: emailMonitor.address, unreadable: emailMonitor.source === "unreadable" }}
+          isOwner={isOwner}
+        />
+      </Section>
+    ),
     // CLIENT ONBOARDING (Oct 5 2026): one client at a time — what they get,
     // their portal account, and the messages Jordan sends them himself.
     program: (
@@ -426,7 +441,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     scheduling: `Photos: ${turns.photos} hours · standard video: ${turns.standardVideoHours} hours · monthly content: ${turns.monthlyBusinessDays} business days.`,
     production: `Primary review: ${primaryReviewer} · backup offered after ${reviewRoom.coverOfferHours} covered hours · 1080p pass switch ${topaz.enabled ? "on" : "off"}.`,
     program: `${automations ? `${automations.filter((automation) => automation.enabled).length} of ${automations.length} automation switches on` : "Automation switches could not be read"} · ${reminders ? `reminder policy uses ${reminders.policySource === "stored" ? "saved values" : "defaults"}; its switch is ${reminders.switch.enabled ? "on" : reminders.switch.missing ? "not configured" : "off"}` : "reminder policy could not be read"}.`,
-    comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
+    comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · client email copies ${emailMonitor.enabled ? `to ${emailMonitor.address}` : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
     integrations: <Suspense fallback={<>Reading connection status…</>}><IntegrationSummary report={readiness} /></Suspense>,
     financial: `Photographer pay view ${payVisibility.paused ? "paused" : "not paused"}. Individual access rules still apply.`,
   };

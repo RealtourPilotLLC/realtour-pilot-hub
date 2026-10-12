@@ -109,8 +109,13 @@ export async function sendFeedbackReply(
   const text = body.trim();
   if (text.length < 20) return { ok: false, message: "Write a bit more before sending." };
   const { sendGmailNew } = await import("@/lib/integrations/google");
-  const res = await sendGmailNew({ mailbox: "info@realtourpilot.com", to, subject, body: text });
+  // The owner's copy of a client email (Oct 12 2026, lib/clientEmailMonitor.ts):
+  // a blind copy on this message; never throws, an unreadable setting = on.
+  const { planClientEmailCopy, bccOf, sendClientEmailCopy } = await import("@/lib/clientEmailMonitor");
+  const plan = await planClientEmailCopy({ to, body: text });
+  const res = await sendGmailNew({ mailbox: "info@realtourpilot.com", to, subject, body: text, bcc: bccOf(plan) });
   if (!res.ok) return { ok: false, message: res.error };
+  if (plan.mode === "copy") await sendClientEmailCopy(plan, { subject });
   const who = (me as { name?: string | null; email?: string } | null)?.name ?? (me as { email?: string } | null)?.email ?? "the office";
   await prisma.feedback.update({
     where: { id: feedbackId },

@@ -138,6 +138,18 @@ export async function gmailSendHealth(): Promise<Array<{ email: string; canSend:
   return out;
 }
 
+/** What happened to the owner's copy of a client email (Oct 12 2026). */
+export type ClientEmailCopyMode = "bcc" | "copy" | "copy_failed" | "none";
+
+/** One clean address for a `Bcc:` header, or null. Refuses anything that could
+ *  smuggle a header (CR/LF), a list, or the recipient themself. */
+function bccHeader(bcc: string | null, to: string): string | null {
+  const v = (bcc ?? "").trim().toLowerCase();
+  if (!v || /[\r\n,;<>"\s]/.test(v) || !/^[^@]+@[^@]+\.[^@]+$/.test(v)) return null;
+  if (v === to.trim().toLowerCase()) return null;
+  return v;
+}
+
 // Send a real threaded REPLY from one of our mailboxes — the human-reviewed
 // draft behind the task "Send email" button. Loads the thread, replies to the
 // latest message that isn't ours (proper In-Reply-To/References + Re: subject,
@@ -196,16 +208,26 @@ export async function sendGmailReply(opts: {
   body: string;
   /** The recipient the human confirmed — abort if the thread changed under them. */
   expectedTo?: string;
-}): Promise<{ ok: true; to: string; subject: string } | { ok: false; error: string; needsReconnect?: boolean }> {
+  /** Oct 12 2026: a reply to a CLIENT — the owner gets his copy (lib/clientEmailMonitor.ts):
+   *  a blind copy on this very message, or, if it carries a one-use sign-in
+   *  link, a separate redacted copy once this one was accepted. */
+  clientCopy?: boolean;
+}): Promise<{ ok: true; to: string; subject: string; copy?: ClientEmailCopyMode } | { ok: false; error: string; needsReconnect?: boolean }> {
   const t = await gmailReplyTarget(opts.mailbox, opts.threadId);
   if (!t.ok) return t;
   const { token, acctEmail, to, subject, msgId } = t;
   if (opts.expectedTo && opts.expectedTo.toLowerCase() !== to.toLowerCase()) {
     return { ok: false, error: `The thread changed — the reply would now go to ${to}, not ${opts.expectedTo}. Re-open and confirm.` };
   }
+  // Decided AFTER the recipient is known (the thread names it). Never throws:
+  // an unreadable setting means the default — on, to info@.
+  const monitor = opts.clientCopy ? await import("@/lib/clientEmailMonitor") : null;
+  const plan = monitor ? await monitor.planClientEmailCopy({ to, body: opts.body }) : null;
+  const bcc = bccHeader(monitor?.bccOf(plan) ?? null, to);
 
   const mime = [
     `To: ${to}`,
+    ...(bcc ? [`Bcc: ${bcc}`] : []),
     `From: ${acctEmail}`,
     // RFC 2047-encode so names/subjects with non-ASCII survive.
     `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`,
@@ -225,7 +247,9 @@ export async function sendGmailReply(opts: {
     return { ok: false, error: "Gmail can read but not send yet — reconnect Google in Connections to grant sending.", needsReconnect: true };
   }
   if (!res.ok) return { ok: false, error: `Gmail send failed (${res.status}).` };
-  return { ok: true, to, subject };
+  // The client has it. Only now the separate, redacted copy (sign-in links).
+  const copied = monitor && plan?.mode === "copy" ? await monitor.sendClientEmailCopy(plan, { subject, mailbox: acctEmail }) : false;
+  return { ok: true, to, subject, copy: !plan || plan.mode === "none" ? "none" : plan.mode === "copy" ? (copied ? "copy" : "copy_failed") : bcc ? "bcc" : "none" };
 }
 
 // Send a NEW email (not a reply into an existing thread). Client feedback
@@ -255,6 +279,11 @@ export async function sendGmailNew(opts: {
   subject: string;
   body: string;
   strict?: boolean;
+  /** Oct 12 2026: a blind copy on this message (the owner's monitoring copy of a
+   *  client email — lib/clientEmailMonitor.ts decides it). A true `Bcc:` header:
+   *  Gmail delivers to it and strips it from what the To recipient receives. An
+   *  address that is not one clean address, or is the recipient, is ignored. */
+  bcc?: string | null;
 }): Promise<
   | { ok: true; to: string; id: string | null }
   | { ok: false; error: string; needsReconnect?: boolean; status?: number }
@@ -275,8 +304,10 @@ export async function sendGmailNew(opts: {
   } catch {
     return { ok: false, error: "Google token expired — reconnect Gmail in Connections.", needsReconnect: true, status: 401 };
   }
+  const bcc = bccHeader(opts.bcc ?? null, to);
   const mime = [
     `To: ${to}`,
+    ...(bcc ? [`Bcc: ${bcc}`] : []),
     `From: ${acct.email}`,
     `Subject: =?UTF-8?B?${Buffer.from(opts.subject).toString("base64")}?=`,
     "Content-Type: text/plain; charset=UTF-8",

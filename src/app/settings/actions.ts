@@ -555,3 +555,30 @@ export async function loadPayVisibility(): Promise<{ paused: boolean; pausedAtIS
   const r = await payVisibilityRules();
   return { paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy };
 }
+
+// ---------------------------------------------------------------------------
+// CLIENT EMAIL COPIES (Jordan, Oct 12 2026): "Anytime a client gets an email, I
+// want to receive that email too so I can monitor what the emails look like."
+// One address and an off switch (lib/clientEmailMonitor.ts). OWNER only: it is
+// his inbox the copies land in, and turning it off hides client mail from him.
+// ---------------------------------------------------------------------------
+export async function saveClientEmailMonitorAction(input: { enabled: boolean; address: string }): Promise<{ ok: boolean; message: string; enabled?: boolean; address?: string }> {
+  try {
+    const me = await requireSettingsActor();
+    if (me && me.role !== "OWNER") return { ok: false, message: "Only Jordan can change this one." };
+    const { saveClientEmailMonitor, cleanMonitorAddress } = await import("@/lib/clientEmailMonitor");
+    if (!cleanMonitorAddress(input?.address)) return { ok: false, message: "That doesn't look like an email address." };
+    const saved = await saveClientEmailMonitor({ enabled: input.enabled !== false, address: input.address }, me?.email ?? null);
+    revalidatePath("/settings");
+    return {
+      ok: true,
+      enabled: saved.enabled,
+      address: saved.address,
+      message: saved.enabled
+        ? `Saved. From the next email on, every email a client gets is also sent to ${saved.address}.`
+        : "Saved. Client emails are no longer copied to you.",
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Couldn’t save — try again." };
+  }
+}

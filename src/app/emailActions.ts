@@ -46,7 +46,10 @@ export async function sendEmailReply(
   }
 
   const { sendGmailReply } = await import("@/lib/integrations/google");
-  const sent = await sendGmailReply({ mailbox, threadId, body: text, expectedTo: opts?.expectedTo });
+  // clientCopy (Oct 12 2026): Jordan gets a blind copy of every reply that goes
+  // to a client from here — never of one to a team member (the plan skips our
+  // own domain and anyone on the team).
+  const sent = await sendGmailReply({ mailbox, threadId, body: text, expectedTo: opts?.expectedTo, clientCopy: true });
   if (!sent.ok) {
     if (!opts?.keepOpen) {
       await prisma.smartTask
