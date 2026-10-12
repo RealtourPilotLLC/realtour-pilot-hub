@@ -246,9 +246,16 @@ export async function openReviewWindow(submissionId: string, opts: { at?: Date; 
   if (sub.portalPublicationRequiredAt && !sub.clientReleasedAt) return null;
   const owner = await programOf(sub.project.contentMonthId, sub.project.clientId);
   if (!owner) return null;
-  // The TRUE release time is kept: a repair that runs an hour late must not
-  // hand the client an hour more than they were given.
-  const openedAt = sub.clientReleasedAt ?? opts.at ?? sub.decidedAt ?? new Date();
+  // PUBLISHED BEFORE THE CLIENT COULD SIGN IN (Jordan, Oct 12 2026): the video
+  // sits in their portal ready for review, but nobody has been given it yet,
+  // so there is no window, deadline or reminder until someone can sign in. The
+  // clock then starts when the window is written (the hourly repair, or the
+  // client's own first action), never from the earlier publication.
+  const { awaitingPortalSignIn, publishedBeforeSignIn } = await import("@/lib/monthlyFinal");
+  if (await awaitingPortalSignIn(submissionId, sub.project.contentMonthId)) return null;
+  // Otherwise the TRUE release time is kept: a repair that runs an hour late
+  // must not hand the client an hour more than they were given.
+  const openedAt = (await publishedBeforeSignIn(submissionId)) ? new Date() : sub.clientReleasedAt ?? opts.at ?? sub.decidedAt ?? new Date();
   await prisma.reviewSubmission.updateMany({ where: { id: submissionId, clientReleasedAt: null }, data: { clientReleasedAt: openedAt, clientReleasedBy: (opts.by ?? "Review Room").slice(0, 120) } });
   // A window written LATE — the repair, or ensureWindow's REPAIR branch — can
   // meet a cut the client already decided: anything released between the epoch
@@ -355,6 +362,10 @@ export async function ensureWindow(submissionId: string, owner: Owner): Promise<
   if (sub.status === "APPROVED" && sub.decidedBy !== DELIVERED_STAMP && sub.assetUrl && releasedAt.getTime() >= REVIEW_WINDOW_EPOCH.getTime()) {
     const w = await openReviewWindow(submissionId, { at: releasedAt, by: sub.decidedBy, source: "REPAIR" });
     if (w) return w;
+    // Published before the client could sign in and still waiting for them:
+    // no window yet. Never a LAZY one, whose clock would never run.
+    const { publishedBeforeSignIn } = await import("@/lib/monthlyFinal");
+    if (await publishedBeforeSignIn(submissionId)) return null;
   }
   return writeWindow(sub, owner, { openedAt: releasedAt, source: "LAZY", ...(await stateFromDecisions(submissionId, owner.enrollmentId)) });
 }

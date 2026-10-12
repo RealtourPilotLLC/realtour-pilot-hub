@@ -222,17 +222,22 @@ async function main() {
     c.ok("held files and a low Topaz balance are addressed to Kyle too", /dedupeKey: `topaz-held-kyle-/.test(topazSrc) && /dedupeKey: `topaz-low-balance-kyle-/.test(topazSrc));
 
     // =======================================================================
-    c.head("3 · client not live on the portal: send the Final Dropbox link, then Mark as sent");
+    c.head("3 · client not signed up yet: the video still goes to their portal and waits for them (Oct 12 2026)");
     // =======================================================================
+    // Jordan, Oct 12 2026: "once it is approved and run through Topaz, it should
+    // automatically be sent to the content program portal and be ready for
+    // review by the client". Until then a client who could not sign in yet got
+    // nothing: Kyle was told to send the Final Dropbox link instead.
+    const mf = await import("@/lib/monthlyFinal");
     const B = await buildContentMonth(prisma, { name: "Bea Outside TEST", package: "Starter", owner: { email: "bea@realtourpilot.com", name: "Bea Owner" } });
     await ensureOutputsForProject(B.projectId!);
     await prisma.client.update({ where: { id: B.clientId }, data: { name: "Bea Outside Realty" } }); // a real client, outside the (closed) rollout
     const b1 = await mkCut(B.projectId!, B.deliverableId, 1, 1, approvedStamped());
     await prisma.topazJob.create({ data: { projectId: B.projectId!, submissionId: b1, state: "done", finalPath: "/drill/B/Final Video/video1-v1 - FINAL (Topaz).mp4", savedAt: now(), outputCheck: "verified" } });
     const bRow = (await rts.readyToSend({ projectId: B.projectId! })).ready.find((r) => r.submissionId === b1);
-    c.ok("the card's next step names the client and the two actions", bRow?.portalStep?.action === "send-outside-portal" && bRow.portalStep.says === "Bea Outside Realty's portal isn't live yet. Send the Final Dropbox link to Bea Outside Realty, then Mark as sent.", bRow?.portalStep?.says);
+    c.ok("the card says the video goes to the client's portal and waits for them", bRow?.portalStep?.action === "retry-publication" && !bRow.portalStep.failed && bRow.portalStep.says === "Ready for Bea Outside Realty's portal, where it waits for their review until they sign up. If it isn't there yet, publish it now.", bRow?.portalStep?.says);
     const bMsg = bRow ? deliveryReadyMessage(bRow, "https://hub.invalid") : null;
-    c.ok("Kyle's Slack says the same, with the Final Dropbox file", !!bMsg && /Send the Final Dropbox link to Bea Outside Realty, then Mark as sent/.test(bMsg.slackDm) && /Final Dropbox file:/.test(bMsg.slackDm) && !/final check/.test(bMsg.slackDm), bMsg?.slackDm);
+    c.ok("Kyle's Slack never tells him to send a Dropbox link instead", !!bMsg && !/Send the Final Dropbox link/.test(bMsg.slackDm), bMsg?.slackDm);
     // A skipped pass on this real client: Kyle is told once, by the Topaz notice —
     // the five-minute delivery sweep does not DM him the same thing again.
     const sOn = await topazSettings();
@@ -246,21 +251,18 @@ async function main() {
     const { notifyKyleDeliveryReady } = await import("@/lib/deliveryReadyNotify");
     await notifyKyleDeliveryReady();
     const sweepRows = await prisma.notification.findMany({ where: { userKey: `tm:${kyle.id}`, dedupeKey: { startsWith: "delivery-ready-" } }, select: { title: true, body: true } });
-    c.ok("the delivery sweep tells Kyle to send the Dropbox link for the client off the portal", sweepRows.some((r) => r.title.startsWith("Send the Final Dropbox link") && /Send the Final Dropbox link to Bea Outside Realty, then Mark as sent/.test(r.body ?? "")), sweepRows.map((r) => r.title).join(" | "));
+    c.ok("the delivery sweep never asks Kyle for a Dropbox link (the hub publishes it)", !sweepRows.some((r) => /Send the Final Dropbox link/.test(`${r.title} ${r.body ?? ""}`)), sweepRows.map((r) => r.title).join(" | "));
     c.ok("…and does not repeat the skipped pass as a second DM", !sweepRows.some((r) => r.title.startsWith("1080p file needed")), sweepRows.map((r) => r.title).join(" | "));
-    const oldPress = await rts.markVideoSent(b1, "Kyle");
-    c.ok("OLD: the only Mark as sent a portal video had (the portal handoff) refuses here — the dead end", !oldPress.ok && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: b1 } })).sentToClientAt === null, oldPress.message);
-    const early = await actions.markSentOutsidePortalAction(b3);
-    c.ok("Mark as sent refuses a version with no checked 1080p file", !early.ok && /checked 1080p file isn't ready/.test(early.message), early.message);
-    const sameA = await actions.markSentOutsidePortalAction(p2);
-    c.ok("…and a client who CAN sign in (publish to their portal instead)", !sameA.ok && /can sign in to the portal now/.test(sameA.message), sameA.message);
-    const sent = await actions.markSentOutsidePortalAction(b1);
-    const b1Row = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: b1 } });
-    c.ok("Mark as sent records Kyle's send", sent.ok && !!b1Row.sentToClientAt && !!b1Row.clientReleasedAt, sent.message);
-    c.ok("…as a send outside the portal (no portal handoff marker)", !(await ce.monthlyPortalHandoffsFor([b1])).has(b1));
-    c.ok("…and the row leaves Kyle's card", !(await rts.readyToSend({ projectId: B.projectId! })).ready.some((r) => r.submissionId === b1));
-    const again = await actions.markSentOutsidePortalAction(b1);
-    c.ok("a second press says it is already recorded", again.ok && /Already marked sent/.test(again.message), again.message);
+    // The publication itself, and its review clock waiting for a sign-in, are
+    // proven end to end in monthly-final-destination.ts (this drill's Dropbox
+    // has no final backup, so here only that proof can stop it).
+    const attempt = await rts.markVideoSent(b1, "Automatic portal publication");
+    c.ok("NEW: a client who cannot sign in yet is never the reason publication stops", !attempt.ok && !/owner seat|sign in|rollout/i.test(attempt.message) && /final Dropbox folder/.test(attempt.message), attempt.message);
+    c.ok("…and nothing is waiting on a sign-in for a version never published", !(await mf.publishedBeforeSignIn(b1)) && !(await mf.awaitingPortalSignIn(b1, B.monthId)));
+    // Jordan, Oct 12 2026: "we never send dropbox links to clients … dropbox is
+    // for our internal use." The card's Mark as sent (outside the portal) is gone.
+    c.ok("no 'Mark as sent outside the portal' action exists any more", !("markSentOutsidePortalAction" in actions));
+    c.ok("…and nothing on the card or in Kyle's notices mentions a Dropbox link for the client", !/Dropbox link/.test(src("src/lib/deliveryReadyMessage.ts")) && !/send-outside-portal/.test(src("src/components/ops/PortalNextStep.tsx")));
 
     // =======================================================================
     c.head("10 · a job linked to its month AFTER approval waits for publication");

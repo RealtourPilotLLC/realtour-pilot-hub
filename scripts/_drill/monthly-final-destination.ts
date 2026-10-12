@@ -73,7 +73,7 @@ async function main() {
     const { finalFileChoicesAction, recordFinalFileCheckAction, readFinalFileCheckReceiptAction } = await import("@/app/ops/finalRenditionActions");
     const { GET: finalPreview } = await import("@/app/api/review/cut/[id]/final/route");
     const { GET: reviewOriginal } = await import("@/app/api/review/cut/[id]/stream/route");
-    const { markVideoSent, readyToSend } = await import("@/lib/readyToSend");
+    const { markVideoSent, readyToSend, completePortalDelivery } = await import("@/lib/readyToSend");
     const { mediaToken } = await import("@/lib/portalMedia");
     const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout, CLOSED_ROLLOUT } = await import("@/lib/programRolloutCore");
     const since = new Date(Date.now() - 60_000).toISOString();
@@ -137,12 +137,14 @@ async function main() {
     mode = "complete"; const recovered = await startDropboxCopy(lost.id, { inline: false });
     c.ok("lost save_url response reconciles existing matching bytes without trusting path", rejected && recovered.complete && await prisma.auditLog.count({ where: { action: "cut_dropbox_backup", target: lost.id } }) === 1);
     await prisma.clientUser.update({ where: { id: person.id }, data: { status: "DISABLED" } });
-    c.ok("disabled owner cannot settle monthly final-file access", !(await monthlyFinalSnapshot(original.id)).ok);
+    // Oct 12 2026 (Jordan): a live program gets the video in its portal whether
+    // or not anyone can sign in yet; who can sign in is recorded, not required.
+    c.ok("a disabled owner leaves the program publishable but nobody signed in", (await monthlyFinalSnapshot(original.id)).ok && (await monthlyOwnerAccess([month.id])).get(month.id)?.ok === false);
     await prisma.clientUser.update({ where: { id: person.id }, data: { status: "ACTIVE" } });
     const otherClient = await prisma.client.create({ data: { name: "Other program TEST" } });
     const otherEnrollment = await prisma.contentEnrollment.create({ data: { clientId: otherClient.id, status: "ACTIVE", package: "Other", videosPerMonth: 1, sessionsPerMonth: 1, sessionHours: 1 } });
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { enrollmentId: otherEnrollment.id } });
-    c.ok("a live owner seat pointing at another enrollment does not certify this month", !(await monthlyFinalSnapshot(original.id)).ok);
+    c.ok("a live owner seat pointing at another enrollment does not count as sign-in for this month", (await monthlyOwnerAccess([month.id])).get(month.id)?.ok === false && (await monthlyOwnerAccess([month.id])).get(month.id)?.live === true);
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { enrollmentId: enrollment.id } });
     await prisma.client.update({ where: { id: client.id }, data: { name: "Normal client outside pilot" } });
     c.ok("real client outside stored TEST_ONLY rollout cannot certify access", !(await monthlyOwnerAccess([month.id])).get(month.id)?.ok);
@@ -260,14 +262,41 @@ async function main() {
     const gatedJob = await prisma.topazJob.create({ data: { submissionId: gated.id, projectId: project.id, state: "failed", finalPath: gatedPath, savedAt: new Date(), outputCheck: "verified" } });
     c.ok("failed Topaz cannot publish the original or start a deadline", !(await cv.publishApprovedCutToLibrary(gated.id)).published && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } })).clientReleasedAt);
     await prisma.topazJob.update({ where: { id: gatedJob.id }, data: { state: "done" } });
+    // Oct 12 2026: nobody can sign in yet, and the program is live. The checked
+    // video still goes to the portal; its review clock waits for a sign-in.
+    const early = await makeCut(3, 2);
+    await prisma.reviewSubmission.update({ where: { id: early.id }, data: { clientReleasedAt: null, portalPublicationRequiredAt: approvedBeforeProcessing, decidedAt: approvedBeforeProcessing } });
+    const earlyPath = "/isolated/monthly/05-Final-Video/early-publication.mp4"; put(earlyPath, PROCESSED);
+    await prisma.topazJob.create({ data: { submissionId: early.id, projectId: project.id, state: "done", finalPath: earlyPath, savedAt: new Date(), outputCheck: "verified" } });
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { revokedAt: new Date() } });
-    c.ok("missing owner access leaves one publication exception", !(await cv.publishApprovedCutToLibrary(gated.id)).published && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } })).sentToClientAt);
+    const earlyPub = await cv.publishApprovedCutToLibrary(early.id);
+    const earlyCut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: early.id } });
+    c.ok("no one can sign in yet: the checked video still goes to the portal", earlyPub.published && !!earlyCut.clientReleasedAt && !!earlyCut.sentToClientAt, JSON.stringify(earlyPub));
+    const homeRows = async () => (await readyToSend({ projectId: project.id, recordFollowUpHealth: false, includeNoticeIncidents: false })).portalDelivered ?? [];
+    c.ok("…and the home screen lists it as delivered via the content program, waiting for sign-up", (await homeRows()).find((r) => r.submissionId === early.id)?.waitingForSignUp === true);
+    await windows.repairReviewWindows();
+    c.ok("…with no review window or deadline while nobody can sign in", !(await prisma.contentReviewWindow.findUnique({ where: { submissionId: early.id } })) && !(await windows.openReviewWindow(early.id)));
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { revokedAt: null } });
+    const seatBack = Date.now();
+    await windows.repairReviewWindows();
+    const earlyWindow = await prisma.contentReviewWindow.findUnique({ where: { submissionId: early.id } });
+    c.ok("…and once the owner can sign in, the clock starts then, not at publication", !!earlyWindow && earlyWindow.state === "OPEN" && earlyWindow.openedAt.getTime() >= seatBack - 1000 && earlyWindow.openedAt.getTime() > earlyCut.clientReleasedAt!.getTime(), JSON.stringify(earlyWindow && { openedAt: earlyWindow.openedAt, released: earlyCut.clientReleasedAt }));
     const beforeChecks = await prisma.finalRenditionCheck.count({ where: { submissionId: gated.id } });
     const publication = await cv.publishApprovedCutToLibrary(gated.id);
     const publishedCut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } });
     const publishedWindow = await prisma.contentReviewWindow.findUnique({ where: { submissionId: gated.id } });
     c.ok("verified Topaz auto-publishes exact version without fake human checks", publication.published && !!publishedCut.clientReleasedAt && !!publishedCut.sentToClientAt && beforeChecks === 0 && await prisma.finalRenditionCheck.count({ where: { submissionId: gated.id } }) === 0, JSON.stringify(publication));
+    // Oct 12 2026 (Jordan): the home screen says it was delivered via the
+    // content program, with Upload to Aryeo (Download + Aryeo listing) or Mark
+    // as completed.
+    const deliveredRow = (await homeRows()).find((r) => r.submissionId === gated.id);
+    c.ok("the home screen lists the published video as delivered via the content program", !!deliveredRow && !!deliveredRow.file?.downloadHref && deliveredRow.deliveredAtISO === publishedCut.sentToClientAt?.toISOString() && deliveredRow.waitingForSignUp === false, JSON.stringify(deliveredRow));
+    const completed = await completePortalDelivery(gated.id, "Kyle TEST", { aryeo: true });
+    const closeOut = await prisma.auditLog.findUnique({ where: { id: `monthly-portal-followup:${gated.id}` } });
+    c.ok("Mark as completed records who and the Aryeo choice, and the client's video is untouched", completed.ok && closeOut?.actor === "Kyle TEST" && /"aryeoUploadChosen":true/.test(closeOut.detail) && !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } })).clientReleasedAt);
+    c.ok("…the row leaves the home screen", !(await homeRows()).some((r) => r.submissionId === gated.id));
+    c.ok("…a second press says it is already done", (await completePortalDelivery(gated.id, "Kyle TEST")).message === "Already marked completed.");
+    c.ok("a video the portal never received cannot be completed here", !(await completePortalDelivery(sibling.id, "Kyle TEST")).ok);
     c.ok("review clock starts at actual publication, not earlier approval", !!publishedWindow && publishedWindow.openedAt.getTime() === publishedCut.clientReleasedAt?.getTime() && publishedWindow.openedAt > approvedBeforeProcessing);
     await cv.publishApprovedCutToLibrary(gated.id);
     const repeatedPublication = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } });

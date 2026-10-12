@@ -34,12 +34,11 @@ test("portal destination preserves release and access gates", () => {
   // Oct 5: it no longer asks for a "final check" no screen offers.
   assert.doesNotMatch(p.slackDm,/final check|Upload this video to Aryeo|Mark as Uploaded|Aryeo listing:/);
 });
-test("portal client not live: send the Final Dropbox link, then Mark as sent", () => {
+test("portal client not signed up yet: the video goes to their portal, never a Dropbox link (Oct 12 2026)", () => {
   const p=plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true,file:{...cut.file,dropboxUrl:"https://www.dropbox.com/home/Final?preview=final.mp4"},
-    portalStep:{action:"send-outside-portal",blocked:false,says:"Fixture client's portal isn't live yet. Send the Final Dropbox link to Fixture client, then Mark as sent."}} as ReadyVideo);
-  assert.match(p.slackDm,/Send the Final Dropbox link to Fixture client, then Mark as sent/);
-  assert.match(p.slackDm,/Final Dropbox file: https:\/\/www.dropbox.com/);
-  assert.notEqual(p.dedupeKey,plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true}).dedupeKey);
+    portalStep:{action:"retry-publication",blocked:false,says:"Ready for Fixture client's portal, where it waits for their review until they sign up. If it isn't there yet, publish it now."}} as ReadyVideo);
+  assert.match(p.slackDm,/where it waits for their review until they sign up/);
+  assert.doesNotMatch(p.slackDm,/Dropbox link|Final Dropbox file|Mark as sent/);
 });
 test("portal video without its checked 1080p file names the retry and offers no download", () => {
   const p=plan({...cut,deliveryDestination:"client-portal",monthlyProgram:true,

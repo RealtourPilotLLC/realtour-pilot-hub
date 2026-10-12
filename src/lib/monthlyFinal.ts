@@ -9,7 +9,10 @@ import { digest, proveOriginalBackup, readDropboxFile } from "@/lib/finalDropbox
 import type { TopazState } from "@/lib/topazJobs";
 
 type Db = Pick<Prisma.TransactionClient, "contentMonth" | "contentEnrollment" | "clientMembership" | "clientUser" | "client" | "appSetting">;
-export type MonthlyAccess = { ok: boolean; enrollmentId: string | null; clientId: string | null; stamp: string; message: string };
+/** `live`: this month belongs to an ACTIVE, unrevoked program of this client —
+ *  enough to publish a version into its portal (Jordan, Oct 12 2026).
+ *  `ok`: on top of that, an eligible owner can sign in today. */
+export type MonthlyAccess = { ok: boolean; live: boolean; enrollmentId: string | null; clientId: string | null; stamp: string; message: string };
 
 /** Same eligibility as a normal owner login, fenced to THIS month's enrollment.
  * A disabled person or an owner seat on another program cannot settle delivery. */
@@ -27,11 +30,13 @@ export async function monthlyOwnerAccess(monthIds: string[], db: Db = prisma): P
     const e = enrollments.find((e) => e.id === m.enrollmentId);
     const client = clients.find((c) => c.id === m.clientId);
     const owners = seats.filter((s) => s.enrollmentId === m.enrollmentId && s.clientId === m.clientId && users.some((u) => u.id === s.clientUserId));
-    const ok = !!e && e.clientId === m.clientId && e.status === "ACTIVE" && !e.accessRevokedAt && !!client && owners.length > 0
-      && rolloutDecision({ rollout, client, op: "portal_sign_in", now: new Date() }).ok;
-    out.set(m.id, { ok, enrollmentId: m.enrollmentId, clientId: m.clientId,
-      stamp: digest([m, e, owners, users.filter((u) => owners.some((s) => s.clientUserId === u.id)), setting?.value ?? null, ok]),
-      message: ok ? "An eligible owner can sign in to this exact program." : "Confirm an eligible owner seat and rollout access for this exact program before recording portal delivery." });
+    const live = !!e && e.clientId === m.clientId && e.status === "ACTIVE" && !e.accessRevokedAt && !!client;
+    const ok = live && owners.length > 0 && rolloutDecision({ rollout, client, op: "portal_sign_in", now: new Date() }).ok;
+    out.set(m.id, { ok, live, enrollmentId: m.enrollmentId, clientId: m.clientId,
+      stamp: digest([m, e, owners, users.filter((u) => owners.some((s) => s.clientUserId === u.id)), setting?.value ?? null, ok, live]),
+      message: ok ? "An eligible owner can sign in to this exact program."
+        : live ? "This program's portal is ready, but nobody can sign in to it yet."
+          : "This client's program isn't active, so there is no portal to publish to." });
   }
   return out;
 }
@@ -90,8 +95,13 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
     if (!source || source.hash !== backup.hash || source.size !== backup.size) return { ok: false, message: "The client’s original file and its final Dropbox backup do not match. Reconcile these exact files before recording delivery." };
     canonicalSource = source;
   }
+  // ONE RULE FOR PUBLICATION (Jordan, Oct 12 2026: "once it is approved and
+  // run through Topaz, it should automatically be sent to the content program
+  // portal and be ready for review by the client"). The program must be live;
+  // a client who has not signed up yet still gets the video in their portal,
+  // and its review clock waits for them (reviewWindows.openReviewWindow).
   const access = (await monthlyOwnerAccess([cut.project.contentMonthId!])).get(cut.project.contentMonthId!);
-  if (!access?.ok || access.clientId !== cut.project.clientId) return { ok: false, message: access?.message ?? "Client access could not be confirmed." };
+  if (!access?.live || access.clientId !== cut.project.clientId) return { ok: false, message: access?.message ?? "Client access could not be confirmed." };
   const fresh = await loadMonthlyCut(id);
   if (!fresh || monthlyCutStamp(fresh) !== monthlyCutStamp(cut) || !(await currentMonthlyCut(fresh))) return { ok: false, message: "The approved version or final file changed during the read. Check the current version again." };
   const mediaId = digest([file.kind, backup.id, backup.rev, backup.hash, backup.size, digest(backup.path)]);
@@ -101,40 +111,34 @@ export async function monthlyFinalSnapshot(id: string): Promise<MonthlyFinalSnap
 
 const verified1080p = (cut: MonthlyCut) => cut.topazJob?.state === "done" && !!cut.topazJob.finalPath && !!cut.topazJob.savedAt && ["verified", "resolved-processed"].includes(cut.topazJob.outputCheck ?? "");
 
-/**
- * KYLE SENT THE FINAL DROPBOX LINK HIMSELF (Oct 5 2026). For a client whose
- * portal is not live yet (not in the rollout, or no owner seat), the portal
- * handoff can never be recorded, and the row sat on his card with nothing to
- * press. This records his send: the same exact current version, the same
- * checked 1080p file whenever the version waits for publication, and only
- * while the client really cannot sign in — a client who can is published to
- * their portal instead. No portal handoff marker is written: this is a send
- * outside the portal, which is what the release rule (cutEntitlement) reads.
- */
-export async function claimMonthlyOutsidePortal(id: string, by: string | null): Promise<{ ok: true; count: number } | { ok: false; message: string }> {
-  const cut = await loadMonthlyCut(id);
-  if (!cut || !(await currentMonthlyCut(cut))) return { ok: false, message: "That monthly approved version is no longer current." };
-  const deliveryCut = await import("@/lib/finalRendition").then((m) => m.loadCut(id));
-  if (deliveryCut && await import("@/lib/videoDeliveryDestination").then((m) => m.usesAryeoDelivery(deliveryCut))) return { ok: false, message: "Aryeo was selected for this version. Use its upload and delivery steps." };
-  if (publicationRequiredAt(cut, true) && !verified1080p(cut)) return { ok: false, message: "The checked 1080p file isn't ready, so there is nothing to send yet. Run the 1080p pass first." };
-  const access = (await monthlyOwnerAccess([cut.project.contentMonthId!])).get(cut.project.contentMonthId!);
-  if (access?.ok && access.clientId === cut.project.clientId) return { ok: false, message: "This client can sign in to the portal now. Publish it to their portal instead." };
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "ReviewSubmission" WHERE "projectId" = ${cut.projectId} ORDER BY id FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "Project" WHERE id = ${cut.projectId} FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM "ReviewSubmission" WHERE "projectId" = ${cut.projectId} ORDER BY id FOR UPDATE`;
-    const current = await loadMonthlyCut(id, tx);
-    if (current?.sentToClientAt) return { ok: true as const, count: 0 };
-    if (!current || monthlyCutStamp(current) !== monthlyCutStamp(cut) || !(await currentMonthlyCut(current, tx))) return { ok: false as const, message: "The version or its final file changed. Check the current version again." };
-    const sentAt = new Date();
-    const changed = await tx.reviewSubmission.updateMany({ where: { id, status: "APPROVED", sentToClientAt: null }, data: { sentToClientAt: sentAt, sentToClientBy: by, clientReleasedAt: current.clientReleasedAt ?? sentAt, clientReleasedBy: current.clientReleasedBy ?? "Sent as a Final Dropbox link" } });
-    return { ok: true as const, count: changed.count };
-  }, { isolationLevel: "Serializable" });
-}
-
 /** Provider proof is collected before the transaction; the first delivery
  * claim rechecks canonical version, exact seat/scope and saved check inside it. */
 export const monthlyPortalHandoffId = (submissionId: string) => `monthly-portal-handoff:${submissionId}`;
+
+/**
+ * Was this version published into a portal nobody could sign in to yet, and
+ * is that still so? Then the client has not been given it: no review window,
+ * no deadline, no reminder until they can (Oct 12 2026). Once someone can,
+ * this is false and the window opens with the clock starting then. A handoff
+ * recorded before Oct 12 carries no signInReady and reads as given.
+ */
+export async function awaitingPortalSignIn(submissionId: string, contentMonthId: string | null | undefined): Promise<boolean> {
+  if (!contentMonthId) return false;
+  const handoff = await prisma.auditLog.findUnique({ where: { id: monthlyPortalHandoffId(submissionId) }, select: { detail: true } });
+  if (!handoff?.detail) return false;
+  let ready: unknown = true;
+  try { ready = (JSON.parse(handoff.detail) as { signInReady?: unknown }).signInReady; } catch { return false; }
+  if (ready !== false) return false;
+  const access = (await monthlyOwnerAccess([contentMonthId])).get(contentMonthId);
+  return !access?.ok;
+}
+
+/** Was this version published while nobody could sign in to the portal (its handoff says signInReady: false)? */
+export async function publishedBeforeSignIn(submissionId: string): Promise<boolean> {
+  const handoff = await prisma.auditLog.findUnique({ where: { id: monthlyPortalHandoffId(submissionId) }, select: { detail: true } });
+  if (!handoff?.detail) return false;
+  try { return (JSON.parse(handoff.detail) as { signInReady?: unknown }).signInReady === false; } catch { return false; }
+}
 
 export async function claimMonthlyFinalDelivery(id: string, by: string | null): Promise<{ ok: true; count: number } | { ok: false; message: string }> {
   const s = await monthlyFinalSnapshot(id);
@@ -149,7 +153,7 @@ export async function claimMonthlyFinalDelivery(id: string, by: string | null): 
     const destinationCut = await import("@/lib/finalRendition").then(m => m.loadCut(id, tx));
     if (destinationCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(destinationCut, tx))) return { ok: false as const, message: "Aryeo was selected before portal publication. Use its upload and delivery queue." };
     const access = (await monthlyOwnerAccess([s.cut.project.contentMonthId!], tx)).get(s.cut.project.contentMonthId!);
-    if (!current || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.ok || access.stamp !== s.access.stamp) return { ok: false as const, message: "The version or client access changed before delivery was recorded. Check the current final file again." };
+    if (!current || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.live || access.stamp !== s.access.stamp) return { ok: false as const, message: "The version or client access changed before delivery was recorded. Check the current final file again." };
     await tx.$queryRaw`SELECT id FROM "ContentVideoSource" WHERE kind = 'REVIEW_CUT' AND ref = ${id} FOR SHARE`;
     const source = await tx.contentVideoSource.findFirst({ where: { kind: "REVIEW_CUT", ref: id }, select: { videoId: true } });
     if (source) await tx.$queryRaw`SELECT id FROM "ContentVideo" WHERE id = ${source.videoId} FOR SHARE`;
@@ -159,7 +163,9 @@ export async function claimMonthlyFinalDelivery(id: string, by: string | null): 
     const changed = await tx.reviewSubmission.updateMany({ where: { id, status: "APPROVED", sentToClientAt: null }, data: { sentToClientAt: publishedAt, sentToClientBy: by, clientReleasedAt: current.clientReleasedAt ?? publishedAt, clientReleasedBy: current.clientReleasedBy ?? "Portal publication" } });
     if (changed.count === 1) {
       await tx.auditLog.create({ data: { id: monthlyPortalHandoffId(id), actor: "system", action: "monthly_portal_handoff", target: id,
-        detail: JSON.stringify({ sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId, publishedAt: publishedAt.toISOString(), libraryVideoId: linked.id }) } });
+        // signInReady false = published before anyone could sign in: the review
+        // clock starts when someone can (awaitingPortalSignIn), not now.
+        detail: JSON.stringify({ sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId, publishedAt: publishedAt.toISOString(), libraryVideoId: linked.id, signInReady: access.ok }) } });
     }
     return { ok: true as const, count: changed.count };
   }, { isolationLevel: "Serializable" });

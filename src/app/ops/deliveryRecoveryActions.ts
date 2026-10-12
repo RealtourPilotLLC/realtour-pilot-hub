@@ -97,13 +97,14 @@ export async function retryPortalPublicationAction(submissionId: string): Promis
   return { ok: true, message: "Publishing to the client's portal now. This row clears when it lands; if it can't, the reason shows here." };
 }
 
-/** Kyle sent the Final Dropbox link to a client whose portal isn't live yet. */
-export async function markSentOutsidePortalAction(submissionId: string): Promise<Result & { already?: boolean; incomplete?: string[] }> {
+/** Oct 12 2026: a branding video the portal already has is done for the office
+ *  (after an optional Aryeo upload). Records it; reaches no client. */
+export async function completePortalDeliveryAction(submissionId: string, opts: { aryeo?: boolean } = {}): Promise<Result> {
   const who = await staff();
   if (!who.ok) return who;
   if (!ID_RE.test(submissionId)) return { ok: false, message: "That video isn't on the delivery queue." };
-  const { markVideoSent } = await import("@/lib/readyToSend");
-  const r = await markVideoSent(submissionId, who.name, { outsidePortal: true });
-  if (r.ok && !r.incomplete?.length) refresh();
-  return { ok: r.ok, message: r.ok && !r.already && !r.incomplete?.length ? "Marked as sent." : r.message, already: r.already, incomplete: r.incomplete };
+  const { completePortalDelivery } = await import("@/lib/readyToSend");
+  const r = await completePortalDelivery(submissionId, who.name, { aryeo: opts.aryeo === true });
+  if (r.ok) refresh();
+  return r;
 }

@@ -729,10 +729,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const needsFinishing = d.readySend.needsFinishing?.length ?? 0;
   const notTold = d.readySend.notTold?.length ?? 0;
   const incidents = d.readySend.noticeIncidents?.length ?? 0;
+  // Oct 12 2026: branding videos the portal already has — upload to Aryeo or mark completed.
+  const viaProgram = d.readySend.portalDelivered?.length ?? 0;
   add({
-    key: "delivery-steps", group: "waiting", count: needsFinishing + notTold + incidents,
-    label: `delivery step${needsFinishing + notTold + incidents === 1 ? "" : "s"} to finish`,
+    key: "delivery-steps", group: "waiting", count: needsFinishing + notTold + incidents + viaProgram,
+    label: `delivery step${needsFinishing + notTold + incidents + viaProgram === 1 ? "" : "s"} to finish`,
     detail: [
+      viaProgram ? `${viaProgram} delivered via the content program to close out` : null,
       needsFinishing ? `${needsFinishing} to finish sending` : null,
       notTold ? `${notTold} client${notTold === 1 ? "" : "s"} not told yet` : null,
       incidents ? `${incidents} notice${incidents === 1 ? "" : "s"} failed` : null,
@@ -2264,7 +2267,7 @@ function VideoReviewCard({ d, showReady = true, includeTest = false }: { d: OpsD
           looking at videos. */}
       {showReady && (
         <div>
-          <ReadyToSendHeading n={d.readySend.ready.length} />
+          <ReadyToSendHeading n={d.readySend.ready.length + (d.readySend.portalDelivered?.length ?? 0)} />
           <div className="mt-2">
             <ReadyToSendCard board={d.readySend} includeTest={includeTest} />
           </div>

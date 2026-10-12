@@ -165,7 +165,7 @@ export async function finalChoices(submissionId: string) {
   const cut = await loadCut(submissionId);
   if (!cut || await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(cut))) return listingChoices(submissionId);
   const s = await monthlyFinalSnapshot(submissionId);
-  return s.ok ? { ok: true, message: "Play the exact portal file. Its final Dropbox backup and this program’s owner access were read now. These ticks are your staff attestation.", choices: [{ id: s.fingerprint, title: s.fileName, url: s.previewUrl, duration: null }] } : { ok: false, message: s.message, choices: [] };
+  return s.ok ? { ok: true, message: "Play the exact portal file. Its final Dropbox backup and this client’s program were read now. These ticks are your staff attestation.", choices: [{ id: s.fingerprint, title: s.fileName, url: s.previewUrl, duration: null }] } : { ok: false, message: s.message, choices: [] };
 }
 
 export async function finalCheckReceipt(submissionId: string, attemptId: string, actorId: string | null, attemptFingerprint?: string) {
@@ -202,14 +202,14 @@ export async function recordFinalCheck(input: FinalCheckInput): Promise<{ ok: bo
     const destinationCut = await loadCut(s.cut.id, tx);
     if (destinationCut && await import("@/lib/videoDeliveryDestination").then(m => m.usesAryeoDelivery(destinationCut, tx))) return { ok: false, message: "Aryeo was selected. Check its exact uploaded file instead of saving a portal check." };
     const access = (await monthlyOwnerAccess([s.cut.project.contentMonthId!], tx)).get(s.cut.project.contentMonthId!);
-    if (!current || current.sentToClientAt || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.ok || access.stamp !== s.access.stamp) return { ok: false, message: "The version or client access changed. Check the current final file again." };
+    if (!current || current.sentToClientAt || monthlyCutStamp(current) !== monthlyCutStamp(s.cut) || !(await currentMonthlyCut(current, tx)) || !access?.live || access.stamp !== s.access.stamp) return { ok: false, message: "The version or client access changed. Check the current final file again." };
     if (s.file.kind === "original") await tx.auditLog.upsert({ where: { id: backupReceiptData(s.cut, s.backup).id }, create: backupReceiptData(s.cut, s.backup), update: {} });
     await tx.finalRenditionCheck.create({ data: { id: `final-check:${input.attemptId}`, submissionId: s.cut.id, projectId: s.cut.projectId,
       destination: "client-portal", destinationMediaId: s.mediaId, destinationUrl: s.previewUrl, sourceFingerprint: s.fingerprint,
       checksJson: JSON.stringify({ checks: FINAL_CHECK_KEYS, attemptFingerprint: finalCheckAttemptFingerprint(input) }), metadataJson: input.metadata ? JSON.stringify(input.metadata) : null,
       checkedBy: input.actor.name.slice(0, 120), checkedByUserId: input.actor.id } });
-    await tx.activity.create({ data: { projectId: s.cut.projectId, type: "SYSTEM", body: `Final portal video checked by ${input.actor.name}: cut v${s.cut.round}, exact final Dropbox backup and owner access confirmed. Playback, audio, frames, title and identity were attested; this is not an automated full watch or client notification.`.slice(0, 500) } });
-    return { ok: true, message: "Exact portal final-file check recorded with final Dropbox backup and owner access. Notification and client approval remain separate." };
+    await tx.activity.create({ data: { projectId: s.cut.projectId, type: "SYSTEM", body: `Final portal video checked by ${input.actor.name}: cut v${s.cut.round}, exact final Dropbox backup and the client's program confirmed. Playback, audio, frames, title and identity were attested; this is not an automated full watch or client notification.`.slice(0, 500) } });
+    return { ok: true, message: "Exact portal final-file check recorded with final Dropbox backup and the client's program. Notification and client approval remain separate." };
   }, { isolationLevel: "Serializable" });
 }
 
@@ -222,5 +222,5 @@ export async function manualFinalCheckReady(submissionId: string): Promise<{ ok:
   const s = await monthlyFinalSnapshot(submissionId);
   if (!s.ok) return s;
   const check = await prisma.finalRenditionCheck.findFirst({ where: { submissionId, destination: "client-portal", sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId }, orderBy: { checkedAt: "desc" } });
-  return check ? { ok: true, message: "The exact portal final file, final Dropbox backup and program owner access are confirmed." } : { ok: false, message: "Check the exact portal file and final Dropbox backup before recording monthly delivery." };
+  return check ? { ok: true, message: "The exact portal final file, final Dropbox backup and the client's program are confirmed." } : { ok: false, message: "Check the exact portal file and final Dropbox backup before recording monthly delivery." };
 }

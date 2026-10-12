@@ -4,12 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send, UploadCloud } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkUploaded } from "@/components/ops/MarkUploaded";
 import { MarkProjectSent } from "@/components/ops/MarkProjectSent";
-import { ChooseAryeoDelivery } from "@/components/ops/ChooseAryeoDelivery";
 import { WatchDeliveryVideo, deliveryPreview } from "@/components/ops/WatchDeliveryVideo";
 import { uploadedDeliveryGroups, type UploadedTarget } from "@/lib/uploadedDeliveryGroups";
 import { CorrectUpload } from "@/components/ops/CorrectUpload";
@@ -19,9 +18,10 @@ import { PortalNextStep } from "@/components/ops/PortalNextStep";
 import { NotTold } from "@/components/ops/NotTold";
 import { SaveStatus } from "@/components/ui/SaveStatus";
 import { undoVideoUploadAction } from "@/app/ops/actions";
+import { completePortalDeliveryAction } from "@/app/ops/deliveryRecoveryActions";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
-import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
+import type { PortalDelivered, ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
 import type { DeliveryNoticeIncident } from "@/lib/deliveryNoticeIncidents";
 
 // ---------------------------------------------------------------------------
@@ -97,16 +97,17 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
   const router = useRouter();
   const [recorded, setRecorded] = useState<Map<string, string | null | undefined>>(() => new Map());
   const [sent, setSent] = useState<Map<string, string | null | undefined>>(() => new Map());
-  const [aryeoChoices, setAryeoChoices] = useState<Map<string, string>>(() => new Map());
   const { needsFinishing } = board;
-  const chosenDestination = <T extends ReadyVideo | RenderingVideo>(v: T): T => aryeoChoices.has(v.submissionId) && aryeoChoices.get(v.submissionId) === v.destinationFingerprint ? { ...v, deliveryDestination: "aryeo-listing", canChooseAryeo: false } : v;
-  const rendering = board.rendering.map(chosenDestination);
-  const chooseAryeo = (v: ReadyVideo | RenderingVideo) => setAryeoChoices(previous => new Map(previous).set(v.submissionId, v.destinationFingerprint!));
+  // Oct 12 2026 (Jordan): branding content is delivered through the portal,
+  // everything else through Aryeo — so the card no longer offers "send this
+  // monthly video to Aryeo instead". A branding video can still go up on Aryeo
+  // AFTER the portal has it (PortalDeliveredList).
+  const rendering = board.rendering;
   // UNDO, AT ONCE (Oct 5 2026): an undone upload is back in "Ready for upload"
   // the moment it is pressed; the server's answer only has to agree with it.
   const [undone, setUndone] = useState<Map<string, string>>(() => new Map());
   const isUndone = (v: ReadyVideo) => !!v.uploadFingerprint && undone.get(v.submissionId) === v.uploadFingerprint;
-  const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint)).map(chosenDestination)
+  const ready = board.ready.filter((v) => !(sent.has(v.submissionId) && sent.get(v.submissionId) === v.uploadFingerprint))
     .map((v) => isUndone(v) ? { ...v, uploaded: null } : v);
   const isRecorded = (v: ReadyVideo) => !isUndone(v) && recorded.has(v.submissionId) && recorded.get(v.submissionId) === v.uploadFingerprint;
   const uploadedRows = ready.filter((v) => !usesPortal(v) && (v.uploaded || isRecorded(v)));
@@ -172,7 +173,8 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
         <NeedsFinishing rows={needsFinishing ?? []} />
         <NotTold rows={notTold} />
         <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
-        <Rendering rows={rendering} onAryeoChosen={chooseAryeo} />
+        <PortalDeliveredList rows={board.portalDelivered ?? []} />
+        <Rendering rows={rendering} />
       </div>
     );
   }
@@ -185,9 +187,10 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
       {[
         { title: "Ready for upload", rows: ready.filter((v) => !usesPortal(v) && !v.uploaded && !isRecorded(v)) },
         { title: "Portal delivery needs attention", rows: ready.filter(usesPortal) },
-      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={(delivered) => uploaded(v, delivered)} onAryeoChosen={() => chooseAryeo(v)} />)}</section>)}
+      ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={(delivered) => uploaded(v, delivered)} />)}</section>)}
       {uploadedGroups.length > 0 && <section className="space-y-2" aria-label="Uploaded, not sent"><h4 className="font-semibold">Uploaded, not sent <span className="text-muted">({uploadedGroups.length})</span></h4>{uploadedGroups.map(group => <UploadedRow key={group.projectId} group={group} onSent={sentGroup} onUndo={undoUpload} undoErrors={undoErrors} />)}</section>}
-      <Rendering rows={rendering} onAryeoChosen={chooseAryeo} />
+      <PortalDeliveredList rows={board.portalDelivered ?? []} />
+      <Rendering rows={rendering} />
     </div>
   );
 }
@@ -234,7 +237,7 @@ function DeliveryTextIncidents({ rows, includeTest = false }: { rows: DeliveryNo
 
 /** The cuts the 1080p lane still owes work on: named, dated, and not offered.
  *  No Download, no "Mark as sent" — the file to send does not exist yet. */
-function Rendering({ rows, onAryeoChosen }: { rows: RenderingVideo[]; onAryeoChosen?: (v: RenderingVideo) => void }) {
+function Rendering({ rows }: { rows: RenderingVideo[] }) {
   if (rows.length === 0) return null;
   // HELD rows first, and apart (O02): the lane has finished with them and is
   // waiting on a PERSON, so they carry the one decision on this footnote. Every
@@ -244,7 +247,7 @@ function Rendering({ rows, onAryeoChosen }: { rows: RenderingVideo[]; onAryeoCho
   return (
     <>
       {held.length > 0 && <Held rows={held} />}
-      {running.length > 0 && <Running rows={running} onAryeoChosen={onAryeoChosen} />}
+      {running.length > 0 && <Running rows={running} />}
     </>
   );
 }
@@ -274,7 +277,7 @@ function Held({ rows }: { rows: RenderingVideo[] }) {
   );
 }
 
-function Running({ rows, onAryeoChosen }: { rows: RenderingVideo[]; onAryeoChosen?: (v: RenderingVideo) => void }) {
+function Running({ rows }: { rows: RenderingVideo[] }) {
   return (
     <div className="rounded-xl border border-dashed border-border px-3.5 py-2.5">
       <p className="flex items-center gap-1.5 text-ui-status font-semibold text-muted">
@@ -290,7 +293,6 @@ function Running({ rows, onAryeoChosen }: { rows: RenderingVideo[]; onAryeoChose
             <span className={cn(r.waitingHours >= 24 && "font-semibold text-danger")}> · approved {waited(r.waitingHours)} ago</span>
             <span className="block">{r.says}</span>
             {r.deliveryDestination === "aryeo-listing" && <span className="block">Destination: Aryeo. The finished file will still be saved in Final Dropbox.</span>}
-            {r.canChooseAryeo && r.destinationFingerprint && onAryeoChosen && <ChooseAryeoDelivery submissionId={r.submissionId} fingerprint={r.destinationFingerprint} onChosen={() => onAryeoChosen(r)} />}
           </li>
         ))}
       </ul>
@@ -304,7 +306,7 @@ function Running({ rows, onAryeoChosen }: { rows: RenderingVideo[]; onAryeoChose
  *  work at most, and past that the silence is the story again. */
 const IN_HAND_HOURS = 4;
 
-function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?: (sent?: boolean) => void; onAryeoChosen?: () => void }) {
+function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boolean) => void }) {
   // SOMEBODY STARTED THE HANDOFF — so stop shouting at them briefly (Jordan,
   // Sep 21). A row pulled ten minutes ago rendered identically to one nobody had
   // ever opened, both in red, both reading "ready 3 days". The red goes away
@@ -498,8 +500,77 @@ function ReadyRow({ v, onUploaded, onAryeoChosen }: { v: ReadyVideo; onUploaded?
         )}
       </div>
         {v.uploaded && <CorrectUpload submissionId={v.submissionId} receiptId={v.uploaded.id} />}
-        {usesPortal(v) && v.canChooseAryeo && v.destinationFingerprint && onAryeoChosen && <ChooseAryeoDelivery submissionId={v.submissionId} fingerprint={v.destinationFingerprint} onChosen={onAryeoChosen} />}
       </section>
+    </div>
+  );
+}
+
+/**
+ * DELIVERED VIA THE CONTENT PROGRAM (Jordan, Oct 12 2026): "branding content
+ * should go straight to the portal once its approved and ran through topaz.
+ * Then, on the home screen, it should say that it was delivered via the
+ * content program, with the option to upload it to Aryeo or the option to mark
+ * as completed. If upload to aryeo is selected, we should be able to see the
+ * button to download it and the button to the aryeo listing."
+ * Nothing here reaches the client: the portal already has the video.
+ */
+function PortalDeliveredList({ rows }: { rows: PortalDelivered[] }) {
+  const [closed, setClosed] = useState<Set<string>>(() => new Set());
+  const open = rows.filter((r) => !closed.has(r.submissionId));
+  if (!open.length) return null;
+  return (
+    <section className="space-y-2" aria-label="Delivered via the content program">
+      <h4 className="font-semibold">Delivered via the content program <span className="text-muted">({open.length})</span></h4>
+      {open.map((r) => <PortalDeliveredRow key={r.submissionId} r={r} onCompleted={() => setClosed((prev) => new Set(prev).add(r.submissionId))} />)}
+    </section>
+  );
+}
+
+const quietBtn = "inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+
+function PortalDeliveredRow({ r, onCompleted }: { r: PortalDelivered; onCompleted: () => void }) {
+  const [aryeo, setAryeo] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const complete = () => {
+    setBusy(true);
+    setError(null);
+    void completePortalDeliveryAction(r.submissionId, { aryeo })
+      .then((res) => { if (res.ok) onCompleted(); else { setError(res.message); setBusy(false); } })
+      .catch(() => { setError("Couldn't reach the hub. Nothing was recorded; try again."); setBusy(false); });
+  };
+  return (
+    <div className="min-w-0 rounded-xl border border-border px-3.5 py-2.5">
+      <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm leading-snug">
+        <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.clientName}</Link>
+        <span className="text-muted">· {r.monthKey ? monthName(r.monthKey) : "Month link unverified"}</span>
+        <span className="min-w-0 font-medium">· {r.topicTitle ?? r.cutLabel}</span>
+        <span className="rounded bg-success/15 px-1.5 py-0.5 text-ui-status font-semibold text-success">In the portal</span>
+      </div>
+      <p className="mt-1 text-sm text-muted"><span className="font-medium text-foreground">{r.cutLabel} · version {r.round}</span></p>
+      <p className="mt-1 text-sm text-foreground/85">
+        Delivered via the content program {etDateTime(new Date(r.deliveredAtISO))}.
+        {r.waitingForSignUp ? ` It's waiting in ${r.clientName}'s portal for their review until they sign up.` : ` ${r.clientName} can review it in their portal now.`}
+      </p>
+      {aryeo && (
+        <div className="mt-2 flex flex-wrap items-center gap-2" aria-label="Upload to Aryeo">
+          {r.file ? <DownloadFile href={r.file.downloadHref} taken={Boolean(r.downloadedAtISO)} /> : <span className="text-sm text-warning">The hub has no copy of this file to download. Open the job to find it.</span>}
+          {r.aryeoUrl
+            ? <a href={r.aryeoUrl} target="_blank" rel="noreferrer" title={r.aryeoTitle} className={quietBtn}><ExternalLink className="size-3.5" /> Aryeo listing</a>
+            : <span className="text-sm text-warning"><Link href={`/projects/${r.projectId}`} className="underline underline-offset-2 hover:text-brand">No Aryeo listing is linked to this job.</Link> Open the job and press Refresh from Aryeo.</span>}
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {!aryeo && (
+          <button type="button" onClick={() => setAryeo(true)} className={quietBtn}>
+            <UploadCloud className="size-3.5" /> Upload to Aryeo
+          </button>
+        )}
+        <button type="button" onClick={complete} disabled={busy} className={quietBtn} aria-label={`Mark ${r.clientName} ${r.cutLabel} as completed`}>
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Mark as completed
+        </button>
+      </div>
+      {error && <p role="alert" className="mt-1 text-sm text-danger">{error}</p>}
     </div>
   );
 }
