@@ -3289,6 +3289,11 @@ model ContentPillar {
   focusAreas        String?
   contentApproach   String? // optional third field (Mike's strategy)
   sortOrder         Int       @default(0)
+  // Oct 13 2026 (Jordan, Arielle Roemer): how much of the client's content
+  // this pillar should carry. LIGHT pillars get a smaller topic bank and rank
+  // lower in recommendations; LEAD pillars rank higher and show first on the
+  // client's topic bank.
+  emphasis          String    @default("NORMAL") // LEAD | NORMAL | LIGHT
   status            String    @default("ACTIVE") // ACTIVE | RETIRED
   retiredAt         DateTime?
   mergedIntoId      String? // -> ContentPillar, when two were folded together

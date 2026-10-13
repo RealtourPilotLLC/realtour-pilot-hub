@@ -8,6 +8,7 @@ import type { MonthPlanning, PlanStep } from "@/lib/planningState";
 import { TEXT_KYLE } from "@/lib/portalWords";
 import { PROGRAM_SLOT_HORIZON_DAYS } from "@/lib/portalScheduling";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
+import { orderByPillarEmphasis } from "@/lib/contentPolicy/topicBank";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28; identity layer,
@@ -1433,7 +1434,11 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     };
   };
   const declinedIn = (pillarId: string | null) => bank.declined.filter((t) => visibleIds.has(t.id) && (pillarId ? t.pillarId === pillarId : !t.pillarId || !pillars.some((p) => p.id === t.pillarId)));
-  const groups = bank.groups.map((g) => ({
+  // Oct 13 2026 (pillar emphasis): the client's LEAD pillars come first and
+  // LIGHT ones last, so the bank they pick from opens on their main focus.
+  const emphasisOf = new Map(pillars.map((p) => [p.id, p.emphasis]));
+  const orderedGroups = orderByPillarEmphasis(bank.groups, (g) => (g.pillarId ? emphasisOf.get(g.pillarId) : null), (g) => !!g.pillarId);
+  const groups = orderedGroups.map((g) => ({
     pillarId: g.pillarId, pillarName: g.pillarName, purpose: g.pillarId ? purposeOf.get(g.pillarId) ?? null : null,
     topics: [...g.topics.filter((t) => visibleIds.has(t.id)), ...declinedIn(g.pillarId)].map((t) => toTopic(t, g.pillarName)),
   }));

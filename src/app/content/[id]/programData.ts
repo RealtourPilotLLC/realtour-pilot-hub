@@ -49,7 +49,7 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
   const strategyDraft = queue.strategy && !(queue.strategy.state === "failed" && newestVersionAt && newestVersionAt > queue.strategy.at) ? queue.strategy : null;
   if (discovery) discovery.drafting = strategyDraft;
   const prows: ProposalRow[] = proposals.map((p) => ({ id: p.id, kind: p.kind, summary: p.summary, impact: p.impact, sourceKind: p.sourceKind, sourceRef: p.sourceRef, createdAt: p.createdAt.toISOString() }));
-  const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status }));
+  const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status, emphasis: p.emphasis }));
   const mapping: MappingRowUi[] = mappingRaw.filter((m) => !dismissed.has(m.label));
   const ow: OwnerUi[] = Object.values(owners).map((o) => ({ duty: o.duty, label: o.label, scope: o.scope, appUserId: o.appUserId }));
   return {

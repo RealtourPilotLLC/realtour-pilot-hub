@@ -221,10 +221,11 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
         }>
         {stock.length > 0 && (
           <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border px-5 py-2 text-[11px] text-muted">
-            <span className="text-muted-2">Usable per pillar (target {stock[0].target}):</span>
+            <span className="text-muted-2">Usable per pillar (target {Math.max(...stock.map((p) => p.target))}):</span>
             {stock.map((p) => (
               <span key={p.pillarId} className={p.need > 0 ? "text-warning" : undefined}>
-                {p.pillarName} {p.usable}{p.pending ? ` + ${p.pending} to review` : ""}{p.declined ? ` · ${p.declined} set aside` : ""}{p.need > 0 ? ` · needs ${p.need}` : ""}
+                {/* Oct 13 2026: a light pillar's smaller target is shown beside it. */}
+                {p.pillarName} {p.usable}{p.target < Math.max(...stock.map((x) => x.target)) ? ` of ${p.target} (light)` : ""}{p.pending ? ` + ${p.pending} to review` : ""}{p.declined ? ` · ${p.declined} set aside` : ""}{p.need > 0 ? ` · needs ${p.need}` : ""}
               </span>
             ))}
           </div>

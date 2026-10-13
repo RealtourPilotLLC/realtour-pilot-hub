@@ -14,6 +14,7 @@ import {
   addPillar, approveStrategy, confirmPillarMappingAction, createPillarsFromStrategy, dismissPillarLabelAction, queueStrategyDraftAction, editStrategySection, previewStrategyBackfill, rejectStrategy, releaseStrategy,
   renamePillarAction, resolveStrategyProposal, reviseStrategy, saveMonthPriorities, saveStrategyBackfill, setDutyOwner, waiveDiscoveryAction, type StrategyPreview,
 } from "@/app/content/actions";
+import { setPillarEmphasisAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Strategy tab (spec §3/§21): versions never overwrite; approve and release
@@ -56,7 +57,8 @@ export type DiscoveryUi = {
   drafting?: QueueItemUi | null;
 };
 export type ProposalRow = { id: string; kind: string; summary: string; impact: string | null; sourceKind: string; sourceRef: string | null; createdAt: string };
-export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string };
+/** `emphasis` (Oct 13 2026): LEAD | NORMAL | LIGHT, set with the Lead · Normal · Light control on PillarItem. */
+export type PillarRowUi = { id: string; name: string; purpose: string | null; focusAreas: string | null; aliases: string[]; status: string; emphasis: "LEAD" | "NORMAL" | "LIGHT" };
 export type MappingRowUi = { label: string; topicCount: number; sample: string[]; proposedPillarId: string | null; proposedPillarName: string | null; confidence: number; isQualityDimension: boolean };
 export type OwnerUi = { duty: string; label: string; scope: string; appUserId: string | null };
 /** CP-11: the section a proposal changes, as the strategy in force has it. */
@@ -215,7 +217,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
       <div className="grid items-start gap-5 lg:grid-cols-2">
         <Section icon={Layers} title="Content pillars" count={pillars.length} flush action={approved ? <span className="text-[11px] text-muted-2">from v{approved.versionNo} + edits</span> : undefined}>
           <div className="divide-y divide-border">
-            {pillars.map((p) => <PillarItem key={p.id} p={p} busy={busy} onRename={(n) => run(() => renamePillarAction(enrollmentId, p.id, n))} />)}
+            {pillars.map((p) => <PillarItem key={p.id} p={p} busy={busy} onRename={(n) => run(() => renamePillarAction(enrollmentId, p.id, n))} onEmphasis={(e) => run(() => setPillarEmphasisAction(enrollmentId, p.id, e))} />)}
             {pillars.length === 0 && <p className="px-5 py-3 text-sm text-muted">No pillars yet — approving a strategy creates them from the document, or add one below.</p>}
           </div>
           <AddPillar busy={busy} onAdd={(n, pu, fa) => run(() => addPillar(enrollmentId, n, pu, fa))} />
@@ -410,9 +412,29 @@ function PrioritiesCard({ month, busy, onSave }: { month: { label: string; prior
   );
 }
 
-function PillarItem({ p, busy, onRename }: { p: PillarRowUi; busy: boolean; onRename: (n: string) => void }) {
+// PILLAR EMPHASIS (Oct 13 2026, Jordan: Arielle Roemer's strategy should be
+// "less buyer heavy and more seller heavy and personal branding heavy"). Lead
+// pillars get a full bank, rank higher and show first to the client; light
+// pillars get about a third of the bank, rank lower and show last.
+const EMPHASIS_OPTIONS = [
+  { value: "LEAD", label: "Lead", hint: "The client's main focus: full topic bank, ranked first, shown first to the client" },
+  { value: "NORMAL", label: "Normal", hint: "A full topic bank at normal weight" },
+  { value: "LIGHT", label: "Light", hint: "Supporting only: a smaller topic bank, ranked lower, shown last to the client" },
+] as const;
+
+function PillarItem({ p, busy, onRename, onEmphasis }: { p: PillarRowUi; busy: boolean; onRename: (n: string) => void; onEmphasis: (e: PillarRowUi["emphasis"]) => void }) {
   const [edit, setEdit] = useState(false);
   const [n, setN] = useState(p.name);
+  const emphasisControl = p.status !== "RETIRED" && (
+    <div role="group" aria-label={`Emphasis for ${p.name}`} className="mt-1 inline-flex overflow-hidden rounded-md border border-border text-[11px]">
+      {EMPHASIS_OPTIONS.map((o) => (
+        <button key={o.value} type="button" title={o.hint} aria-pressed={p.emphasis === o.value} disabled={busy || p.emphasis === o.value} onClick={() => onEmphasis(o.value)}
+          className={`px-2 py-0.5 ${p.emphasis === o.value ? (o.value === "LEAD" ? "bg-brand font-semibold text-white" : o.value === "LIGHT" ? "bg-surface-2 font-semibold text-muted" : "bg-surface-2 font-semibold") : "text-muted hover:bg-surface-2"} disabled:cursor-default`}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <div className="px-5 py-2.5">
       {edit ? (
@@ -427,6 +449,7 @@ function PillarItem({ p, busy, onRename }: { p: PillarRowUi; busy: boolean; onRe
             <div className="text-sm font-medium">{p.name}{p.status === "RETIRED" && <span className="ml-1 text-[11px] text-muted-2">retired</span>}</div>
             {p.purpose && <p className="text-[12px] text-muted">{p.purpose}</p>}
             {p.aliases.length > 0 && <p className="text-[11px] text-muted-2">also known as: {p.aliases.join(" · ")}</p>}
+            {emphasisControl}
           </div>
           <button onClick={() => setEdit(true)} className="text-[11px] text-muted hover:underline">rename</button>
         </div>

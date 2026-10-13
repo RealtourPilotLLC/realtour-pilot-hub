@@ -15,7 +15,7 @@ import { STRATEGY_TEMPLATE, type StrategyDocument, renderStrategy } from "./stra
 import { CANONICAL_SCRIPT_PRESENTATION } from "./policy";
 import type { ScriptGeneratorInput, InterviewQuestion, FollowUpCondition } from "./interview";
 import type { CanonicalScript } from "./scriptFormat";
-import type { Topic } from "./topicBank";
+import { type Topic, emphasisOfPillar, topicsForEmphasis } from "./topicBank";
 import { renderScript } from "./scriptFormat";
 
 export type JsonSchema = Record<string, unknown>;
@@ -319,7 +319,13 @@ export const TOPIC_BANK_OUTPUT_SCHEMA: JsonSchema = {
 
 export function buildTopicBankPrompt(
   ctx: ClientContext,
-  opts: { topicsPerPillar?: number; existingTopics?: { title: string; pillarName: string; state: Topic["state"]; note?: string | null }[]; refresh?: boolean } = {},
+  opts: {
+    topicsPerPillar?: number;
+    existingTopics?: { title: string; pillarName: string; state: Topic["state"]; note?: string | null }[];
+    refresh?: boolean;
+    /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT (ContentPillar.emphasis). A LIGHT pillar asks for topicsForEmphasis(n, "LIGHT"). */
+    pillarEmphasis?: Record<string, string>;
+  } = {},
 ): PromptBundle {
   assertClientScoped(ctx);
   const cfg = GENERATION_POLICY.topicsPerPillar;
@@ -327,10 +333,31 @@ export function buildTopicBankPrompt(
   if (!Number.isInteger(n) || n < cfg.min || n > cfg.max) throw new RangeError(`topicsPerPillar must be ${cfg.min}–${cfg.max}; got ${n}`);
   const pillars = ctx.strategy?.document?.contentPillars.pillars.map((p) => p.name) ?? [];
   const existing = opts.existingTopics ?? [];
+  // PER-PILLAR COUNTS (Oct 13 2026, Arielle Roemer's buyer-heavy bank): every
+  // pillar used to be asked for the same n, so a supporting pillar filled as
+  // much of the bank as the lead one. Each pillar now states its own count,
+  // and the model is told which pillars lead and which are light.
+  const emphasisOf = (name: string) => emphasisOfPillar(opts.pillarEmphasis, name);
+  const countOf = (name: string) => topicsForEmphasis(n, emphasisOf(name));
+  const uniform = pillars.every((p) => countOf(p) === n);
+  const lead = pillars.filter((p) => emphasisOf(p) === "LEAD");
+  const light = pillars.filter((p) => emphasisOf(p) === "LIGHT");
+  const total = pillars.reduce((sum, p) => sum + countOf(p), 0);
+  const countLine =
+    !pillars.length || uniform
+      ? `COUNT: exactly ${n} topics under EACH of the client's ${pillars.length || "approved"} pillars (${pillars.join("; ") || "from the approved strategy"}) = ${pillars.length ? n * pillars.length : "N × pillar count"} topics. Never more, never fewer, never padded. If the source context cannot support ${n} at the quality bar for a pillar, return fewer, set complete=false, and add an insufficient-context gap naming what is missing.`
+      : `COUNT: each pillar has its OWN count: ${pillars.map((p) => `${p}: exactly ${countOf(p)}`).join("; ")} = ${total} topics. Never more, never fewer, never padded. If the source context cannot support a pillar's count at the quality bar, return fewer for that pillar, set complete=false, and add an insufficient-context gap naming what is missing.`;
+  const emphasisLine = [
+    lead.length ? `LEAD pillars (the client's main focus; most of their content should come from these): ${lead.join("; ")}.` : "",
+    light.length ? `LIGHT pillars (supporting only; keep their topics few and do not let them crowd the bank): ${light.join("; ")}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   const system = [
     systemHeader("You are building (or refreshing) a client's Video Topic Bank for Realtour Pilot."),
     "",
-    `COUNT: exactly ${n} topics under EACH of the client's ${pillars.length || "approved"} pillars (${pillars.join("; ") || "from the approved strategy"}) = ${pillars.length ? n * pillars.length : "N × pillar count"} topics. Never more, never fewer, never padded. If the source context cannot support ${n} at the quality bar for a pillar, return fewer, set complete=false, and add an insufficient-context gap naming what is missing.`,
+    countLine,
+    ...(emphasisLine ? [`EMPHASIS: ${emphasisLine}`] : []),
     "",
     "PRESENTATION (Arielle's bank): under each pillar heading, numbered from 1, a specific title plus one concrete sentence describing what the video would show or explain. Store audience need, business goal, intended message and source behind that simple view.",
     "",

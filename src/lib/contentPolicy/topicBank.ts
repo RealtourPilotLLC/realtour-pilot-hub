@@ -108,6 +108,50 @@ export function makeTopic(partial: Partial<Topic> & { title: string; pillarName:
 }
 
 // ---------------------------------------------------------------------------
+// PILLAR EMPHASIS (Oct 13 2026, Jordan: "Buyer Education & Transaction
+// Guidance topics are being recommended for Arielle Roemer. Her content
+// strategy should be less buyer heavy and more seller heavy and personal
+// branding heavy.")
+//
+// Every pillar used to get the same number of bank topics and the same weight
+// in the ranking, so a minor pillar filled as much of the bank as the lead one.
+// ContentPillar.emphasis is one setting per pillar, set on the Strategy tab:
+//   LEAD   the client's main focus: a full bank, ranked up (x1.5), shown first;
+//   NORMAL as before: a full bank, neutral weight;
+//   LIGHT  supporting only: about a third of the bank (never fewer than 2),
+//          ranked down (x0.5), shown last.
+// ---------------------------------------------------------------------------
+
+export type PillarEmphasis = "LEAD" | "NORMAL" | "LIGHT";
+export const PILLAR_EMPHASES: readonly PillarEmphasis[] = ["LEAD", "NORMAL", "LIGHT"];
+export const PILLAR_EMPHASIS_WEIGHT: Record<PillarEmphasis, number> = { LEAD: 1.5, NORMAL: 1, LIGHT: 0.5 };
+
+/** Anything stored or typed → one of the three; unknown values read as NORMAL. */
+export function asPillarEmphasis(v: string | null | undefined): PillarEmphasis {
+  const u = (v ?? "").trim().toUpperCase();
+  return u === "LEAD" || u === "LIGHT" ? u : "NORMAL";
+}
+
+/** How many bank topics a pillar gets: n for LEAD and NORMAL, max(2, round(n/3)) for LIGHT. */
+export function topicsForEmphasis(n: number, emphasis: string | null | undefined): number {
+  return asPillarEmphasis(emphasis) === "LIGHT" ? Math.max(2, Math.round(n / 3)) : n;
+}
+
+/** A pillar's emphasis from a name-keyed map, matched the way pillar names are everywhere (case and punctuation ignored). */
+export function emphasisOfPillar(map: Record<string, string> | null | undefined, name: string): PillarEmphasis {
+  if (!map) return "NORMAL";
+  if (name in map) return asPillarEmphasis(map[name]);
+  const key = Object.keys(map).find((k) => normalizeTitle(k) === normalizeTitle(name));
+  return asPillarEmphasis(key ? map[key] : null);
+}
+
+/** LEAD first, LIGHT last, everything else in its existing order (stable); a row with no pillar stays at the end. */
+export function orderByPillarEmphasis<T>(rows: T[], emphasisOf: (row: T) => string | null | undefined, hasPillar: (row: T) => boolean = () => true): T[] {
+  const rank = (r: T) => (!hasPillar(r) ? 3 : ({ LEAD: 0, NORMAL: 1, LIGHT: 2 } as const)[asPillarEmphasis(emphasisOf(r))]);
+  return rows.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i).map((x) => x.r);
+}
+
+// ---------------------------------------------------------------------------
 // Reader — Arielle's docx (dumped), the markdown form, or a titles-only bank
 // ---------------------------------------------------------------------------
 
@@ -343,7 +387,8 @@ export type TopicBankValidation = {
   ok: boolean;
   mode: "generated" | "imported";
   expectedPerPillar: number;
-  counts: { pillar: string; count: number }[];
+  /** `expected` is the pillar's own count: topicsForEmphasis(expectedPerPillar, its emphasis). */
+  counts: { pillar: string; count: number; expected: number }[];
   duplicates: { a: string; b: string; pillarA: string; pillarB: string; similarity: number }[];
   findings: Finding[];
   gaps: Gap[];
@@ -356,6 +401,8 @@ export type ValidateTopicBankOptions = {
   mode?: "generated" | "imported";
   /** Pillar names the approved strategy defines — a topic under any other name is flagged. */
   strategyPillarNames?: string[];
+  /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT. A LIGHT pillar is held to topicsForEmphasis(n, "LIGHT"), not n. */
+  pillarEmphasis?: Record<string, string>;
 };
 
 export function validateTopicBank(bank: TopicBank, opts: ValidateTopicBankOptions = {}): TopicBankValidation {
@@ -372,18 +419,20 @@ export function validateTopicBank(bank: TopicBank, opts: ValidateTopicBankOption
   }
   if (!bank.pillars.length) findings.push({ code: "bank.no-pillars", severity: "block", message: "The bank has no pillars." });
 
-  const counts = bank.pillars.map((p) => ({ pillar: p.name, count: p.topics.length }));
+  const expectedFor = (name: string) => topicsForEmphasis(expected, emphasisOfPillar(opts.pillarEmphasis, name));
+  const counts = bank.pillars.map((p) => ({ pillar: p.name, count: p.topics.length, expected: expectedFor(p.name) }));
   bank.pillars.forEach((p, pi) => {
-    if (p.topics.length !== expected) {
+    const want = expectedFor(p.name);
+    if (p.topics.length !== want) {
       findings.push({
         code: "pillar.count",
         severity: blockOrWarn,
-        message: `Pillar “${p.name}” has ${p.topics.length} topics; exactly ${expected} are required${mode === "imported" ? " for a generated bank (imported banks keep their real count)" : ""}.`,
+        message: `Pillar “${p.name}” has ${p.topics.length} topics; exactly ${want} are required${want !== expected ? " (a light pillar)" : ""}${mode === "imported" ? " for a generated bank (imported banks keep their real count)" : ""}.`,
         path: `pillars[${pi}]`,
-        measured: { count: p.topics.length, expected },
+        measured: { count: p.topics.length, expected: want },
       });
-      if (mode === "generated" && p.topics.length < expected) {
-        gaps.push(makeGap("insufficient-context", `Only ${p.topics.length} of ${expected} topics could be supported for “${p.name}” at the quality bar.`, { field: `pillars[${pi}].topics`, question: `What else could ${bank.clientName ?? "the client"} speak to under “${p.name}” from real experience?` }));
+      if (mode === "generated" && p.topics.length < want) {
+        gaps.push(makeGap("insufficient-context", `Only ${p.topics.length} of ${want} topics could be supported for “${p.name}” at the quality bar.`, { field: `pillars[${pi}].topics`, question: `What else could ${bank.clientName ?? "the client"} speak to under “${p.name}” from real experience?` }));
       }
     }
     if (opts.strategyPillarNames && !opts.strategyPillarNames.some((n) => normalizeTitle(n) === normalizeTitle(p.name))) {
@@ -439,7 +488,7 @@ export type RecommendationInput = {
   bank: Topic[];
   goals: StrategyGoal[];
   brandMessage?: string | null;
-  /** pillarName → weight; 1 = neutral, >1 emphasised (e.g. "Seller strategy will lead the content mix"). */
+  /** pillarName → weight; 1 = neutral, >1 emphasised (e.g. "Seller strategy will lead the content mix"), <1 a light supporting pillar. Scales the whole score (Oct 13 2026). */
   pillarEmphasis?: Record<string, number>;
   /** Free text such as "establishing team identity before the November anniversary". Matched by keyword against topics. */
   relationshipPhase?: string | null;
@@ -580,12 +629,18 @@ export function rankRecommendations(input: RecommendationInput): RecommendationR
       reasons.push("fits the current phase of the relationship");
     }
 
-    // 3. Pillar emphasis and under-representation.
+    // 3. Pillar emphasis and under-representation. Oct 13 2026: the weight
+    // used to scale only the goal / brand / phase points, so a light pillar's
+    // topic with none of those (0 x 0.5 = 0, then the same +1 base as every
+    // topic) ranked level with a normal one, and its under-representation
+    // bonus pushed it UP. The weight now scales the whole score (applied
+    // below, once every point is in), and a light pillar is meant to be
+    // filmed less, so it earns no under-representation bonus.
     const pillar = topic.pillarRef.pillarName;
     const weight = emphasis[pillar] ?? 1;
-    score *= weight;
     if (weight > 1) reasons.push("pillar leads the content mix");
-    if (pillarFilmedCounts) {
+    if (weight < 1) reasons.push("light pillar: supporting content only");
+    if (pillarFilmedCounts && weight >= 1) {
       const filmedHere = pillarFilmedCounts[pillar] ?? 0;
       const under = maxFilmed ? (maxFilmed - filmedHere) / (maxFilmed + 1) : 0;
       if (under > 0) {
@@ -643,6 +698,7 @@ export function rankRecommendations(input: RecommendationInput): RecommendationR
       }
     }
 
+    score *= weight;
     const whyNow = reasons.length ? reasons.join("; ") : "in the bank with no goal, phase or history signal attached — a filler, not a priority";
     scored.push({
       topic,
