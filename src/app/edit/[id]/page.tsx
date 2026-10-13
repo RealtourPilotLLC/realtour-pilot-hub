@@ -279,7 +279,8 @@ export default async function EditBriefPage({
   // "connect it" note until the key is in); editors only once it works.
   const musicConnected = await epidemicSoundConnected().catch(() => false);
   const folders = actualFolderPaths(project); // the job's OWN folder, not the convention path (audit, Sep 8)
-  const rawUrl = dropboxWebUrl(folders.rawVideo);
+  // The live folder at click time (a renamed "…_02-RAW-Video" no longer breaks it).
+  const rawUrl = `/api/dropbox/open/${project.id}?folder=rawVideo`;
   // The pick's "Open in Dropbox" link, built here (dropboxFolders is
   // server-only) from the path the download recorded, so it survives a
   // reload instead of living only in the session that clicked Download

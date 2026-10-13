@@ -249,7 +249,7 @@ export default async function ProjectPage({
   });
   const dropboxLinks = [
     { label: "Raw Photos", url: dropboxWebUrl(folders.rawPhotos) },
-    { label: "Raw Video", url: dropboxWebUrl(folders.rawVideo) },
+    { label: "Raw Video", url: `/api/dropbox/open/${project.id}?folder=rawVideo` },
     { label: "Final Photos", url: dropboxWebUrl(folders.finalPhotos) },
     { label: "Final Video", url: dropboxWebUrl(folders.finalVideo) },
   ];

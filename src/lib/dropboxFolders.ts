@@ -288,6 +288,22 @@ async function claimedByAnotherLiveJob(p: EnsureProject, path: string): Promise<
   return claimants.some((o) => o.recorded === lc(path) || o.derived === lc(path));
 }
 
+/**
+ * A STANDARD SUBFOLDER SOMEBODY RENAMED (Jordan, Oct 13 2026: "when I click
+ * open the raw footage button … it doesn't seem to work … the sub folder
+ * should just be 02-RAW-Video"). Found live: "2625 Wassergass Rd (Georgiana
+ * Torrella)_02-RAW-Video", "1_3826 Fairmount Ave (Stephen Kennedy)_02-RAW-Video",
+ * "02-RAW-Video (1)" — the shape a folder takes when it is downloaded or
+ * shared and uploaded back. The hub never names folders this way. Exactly one
+ * such sibling is the renamed standard folder; two or more is for a person.
+ */
+export function strayStandardFolder(names: Iterable<string>, standard: string): string | null {
+  const esc = standard.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^(?:.+_${esc}|${esc} \\(\\d+\\))$`, "i");
+  const hits = [...names].filter((n) => n !== standard && re.test(n));
+  return hits.length === 1 ? hits[0] : null;
+}
+
 async function listingSubfolders(path: string): Promise<Set<string> | null> {
   try {
     return new Set((await dropboxListFolder(path)).filter((e) => e.tag === "folder").map((e) => e.name));
@@ -361,7 +377,18 @@ export async function ensureProjectFolders(p: EnsureProject): Promise<EnsureResu
   const existing = await listingSubfolders(own.target);
   if (existing) {
     const missing = SUBFOLDERS.filter((k) => !existing.has(f[k].split("/").pop()!));
-    for (const k of missing) await dropboxCreateFolder(f[k]);
+    for (const k of missing) {
+      // A renamed standard folder gets its name back (files ride along) —
+      // creating an empty one beside it is what made "Open the raw footage"
+      // open an empty folder while the clips sat in the renamed one.
+      const name = f[k].split("/").pop()!;
+      const stray = strayStandardFolder(existing, name);
+      if (stray && (await dropboxMoveFolder(`${own.target}/${stray}`, f[k]).catch(() => false))) {
+        await prisma.activity.create({ data: { projectId: p.id, type: "SYSTEM", body: `Dropbox folder "${stray}" renamed back to ${name}` } }).catch(() => {});
+        continue;
+      }
+      await dropboxCreateFolder(f[k]);
+    }
     if (p.dropboxFolder !== own.target) await rememberPath(p.id, own.target, splitNote ?? undefined);
     return missing.length ? "repaired" : "exists";
   }
@@ -890,4 +917,31 @@ export async function syncDropboxFolderStatus(): Promise<{
   if (movedToShot > 0 || movedToReview > 0) await generateTasksForActiveProjects();
 
   return { checked: projects.length, movedToShot, movedToReview };
+}
+
+/**
+ * Where a job's standard subfolder REALLY is, read live (the "Open the raw
+ * footage" buttons go through this, Oct 13 2026): the standard folder when it
+ * exists (or, when a renamed copy sits beside it, whichever of the two holds
+ * more files); else the renamed copy (strayStandardFolder); else the job
+ * folder itself — never a link to a folder that isn't there.
+ */
+export async function liveSubfolderPath(p: FolderProject, key: keyof ProjectFolders): Promise<string> {
+  const f = actualFolderPaths(p);
+  const listing = f.listing;
+  const standard = f[key];
+  if (key === "listing") return listing;
+  const name = standard.split("/").pop()!;
+  const names = await listingSubfolders(listing).catch(() => null);
+  if (!names) return listing;
+  const stray = strayStandardFolder(names, name);
+  const hasStandard = names.has(name);
+  if (hasStandard && !stray) return standard;
+  if (stray && !hasStandard) return `${listing}/${stray}`;
+  if (stray && hasStandard) {
+    // Both there (2549 Crestline Dr: 1 file in 02-RAW-Video, 58 in "02-RAW-Video (1)"): the one holding the footage.
+    const [own, other] = await Promise.all([folderFileCount(standard).catch(() => null), folderFileCount(`${listing}/${stray}`).catch(() => null)]);
+    return (other ?? 0) > (own ?? 0) ? `${listing}/${stray}` : standard;
+  }
+  return listing;
 }
