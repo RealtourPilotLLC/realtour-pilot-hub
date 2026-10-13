@@ -1017,7 +1017,7 @@ export async function approveStrategy(versionId: string): Promise<Result> {
       releaseNote = ` Not released to their portal: ${e instanceof Error ? e.message : String(e)}`;
     }
     path(v.enrollmentId);
-    if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : "Already approved — its pillars exist; nothing changed.") + releaseNote + bankNote };
+    if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : releaseNote ? "Already approved; its pillars exist." : "Already approved — its pillars exist; nothing changed.") + releaseNote + bankNote };
     return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}.${releaseNote}${bankNote}` };
   } catch (e) { return fail(e); }
 }

@@ -358,7 +358,7 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
  * AND each has worked at least once with no error since — proven on a TEST
  * booking first. Empty = available. Pure over the switch rows.
  */
-function autoBookingProblems(
+export function autoBookingProblems(
   rows: { key: string; enabled: boolean; lastRunAt: Date | null; lastError: string | null; lastErrorAt: Date | null }[],
   effects: Record<string, { title: string }>,
 ): string[] {
