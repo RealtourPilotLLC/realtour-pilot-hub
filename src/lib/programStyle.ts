@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { type VideoStyle, VIDEO_STYLE_LABEL, VIDEO_STYLE_OVERRIDE_KEY, videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
 
 // ---------------------------------------------------------------------------
 // PROGRAM STYLE, PER CLIENT (Oct 8 2026) — two switches on the client file.
@@ -104,4 +105,61 @@ export async function setClientPlanned(enrollmentId: string, on: boolean, by: st
   await setWorkflowFlags(enrollmentId, { clientSuppliesTopics: on }, by);
   await recalcProgramMonthsForEnrollment(enrollmentId).catch(() => []);
   return { changed: true };
+}
+
+// ---------------------------------------------------------------------------
+// VIDEO STYLE (Oct 13 2026), the third Program style setting.
+//
+// Jordan: "Some clients, like Janice Pigga, Joe Sutow, and Mike Flatley,
+// prefer more creative, skit-style videos ... there should be different
+// settings for the accounts. Direct-to-camera or Skits."
+//
+//   DIRECT ("Direct-to-camera", the default): today's scripts and topics.
+//   SKITS ("Skits"): every script draft and revision is a short comedic scene
+//     inside the same house framework, the client alone on camera by default,
+//     and topic suggestions are skit concepts (contentPolicy/prompts.ts).
+//
+// No column: it lives in ContentEnrollment.overridesJson as `videoStyle`, and
+// a missing value is DIRECT. The change is ledgered (ProgramEnrollmentChange,
+// field "overrides") with who made it. Nothing here messages anyone or touches
+// a script already written.
+// ---------------------------------------------------------------------------
+
+export { type VideoStyle, VIDEO_STYLE_LABEL, asVideoStyle, videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
+
+/** The account's video style; DIRECT when nothing is set. */
+export async function videoStyleOf(enrollmentId: string): Promise<VideoStyle> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  return videoStyleFromOverrides(e?.overridesJson ?? null);
+}
+
+/**
+ * Set the account's video style. DIRECT removes the key (the default), SKITS
+ * writes it. Compare-and-swap on the whole bag, like the catch-up and late
+ * session records that share it, so a concurrent write to another key is
+ * never lost.
+ */
+export async function setVideoStyle(enrollmentId: string, style: VideoStyle, by: string | null): Promise<{ changed: boolean; style: VideoStyle }> {
+  if (style !== "DIRECT" && style !== "SKITS") throw new Error("The video style is Direct-to-camera or Skits.");
+  const { recordEnrollmentChange, readOverrides } = await import("@/lib/enrollmentChanges");
+  const { etMonthKey } = await import("@/lib/contentProgram");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
+    if (!e) throw new Error("Enrollment not found.");
+    const before = videoStyleFromOverrides(e.overridesJson);
+    if (before === style) return { changed: false, style };
+    const bag = { ...readOverrides(e.overridesJson) };
+    if (style === "DIRECT") delete bag[VIDEO_STYLE_OVERRIDE_KEY]; else bag[VIDEO_STYLE_OVERRIDE_KEY] = style;
+    const next = Object.keys(bag).length ? JSON.stringify(bag) : null;
+    const w = await prisma.contentEnrollment.updateMany({ where: { id: enrollmentId, overridesJson: e.overridesJson }, data: { overridesJson: next } });
+    if (!w.count) continue; // another write to the bag landed first: read it again
+    const now = new Date();
+    await recordEnrollmentChange({
+      enrollmentId, clientId: e.clientId, field: "overrides", from: { [VIDEO_STYLE_OVERRIDE_KEY]: before }, to: { [VIDEO_STYLE_OVERRIDE_KEY]: style },
+      effectiveAt: now, effectiveMonthKey: etMonthKey(now), changedBy: by, appliedAt: now,
+      reason: `Video style set to ${VIDEO_STYLE_LABEL[style]} (Program style).`,
+    });
+    return { changed: true, style };
+  }
+  throw new Error("The client file changed while saving. Try again.");
 }

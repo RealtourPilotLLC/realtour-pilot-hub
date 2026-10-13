@@ -45,6 +45,8 @@ export type ClientContext = {
   sourceExcerpts?: SourceExcerpt[] | null;
   /** The month being planned, when known. */
   monthKey?: string | null;
+  /** Oct 13 2026: the account's video style (Settings › Program style). Missing = DIRECT, today's behaviour. */
+  videoStyle?: VideoStyle | null;
 };
 
 export type SourceExcerpt = {
@@ -76,6 +78,126 @@ export const NO_INVENTION_RULE = `TRUTHFULNESS (mandatory)
 - Never invent client stories, transaction outcomes, local statistics, credentials, personal anecdotes, team members, offers or guarantees.
 - When the sources do not support something the script or strategy needs, DO NOT write a plausible sentence. Emit a gap object instead: {"kind": "unsupported-claim" | "missing-answer" | "missing-source" | "unverified-history" | "insufficient-context" | "placeholder", "field": "<where>", "text": "<what is missing>", "question": "<the one targeted question that would close it, or null>"}.
 - A gap is a normal, expected output. An invented fact is a failure.`;
+
+// ---------------------------------------------------------------------------
+// VIDEO STYLE, PER ACCOUNT (Oct 13 2026). Jordan: "Some clients, like Janice
+// Pigga, Joe Sutow, and Mike Flatley, prefer more creative, skit-style videos
+// ... It should still follow the same scripting framework, but the scripts
+// should be written differently ... Also, the personal branding topics should
+// be a bit funnier ... Direct-to-camera or Skits." And, the same evening: "I
+// don't want the scripts to always include other characters ... it creates
+// complications with the production logistics."
+//
+//   DIRECT (the default; a missing value) — today's prompts, unchanged.
+//   SKITS — the script prompt carries SKIT_SCRIPT_BLOCK (the same five
+//     framework sections, a short comedic scene inside them, the client alone
+//     on camera by default) and the topic bank asks for skit concepts
+//     (SKIT_TOPIC_RULE), filmable by the client alone.
+//   Every account's topic bank carries PERSONAL_BRAND_HUMOUR_RULE.
+//
+// Stored in ContentEnrollment.overridesJson as `videoStyle` (programStyle.ts).
+// The house example below is a made-up agent: prompts are client-scoped, so no
+// real client's script ever appears in another client's prompt.
+// ---------------------------------------------------------------------------
+
+export type VideoStyle = "DIRECT" | "SKITS";
+export const VIDEO_STYLE_LABEL: Record<VideoStyle, string> = { DIRECT: "Direct-to-camera", SKITS: "Skits" };
+export const VIDEO_STYLE_OVERRIDE_KEY = "videoStyle";
+
+/** Anything that is not "SKITS" reads as DIRECT (the default, today's behaviour). */
+export function asVideoStyle(v: unknown): VideoStyle {
+  return typeof v === "string" && v.trim().toUpperCase() === "SKITS" ? "SKITS" : "DIRECT";
+}
+
+/** The style from ContentEnrollment.overridesJson (a JSON string or the parsed bag). */
+export function videoStyleFromOverrides(overrides: string | Record<string, unknown> | null | undefined): VideoStyle {
+  if (!overrides) return "DIRECT";
+  let bag: unknown = overrides;
+  if (typeof overrides === "string") {
+    try { bag = JSON.parse(overrides); } catch { return "DIRECT"; }
+  }
+  return bag && typeof bag === "object" && !Array.isArray(bag) ? asVideoStyle((bag as Record<string, unknown>)[VIDEO_STYLE_OVERRIDE_KEY]) : "DIRECT";
+}
+
+/** The made-up house example: the client alone, a postgame press conference, off-camera questions. */
+export const SKIT_HOUSE_EXAMPLE = `The Postgame Closing Interview
+HOOK
+[Press conference setup. Sam sits alone at a folding table with a microphone and a backdrop made of open house signs.]
+[On-screen text: POSTGAME PRESS CONFERENCE]
+REPORTER (off camera): Sam, your buyers just got their keys. How do you feel?
+SAM: Tired. Proud. Mostly tired.
+Talking Point 1: Re-hook
+REPORTER (off camera): That inspection report was long. Were you worried?
+SAM: Long reports scare people. They shouldn't.
+Talking Point 2: Build up
+[Slow push in. Sam taps the table like a coach drawing up a play.]
+SAM: You don't fight every play. Most items are small. You ask about the big ones: roof, foundation, systems.
+[SFX: a crowd cheering, much too loud]
+Talking Point 3: Payoff
+REPORTER (off camera): Any advice for buyers?
+SAM: Read the report for safety and big costs. That's where the deal is won.
+Close / Call to action
+REPORTER (off camera): Last question.
+SAM: Call me before your inspection, not after.
+[Sam takes a long sip of water and closes his eyes at the mic.]
+SAM (eyes closed): Mostly tired.`;
+
+/** Added to the script prompt's system text for a SKITS account. No dash is used as punctuation here: the model mirrors it. */
+export const SKIT_SCRIPT_BLOCK = `VIDEO STYLE: SKITS (this client's account is set to Skits)
+This client films short comedic skits, not straight talking-to-camera scripts. Write this script as a skit. The house framework does not change: the same five sections, labelled the same way and in the same order (HOOK, Talking Point 1: Re-hook, Talking Point 2: Build up, Talking Point 3: Payoff, Close / Call to action), and each section still does its framework job. Inside the sections, write a short scene instead of a monologue.
+
+THE CLIENT IS ALONE ON CAMERA. Other people on camera complicate the shoot, so build every skit for one person:
+- The client plays every on-screen role (two versions of themself, their own client, a reporter), or talks to an off-camera voice.
+- A recognisable format played solo works best: a press conference answering off-camera questions, a pitch to an unseen panel, a nature documentary voiceover over the client at work, a sports commentary, a movie trailer.
+- Get the comedy from props, reaction cuts, on-screen text, sound effects, time cards and deadpan delivery to camera.
+- A second person on camera only rarely, and only someone the client already films with: a teammate or a family member named in the client's facts or brief. Never a stranger, an actor or an invented character, and never more than one. Off-camera voices are always fine.
+
+CRAFT:
+- A concept with a premise: one recognisable format or situation, set up in the first line or two of the HOOK. The first spoken line is the scroll-stopper.
+- Dialogue lines start with a speaker label in capitals and a colon. The client is their first name in capitals (for example "SAM:"); add a short note in parentheses when it helps ("SAM (to camera):", "SAM (voiceover):"). An unseen voice is "REPORTER (off camera):", "NARRATOR (voiceover):" or "OFF CAMERA:". No hyphens inside a label.
+- Stage and shot directions go on their own line in square brackets: "[Smash cut: Sam is already at the closing table.]". On-screen text and sound effects are bracketed lines too: "[On-screen text: THREE DAYS LATER]", "[SFX: record scratch]".
+- One running joke that comes back as a callback in the close, and a deadpan final button.
+- The real estate point still lands: the useful takeaway or the trust point is delivered inside the joke, never instead of it. A viewer who hears only the dialogue still learns the real thing.
+- The premise is play; the claims are not. Never invent a deal, a result, a number, a client story or a credential to make a joke work. Anything said as the client's own experience comes from the sources, or it becomes a gap.
+- Simple to film: one location, a few props, a few short lines per section.
+
+LENGTH: only dialogue is spoken. The spoken dialogue of the whole script stays within the same cap as every script (about 70 to 110 words); speaker labels, directions, on-screen text and sound effects do not count. Each section is a few short lines.
+
+SAME RULES AS EVERY SCRIPT: plain language, no em dash or en dash anywhere, no durations or timings written into the script, nothing confidential, only facts we have.
+
+JSON: each section's lines go in its own field (hook, each talking point's text, close), one line of the scene per line, separated by line breaks. The caption CTA stays one plain line, not part of the scene.
+
+HOUSE EXAMPLE (a made-up agent; the shape only, never its jokes, lines or facts):
+${SKIT_HOUSE_EXAMPLE}`;
+
+/** Every account's topic bank (Oct 13 2026): the personal brand topics are a bit funnier. */
+export const PERSONAL_BRAND_HUMOUR_RULE =
+  "PERSONAL BRAND TOPICS (every client): on the personal brand or trust pillar (the one about who the agent is: their story, personality, family, team, habits and community), make the topics a bit funnier. Favour personality, self-aware humour and relatable moments that buyers, sellers and neighbours recognise over earnest résumé statements (years in business, awards, \"why I got into real estate\"). Still specific, still true to the client's facts and voice, still filmable.";
+
+/** A SKITS account's topic bank: every topic is a skit concept the client can film alone. */
+export const SKIT_TOPIC_RULE = `VIDEO STYLE: SKITS (this client's account is set to Skits). Every topic is a creative skit concept.
+- The title is the premise: a recognisable format or situation (for example "Shark Tank Listing Pitch", "The Postgame Closing Interview", "Nature Documentary: The First-Time Buyer").
+- The description is one sentence naming the real takeaway the skit delivers: what the viewer learns, or why they trust the agent. The intended message is that takeaway.
+- Every concept can be filmed by the client alone: they play every role or talk to an off-camera voice. At most, rarely, a teammate or family member named in the client's facts. Never a stranger, an actor or an invented character.
+- The value or trust point is delivered inside the joke, never instead of it. The personal brand pillar's concepts are the funniest.`;
+
+/** The script output schema for a SKITS account: the same fields, with the spoken-line descriptions written for a scene. */
+function skitScriptSchema(): JsonSchema {
+  const props = (SCRIPT_OUTPUT_SCHEMA.properties ?? {}) as Record<string, Record<string, unknown>>;
+  const points = props.points as { items: { properties: Record<string, unknown> } } & Record<string, unknown>;
+  return {
+    ...SCRIPT_OUTPUT_SCHEMA,
+    properties: {
+      ...props,
+      hook: { type: "string", description: "The skit's opening, one line per line: a [bracketed] setup direction if needed, then the premise's first spoken line (the scroll-stopper). Speaker-labelled dialogue. No greeting or introduction." },
+      points: {
+        ...points,
+        items: { ...points.items, properties: { ...points.items.properties, text: { type: "string", description: "This beat of the scene, one line per line: speaker-labelled dialogue (\"SAM: ...\") and [bracketed] directions, on-screen text or sound effects. A few short lines." } } },
+      },
+      close: { type: "string", description: "The callback to the running joke and a deadpan final button, one line per line. Spoken dialogue plus any [bracketed] direction." },
+    },
+  };
+}
 
 const GAP_SCHEMA: JsonSchema = {
   type: "object",
@@ -362,6 +484,10 @@ export function buildTopicBankPrompt(
     "PRESENTATION (Arielle's bank): under each pillar heading, numbered from 1, a specific title plus one concrete sentence describing what the video would show or explain. Store audience need, business goal, intended message and source behind that simple view.",
     "",
     "QUALITY: every topic is specific, filmable, audience-relevant, aligned with brand voice and goals, and capable of supporting a strong hook. Weak, vague, repetitive or non-filmable discussion does not become a topic. A title variation of an existing concept is not a distinct idea.",
+    "",
+    // Oct 13 2026: every account's personal brand topics a bit funnier; a SKITS account's topics are skit concepts.
+    PERSONAL_BRAND_HUMOUR_RULE,
+    ...(asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE] : []),
     opts.refresh
       ? "REFRESH: preserve accepted, rejected, selected and filmed history. Do not re-suggest an archived idea as new; do not rename the client's pillars; add candidates, never delete."
       : "",
@@ -458,6 +584,8 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
   assertClientScoped(ctx, topic);
   const t = GENERATION_POLICY.timing;
   const captionExamples = ctx.strategy?.document?.captionCtaExamples?.items ?? [];
+  // Oct 13 2026: a SKITS account gets the skit block (same framework, a scene inside it).
+  const skit = asVideoStyle(ctx.videoStyle) === "SKITS";
   const system = [
     systemHeader("You are writing ONE personal-branding video script for a Realtour Pilot client."),
     "",
@@ -465,9 +593,12 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
     CANONICAL_SCRIPT_PRESENTATION,
     "",
     `HARD RULES: one clear idea; exactly three connected talking points in the order re-hook → build up → payoff; the payoff delivers on the hook; a specific scroll-stopping hook; a strong close; no greeting or introduction; spoken content targets ${t.targetSec[0]}–${t.targetSec[1]} seconds (about ${t.heuristicWords[0]}–${t.heuristicWords[1]} spoken words — a heuristic, not proof; write short punchy lines and tighten rather than rush). The category is the linked approved pillar. Match the client's approved voice; the prior scripts show voice and specificity, not length or structure.`,
-    `PART BUDGETS (spoken words): hook ≤${SCRIPT_PART_BUDGETS.hookWords} (one sentence); each talking point ≤${SCRIPT_PART_BUDGETS.pointWords}; close ≤${SCRIPT_PART_BUDGETS.closeWords}; the whole spoken script never above ${t.heuristicWords[1]}. When in doubt, cut — a shorter draft is easier to review than a long one is to trim.`,
+    skit
+      ? `PART BUDGETS (spoken dialogue words; speaker labels and bracketed lines are not counted): hook ≤${SCRIPT_PART_BUDGETS.hookWords} (it may run over a few short lines); each talking point ≤${SCRIPT_PART_BUDGETS.pointWords}; close ≤${SCRIPT_PART_BUDGETS.closeWords}; the whole spoken dialogue never above ${t.heuristicWords[1]}. When in doubt, cut.`
+      : `PART BUDGETS (spoken words): hook ≤${SCRIPT_PART_BUDGETS.hookWords} (one sentence); each talking point ≤${SCRIPT_PART_BUDGETS.pointWords}; close ≤${SCRIPT_PART_BUDGETS.closeWords}; the whole spoken script never above ${t.heuristicWords[1]}. When in doubt, cut — a shorter draft is easier to review than a long one is to trim.`,
     "EVIDENCE, NOT COPY: the client's answers and any call excerpts are evidence, not copy. Choose ONE concrete detail per point and say it plainly; do not compress everything they said into the script.",
     `PUNCTUATION: ${GENERATION_POLICY.punctuation.rule}`,
+    ...(skit ? ["", SKIT_SCRIPT_BLOCK, ""] : []),
     captionExamples.length ? `CAPTION CTA: write one in the style of the strategy's Caption CTA Examples:\n${captionExamples.map((c) => `- ${c}`).join("\n")}` : "CAPTION CTA: the strategy lists no Caption CTA Examples; write one only if the client supplied a next step, otherwise null.",
     "",
     SPEAKER_ATTRIBUTION_RULE,
@@ -503,7 +634,7 @@ export function buildScriptPrompt(ctx: ClientContext, source: ScriptPromptSource
     for (const e of source.excerpts) userParts.push(`[${e.speaker}${e.speakerName ? ` · ${e.speakerName}` : ""} · ${e.source}] ${e.text}`);
     if (!source.excerpts.some((e) => e.speaker === "client")) userParts.push("(No client-spoken excerpt exists for this topic — the script can carry no client experience; emit gaps.)");
   }
-  return { name: "script", system, user: userParts.join("\n"), outputSchema: SCRIPT_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
+  return { name: "script", system, user: userParts.join("\n"), outputSchema: skit ? skitScriptSchema() : SCRIPT_OUTPUT_SCHEMA, stamp: policyStamp(ctx.strategy?.version ?? null), clientId: ctx.clientId };
 }
 
 // ---------------------------------------------------------------------------

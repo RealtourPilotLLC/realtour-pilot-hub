@@ -41,7 +41,7 @@
 // what the script holds, so a dropped or added word is shown to a person.
 // ---------------------------------------------------------------------------
 
-import { parseDeliveredScript, splitDeliveredScripts, estimateSpokenSeconds, isStageDirectionLine, type CanonicalScript } from "@/lib/contentPolicy/scriptFormat";
+import { parseDeliveredScript, splitDeliveredScripts, estimateSpokenSeconds, isStageDirectionLine, isUnspokenCueLine, stripInlineDirections, type CanonicalScript } from "@/lib/contentPolicy/scriptFormat";
 import { countSpokenWords, GENERATION_POLICY, type TalkingPointRole } from "@/lib/contentPolicy/policy";
 
 export type UploadSource = { name: string; text: string };
@@ -644,14 +644,19 @@ export function isDimensionLine(v: string): boolean {
 
 const stripTitleNumber = (t: string) => t.replace(new RegExp(`^(?:(?:script|video|reel|skit)\\s*#?\\s*)?\\d{1,2}\\s*[.):|${DASH_CLASS}-]\\s*`, "i"), "").replace(/^(?:script|video|reel|skit)\s*#?\s*\d{1,2}\s*$/i, "").trim();
 
-/** The words a person says in a line of a skit: the speaker label and any whole-line [direction] are not spoken. */
+/**
+ * The words a person says in a line of a skit: the speaker label and any
+ * whole-line [direction] are not spoken. Oct 13 2026: nor is an unbracketed
+ * "On-screen text: …" / "SFX: …" line, or a [direction] inside a line, the
+ * same rule estimateSpokenSeconds applies to a stored skit.
+ */
 export function spokenWordsOfLine(line: string): number {
   let l = line.trim();
-  if (!l || isStageDirectionLine(l)) return 0;
+  if (!l || isStageDirectionLine(l) || isUnspokenCueLine(l)) return 0;
   const sp = inlineSpeaker(l);
   if (sp) l = sp.rest;
   if (isStageDirectionLine(l)) return 0;
-  return countSpokenWords(l);
+  return countSpokenWords(stripInlineDirections(l));
 }
 
 /**

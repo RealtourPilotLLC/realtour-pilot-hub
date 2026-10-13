@@ -11,7 +11,7 @@ import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDE
 import { CONTENT_RULES } from "@/lib/contentPipeline";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
-  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, emphasisOfPillar, topicsForEmphasis,
+  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, emphasisOfPillar, topicsForEmphasis, videoStyleFromOverrides,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument,
 } from "@/lib/contentPolicy";
 
@@ -116,7 +116,7 @@ export async function scrubTranscriptForGeneration(clientId: string, text: strin
 export type BuiltContext = { ctx: ClientContext; enrollmentId: string; clientId: string; strategyVersionId: string | null; strategyLabel: string | null; policyVersionId: string; inputRefs: Record<string, unknown> };
 
 export async function buildClientContext(enrollmentId: string, opts: { monthId?: string | null; monthKey?: string | null; projectId?: string | null; priorScripts?: number } = {}): Promise<BuiltContext> {
-  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
   if (!e) throw new Error("Enrollment not found.");
   const [client, strategy, policy, facts, prior] = await Promise.all([
     prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }),
@@ -145,6 +145,9 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
     knownFacts: kn.kept,
     priorScripts,
     monthKey: opts.monthKey ?? (opts.monthId ? monthKeys.get(opts.monthId) ?? null : null),
+    // Oct 13 2026: Direct-to-camera or Skits (Settings › Program style). Every
+    // script and topic prompt built from this context reads it.
+    videoStyle: videoStyleFromOverrides(e.overridesJson),
   };
   return {
     ctx, enrollmentId, clientId: e.clientId, strategyVersionId: strategy?.versionId ?? null, strategyLabel: strategy?.label ?? null, policyVersionId: policy.id,
@@ -154,13 +157,22 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
 
 // --- scripts ----------------------------------------------------------------------
 
-function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, clientId: string | null = null): { parts: VersionParts; validation: ReturnType<typeof validateNewScript>; gaps: Gap[] } {
-  const script = scriptFromGeneratorOutput(json, policyStamp(null), clientId);
+/**
+ * Oct 13 2026: a SKIT (a SKITS account's draft, or a revision of a skit) keeps
+ * its lines, one per line, and its speaker labels: a scene flattened into one
+ * paragraph would lose who says what, and the labels are what keep the
+ * directions and the speakers out of the spoken-word count. A direct-to-camera
+ * draft is stored exactly as before.
+ */
+function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, clientId: string | null = null, opts: { skit?: boolean } = {}): { parts: VersionParts; validation: ReturnType<typeof validateNewScript>; gaps: Gap[] } {
+  const script = scriptFromGeneratorOutput(json, policyStamp(null), clientId, { skit: !!opts.skit });
   const validation = validateNewScript(script);
+  const said = (b: { text: string; lines: string[] } | null | undefined) => (b ? (opts.skit ? b.lines.join("\n") : b.text) : "");
   const parts: VersionParts = {
     title: script.title, categoryLabel: script.pillarRef?.categoryAsDelivered ?? json.category ?? null, pillarId,
-    hook: script.hook?.text ?? "", points: script.points.map((p) => ({ role: p.role, text: p.text })), close: script.close?.text ?? "", captionCta: script.captionCta,
+    hook: said(script.hook), points: script.points.map((p) => ({ role: p.role, text: said(p) })), close: said(script.close), captionCta: script.captionCta,
     filmingNotes: script.internal.filmingNotes, sourceExcerpts: script.internal.sourceExcerpts, dimensionsCheck: (script.internal.contentPillarCheck as Record<string, string> | null) ?? null, placeholders: script.internal.placeholders,
+    ...(opts.skit && script.internal.speakerLabels.length ? { speakerLabels: script.internal.speakerLabels } : {}),
   };
   return { parts, validation, gaps: validation.gaps };
 }
@@ -199,6 +211,8 @@ async function excerptsForTopic(topicId: string, monthId: string | null): Promis
  * told to take out any the current version has).
  */
 const SCRIPT_PROMPT_VERSION = "script.v4-no-dashes";
+/** Oct 13 2026: a SKITS account's prompt carries the skit block, so its runs say so; a DIRECT prompt is unchanged and keeps v4. */
+const scriptPromptVersion = (ctx: ClientContext) => (ctx.videoStyle === "SKITS" ? `${SCRIPT_PROMPT_VERSION}+skits` : SCRIPT_PROMPT_VERSION);
 
 export type GenerateScriptOpts = {
   topicId: string; monthId: string | null; requestedBy: string; unattended: boolean; callRecordId?: string | null; excerpts?: SourceExcerpt[]; selectedOnCall?: boolean;
@@ -248,11 +262,11 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   if (o.onlyIfUnscripted) await assertUnscripted(o.topicId, o.monthId, null, `"${row.title}"`);
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length },
-    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
+    promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
     dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: o.claimedRun ?? null,
   });
   try {
-    const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId);
+    const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId, { skit: built.ctx.videoStyle === "SKITS" });
     if (!parts.title) parts.title = row.title;
     // monthId null = the bank-level script (IS NULL), never "any month's script".
     const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
@@ -288,11 +302,11 @@ export async function generateScriptFromInterview(interviewId: string, requested
   if (opts.onlyIfUnscripted) await assertUnscripted(a.topic.id!, a.monthId, interviewId, `"${a.topic.title}"`);
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length },
-    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`, holdDedupeKey: true,
+    promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`, holdDedupeKey: true,
     system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
   });
   try {
-    const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId);
+    const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId, { skit: built.ctx.videoStyle === "SKITS" });
     if (!parts.title) parts.title = a.topic.title;
     const existing = await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } });
     if (existing && opts.onlyIfUnscripted) throw new AlreadyDraftedError(`"${a.topic.title}"`);
@@ -326,6 +340,12 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const [s, base] = await Promise.all([prisma.contentScript.findUnique({ where: { id: scriptId } }), prisma.contentScriptVersion.findUnique({ where: { id: baseId } })]);
   if (!s || !base) throw new Error("Script not found.");
   const built = await buildClientContext(s.enrollmentId, { monthId: s.monthId });
+  // Oct 13 2026: a skit stays a skit. The version being revised is a skit when
+  // it carries speaker labels (one we drafted for a SKITS account, or an
+  // uploaded skit), whatever the account's style is today; a SKITS account's
+  // revision is written as a skit too.
+  const skit = built.ctx.videoStyle === "SKITS" || !!base.speakerLabelsJson;
+  if (skit) built.ctx.videoStyle = "SKITS";
   const topic = s.topicId ? (await policyTopic(s.topicId)).topic : makeTopic({ title: s.title, pillarName: base.categoryLabel ?? "", clientId: s.clientId });
   // Same other-client scrub as the first draft — a call excerpt naming another enrolled client never reaches a revision prompt either.
   const rawExcerpts = s.topicId ? await excerptsForTopic(s.topicId, s.monthId) : [];
@@ -334,10 +354,10 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const user = `${bundle.user}\n\nCURRENT VERSION (v${base.versionNo}) — keep what already works, change only what the reviewer asks:\n${base.body}\n\nREVIEWER'S INSTRUCTION: ${instructions.trim().slice(0, 2000)}\n\nPUNCTUATION: the new version has no em dash or en dash anywhere, even where the current version has one; use a comma, a period or "and" instead.`;
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_revise", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId, basedOnVersionId: baseId }, inputRefs: { ...built.inputRefs, instruction: sha256(instructions) },
-    promptKey: "script", promptVersion: SCRIPT_PROMPT_VERSION, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `revise:${scriptId}`,
+    promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `revise:${scriptId}`,
     system: bundle.system, prompt: user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
   });
-  const { parts, validation, gaps } = partsFromGenerated(run.output, base.pillarId, s.clientId);
+  const { parts, validation, gaps } = partsFromGenerated(run.output, base.pillarId, s.clientId, { skit });
   // The reviewer's revision must not silently recategorise the script.
   parts.categoryLabel = base.categoryLabel ?? parts.categoryLabel;
   parts.pillarId = base.pillarId;
