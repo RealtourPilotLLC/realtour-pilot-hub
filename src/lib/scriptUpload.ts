@@ -170,6 +170,37 @@ async function pillarChoices(enrollmentId: string): Promise<{ options: (PillarCh
 type TopicRow = { id: string; title: string; status: string; approvalState: string | null; clientDeclinedAt: Date | null; pillarId: string | null; monthId: string | null };
 
 /** Every topic on the enrollment with whether a NEW script for this month may hang off it. */
+// ---------------------------------------------------------------------------
+// THE HUB'S OWN DRAFTS STEP ASIDE (Jordan, Oct 13 2026): "if I upload scripts
+// manually for a month, the scripts that the system wrote should be removed
+// from the review queue." Joe Sutow's October: four AI drafts sat in the
+// queue with no way to clear them, and because a topic with a script "can't
+// take" another, his upload added four NEW topics beside them (8 for 4 owed).
+// A system draft is an AI-written script on the month that no person has
+// approved, shared, filmed or had the client answer. Uploading for the month
+// removes each one from the queue, and its topic from the month unless the
+// upload uses that same topic. The full rows go on the upload's ledger, so
+// Undo puts them back exactly.
+// ---------------------------------------------------------------------------
+type SystemDraft = { id: string; title: string; topicId: string | null };
+async function systemDraftsInReview(monthId: string): Promise<SystemDraft[]> {
+  const rows = await prisma.contentScript.findMany({
+    where: {
+      monthId, historical: false, source: { in: ["ai", "AI"] }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] },
+      approvedVersionId: null, sharedVersionId: null, clientApprovedVersionId: null, clientChangesAt: null, videoId: null,
+    },
+    select: { id: true, title: true, topicId: true },
+  });
+  if (!rows.length) return [];
+  // Never one a person already acted on: no release row, no client suggestion.
+  const [releases, suggestions] = await Promise.all([
+    prisma.contentScriptRelease.findMany({ where: { scriptId: { in: rows.map((r) => r.id) } }, select: { scriptId: true } }),
+    prisma.scriptSuggestion.findMany({ where: { scriptId: { in: rows.map((r) => r.id) } }, select: { scriptId: true } }),
+  ]);
+  const touched = new Set([...releases.map((r) => r.scriptId), ...suggestions.map((r) => r.scriptId)]);
+  return rows.filter((r) => !touched.has(r.id));
+}
+
 async function bankFor(enrollmentId: string, monthId: string): Promise<{ rows: TopicRow[]; ui: BankTopicUi[] }> {
   const [rows, sels, scripts, months] = await Promise.all([
     prisma.contentTopic.findMany({ where: { enrollmentId }, select: { id: true, title: true, status: true, approvalState: true, clientDeclinedAt: true, pillarId: true, monthId: true }, orderBy: { createdAt: "desc" }, take: 1500 }),
@@ -178,10 +209,12 @@ async function bankFor(enrollmentId: string, monthId: string): Promise<{ rows: T
     prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true, historical: true, status: true } }),
   ]);
   const monthOf = new Map(months.map((m) => [m.id, m]));
+  const stepping = new Set((await systemDraftsInReview(monthId)).map((d) => d.topicId).filter(Boolean));
   const ui = rows.map((t): BankTopicUi => {
     let why: string | null = null;
     const otherSel = sels.find((s) => s.topicId === t.id && s.monthId !== monthId && monthOf.get(s.monthId)?.status === "OPEN" && !monthOf.get(s.monthId)?.historical);
-    const script = scripts.find((s) => s.topicId === t.id);
+    // A topic whose only script is one of this month's system drafts can take the upload: the draft steps aside.
+    const script = scripts.find((s) => s.topicId === t.id && !(s.monthId === monthId && stepping.has(t.id)));
     if (RULED_OUT.has(t.status) || (t.approvalState && RULED_OUT.has(t.approvalState))) why = "it was rejected or archived";
     else if (t.clientDeclinedAt) why = "the client marked it “Not interested”";
     else if (PRODUCTION_DONE.has(t.status)) why = "it has already been filmed";
@@ -196,13 +229,15 @@ async function monthSelections(monthId: string): Promise<MonthSelectionUi[]> {
   const sels = await prisma.contentTopicSelection.findMany({ where: { monthId, status: { in: ALLOWANCE_SELECTION_STATUSES } }, orderBy: { createdAt: "asc" }, select: { topicId: true, status: true } });
   if (!sels.length) return [];
   const ids = sels.map((s) => s.topicId);
-  const [topics, scripts, interviews] = await Promise.all([
+  const [topics, scripts, interviews, drafts] = await Promise.all([
     prisma.contentTopic.findMany({ where: { id: { in: ids } }, select: { id: true, title: true } }),
-    prisma.contentScript.findMany({ where: { monthId, historical: false, topicId: { in: ids } }, select: { topicId: true } }),
+    prisma.contentScript.findMany({ where: { monthId, historical: false, topicId: { in: ids } }, select: { id: true, topicId: true } }),
     prisma.contentInterview.findMany({ where: { monthId, topicId: { in: ids } }, select: { topicId: true, status: true } }),
+    systemDraftsInReview(monthId),
   ]);
+  const stepping = new Set(drafts.map((d) => d.id));
   return sels.map((s) => {
-    const hasScript = scripts.some((x) => x.topicId === s.topicId);
+    const hasScript = scripts.some((x) => x.topicId === s.topicId && !stepping.has(x.id));
     const answersStarted = interviews.some((i) => i.topicId === s.topicId && i.status !== "NOT_STARTED" && i.status !== "ABANDONED");
     const carried = s.status === "CARRIED";
     return { topicId: s.topicId, title: topics.find((t) => t.id === s.topicId)?.title ?? "(topic)", status: s.status, hasScript, answersStarted, carried, replaceable: !hasScript && !answersStarted && !carried };
@@ -262,6 +297,10 @@ export async function buildUploadPreview(opts: {
     notes.push(`Only the first ${MAX_SCRIPTS} scripts are shown — upload the rest separately.`);
     raws = raws.slice(0, MAX_SCRIPTS);
   }
+
+  // The hub's own drafts for this month come out of the review queue on Add.
+  const stepAside = await systemDraftsInReview(month.id);
+  if (stepAside.length) notes.push(`${plural(stepAside.length, "script")} the hub drafted for ${monthName(month.monthKey)} (${stepAside.map((d) => `“${d.title}”`).join(", ")}) ${stepAside.length === 1 ? "comes" : "come"} out of the review queue when you add these, along with ${stepAside.length === 1 ? "its topic" : "their topics"} unless one of your scripts uses the same topic. Undo puts them back.`);
 
   // The document's own month, when it names one that is not this month.
   const { monthFromText } = await import("@/lib/contentImport");
@@ -458,6 +497,8 @@ type UploadLedger = {
   pillarsCreated?: number;
   sent?: { by: string; at: string; versionIds: string[] }[];
   undone?: { by: string; at: string; routeRestored: boolean };
+  /** Oct 13 2026: the hub's own drafts this upload took out of the review queue — whole rows, so Undo can put them back. */
+  withdrawn?: { script: Record<string, unknown>; versions: Record<string, unknown>[] }[];
 };
 
 const firstName = (a: UploadActor) => (a.name?.trim().split(/\s+/)[0]) || a.email.split("@")[0];
@@ -584,6 +625,9 @@ export async function applyScriptUpload(input: {
     }
     await saveLedger();
 
+    // 1b · the hub's own drafts for this month step aside (see systemDraftsInReview).
+    await stepAsideSystemDrafts({ monthId: month.id, keepTopicIds: used, batchId, actor, ledger, save: saveLedger });
+
     // 2 · each script: its topic on the month (document order first), then the script itself.
     const approvedPillars = pillars.map((p) => ({ id: p.id, name: p.name, status: p.status, aliases: p.aliases }));
     // The upload's order is the month's order: its picks rank AHEAD of whatever
@@ -684,6 +728,7 @@ export async function applyScriptUpload(input: {
     pillarsCreated ? `${month.clientName}'s ${plural(pillarsCreated, "content pillar")} from the approved strategy ${pillarsCreated === 1 ? "is" : "are"} now set up.` : "",
     extras ? `${extras === 1 ? "1 is an extra" : `${extras} are extras`} beyond the ${month.videosOwed} owed — kept on the month, waiting ${extras === 1 ? "its" : "their"} turn.` : "",
     open ? `${plural(open, "slot")} still open for ${mName}.` : "",
+    ledger.withdrawn?.length ? `${plural(ledger.withdrawn.length, "draft")} the hub wrote for ${mName} came out of the review queue.` : "",
     "They're in the review queue — send them to the client when you're ready.",
   ].filter(Boolean).join(" ");
   return { batchId, created: ledger.scriptIds.length, newTopics: ledger.createdTopicIds.length, fromBank: ledger.matched.length, extras, open, replaced: ledger.replaced.length, routeChosen: ledger.route.chosen, monthName: mName, message };
@@ -803,6 +848,49 @@ export async function sendScriptUpload(batchId: string, actor: UploadActor): Pro
   return { sent, skipped, emailNote: sent ? emailNote : null, message, monthId: led.monthId, enrollmentId: b.enrollmentId };
 }
 
+async function stepAsideSystemDrafts(o: { monthId: string; keepTopicIds: Set<string>; batchId: string; actor: UploadActor; ledger: UploadLedger; save: () => Promise<unknown> }): Promise<number> {
+  const drafts = await systemDraftsInReview(o.monthId);
+  if (!drafts.length) return 0;
+  const staff: Actor = { kind: "STAFF", staffUserId: o.actor.appUserId ?? o.actor.email };
+  o.ledger.withdrawn = o.ledger.withdrawn ?? [];
+  for (const d of drafts) {
+    const script = await prisma.contentScript.findUnique({ where: { id: d.id } });
+    if (!script) continue;
+    const versions = await prisma.contentScriptVersion.findMany({ where: { scriptId: d.id }, orderBy: { versionNo: "asc" } });
+    // Its topic leaves the month too, unless an uploaded script took that topic.
+    if (d.topicId && !o.keepTopicIds.has(d.topicId)) {
+      const sel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: d.topicId, monthId: o.monthId } } });
+      const t = await prisma.contentTopic.findUnique({ where: { id: d.topicId }, select: { monthId: true, status: true, pillarId: true, enrollmentId: true } });
+      if (sel && t && ALLOWANCE_SELECTION_STATUSES.includes(sel.status) && sel.status !== "CARRIED") {
+        o.ledger.replaced.push(priorOf(d.topicId, sel, t));
+        await prisma.contentTopicSelection.update({ where: { id: sel.id }, data: { status: "REMOVED", rank: null, removedAt: new Date(), removedBy: o.actor.email, removedReason: `UPLOAD_REPLACED:${o.batchId}` } });
+        if (t.monthId === o.monthId && t.status === "SELECTED") await prisma.contentTopic.update({ where: { id: d.topicId }, data: { monthId: null, status: "SAVED" } });
+        await recordTopicEvent(d.topicId, t.enrollmentId, "DESELECTED", staff, { monthId: o.monthId, fromStatus: t.status, toStatus: t.monthId === o.monthId && t.status === "SELECTED" ? "SAVED" : t.status, note: `The hub's draft stepped aside for the scripts ${firstName(o.actor)} uploaded` });
+      }
+    }
+    o.ledger.withdrawn.push({ script: script as unknown as Record<string, unknown>, versions: versions as unknown as Record<string, unknown>[] });
+    await o.save();
+    await prisma.contentScriptVersion.deleteMany({ where: { scriptId: d.id } });
+    await prisma.contentScript.deleteMany({ where: { id: d.id } });
+  }
+  await o.save();
+  return drafts.length;
+}
+
+/**
+ * For an upload made before Oct 13 2026 (Joe Sutow's October): take the hub's
+ * drafts for its month out of the review queue now, on that upload's ledger,
+ * exactly as a new upload does. Its scripts' topics stay; Undo still restores.
+ */
+export async function stepAsideForUpload(batchId: string, actor: UploadActor): Promise<{ removed: number; monthId: string; enrollmentId: string }> {
+  const b = await prisma.contentImportBatch.findUnique({ where: { id: batchId } });
+  const led = b ? readLedger(b.previewJson) : null;
+  if (!b || b.kind !== UPLOAD_KIND || !led || !b.enrollmentId || b.mode !== "APPLIED") throw new Error("That upload isn't an applied upload on file.");
+  const keep = new Set((await prisma.contentScript.findMany({ where: { id: { in: led.scriptIds } }, select: { topicId: true } })).map((s) => s.topicId).filter((t): t is string => !!t));
+  const removed = await stepAsideSystemDrafts({ monthId: led.monthId, keepTopicIds: keep, batchId, actor, ledger: led, save: () => prisma.contentImportBatch.update({ where: { id: batchId }, data: { previewJson: JSON.stringify(led) } }) });
+  return { removed, monthId: led.monthId, enrollmentId: b.enrollmentId };
+}
+
 // ---------------------------------------------------------------------------
 // UNDO — only while nothing from the upload has reached the client.
 // ---------------------------------------------------------------------------
@@ -863,6 +951,13 @@ export async function undoScriptUpload(batchId: string, actor: UploadActor): Pro
   // 3 · bank topics it used, and the picks it replaced: exactly as they were.
   for (const p of [...led.matched].reverse()) await restoreSelection(p, led.monthId, enrollmentId, batchId, actor, "Upload undone — put back as it was");
   for (const p of led.replaced) await restoreSelection(p, led.monthId, enrollmentId, batchId, actor, "Upload undone — back on the month");
+  // 3b · the hub's own drafts it took out of the queue: back, exactly as they were.
+  for (const w of led.withdrawn ?? []) {
+    const id = String(w.script.id);
+    if (await prisma.contentScript.findUnique({ where: { id }, select: { id: true } })) continue;
+    await prisma.contentScript.create({ data: w.script as never });
+    if (w.versions.length) await prisma.contentScriptVersion.createMany({ data: w.versions as never });
+  }
   // 4 · the route it chose, compare-and-set on the stamp it wrote.
   let routeRestored = false;
   if (led.route.chosen && led.route.before && led.route.at) {
@@ -881,6 +976,6 @@ export async function undoScriptUpload(batchId: string, actor: UploadActor): Pro
   const mName = monthName(led.monthKey);
   return {
     monthId: led.monthId, enrollmentId,
-    message: `Undone — ${plural(ids.length, "script")} removed from ${mName}${topicsRemoved ? `, ${plural(topicsRemoved, "new topic")} removed` : ""}${led.replaced.length ? `, ${plural(led.replaced.length, "earlier pick")} back on the month` : ""}${led.route.chosen ? (routeRestored ? ", and the month's planning is back to how it was" : " (the month's planning was changed since, so it was left as it is)") : ""}.`,
+    message: `Undone — ${plural(ids.length, "script")} removed from ${mName}${topicsRemoved ? `, ${plural(topicsRemoved, "new topic")} removed` : ""}${led.replaced.length ? `, ${plural(led.replaced.length, "earlier pick")} back on the month` : ""}${led.withdrawn?.length ? `, ${plural(led.withdrawn.length, "hub draft")} back in the review queue` : ""}${led.route.chosen ? (routeRestored ? ", and the month's planning is back to how it was" : " (the month's planning was changed since, so it was left as it is)") : ""}.`,
   };
 }

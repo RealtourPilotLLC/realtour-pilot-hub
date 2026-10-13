@@ -527,6 +527,43 @@ async function main() {
     c.ok("…a short month is not 'planned': it waits for the fourth topic (no false 'script approval')", mC.planningMode === "WRITTEN" && mC.preparationStatus === "WRITTEN_SELECTED", `${mC.preparationStatus}`);
 
     // =======================================================================
+    c.head("§7b · the hub's own drafts step aside (Jordan, Oct 13: Joe Sutow's October)");
+    // =======================================================================
+    {
+      const { createScriptVersion } = await import("@/lib/contentScripts");
+      const { createTopic, selectTopicForMonth } = await import("@/lib/contentTopics");
+      const G = await buildContentMonth(prisma, { name: "Gio Drafts TEST", package: "Starter", monthKey: "2026-10", project: false });
+      const sys = { kind: "AI" } as const;
+      const mkDraft = async (title: string) => {
+        const t = await createTopic({ enrollmentId: G.enrollmentId, title, source: "strategy_call", status: "SAVED", approvalState: "PROPOSED", actor: sys });
+        await selectTopicForMonth(t.id, G.monthId, { source: "call", actor: sys, status: "RECONCILED" });
+        const v = await createScriptVersion({ enrollmentId: G.enrollmentId, monthId: G.monthId, topicId: t.id, parts: { title, hook: `${title}: the hook.`, points: [{ role: "RE_HOOK", text: "One." }, { role: "BUILD_UP", text: "Two." }, { role: "PAYOFF", text: "Three." }], close: "Call me." }, source: "AI", status: "INTERNAL_REVIEW", createdBy: "cron" } as never);
+        return { topicId: t.id, scriptId: (v as { scriptId: string }).scriptId };
+      };
+      const same = await mkDraft("Open houses still work");
+      const other = await mkDraft("An idea the AI had");
+      const twoText = "Script 1: Open houses still work\nHook: Open houses are not dead.\nTP1 Rehook: They bring in neighbors who know buyers.\nTP2 Build Up: They create urgency on a Sunday.\nTP3 Payoff: They give you feedback in real time.\nClose: Thinking of listing? Let's talk.\n\nScript 2: Pricing a condo\nHook: Condos price differently than houses.\nTP1 Rehook: The building is part of the price.\nTP2 Build Up: Fees and reserves move buyers more than finishes.\nTP3 Payoff: Show the building's health up front.\nClose: Selling a condo? Ask me how.";
+      const fG = new FormData(); fG.append("text", twoText);
+      const pG = await act.previewScriptUploadAction(G.enrollmentId, G.monthId, fG);
+      if (!pG.ok) throw new Error(pG.message);
+      c.ok("the preview says the hub's 2 drafts come out of the queue on Add", pG.preview.notes.some((n) => /2 scripts the hub drafted for October/.test(n) && /Undo puts them back/.test(n)), pG.preview.notes.join(" | "));
+      const dSame = pG.preview.drafts.find((d) => d.title === "Open houses still work")!;
+      c.ok("a title matching a topic that only has a hub draft is no longer refused: it takes that topic", !dSame.conflict && dSame.topicId === same.topicId, `${dSame.conflict} · ${dSame.topicId}`);
+      const cG = await act.confirmScriptUploadAction({ enrollmentId: G.enrollmentId, monthId: G.monthId, fileNames: pG.preview.fileNames, items: pG.preview.drafts.map((d) => ({ text: d.text, title: d.title, topicId: d.topicId, pillarId: null, sourceName: d.sourceName })) });
+      c.ok("Add says the drafts came out of the queue", cG.ok && /2 drafts the hub wrote for October came out of the review queue\./.test(cG.message), cG.message);
+      const left = await prisma.contentScript.findMany({ where: { monthId: G.monthId }, select: { id: true, source: true } });
+      c.ok("only the uploaded scripts are on October now (no hub drafts in the queue)", left.length === 2 && left.every((x) => x.source === "manual") && !(await scriptsAwaitingReview(G.enrollmentId)).some((q) => q.path !== "manual"));
+      const otherSel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: other.topicId, monthId: G.monthId } } });
+      const sameSel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: same.topicId, monthId: G.monthId } } });
+      c.ok("the draft's topic the upload didn't use leaves the month; the one it used stays", otherSel?.status === "REMOVED" && /UPLOAD_REPLACED/.test(otherSel.removedReason ?? "") && sameSel?.status !== "REMOVED", `${otherSel?.status} / ${sameSel?.status}`);
+      const uG = await act.undoScriptUploadAction(cG.batchId!);
+      const back = await prisma.contentScript.findMany({ where: { id: { in: [same.scriptId, other.scriptId] } }, select: { id: true, status: true, source: true } });
+      const backVersions = await prisma.contentScriptVersion.count({ where: { scriptId: { in: [same.scriptId, other.scriptId] } } });
+      c.ok("Undo puts both hub drafts back in the queue, exactly (same ids, versions)", uG.ok && /2 hub drafts back in the review queue/.test(uG.message) && back.length === 2 && back.every((x) => x.source === "ai" && x.status === "INTERNAL_REVIEW") && backVersions === 2, uG.message);
+      c.ok("…and the draft's topic is back on the month", (await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: other.topicId, monthId: G.monthId } } }))?.status === "RECONCILED");
+    }
+
+    // =======================================================================
     c.head("§8 · send to the client for review");
     // =======================================================================
     await signIn(editor);
