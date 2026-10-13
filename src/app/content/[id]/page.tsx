@@ -147,6 +147,7 @@ export default async function ContentClientPage({
             {staffEyes && (
               <Link href={`/settings/onboarding?client=${encodeURIComponent(client.id)}`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><ListChecks className="mr-1 inline size-3.5" />Onboarding</Link>
             )}
+            {staffEyes && <Link href={`/content/activity?client=${encodeURIComponent(client.id)}#feed`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><Activity className="mr-1 inline size-3.5" />Activity</Link>}
             {/* TOOLS — the things you reach for occasionally, off the tab bar. */}
             <details className="group relative">
               <summary className="flex cursor-pointer list-none items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">

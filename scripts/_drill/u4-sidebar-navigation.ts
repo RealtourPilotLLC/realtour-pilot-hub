@@ -51,7 +51,8 @@ async function main() {
     for (const [name, who] of cases) {
       const before = render(Before, who);
       const after = render(Sidebar, who);
-      check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after)));
+      // Oct 14 2026: "Client activity" (/content/activity) is the one destination added since BASE.
+      check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => h !== "/content/activity")));
       check(`${name}: every destination still appears once`, hrefs(after).length === new Set(hrefs(after)).size);
     }
     const owner = render(Sidebar, user("OWNER"));
@@ -64,6 +65,7 @@ async function main() {
     // Oct 5 2026: Clients (Content Program + Clients) is open by default — the
     // office is onboarding clients this week. For every role that has it.
     check("Clients group is open by default with both doors visible", ["OWNER", "ADMIN"].every((role) => { const html = render(Sidebar, user(role)); return !group(html, "clients").includes("<details") && group(html, "clients").includes('href="/content"') && group(html, "clients").includes('href="/clients"'); }));
+    check("Client activity sits in Clients for owner and admin, and nobody else", ["OWNER", "ADMIN"].every((role) => group(render(Sidebar, user(role)), "clients").includes('href="/content/activity"')) && [editor, photographer].every((html) => !hrefs(html).includes("/content/activity")) && !hrefs(render(Sidebar, user("EDITOR", { content: true }))).includes("/content/activity"));
     check("disclosure summaries participate in the existing drawer focus selector", [...owner.matchAll(/<summary\b([^>]*)>/g)].every((match) => match[1].includes('tabindex="0"')));
     const both = renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(Sidebar, { user: user("OWNER") }), React.createElement(Sidebar, { user: user("OWNER") })));
     const ids = [...both.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
