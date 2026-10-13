@@ -10,7 +10,9 @@ import { buildContentMonth } from "./_fixtures/contentMonth";
 import { currentSessionSlot, portalMonthHref, portalMonthKey, portalSessionIndex, selectedPortalMonth, sessionDatePage, sessionOfferKey } from "../../src/lib/portalScheduling";
 
 const RealDate = Date;
-const NOW = RealDate.UTC(2026, 9, 1, 14);
+// Oct 13 2026: the portal shows next month only from the 24th, so this drill (which moves between October and
+// November) runs on Oct 26; the rule itself is checked below with portalLastMonthKey.
+const NOW = RealDate.UTC(2026, 9, 26, 14);
 globalThis.Date = new Proxy(RealDate, {
   construct(target, args: unknown[]) { return args.length ? Reflect.construct(target, args) : new target(NOW); },
   get(target, key, receiver) { return key === "now" ? () => NOW : Reflect.get(target, key, receiver); },
@@ -47,6 +49,10 @@ async function main() {
     await prisma.programCallRecord.create({ data: { enrollmentId: f.enrollmentId, clientId: f.clientId, monthId: f.monthId, callType: "MONTHLY_STRATEGY", status: "COMPLETED", matchState: "MATCHED", scheduledStart: new Date("2026-09-25T14:00:00Z"), scheduledEnd: new Date("2026-09-25T14:30:00Z"), transcriptState: "ANALYZED" } });
     const months = await portal.portalScheduleMonths(viewer.enrollment);
     c.ok("month query resolves only among the signed enrollment's open months", selectedPortalMonth(months, "2026-11")?.monthId === november.id && selectedPortalMonth(months, "2026-12") === null && selectedPortalMonth(months, "2026-09") === null);
+    {
+      const { portalLastMonthKey } = await import("@/lib/contentProgram");
+      c.ok("Oct 13 2026 rule: before the 24th the client sees only this month; from the 24th, next month too", portalLastMonthKey(new RealDate("2026-10-13T16:00:00Z")) === "2026-10" && portalLastMonthKey(new RealDate("2026-10-24T05:00:00Z")) === "2026-11" && portalLastMonthKey(new RealDate("2026-10-24T03:00:00Z")) === "2026-10" && portalLastMonthKey(new RealDate("2026-12-28T16:00:00Z")) === "2027-01");
+    }
     c.ok("malformed month and impossible Pro session query are refused", portalMonthKey("2026-13") === null && portalMonthKey("2026-1") === null && portalSessionIndex("3", 2) === null && portalSessionIndex("2", 2) === 2);
     const link = portalMonthHref(`?e=${f.enrollmentId}&tab=plan&pv=month&iv=oldinterview&page=7&q=private+draft&token=private-token`, "2026-11", 2);
     c.ok("context link is query-only and retains client/month/session without private search or bearer material", link.startsWith("?") && link.includes(`e=${f.enrollmentId}`) && link.includes("month=2026-11&session=2") && !/iv=|page=|q=|token=|private|\/portal/.test(link));
@@ -60,8 +66,8 @@ async function main() {
     const secondAddress = await actions.portalSaveSessionPlanAddress(auth, f.monthId, 2, exact("220 Second Lane"));
     c.ok("signed Pro client saves each session's own address and distinct plan", firstAddress.ok && secondAddress.ok && firstAddress.planId !== secondAddress.planId, `${firstAddress.message} / ${secondAddress.message}`);
     const days: import("@/lib/portal").PortalSlotDay[] = Array.from({ length: 21 }, (_, i) => {
-      const date = new Date(Date.UTC(2026, 9, i + 2, 12));
-      const slots = [new Date(Date.UTC(2026, 9, i + 2, 15)).toISOString(), new Date(Date.UTC(2026, 9, i + 2, 18)).toISOString()];
+      const date = new Date(Date.UTC(2026, 9, i + 27, 12));
+      const slots = [new Date(Date.UTC(2026, 9, i + 27, 15)).toISOString(), new Date(Date.UTC(2026, 9, i + 27, 18)).toISOString()];
       return { date: date.toISOString().slice(0, 10), slots, fitsMinutes: 240, creatives: ["Fixture photographer"], slotCreatives: Object.fromEntries(slots.map((slot) => [slot, [{ teamMemberId: "fixture-u2-photographer", name: "Fixture photographer" }]])) };
     }).filter((day) => ![0, 6].includes(new Date(`${day.date}T12:00:00Z`).getUTCDay()));
     // The cache represents a provider response that already passed product,
