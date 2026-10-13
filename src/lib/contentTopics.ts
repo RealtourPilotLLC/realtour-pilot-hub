@@ -7,7 +7,7 @@ import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { confidentialFilter } from "@/lib/clientFacts";
-import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, clientReasonFor, GENERATION_POLICY, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
+import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, clientReasonFor, GENERATION_POLICY, PILLAR_EMPHASIS_WEIGHT, topicsForEmphasis, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
 // Video Topics (spec §5/§18/§27). A topic carries audience need, business
@@ -815,8 +815,11 @@ export async function bankStock(enrollmentId: string): Promise<PillarStock[]> {
     prisma.contentTopic.findMany({ where: { enrollmentId, pillarId: { not: null } }, select: { pillarId: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true } }),
     prisma.contentTopicSuggestion.groupBy({ by: ["pillarId"], where: { enrollmentId, disposition: "PENDING", kind: "BANK" }, _count: { _all: true } }),
   ]);
-  const target = policy.topicsPerPillar;
+  // Oct 13 2026: the target is per pillar. A LIGHT pillar is stocked to about
+  // a third of the policy count (never below 2), so the weekly refill stops
+  // topping a supporting pillar up to a full bank.
   return pillars.map((p) => {
+    const target = topicsForEmphasis(policy.topicsPerPillar, p.emphasis);
     const mine = topics.filter((t) => t.pillarId === p.id);
     const usable = mine.filter(isUsableStock).length;
     const waiting = pending.find((g) => g.pillarId === p.id)?._count._all ?? 0;
@@ -1032,9 +1035,17 @@ export async function executeRecommendationRun(runId: string): Promise<void> {
   const monthKeys = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId: run.enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
   const priorScripts: PriorScript[] = scriptsRows.map((s) => ({ topicId: s.topicId, title: s.title, pillarName: nameOf(s.pillarId, null), status: s.status === "INTERNAL_REVIEW" || s.status === "DRAFT" ? "DRAFT" : "APPROVED", monthKey: s.monthId ? monthKeys.get(s.monthId) ?? null : null }));
   const capacity = cap ? cap.owed - cap.selected : Math.max(1, e?.videosPerMonth ?? 4);
-  const emphasisSentence = strategy?.document?.contentPillars.preamble.join(" ") ?? "";
+  // Oct 13 2026: the weight comes from each pillar's own emphasis setting
+  // (LEAD 1.5, NORMAL 1, LIGHT 0.5). The old guess from the pillars preamble
+  // ("Seller strategy will lead…") is kept only for a client whose pillars are
+  // all still NORMAL, i.e. nobody has set anything yet.
   const pillarEmphasis: Record<string, number> = {};
-  for (const p of pillars) if (emphasisSentence && new RegExp(p.name.split(/\s+/)[0], "i").test(emphasisSentence) && /lead|primary|emphasi/i.test(emphasisSentence)) pillarEmphasis[p.name] = 1.2;
+  if (pillars.some((p) => p.emphasis !== "NORMAL")) {
+    for (const p of pillars) if (p.emphasis !== "NORMAL") pillarEmphasis[p.name] = PILLAR_EMPHASIS_WEIGHT[p.emphasis];
+  } else {
+    const emphasisSentence = strategy?.document?.contentPillars.preamble.join(" ") ?? "";
+    for (const p of pillars) if (emphasisSentence && new RegExp(p.name.split(/\s+/)[0], "i").test(emphasisSentence) && /lead|primary|emphasi/i.test(emphasisSentence)) pillarEmphasis[p.name] = 1.2;
+  }
   const result = rankRecommendations({ bank, goals, brandMessage: strategy?.document?.brandOverview.brandMessage ?? null, pillarEmphasis, relationshipPhase: strategy?.document?.strategicDirection?.paragraphs.join(" ") ?? null, filmingHistory: history, priorScripts, capacity, alternatives: Math.min(3, capacity) });
   const rows = [...result.recommended.map((r) => ({ r, kind: "RECOMMENDED" })), ...result.alternatives.map((r) => ({ r, kind: "ALTERNATIVE" }))];
   if (!rows.length) {

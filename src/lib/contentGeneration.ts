@@ -11,7 +11,7 @@ import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDE
 import { CONTENT_RULES } from "@/lib/contentPipeline";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
-  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp,
+  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, emphasisOfPillar, topicsForEmphasis,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument,
 } from "@/lib/contentPolicy";
 
@@ -386,7 +386,12 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // the prompt AND the dedupe below — a second click must not offer the same title twice.
   const pendingRows = await prisma.contentTopicSuggestion.findMany({ where: { enrollmentId: run.enrollmentId, disposition: "PENDING" }, select: { title: true, pillarId: true } });
   for (const s of pendingRows) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "SUGGESTED", note: "already suggested, awaiting review" });
-  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH" });
+  // Oct 13 2026: each pillar's emphasis (LEAD | NORMAL | LIGHT) by every name
+  // it goes by, so the prompt asks a LIGHT pillar for its smaller count and
+  // the validator below holds it to that count, not the full one.
+  const pillarEmphasis: Record<string, string> = {};
+  for (const p of pillars) for (const name of [p.name, ...p.aliases]) pillarEmphasis[name] = p.emphasis;
+  const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis });
   const runRes = await runAiJson<BankOut>({
     kind: run.kind === "BANK" ? "topic_bank" : "topic_refresh", enrollmentId: run.enrollmentId, clientId: run.clientId, scope: { refreshRunId: runId, pillarId: opts.pillarId ?? null }, inputRefs: { ...built.inputRefs, existingTopics: existing.length },
     promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 16_000,
@@ -399,17 +404,20 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     const pillarId = await resolvePillarByLabel(run.enrollmentId, p.pillarName);
     bank.pillars.push({ pillarId, name: p.pillarName, purpose: null, topics: (p.topics ?? []).map((t) => makeTopic({ title: t.title, pillarName: p.pillarName, description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: "GENERATED", sourceRef: t.sourceRef, clientId: run.clientId, pillarRef: { pillarId, pillarName: p.pillarName } })) });
   }
-  const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: strategyPillars.map((p) => p.name) });
+  const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: strategyPillars.map((p) => p.name), pillarEmphasis });
   let created = 0, resurfaced = 0, duplicates = 0, notKept = 0;
   const rows: Prisma.ContentTopicSuggestionCreateManyInput[] = [];
   for (const p of bank.pillars) {
     if (!p.pillarId) continue; // an unknown pillar name is a finding, never a new pillar
+    // A LIGHT pillar keeps at most its own count even when the model sends a full pillar's worth (Oct 13 2026).
+    const lightCap = emphasisOfPillar(pillarEmphasis, p.name) === "LIGHT" ? topicsForEmphasis(perPillar, "LIGHT") : null;
     let rank = 0;
     for (const t of p.topics) {
       const hash = topicDedupeHash(t.title);
       if (blocked.has(hash)) { resurfaced++; continue; } // archived/rejected concepts never come back
       if (existingHashes.has(hash)) { duplicates++; continue; }
       if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
+      if (lightCap != null && rank >= lightCap) { notKept++; continue; }
       existingHashes.add(hash);
       rows.push({ refreshRunId: runId, enrollmentId: run.enrollmentId, clientId: run.clientId, pillarId: p.pillarId, kind: "BANK", rank: ++rank, title: t.title.slice(0, 200), description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, rationale: t.sourceRef ? `Grounded in: ${t.sourceRef}` : "Inferred from the pillar's focus areas", dedupeHash: hash });
       created++;

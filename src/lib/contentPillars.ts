@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { normalizeTitle, titleSimilarity } from "@/lib/contentPolicy";
+import { normalizeTitle, titleSimilarity, asPillarEmphasis, type PillarEmphasis } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
 // Pillars as STABLE identities (spec §5/§18, manifest C-A6/C-C4). A client's
@@ -13,7 +13,7 @@ import { normalizeTitle, titleSimilarity } from "@/lib/contentPolicy";
 // writes pillarId onto topics, one label at a time, on his say-so.
 // ---------------------------------------------------------------------------
 
-export type PillarRow = { id: string; name: string; purpose: string | null; focusAreas: string | null; contentApproach: string | null; sortOrder: number; status: string; strategyVersionId: string | null; aliases: string[] };
+export type PillarRow = { id: string; name: string; purpose: string | null; focusAreas: string | null; contentApproach: string | null; sortOrder: number; status: string; strategyVersionId: string | null; aliases: string[]; /** Oct 13 2026: LEAD | NORMAL | LIGHT (contentPolicy topicBank.ts, PILLAR EMPHASIS). */ emphasis: PillarEmphasis };
 
 export async function listPillars(enrollmentId: string, opts: { includeRetired?: boolean } = {}): Promise<PillarRow[]> {
   const rows = await prisma.contentPillar.findMany({
@@ -22,7 +22,7 @@ export async function listPillars(enrollmentId: string, opts: { includeRetired?:
   });
   const aliases = rows.length ? await prisma.contentPillarAlias.findMany({ where: { pillarId: { in: rows.map((r) => r.id) } } }) : [];
   return rows.map((r) => ({
-    id: r.id, name: r.name, purpose: r.purpose, focusAreas: r.focusAreas, contentApproach: r.contentApproach, sortOrder: r.sortOrder, status: r.status, strategyVersionId: r.strategyVersionId,
+    id: r.id, name: r.name, purpose: r.purpose, focusAreas: r.focusAreas, contentApproach: r.contentApproach, sortOrder: r.sortOrder, status: r.status, strategyVersionId: r.strategyVersionId, emphasis: asPillarEmphasis(r.emphasis),
     aliases: aliases.filter((a) => a.pillarId === r.id && a.name !== r.name).map((a) => a.name),
   }));
 }
@@ -73,6 +73,22 @@ export async function renamePillar(pillarId: string, newName: string, by: string
 
 export async function updatePillarFields(pillarId: string, patch: { purpose?: string | null; focusAreas?: string | null; contentApproach?: string | null; sortOrder?: number }): Promise<void> {
   await prisma.contentPillar.update({ where: { id: pillarId }, data: patch });
+}
+
+/**
+ * Oct 13 2026: how much of the client's content this pillar carries (LEAD |
+ * NORMAL | LIGHT). Read by the bank prompt and validator (per-pillar counts),
+ * the weekly refill target, the recommendation ranking and the order of the
+ * client's topic bank. Refuses a pillar that belongs to another enrollment.
+ */
+export async function setPillarEmphasis(enrollmentId: string, pillarId: string, emphasis: string): Promise<{ changed: boolean; emphasis: PillarEmphasis; name: string }> {
+  const value = asPillarEmphasis(emphasis);
+  if (value !== emphasis.trim().toUpperCase()) throw new Error("Emphasis must be Lead, Normal or Light.");
+  const p = await prisma.contentPillar.findUnique({ where: { id: pillarId }, select: { enrollmentId: true, emphasis: true, name: true } });
+  if (!p || p.enrollmentId !== enrollmentId) throw new Error("Pillar not found.");
+  if (asPillarEmphasis(p.emphasis) === value) return { changed: false, emphasis: value, name: p.name };
+  await prisma.contentPillar.update({ where: { id: pillarId }, data: { emphasis: value } });
+  return { changed: true, emphasis: value, name: p.name };
 }
 
 /** Retire (never delete). Topics keep their pillarId; readers show the retired name. */

@@ -1186,6 +1186,27 @@ export async function renamePillarAction(enrollmentId: string, pillarId: string,
   } catch (e) { return fail(e); }
 }
 
+/**
+ * Oct 13 2026 (Jordan, Arielle Roemer's buyer-heavy recommendations): a
+ * pillar's emphasis, Lead · Normal · Light. Strategy work, so the strategy
+ * duty owner sets it, like approving the strategy. It changes how many bank
+ * topics the pillar gets, how its topics rank and where it sits on the
+ * client's topic bank; nothing already in the bank is touched.
+ */
+export async function setPillarEmphasisAction(enrollmentId: string, pillarId: string, emphasis: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    await assertDutyOwner("STRATEGY", enrollmentId, null, me);
+    const { setPillarEmphasis } = await import("@/lib/contentPillars");
+    const r = await setPillarEmphasis(enrollmentId, pillarId, emphasis);
+    path(enrollmentId);
+    if (!r.changed) return { ok: true, message: `“${r.name}” is already ${r.emphasis.toLowerCase()}.` };
+    const what = r.emphasis === "LEAD" ? "a lead pillar: ranked first in recommendations and shown first to the client" : r.emphasis === "LIGHT" ? "a light pillar: a smaller topic bank, ranked lower and shown last" : "a normal pillar";
+    return { ok: true, message: `“${r.name}” is now ${what}.` };
+  } catch (e) { return fail(e); }
+}
+
 export async function confirmPillarMappingAction(enrollmentId: string, label: string, pillarId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
