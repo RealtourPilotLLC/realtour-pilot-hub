@@ -649,6 +649,8 @@ export type OnboardingView = {
   draft: { id: string; versionNo: number; status: string; createdAt: Date } | null;
   approved: { id: string; versionNo: number; approvedAt: Date | null; releasedAt: Date | null } | null;
   missingItems: string[]; assets: Record<string, boolean>; lastError: string | null;
+  /** Oct 13 2026: first-bank suggestions still to review — the one step left between BANK_GENERATED and COMPLETE. */
+  bankToReview: number;
 };
 
 export async function onboardingView(enrollmentId: string): Promise<OnboardingView | null> {
@@ -663,9 +665,15 @@ export async function onboardingView(enrollmentId: string): Promise<OnboardingVi
   let assets: Record<string, boolean> = {};
   try { missing = JSON.parse(ob.missingItemsJson ?? "[]") as string[]; } catch { missing = []; }
   try { assets = JSON.parse(ob.assetChecklistJson ?? "{}") as Record<string, boolean>; } catch { assets = {}; }
+  // Oct 13 2026 (Jordan, on Janice Pigga's panel: "what is all this for?"): the
+  // gap list is the AI DRAFT's questions from the discovery call. Once a
+  // strategy is approved it has been read and decided on, so it is no longer
+  // shown; what is left to do is said instead.
+  if (approved) missing = [];
+  const bankToReview = ob.initialBankRunId ? await prisma.contentTopicSuggestion.count({ where: { refreshRunId: ob.initialBankRunId, disposition: "PENDING" } }) : 0;
   return {
     id: ob.id, status: ob.status, discoveryRequired: ob.discoveryRequired,
     waived: ob.discoveryWaivedAt ? { at: ob.discoveryWaivedAt, by: ob.discoveryWaivedBy, reason: ob.discoveryWaivedReason } : null,
-    call, draft, approved, missingItems: missing, assets, lastError: ob.lastError,
+    call, draft, approved, missingItems: missing, assets, lastError: ob.lastError, bankToReview,
   };
 }

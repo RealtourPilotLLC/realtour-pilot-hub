@@ -190,7 +190,10 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
             <li>Discovery call: {onboarding.call ? `${onboarding.call.status.toLowerCase()}${onboarding.call.scheduledStart ? ` · ${fmtDay(onboarding.call.scheduledStart.toISOString())}` : ""} · transcript ${onboarding.call.transcriptState.toLowerCase()}` : onboarding.discoveryRequired ? "not booked yet" : "not required"}</li>
             <li>Strategy: {onboarding.approved ? `v${onboarding.approved.versionNo} approved${onboarding.approved.releasedAt ? " and released" : ""}` : onboarding.draft ? `v${onboarding.draft.versionNo} drafted — ${onboarding.draft.status.toLowerCase().replace(/_/g, " ")}` : "no draft yet"}
               {" "}<Link href={planHref("strategy")} className="font-medium text-brand hover:underline">Open</Link></li>
-            {onboarding.missingItems.length > 0 && <li className="text-warning">Missing: {onboarding.missingItems.slice(0, 6).join(", ")}</li>}
+            {onboarding.missingItems.length > 0 && <li className="text-warning">Still to confirm for the strategy draft: {onboarding.missingItems.slice(0, 6).join(", ")}</li>}
+            {onboarding.status === "BANK_GENERATED" && onboarding.bankToReview > 0 && (
+              <li>Last step: review the first topic bank ({onboarding.bankToReview} suggestion{onboarding.bankToReview === 1 ? "" : "s"}){" "}<Link href={planHref("topics")} className="font-medium text-brand hover:underline">Open</Link></li>
+            )}
           </ul>
         </Section>
       )}
