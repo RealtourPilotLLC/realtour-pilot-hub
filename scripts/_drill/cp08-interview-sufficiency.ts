@@ -47,6 +47,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
+import { isJudgeCall, passingJudge } from "./_judge";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 // Oct 5 2026: the sign-in button's POST must prove it came from our own page —
@@ -72,6 +73,7 @@ interceptModule(
     get(t, k) {
       if (k !== "aiJsonWithUsage") return t[k];
       return async (opts: { system: string; prompt: string }) => {
+        if (isJudgeCall(opts.system)) return passingJudge(); // Oct 14 2026: the automatic judge passes; not counted here
         aiCalls++;
         prompts.push({ system: opts.system, prompt: opts.prompt });
         const usage = { inputTokens: 900, outputTokens: 300 };
@@ -388,7 +390,7 @@ async function main() {
     c.ok("…and 'evidence, not copy'", /EVIDENCE, NOT COPY/.test(sys));
     const runs7 = await prisma.programAiRun.findMany({ where: { kind: "script_draft" }, select: { promptVersion: true } });
     // Oct 12 2026: v4 carries the no-dash rule on top of v3's 30–50 s budgets (oct12-queued-drafts §11).
-    c.ok("every script draft is stamped with the current script prompt (script.v4-no-dashes, v3's budgets kept)", runs7.length > 0 && runs7.every((r) => r.promptVersion === "script.v4-no-dashes"), JSON.stringify([...new Set(runs7.map((r) => r.promptVersion))]));
+    c.ok("every script draft is stamped with the current script prompt (script.v5-angle, v3's budgets kept)", runs7.length > 0 && runs7.every((r) => r.promptVersion === "script.v5-angle"), JSON.stringify([...new Set(runs7.map((r) => r.promptVersion))]));
     const longV = await prisma.contentScriptVersion.findFirst({ where: { title: LONG_TITLE } });
     const val = JSON.parse(longV?.validationJson ?? "{}") as { ok?: boolean; findings?: { code: string; severity: string }[] };
     const timing = (val.findings ?? []).filter((f) => f.code === "timing.out-of-range");

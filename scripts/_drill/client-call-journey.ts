@@ -3,6 +3,7 @@
 // is fake; queue gates, actions, readers, source records and attribution are real.
 // Disposable database behind the mandatory preload. No external provider calls.
 import { bootDrillDb, installNextStubs, interceptModule, fenceFetch, makeChecker } from "./_harness";
+import { isJudgeCall, passingJudge, isIdentityCall, plainIdentity } from "./_judge";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 // Oct 5 2026: the sign-in button's POST must prove it came from our own page —
@@ -43,6 +44,8 @@ interceptModule((r) => r === "@/lib/integrations/ai" || /[\\/]integrations[\\/]a
   get(target, key) {
     if (key !== "aiJsonWithUsage") return target[key];
     return async (input: { system: string; prompt: string }) => {
+      if (isJudgeCall(input.system)) return passingJudge(); // Oct 14 2026: the automatic judge passes; not counted here
+      if (isIdentityCall(input.system)) return plainIdentity(); // Oct 14 2026: approving the strategy builds the creative identity
       const kind = /processing a call transcript/.test(input.system) ? "analysis" : /building a client's 2026 Social Content Strategy/.test(input.system) ? "strategy" : "script";
       modelCalls.push({ kind, prompt: input.prompt });
       if (kind === "analysis" && failNextAnalysis) { failNextAnalysis = false; throw new Error("503 isolated fake model unavailable"); }

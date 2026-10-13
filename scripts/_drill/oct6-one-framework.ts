@@ -185,7 +185,8 @@ async function main() {
     const q = policy.INTERVIEW_QUESTION_PLAN.find((x) => x.id === "audienceProblem");
     c.ok("the interview plan's hook premise names a bold statement", !!q && /bold statement/.test(q.captures));
     const rules = policy.policyRulesText();
-    c.ok("the rules text every prompt carries holds the whole framework (5 parts, the Hook's 'bold statement')", /=== VIDEO STRUCTURE FRAMEWORK/.test(rules) && HEADINGS.every((h) => rules.includes(`${h} — `)) && rules.includes(policy.FRAMEWORK_HOOK.definition));
+    // Oct 14 2026: the rules text prints "Heading: definition" (no dash used as punctuation in any prompt).
+    c.ok("the rules text every prompt carries holds the whole framework (5 parts, the Hook's 'bold statement')", /=== VIDEO STRUCTURE FRAMEWORK/.test(rules) && HEADINGS.every((h) => rules.includes(`${h}: `)) && rules.includes(policy.FRAMEWORK_HOOK.definition));
     // At least the Oct 6 bump (Oct 12 2026 bumped it again for the no-dash rule — oct12-queued-drafts §11).
     c.ok("the policy version was bumped with the change (length + carried direction)", policy.GENERATION_POLICY_VERSION >= "2026-10-06.2", policy.GENERATION_POLICY_VERSION);
   }
@@ -352,8 +353,9 @@ async function main() {
     let prompt = "";
     try { const b = policy.buildScriptPrompt(ctx, { path: "transcript", topic, excerpts: [], selectedOnCall: false }); prompt = `${b.system}\n${b.user}`; } catch (e) { prompt = `ERR ${(e as Error).message}`; }
     const stale = /20\s*(?:–|-|to)\s*30|45\s*(?:–|-)\s*65/;
-    c.ok("the rules text every prompt carries says 30–50 and never 20–30 / 45–65", rules.includes("30–50 seconds") && rules.includes("30 to 50 second") && !stale.test(rules), (rules.match(stale) ?? [""])[0]);
-    c.ok("the script prompt (system + user, prior-scripts line included) says 30–50 and never 20–30", !prompt.startsWith("ERR") && prompt.includes("30–50") && /exactly three points, 30–50 s/.test(prompt) && !stale.test(prompt), prompt.startsWith("ERR") ? prompt : (prompt.match(stale) ?? [""])[0]);
+    // Oct 14 2026: written "30 to 50" (no dash used as punctuation in any prompt).
+    c.ok("the rules text every prompt carries says 30 to 50 and never 20–30 / 45–65", rules.includes("30 to 50 seconds") && !stale.test(rules), (rules.match(stale) ?? [""])[0]);
+    c.ok("the script prompt (system + user, prior-scripts line included) says 30 to 50 and never 20–30", !prompt.startsWith("ERR") && prompt.includes("30 to 50") && /exactly three points, 30 to 50 seconds/.test(prompt) && !stale.test(prompt), prompt.startsWith("ERR") ? prompt : (prompt.match(stale) ?? [""])[0]);
     c.ok("the LENGTH override quotes Jordan's Oct 6 words", policy.POLICY_OVERRIDES.some((o) => o.startsWith("LENGTH:") && o.includes("between 30-50 seconds long, sometimes a minute")));
 
     const mk = (total: number) => {

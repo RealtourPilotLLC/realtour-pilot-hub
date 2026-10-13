@@ -58,6 +58,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, interceptModule, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { isJudgeCall, passingJudge } from "./_judge";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 const PORT = Number(process.env.DRILL_PORT ?? 6934);
@@ -93,6 +94,8 @@ interceptModule((r) => r === "@/lib/integrations/ai" || /[\\/]integrations[\\/]a
   get(target, key) {
     if (key !== "aiJsonWithUsage") return target[key];
     return async (input: { system: string; prompt: string }) => {
+      // Oct 14 2026: the automatic judge after every draft passes here; this drill is about the queue.
+      if (isJudgeCall(input.system)) return passingJudge();
       const kind: Call["kind"] = /writing ONE personal-branding video script/.test(input.system) ? (/REVIEWER'S INSTRUCTION/.test(input.prompt) ? "revise" : "script") : /Social Content Strategy for Realtour Pilot using the house template/.test(input.system) ? "strategy" : "other";
       const topic = (/TOPIC:\s*(.+)/.exec(input.prompt)?.[1] ?? "").trim();
       const call: Call = { kind, topic, system: input.system, prompt: input.prompt };
@@ -287,7 +290,7 @@ async function main() {
       const per = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7].map(async (i) => ({ runs: await runsFor(T(i).id), script: await scriptOf(T(i).id), topic: await prisma.contentTopic.findUniqueOrThrow({ where: { id: T(i).id } }) })));
       c.ok("eight scripts, each from ONE run row — the queued row itself (adopted, never a second run)", per.every((p) => p.runs.length === 1 && p.runs[0].status === "SUCCEEDED" && !!p.script && p.runs[0].outputRef?.startsWith("ContentScriptVersion:")), per.map((p) => `${p.runs.length}:${p.runs[0]?.status}`).join(","));
       const r0 = per[0].runs[0];
-      c.ok("…the run carries the prompt it was built from, Jordan's name, one attempt, the key freed", r0.promptKey === "script" && r0.promptVersion === "script.v4-no-dashes" && r0.requestedBy === jordan.email && r0.attempts === 1 && r0.dedupeKey === null && r0.leaseBy === null && (r0.costCents ?? 0) > 0, JSON.stringify({ pk: r0.promptKey, pv: r0.promptVersion, a: r0.attempts, by: r0.requestedBy, k: r0.dedupeKey, l: r0.leaseBy, cost: r0.costCents }));
+      c.ok("…the run carries the prompt it was built from, Jordan's name, one attempt, the key freed", r0.promptKey === "script" && r0.promptVersion === "script.v5-angle" && r0.requestedBy === jordan.email && r0.attempts === 1 && r0.dedupeKey === null && r0.leaseBy === null && (r0.costCents ?? 0) > 0, JSON.stringify({ pk: r0.promptKey, pv: r0.promptVersion, a: r0.attempts, by: r0.requestedBy, k: r0.dedupeKey, l: r0.leaseBy, cost: r0.costCents }));
       c.ok("…every topic SCRIPTED, each script INTERNAL_REVIEW (nothing approved or shared)", per.every((p) => p.topic.status === "SCRIPTED" && p.script?.status === "INTERNAL_REVIEW" && !p.script?.approvedVersionId && !p.script?.sharedVersionId));
     }
 
@@ -484,7 +487,7 @@ async function main() {
     // =========================================================================
     c.head("11 · no dashes in a script (Jordan, Oct 12)");
     {
-      c.ok("the policy version was bumped and every prompt's rules carry the punctuation rule", policy.GENERATION_POLICY_VERSION === "2026-10-12.1" && policy.policyRulesText().includes("=== PUNCTUATION (Jordan, Oct 12 2026) ===") && policy.policyRulesText().includes(policy.SCRIPT_PUNCTUATION_RULE));
+      c.ok("the policy version was bumped and every prompt's rules carry the punctuation rule", policy.GENERATION_POLICY_VERSION >= "2026-10-12.1" && policy.policyRulesText().includes("=== PUNCTUATION (Jordan, Oct 12 2026) ===") && policy.policyRulesText().includes(policy.SCRIPT_PUNCTUATION_RULE));
       const scriptCall = modelCalls.filter((m) => m.kind === "script").at(-1)!;
       c.ok("the script prompt repeats it beside its own rules; the strategy prompt carries it too", scriptCall.system.includes(`PUNCTUATION: ${policy.SCRIPT_PUNCTUATION_RULE}`) && (modelCalls.find((m) => m.kind === "strategy")?.system ?? "").includes(policy.SCRIPT_PUNCTUATION_RULE));
       c.ok("the rule names the dashes but uses neither as punctuation", !/\w\s*[—–]\s*\w/.test(policy.SCRIPT_PUNCTUATION_RULE));

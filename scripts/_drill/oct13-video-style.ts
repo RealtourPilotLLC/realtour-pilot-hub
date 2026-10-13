@@ -12,6 +12,11 @@
 //     --require ./scripts/_drill/_drill-preload.cjs \
 //     scripts/_drill/oct13-video-style.ts
 //
+// Oct 14 2026: the script and bank prompts changed for EVERY account (the clean
+// house brief, oct14-creative-engine.ts), so sections 2 and 3 now assert that a
+// DIRECT account gets no skit content (and keeps its per-pillar counts) rather
+// than the BASE prompt byte for byte; the validator comparison still holds.
+//
 // The OLD prompts.ts and scriptFormat.ts are loaded for real from BASE (the
 // commit this change starts from), so "a DIRECT account reads as before" is
 // asserted byte for byte, not described.
@@ -43,6 +48,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
+import { isJudgeCall, passingJudge } from "./_judge";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 const PORT = Number(process.env.DRILL_PORT ?? 6985);
@@ -84,6 +90,7 @@ interceptModule(
     get(t, k) {
       if (k !== "aiJsonWithUsage") return t[k];
       return async (opts: { system: string; prompt: string }) => {
+        if (isJudgeCall(opts.system)) return passingJudge(); // Oct 14 2026: the automatic judge passes; not counted here
         aiCalls++;
         prompts.push({ system: opts.system, prompt: opts.prompt });
         const usage = { inputTokens: 700, outputTokens: 250 };
@@ -202,8 +209,11 @@ async function main() {
     c.ok("the skit block and the topic rules carry no em or en dash", noDash(policy.SKIT_SCRIPT_BLOCK) && noDash(policy.SKIT_TOPIC_RULE) && noDash(policy.PERSONAL_BRAND_HUMOUR_RULE));
     c.ok("SKITS: the output schema describes a scene", /speaker-labelled dialogue/.test(JSON.stringify(skitPrompt.outputSchema)) && (skitPrompt.outputSchema.required as string[]).join() === (policy.SCRIPT_OUTPUT_SCHEMA.required as string[]).join());
     c.ok("DIRECT: no skit block", !/VIDEO STYLE: SKITS/.test(directPrompt.system) && directPrompt.outputSchema === policy.SCRIPT_OUTPUT_SCHEMA);
-    const oldDirect = oldPrompts.buildScriptPrompt(builtD.ctx, { path: "transcript", topic: topicFor(builtD.ctx, "Read the inspection report like a pro"), excerpts: [], selectedOnCall: true });
-    c.ok("DIRECT: system and user prompts are the OLD ones byte for byte", oldDirect.system === directPrompt.system && oldDirect.user === directPrompt.user);
+    // Oct 14 2026: the script prompt itself changed for every account (oct14-creative-engine.ts), so DIRECT is no
+    // longer the BASE prompt byte for byte; what must hold is that a DIRECT account gets no skit content at all.
+    const skitWords = /VIDEO STYLE: SKITS|ACTED SCENE|THE CLIENT IS ALONE ON CAMERA|skit/i;
+    c.ok("DIRECT: no skit content anywhere in the system or user prompt", !skitWords.test(directPrompt.system) && !skitWords.test(directPrompt.user), (directPrompt.system.match(skitWords) ?? directPrompt.user.match(skitWords) ?? [""])[0]);
+    c.ok("DIRECT and SKITS share the house brief, the angle and the audience psychology", [policy.HOUSE_SCRIPTING_RULES, policy.ANGLE_BLOCK, policy.AUDIENCE_PSYCHOLOGY_BLOCK].every((b) => directPrompt.system.includes(b) && skitPrompt.system.includes(b)));
 
     // ======================================================================
     c.head("3 · the topic bank prompt");
@@ -216,14 +226,15 @@ async function main() {
     c.ok("DIRECT: no skit topic rule", !/VIDEO STYLE: SKITS/.test(bankD.system));
     c.ok("the personal brand humour rule is in BOTH", bankS.system.includes(policy.PERSONAL_BRAND_HUMOUR_RULE) && bankD.system.includes(policy.PERSONAL_BRAND_HUMOUR_RULE));
     c.ok("…personality and self-aware humour over earnest résumé statements", /self-aware humour and relatable moments/.test(policy.PERSONAL_BRAND_HUMOUR_RULE) && /earnest résumé statements/.test(policy.PERSONAL_BRAND_HUMOUR_RULE));
-    const oldBankD = oldPrompts.buildTopicBankPrompt(withStrategy(builtD.ctx));
-    c.ok("DIRECT: the OLD bank prompt plus the humour rule, nothing else", bankD.system.replace(`\n\n${policy.PERSONAL_BRAND_HUMOUR_RULE}`, "") === oldBankD.system && bankD.user === oldBankD.user);
+    // Oct 14 2026: the bank prompt gained the originality rule for every account; a DIRECT bank still carries no skit rule.
+    c.ok("DIRECT: the bank prompt carries the humour and originality rules and no skit rule", bankD.system.includes(policy.PERSONAL_BRAND_HUMOUR_RULE) && bankD.system.includes(policy.TOPIC_ORIGINALITY_RULE) && !bankD.system.includes(policy.SKIT_TOPIC_RULE) && !/VIDEO STYLE: SKITS/.test(bankD.system));
     const emph = { [BUYER]: "LIGHT", [SELLER]: "LEAD" };
     const bankSE = policy.buildTopicBankPrompt(withStrategy(builtS.ctx), { pillarEmphasis: emph });
     c.ok("pillar emphasis still shapes a SKITS bank: per-pillar counts, LEAD and LIGHT named", bankSE.system.includes(`${BUYER}: exactly 3`) && bankSE.system.includes(`${SELLER}: exactly 10`) && /LEAD pillars[^\n]*Seller Strategy/.test(bankSE.system) && /LIGHT pillars[^\n]*Buyer Education/.test(bankSE.system) && bankSE.system.includes(policy.SKIT_TOPIC_RULE));
     const oldBankDE = oldPrompts.buildTopicBankPrompt(withStrategy(builtD.ctx), { pillarEmphasis: emph });
+    const countLine = (sys: string) => (/^COUNT:.*$/m.exec(sys) ?? [""])[0] + (/^EMPHASIS:.*$/m.exec(sys) ?? [""])[0];
     const bankDE = policy.buildTopicBankPrompt(withStrategy(builtD.ctx), { pillarEmphasis: emph });
-    c.ok("…and a DIRECT bank with emphasis is the OLD one plus the humour rule", bankDE.system.replace(`\n\n${policy.PERSONAL_BRAND_HUMOUR_RULE}`, "") === oldBankDE.system);
+    c.ok("…and a DIRECT bank with emphasis keeps the OLD per-pillar counts and emphasis lines exactly", countLine(bankDE.system) === countLine(oldBankDE.system) && countLine(bankDE.system).length > 20 && !bankDE.system.includes(policy.SKIT_TOPIC_RULE));
 
     // ======================================================================
     c.head("4 · validation: a skit passes, dialogue only is counted; direct unchanged");
@@ -259,7 +270,7 @@ async function main() {
     const sv = await prisma.contentScriptVersion.findUnique({ where: { id: sDraft.versionId } });
     c.ok("SKITS: the draft prompt carried the skit block", prompts.length === 1 && prompts[0].system.includes(policy.SKIT_SCRIPT_BLOCK));
     const sRun = await prisma.programAiRun.findFirst({ where: { kind: "script_draft", enrollmentId: S.enrollmentId }, orderBy: { createdAt: "desc" } });
-    c.ok("…its run is stamped with the skit prompt (script.v4-no-dashes+skits)", sRun?.promptVersion === "script.v4-no-dashes+skits", sRun?.promptVersion ?? "no run");
+    c.ok("…its run is stamped with the skit prompt (script.v5-angle+skits)", sRun?.promptVersion === "script.v5-angle+skits", sRun?.promptVersion ?? "no run");
     c.ok("…the version passes the format check", sDraft.ok, JSON.stringify(JSON.parse(sv?.validationJson ?? "{}").findings?.filter((f: { severity: string }) => f.severity === "block")));
     c.ok("…stored as a skit: speakers kept", JSON.parse(sv?.speakerLabelsJson ?? "[]").join(" | ") === "REPORTER (off camera) | DANA | DANA (eyes closed)", sv?.speakerLabelsJson ?? "none");
     c.ok("…every line kept, one per line", sv?.hook === SKIT.hook && sv?.close === SKIT.close && JSON.parse(sv?.pointsJson ?? "[]")[1]?.text === SKIT.build);

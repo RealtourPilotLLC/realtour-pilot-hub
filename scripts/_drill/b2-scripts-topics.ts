@@ -33,6 +33,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
+import { isJudgeCall, passingJudge } from "./_judge";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 const PORT = Number(process.env.DRILL_PORT ?? 5622);
@@ -53,6 +54,7 @@ interceptModule(
     get(t, k) {
       if (k !== "aiJsonWithUsage") return t[k];
       return async (opts: { system: string; prompt: string }) => {
+        if (isJudgeCall(opts.system)) return passingJudge(); // Oct 14 2026: the automatic judge passes; not counted here
         aiCalls++;
         prompts.push(`${opts.system}\n${opts.prompt}`);
         if (failNextAi > 0) { failNextAi--; throw new Error("drill: the model is unavailable"); }

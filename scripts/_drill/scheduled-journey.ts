@@ -336,9 +336,11 @@ async function main() {
   let heldKey: string | null = null;
   let heldLease: Date | null = null;
   aiHook = async () => {
-    const row = await prisma.programAiRun.findFirst({ where: { status: "RUNNING" }, select: { dedupeKey: true, leaseUntil: true } });
-    heldKey = row?.dedupeKey ?? null;
-    heldLease = row?.leaseUntil ?? null;
+    // Oct 14 2026: the draft is followed by the automatic judge (its own run, kind script_judge); the draft's run is the one asserted.
+    const row = await prisma.programAiRun.findFirst({ where: { status: "RUNNING", kind: "script_draft" }, select: { dedupeKey: true, leaseUntil: true } });
+    if (!row) return;
+    heldKey = row.dedupeKey ?? null;
+    heldLease = row.leaseUntil ?? null;
   };
   await sweepOwedScripts({ max: 6, budgetMs: 45_000 });
   aiHook = null;
@@ -480,7 +482,8 @@ async function main() {
   ok("questions are phrased BEFORE scripts are drafted", stepBody.indexOf("sweepInterviewPlans(") < stepBody.indexOf("sweepOwedScripts("));
   ok("with the same counts this drill ran", /sweepInterviewPlans\(\{ max: 4,/.test(stepBody) && /sweepOwedScripts\(\{ max: 6,/.test(stepBody), "plans 4, drafts 6");
   ok("every question set and every script starts only with the time to finish it", /minStartMs: INTERVIEW_PLAN_MIN_START_MS/.test(stepBody) && /minStartMs: SCRIPT_DRAFT_MIN_START_MS/.test(stepBody));
-  ok("each sweep's budget is what is left of the run, less the margin", (stepBody.match(/budgetMs: budget\(\)/g) ?? []).length === 2 && /remaining\(\) - MARGIN_MS/.test(routeSrc));
+  // Oct 14 2026: a third sweep in the step, the automatic script checks (scriptJudge.sweepScriptChecks).
+  ok("each sweep's budget is what is left of the run, less the margin", (stepBody.match(/budgetMs: budget\(\)/g) ?? []).length === 3 && /sweepScriptChecks\(/.test(stepBody) && /remaining\(\) - MARGIN_MS/.test(routeSrc));
   ok("nothing in the step writes to a provider", !/openphone|gmail|aryeo|stripe|dropbox/i.test(stepBody));
   ok("the job is on the 15-minute schedule", /"\/api\/cron\/topics",\s*"schedule": "7,22,37,52 \* \* \* \*"/.test(fs.readFileSync(path.resolve(__dirname, "../../vercel.json"), "utf8")));
 
