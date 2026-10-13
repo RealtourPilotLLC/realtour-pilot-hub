@@ -369,8 +369,9 @@ async function main() {
     await tj.cancelTranscriptJobs(monaCall, "drill: run by hand");
     const r2 = await gen.runTranscriptJob({ id: "m", kind: "ANALYZE", callRecordId: monaCall, requestedBy: "drill-staff" });
     const mMonth = await prisma.contentMonth.findFirst({ where: { enrollmentId: mona.enrollmentId, monthKey: "2026-10" } });
-    const mSel = await prisma.contentTopicSelection.count({ where: { monthId: mMonth?.id ?? "-" , status: "PROPOSED" } });
-    c.ok("MONTHLY call (regression): PROPOSED selection on the planned month, priorities and to-dos land on it", r2.ok && mSel === 1 && (mMonth?.prioritiesJson ?? "").includes("spring market") && (mMonth?.notes ?? "").includes("Send logo files"), `sel=${mSel}`);
+    // Oct 13 2026: topics agreed on a strategy call are confirmed on arrival (RECONCILED), no reconcile step.
+    const mSel = await prisma.contentTopicSelection.count({ where: { monthId: mMonth?.id ?? "-" , status: "RECONCILED" } });
+    c.ok("MONTHLY call (regression): a confirmed selection on the planned month, priorities and to-dos land on it", r2.ok && mSel === 1 && (mMonth?.prioritiesJson ?? "").includes("spring market") && (mMonth?.notes ?? "").includes("Send logo files"), `sel=${mSel}`);
   }
 
   // =========================================================================
@@ -660,7 +661,7 @@ async function main() {
 
     // A legacy "Accepted proposal" section: refused by the release; dropped by the portal even if released the OLD way.
     const pid = await cs.createStrategyProposal({ enrollmentId: nadia.enrollmentId, kind: "POSITIONING", summary: "Lean into relocation buyers", sourceKind: "call" });
-    const acc = await cs.acceptStrategyProposal(pid, "jordan@realtourpilot.com");
+    const acc = await oldCs.acceptStrategyProposal(pid, "jordan@realtourpilot.com"); // the OLD accept appended it (Oct 13 2026: the new one revises the section)
     await actions.approveStrategy(acc.versionId!);
     const r3 = await actions.releaseStrategy(acc.versionId!);
     c.ok("an appended 'Accepted proposal' section blocks the release", !r3.ok && /Accepted proposal/.test(r3.message), r3.message);

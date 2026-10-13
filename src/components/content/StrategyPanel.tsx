@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { AlertTriangle, Check, Compass, Layers, Loader2, MessageSquareText, Mic, Pencil, Send, Trash2, Upload, Wand2, X } from "lucide-react";
+import { AlertTriangle, Check, Compass, Layers, Loader2, MessageSquareText, Mic, Pencil, Send, Trash2, Undo2, Upload, Wand2, X } from "lucide-react";
 import type { CallTranscriptUi } from "@/lib/callAnalysis";
 import type { QueueItemUi } from "@/lib/aiQueue";
 import { useToast } from "@/components/ui/Toast";
@@ -22,11 +22,12 @@ import {
 // free-text pillar labels on old topics are mapped ONLY when Jordan confirms
 // each one. The month's priorities live apart from the brand foundation.
 //
-// CP-11 (Sep 24 2026): a proposal that names ONE section shows that section's
-// heading, its text now, and the proposed replacement — editable — and
-// accepting drafts a new version with only that section changed. One with no
-// section is "Unplaced": place it on a section (and write the text), or accept
-// it as before and fold it in by hand.
+// CP-11 (Sep 24 2026), reworked Oct 13 2026: a proposal shows the section it
+// names and what it says now; accepting writes the change into the NEWEST
+// version in play (the revision reads the whole section and changes only
+// that), so changes chain: v3 = v2 + the next change, and v2 is replaced.
+// Approving a version replaces only OLDER ones; "Undo" puts the previous
+// version back in force and sends the newer one back to "needs your OK".
 //
 // A08 / U01 (Sep 25 2026): a version reads as a formatted document
 // (StrategyDocView — labelled rows, lists, one card per pillar), and Jordan
@@ -66,10 +67,10 @@ const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2";
 
-export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], discovery = null, queueActive = [] }: {
+export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], workingVersionNo = null, discovery = null, queueActive = [] }: {
   enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; mapping: MappingRowUi[]; owners: OwnerUi[];
   staff: { id: string; name: string }[]; isOwner: boolean; month: { id: string; label: string; priorities: string[]; sourceRef: string | null } | null;
-  targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[]; discovery?: DiscoveryUi | null;
+  targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[]; workingVersionNo?: number | null; discovery?: DiscoveryUi | null;
   /** Oct 12: everything in flight for the client (aiQueue.activeQueueRuns) — polled until it changes. */
   queueActive?: string[];
 }) {
@@ -81,6 +82,10 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   const approved = versions.find((v) => v.status === "APPROVED") ?? null;
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
   const clientSuggestions = proposals.filter((p) => p.sourceKind === "client");
+  // Oct 13 2026: changes chain on the NEWEST version in play; only it is edited.
+  const newestNo = Math.max(0, ...versions.filter((v) => EDITABLE.includes(v.status)).map((v) => v.versionNo));
+  /** The version that was in force just before vN (the one an undo puts back): the latest approved of the older ones. */
+  const previousInForce = (n: number) => versions.filter((x) => x.versionNo < n && x.status === "SUPERSEDED" && x.approvedAt).sort((a, b) => Date.parse(b.approvedAt!) - Date.parse(a.approvedAt!))[0] ?? null;
   const { toast, show } = useToast(8000);
   useAiQueueWatch(enrollmentId, queueActive);
   // The click answers at once (the draft is queued); until the server's own
@@ -120,7 +125,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
       {proposals.length > 0 && (
         <Section icon={Send} title="Proposed changes to the strategy" count={proposals.length} tone="warning" flush>
           <div className="divide-y divide-border">
-            {proposals.map((p) => <ProposalItem key={p.id} p={p} target={targets[p.id] ?? null} sections={sections} busy={busy} onResolve={(accept, n, text, sectionId) => run(() => resolveStrategyProposal(p.id, accept, n, text, sectionId))} />)}
+            {proposals.map((p) => <ProposalItem key={p.id} p={p} target={targets[p.id] ?? null} sections={sections} workingVersionNo={workingVersionNo} busy={busy} onResolve={(accept, n, text, sectionId) => run(() => resolveStrategyProposal(p.id, accept, n, text, sectionId))} />)}
           </div>
         </Section>
       )}
@@ -160,7 +165,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                 <span className="text-[15px] font-semibold">v{v.versionNo}</span>
                 <StatusChip status={v.status} released={!!v.releasedAt} everApproved={!!v.approvedAt} />
                 <span className="text-[12px] text-muted">{v.structureTemplate} · {v.sourceKind.replace("_", " ")}{v.sourceRef ? ` · ${v.sourceRef}` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}</span>
-                {v.approvedAt && v.status !== "SUPERSEDED" && <span className="text-[12px] text-success">approved {fmt(v.approvedAt)} by {v.approvedBy}</span>}
+                {v.approvedAt && v.status === "APPROVED" && <span className="text-[12px] text-success">approved {fmt(v.approvedAt)} by {v.approvedBy}</span>}
                 {v.releasedAt && <span className="text-[12px] text-success">released {fmt(v.releasedAt)}</span>}
               </button>
               {v.changeSummary && <p className="mt-1 text-[12px] text-muted">{v.changeSummary}</p>}
@@ -172,24 +177,30 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                     collapsible
                     openFirst
                     size="xs"
-                    actions={(s) => !(EDITABLE.includes(v.status) && !s.canonical) && !isFrameworkView(s) ? null : (
+                    actions={(s) => !(v.versionNo === newestNo && !s.canonical) && !isFrameworkView(s) ? null : (
                       <>
                         {/* Oct 6 2026: one Video Structure Framework for every client. */}
                         {isFrameworkView(s) && <p className="mb-1.5 text-[11px] text-muted-2">The house framework — the same for every client, whatever the uploaded document said. Caption CTA examples, strategic direction and any client style notes are this client&apos;s own.</p>}
-                        {EDITABLE.includes(v.status) && !s.canonical && <SectionEdit key={`${v.id}:${s.id}`} section={s} approved={v.status === "APPROVED"} last={v.sections.filter((x) => !x.canonical).length === 1} busy={busy}
+                        {v.versionNo === newestNo && !s.canonical && <SectionEdit key={`${v.id}:${s.id}`} section={s} approved={v.status === "APPROVED"} last={v.sections.filter((x) => !x.canonical).length === 1} busy={busy}
                           onSave={(text) => run(() => editStrategySection(v.id, s.id, text))}
                           onRemove={() => run(() => editStrategySection(v.id, s.id, null))} />}
                       </>
                     )}
                   />
-                  {EDITABLE.includes(v.status) && <ReviseBox versionNo={v.versionNo} approved={v.status === "APPROVED"} suggestions={clientSuggestions} busy={busy}
+                  {v.versionNo === newestNo && <ReviseBox versionNo={v.versionNo} approved={v.status === "APPROVED"} suggestions={clientSuggestions} busy={busy}
                     onRevise={(notes, ids) => run(() => reviseStrategy(v.id, notes, ids))} />}
                   <div className="flex flex-wrap gap-1.5">
                     {v.status !== "APPROVED" && v.status !== "REJECTED" && v.status !== "SUPERSEDED" && (
                       <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{v.versionNo}</button>
                     )}
+                    {/* Oct 13 2026: UNDO. Putting the previous version back sends this one to "needs your OK" (approve it again to redo); nothing newer is ever marked replaced by something older. */}
+                    {v.status === "APPROVED" && previousInForce(v.versionNo) && (
+                      <button disabled={busy} onClick={() => { const prev = previousInForce(v.versionNo)!; if (window.confirm(`Undo approving v${v.versionNo}? v${prev.versionNo} goes back in force and v${v.versionNo} waits for your OK again.`)) run(() => approveStrategy(prev.id)); }} className={quiet}>
+                        <Undo2 className="mr-1 inline size-3" />Undo: put v{previousInForce(v.versionNo)!.versionNo} back in force
+                      </button>
+                    )}
                     {/* Only a version that WAS in force can be put back; a draft replaced by a later edit is history. */}
-                    {v.status === "SUPERSEDED" && v.approvedAt && <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={quiet}>Re-approve this older version</button>}
+                    {v.status === "SUPERSEDED" && v.approvedAt && <button disabled={busy} onClick={() => { if (window.confirm(`Put v${v.versionNo} back in force? Newer approved versions go back to "needs your OK".`)) run(() => approveStrategy(v.id)); }} className={quiet}>Put v{v.versionNo} back in force</button>}
                     {v.status === "APPROVED" && !v.releasedAt && isOwner && (
                       <button disabled={busy} onClick={() => run(() => releaseStrategy(v.id))} className={`${btn} bg-brand text-white`}>Release to the portal</button>
                     )}
@@ -239,7 +250,7 @@ function StatusChip({ status, released, everApproved }: { status: string; releas
   const cls = status === "APPROVED" ? "bg-success-soft text-success" : status === "DRAFT" || status === "INTERNAL_REVIEW" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted";
   const label = status === "APPROVED" ? (released ? "in force · released" : "in force")
     : status === "INTERNAL_REVIEW" ? "needs your OK"
-    : status === "SUPERSEDED" && !everApproved ? "replaced by a later edit"
+    : status === "SUPERSEDED" ? (everApproved ? "was in force, replaced by a later version" : "replaced by a later version")
     : status.toLowerCase();
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
 }
@@ -352,13 +363,16 @@ function ReviseBox({ versionNo, approved, suggestions, busy, onRevise }: { versi
   );
 }
 
-function ProposalItem({ p, target, sections, busy, onResolve }: {
-  p: ProposalRow; target: ProposalTargetUi | null; sections: { id: string; heading: string }[]; busy: boolean;
+function ProposalItem({ p, target, sections, workingVersionNo, busy, onResolve }: {
+  p: ProposalRow; target: ProposalTargetUi | null; sections: { id: string; heading: string }[]; workingVersionNo: number | null; busy: boolean;
   onResolve: (accept: boolean, note: string, text?: string | null, sectionId?: string | null) => void;
 }) {
+  // Oct 13 2026: accepting no longer pastes a replacement over the section. The
+  // change is written into the newest version by the revision (which reads the
+  // whole section), so the box below is an optional instruction, not new text.
   const [n, setN] = useState("");
-  const [text, setText] = useState(target?.proposed ?? "");
   const [place, setPlace] = useState("");
+  const on = workingVersionNo ? `v${workingVersionNo}` : "the newest version";
   return (
     <div className="px-5 py-3">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-warning">{p.kind.toLowerCase()} · from {p.sourceKind}{p.sourceRef ? ` · ${p.sourceRef}` : ""} · {fmt(p.createdAt)}</div>
@@ -366,36 +380,30 @@ function ProposalItem({ p, target, sections, busy, onResolve }: {
       {p.impact && <p className="mt-0.5 text-[12px] text-muted">Impact: {p.impact}</p>}
       {target ? (
         <div className="mt-2 space-y-1.5 rounded-lg border border-border bg-surface-2/40 p-2.5">
-          <p className="text-[12px] font-semibold">Changes only the “{target.heading ?? "?"}” section</p>
-          {target.stale && <p className="rounded bg-warning-soft/60 px-2 py-1 text-[11px] text-warning">That section changed (or is gone) since this was proposed — accepting will be refused. Reject it and look again.</p>}
+          <p className="text-[12px] font-semibold">Changes the “{target.heading ?? "?"}” section of {on}</p>
+          {target.stale && <p className="rounded bg-warning-soft/60 px-2 py-1 text-[11px] text-warning">That section isn&apos;t in {on} any more. Reject this, or accept it and the change is placed where it fits.</p>}
           {target.current != null && <details><summary className="cursor-pointer text-[11px] text-muted">What it says now</summary><p className="mt-1 whitespace-pre-wrap text-[12px] text-foreground/80">{target.current}</p></details>}
-          <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={2} aria-label="Proposed text for this section" className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs" />
+          {target.proposed.trim() && <details><summary className="cursor-pointer text-[11px] text-muted">Suggested wording</summary><p className="mt-1 whitespace-pre-wrap text-[12px] text-foreground/80">{target.proposed}</p></details>}
         </div>
       ) : (
         <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-border p-2.5">
-          <p className="text-[11px] text-muted"><span className="font-semibold text-foreground">Unplaced</span> — no single section named. Place it on one and write the new text, or accept it as-is and it is added as its own section for you to fold in.</p>
+          <p className="text-[11px] text-muted"><span className="font-semibold text-foreground">No section named.</span> Accept it and the change is placed where it fits, or pick the section yourself.</p>
           {sections.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <select value={place} onChange={(e) => setPlace(e.target.value)} className="rounded border border-border bg-surface-2 px-2 py-1 text-xs">
-                <option value="">— place on a section —</option>
-                {sections.map((s) => <option key={s.id} value={s.id}>{s.heading}</option>)}
-              </select>
-            </div>
+            <select value={place} onChange={(e) => setPlace(e.target.value)} className="rounded border border-border bg-surface-2 px-2 py-1 text-xs">
+              <option value="">Where it fits</option>
+              {sections.map((s) => <option key={s.id} value={s.id}>{s.heading}</option>)}
+            </select>
           )}
-          {place && <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={2} placeholder="The new text for that section" className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs" />}
         </div>
       )}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <input value={n} onChange={(e) => setN(e.target.value)} placeholder="note (optional)" className="w-56 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
-        <button
-          disabled={busy || (!!target && !text.trim()) || (!target && !!place && !text.trim())}
-          onClick={() => onResolve(true, n, target || place ? text : null, !target && place ? place : null)}
-          className={`${btn} bg-success/15 text-success`}
-        >
-          Accept → new draft
+        <input value={n} onChange={(e) => setN(e.target.value)} placeholder="how to apply it (optional)" className="w-64 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
+        <button disabled={busy} onClick={() => onResolve(true, n, null, !target && place ? place : null)} className={`${btn} bg-success/15 text-success`}>
+          Accept → add to the next draft
         </button>
         <button disabled={busy} onClick={() => onResolve(false, n)} className={quiet}>Reject</button>
       </div>
+      <p className="mt-1 text-[11px] text-muted-2">The next draft is {on} plus this change, with every earlier change kept. Approve it to put it in force.</p>
     </div>
   );
 }

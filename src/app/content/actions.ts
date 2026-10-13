@@ -1130,13 +1130,16 @@ export async function resolveStrategyProposal(proposalId: string, accept: boolea
     await assertDutyOwner("STRATEGY", p.enrollmentId, null, me);
     const { acceptStrategyProposal, rejectStrategyProposal } = await import("@/lib/contentStrategy");
     if (accept) {
-      const r = await acceptStrategyProposal(proposalId, me.email, note, { text: typeof text === "string" ? text : null, sectionId: typeof sectionId === "string" && sectionId ? sectionId : null });
+      // Oct 13 2026: `text` is the person's own instruction now (how to apply it), not a replacement section.
+      const how = [note, typeof text === "string" ? text : ""].map((x) => (x ?? "").trim()).filter(Boolean).join("\n");
+      const r = await acceptStrategyProposal(proposalId, me.email, how, { sectionId: typeof sectionId === "string" && sectionId ? sectionId : null });
       path(p.enrollmentId);
+      const where = r.sectionHeadings?.length ? ` (${r.sectionHeadings.map((h) => `"${h}"`).join(", ")})` : "";
       return {
         ok: true,
-        message: r.sectionHeading
-          ? `Accepted — a new draft changes only the "${r.sectionHeading}" section; approve it to make it the strategy in force. The current version stays in force until then.`
-          : r.versionId ? "Accepted — a new draft version carries the change; approve it to make it the strategy in force." : "Accepted and recorded (no approved strategy to base a draft on yet).",
+        message: r.versionId
+          ? `Accepted. v${r.versionNo} is v${r.basedOnVersionNo} with this change${where}; approve v${r.versionNo} to put it in force.`
+          : "Accepted and recorded (there is no strategy to change yet).",
       };
     }
     await rejectStrategyProposal(proposalId, me.email, note);

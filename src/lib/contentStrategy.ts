@@ -185,7 +185,20 @@ export async function approveStrategyVersion(versionId: string, by: string): Pro
   const alreadyApproved = v.status === "APPROVED";
   if (!alreadyApproved) {
     const now = new Date();
-    await prisma.contentStrategyVersion.updateMany({ where: { strategyId: v.strategyId, status: "APPROVED", id: { not: versionId } }, data: { status: "SUPERSEDED" } });
+    // ONE DIRECTION ONLY (Jordan, Oct 13 2026: "this should never happen where
+    // v2 supersedes v3"). Approving vN replaces what came BEFORE it: an older
+    // version in force, and the open drafts vN was built from (their changes
+    // are inside it). A NEWER version is never "superseded" by an older one:
+    // putting an older version back in force (the undo) sends a newer approved
+    // one back to "needs your OK", where it can be approved again; a newer
+    // draft stays a draft.
+    const all = await prisma.contentStrategyVersion.findMany({ where: { strategyId: v.strategyId }, select: { id: true, versionNo: true, status: true, basedOnVersionId: true } });
+    const ancestors = new Set<string>();
+    for (let at = v.basedOnVersionId; at && !ancestors.has(at); at = all.find((x) => x.id === at)?.basedOnVersionId ?? null) ancestors.add(at);
+    const older = all.filter((x) => x.id !== versionId && x.versionNo < v.versionNo && (x.status === "APPROVED" || (ancestors.has(x.id) && (x.status === "DRAFT" || x.status === "INTERNAL_REVIEW"))));
+    const newerInForce = all.filter((x) => x.versionNo > v.versionNo && x.status === "APPROVED");
+    if (older.length) await prisma.contentStrategyVersion.updateMany({ where: { id: { in: older.map((x) => x.id) } }, data: { status: "SUPERSEDED" } });
+    if (newerInForce.length) await prisma.contentStrategyVersion.updateMany({ where: { id: { in: newerInForce.map((x) => x.id) }, status: "APPROVED" }, data: { status: "INTERNAL_REVIEW" } });
     await prisma.contentStrategyVersion.update({ where: { id: versionId }, data: { status: "APPROVED", approvedBy: by, approvedAt: now } });
     // The identity row becomes ACTIVE and its legacy columns mirror THIS version
     // (the readers that still parse {"Heading": "text"} then show the strategy
@@ -318,6 +331,11 @@ export async function deriveStrategyVersion(o: {
   const base = await prisma.contentStrategyVersion.findUnique({ where: { id: o.baseId } });
   if (!base) throw new Error("Strategy version not found.");
   if (!EDITABLE.includes(base.status)) throw new Error(`v${base.versionNo} is ${base.status.toLowerCase()} — make the change on the newest version instead.`);
+  // Oct 13 2026: changes CHAIN. An edit to an older version while a newer one
+  // is open would fork the document (the newer one's changes missing from
+  // the edit), so it is made on the newest instead.
+  const newest = await newestWorkingVersion(base.enrollmentId);
+  if (newest && newest.id !== base.id) throw new Error(`v${newest.versionNo} is the newest version — make the change there, so nothing in it is lost.`);
   const stored = parseStoredSections(base.sectionsJson);
   if (!stored) throw new Error("That version's sections can't be read.");
   const changed: string[] = [];
@@ -462,139 +480,95 @@ export async function createStrategyProposal(opts: {
 }
 
 /**
- * Accept a proposal into a new INTERNAL_REVIEW draft. Jordan still approves
- * and releases it; the version in force is untouched until he does.
- *
- * CP-11 (Sep 24 2026) — SECTION-SPECIFIC. A proposal that names its section
- * (`strategy.section:<id>`) replaces the text of THAT section only, in a copy
- * of the version in force NOW: every other section keeps its id, order,
- * heading and text byte for byte, and nothing is appended. If the section has
- * changed since the proposal was made (a newer approved version edited it),
- * the proposal is refused rather than written over the newer words. `text`
- * lets the person edit the replacement before it goes in. A PROFILE proposal
- * is not a strategy change at all and is refused here (it is applied from
- * the Facts tab), as is anything confidential. A legacy proposal with no
- * target keeps the old behaviour — the change appended as its own section for
- * Jordan to fold in.
+ * The version a change is made on: the NEWEST one still in play (a draft
+ * waiting for approval, or the version in force when nothing newer is open).
+ * Proposals, edits and revisions all build on it, so every change carries the
+ * ones before it (Oct 13 2026).
  */
-export async function acceptStrategyProposal(proposalId: string, by: string, note?: string, opts: { text?: string | null; sectionId?: string | null } = {}): Promise<{ versionId: string | null; sectionHeading?: string | null }> {
-  let p = await prisma.contentStrategyProposal.findUnique({ where: { id: proposalId } });
+export async function newestWorkingVersion(enrollmentId: string): Promise<{ id: string; versionNo: number; status: string } | null> {
+  return prisma.contentStrategyVersion.findFirst({ where: { enrollmentId, status: { in: ["DRAFT", "INTERNAL_REVIEW", "APPROVED"] } }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, status: true } });
+}
+
+/**
+ * Accept a proposal: the change goes into the NEXT draft, for Jordan to approve.
+ *
+ * Oct 13 2026 (Jordan: "V2 changes should be included in V3, and V2 should
+ * automatically be superseded when a later version is released"). Two things
+ * were wrong with the CP-11 accept:
+ *   · each accepted proposal made its own draft from the version in force, so
+ *     two proposals from one call became two drafts that each lacked the
+ *     other's change, and approving one threw the other away;
+ *   · the call analysis sees the strategy's HEADINGS, not its text, so its
+ *     "replacement text" was a fragment or an instruction ("Update all
+ *     instances of 'Lita' to 'Lyda'…"), and accepting it replaced the whole
+ *     section with that fragment (Arielle Roemer's Brand Overview, v2 and v3).
+ * Now the proposal is applied by the strategy revision (it reads every
+ * section's full text, changes only what was asked and returns whole
+ * sections) on the newest version in play, whose open draft it replaces.
+ * Proposal 2 after proposal 1 is v3 = v2 + change 2; v2 is marked replaced.
+ * `note` is passed to the revision as Jordan's own instruction. A PROFILE
+ * proposal is refused here (it is applied from the Facts tab), as is anything
+ * confidential.
+ */
+export async function acceptStrategyProposal(proposalId: string, by: string, note?: string, opts: { sectionId?: string | null } = {}): Promise<{ versionId: string | null; versionNo?: number | null; sectionHeadings?: string[]; basedOnVersionNo?: number | null }> {
+  const p = await prisma.contentStrategyProposal.findUnique({ where: { id: proposalId } });
   if (!p || p.status !== "PROPOSED") throw new Error("That proposal was already handled.");
   if (p.targetKey?.startsWith("profile.")) throw new Error("That's a change to the client's profile, not the strategy — apply it (or ignore it) on the Facts tab.");
   const fact = p.factId ? await prisma.clientFact.findUnique({ where: { id: p.factId }, select: { confidential: true } }) : null;
-  const edited = (opts.text ?? "").trim();
-  // What THIS proposal would put into the strategy: its summary, its proposed
-  // text and the person's edit — never its `from`, which is the version in
-  // force quoting itself (a marker there is the release guard's business).
   let proposedTo = "";
   try { proposedTo = (JSON.parse(p.diffJson ?? "[]") as { to?: string }[]).map((d) => d.to ?? "").join("\n"); } catch { proposedTo = p.diffJson ?? ""; }
-  if (fact?.confidential || CONFIDENTIAL_RE.test(p.summary) || CONFIDENTIAL_RE.test(proposedTo) || CONFIDENTIAL_RE.test(edited)) {
+  const instruction = (note ?? "").trim();
+  if (fact?.confidential || CONFIDENTIAL_RE.test(p.summary) || CONFIDENTIAL_RE.test(proposedTo) || CONFIDENTIAL_RE.test(instruction)) {
     throw new Error("This carries confidential knowledge, so it can't go into the strategy. Reject it.");
   }
-  // An UNPLACED proposal (a legacy row, or a heading the model got wrong) that
-  // the person places on a section now: it becomes a section proposal against
-  // the version in force, and is accepted as one.
-  if (!p.targetKey && opts.sectionId && edited) {
-    const inForce = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: p.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" } });
-    const sec = inForce ? parseStoredSections(inForce.sectionsJson)?.sections.find((s) => s.id === opts.sectionId) : null;
-    if (!inForce || !sec) throw new Error("That section isn't in the strategy in force — pick another.");
-    const targetKey = `strategy.section:${sec.id}`;
-    // Placed only while it is still open and unplaced: a second tab placing it
-    // at the same moment must not rewrite what the first one accepts.
-    const placed = await prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "PROPOSED", targetKey: null }, data: { targetKey, baseVersionId: inForce.id, diffJson: JSON.stringify([{ path: targetKey, from: sec.text, to: edited }]) } });
-    if (!placed.count) throw new Error("That proposal was already handled.");
-    p = await prisma.contentStrategyProposal.findUniqueOrThrow({ where: { id: p.id } });
+  const first = await newestWorkingVersion(p.enrollmentId);
+  if (!first) {
+    // Nothing to change yet: recorded as accepted, folded in when a strategy exists.
+    const won = await prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "PROPOSED" }, data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: instruction || null } });
+    if (!won.count) throw new Error("That proposal was already handled.");
+    return { versionId: null };
   }
-  if (p.targetKey?.startsWith("strategy.section:")) return acceptSectionProposal(p, by, note, edited);
-  await claimProposal(p.id, by, note);
-  const base = p.baseVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: p.baseVersionId } }) : null;
-  let versionId: string | null = null;
+  // An unplaced proposal the person places on a section: recorded on the row
+  // (so the revision is told which section), and only while it is still open.
+  if (!p.targetKey && opts.sectionId) {
+    const placed = await prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "PROPOSED", targetKey: null }, data: { targetKey: `strategy.section:${opts.sectionId}` } });
+    if (!placed.count) throw new Error("That proposal was already handled.");
+  }
+  // Claim FIRST (compare-and-set): a second tab, or a double click, is told
+  // "already handled" and runs nothing. A failure hands the proposal back.
+  const won = await prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "PROPOSED" }, data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: instruction || null } });
+  if (!won.count) throw new Error("That proposal was already handled.");
+  const giveBack = () => prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "ACCEPTED", resolvedBy: by, resultVersionId: null }, data: { status: "PROPOSED", resolvedBy: null, resolvedAt: null, resolutionNote: null } }).catch(() => {});
+  const { reviseStrategyWithFeedback } = await import("@/lib/contentGeneration");
+  let base: { id: string; versionNo: number; status: string } = first;
+  let r: Awaited<ReturnType<typeof reviseStrategyWithFeedback>> | null = null;
   try {
-    if (base) {
-      // A new draft = the approved sections plus one appended "Proposed change"
-      // section carrying the accepted wording — Jordan approves the draft (or
-      // edits it) before it is the strategy.
-      const stored = parseStoredSections(base.sectionsJson);
-      if (stored) {
-        const sections = [...stored.sections, { id: `proposal-${p.id}`, number: null, heading: `Accepted proposal (${p.kind.toLowerCase()})`, order: stored.sections.length + 1, text: p.summary + (p.diffJson ? `\n\n${(JSON.parse(p.diffJson) as { path: string; from: string | null; to: string }[]).map((d) => `${d.path}: ${d.from ?? "—"} → ${d.to}`).join("\n")}` : "") }];
-        const r = await createStrategyVersion({
-          enrollmentId: p.enrollmentId, stored: { ...stored, sections }, rawText: base.rawText, sourceKind: p.sourceKind === "call" ? "monthly_call" : "manual", sourceRef: p.sourceRef,
-          callRecordId: p.callRecordId, basedOnVersionId: base.id, createdBy: by, status: "INTERNAL_REVIEW", changeSummary: `Accepted proposal: ${p.summary}`,
-        });
-        versionId = r.versionId;
+    // The revision takes a while; if ANOTHER change landed a newer draft in
+    // the meantime, the write is refused (deriveStrategyVersion) and this one
+    // is made again on top of it, so it never forks.
+    for (let attempt = 0; ; attempt++) {
+      const at: { id: string; versionNo: number; status: string } | null = attempt === 0 ? first : await newestWorkingVersion(p.enrollmentId);
+      if (!at) throw new Error("There's no strategy to change any more.");
+      try {
+        r = await reviseStrategyWithFeedback(at.id, { notes: instruction || null, proposalIds: [p.id], preclaimed: true }, by);
+        base = at;
+        break;
+      } catch (e) {
+        if (attempt < 2 && /is the newest version/.test(e instanceof Error ? e.message : String(e))) continue;
+        throw e;
       }
     }
   } catch (e) {
-    await releaseProposal(p.id, by);
+    await giveBack();
     throw e;
   }
-  await prisma.contentStrategyProposal.update({ where: { id: proposalId }, data: { resultVersionId: versionId } });
-  return { versionId };
-}
-
-type ProposalRow = NonNullable<Awaited<ReturnType<typeof prisma.contentStrategyProposal.findUnique>>>;
-
-/**
- * ACCEPT IS COMPARE-AND-SET (review, Sep 24 2026). The accept read the status,
- * built a version, then wrote ACCEPTED unconditionally — so two tabs accepting
- * the same proposal with different edited text both passed the read and made
- * TWO drafts, the second orphaning the first. The claim is now the first write
- * and only one caller can make it (profileFields.applyFieldProposal's pattern);
- * a version is built only by the caller that won, and a failure hands the
- * proposal back.
- */
-async function claimProposal(id: string, by: string, note: string | undefined): Promise<void> {
-  const won = await prisma.contentStrategyProposal.updateMany({ where: { id, status: "PROPOSED" }, data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: note ?? null } });
-  if (won.count !== 1) throw new Error("That proposal was already handled.");
-}
-
-/** The build after a claim failed: the proposal is open again, exactly as it was. */
-async function releaseProposal(id: string, by: string): Promise<void> {
-  await prisma.contentStrategyProposal.updateMany({ where: { id, status: "ACCEPTED", resolvedBy: by, resultVersionId: null }, data: { status: "PROPOSED", resolvedBy: null, resolvedAt: null, resolutionNote: null } }).catch(() => {});
-}
-
-async function acceptSectionProposal(p: ProposalRow, by: string, note: string | undefined, edited: string): Promise<{ versionId: string | null; sectionHeading: string | null }> {
-  const sectionId = (p.targetKey ?? "").slice("strategy.section:".length);
-  let diff: { path: string; from: string | null; to: string } | null = null;
-  try { diff = (JSON.parse(p.diffJson ?? "[]") as { path: string; from: string | null; to: string }[])[0] ?? null; } catch { diff = null; }
-  const replacement = edited || (diff?.to ?? "").trim();
-  if (!replacement) throw new Error("Write the new text for this section before accepting it.");
-  // The version in force NOW — not necessarily the one the proposal was made
-  // against. If they differ, the section itself must be unchanged since.
-  const base = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: p.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" } });
-  const stored = base ? parseStoredSections(base.sectionsJson) : null;
-  if (!base || !stored) throw new Error("There's no approved strategy to change yet — approve one first.");
-  const at = stored.sections.findIndex((s) => s.id === sectionId);
-  if (at === -1) throw new Error("That section isn't in the strategy in force any more — reject this, or place it by hand.");
-  const sameText = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").replace(/\s+/g, " ").trim() === (b ?? "").replace(/\s+/g, " ").trim();
-  if (base.id !== p.baseVersionId && diff && !sameText(stored.sections[at].text, diff.from)) {
-    throw new Error(`The "${stored.sections[at].heading}" section changed in v${base.versionNo} after this was proposed — reject this one and look again.`);
+  if (!r || r.versionId === base.id) {
+    await giveBack();
+    const why = r ? [...r.unaddressed, ...r.ignoredSections.map((s) => `an unknown section (${s})`)].join("; ") : "";
+    throw new Error(`The change couldn't be placed in v${base.versionNo}${why ? `: ${why}` : ""}. Edit the section by hand on v${base.versionNo}, or reject this.`);
   }
-  const sections = stored.sections.map((s, i) => (i === at ? { ...s, text: replacement } : s));
-  const next: StoredSections = { ...stored, sections, document: refreshedDocument(stored, sections) };
-  const heading = stored.sections[at].heading;
-  // Claim, THEN build: the loser of a double accept writes nothing.
-  await claimProposal(p.id, by, note);
-  let r: Awaited<ReturnType<typeof createStrategyVersion>>;
-  try {
-    r = await createStrategyVersion({
-      enrollmentId: p.enrollmentId, stored: next, rawText: base.rawText, sourceKind: p.sourceKind === "call" ? "monthly_call" : "manual", sourceRef: p.sourceRef,
-      callRecordId: p.callRecordId, basedOnVersionId: base.id, createdBy: by, status: "INTERNAL_REVIEW",
-      changeSummary: `Section "${heading}": ${p.summary}`.slice(0, 1000),
-    });
-  } catch (e) {
-    await releaseProposal(p.id, by);
-    throw e;
-  }
-  const changed = !sameText(replacement, diff?.to);
-  await prisma.contentStrategyProposal.update({
-    where: { id: p.id },
-    data: {
-      resultVersionId: r.versionId,
-      ...(changed && diff ? { diffJson: JSON.stringify([{ ...diff, appliedTo: replacement }]) } : {}),
-    },
-  });
-  return { versionId: r.versionId, sectionHeading: heading };
+  await prisma.contentStrategyProposal.updateMany({ where: { id: p.id, status: "ACCEPTED", resultVersionId: null }, data: { resultVersionId: r.versionId } });
+  return { versionId: r.versionId, versionNo: r.versionNo, sectionHeadings: r.changedSections, basedOnVersionNo: base.versionNo };
 }
 
 /**

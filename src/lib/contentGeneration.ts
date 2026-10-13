@@ -878,7 +878,7 @@ export async function draftStrategyFromTranscript(o: { enrollmentId: string; cli
 // ---------------------------------------------------------------------------
 type RevisionOut = { changes: { sectionId: string; text: string }[]; summary: string; unaddressed: string[] };
 
-export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?: string | null; proposalIds?: string[] | null }, by: string): Promise<{ versionId: string; versionNo: number; existed: boolean; changedSections: string[]; unaddressed: string[]; ignoredSections: string[]; proposalsFolded: number; runId: string | null }> {
+export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?: string | null; proposalIds?: string[] | null; /** Oct 13 2026: the caller already claimed these (ACCEPTED by `by`, no result yet) — acceptStrategyProposal. */ preclaimed?: boolean }, by: string): Promise<{ versionId: string; versionNo: number; existed: boolean; changedSections: string[]; unaddressed: string[]; ignoredSections: string[]; proposalsFolded: number; runId: string | null }> {
   const base = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId } });
   if (!base) throw new Error("Strategy version not found.");
   if (!["DRAFT", "INTERNAL_REVIEW", "APPROVED"].includes(base.status)) throw new Error(`v${base.versionNo} is ${base.status.toLowerCase()} — revise the newest version instead.`);
@@ -888,7 +888,7 @@ export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?
   if (CONFIDENTIAL_RE.test(notes)) throw new Error("Take the [CONFIDENTIAL] marker out of your notes — the strategy is shown to the client.");
   const ids = [...new Set((fb.proposalIds ?? []).filter((x) => typeof x === "string" && x))];
   const proposals = ids.length
-    ? await prisma.contentStrategyProposal.findMany({ where: { id: { in: ids }, enrollmentId: base.enrollmentId, status: "PROPOSED", OR: [{ targetKey: null }, { NOT: { targetKey: { startsWith: "profile." } } }] }, orderBy: { createdAt: "asc" } })
+    ? await prisma.contentStrategyProposal.findMany({ where: { id: { in: ids }, enrollmentId: base.enrollmentId, ...(fb.preclaimed ? { status: "ACCEPTED", resolvedBy: by, resultVersionId: null } : { status: "PROPOSED" }), OR: [{ targetKey: null }, { NOT: { targetKey: { startsWith: "profile." } } }] }, orderBy: { createdAt: "asc" } })
     : [];
   if (!notes && !proposals.length) throw new Error("Write what should change, or pick a client suggestion to fold in.");
   const feedbackKey = sha256(JSON.stringify({ base: base.id, notes, ids: proposals.map((p) => p.id).sort() })).slice(0, 24);
@@ -916,20 +916,31 @@ export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?
     const known = new Set(stored.sections.map((x) => x.id));
     const replace = new Map<string, string>();
     const ignoredSections: string[] = [];
-    for (const c of Array.isArray(run.output.changes) ? run.output.changes : []) {
-      if (c && typeof c.sectionId === "string" && known.has(c.sectionId) && typeof c.text === "string" && c.text.trim()) replace.set(c.sectionId, c.text);
-      else ignoredSections.push(String(c?.sectionId ?? "?"));
-    }
     const unaddressed = Array.isArray(run.output.unaddressed) ? run.output.unaddressed.filter((x) => typeof x === "string" && x.trim()) : [];
+    for (const c of Array.isArray(run.output.changes) ? run.output.changes : []) {
+      if (c && typeof c.sectionId === "string" && known.has(c.sectionId) && typeof c.text === "string" && c.text.trim()) {
+        // Oct 13 2026: a "complete new body" that came back as a fraction of the
+        // section (a fragment, or an instruction about it) would wipe out the
+        // rest of the section. Not applied; the person edits it by hand.
+        const before = stored.sections.find((x) => x.id === c.sectionId)?.text ?? "";
+        if (before.length >= 300 && c.text.trim().length < before.length * 0.6) {
+          unaddressed.push(`the rewrite of "${stored.sections.find((x) => x.id === c.sectionId)?.heading ?? c.sectionId}" came back much shorter than the section, so it was not applied`);
+          continue;
+        }
+        replace.set(c.sectionId, c.text);
+      } else ignoredSections.push(String(c?.sectionId ?? "?"));
+    }
     const summary = typeof run.output.summary === "string" && run.output.summary.trim() ? run.output.summary.trim() : "changes from the feedback";
     await claimRunWrite(run.runId); // still this run's to write (see generateScriptForTopic)
     const r = await deriveStrategyVersion({ baseId: base.id, replace, by, sourceKind: "ai", aiRunId: run.runId, changeSummary: `Revised with feedback${proposals.length ? ` (${proposals.length} client suggestion${proposals.length === 1 ? "" : "s"} folded in)` : ""}: ${summary}` });
     let proposalsFolded = 0;
     if (r.versionId !== base.id && proposals.length) {
-      const won = await prisma.contentStrategyProposal.updateMany({
-        where: { id: { in: proposals.map((p) => p.id) }, status: "PROPOSED" },
-        data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: `Folded into v${r.versionNo} by a feedback revision`, resultVersionId: r.versionId },
-      });
+      const won = fb.preclaimed
+        ? await prisma.contentStrategyProposal.updateMany({ where: { id: { in: proposals.map((p) => p.id) }, status: "ACCEPTED", resolvedBy: by, resultVersionId: null }, data: { resultVersionId: r.versionId } })
+        : await prisma.contentStrategyProposal.updateMany({
+          where: { id: { in: proposals.map((p) => p.id) }, status: "PROPOSED" },
+          data: { status: "ACCEPTED", resolvedBy: by, resolvedAt: new Date(), resolutionNote: `Folded into v${r.versionNo} by a feedback revision`, resultVersionId: r.versionId },
+        });
       proposalsFolded = won.count;
     }
     await setRunOutputRef(run.runId, `ContentStrategyVersion:${r.versionId}`);

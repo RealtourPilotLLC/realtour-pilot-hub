@@ -75,12 +75,12 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   if (v === "strategy") {
     const [d, targets] = await Promise.all([
       loadStrategyTab(id, month ? { id: month.id, monthKey: month.monthKey, prioritiesJson: month.prioritiesJson, prioritiesSourceRef: month.prioritiesSourceRef } : null),
-      loadStrategyTargets(id).catch(() => ({ targets: {}, sections: [] })),
+      loadStrategyTargets(id).catch(() => ({ targets: {}, sections: [], workingVersionNo: null })),
     ]);
     return (
       <div className="space-y-5">
         {sub}
-        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} discovery={d.discovery} queueActive={d.queueActive} />
+        <StrategyPanel enrollmentId={id} versions={d.versions} proposals={d.proposals} pillars={d.pillars} mapping={d.mapping} owners={d.owners} staff={d.staff} isOwner={ownerEyes} month={d.month} targets={targets.targets} sections={targets.sections} workingVersionNo={targets.workingVersionNo} discovery={d.discovery} queueActive={d.queueActive} />
       </div>
     );
   }

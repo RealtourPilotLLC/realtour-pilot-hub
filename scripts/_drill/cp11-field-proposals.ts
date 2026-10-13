@@ -53,14 +53,21 @@ installNextStubs();
 
 // ---- the model boundary: the answer is a fixture, everything around it is real
 let nextAnalysis: Record<string, unknown> | null = null;
+// Oct 13 2026: accepting a strategy proposal runs the strategy REVISION (it
+// reads the whole section); its answer is built from the prompt by this.
+let reviseWith: ((prompt: string) => Record<string, unknown>) | null = null;
 const prompts: string[] = [];
 interceptModule(
   (r) => r === "@/lib/integrations/ai" || r.endsWith("/integrations/ai"),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
     get(t, k) {
       if (k !== "aiJsonWithUsage") return t[k];
-      return async (opts: { prompt: string }) => {
+      return async (opts: { prompt: string; system?: string }) => {
         prompts.push(opts.prompt);
+        if (/revising a client's Social Content Strategy/.test(opts.system ?? "")) {
+          if (!reviseWith) throw new Error("drill: no revision fixture");
+          return { result: reviseWith(opts.prompt), usage: { inputTokens: 1000, outputTokens: 300 }, model: "drill-stub" };
+        }
         if (!nextAnalysis) throw new Error("drill: no fixture analysis queued");
         const result = nextAnalysis;
         return { result, usage: { inputTokens: 1000, outputTokens: 300 }, model: "drill-stub" };
@@ -303,6 +310,16 @@ async function main() {
     c.ok("a proposal whose fact is later marked confidential → apply refused, slot unchanged", !r.ok && /confidence/.test(r.message) && (await bp.getSlot(W.clientId, "music"))?.value === "Lo-fi", r.message);
   }
 
+  // The revision stub: the WHOLE section back, with one line added — what the
+  // real revision is told to do ("that section's COMPLETE new body").
+  const sectionFromPrompt = (prompt: string, id: string) => {
+    const at = prompt.indexOf(`[id: ${id}]`);
+    const body = prompt.slice(prompt.indexOf("\n", at) + 1);
+    const end = body.search(/\n\n\[id: |\n\nFEEDBACK TO APPLY:/);
+    return (end === -1 ? body : body.slice(0, end)).trim();
+  };
+  const addLine = (id: string, line: string) => (prompt: string) => ({ changes: [{ sectionId: id, text: `${sectionFromPrompt(prompt, id)}\n${line}` }], summary: `added "${line}"`, unaddressed: [] });
+
   // =========================================================================
   c.head("7 · a strategy proposal changes ONE section, in a draft");
   // =========================================================================
@@ -312,11 +329,13 @@ async function main() {
     c.ok("targetKey 'strategy.section:content-goals'", p?.targetKey === "strategy.section:content-goals", p?.targetKey ?? "");
     const v1 = await sectionsOf(W.v1);
     const count = await prisma.contentStrategyVersion.count({ where: { enrollmentId: W.enrollmentId } });
+    reviseWith = () => ({ changes: [{ sectionId: "content-goals", text: GOALS_PROPOSAL.proposedText }], summary: "goals", unaddressed: [] });
     const r = await actions.resolveStrategyProposal(p!.id, true, "Agreed on the call");
     const v = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: W.enrollmentId }, orderBy: { versionNo: "desc" } });
     const next = await sectionsOf(v!.id);
     c.ok("accepted → a new INTERNAL_REVIEW version based on v1", r.ok && v?.status === "INTERNAL_REVIEW" && v.basedOnVersionId === W.v1 && (await prisma.contentStrategyVersion.count({ where: { enrollmentId: W.enrollmentId } })) === count + 1, r.message);
-    c.ok("the message names the section", /only the "2\. Content Goals" section/.test(r.message), r.message);
+    c.ok("the message names the section", /"2\. Content Goals"/.test(r.message), r.message);
+    c.ok("the revision was shown the section's FULL text (not just its heading)", prompts.at(-1)!.includes(v1.sections.find((s) => s.id === "content-goals")!.text) && /From Jordan: Agreed on the call/.test(prompts.at(-1)!));
     c.ok("same section count, no 'Accepted proposal' section", next.sections.length === v1.sections.length && !next.sections.some((s) => /Accepted proposal/.test(s.heading)));
     const others = v1.sections.filter((s) => s.id !== "content-goals");
     c.ok("every other section: same id, order, heading and text, byte for byte", others.every((s, i) => JSON.stringify(s) === JSON.stringify(next.sections.filter((x) => x.id !== "content-goals")[i])));
@@ -329,7 +348,7 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("8 · stale: the section changed in a newer approved version → refused");
+  c.head("8 · a proposal made against an older version lands on the NEWEST one, keeping its edits");
   // =========================================================================
   {
     const overview = { kind: "POSITIONING", summary: "Lead with relocation in the brand message", impact: null, section: "Brand Overview", proposedText: "Brand Message: The relocation specialist for the western suburbs", confidential: false };
@@ -342,15 +361,20 @@ async function main() {
     const edited = { ...v1, sections: v1.sections.map((s) => (s.id === "brand-overview" ? { ...s, text: `${s.text}\nShort Brand Statement: Main Line, done right.` } : s)) };
     const v3 = await cs.createStrategyVersion({ enrollmentId: W.enrollmentId, stored: edited, sourceKind: "manual", createdBy: "jordan@realtourpilot.com", status: "INTERNAL_REVIEW", changeSummary: "Jordan's own edit" });
     await cs.approveStrategyVersion(v3.versionId, "jordan@realtourpilot.com");
+    reviseWith = addLine("brand-overview", "Brand Message: The relocation specialist for the western suburbs");
     const r = await actions.resolveStrategyProposal(po!.id, true, "");
-    c.ok("the Brand Overview proposal (made against v1) is refused", !r.ok && /changed in v\d/.test(r.message), r.message);
-    c.ok("  …and is still PROPOSED", (await prisma.contentStrategyProposal.findUnique({ where: { id: po!.id } }))?.status === "PROPOSED");
-    const ok = await actions.resolveStrategyProposal(pg!.id, true, "", "- Grow to 5,000 local followers\n- Launch a monthly newsletter (Jordan's wording)");
+    const vo = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: W.enrollmentId }, orderBy: { versionNo: "desc" } });
+    const bo = (await sectionsOf(vo!.id)).sections.find((s) => s.id === "brand-overview")!.text;
+    c.ok("the Brand Overview proposal (made against v1) is built on the newer approved version", r.ok && vo?.basedOnVersionId === v3.versionId, r.message);
+    c.ok("  …keeping that version's own edit AND adding the change", bo.includes("Main Line, done right") && bo.includes("relocation specialist"), bo.slice(-160));
+    reviseWith = addLine("content-goals", "- Launch a monthly newsletter");
+    const ok = await actions.resolveStrategyProposal(pg!.id, true, "", "Word it as a monthly newsletter");
     const v = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: W.enrollmentId }, orderBy: { versionNo: "desc" } });
     const next = await sectionsOf(v!.id);
-    c.ok("a v1-based proposal whose section did NOT change goes through, on top of the version in force", ok.ok && v?.basedOnVersionId === v3.versionId && !!next.sections.find((s) => s.id === "brand-overview")?.text.includes("Main Line, done right"), ok.message);
-    c.ok("  …with the person's edited wording, recorded on the proposal", !!next.sections.find((s) => s.id === "content-goals")?.text.endsWith("(Jordan's wording)") && ((await prisma.contentStrategyProposal.findUnique({ where: { id: pg!.id } }))?.diffJson ?? "").includes("appliedTo"));
-    await actions.resolveStrategyProposal(po!.id, false, "stale");
+    c.ok("the next proposal chains on that draft: both changes in one version", ok.ok && v?.basedOnVersionId === vo!.id && next.sections.find((s) => s.id === "brand-overview")!.text.includes("relocation specialist") && next.sections.find((s) => s.id === "content-goals")!.text.includes("monthly newsletter"), ok.message);
+    c.ok("  …the person's instruction reached the revision and is recorded on the proposal", /From Jordan: Word it as a monthly newsletter/.test(prompts.at(-1)!) && (await prisma.contentStrategyProposal.findUnique({ where: { id: pg!.id } }))?.resolutionNote === "Word it as a monthly newsletter");
+    c.ok("  …and the draft it was built on is marked replaced", (await prisma.contentStrategyVersion.findUnique({ where: { id: vo!.id } }))?.status === "SUPERSEDED");
+    await cs.approveStrategyVersion(v!.id, "jordan@realtourpilot.com");
   }
 
   // =========================================================================
@@ -421,15 +445,18 @@ async function main() {
   {
     const id = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "PILLAR", summary: "Add a pillar about schools", sourceKind: "call" });
     const inForce = await cs.approvedStrategy(W.enrollmentId);
-    const r = await actions.resolveStrategyProposal(id, true, "", "Pillar 1: Market Insight\nPurpose: Explain the market\nFocus Areas: Prices, inventory, school districts", "content-pillars");
+    const pillarsBefore = inForce!.stored.sections.find((s) => s.id === "content-pillars")!.text;
+    reviseWith = addLine("content-pillars", "Pillar 9: Schools. Purpose: explain school districts");
+    const r = await actions.resolveStrategyProposal(id, true, "", null, "content-pillars");
     const v = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: W.enrollmentId }, orderBy: { versionNo: "desc" } });
     const next = await sectionsOf(v!.id);
-    c.ok("placed → a section-only draft on the version in force", r.ok && v?.basedOnVersionId === inForce?.versionId && next.sections.length === inForce!.stored.sections.length && next.sections.find((s) => s.id === "content-pillars")!.text.includes("school districts"), r.message);
-    c.ok("  …and the proposal now names its section", (await prisma.contentStrategyProposal.findUnique({ where: { id } }))?.targetKey === "strategy.section:content-pillars");
+    const now = next.sections.find((s) => s.id === "content-pillars")!.text;
+    c.ok("placed → a draft on the version in force with the change ADDED to the section (nothing in it lost)", r.ok && v?.basedOnVersionId === inForce?.versionId && next.sections.length === inForce!.stored.sections.length && now.startsWith(pillarsBefore) && now.includes("school districts"), r.message);
+    c.ok("  …and the proposal now names its section and points at the draft", (await prisma.contentStrategyProposal.findUnique({ where: { id } }))?.targetKey === "strategy.section:content-pillars" && (await prisma.contentStrategyProposal.findUnique({ where: { id } }))?.resultVersionId === v?.id);
   }
 
   // =========================================================================
-  c.head("14 · a portal correction naming a section is aimed at it");
+  c.head("14 · a portal correction naming a section is aimed at it; the change goes in WHOLE");
   // =========================================================================
   {
     const { portalProposeStrategyCorrection } = await import("@/app/portal/actions");
@@ -438,35 +465,42 @@ async function main() {
     const r = await portalProposeStrategyCorrection({ token }, { summary: "We don't do new construction any more", section: "content goals" });
     const p = await prisma.contentStrategyProposal.findFirst({ where: { enrollmentId: W.enrollmentId, sourceKind: "client" }, orderBy: { createdAt: "desc" } });
     c.ok("the correction targets the Content Goals section", r.ok && p?.targetKey === "strategy.section:content-goals", `${r.message} · ${p?.targetKey}`);
-    const noText = await actions.resolveStrategyProposal(p!.id, true, "");
-    c.ok("accepting it without writing the replacement is refused", !noText.ok && /Write the new text/.test(noText.message), noText.message);
-    const leak = await actions.resolveStrategyProposal(p!.id, true, "", "- New goal [CONFIDENTIAL: their commission split]");
-    c.ok("a replacement carrying a [CONFIDENTIAL] marker is refused, and nothing is drafted", !leak.ok && /confidential/i.test(leak.message) && (await prisma.contentStrategyProposal.findUnique({ where: { id: p!.id } }))?.status === "PROPOSED", leak.message);
-    const fine = await actions.resolveStrategyProposal(p!.id, true, "", "- Grow to 5,000 local followers\n- Resale homes only");
-    c.ok("with clean text it drafts the section change", fine.ok, fine.message);
+    const leak = await actions.resolveStrategyProposal(p!.id, true, "", "say [CONFIDENTIAL: their commission split]");
+    c.ok("an instruction carrying a [CONFIDENTIAL] marker is refused, and nothing is drafted", !leak.ok && /confidential/i.test(leak.message) && (await prisma.contentStrategyProposal.findUnique({ where: { id: p!.id } }))?.status === "PROPOSED", leak.message);
+    // The bug Jordan hit (Arielle Roemer, Oct 12): the model's "new text" was a
+    // fragment, and it replaced the whole section. A fragment is not applied now.
+    // A real section runs 600 to 2,700 characters; the fixture's are short, so one is lengthened first (in force, as a person would).
+    const nowIn = (await cs.approvedStrategy(W.enrollmentId))!;
+    const padded = { ...nowIn.stored, sections: nowIn.stored.sections.map((x) => (x.id === "brand-overview" ? { ...x, text: `${x.text}\n${"Brand Voice: warm, clear and direct, with a practical point in every video. ".repeat(6)}` } : x)) };
+    const pv = await cs.createStrategyVersion({ enrollmentId: W.enrollmentId, stored: padded, sourceKind: "manual", createdBy: "drill", status: "INTERNAL_REVIEW" });
+    await cs.approveStrategyVersion(pv.versionId, "jordan@realtourpilot.com");
+    const longest = padded.sections.find((x) => x.id === "brand-overview")!;
+    const fp = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "PREFERENCE", summary: "Fix a name spelling", sourceKind: "call", targetKey: `strategy.section:${longest.id}`, diff: [{ path: `strategy.section:${longest.id}`, from: longest.text, to: "Update all instances of Lita to Lyda." }] });
+    reviseWith = () => ({ changes: [{ sectionId: longest.id, text: "Update all instances of Lita to Lyda." }], summary: "fragment", unaddressed: [] });
+    const frag = await actions.resolveStrategyProposal(fp, true, "");
+    c.ok("a rewrite that comes back as a fragment of the section is NOT applied; the proposal stays open", longest.text.length >= 300 && !frag.ok && /much shorter/.test(frag.message) && (await prisma.contentStrategyProposal.findUnique({ where: { id: fp } }))?.status === "PROPOSED", `${longest.text.length} chars · ${frag.message}`);
+    await actions.resolveStrategyProposal(fp, false, "drill");
+    reviseWith = addLine("content-goals", "- Resale homes only");
+    const fine = await actions.resolveStrategyProposal(p!.id, true, "");
+    c.ok("a whole-section revision drafts the change", fine.ok, fine.message);
   }
 
   // =========================================================================
-  c.head("15 · accepting is compare-and-set: two tabs, different text → one draft, one winner");
+  c.head("15 · accepting is compare-and-set: two tabs → one draft, one winner");
   // =========================================================================
-  // Review fix (Sep 24 2026): the accept read PROPOSED, built a version, then
-  // wrote ACCEPTED unconditionally, so two concurrent accepts with different
-  // edited text both built a draft and the first was orphaned. (The section
-  // path is new in this batch, so there is no older build to race.)
   {
-    const inForce = await cs.approvedStrategy(W.enrollmentId);
-    const goals = inForce!.stored.sections.find((x) => x.id === "content-goals")!;
     const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const results: string[] = [];
     let clean = true;
     let i = 0;
     for (const delay of [0, 1, 3, 8, 20]) {
       i++;
-      const id = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "POSITIONING", summary: `Race ${i}`, sourceKind: "call", targetKey: "strategy.section:content-goals", diff: [{ path: "strategy.section:content-goals", from: goals.text, to: `- Race goal ${i}` }] });
+      const id = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "POSITIONING", summary: `Race ${i}`, sourceKind: "call", targetKey: "strategy.section:content-goals", diff: [{ path: "strategy.section:content-goals", from: "x", to: `- Race goal ${i}` }] });
+      reviseWith = addLine("content-goals", `- Race goal ${i}`);
       const before = await prisma.contentStrategyVersion.count({ where: { enrollmentId: W.enrollmentId } });
       const res = await Promise.allSettled([
-        cs.acceptStrategyProposal(id, "tab-a", undefined, { text: `- Tab A goal ${i}` }),
-        (async () => { await tick(delay); return cs.acceptStrategyProposal(id, "tab-b", undefined, { text: `- Tab B goal ${i}` }); })(),
+        cs.acceptStrategyProposal(id, "tab-a", "tab a"),
+        (async () => { await tick(delay); return cs.acceptStrategyProposal(id, "tab-b", "tab b"); })(),
       ]);
       const made = await prisma.contentStrategyVersion.findMany({ where: { enrollmentId: W.enrollmentId }, orderBy: { versionNo: "asc" }, skip: before, select: { id: true } });
       const p = await prisma.contentStrategyProposal.findUniqueOrThrow({ where: { id } });
@@ -477,11 +511,51 @@ async function main() {
       results.push(`${delay}ms: drafts=${made.length} won=${won.length} ${p.status}${p.resultVersionId === made[0]?.id ? "" : " (result points elsewhere)"}`);
     }
     c.ok("at every interleaving: exactly one draft, one success, the loser told 'already handled', the proposal pointing at that draft", clean, results.join(" | "));
-    // A failed build hands the proposal back rather than leaving it ACCEPTED with no draft.
-    const stale = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "POSITIONING", summary: "Stale on arrival", sourceKind: "call", targetKey: "strategy.section:no-such-section", diff: [{ path: "strategy.section:no-such-section", from: "x", to: "y" }] });
+    // A failed placement hands the proposal back rather than leaving it ACCEPTED with no draft.
+    const stale = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "POSITIONING", summary: "Nothing to change", sourceKind: "call" });
+    reviseWith = () => ({ changes: [], summary: "nothing", unaddressed: ["no section fits"] });
     let why = "";
     try { await cs.acceptStrategyProposal(stale, "tab-a"); } catch (e) { why = e instanceof Error ? e.message : String(e); }
-    c.ok("a refused accept leaves the proposal PROPOSED", /isn't in the strategy in force/.test(why) && (await prisma.contentStrategyProposal.findUniqueOrThrow({ where: { id: stale } })).status === "PROPOSED", why);
+    c.ok("a change the revision can't place is refused and the proposal stays PROPOSED", /couldn't be placed/.test(why) && (await prisma.contentStrategyProposal.findUniqueOrThrow({ where: { id: stale } })).status === "PROPOSED", why);
+  }
+
+  // =========================================================================
+  c.head("16 · Oct 13 2026: changes CHAIN; approving never supersedes a newer version; undo");
+  // =========================================================================
+  {
+    const strat = async () => prisma.contentStrategyVersion.findMany({ where: { enrollmentId: W.enrollmentId }, orderBy: { versionNo: "asc" }, select: { id: true, versionNo: true, status: true, basedOnVersionId: true } });
+    // Approve whatever is pending, so the chain starts from a version in force.
+    const newestNow = await cs.newestWorkingVersion(W.enrollmentId);
+    if (newestNow && newestNow.status !== "APPROVED") await cs.approveStrategyVersion(newestNow.id, "jordan@realtourpilot.com");
+    const inForce = await cs.newestWorkingVersion(W.enrollmentId);
+    const a = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "PREFERENCE", summary: "Spell Lita as Lyda", sourceKind: "call", targetKey: "strategy.section:content-goals", diff: [{ path: "strategy.section:content-goals", from: "x", to: "Update all instances of Lita" }] });
+    const b = await cs.createStrategyProposal({ enrollmentId: W.enrollmentId, kind: "PREFERENCE", summary: "Add results-driven to core values", sourceKind: "call", targetKey: "strategy.section:content-goals", diff: [{ path: "strategy.section:content-goals", from: "x", to: "Core Values: results-driven" }] });
+    reviseWith = addLine("content-goals", "- CHANGE A");
+    const ra = await cs.acceptStrategyProposal(a, "jordan@realtourpilot.com");
+    reviseWith = addLine("content-goals", "- CHANGE B");
+    const rb = await cs.acceptStrategyProposal(b, "jordan@realtourpilot.com");
+    const vb = (await sectionsOf(rb.versionId!)).sections.find((s) => s.id === "content-goals")!.text;
+    let rows = await strat();
+    const va = rows.find((x) => x.id === ra.versionId)!, vB = rows.find((x) => x.id === rb.versionId)!;
+    c.ok("the second accepted change is built on the FIRST draft, not on the version in force", vB.basedOnVersionId === va.id && rb.basedOnVersionNo === va.versionNo, `v${vB.versionNo} based on ${rows.find((x) => x.id === vB.basedOnVersionId)?.versionNo}`);
+    c.ok("  …so it carries BOTH changes", vb.includes("- CHANGE A") && vb.includes("- CHANGE B"), vb.slice(-80));
+    c.ok("  …and the first draft is marked replaced (one open draft)", va.status === "SUPERSEDED" && vB.status === "INTERNAL_REVIEW", `${va.status}/${vB.status}`);
+    // The OLD order of events: an older draft approved after a newer one is
+    // approved must not push the newer one aside.
+    await cs.approveStrategyVersion(rb.versionId!, "jordan@realtourpilot.com");
+    rows = await strat();
+    c.ok("approving the newest replaces the one in force before it", rows.find((x) => x.id === inForce!.id)?.status === "SUPERSEDED" && rows.find((x) => x.id === rb.versionId)?.status === "APPROVED");
+    let editRefused = "";
+    try { await cs.editStrategyVersionSection(inForce!.id, "content-goals", "- old edit", "jordan@realtourpilot.com"); } catch (e) { editRefused = e instanceof Error ? e.message : String(e); }
+    c.ok("an edit to an OLDER version is refused (it would fork); it's made on the newest", /newest version/.test(editRefused), editRefused);
+    // UNDO: put the previous version back in force.
+    await cs.approveStrategyVersion(inForce!.id, "jordan@realtourpilot.com");
+    rows = await strat();
+    c.ok("UNDO: the previous version is back in force, and the newer one waits for an OK again (never 'superseded' by the older)", rows.find((x) => x.id === inForce!.id)?.status === "APPROVED" && rows.find((x) => x.id === rb.versionId)?.status === "INTERNAL_REVIEW", rows.map((x) => `v${x.versionNo}:${x.status}`).join(" "));
+    c.ok("  …and the newest version (to edit, or approve again) is still the newer one", (await cs.newestWorkingVersion(W.enrollmentId))?.id === rb.versionId);
+    await cs.approveStrategyVersion(rb.versionId!, "jordan@realtourpilot.com");
+    rows = await strat();
+    c.ok("REDO: approving it again puts it back in force", rows.find((x) => x.id === rb.versionId)?.status === "APPROVED" && rows.filter((x) => x.status === "APPROVED").length === 1, rows.map((x) => `v${x.versionNo}:${x.status}`).join(" "));
   }
 
   c.ok("nothing left the machine: zero blocked outbound calls", fence.blocked.length === 0, fence.blocked.join(", "));

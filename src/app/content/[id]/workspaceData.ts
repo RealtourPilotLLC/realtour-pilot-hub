@@ -141,26 +141,30 @@ export async function loadFieldProposals(clientId: string): Promise<FieldProposa
   return out;
 }
 
-export async function loadStrategyTargets(enrollmentId: string): Promise<{ targets: Record<string, ProposalTargetUi>; sections: { id: string; heading: string }[] }> {
-  const { approvedStrategy } = await import("@/lib/contentStrategy");
+export async function loadStrategyTargets(enrollmentId: string): Promise<{ targets: Record<string, ProposalTargetUi>; sections: { id: string; heading: string }[]; workingVersionNo: number | null }> {
+  // Oct 13 2026: a proposal is applied to the NEWEST version in play (a draft
+  // waiting for approval, else the one in force), so that is what it shows.
+  const { newestWorkingVersion, parseStoredSections } = await import("@/lib/contentStrategy");
   const { isFrameworkSection, canonicalFrameworkSectionText } = await import("@/lib/contentPolicy");
-  const [rows, approved] = await Promise.all([
-    prisma.contentStrategyProposal.findMany({ where: { enrollmentId, status: "PROPOSED", targetKey: { startsWith: "strategy.section:" } }, select: { id: true, targetKey: true, diffJson: true, baseVersionId: true } }),
-    approvedStrategy(enrollmentId),
+  const [rows, newest] = await Promise.all([
+    prisma.contentStrategyProposal.findMany({ where: { enrollmentId, status: "PROPOSED", targetKey: { startsWith: "strategy.section:" } }, select: { id: true, targetKey: true, diffJson: true } }),
+    newestWorkingVersion(enrollmentId),
   ]);
+  const row = newest ? await prisma.contentStrategyVersion.findUnique({ where: { id: newest.id }, select: { sectionsJson: true } }) : null;
+  const stored = row ? parseStoredSections(row.sectionsJson) : null;
   const out: Record<string, ProposalTargetUi> = {};
   for (const r of rows) {
     const sectionId = (r.targetKey ?? "").slice("strategy.section:".length);
     let diff: { from: string | null; to: string } | null = null;
     try { diff = (JSON.parse(r.diffJson ?? "[]") as { from: string | null; to: string }[])[0] ?? null; } catch { diff = null; }
-    const section = approved?.stored.sections.find((s) => s.id === sectionId) ?? null;
+    const section = stored?.sections.find((s) => s.id === sectionId) ?? null;
     out[r.id] = {
       // The framework section reads as the house framework (Oct 6 2026), as it does in the version view.
       heading: section?.heading ?? null, current: section ? (isFrameworkSection(section) ? canonicalFrameworkSectionText(section.text) : section.text) : null, proposed: diff?.to ?? "",
-      stale: !section || (approved?.versionId !== r.baseVersionId && (section.text ?? "").replace(/\s+/g, " ").trim() !== (diff?.from ?? "").replace(/\s+/g, " ").trim()),
+      stale: !section,
     };
   }
-  return { targets: out, sections: (approved?.stored.sections ?? []).map((x) => ({ id: x.id, heading: x.heading })) };
+  return { targets: out, sections: (stored?.sections ?? []).map((x) => ({ id: x.id, heading: x.heading })), workingVersionNo: newest?.versionNo ?? null };
 }
 
 // ---------------------------------------------------------------------------
