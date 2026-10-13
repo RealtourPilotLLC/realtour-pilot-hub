@@ -285,6 +285,56 @@ async function main() {
       c.ok("bookings not added while unproven, kept where it was", !yOps.includes("hub_writes") && xOps.includes("hub_writes"));
     }
 
+    // =========================================================================
+    c.head("9 · The portal already built for them (Jordan: \"the portals we already have built\")");
+    {
+      // Janice's shape: an older record (ENDED program, old address) and the
+      // ACTIVE record with her months, topics and scripts, a welcome held
+      // from her payment for a different address.
+      const old = await mkClient("Janet Dup", "janet.old@example.test", "ENDED");
+      const J = await mkClient("Janet Dup", "janet@example.test");
+      const month = await prisma.contentMonth.create({ data: { enrollmentId: J.enrollmentId, clientId: J.id, monthKey: "2026-10", videosOwed: 4, status: "OPEN" } });
+      const topic = await prisma.contentTopic.create({ data: { enrollmentId: J.enrollmentId, clientId: J.id, title: "Why Paoli", status: "SELECTED" } });
+      await prisma.contentScript.create({ data: { enrollmentId: J.enrollmentId, clientId: J.id, monthId: month.id, topicId: topic.id, title: "Why Paoli", body: "x", status: "APPROVED", releaseState: "released" } });
+      await prisma.appSetting.create({ data: { key: `portal-access-owed:${J.enrollmentId}:janet.pay@example.test`, value: JSON.stringify({ enrollmentId: J.enrollmentId, clientId: J.id, email: "janet.pay@example.test", name: "Janet Dup", role: "OWNER", reason: "welcome", since: now.toISOString() }) } });
+      const enrollmentsBefore = await prisma.contentEnrollment.count();
+      const clientsBefore = await prisma.client.count();
+      const beforeJ = sent.length;
+      const r = await auto.autoOnboardClient(J.id, "drill@auto.test", { sendWelcome: true });
+      const seat = await prisma.clientMembership.findFirst({ where: { clientId: J.id, role: "OWNER", revokedAt: null }, select: { enrollmentId: true, clientUserId: true } });
+      c.ok("the OWNER seat is on her EXISTING program (the one with her month, topic and script)", r.outcome === "onboarded" && seat?.enrollmentId === J.enrollmentId && r.enrollmentId === J.enrollmentId && /1 month, 1 script, 1 topic/.test(r.steps.find((s) => s.key === "account")?.detail ?? ""), r.steps.find((s) => s.key === "account")?.detail);
+      c.ok("no program and no client record was created", (await prisma.contentEnrollment.count()) === enrollmentsBefore && (await prisma.client.count()) === clientsBefore);
+      c.ok("the seat uses the email on THIS record (not the older record's, not the held payment address)", r.seatEmail === "janet@example.test" && sentTo("janet@example.test").length === 1 && sentTo("janet.old@example.test").length === 0 && sent.length === beforeJ + 1);
+      c.ok("the differing held payment address is reported and left held", /janet\.pay@example\.test/.test(r.steps.find((s) => s.key === "account")?.detail ?? "") && !!(await prisma.appSetting.findUnique({ where: { key: `portal-access-owed:${J.enrollmentId}:janet.pay@example.test` } })));
+      c.ok("the older record is flagged as a duplicate (with its ENDED program), and never used", r.duplicates.length === 1 && r.duplicates[0].includes(old.id) && /program ENDED/.test(r.duplicates[0]) && (await prisma.clientMembership.count({ where: { clientId: old.id } })) === 0 && /DUPLICATE CLIENT RECORD/.test(auto.reportLine(r)), r.duplicates.join(" | "));
+      c.ok("the welcome tells her to sign in at the portal sign-in page", /\/portal\/login/.test(sent.at(-1)!.body));
+
+      // She signs in the way the welcome says: her email on the sign-in page.
+      const { requestLoginLink, consumeLoginToken } = await import("@/lib/portalAccess");
+      const { signClientSession } = await import("@/lib/auth/clientSession");
+      const portal = await import("@/lib/portal");
+      const beforeLink = sent.length;
+      await requestLoginLink("janet@example.test");
+      const loginRow = await prisma.outboxMessage.findFirst({ where: { dedupeKey: { startsWith: `portal_login:${seat?.clientUserId}:` } }, orderBy: { createdAt: "desc" }, select: { body: true, state: true } });
+      const link = /\/portal\/auth\/([A-Za-z0-9_-]{40,60})/.exec(loginRow?.body ?? "")?.[1] ?? null;
+      c.ok("asking for a sign-in link emails her one", !!link && loginRow?.state === "accepted" && sent.slice(beforeLink).filter((s) => /janet@example\.test/.test(s.to)).length === 1, `${loginRow?.state ?? "no outbox row"} · ${sent.slice(beforeLink).map((s) => `${s.to}: ${s.subject}`).join(" / ")}`);
+      const used = link ? await consumeLoginToken(link) : null;
+      const cookie = used?.ok ? await signClientSession({ cu: used.clientUserId, email: used.email }) : null;
+      const view = cookie ? await portal.resolvePortalViewer({ cookies: { get: (n: string) => (n === "rtp_client" ? cookie : undefined) } }) : null;
+      c.ok("…and signing in lands her in that same program, as its owner", !!view && view.ok && view.viewer.enrollment.id === J.enrollmentId && view.viewer.actor.kind === "CLIENT" && view.viewer.actor.membershipRole === "OWNER", view && !view.ok ? view.reason : "");
+      const scripts = await prisma.contentScript.count({ where: { enrollmentId: view && view.ok ? view.viewer.enrollment.id : "none" } });
+      c.ok("…where her existing script is", scripts === 1);
+
+      // Joseph's shape: the welcome is held on a program id that no longer exists.
+      const Jo = await mkClient("Joe Folded", "joe@example.test");
+      const staleKey = "portal-access-owed:cm_gone_enrollment_000000:joe@example.test";
+      await prisma.appSetting.create({ data: { key: staleKey, value: JSON.stringify({ enrollmentId: "cm_gone_enrollment_000000", clientId: Jo.id, email: "joe@example.test", name: "Joe", role: "OWNER", reason: "welcome", since: now.toISOString() }) } });
+      const dryJo = await auto.autoOnboardClient(Jo.id, "drill@auto.test", { sendWelcome: true, dryRun: true });
+      c.ok("dry run: names the hold on a program that no longer exists, clears nothing", dryJo.steps.some((s) => s.status === "would" && /no longer exists/.test(s.detail)) && !!(await prisma.appSetting.findUnique({ where: { key: staleKey } })));
+      const rJo = await auto.autoOnboardClient(Jo.id, "drill@auto.test", { sendWelcome: true });
+      c.ok("live: the account opens on his existing program, the stale hold is cleared (audited), ONE welcome", rJo.outcome === "onboarded" && !(await prisma.appSetting.findUnique({ where: { key: staleKey } })) && (await prisma.auditLog.count({ where: { action: "auto_onboarding_cleared_stale_hold", target: Jo.id } })) === 1 && sentTo("joe@example.test").length === 1);
+    }
+
     c.ok("nothing outside the machine was contacted (Gmail answered in-process)", fence.blocked.length === 0 && fence.faked.every((u) => /googleapis\.com/.test(u)), fence.blocked.join(", "));
     console.log(`\n${await drill.evidence()}`);
     c.summary();

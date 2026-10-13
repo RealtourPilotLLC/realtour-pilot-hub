@@ -100,7 +100,10 @@ export async function autoOnboardClientAction(input: { clientId: string }): Prom
     return {
       ok: r.outcome === "onboarded",
       message: r.outcome === "onboarded" ? `${r.name} is onboarded.` : `${r.name}: done as far as it can go. Something below needs you.`,
-      lines: r.steps.map((s) => `${s.key}: ${s.status}. ${s.detail}`),
+      lines: [
+        ...r.steps.map((s) => `${s.key}: ${s.status}. ${s.detail}`),
+        ...(r.duplicates.length ? [`Another client record looks like this one (not used; check it): ${r.duplicates.join("; ")}`] : []),
+      ],
     };
   } catch (e) { return { ...fail(e), lines: [] }; }
 }

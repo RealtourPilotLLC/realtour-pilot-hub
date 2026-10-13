@@ -28,7 +28,7 @@
 //   · autoOnboarding.autoOnboardClient({ dryRun }) — what "Onboard all
 //     active clients" would do: the welcome, and releasing an approved
 //     strategy (which queues a strategy-ready email).
-// Evaluated every --step-hours (default 1) over --hours (default 72). A
+// Evaluated every --step-hours (default 3; each step is a full dry run against the live database, so 1 takes most of an hour) over --hours (default 72). A
 // message is listed at the first hour it would go; a dry run writes no row,
 // so a follow-up that depends on an earlier send having happened is not
 // modelled beyond its dated milestone. portal_login_email only answers a
@@ -50,7 +50,7 @@ const arg = (name: string, d: number) => {
   return Number.isFinite(v) && v > 0 ? v : d;
 };
 const HOURS = arg("--hours", 72);
-const STEP = arg("--step-hours", 1);
+const STEP = arg("--step-hours", 3);
 const BY = "forecast@realtourpilot.com";
 const WRITES = new Set(["create", "createMany", "createManyAndReturn", "update", "updateMany", "updateManyAndReturn", "upsert", "delete", "deleteMany", "$executeRaw", "$executeRawUnsafe", "$runCommandRaw"]);
 
@@ -168,6 +168,7 @@ async function main() {
     const t = new Date(now.getTime() + h * 3_600_000);
     simNow = t;
     const thisMonth = etMonthKey(t);
+    process.stderr.write(`forecast: +${h} h of ${HOURS} (${et(t)})\n`);
     try {
       const r = await evaluateReminders({ dryRun: true, now: t, requestedBy: "activation-forecast" });
       for (const c of r.candidates) {
@@ -205,7 +206,7 @@ async function main() {
   for (const c of clients) {
     try {
       const r = await autoOnboardClient(c.id, BY, { sendWelcome: true, dryRun: true });
-      onboarding.set(c.id, r.steps.filter((s) => s.status !== "already").map((s) => `${s.key}: ${s.detail}`));
+      onboarding.set(c.id, [`seat on program ${r.enrollmentId ?? "?"} for ${r.seatEmail ?? "NO EMAIL"}`, ...r.steps.filter((s) => s.status !== "already").map((s) => `${s.key}: ${s.detail}`), ...(r.duplicates.length ? [`DUPLICATE CLIENT RECORD: ${r.duplicates.join("; ")}`] : [])]);
       const w = r.steps.find((s) => s.key === "welcome");
       if (w?.status === "would") add({ at: now, clientId: c.id, name: c.name, lane: "welcome (on Onboard all)", what: w.detail, to: null, flags: [] }, `welcome:${c.id}`);
       const st = r.steps.find((s) => s.key === "strategy");

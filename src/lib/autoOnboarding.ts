@@ -57,6 +57,12 @@ export type AutoOnboardReport = {
   outcome: "onboarded" | "partial" | "skipped" | "would";
   reason: string | null;
   steps: AutoStep[];
+  /** Their EXISTING program (the one that holds their strategy, months, scripts and videos): the seat goes on it. */
+  enrollmentId: string | null;
+  /** The address the OWNER seat uses (or would use), or null. */
+  seatEmail: string | null;
+  /** Other Client records with the same name or email: Jordan should know (Oct 14 2026). */
+  duplicates: string[];
 };
 
 export type AutoOnboardOpts = {
@@ -96,14 +102,77 @@ export async function welcomeAlreadySent(clientId: string): Promise<string | nul
   return null;
 }
 
+/** Normalised for comparing names: lower case, single spaces. */
+const nameKey = (n: string | null | undefined) => (n ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Other Client records that look like this client (the same name, or the
+ * same email), with their program's status, e.g. "Janice Pigga
+ * (janicepigga@..., program ENDED, record ...)". Only reported; the run
+ * always uses the record it was given.
+ */
+export async function duplicateRecordsOf(client: { id: string; name: string; email: string | null }): Promise<string[]> {
+  const email = normEmail(client.email);
+  const first = nameKey(client.name).split(" ")[0] ?? "";
+  const rows = await prisma.client.findMany({
+    where: { id: { not: client.id }, OR: [...(first ? [{ name: { contains: first, mode: "insensitive" as const } }] : []), ...(email ? [{ email: { equals: email, mode: "insensitive" as const } }] : [])] },
+    select: { id: true, name: true, email: true },
+    take: 50,
+  });
+  const same = rows.filter((r) => nameKey(r.name) === nameKey(client.name) || (!!email && normEmail(r.email) === email));
+  if (!same.length) return [];
+  const programs = await prisma.contentEnrollment.findMany({ where: { clientId: { in: same.map((r) => r.id) } }, select: { clientId: true, status: true } });
+  return same.map((r) => {
+    const st = programs.find((p) => p.clientId === r.id)?.status;
+    return `${r.name} (${r.email ?? "no email"}, ${st ? `program ${st}` : "no program"}, record ${r.id})`;
+  });
+}
+
+/** Welcomes held for this client and address whose program no longer exists (the hold's key names a deleted enrollment). */
+async function staleHeldWelcomes(clientId: string, email: string): Promise<{ key: string; enrollmentId: string }[]> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: "portal-access-owed:" } }, select: { key: true, value: true } });
+  const mine: { key: string; enrollmentId: string }[] = [];
+  for (const r of rows) {
+    try {
+      const v = JSON.parse(r.value) as { clientId?: string; enrollmentId?: string; email?: string; reason?: string };
+      if (v.clientId === clientId && v.reason === "welcome" && normEmail(v.email) === email && v.enrollmentId) mine.push({ key: r.key, enrollmentId: v.enrollmentId });
+    } catch { /* a hand-edited row is not ours to judge */ }
+  }
+  if (!mine.length) return [];
+  const live = new Set((await prisma.contentEnrollment.findMany({ where: { id: { in: mine.map((m) => m.enrollmentId) } }, select: { id: true } })).map((e) => e.id));
+  return mine.filter((m) => !live.has(m.enrollmentId));
+}
+
+/** "their existing program <id> (3 months, 12 scripts, 9 topics)". */
+async function existingPortalWords(enrollmentId: string): Promise<string> {
+  const [months, scripts, topics] = await Promise.all([
+    prisma.contentMonth.count({ where: { enrollmentId } }),
+    prisma.contentScript.count({ where: { enrollmentId } }),
+    prisma.contentTopic.count({ where: { enrollmentId } }),
+  ]);
+  return `their existing program ${enrollmentId} (${months} month${months === 1 ? "" : "s"}, ${scripts} script${scripts === 1 ? "" : "s"}, ${topics} topic${topics === 1 ? "" : "s"})`;
+}
+
 /** The whole Client onboarding page for ONE client. See the header. */
 export async function autoOnboardClient(clientId: string, by: string, opts: AutoOnboardOpts): Promise<AutoOnboardReport> {
   const dry = opts.dryRun === true;
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true, name: true, email: true, backupEmail: true } });
-  const report = (outcome: AutoOnboardReport["outcome"], reason: string | null, steps: AutoStep[] = []): AutoOnboardReport => ({ clientId, name: client?.name ?? clientId, outcome, reason, steps });
+  let enrollmentId: string | null = null;
+  let seatEmail: string | null = null;
+  let duplicates: string[] = [];
+  const report = (outcome: AutoOnboardReport["outcome"], reason: string | null, steps: AutoStep[] = []): AutoOnboardReport => ({ clientId, name: client?.name ?? clientId, outcome, reason, steps, enrollmentId, seatEmail, duplicates });
   if (!client) return report("skipped", "the client no longer exists");
+  // THE PORTAL ALREADY BUILT FOR THEM (Jordan, Oct 14 2026: "Make sure that
+  // they are signing up for the portals we already have built for them").
+  // One program per client record (ContentEnrollment.clientId is unique), so
+  // this is the program that holds their strategy, months, topics, scripts
+  // and videos; nothing here ever creates a program or a client. Duplicate
+  // client records (an older one with an ENDED program) are named in the
+  // report and never used.
+  duplicates = await duplicateRecordsOf(client);
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId }, select: { id: true, status: true } });
   if (!enrollment) return report("skipped", "no content program");
+  enrollmentId = enrollment.id;
   if (enrollment.status !== "ACTIVE") return report("skipped", `the program is ${enrollment.status.toLowerCase()}`);
   const isTest = isSyntheticClientRow(client);
   if (isTest && !opts.allowTest) return report("skipped", "a TEST client (pass allowTest for a test run)");
@@ -167,19 +236,48 @@ export async function autoOnboardClient(clientId: string, by: string, opts: Auto
   const owner = liveOwner();
   if (owner) {
     accountOk = true;
-    step({ key: "account", status: "already", detail: `Portal account: ${owner.email}.` });
+    seatEmail = owner.email;
+    step({ key: "account", status: "already", detail: `Portal account: ${owner.email}, on ${await existingPortalWords(enrollment.id)}.` });
   } else {
-    const candidates = [detail.heldWelcome?.email ?? null, normEmail(client.email), normEmail(client.backupEmail)].filter((x): x is string => !!x);
-    const email = isTest ? candidates.find((e) => isStaffControlledEmail(e)) ?? null : candidates[0] ?? null;
+    // The email on THIS client record first (never a duplicate record's);
+    // a welcome held from their payment ON THIS PROGRAM only when the record
+    // has none. A held address that differs is reported and left held.
+    const own = normEmail(client.email);
+    const held = detail.heldWelcome?.email ?? null;
+    const candidates = [own, held, normEmail(client.backupEmail)].filter((x): x is string => !!x);
+    const email = isTest ? candidates.find((e) => isStaffControlledEmail(e)) ?? null : own ?? held;
+    seatEmail = email;
+    const heldNote = held && email && held !== email ? ` A welcome is still held from their payment for ${held} (a different address): it stays held; release it only if that person needs their own account.` : "";
     if (!email) {
       step({ key: "account", status: "failed", detail: isTest ? "No staff-controlled @realtourpilot.com address on this TEST client, so no account was created." : "No email on file. Add one on the client's page; no account was created and no welcome was sent." });
     } else if (dry) {
-      step({ key: "account", status: "would", detail: `would create their portal account for ${email}${detail.heldWelcome?.email === email ? " (the address their payment's welcome is held for)" : ""}.` });
+      step({ key: "account", status: "would", detail: `would create their portal account for ${email} on ${await existingPortalWords(enrollment.id)}${detail.heldWelcome?.email === email ? " (the address their payment's welcome is held for)" : ""}.${heldNote}` });
     } else {
       const r = await ob.createOnboardingSeat({ clientId, email, name: client.name ?? null, by, byAppUserId: opts.byAppUserId ?? null });
       detail = (await ob.loadOnboardingDetail(clientId)) ?? detail;
-      accountOk = r.ok && !!liveOwner();
-      step({ key: "account", status: accountOk ? "done" : "failed", detail: r.message });
+      // The seat must be on THIS program (loadOnboardingDetail reads seats by its enrollment id).
+      accountOk = r.ok && !!liveOwner() && (await prisma.clientMembership.count({ where: { enrollmentId: enrollment.id, clientId, role: "OWNER", revokedAt: null } })) > 0;
+      step({ key: "account", status: accountOk ? "done" : "failed", detail: `${r.message}${accountOk ? ` On ${await existingPortalWords(enrollment.id)}.` : ""}${heldNote}` });
+    }
+  }
+
+  // A welcome held from their payment on a program that NO LONGER EXISTS
+  // (Joseph Sutow, Oct 14 2026: his signup's program was folded into the one
+  // he already had, and the hold still names the old id). Release would
+  // refuse it for ever ("Enrollment not found"); once their account is open
+  // on the existing program, for the same address, it is owed nothing more.
+  if (seatEmail) {
+    const stale = await staleHeldWelcomes(clientId, seatEmail);
+    if (stale.length) {
+      if (dry) {
+        step({ key: "account", status: "would", detail: `would clear ${stale.length} welcome${stale.length === 1 ? "" : "s"} held from their payment on a program that no longer exists (${stale.map((x) => x.enrollmentId).join(", ")}); their account is on the existing program.` });
+      } else if (accountOk) {
+        await prisma.$transaction([
+          prisma.appSetting.deleteMany({ where: { key: { in: stale.map((x) => x.key) } } }),
+          prisma.auditLog.create({ data: { actor: by, action: "auto_onboarding_cleared_stale_hold", target: clientId, detail: `Held welcome(s) for ${seatEmail} on program(s) that no longer exist (${stale.map((x) => x.enrollmentId).join(", ")}) cleared: the account is open on ${enrollment.id}.` } }),
+        ]);
+        step({ key: "account", status: "done", detail: `Cleared ${stale.length} welcome${stale.length === 1 ? "" : "s"} held on a program that no longer exists; their account is on the existing program.` });
+      }
     }
   }
 
@@ -244,7 +342,7 @@ export async function autoOnboardAll(by: string, opts: AutoOnboardOpts): Promise
     try {
       out.push(await autoOnboardClient(c.id, by, { ...opts, allowTest: false }));
     } catch (e) {
-      out.push({ clientId: c.id, name: c.name, outcome: "partial", reason: errText(e), steps: [] });
+      out.push({ clientId: c.id, name: c.name, outcome: "partial", reason: errText(e), steps: [], enrollmentId: null, seatEmail: null, duplicates: [] });
     }
   }
   return out;
@@ -256,7 +354,8 @@ export function reportLine(r: AutoOnboardReport): string {
   const bad = r.steps.filter((s) => s.status === "failed" || (s.status === "skipped" && s.key !== "strategy"));
   const welcome = r.steps.find((s) => s.key === "welcome");
   const head = r.outcome === "onboarded" ? "onboarded" : r.outcome === "would" ? "would be onboarded" : "needs you";
-  return `${r.name}: ${head}${welcome ? ` · welcome ${welcome.status}` : ""}${bad.length ? ` · ${bad.map((s) => `${s.key}: ${s.detail}`).join(" ")}` : ""}`;
+  const dup = r.duplicates.length ? ` · DUPLICATE CLIENT RECORD${r.duplicates.length > 1 ? "S" : ""}: ${r.duplicates.join("; ")}` : "";
+  return `${r.name}: ${head}${welcome ? ` · welcome ${welcome.status}` : ""}${bad.length ? ` · ${bad.map((s) => `${s.key}: ${s.detail}`).join(" ")}` : ""}${dup}`;
 }
 
 /**
