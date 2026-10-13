@@ -13,8 +13,9 @@ import type { TeamSeat } from "@/lib/portalTeam";
 // truth about the one thing that is not live yet: while `portal_invites` is
 // off, an invitation is SAVED and listed as held, and nothing reaches the
 // person. The shared link carries no name, so it never gets a form it cannot
-// use — it is told how to sign in instead, or, while email sign-in is off,
-// that adding people opens when it is switched on.
+// use. C14 (Oct 13 2026): it gets no account or team cards either, only a
+// sign-in prompt (or, while email sign-in is not live for the account, the
+// office line to add people for them).
 // ---------------------------------------------------------------------------
 
 export type SettingsData = {
@@ -40,6 +41,25 @@ const ROLE_WORDS: Record<string, string> = {
 };
 
 export function SettingsTab({ d }: { d: SettingsData }) {
+  if (d.viewerKind === "TOKEN") {
+    return (
+      <div className="mt-6 space-y-4">
+        <h1 className="text-xl font-semibold tracking-tight">Settings &amp; Team</h1>
+        <Card>
+          <CardTitle icon={KeyRound}>Sign in to manage your account</CardTitle>
+          {d.signInEmailOn ? (
+            <div className="mt-2 text-sm">
+              <p className="text-muted">Sign in with your email to see your account and add your team.</p>
+              <Link href="/portal/login" className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white"><KeyRound className="size-3.5" /> Sign in</Link>
+            </div>
+          ) : (
+            <p className="mt-2 text-sm text-muted">Use the sign-in link in your invitation email. To add a teammate, {d.contactLine} with their name and email and we&rsquo;ll add them for you.</p>
+          )}
+        </Card>
+        <RowLink href={d.profileHref} icon={Palette}>{d.profileLabel}: colors, logo, fonts, links, music</RowLink>
+      </div>
+    );
+  }
   return (
     <div className="mt-6 space-y-4">
       <h1 className="text-xl font-semibold tracking-tight">Settings &amp; Team</h1>
@@ -54,9 +74,7 @@ export function SettingsTab({ d }: { d: SettingsData }) {
           </div>
         ) : d.viewerKind === "STAFF" ? (
           <p className="mt-2 text-sm text-muted">You&rsquo;re viewing this account on the client&rsquo;s behalf. Anything you change here is recorded as you.</p>
-        ) : (
-          <p className="mt-2 text-sm text-muted">You&rsquo;re using your program link. It works on any device you open it on.</p>
-        )}
+        ) : null}
       </Card>
 
       <section id="team" className="scroll-mt-24">
@@ -68,15 +86,6 @@ export function SettingsTab({ d }: { d: SettingsData }) {
             <div className="mt-2"><LoadFailed what="your team" /></div>
           ) : d.readOnly ? (
             <p className="mt-2 text-sm text-muted">Your program is {d.programStatus === "PAUSED" ? "paused" : "ended"}, so the team can&rsquo;t be changed right now.</p>
-          ) : d.viewerKind === "TOKEN" ? (
-            d.signInEmailOn ? (
-              <div className="mt-2 text-sm">
-                <p className="text-muted">To add an assistant or teammate, sign in with your email first. The shared link doesn&rsquo;t carry a name, and every invitation records who sent it.</p>
-                <Link href="/portal/login" className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white"><KeyRound className="size-3.5" /> Sign in with email</Link>
-              </div>
-            ) : (
-              <p className="mt-2 text-sm text-muted">Adding teammates opens when email sign-in is switched on for your account. Until then, {d.contactLine} with their name and email and we&rsquo;ll add them for you.</p>
-            )
           ) : (
             <p className="mt-2 text-sm text-muted">Only the program owner can add or remove people on this account.</p>
           )}

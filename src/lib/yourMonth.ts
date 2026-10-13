@@ -65,8 +65,9 @@ export type YourMonthInput = {
   hrefs: { bank: string; month: string; scripts: string; bookingUrl: string };
   /**
    * Oct 8 2026: the client plans their own content ("we show up and shoot").
-   * The month is then: add your creative brief (optional) → the strategy call
-   * when calls are on → book filming. No route, topics, answers or scripts.
+   * The month is then: add your creative brief (optional) → book filming. No
+   * route, topics, answers, scripts or strategy call (Oct 13 2026: Jordan,
+   * their own path; a call booked anyway is managed beside the steps).
    */
   clientPlanned?: { briefFiles: number; briefNotes: boolean } | null;
   timezone?: string;
@@ -252,8 +253,9 @@ function oneCurrent(steps: Raw[]): YourMonthStep[] {
 
 /**
  * THE CLIENT-PLANNED MONTH (Oct 8 2026). Their brief first — optional, so it
- * is never the one current step, only "also ready for you" — then the call
- * when calls are on (offered, never a gate), then filming.
+ * is never the one current step, only "also ready for you" — then filming.
+ * No strategy-call step, even with calls on for the program (Oct 13 2026):
+ * a client who plans their own videos is never asked to book one.
  */
 function clientPlannedSteps(i: YourMonthInput, cp: { briefFiles: number; briefNotes: boolean }, o: { actSession: boolean; tz: string; now: Date }): YourMonthStep[] {
   const steps: Raw[] = [];
@@ -261,12 +263,6 @@ function clientPlannedSteps(i: YourMonthInput, cp: { briefFiles: number; briefNo
   steps.push(has
     ? { key: "brief", status: "done", title: "Your creative brief is in", detail: [cp.briefFiles ? plural(cp.briefFiles, "file") : null, cp.briefNotes ? "notes" : null].filter(Boolean).join(" and ") + ". Add to it any time.", cta: null }
     : { key: "brief", status: "todo", title: `Add your creative brief for ${i.monthLabel} (optional)`, detail: "Upload your plan or paste your notes, and your crew will have it at the shoot.", cta: i.readOnly ? null : { label: "Add your brief", href: "#step-brief" } });
-  if (i.planning.callMode !== "NOT_INCLUDED" && i.planning.callStatus !== "NOT_REQUIRED") {
-    const held = i.month.call === "HELD";
-    if (held) steps.push({ key: "call", status: "done", title: "Strategy call held", detail: null, cta: null });
-    else if (i.month.call === "BOOKED") steps.push({ key: "call", status: "waiting", title: i.planning.callAtISO ? `Your call is booked for ${callWhenWords(i.planning.callAtISO, o.tz, o.now)}` : "Your call is booked", detail: "You can book filming now. You don't need to wait for the call.", cta: null });
-    else steps.push({ key: "call", status: o.actSession ? "action" : "waiting", title: "Book your strategy call", detail: "Filming isn't held up by it. Book both whenever suits you.", cta: o.actSession ? { label: "Book the call", href: i.hrefs.bookingUrl, external: /^https?:/i.test(i.hrefs.bookingUrl) } : null });
-  }
   const dayOnly = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: o.tz, weekday: "long", month: "long", day: "numeric" });
   steps.push(filmingStep(i, { actSession: o.actSession, dayOnly }));
   return oneCurrent(steps);

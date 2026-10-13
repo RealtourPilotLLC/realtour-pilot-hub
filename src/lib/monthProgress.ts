@@ -959,10 +959,12 @@ export type ClientMonthProgress = {
   monthKey: string;
   videosOwed: number;
   sessions: { required: number; missing: number; cards: ClientSessionCard[] };
-  production: { known: boolean; delivered: number; total: number; inProduction: number; approved: number; awaitingYou: number };
+  /** `approvedWaiting` (Oct 13 2026): approved by the client, not delivered yet. The Library files these under Approved, so Home never calls them "in production or review". */
+  production: { known: boolean; delivered: number; total: number; inProduction: number; approved: number; awaitingYou: number; approvedWaiting: number };
 };
 
 export function clientMonthProgress(p: MonthProgress): ClientMonthProgress {
+  const approvedWaiting = (p.production.videos ?? []).filter((v) => v.countsTowardAllowance && v.clientApproved && !v.delivered).length;
   const cards = p.sessions.list.map((f): ClientSessionCard => {
     // "Filmed" only when somebody confirmed it; a passed date is a session
     // HELD, and a dated job we cannot tie to an appointment is being confirmed.
@@ -980,9 +982,10 @@ export function clientMonthProgress(p: MonthProgress): ClientMonthProgress {
       known: p.production.known,
       delivered: p.production.delivered,
       total: p.production.counted,
-      inProduction: Math.max(0, p.production.counted - p.production.delivered),
+      inProduction: Math.max(0, p.production.counted - p.production.delivered - approvedWaiting),
       approved: p.production.clientApproved,
       awaitingYou: p.production.awaitingClient,
+      approvedWaiting,
     },
   };
 }

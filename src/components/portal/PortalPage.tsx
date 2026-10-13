@@ -73,7 +73,7 @@ const DEFAULT_TERMS = `## The program
 Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. Each month we plan your videos with you, film them at your session, and deliver the finished videos here in your portal.
 
 ## Scheduling
-Each month is planned either on a strategy call or here in the portal, where you pick your topics and answer a few short questions. Filming can be booked as soon as your answers are sent or your call is booked. Sessions start at least three weekdays (72 weekday hours, Monday to Friday) after your answers are sent or your call ends, so your scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss. Inside 24 hours, call or text Kyle at (215) 645-4889.
+Each month is planned either on a strategy call or here in the portal, where you pick your topics and answer a few short questions. Filming can be booked as soon as your answers are sent or your call is booked. Sessions start at least three business days after your answers are sent or your call ends, so your scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss. Inside 24 hours, call or text Kyle at (215) 645-4889.
 
 ## Revisions
 Every video comes with revision rounds to get it right. Ask right here in the portal: pause the video, tell us what to change, and it goes straight to your editor.
@@ -154,7 +154,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // lib/callBooking.portalBookingLinks. Loaded once, only by the pages that
   // show it; with no mapping the link is the office conversation.
   const noCallLinks: { bookingUrl: string | null; view: PortalCallBookingView | null } = { bookingUrl: null, view: null };
-  const callLinksP = dataTab === "home" || dataTab === "schedule" || route.dest === "plan"
+  const callLinksP = dataTab === "home" || route.dest === "plan"
     ? portalBookingLinks(viewer, { planHref: portalHref(contextBase, "plan"), monthId: selectedMonth?.id })
       .catch((e) => { console.error("[portal] call booking links failed", e); return noCallLinks; })
     : Promise.resolve(noCallLinks);
@@ -183,10 +183,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   let priorities: string[] = [];
   let planningRes: { ok: true; data: PortalPlanning | null } | { ok: false } | null = null;
   let scheduleRes: { ok: true; data: PortalScheduleMonth[] } | { ok: false } | null = null;
-  let slotDays: PortalSlotDay[] = [];
-  let sessions: { id: string; shootDate: Date | null; title: string | null; addressLine: string | null; status: string }[] = [];
   let resourcesRes: { ok: true; data: ResourceGroupView[] } | { ok: false } | null = null;
-  let scheduleBookingUrl = "";
 
   if (dataTab === "home" || dataTab === "videos") {
     // The library's logical videos are built from the cuts and delivery rows
@@ -282,6 +279,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           // Only the emailed-link seat can never approve; point it at the door
           // that leads to one that can — when that door actually opens.
           signInHref: actor.kind === "TOKEN" && emailSignInLive ? "/portal/login" : null,
+          // A1 (Oct 13 2026): the link watches; deciding (approve or request
+          // changes) is for a signed-in seat, and the page says so plainly.
+          linkVisitor: actor.kind === "TOKEN",
         };
         else videoStatusFailed = true;
       }
@@ -301,26 +301,14 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     if (m?.prioritiesJson) { const { monthPriorities } = await import("@/lib/contentStrategy"); priorities = monthPriorities(m.prioritiesJson); }
   }
   if (dataTab === "schedule") {
-    const [p, s, sess] = await Promise.all([
+    // C14 (Oct 13 2026): Schedule is a read-only "Upcoming" list. Booking,
+    // changing and cancelling all happen in Your Month, so this page loads no
+    // live slots and no booking links.
+    const [p, s] = await Promise.all([
       attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
       attempt("schedule months", () => portalScheduleMonths(enrollment)),
-      prisma.project.findMany({
-        where: { clientId: enrollment.clientId, contentMonthId: { not: null }, status: { not: "CANCELLED" }, shootDate: { not: null } },
-        orderBy: { shootDate: "desc" }, take: 24, select: { id: true, shootDate: true, status: true, title: true, addressLine: true, contentMonthId: true },
-      }).catch(() => []),
     ]);
     planningRes = p; scheduleRes = s;
-    scheduleBookingUrl = await callBookingUrl();
-    // Only this enrollment's months (a project on another program's month is not a session here).
-    const monthIds = new Set((await prisma.contentMonth.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true } })).map((m) => m.id));
-    sessions = sess.filter((x) => x.contentMonthId && monthIds.has(x.contentMonthId));
-    // Live Aryeo slots only when a picker could actually render — to book, or
-    // (CP-04) to move a session. The viewer's OWN package's product: a Starter
-    // client gets the two-hour calendar, not Accelerator's four-hour one.
-    if (s.ok && perms.session && !readOnly && s.data.some((m) => !m.locked && (m.capacity.remaining > 0 || m.requests.some((r) => r.canChange)))) {
-      const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }).catch(() => null))?.package ?? null;
-      slotDays = await companySlotDays({ package: pkg }).catch(() => []);
-    }
   }
   if (dataTab === "resources") resourcesRes = await attempt("resources", () => publishedResources());
 
@@ -454,6 +442,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       lateSession: home.planning?.late ? { label: home.planning.late.label, open: home.planning.late.state === "TO_BOOK" && home.planning.late.scriptsReady, combined: home.planning.late.combine.combined } : null,
       setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
       ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
+      // A1 (Oct 13 2026): the shared link watches; a signed-in seat decides.
+      linkVisitor: actor.kind === "TOKEN" ? { signInHref: emailSignInLive ? "/portal/login" : null } : null,
     }, contextBase);
   }
 
@@ -551,11 +541,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={tabHref} /> : <LibraryV2 d={library} failed={libraryFailed} href={tabHref} />)}
       {route.dest === "schedule" && (
         <ScheduleTab
-          key={`${scheduleMonthId ?? "default"}:${selectedSession ?? "next"}`}
-          selectedMonthId={scheduleMonthId} selectedSessionIndex={selectedSession}
           planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
           months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
-          slotDays={slotDays} bookingUrl={scheduleBookingUrl} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
+          perms={{ session: perms.session }} readOnly={readOnly}
           topicsHref={planHrefs.month} topicsLabel="Your Month" routeHref={`${planHrefs.month}#step-route`}
         />
       )}

@@ -125,3 +125,17 @@ export const isLibraryFilter = (k: unknown): k is LibraryFilterKey => LIBRARY_FI
 // ---------------------------------------------------------------------------
 export const TEXT_KYLE = "text Kyle at (215) 645-4889";
 export const TEXT_KYLE_START = "Text Kyle at (215) 645-4889";
+
+const COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+/**
+ * The preparation window in the client's words (Oct 13 2026: "72 weekday
+ * hours" is the office's measure, "three business days" is the client's).
+ * Whole days read as words; an odd number of hours keeps the hours.
+ */
+export function businessDaysWords(hours: number): string {
+  if (hours > 0 && hours % 24 === 0) {
+    const n = hours / 24;
+    return `${COUNT_WORDS[n] ?? String(n)} business day${n === 1 ? "" : "s"}`;
+  }
+  return `${hours} business hours`;
+}

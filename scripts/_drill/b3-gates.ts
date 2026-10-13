@@ -654,11 +654,13 @@ async function main() {
     // =======================================================================
     const terms = code(read("src/components/portal/PortalPage.tsx"));
     c.ok("OLD terms: 'Sessions are booked after your call … a few business days'", /a few business days between the call and the shoot/.test(show("src/components/portal/PortalPage.tsx")));
-    c.ok("NEW terms: both routes, 72 weekday hours, Kyle inside 24 hours", /at least three weekdays \(72 weekday hours, Monday to Friday\) after your answers are sent or your call ends/.test(terms) && /Inside 24 hours, call or text Kyle at \(215\) 645-4889/.test(terms) && !/a few business days/.test(terms));
+    // Oct 13 2026: the client's words are "three business days" ("72 weekday hours" is the office's measure).
+    c.ok("NEW terms: both routes, three business days, Kyle inside 24 hours", /at least three business days after your answers are sent or your call ends/.test(terms) && !/72 weekday hours/.test(terms) && /Inside 24 hours, call or text Kyle at \(215\) 645-4889/.test(terms) && !/a few business days/.test(terms));
     const choice = code(read("src/components/portal/PlanningChoice.tsx"));
     const sched = code(read("src/components/portal/tabs/ScheduleTab.tsx"));
     c.ok("OLD route card / schedule tab: 'opens a few business days after'", /opens a few business days after/.test(show("src/components/portal/PlanningChoice.tsx")) && /opens a few business days after/.test(show("src/components/portal/tabs/ScheduleTab.tsx")));
-    c.ok("NEW: 'as soon as your answers are in' / 'as soon as the call is', 72 weekday hours, no 'few business days'", !/few business days/.test(choice + sched) && /Filming can be booked as soon as the call is/.test(choice) && /72 weekday hours/.test(choice) && /You can book filming now, before the call/.test(sched));
+    // C14 (Oct 13 2026): Schedule is a read-only list now; booking (and its timing words) lives in Your Month.
+    c.ok("NEW: 'as soon as your answers are in' / 'as soon as the call is', three business days, no 'few business days', and Schedule points to Your Month", !/few business days/.test(choice + sched) && /Filming can be booked as soon as the call is/.test(choice) && /three business days/.test(choice) && !/72 weekday hours/.test(choice + sched) && /Book, change or cancel them in \{topicsLabel\}/.test(sched));
     const g04 = read("docs/portal-guides/04-preparing-for-your-session.md");
     const gj = JSON.parse(read("docs/portal-guides/guides.json")) as { guides: { slug: string; body: string }[] };
     const g04j = gj.guides.find((g) => g.slug === "preparing-for-your-filming-session")?.body ?? "";

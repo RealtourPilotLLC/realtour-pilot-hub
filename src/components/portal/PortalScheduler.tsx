@@ -9,6 +9,7 @@ import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
 import type { PreparationHold, SessionSlotsResult, TravelLabel, TravelSlotDay } from "@/lib/sessionTravel";
 import { CancelRequestButton } from "@/components/portal/PlanningChoice";
+import { businessDaysWords } from "@/lib/portalWords";
 import { PROGRAM_SLOT_HORIZON_DAYS, currentSessionSlot, portalMonthHref, portalSessionIndex, sessionDatePage, sessionOfferKey } from "@/lib/portalScheduling";
 
 // The scheduling card, clean (Jordan, Aug 28): finished states collapse to
@@ -78,7 +79,7 @@ const OPEN = new Set(["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_
 export function preparationLine(p: PreparationHold, tz: string): string {
   const after = p.after === "CALL" ? "your strategy call" : "you sent us your planning answers";
   // The zone as it reads ON that day (EST in late November), not today's.
-  return `We need ${p.windowHours} weekday hours after ${after} to prepare, so the first time we can film is ${whenWithZone(p.earliestISO, tz)}.`;
+  return `We need ${businessDaysWords(p.windowHours)} after ${after} to prepare, so the first time we can film is ${whenWithZone(p.earliestISO, tz)}.`;
 }
 
 /** The hour (0–23) of a start on the client's own clock. */
@@ -305,7 +306,12 @@ export function PortalScheduler({
   const slot = currentSessionSlot(slotPick, offerKey, activeDay);
   const setSlot = (value: string | null) => setSlotPick(value ? { key: offerKey, value } : null);
   const slotCreatives = slot && activeDay?.slotCreatives?.[slot] ? activeDay.slotCreatives[slot] : [];
-  const chosenCreative = slotCreatives.length === 1 ? slotCreatives[0].teamMemberId : creative;
+  // C14 (Oct 13 2026): the hub picks the videographer. The hub's own booking
+  // needs one named (sessionBooking refuses "no creative was chosen"), so with
+  // more than one free the first whose drive was checked is chosen for the
+  // client; the list stays below for anyone who wants someone else.
+  const defaultCreative = slotCreatives.find((c) => !!slot && activeDay?.slotCreativeTravel[slot]?.[c.teamMemberId] !== "UNCHECKED") ?? slotCreatives[0] ?? null;
+  const chosenCreative = slotCreatives.length === 1 ? slotCreatives[0].teamMemberId : creative && slotCreatives.some((c) => c.teamMemberId === creative) ? creative : defaultCreative?.teamMemberId ?? null;
   const chosenTravel: TravelLabel | null = slot && activeDay ? (chosenCreative ? activeDay.slotCreativeTravel[slot]?.[chosenCreative] ?? null : activeDay.slotTravel[slot] ?? null) : null;
   const needsAddress = !moving && !!res && (res.needsAddress || editAddress);
 
@@ -372,7 +378,7 @@ export function PortalScheduler({
       .then((r) => { if (live) setSlotsRes({ key, res: r }); });
     return () => { live = false; };
   }, [showPicker, slotsKey, month, pickIdx, moving]);
-  const needsCreativePick = !!slot && slotCreatives.length > 1 && !creative;
+  const needsCreativePick = !!slot && slotCreatives.length > 1 && !chosenCreative;
   const requestRows = month ? month.requests.filter((r) => r.status !== "CONFIRMED" || (r.canChange && !readOnly)) : [];
 
   return (
@@ -396,14 +402,12 @@ export function PortalScheduler({
       ) : (
         <>
           {months.length === 1 && <div className="mt-1 text-sm font-semibold">{month.tabLabel ?? monthLabel(month.monthKey)}</div>}
-          {/* Oct 12 2026: an over month's session, booked late beside this month's (lateSession.ts). */}
-          {month.late && (
-            <div className="mt-2"><StatusRow icon={Info} tone="muted">
-              {month.late.combined
-                // Oct 13 2026: one session films both months' videos.
-                ? `One session for your ${monthLabel(month.monthKey).split(" ")[0]} and ${monthLabel(month.late.hostMonthKey).split(" ")[0]} videos${month.late.combinedVideos ? ` (all ${month.late.combinedVideos})` : ""}, filmed in ${monthLabel(month.late.hostMonthKey).split(" ")[0]}. Plan on about 4 hours.`
-                : <>Your {monthLabel(month.monthKey).split(" ")[0]} session, filmed in {monthLabel(month.late.hostMonthKey).split(" ")[0]}{month.late.scriptsReady ? ". It uses the scripts we already sent you." : "."}</>}
-            </StatusRow></div>
+          {/* Oct 12 2026: an over month's session, booked late beside this month's
+              (lateSession.ts). Its tab already names WHICH session it is, and
+              Your Month's card above explains it once (C14, Oct 13 2026); the
+              one thing left to say here is how long a combined session runs. */}
+          {month.late?.combined && (
+            <div className="mt-2"><StatusRow icon={Info} tone="muted">Plan on about 4 hours for this session.</StatusRow></div>
           )}
 
           {/* Strategy call / planning — a slim row when handled, a clear CTA when not. */}
@@ -415,8 +419,11 @@ export function PortalScheduler({
               </StatusRow>
             ) : writtenPath ? (
               <StatusRow icon={month.locked ? Clock : CheckCircle2} tone={month.locked ? "muted" : "ok"}>
-                {month.locked ? "Planning in writing: send us your answers and session booking opens" : "Planning in writing: answers received"}
+                {month.locked ? "Send us your answers and session booking opens" : "Your answers are in"}
               </StatusRow>
+            ) : month.clientPlanned ? (
+              // A3 (Oct 13 2026): a client who plans their own videos is never asked for a strategy call.
+              <StatusRow icon={Info} tone="muted">You plan your videos. Just book your filming.</StatusRow>
             ) : month.callStatus === "COMPLETED" ? (
               <StatusRow icon={CheckCircle2} tone="ok">Strategy call held{month.callAtISO ? ` ${new Date(month.callAtISO).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" })}` : ""}</StatusRow>
             ) : month.callStatus === "SCHEDULED" ? (
@@ -541,7 +548,7 @@ export function PortalScheduler({
                     {/* Step 2: when, from that address. A19: when the preparation
                         window is why the first day is later than tomorrow, say so. */}
                     {!needsAddress && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-muted">
-                      <p className="min-w-0 flex-1 basis-64">We show times for {PROGRAM_SLOT_HORIZON_DAYS} days from your first filming day. Need a later date? Kyle can help. Times can be a few minutes old, so we check again when you book.</p>
+                      <p className="min-w-0 flex-1 basis-64">These are the next {PROGRAM_SLOT_HORIZON_DAYS} days of open times; for a later date, ask Kyle.</p>
                       <button type="button" disabled={busy} onClick={() => { setSlot(null); setDay(null); setCreative(null); setReload((n) => n + 1); }} className="min-h-11 rounded-xl border border-border px-3 font-medium">Reload times</button>
                     </div>}
                     {!needsAddress && res.preparation && (
@@ -569,7 +576,7 @@ export function PortalScheduler({
                               className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-border px-3 font-medium disabled:opacity-40">
                               <ChevronLeft className="size-4" /> Previous dates
                             </button>
-                            <span className="text-muted" aria-live="polite">Dates {dayPage * 6 + 1}–{Math.min((dayPage + 1) * 6, monthDays.length)} of {monthDays.length} available</span>
+                            <span className="text-muted" aria-live="polite">Dates {dayPage * 6 + 1} to {Math.min((dayPage + 1) * 6, monthDays.length)} of {monthDays.length} available</span>
                             <button type="button" disabled={busy || (dayPage + 1) * 6 >= monthDays.length} onClick={() => changeDayPage(dayPage + 1)}
                               className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-border px-3 font-medium disabled:opacity-40">
                               More dates <ChevronRight className="size-4" />
@@ -582,11 +589,11 @@ export function PortalScheduler({
                             <SlotTimes day={activeDay} slot={slot} tz={tz} onPick={pickSlot} disabled={busy} />
                             {slot && slotCreatives.length > 1 && (
                               <div className="mt-3">
-                                <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Who would you like?</div>
+                                <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Your videographer</div>
                                 <div className="mt-1.5 flex flex-wrap gap-2" role="radiogroup" aria-label="Videographer">
                                   {slotCreatives.map((c) => (
-                                    <button key={c.teamMemberId} type="button" disabled={busy} role="radio" aria-checked={creative === c.teamMemberId} onClick={() => setCreative(c.teamMemberId)}
-                                      className={cn("rounded-xl border px-3 py-1.5 text-sm", creative === c.teamMemberId ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:text-foreground")}>
+                                    <button key={c.teamMemberId} type="button" disabled={busy} role="radio" aria-checked={chosenCreative === c.teamMemberId} onClick={() => setCreative(c.teamMemberId)}
+                                      className={cn("rounded-xl border px-3 py-1.5 text-sm", chosenCreative === c.teamMemberId ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:text-foreground")}>
                                       {c.name}
                                       {activeDay.slotCreativeTravel[slot]?.[c.teamMemberId] === "UNCHECKED" && <span className="ml-1 text-[10px] font-normal text-muted-2">(Kyle confirms)</span>}
                                     </button>
@@ -595,7 +602,7 @@ export function PortalScheduler({
                               </div>
                             )}
                             {Object.values(activeDay.slotTravel).includes("UNCHECKED") && (
-                              <p className="mt-2 text-xs text-muted">&ldquo;Kyle confirms&rdquo;: we could not check the drive from your videographer&rsquo;s other shoot that day, so Kyle confirms that time by hand.</p>
+                              <p className="mt-2 text-xs text-muted">&ldquo;Kyle confirms&rdquo; means Kyle checks that time by hand before it&rsquo;s booked.</p>
                             )}
                           </>
                         )}
@@ -627,11 +634,9 @@ export function PortalScheduler({
                           {slot && activeDay ? `${moving ? "Move to" : selfBooking && chosenTravel !== "UNCHECKED" ? "Book" : "Request"} ${dayLabel(activeDay.date)} at ${timeLabel(slot, tz)}` : "Send my request"}
                         </button>
                         <p className="mt-1.5 text-xs text-muted">
-                          {chosenTravel === "UNCHECKED"
-                            ? "Kyle confirms this time by hand, so it shows as requested until he does."
-                            : selfBooking
-                            ? "This books straight into our calendar. It shows as booked once the calendar confirms it."
-                            : "Kyle books your pick in our calendar by hand, so it shows as requested until he confirms it."}
+                          {chosenTravel === "UNCHECKED" || !selfBooking
+                            ? "Kyle confirms this time by hand, and it shows as requested until he does."
+                            : "This books straight into our calendar."}
                         </p>
                       </>
                     )}

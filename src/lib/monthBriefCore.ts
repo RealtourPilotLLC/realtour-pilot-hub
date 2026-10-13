@@ -53,8 +53,8 @@ export function briefInline(name: string): boolean {
 
 /** The refusal for one file, or null when it may be stored. */
 export function briefFileRefusal(name: string, size: number): string | null {
-  if (!name || !NAME_OK.test(name)) return "That file name can't be used — rename it and try again.";
-  if (!BRIEF_EXT.test(name)) return "That type of file can't be added — PDFs, Word documents, pictures and text files work.";
+  if (!name || !NAME_OK.test(name)) return "That file name can't be used. Rename it and try again.";
+  if (!BRIEF_EXT.test(name)) return "That type of file can't be added. PDFs, Word documents, pictures and text files work.";
   if (!Number.isFinite(size) || size <= 0) return "That file is empty.";
   if (size > BRIEF_MAX_BYTES) return `That file is over ${BRIEF_MAX_LABEL}. Send a smaller copy, or paste the text in the notes instead.`;
   return null;

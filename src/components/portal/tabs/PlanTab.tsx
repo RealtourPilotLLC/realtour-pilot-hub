@@ -24,7 +24,8 @@ import { portalMonthHref } from "@/lib/portalScheduling";
 //   Scripts    — every script waiting on the client's read, with the words in
 //                front of them and the two answers (ScriptApprovalCard, R1);
 //   Topic bank — everything not on a month yet, Suggested first (view="bank");
-//   Strategy   — the released strategy (StrategyTab, unchanged).
+//   Strategy   — the released strategy (StrategyTab). Since C14 (Oct 13 2026)
+//                not in the sub-nav: an old link opens it read-only.
 //
 // ?iv=<id> opens one topic's questions (InterviewFlow) inside the plan. All
 // of it is the shipped data: portalTopics / portalInterview / portalStrategy,
@@ -51,7 +52,7 @@ export type PlanTabData = {
   filter: string | undefined;
   /** My Plan's own address for each subview (query-only). */
   hrefs: Record<PlanView, string>;
-  /** Oct 8 2026: the client plans their own content — no Scripts or Topic bank views, just the month and the strategy. */
+  /** Oct 8 2026: the client plans their own content — no Scripts or Topic bank views, just the month. */
   clientPlanned?: boolean;
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
@@ -67,8 +68,10 @@ export function PlanTab({ d }: { d: PlanTabData }) {
     { key: "month" as const, label: plan?.month ? `${monthLabel(plan.month.monthKey).split(" ")[0]}` : "This month", short: "Month" },
     { key: "scripts" as const, label: "Scripts", short: "Scripts", count: plan?.scripts.length ?? 0, countLabel: "waiting across all months" },
     { key: "bank" as const, label: "Topic bank", short: "Topics" },
-    { key: "strategy" as const, label: "Strategy", short: "Strategy" },
-  ].filter((t) => !d.clientPlanned || t.key === "month" || t.key === "strategy" || t.key === d.view);
+    // C14 (Oct 13 2026): no Strategy tab for clients. An old ?tab=strategy
+    // link still opens it, read-only, under its own tab here.
+    ...(d.view === "strategy" ? [{ key: "strategy" as const, label: "Strategy", short: "Strategy" }] : []),
+  ].filter((t) => !d.clientPlanned || t.key === "month" || t.key === d.view);
   const intro = {
     month: d.clientPlanned
       ? { title: "Your Month", detail: "You plan the videos. Add your brief if you like, then book your filming time." }
@@ -86,7 +89,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       <SubNav label="Your Month" items={tabs.map((t) => ({ href: d.hrefs[t.key], label: t.label, short: t.short, active: d.view === t.key, count: t.count, countLabel: t.countLabel }))} />
 
       {d.view === "strategy" ? (
-        <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} canSuggest={d.canAct} readOnly={d.readOnly} />
+        <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} canSuggest={false} readOnly={d.readOnly} />
       ) : d.topicsFailed ? (
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (

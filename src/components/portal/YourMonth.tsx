@@ -4,12 +4,12 @@ import { LateFilmingChoice } from "@/components/portal/LateFilmingChoice";
 import { CheckCircle2, ChevronRight, Circle, Clock, ExternalLink } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalPlanning, PortalScheduleMonth, PortalSlotDay, PortalTopicsData } from "@/lib/portal";
-import { yourMonthSteps, type YourMonthStep } from "@/lib/yourMonth";
+import { callWhenWords, yourMonthSteps, type YourMonthStep } from "@/lib/yourMonth";
 import { cn } from "@/lib/utils";
 import { LoadFailed } from "@/components/portal/ui";
 import { TopicBank } from "@/components/portal/TopicBank";
 import { PortalScheduler } from "@/components/portal/PortalScheduler";
-import { RouteChoice, ScheduleLaterButton } from "@/components/portal/PlanningChoice";
+import { RouteChoice } from "@/components/portal/PlanningChoice";
 import { PortalCallPicker } from "@/components/portal/PortalCallPicker";
 import type { PortalCallBookingView } from "@/lib/callBooking";
 import type { MonthBriefView } from "@/lib/monthBriefCore";
@@ -21,9 +21,10 @@ import type { PortalLateScript } from "@/lib/monthLateSession";
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
 // guided page, the v2 plan's month view. The steps come from lib/yourMonth
 // (pure), the numbers from the one planning reader (R01), the booking picker
-// is the Schedule page's own PortalScheduler (same props, same actions), and
-// the topics are TopicBank's month view. The Schedule page stays in the bar
-// for appointments, rescheduling and cancelling; every old ?tab= still lands.
+// is PortalScheduler (the same actions as ever), and the topics are
+// TopicBank's month view. C14 (Oct 13 2026): this is the ONE place filming is
+// booked, changed or cancelled, and the strategy call changed or cancelled;
+// the Schedule page only lists what is coming up and links back here.
 //
 // Each step carries an id (#step-route, #step-topics, #step-answers,
 // #step-call, #step-filming, #step-scripts) so Home's next step opens the plan
@@ -177,29 +178,35 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                   </div>
                 )}
 
-                {/* Book filming — the Schedule page's own picker, embedded. */}
+                {/* Book, change or cancel filming (C14: the only place). Booked
+                    sessions, their address and Change time / Cancel live in the
+                    same picker, so it shows whenever the month is open. */}
                 {step.key === "filming" && (d.scheduleFailed ? (
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
-                ) : s && step.state === "current" && !s.locked && p.late ? (
+                ) : s && !s.locked && p.late ? (
                   // Both sessions are booked from the one card above (Oct 13 2026: or the one session for both months).
-                  <Link href="#step-late" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>{p.late.combine.combined ? `Book it above: one session for your ${p.late.label} and ${p.late.hostLabel} videos` : `Book it above, beside your ${p.late.label} session`} <ChevronRight className="size-4" aria-hidden /></Link>
-                ) : s && step.state === "current" && !s.locked ? (
+                  <Link href="#step-late" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>{step.state === "done" ? "Change or cancel it above" : p.late.combine.combined ? `Book it above: one session for your ${p.late.label} and ${p.late.hostLabel} videos` : `Book it above, beside your ${p.late.label} session`} <ChevronRight className="size-4" aria-hidden /></Link>
+                ) : s && !s.locked ? (
                   <div className="mt-3">
                     <PortalScheduler key={`${s.monthId}:${d.selectedSessionIndex ?? "next"}`} months={[s]} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={p.timezone} selectedMonthId={s.monthId} selectedSessionIndex={d.selectedSessionIndex} embedded />
-                    {d.can.session && !d.readOnly && s.sessionsMissing > 0 && s.capacity.remaining > 0 && (
-                      <ScheduleLaterButton monthId={s.monthId} deferred={!!p.deferredAtISO} />
-                    )}
                   </div>
-                ) : step.state === "done" ? (
-                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Reschedule or cancel <ChevronRight className="size-4" aria-hidden /></Link>
-                ) : s && !s.locked ? (
-                  <Link href={d.hrefs.schedule} className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline", focusRing)}>Manage filming in Schedule <ChevronRight className="size-4" aria-hidden /></Link>
                 ) : null)}
               </div>
             </div>
           </li>
         ))}
       </ol>
+
+      {/* C14 (Oct 13 2026): a strategy call booked on a month whose steps have
+          no call step (planned here, or a client who plans their own videos)
+          is still changed or cancelled here — Schedule links to #step-call. */}
+      {!steps.some((x) => x.key === "call") && d.callBooking?.booked && (
+        <section id="step-call" aria-labelledby="booked-call-line" className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 px-4 py-3 backdrop-blur">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Strategy call</div>
+          <h3 id="booked-call-line" className="text-sm font-semibold">Your call is booked for {callWhenWords(d.callBooking.booked.startISO, p.timezone)}</h3>
+          <PortalCallPicker view={d.callBooking} />
+        </section>
+      )}
 
       {/* Keep the full bank in reach when choosing or answering, then fold it
           so a later action does not compete with a second work area. A client
@@ -242,11 +249,8 @@ function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNul
       <h3 id="late-session-line" className="break-words text-base font-semibold leading-snug">{late.line}</h3>
       <p className="mt-1 text-sm text-muted">
         {combined
-          ? `This one session films your ${late.label} and ${hostName} videos together, so it opens once your ${late.label} scripts are ready and ${hostName} is planned.`
-          : <>
-              {late.scriptsReady ? `Your ${late.label} scripts are ready, so you can book that session now.` : `We're finishing your ${late.label} scripts. That session opens as soon as they're ready.`}
-              {s ? ` ${hostName}'s session follows ${hostName}'s own plan.` : ""}
-            </>}
+          ? `One session films your ${late.label} and ${hostName} videos together.`
+          : late.scriptsReady ? `Your ${late.label} scripts are ready, so you can book that session now.` : `That session opens as soon as your ${late.label} scripts are ready.`}
       </p>
       {/* Oct 13 2026: once the office offers it, the client chooses one 4-hour session or two 2-hour sessions. */}
       {late.combine.offered && (

@@ -1,153 +1,160 @@
 import Link from "next/link";
-import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, MapPin, PenLine, Video } from "lucide-react";
+import { CalendarClock, Camera, ChevronRight, Clock, MapPin, Video } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
-import type { PortalPlanning, PortalScheduleMonth, PortalSlotDay } from "@/lib/portal";
-import { Card, CardTitle, LoadFailed, fmtDate, fmtTime, tzShort } from "@/components/portal/ui";
-import { PortalScheduler } from "@/components/portal/PortalScheduler";
+import type { PortalPlanning, PortalScheduleMonth } from "@/lib/portal";
+import { portalMonthHref } from "@/lib/portalScheduling";
+import { SESSION_WORDS, type Word } from "@/lib/portalWords";
+import { Card, Empty, LoadFailed, StatusChip, fmtDate, fmtTime, tzShort } from "@/components/portal/ui";
 import { cn } from "@/lib/utils";
 
-// SCHEDULE (spec §4): two separate appointments. "Schedule strategy call" —
-// its status, local date/time, timezone, link and what the client may do —
-// and "Schedule content session" (PortalScheduler: per program month, gated
-// by the derived preparation window — 72 weekday hours after the answers are
-// sent or the booked call ends — requests durable). "Plan without a
-// call" appears ONLY when the enrollment is eligible, and it never cancels a
-// booked call; the real cancellation lives on Calendly / the request row.
+// ---------------------------------------------------------------------------
+// SCHEDULE — "what's coming up" (C14, Oct 13 2026, Jordan: one place to book
+// filming, and that place is Your Month).
 //
-// §6.4 (Sep 25 2026): the route choice lives in Your Month's opening prompt.
-// The call card shows where the month stands and links there (`routeHref`)
-// instead of carrying its own buttons. (The old layout's in-card "plan
-// without a call" buttons went with that layout, Oct 6 2026.)
-export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref, topicsLabel, routeHref, selectedMonthId, selectedSessionIndex }: {
+// This page used to carry its own strategy-call card, its own copy of the
+// filming picker and a history of every session in every program month, and
+// it told the client to change a call through Calendly's emails while Your
+// Month offered a working Change / Cancel. Now it is read-only: the booked
+// strategy calls and filming sessions (and filming asked for, while we
+// confirm it), soonest first, each with a link to the Your Month step where
+// it is changed or cancelled. Months still to book link there too. No slots
+// are loaded and nothing here writes.
+// ---------------------------------------------------------------------------
+
+const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+const PENDING = new Set(["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"]);
+
+type Item = {
+  key: string;
+  kind: "call" | "filming";
+  title: string;
+  word: Word;
+  atISO: string | null;
+  details: string[];
+  /** Where we film, when on file. */
+  place?: string | null;
+  meet?: string | null;
+  href: string | null;
+  hrefLabel: string;
+};
+
+export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, perms, readOnly, topicsHref, topicsLabel }: {
   planning: PortalPlanning | null;
   planningFailed: boolean;
   months: PortalScheduleMonth[];
   scheduleFailed: boolean;
-  slotDays: PortalSlotDay[];
-  bookingUrl: string;
-  sessions: { id: string; shootDate: Date | null; title: string | null; addressLine: string | null; status: string }[];
   perms: { session: boolean };
   readOnly: boolean;
-  /** Where the month's topics and questions are — Your Month. */
+  /** Where the month is planned and booked — Your Month. */
   topicsHref: string;
   /** What that page is called ("Your Month"). */
   topicsLabel: string;
-  /** Your Month's route step — the one place the planning route is chosen. */
-  routeHref: string;
-  selectedMonthId?: string | null;
-  selectedSessionIndex?: number | null;
+  /** Your Month's route step (kept for callers; the route is chosen there). */
+  routeHref?: string;
 }) {
-  // The choice is made in Your Month; this card only links there.
-  const switchLink = (label: string) => p?.noCallEligible && !readOnly && perms.session
-    ? <Link href={routeHref} className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{label} <ChevronRight className="size-3" /></Link>
-    : null;
   const p = planning;
   const tz = p?.timezone ?? "America/New_York";
-  // Each time is labelled with its own date's zone (EST in late November),
-  // never today's (Sep 28).
-  const zoneOf = (iso: string | Date) => tzShort(tz, new Date(iso));
-  const now = new Date();
-  const streetOf = (title: string | null, addressLine: string | null) => (addressLine || (title ?? "").split(",")[0] || "").trim();
+  // Each time is labelled with its own date's zone (EST in late November), never today's (Sep 28).
+  const zoneOf = (iso: string) => tzShort(tz, new Date(iso));
+  const when = (iso: string) => `${fmtDate(iso, tz)} at ${fmtTime(iso, tz)} ${zoneOf(iso)}`;
+  const now = new Date().getTime();
+  const canChange = perms.session && !readOnly;
+  const monthName = (key: string) => monthLabel(key).split(" ")[0];
+  // A late month's session is booked from its host month's card (#step-late).
+  const filmingHref = (m: PortalScheduleMonth) => m.late ? `${portalMonthHref(topicsHref, m.late.hostMonthKey)}#step-late` : `${portalMonthHref(topicsHref, m.monthKey)}#step-filming`;
+
+  const items: Item[] = [];
+  if (p && p.callStatus === "SCHEDULED" && p.callAtISO && Date.parse(p.callAtISO) > now - 3600_000) {
+    items.push({
+      key: "call", kind: "call", title: "Strategy call", word: SESSION_WORDS.BOOKED, atISO: p.callAtISO,
+      details: [`To plan your ${monthName(p.monthKey)} videos`, p.meetLink ? "" : "Video call. The link is in your calendar invite."].filter(Boolean),
+      meet: p.meetLink ?? null,
+      href: canChange ? `${portalMonthHref(topicsHref, p.monthKey)}#step-call` : null, hrefLabel: "Change or cancel",
+    });
+  }
+  if (p?.catchUp?.nextCallISO && Date.parse(p.catchUp.nextCallISO) > now - 3600_000) {
+    items.push({ key: "catch-up-call", kind: "call", title: "Strategy call", word: SESSION_WORDS.BOOKED, atISO: p.catchUp.nextCallISO, details: [`To plan your ${p.catchUp.label} videos`], href: null, hrefLabel: "" });
+  }
+  for (const m of months) {
+    const forWhat = m.late?.combined ? `For your ${monthName(m.monthKey)} and ${monthName(m.late.hostMonthKey)} videos` : `For your ${monthName(m.monthKey)} videos`;
+    m.sessions.forEach((s, i) => {
+      if (s.state !== "BOOKED" && s.state !== "CONFIRMING") return;
+      if (s.startISO && Date.parse(s.startISO) < now) return;
+      items.push({
+        key: `s:${m.monthId}:${s.key}`, kind: "filming",
+        title: m.sessionsRequired > 1 ? `Filming session ${s.sessionIndex ?? i + 1} of ${m.sessionsRequired}` : "Filming session",
+        word: SESSION_WORDS[s.state], atISO: s.startISO,
+        place: [s.area, s.addressNote].filter(Boolean).join(" · ") || null,
+        details: [forWhat, s.kyleConfirming ? "Kyle will confirm your filming time with you." : "", s.addressNeeded ? `We still need the exact address. Add it in ${topicsLabel}.` : ""].filter(Boolean),
+        href: canChange ? filmingHref(m) : null, hrefLabel: s.addressNeeded ? "Add the address" : "Change or cancel",
+      });
+    });
+    for (const r of m.requests) {
+      if (!PENDING.has(r.status) || (r.status === "REQUESTED" && r.bookingState === "CONFLICT")) continue;
+      items.push({
+        key: `r:${r.id}`, kind: "filming", title: "Filming session", word: { ...SESSION_WORDS.REQUESTED, label: r.label }, atISO: r.slotStartISO,
+        details: [forWhat], place: r.locationText,
+        href: canChange && r.canChange ? filmingHref(m) : null, hrefLabel: "Change or cancel",
+      });
+    }
+  }
+  items.sort((a, b) => (a.atISO ?? "9999").localeCompare(b.atISO ?? "9999"));
+
+  // Months with filming still to book. Your Month says why one is not open yet.
+  const toBook = months.filter((m) => m.sessionsMissing > 0 && m.capacity.remaining > 0 && !m.requests.some((r) => PENDING.has(r.status) && !(r.status === "REQUESTED" && r.bookingState === "CONFLICT")));
+
   return (
     <div className="mt-6 space-y-4">
-      <h1 className="text-xl font-semibold tracking-tight">Schedule</h1>
-
-      {/* Strategy call */}
-      <Card>
-        <CardTitle icon={CalendarClock}>Schedule strategy call</CardTitle>
-        {planningFailed ? (
-          <div className="mt-2"><LoadFailed what="your strategy call" /></div>
-        ) : !p ? (
-          <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet. We&rsquo;ll set it up and it will show here.</p>
-        ) : (
-          <div className="mt-2 space-y-1.5 text-sm">
-            <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{monthLabel(p.monthKey)}</div>
-            {p.catchUp && <p className="font-medium text-brand">{p.catchUp.line}</p>}
-            {p.late && <p className="font-medium text-brand">{p.late.line}</p>}
-            {p.catchUp?.nextCallISO && <p className="text-xs text-muted">Your call to plan the {p.catchUp.label} videos is booked for {fmtDate(p.catchUp.nextCallISO, tz)} at {fmtTime(p.catchUp.nextCallISO, tz)} {zoneOf(p.catchUp.nextCallISO)}.</p>}
-            {p.clientPlanned && p.callStatus === "NOT_REQUIRED" ? (
-              // Oct 8 2026: they plan their own videos and have no strategy call.
-              <p className="text-muted">Your program doesn&rsquo;t include a strategy call. You plan your videos and we film them.</p>
-            ) : p.planningMode === "WRITTEN" && !p.clientPlanned && p.officePlanned ? (
-              // Oct 12 2026: the office planned the month by writing its scripts — no route to switch.
-              <>
-                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> No call this month</div>
-                <p className="text-xs text-muted">We planned this month and wrote your scripts. Read them in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>. Filming opens once they&rsquo;re ready.</p>
-              </>
-            ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
-              <>
-                <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing: no call this month</div>
-                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in, so filming is open to book." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link>.</> : <>Pick your topics in <Link href={topicsHref} className="font-medium text-brand hover:underline">{topicsLabel}</Link> and answer the questions. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</>}</p>
-                {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {zoneOf(p.callAtISO)}. Cancel it on Calendly if you no longer need it.</p>}
-                {/* Not a one-way door: the same eligibility that offered the
-                    written path offers the call back (review, Sep 17). */}
-                {switchLink("Change how you plan this month")}
-              </>
-            ) : p.callStatus === "COMPLETED" ? (
-              <div className="flex items-center gap-1.5 text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtDate(p.callAtISO, tz)}` : ""}. The month is planned.</div>
-            ) : p.callStatus === "SCHEDULED" && p.callAtISO ? (
-              <>
-                <div><span className="rounded-md bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">Booked</span></div>
-                <div className="font-medium">{fmtDate(p.callAtISO, tz)}</div>
-                <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {zoneOf(p.callAtISO)}</div>
-                {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <div className="text-xs text-muted-2">Video call. The link is in your calendar invite.</div>}
-                <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email. The change shows here within the hour.</p>
-                {/* §3: filming opens the moment the call is booked, measured from the call's end. */}
-                <p className="text-xs text-muted">You can book filming now, before the call. Sessions start at least three weekdays (72 weekday hours) after the call ends.</p>
-                {switchLink("Change how you plan this month")}
-              </>
-            ) : p.callStatus === "NOT_REQUIRED" ? (
-              // NOT_REQUIRED = the program has no strategy call at all.
-              <p className="text-muted">Your program doesn&rsquo;t include a strategy call. We plan the month from your topics and answers.</p>
-            ) : p.callStatus === "SKIPPED" ? (
-              // SKIPPED = no call exists for THIS month. A card headed
-              // "Schedule strategy call" that offers no way to schedule one is
-              // a dead end — the scheduler 40px below already keeps the link
-              // reachable in this exact state, and so does this card now.
-              <>
-                <p className="text-muted">No strategy call this month.</p>
-                {!readOnly && (
-                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book one anyway <ChevronRight className="size-3.5" /></a>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="text-muted">Not booked yet. We plan {monthLabel(p.monthKey)} on this call, then film it.</div>
-                {!readOnly && (
-                  <a href={bookingUrl} target={/^https?:/.test(bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book the call <ChevronRight className="size-4" /></a>
-                )}
-                <p className="text-xs text-muted-2">Times show in your timezone on Calendly; it lands here as Booked once it&rsquo;s on the calendar.</p>
-                {switchLink("Or choose your topics here instead")}
-              </>
-            )}
-          </div>
-        )}
-      </Card>
-
-      {/* Content session */}
       <div>
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><Camera className="size-4 text-brand" /> Schedule content session</div>
-        {scheduleFailed ? <LoadFailed what="your session months" /> : <PortalScheduler months={months} bookingUrl={bookingUrl} days={slotDays} readOnly={!perms.session || readOnly} timezone={tz} selectedMonthId={selectedMonthId} selectedSessionIndex={selectedSessionIndex} />}
+        <h1 className="text-xl font-semibold tracking-tight">Schedule</h1>
+        <p className="mt-0.5 text-sm text-muted">Your strategy calls and filming sessions. Book, change or cancel them in {topicsLabel}.</p>
       </div>
 
-      {/* Sessions on the calendar */}
-      <Card>
-        <CardTitle icon={Camera}>Sessions · all program months</CardTitle>
-        {sessions.filter((s) => s.shootDate).length === 0 ? (
-          <p className="mt-2 text-sm text-muted">No sessions on the calendar yet.</p>
-        ) : (
-          <ul className="mt-3 space-y-2">
-            {sessions.filter((s) => s.shootDate).slice(0, 12).map((s) => (
-              <li key={s.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                <span className="flex items-center gap-1.5"><CalendarClock className={cn("size-4", s.shootDate! >= now ? "text-brand" : "text-muted-2")} /> {fmtDate(s.shootDate!, tz)}</span>
-                <span className="flex items-center gap-1.5 text-muted"><Clock className="size-4" /> {fmtTime(s.shootDate!, tz)} {zoneOf(s.shootDate!)}</span>
-                {streetOf(s.title, s.addressLine) && <span className="flex items-center gap-1.5 text-muted"><MapPin className="size-4" /> {streetOf(s.title, s.addressLine)}</span>}
-                {s.shootDate! >= now ? <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">upcoming</span> : s.status === "DELIVERED" ? <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span> : <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">held</span>}
+      {planningFailed || scheduleFailed ? (
+        <LoadFailed what="your schedule" />
+      ) : items.length === 0 ? (
+        <Empty icon={CalendarClock}>Nothing is booked yet. <Link href={topicsHref} className="font-medium text-brand hover:underline">Open {topicsLabel}</Link> to book your filming.</Empty>
+      ) : (
+        <ul className="space-y-2" aria-label="Coming up">
+          {items.map((it) => {
+            const Icon = it.kind === "call" ? CalendarClock : Camera;
+            return (
+              <li key={it.key}>
+                <Card>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Icon className="size-4 text-brand" aria-hidden />
+                    <span className="text-sm font-semibold">{it.title}</span>
+                    <StatusChip word={it.word} />
+                  </div>
+                  <div className={cn("mt-1 flex items-center gap-1.5 text-sm", it.atISO ? "font-medium" : "text-muted")}>
+                    <Clock className="size-3.5 text-muted-2" aria-hidden /> {it.atISO ? when(it.atISO) : "Time to be confirmed"}
+                  </div>
+                  {it.place && <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted"><MapPin className="mt-0.5 size-3 shrink-0" aria-hidden /> {it.place}</p>}
+                  {it.details.map((line, i) => <p key={i} className="mt-0.5 text-xs text-muted">{line}</p>)}
+                  <div className="mt-1 flex flex-wrap items-center gap-x-4">
+                    {it.meet && <a href={it.meet} target="_blank" rel="noopener noreferrer" className={cn("inline-flex min-h-11 items-center gap-1 text-xs font-medium text-brand hover:underline", focusRing)}><Video className="size-3.5" aria-hidden /> Join on Google Meet</a>}
+                    {it.href && <Link href={it.href} className={cn("inline-flex min-h-11 items-center gap-1 text-xs font-medium text-brand hover:underline", focusRing)}>{it.hrefLabel} <ChevronRight className="size-3.5" aria-hidden /></Link>}
+                  </div>
+                </Card>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {!scheduleFailed && toBook.length > 0 && (
+        <Card>
+          <div className="flex items-center gap-2 text-sm font-semibold"><Camera className="size-4 text-brand" aria-hidden /> Still to book</div>
+          <ul className="mt-1.5 space-y-1">
+            {toBook.map((m) => (
+              <li key={m.monthId} className="flex flex-wrap items-center gap-x-2 text-sm">
+                <span>{m.tabLabel ?? `${monthLabel(m.monthKey)} filming`}{m.sessionsRequired > 1 ? ` (${m.sessionsMissing} of ${m.sessionsRequired} sessions)` : ""}</span>
+                {canChange && <Link href={filmingHref(m)} className={cn("inline-flex min-h-11 items-center gap-1 text-xs font-medium text-brand hover:underline", focusRing)}>Book in {topicsLabel} <ChevronRight className="size-3.5" aria-hidden /></Link>}
               </li>
             ))}
           </ul>
-        )}
-      </Card>
+        </Card>
+      )}
     </div>
   );
 }

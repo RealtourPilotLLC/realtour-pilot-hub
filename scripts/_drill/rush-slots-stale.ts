@@ -415,10 +415,11 @@ async function main() {
       { name: "pacific", file: SCHED, exp: "preparationLine", args: [{ earliestISO: et(10, 29, 9).toISOString(), windowHours: 96, after: "ANSWERS" }, "America/Los_Angeles"] },
     ]);
     const call = String(out.call);
-    c.ok("after a call: \"We need 72 weekday hours after your strategy call to prepare, so the first time we can film is Wednesday, November 25 … 2:30 PM EST.\"",
-      /^We need 72 weekday hours after your strategy call to prepare, so the first time we can film is Wednesday, November 25.*2:30\sPM EST\.$/.test(call), call);
+    // Oct 13 2026: the client reads "three business days" (72 weekday hours is the office's measure).
+    c.ok("after a call: \"We need three business days after your strategy call to prepare, so the first time we can film is Wednesday, November 25 … 2:30 PM EST.\"",
+      /^We need three business days after your strategy call to prepare, so the first time we can film is Wednesday, November 25.*2:30\sPM EST\.$/.test(call), call);
     c.ok("after answers: \"…after you sent us your planning answers…\" Thursday, October 29, 9:00 AM EDT", /after you sent us your planning answers to prepare, so the first time we can film is Thursday, October 29.*9:00\sAM EDT\.$/.test(String(out.answers)), String(out.answers));
-    c.ok("the client's own zone and window: 96 hours, 6:00 AM PDT", /We need 96 weekday hours/.test(String(out.pacific)) && /6:00\sAM PDT\.$/.test(String(out.pacific)), String(out.pacific));
+    c.ok("the client's own zone and window: 96 hours (four business days), 6:00 AM PDT", /We need four business days/.test(String(out.pacific)) && /6:00\sAM PDT\.$/.test(String(out.pacific)), String(out.pacific));
     c.ok("no em dash, no en dash, in any of them", [out.call, out.answers, out.pacific].every((s) => !/[—–]/.test(String(s))));
     const sched = fs.readFileSync(SCHED, "utf8");
     c.ok("the line is drawn at step 2 only when the server sent `preparation`, and the free-text box drops its bare date then",

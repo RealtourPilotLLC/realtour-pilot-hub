@@ -199,7 +199,7 @@ export async function inviteTeammate(
     ok: true, membershipId: g.membershipId,
     message:
       g.welcome === "suppressed"
-        ? `${name} is on your account. Invitations aren't being sent yet for your account, so we haven't emailed them — we'll send their sign-in as soon as your account is set up for it.`
+        ? `${name} is on your account. Invitations aren't being sent yet for your account, so we haven't emailed them. We'll send their sign-in as soon as your account is set up for it.`
         : g.welcome === "failed"
           ? `${name} is on your account. Their sign-in email didn't go through, and our team has been told so we can send it again.`
         : role === "OWNER"

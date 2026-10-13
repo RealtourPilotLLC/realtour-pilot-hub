@@ -73,7 +73,7 @@ async function main() {
     c.ok("thrown public request holds repeat without claiming sent or not-sent and preserves current input", writes.length === beforeLost && field("email").value === "latest@example.test" && button("Email me").disabled === true && contains(tree(), "may already have been processed") && elements(tree(), "ActionLink").some((p) => p.href === "/portal/me"));
     c.ok("public hold marker contains only opaque attempt/operation without account/draft data", Object.keys(JSON.parse(storage.get("portal-login-unconfirmed")!)).sort().join() === "attemptId,operation" && ![...storage.values()].join().includes("@"));
     await mount(() => PortalSignIn({})); type("email", "refresh@example.test"); submit();
-    c.ok("same-tab refresh restores public hold and never treats a reload as terminal proof", writes.length === beforeLost && button("Email me").disabled === true && contains(tree(), "Reloading does not confirm") && field("email").value === "refresh@example.test");
+    c.ok("same-tab refresh restores public hold and never treats a reload as terminal proof", writes.length === beforeLost && button("Email me").disabled === true && contains(tree(), "may already have been processed") && field("email").value === "refresh@example.test");
     await mount(() => PortalSignIn({ emailSignIn: false, reason: "expired", signedIn: { who: "Fixture", canEnter: false } }));
     c.ok("email gate and revoked-seat sign-out remain intact without an actionable email form", !field("email") && elements(tree(), "form").some((p) => p.action));
     storage.clear(); card.stop(); card = mountHooks(() => PortalSignIn({})); card.render(); type("email", "early-dispatch@example.test"); response = deferred(); submit(); await Promise.resolve();

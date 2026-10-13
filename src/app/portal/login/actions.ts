@@ -33,7 +33,7 @@ export async function requestPortalLoginLink(formData: FormData): Promise<{ ok: 
     ok: true,
     message: live
       ? "Request received. If email sign-in is available for that address, check your inbox for a one-time link. We cannot confirm an account or email delivery here. Reply to any text or email from us if you need help getting in."
-      : "Request received. Email sign-in isn't switched on yet. Reply to any text or email from us and we'll help you get in.",
+      : "Request received. Email sign-in isn't ready for your account yet. Reply to any text or email from us and we'll help you get in.",
   };
 }
 

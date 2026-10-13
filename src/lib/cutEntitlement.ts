@@ -243,12 +243,12 @@ export const WHY = {
   AWAITING: "Approve this version above to unlock the download and captions.",
   /** The same block, said to a seat that cannot approve (the emailed link, a collaborator, a viewer). */
   AWAITING_OWNER: "The download and captions unlock once the account owner approves this version.",
-  CHANGES: "You asked for changes to this version — the new one will ask for its own approval, and the download and captions unlock with it.",
-  DRIFT: "The file behind your approval has changed since you approved it — we're re-issuing it for approval before it can be downloaded.",
-  REISSUE: `We're re-issuing this video's file — it'll be back here shortly. ${TEXT_KYLE_START} if you need it now.`,
-  UNPAIRED: `We're confirming which delivered file belongs to this video — it'll be here once we've matched it. ${TEXT_KYLE_START} if you need it now.`,
+  CHANGES: "You asked for changes to this version. The new one will ask for its own approval, and the download and captions unlock with it.",
+  DRIFT: "The file behind your approval has changed since you approved it, so we're re-issuing it for approval before it can be downloaded.",
+  REISSUE: `We're re-issuing this video's file. It'll be back here shortly. ${TEXT_KYLE_START} if you need it now.`,
+  UNPAIRED: `We're confirming which delivered file belongs to this video. It'll be here once we've matched it. ${TEXT_KYLE_START} if you need it now.`,
   NOT_YET_CUT: "The final file lands here once this version is approved and finished.",
-  NOT_YET: "No file yet — it appears here once the video is edited and delivered.",
+  NOT_YET: "No file yet. It appears here once the video is edited and delivered.",
   PRIOR: "This is the version you approved. The newer version is waiting for your review above; its download unlocks once you approve it.",
   /** 9.6b — the 1080p pass is running or its file is held for a listen. Client
    *  copy: plain words, no dash. */
