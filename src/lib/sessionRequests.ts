@@ -72,6 +72,10 @@ export type CreateSessionRequestInput = {
   /** A18/A25: the gate the slot was offered under, SNAPSHOT at request time
    *  (anchor + window), so a later rule change never reassesses it. */
   gate?: { route?: string | null; anchorRef?: string | null; anchorAt?: Date | null; windowHours?: number | null; earliestAt?: Date | null } | null;
+  /** Oct 13 2026: a MOVE the hub tried to make itself (requestReschedule →
+   *  rescheduleHubBooking) and could not — why, in the words Kyle's desk row
+   *  shows. Absent: the session was not one the hub could move at all. */
+  moveDeskReason?: string | null;
 };
 
 export type CapacityCheck = {
@@ -231,7 +235,11 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   if (input.plan?.planId && (!plan || plan.monthId !== month.id || plan.enrollmentId !== enrollment.id)) return { ok: false, reason: "Add the exact filming address for this session first." };
   if (start && !combined && (await isAutomationEnabled("session_booking"))) {
     const { planBookable } = await import("@/lib/sessionAddress");
-    if (booked) deskReason = `this moves a session already on the calendar${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}, and the hub only books new sessions`;
+    // A MOVE of a session the hub booked was already tried by requestReschedule
+    // (rescheduleHubBooking, same checks as a new booking); reaching here means
+    // it could not, and moveDeskReason says why. Anything else on the calendar
+    // was booked by hand, and a person moves it.
+    if (booked) deskReason = `this moves a session already on the calendar${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}: ${input.moveDeskReason ? `the hub tried to move it itself and could not (${input.moveDeskReason.replace(/[.\s]+$/, "")})` : "it was not booked by the hub, so a person moves it in Aryeo"}`;
     else if (deskHeld) deskReason = "this replaces an ask Kyle may already have booked by hand";
     else if (!input.creative?.teamMemberId) deskReason = "no creative was chosen for the slot";
     // EXACT ADDRESS FIRST (§3): the adapter books only an exact, geocoded plan
@@ -239,7 +247,8 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     else if (!plan || !planBookable(plan)) deskReason = "there is no exact, mapped filming address for this session";
     else if (plan.addressVersion !== input.plan!.addressVersion) deskReason = "the filming address changed after the time was offered";
     // UNCHECKED TRAVEL IS DESK-CONFIRMED, never auto-booked (Jordan, Sep 25).
-    else if (!input.travel || input.travel.check === "UNCHECKED") deskReason = "the drive from the creative's other appointments that day could not be checked, so a person confirms this time";
+    // Jordan's Sep 25 rule stands; the reason now says what Kyle checks.
+    else if (!input.travel || input.travel.check === "UNCHECKED") deskReason = `the drive time could not be checked (${input.travel?.check === "UNCHECKED" ? "the hub could not place or measure the creative's other appointments that day" : "no drive-time check came with this time"}), and a time with unchecked drive time is never booked automatically. Check the drive between ${input.creative?.name ?? "the creative"}'s other appointments that day and this address: if it works, book it in Aryeo; if not, offer the client another time`;
     else {
       const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { id: true, name: true } });
       const { hubWritePermit } = await import("@/lib/integrations/aryeo");
@@ -420,7 +429,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   // hands it over (handToDesk). Everything else is desk-assisted, as before —
   // and a replacement says MOVE, with the booking it replaces in plain words.
   if (!hubBooks) {
-    if (booked) await ensureDeskTask(settled.id, "RESCHEDULE", `This replaces the confirmed session at ${slotWords(booked.slotStart, booked.timezone)}${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}. Move that appointment rather than booking a second one.`);
+    if (booked) await ensureDeskTask(settled.id, "RESCHEDULE", `This replaces the confirmed session at ${slotWords(booked.slotStart, booked.timezone)}${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}. Move that appointment rather than booking a second one.${deskReason ? `\nWhy this needs you: ${deskReason}.` : ""}`);
     else if (deskHeld && replaced) await ensureDeskTask(settled.id, "RESCHEDULE", `The client first asked for ${slotWords(replaced.slotStart, replaced.timezone)} and changed it before that showed as booked. If you already booked ${replaced.slotStart ? "that time" : "it"} in Aryeo, move that booking to the new time; do not add a second one. If nothing was booked, book the new time.`);
     else await ensureDeskTask(settled.id, "BOOK", deskReason);
   }
@@ -762,7 +771,7 @@ export async function requestReschedule(
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId } });
   if (!r) return { ok: false, message: "That request isn't on your page." };
   if (!["REQUESTED", "CONFIRMED"].includes(r.status)) return { ok: false, message: "That request is already closed." };
-  const { INSIDE_24H_MESSAGE, within24hElapsed, hubBookedAttempt, rescheduleHubBooking, IN_FLIGHT_STATES } = await import("@/lib/sessionBooking");
+  const { INSIDE_24H_MESSAGE, within24hElapsed, hubBookedAttempt, hubCreatedAppointment, rescheduleHubBooking, IN_FLIGHT_STATES } = await import("@/lib/sessionBooking");
   const start = new Date(newSlot.startISO);
   if (!Number.isFinite(start.getTime())) return { ok: false, message: "Pick a time from the list." };
   // The session actually on the calendar: this row, or — for a move still
@@ -777,12 +786,22 @@ export async function requestReschedule(
   if (r.status === "REQUESTED" && (IN_FLIGHT_STATES as readonly string[]).includes(r.bookingState)) {
     return { ok: false, message: "We are booking that time right now. Give it a minute, then move it if you still need to." };
   }
-  if (r.status === "CONFIRMED" && (await isAutomationEnabled("session_booking")) && (await hubBookedAttempt(r))) {
+  // Oct 13 2026 (Jordan: "I don't want Kyle to have to manually schedule
+  // anything"): a session the HUB booked is moved by the hub, through the same
+  // checks as a new booking (rescheduleHubBooking: >24h, slot free for the
+  // creative, drive time checked, creative-day hold). "Hub-booked" is the
+  // appointment the hub created, on this row or an earlier row of the same
+  // session (a move Kyle confirmed by hand keeps the hub's appointment). Only
+  // when the hub can't (REFUSED) does the move go to the desk, with the reason.
+  let moveDeskReason: string | null = null;
+  if (r.status === "CONFIRMED" && r.aryeoAppointmentId && (await isAutomationEnabled("session_booking"))
+    && ((await hubBookedAttempt(r)) || (await hubCreatedAppointment(r.aryeoAppointmentId)))) {
     const moved = await rescheduleHubBooking(r.id, start, { by: actor.kind === "STAFF" ? actor.userId : actor.kind === "CLIENT" ? actor.clientUserId : null, now });
     if (moved.state !== "REFUSED") {
       await recalcProgramMonth(r.monthId);
       return { ok: moved.ok, message: moved.message, id: r.id };
     }
+    moveDeskReason = moved.message;
   }
   const created = await createSessionRequest({
     enrollmentId: r.enrollmentId,
@@ -794,6 +813,7 @@ export async function requestReschedule(
     creative: creative ?? (r.creativeTeamMemberId ? { teamMemberId: r.creativeTeamMemberId, name: r.creativeName } : null),
     sessionIndex: opts.sessionIndex ?? r.sessionIndex ?? null,
     gate: opts.gate ?? null,
+    moveDeskReason,
   });
   if (!created.ok) return { ok: false, message: created.reason };
   // The old booking still stands in Aryeo until a person moves it: the new

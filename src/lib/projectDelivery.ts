@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { loadCut, sourceFingerprint } from "@/lib/finalRendition";
-import { recordedListingDeliveryAt, uploadedForDelivery, uploadsFor } from "@/lib/deliveryUploads";
+import { recordedListingDeliveryAt, recordUploaded, uploadedForDelivery, uploadsFor } from "@/lib/deliveryUploads";
 import { markVideoSent } from "@/lib/readyToSend";
 import type { GroupDeliveryResult, UploadedTarget } from "@/lib/uploadedDeliveryGroups";
 import { usesAryeoDelivery } from "@/lib/videoDeliveryDestination";
@@ -62,4 +62,25 @@ export async function acknowledgedDeliveryTargets(projectId: string, listing: { 
     targets.push({ submissionId: row.id, fingerprint: receipt.sourceFingerprint });
   }
   return targets;
+}
+
+/**
+ * "MARK AS DELIVERED" — the one manual fallback (Jordan, Oct 13 2026). The
+ * upload and the delivery are normally recorded by Aryeo itself (the listing
+ * check records the upload, Aryeo's LISTING_DELIVERED settles the send); when
+ * that can't tell, a person confirms both in one press. It writes the same two
+ * records the old two buttons did, in the same order and through the same
+ * functions (recordUploaded, then markUploadedGroupSent), so every guard on
+ * either still applies. Records only: nothing reaches Aryeo or the client.
+ */
+export async function markDeliveredByHand(submissionId: string, fingerprint: string, actor: { id: string | null; name: string }): Promise<{ ok: boolean; message: string; sent?: boolean }> {
+  const cut = await loadCut(submissionId);
+  if (!cut) return { ok: false, message: "That video no longer exists." };
+  if (cut.sentToClientAt) return { ok: true, sent: true, message: "Already recorded as delivered." };
+  const upload = await recordUploaded(submissionId, actor, fingerprint);
+  if (!upload.ok) return upload;
+  const sent = await markUploadedGroupSent(cut.projectId, [{ submissionId, fingerprint }], actor.name);
+  return sent.ok
+    ? { ok: true, sent: true, message: "Recorded as delivered. No message was sent to the client." }
+    : { ok: false, sent: false, message: `The upload is recorded, but the delivery could not be: ${sent.message}` };
 }

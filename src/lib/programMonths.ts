@@ -1129,7 +1129,9 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
       // earliest = max(submission, call end) + the window (A18) — and the
       // anchor says which one it was, so a reassessment follows the call.
       for (const s of sessions) if (s.earliestSessionAt && s.earliestSessionAt < buffer) { s.earliestSessionAt = buffer; s.anchor = callAnchorOf(latest); }
-      for (const b of booking?.sessions ?? []) {
+      // Oct 13 2026: a client with calls switched off is never asked about a
+      // stray call's timing (the buffer above still applies to new offers).
+      for (const b of callMode === "NOT_INCLUDED" ? [] : booking?.sessions ?? []) {
         if (b.filmed || !b.startsAt || b.startsAt < callStart || b.startsAt >= buffer) continue;
         const day = (d: Date) => d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
         exceptions.push(`a strategy call ending ${day(callEnd)} ET falls inside the ${windowHours}-hour buffer before the ${day(b.startsAt)} ET session — confirm with the client`);
@@ -1162,7 +1164,9 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   // stamp above). Kyle confirms the real end only while it can still matter:
   // the call route, a session still to book, and the start-based earliest not
   // yet passed. A past August month raises nothing.
-  if (legacyCallStamp && planningMode === "CALL" && callAnchor && !(shortfall?.fullyScheduled) && afterWindow(callAnchor.at) > now) {
+  // Oct 13 2026: never for a client who plans their own content (the call
+  // gates nothing for them) or has calls switched off.
+  if (legacyCallStamp && planningMode === "CALL" && !clientPlanned && callMode !== "NOT_INCLUDED" && callAnchor && !(shortfall?.fullyScheduled) && afterWindow(callAnchor.at) > now) {
     const when = callAnchor.at.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     followUps.push({
       kind: "CONFIRM_CALL_END", owner: "KYLE", sessionIndex: null, ref: String(callAnchor.at.getTime()),
@@ -1229,7 +1233,9 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   const lastApproval = approved.reduce<Date | null>((m, s) => (s.approvedAt && (!m || s.approvedAt > m) ? s.approvedAt : m), null);
   const filmingReadyAt = month.filmingReadyAt ?? (preparationStatus === "READY_FOR_FILMING" ? lastApproval : null);
   // Topics, answers and scripts are the client's own: nothing about them is ours to chase.
-  const followUpsOut = clientPlanned ? followUps.filter((f) => f.kind === "CONFIRM_CALL_END" || f.kind === "CALL_INSIDE_BUFFER") : followUps;
+  // Oct 13 2026: the two call-timing follow-ups are no longer raised for them
+  // either (see CALL_INSIDE_BUFFER and CONFIRM_CALL_END above).
+  const followUpsOut = clientPlanned ? [] : followUps;
   return {
     callMode, strategyCallStatus, strategyCallAt, strategyCallEndsAt, callBookedAt: anchorCall?.createdAt ?? null, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt,
     earliestSessionAt, sessions, sessionsKnown, preparationSufficient,

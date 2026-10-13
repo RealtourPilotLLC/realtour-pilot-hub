@@ -1424,7 +1424,11 @@ async function onListingDelivered(ev: ActivityRef): Promise<string> {
     if (projects.length === 0) {
       return `Aryeo delivered listing ${ev.listingId}, but no job in the hub is linked to it. Nothing to update.`;
     }
-    const done: string[] = [];
+    // Oct 13 2026: record any upload the listing shows (Kyle no longer presses
+    // "Mark as Uploaded"), BEFORE the passes below, so a video he uploaded and
+    // delivered in one go is settled as sent by this very event, not an hour on.
+    const uploads = await recordListingUploads(ev.listingId, listing);
+    const done: string[] = uploads.recorded.length ? [`${uploads.note}`] : [];
     for (const p of projects) {
       // Order: Kyle's card (only where the listing can show us the video), then
       // the status engine — and the plain-English line LAST, because it is the
@@ -1759,9 +1763,29 @@ export type ProofResult = {
   looked: boolean;
   closed: number;
   stamped: number;
+  /** upload receipts the listing check recorded (Oct 13 2026) */
+  uploaded?: number;
   /** the line for the server log, in the words of whoever reads it at 8am */
   note: string;
 };
+
+/**
+ * Record the uploads a fresh listing read shows (lib/listingUploadCheck), and
+ * repaint the cards it moved. Best-effort: a failure here leaves the rows for a
+ * person exactly as before and never costs the delivery passes after it.
+ */
+async function recordListingUploads(listingId: string, listing: { id?: string; videos?: unknown[] } | null, opts?: { dryRun?: boolean }) {
+  try {
+    const { recordUploadsSeenOnListing } = await import("@/lib/listingUploadCheck");
+    const r = await recordUploadsSeenOnListing(listingId, listing, opts);
+    for (const projectId of r.projectIds) await refreshSurfaces(projectId).catch(() => null);
+    if (r.recorded.length || r.wouldRecord.length) console.info(`[aryeo] listing ${listingId}: ${r.note}`);
+    return r;
+  } catch (e) {
+    console.warn(`[aryeo] listing upload check failed for ${listingId}`, e);
+    return { recorded: [] as string[], wouldRecord: [] as string[], projectIds: [] as string[], note: "the listing upload check failed — left for a person" };
+  }
+}
 
 export async function proveListingNow(
   listingId: string,
@@ -1818,12 +1842,16 @@ export async function proveListingNow(
     }
   }
 
+  // 4b. AN UPLOAD IS AN UPLOAD whether or not the listing is delivered yet
+  //     (Oct 13 2026): record what the listing shows (lib/listingUploadCheck).
+  const uploads = await recordListingUploads(listingId, listing);
+
   // 5. NOTHING ON AN UNDELIVERED LISTING HAS REACHED ANYBODY. Same rule the
   //    hourly sweep applies, and for the same reason: a video sitting on a
   //    listing the client cannot open is not a video the client has.
   const delivery = (listing?.delivery_status ?? "").toUpperCase() || null;
   if (delivery !== "DELIVERED") {
-    return quiet(`Aryeo has listing ${listingId} as ${delivery ?? "unknown"} — nothing there has reached the client`);
+    return { ...quiet(`Aryeo has listing ${listingId} as ${delivery ?? "unknown"} — nothing there has reached the client${uploads.recorded.length ? `; ${uploads.note}` : ""}`), uploaded: uploads.recorded.length };
   }
 
   // 6. File what we just saw. The Ready-to-send card reads its evidence out of
@@ -1860,10 +1888,12 @@ export async function proveListingNow(
     }
   }
 
+  if (uploads.recorded.length) said.unshift(uploads.note);
   return {
     looked: true,
     closed,
     stamped,
+    uploaded: uploads.recorded.length,
     note:
       said.length > 0
         ? `${why}: ${said.join("; ")}`
@@ -1929,11 +1959,11 @@ export async function sweepReadyToSendAgainstAryeo(opts?: {
   budgetMs?: number;
   /** evaluate everything, write nothing */
   dryRun?: boolean;
-}): Promise<{ looked: number; closed: number; stamped: number; unread: number; jobs: ReadySweepJob[] }> {
+}): Promise<{ looked: number; closed: number; stamped: number; unread: number; uploaded: number; jobs: ReadySweepJob[] }> {
   const max = opts?.max ?? 12;
   const deadline = Date.now() + (opts?.budgetMs ?? 60_000);
   const board = await readyToSend().catch(() => null);
-  if (!board || board.ready.length === 0) return { looked: 0, closed: 0, stamped: 0, unread: 0, jobs: [] };
+  if (!board || board.ready.length === 0) return { looked: 0, closed: 0, stamped: 0, unread: 0, uploaded: 0, jobs: [] };
 
   // The card's own order — late first, then oldest — so a tight budget spends
   // itself on the rows that have been waiting longest.
@@ -1948,6 +1978,7 @@ export async function sweepReadyToSendAgainstAryeo(opts?: {
   let closed = 0;
   let stamped = 0;
   let unread = 0;
+  let uploaded = 0;
   // One pass per LISTING. Both passes below now range over every project the
   // listing carries (projectsSharingListing), so the second job at an address
   // has already been evaluated by the first job's turn — going round again
@@ -1983,9 +2014,15 @@ export async function sweepReadyToSendAgainstAryeo(opts?: {
       await refreshListingEvidence(id, listing).catch(() => null);
     }
 
+    // Oct 13 2026: the upload records itself when the listing shows it
+    // (lib/listingUploadCheck) — delivered listing or not.
+    const uploads = await recordListingUploads(p.aryeoListingId, listing, { dryRun: opts?.dryRun });
+    uploaded += uploads.recorded.length;
+    const uploadNote = uploads.recorded.length || uploads.wouldRecord.length ? `${uploads.note}; ` : "";
+
     const delivery = (listing?.delivery_status ?? "").toUpperCase() || null;
     if (delivery !== "DELIVERED") {
-      row(`Aryeo has this listing as ${delivery ?? "unknown"}, so nothing there has reached the client — left alone`);
+      row(`${uploadNote}Aryeo has this listing as ${delivery ?? "unknown"}, so nothing there has reached the client — left alone`);
       continue;
     }
 
@@ -2006,14 +2043,14 @@ export async function sweepReadyToSendAgainstAryeo(opts?: {
       opts?.dryRun && cuts.wouldStamp.length > 0 ? `WOULD mark ${cuts.wouldStamp.length} video(s) sent` : null,
     ].filter(Boolean);
     row(
-      said.length > 0
+      uploadNote + (said.length > 0
         ? said.join("; ")
-        : "Aryeo's listing carries no video that can only be this job's unsent cut — left on the card for Kyle",
+        : "Aryeo's listing carries no video that can only be this job's unsent cut — left on the card for Kyle"),
       { closedCards: cards.closed, stampedCuts: cuts.stamped, wouldClose: cards.wouldClose, wouldStamp: cuts.wouldStamp },
     );
     if (!opts?.dryRun && (cards.closed > 0 || cuts.stamped > 0)) await refreshSurfaces(id);
   }
-  return { looked: jobs.length, closed, stamped, unread, jobs };
+  return { looked: jobs.length, closed, stamped, unread, uploaded, jobs };
 }
 
 // ---- the one door ----------------------------------------------------------

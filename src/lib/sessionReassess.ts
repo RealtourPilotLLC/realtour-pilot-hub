@@ -161,7 +161,10 @@ export async function reassessMonthSessions(monthId: string, opts: { now?: Date;
       // by call (a first sight included: a call that is ALREADY gone is
       // today's fact, not the booking's). A written-route session whose
       // answers were reopened has no anchor either — that is not a lost call.
-      const plannedByCall = derived.planningMode === "CALL" || !!prior?.ref?.startsWith("CALL_END:");
+      // Oct 13 2026: a client who plans their own content, or has calls
+      // switched off, has no strategy call for a session to have lost.
+      const callsMatter = !derived.clientPlanned && derived.callMode !== "NOT_INCLUDED";
+      const plannedByCall = callsMatter && (derived.planningMode === "CALL" || !!prior?.ref?.startsWith("CALL_END:"));
       const lost = plannedByCall ? deadCalls[0] ?? null : null;
       if (lost) {
         const what = lost.status === "NO_SHOW" ? "was marked a no-show" : lost.status === "RESCHEDULED" ? "was moved to a time outside this month" : "was cancelled";

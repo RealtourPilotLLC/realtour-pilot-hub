@@ -813,7 +813,9 @@ async function main() {
     c.ok("each row carries the evidence: client, job, listing, host", by("aryeo:lst-dee:1")?.clientName === "Dee Legacy TEST" && by("aryeo:lst-dee:1")?.listingId === "lst-dee" && by("aryeo:lst-dee:1")?.fileHost === "cdn.aryeo.invalid");
     const board = await opsExceptionsBoard();
     const row = board.rows.find((r) => r.id === `legacy:${dee.enrollmentId}`);
-    c.ok("the board: one row for the client, the three unconfirmed files, Kyle, the next action", !!row && row.title === "Dee Legacy TEST" && /^3 older delivered files/.test(row.why) && row.owner === "Kyle" && /confirm or relink/.test(row.nextAction), row ? `${row.title} · ${row.why}` : "none");
+    // Oct 13 2026 (Jordan): history, not a live fault — off Kyle's Home board;
+    // the Library tab above (legacyIdentityRows) still lists every one.
+    c.ok("the Home board no longer carries the legacy-identity row", !row && !board.rows.some((r) => r.id.startsWith("legacy:")), row ? `${row.title} · ${row.why}` : "none");
   }
 
   // =========================================================================

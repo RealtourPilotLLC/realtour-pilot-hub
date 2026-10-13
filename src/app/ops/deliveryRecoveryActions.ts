@@ -96,15 +96,3 @@ export async function retryPortalPublicationAction(submissionId: string): Promis
   refresh();
   return { ok: true, message: "Publishing to the client's portal now. This row clears when it lands; if it can't, the reason shows here." };
 }
-
-/** Oct 12 2026: a branding video the portal already has is done for the office
- *  (after an optional Aryeo upload). Records it; reaches no client. */
-export async function completePortalDeliveryAction(submissionId: string, opts: { aryeo?: boolean } = {}): Promise<Result> {
-  const who = await staff();
-  if (!who.ok) return who;
-  if (!ID_RE.test(submissionId)) return { ok: false, message: "That video isn't on the delivery queue." };
-  const { completePortalDelivery } = await import("@/lib/readyToSend");
-  const r = await completePortalDelivery(submissionId, who.name, { aryeo: opts.aryeo === true });
-  if (r.ok) refresh();
-  return r;
-}

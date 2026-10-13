@@ -789,6 +789,8 @@ const LIVE_JOB: Prisma.ProjectWhereInput = { status: { notIn: ["DELIVERED", "CAN
  *      (the editor's self-check), and assignment is never the way in.
  *   3. OFFER — a cut the PRIMARY has held past coverOfferHours covered hours
  *      is offered to the backup: one bell row, once per cut. Nothing moves.
+ *   3b. ESCALATE — a cut still waiting after 2 x coverOfferHours covered hours
+ *      (the primary's window, then the backup's) texts the owner once.
  *   4. MOVE — only when review_room.coverTransferHours is set (null today):
  *      a cut held past that many covered hours moves to the next present seat.
  *      A cut somebody chose by hand (MANUAL) is never moved by the rule.
@@ -800,9 +802,10 @@ export async function reviewCoverSweep(opts: { now?: Date } = {}): Promise<{
   labelled: number;
   offered: number;
   autoMoved: number;
+  escalated: number;
 }> {
   const at = opts.now ?? new Date();
-  const out = { configured: false, awayMoved: 0, labelled: 0, offered: 0, autoMoved: 0 };
+  const out = { configured: false, awayMoved: 0, labelled: 0, offered: 0, autoMoved: 0, escalated: 0 };
   const chain = await reviewerChain(at);
   if (!chain.configured) return out;
   out.configured = true;
@@ -870,6 +873,53 @@ export async function reviewCoverSweep(opts: { now?: Date } = {}): Promise<{
         dedupeKey: `review-cover-offer-${s.id}`,
       });
       out.offered++;
+    }
+  }
+
+  // 3b · PAST THE BACKUP WINDOW → text Jordan, once per cut (Oct 13 2026).
+  // He is no longer texted for every cut that lands in review (his default
+  // "Video in review" is bell-only now, notifyPrefDefaults). The primary has
+  // coverOfferHours covered hours, then the backup is offered it and gets the
+  // same again; a cut still waiting after both windows is the one worth his
+  // phone. The bell row (one per cut) is the once-only marker; the cuts that
+  // cross in one sweep share ONE text, so a backlog never arrives as a burst.
+  // The text respects his own quiet time (notifyStaffSms → holdFor).
+  {
+    const windowHours = rules.coverOfferHours * 2;
+    const stale = await prisma.reviewSubmission.findMany({
+      where: { status: "PENDING", project: LIVE_JOB, AND: [IN_REVIEW] },
+      select: { id: true, projectId: true, round: true, createdAt: true, selfCheckedAt: true, project: { select: { title: true } } },
+      orderBy: { createdAt: "asc" },
+      take: 200,
+    });
+    const crossed: { street: string; round: number; href: string; hours: number }[] = [];
+    for (const s of stale) {
+      const since = s.selfCheckedAt && s.selfCheckedAt > s.createdAt ? s.selfCheckedAt : s.createdAt;
+      const hours = coveredHoursBetween(since, at, cov);
+      if (hours < windowHours) continue;
+      if ((await prisma.notification.count({ where: { dedupeKey: { startsWith: `review-owner-escalation-${s.id}` } } })) > 0) continue;
+      const street = (s.project?.title || "a job").split(",")[0].trim();
+      const href = `/review/${s.projectId}?cut=${s.id}`;
+      const { notifyInApp } = await import("@/lib/notify");
+      await notifyInApp({
+        kind: "review_escalation",
+        title: `${street} (v${s.round}) has waited ${Math.floor(hours)} covered hours for review — past the backup window`,
+        href,
+        targets: [{ roles: ["OWNER"] }],
+        dedupeKey: `review-owner-escalation-${s.id}`,
+      });
+      crossed.push({ street, round: s.round, href, hours: Math.floor(hours) });
+    }
+    out.escalated = crossed.length;
+    if (crossed.length) {
+      const ownerIds = await import("@/lib/smsPrefs").then((m) => m.ownerTeamMemberIds()).catch(() => [] as string[]);
+      const { notifyStaffSms } = await import("@/lib/notify");
+      const { appBase } = await import("@/lib/appUrl");
+      const [first] = crossed;
+      const text = crossed.length === 1
+        ? `Video still waiting on review past the backup window: ${first.street} (v${first.round}), ${first.hours} covered hours. ${appBase()}${first.href}`
+        : `${crossed.length} videos still waiting on review past the backup window, oldest ${first.street} (v${first.round}). ${appBase()}/review`;
+      if (ownerIds.length) await notifyStaffSms(ownerIds, text, "review_escalation").catch(() => null);
     }
   }
 

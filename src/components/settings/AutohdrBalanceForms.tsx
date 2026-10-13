@@ -46,18 +46,12 @@ export function AutohdrReadingForm() {
   );
 }
 
-const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
 export function AutohdrSettingsForm({
   initial,
-  people,
 }: {
   initial: { checkOwnerKey: string | null; checkWeekday: number; thresholdCredits: number | null; thresholdDollars: number | null; creditsPerPhoto: number | null };
-  people: { key: string; name: string }[];
 }) {
   const [pending, start] = useTransition();
-  const [owner, setOwner] = useState(initial.checkOwnerKey ?? "");
-  const [day, setDay] = useState(initial.checkWeekday);
   const [tc, setTc] = useState(initial.thresholdCredits?.toString() ?? "");
   const [td, setTd] = useState(initial.thresholdDollars?.toString() ?? "");
   const [cpp, setCpp] = useState(initial.creditsPerPhoto?.toString() ?? "");
@@ -69,7 +63,7 @@ export function AutohdrSettingsForm({
         e.preventDefault();
         start(async () => {
           try {
-            const r = await saveAutohdrSettings({ checkOwnerKey: owner || null, checkWeekday: day, thresholdCredits: tc || null, thresholdDollars: td || null, creditsPerPhoto: cpp || null });
+            const r = await saveAutohdrSettings({ checkOwnerKey: initial.checkOwnerKey, checkWeekday: initial.checkWeekday, thresholdCredits: tc || null, thresholdDollars: td || null, creditsPerPhoto: cpp || null });
             setMsg({ ok: r.ok, text: r.message });
           } catch (err) {
             setMsg({ ok: false, text: err instanceof Error ? err.message : "That didn't save." });
@@ -78,17 +72,6 @@ export function AutohdrSettingsForm({
       }}
     >
       <div className="grid gap-2 sm:grid-cols-2">
-        <label className="text-xs text-muted">Weekly check goes to
-          <select value={owner} onChange={(e) => setOwner(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm">
-            <option value="">Nobody (no weekly task)</option>
-            {people.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
-          </select>
-        </label>
-        <label className="text-xs text-muted">On
-          <select value={day} onChange={(e) => setDay(Number(e.target.value))} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm">
-            {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
-          </select>
-        </label>
         <label className="text-xs text-muted">Alert below (credits)
           <input value={tc} onChange={(e) => setTc(e.target.value)} inputMode="numeric" placeholder="not set" className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm" />
         </label>

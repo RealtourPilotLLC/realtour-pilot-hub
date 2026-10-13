@@ -43,7 +43,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     id: "scheduling",
     title: "Scheduling & turnaround",
     short: "Scheduling",
-    summary: "The delivery times we promise clients, and how content-program strategy calls are booked and matched to a client's month.",
+    summary: "The delivery times we promise clients for photos, video, floor plans, 3D tours and monthly content.",
   },
   {
     id: "production",
@@ -55,7 +55,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     id: "program",
     title: "Content program",
     short: "Content program",
-    summary: "The content program's automations and its client reminders. Every switch that would reach a client stays closed until launch is approved, and each one says what it needs before it can work.",
+    summary: "Everything for the content program in one place: its automations, its client reminders, how strategy calls are booked and matched to a client's month through Calendly, and client onboarding. Every switch that would reach a client stays closed until launch is approved, and each one says what it needs before it can work.",
   },
   {
     id: "comms",
@@ -93,9 +93,10 @@ export type SettingsCardKey = (typeof SETTINGS_CARD_KEYS)[number];
  */
 export const SETTINGS_LAYOUT: Record<SettingsGroupId, readonly SettingsCardKey[]> = {
   team: ["team-notifications", "coaching"],
-  scheduling: ["turnaround", "calendly"],
+  scheduling: ["turnaround"],
   production: ["editor-routing", "review-room", "topaz", "product-categories"],
-  program: ["program-automations", "program-reminders"],
+  // Oct 13 2026: Calendly & calls joins the other content-program cards.
+  program: ["program-automations", "program-reminders", "calendly"],
   comms: ["automated-texts", "text-wording", "internal-alerts"],
   integrations: [],
   financial: ["pay-view"],

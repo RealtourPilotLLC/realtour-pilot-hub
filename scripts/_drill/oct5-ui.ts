@@ -411,7 +411,7 @@ async function main() {
     const destinations = findBy(owner.tree, (e) => e.type === "nav" && e.props["aria-label"] === "Your work destinations");
     const destLinks = destinations.flatMap((nav) => findBy(nav, (e) => typeof e.props.href === "string").map((e) => e.props.href as string));
     c.ok("each work destination is linked once (one nav, no duplicate Review Room/My work rows at the top)", destinations.length === 1 && new Set(destLinks).size === destLinks.length && destLinks.includes("/review") && destLinks.includes("/tasks?tab=work&who=me"), destLinks.join(" "));
-    c.ok("the standing rules fold under 'How the day runs'", findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("How the day runs")).length === 1);
+    c.ok("Oct 13 2026: the standing 'How the day runs' rules block is gone", findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("How the day runs")).length === 0);
 
     await signIn(kyle);
     const ops = await render();

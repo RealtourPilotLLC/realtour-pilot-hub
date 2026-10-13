@@ -100,8 +100,9 @@ export function dueTodayET(now: Date = new Date()): Date {
 }
 
 /**
- * THE DESK TASK SAYS IT EXISTS (Oct 5 2026, team notifications pass). A
- * HIGH or URGENT program task — book a paying client's discovery call, the
+ * THE DESK TASK SAYS IT EXISTS (Oct 5 2026, team notifications pass; since
+ * Oct 13 2026 URGENT only — HIGH is covered by the morning and 4 PM digests). An
+ * URGENT (once also HIGH) program task — book a paying client's discovery call, the
  * scripts not approved 24 hours before filming (URGENT), a draft that keeps
  * failing — was a row on a list and nothing else, so the 24-hour warning
  * before a shoot could sit unread until the shoot. Like the URGENT comms task
@@ -120,7 +121,10 @@ async function pingDeskTask(
   row: { id: string; dueAt: Date | null },
   how: "New on" | "Back on",
 ): Promise<void> {
-  if (input.priority === "MEDIUM" || isTestClientName(input.clientName)) return;
+  // Oct 13 2026 (Jordan): desk tasks reached Kyle three or four ways (the
+  // list, this DM, the morning and 4 PM digests, the Home row). Only URGENT
+  // pings at once now; HIGH waits for the digests, which already list it.
+  if (input.priority !== "URGENT" || isTestClientName(input.clientName)) return;
   try {
     const { inBackground, notifyStaffSms, opsAlert } = await import("@/lib/notify");
     const { appBase } = await import("@/lib/appUrl");

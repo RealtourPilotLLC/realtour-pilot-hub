@@ -66,6 +66,14 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   const unanalyzed = (await import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ monthId: month.id })).catch(() => []))
     .filter((c) => c.state === "in" || c.state === "failed").length;
   const prodHref = (v: string) => contentHref(id, { tab: "production", view: v, month: mk });
+  // Oct 13 2026 (Jordan, "as simple as possible"): internal machinery is not
+  // Overview material. Failed automation, an onboarding error and a failed
+  // reminder are counted into ONE line that opens Monitoring, where the detail
+  // lives; reminder bookkeeping shows only while reminders are switched on.
+  const remindersOn = await import("@/lib/programAutomation").then((m) => m.isAutomationEnabled("reminders")).catch(() => false);
+  const automationIssues = (row?.failures.length ?? 0)
+    + (onboarding && onboarding.status !== "COMPLETE" && onboarding.status !== "WAIVED" && onboarding.lastError ? 1 : 0)
+    + (remindersOn && row?.comms.failure ? 1 : 0);
   // The roster's "Open the history" / "Open" point at THIS page (ended,
   // skipped and imported months): useful on a card, dead here — the one
   // dominant button reloaded the page it sat on (Sep 24). Words only, then.
@@ -183,7 +191,6 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
             <li>Strategy: {onboarding.approved ? `v${onboarding.approved.versionNo} approved${onboarding.approved.releasedAt ? " and released" : ""}` : onboarding.draft ? `v${onboarding.draft.versionNo} drafted — ${onboarding.draft.status.toLowerCase().replace(/_/g, " ")}` : "no draft yet"}
               {" "}<Link href={planHref("strategy")} className="font-medium text-brand hover:underline">Open</Link></li>
             {onboarding.missingItems.length > 0 && <li className="text-warning">Missing: {onboarding.missingItems.slice(0, 6).join(", ")}</li>}
-            {onboarding.lastError && <li className="text-warning">Last error: {onboarding.lastError.slice(0, 160)}</li>}
           </ul>
         </Section>
       )}
@@ -196,7 +203,6 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Strategy call</p>
                 <p>{row.planning.requirementWord}{row.strategyCall.atISO ? ` · ${fmtDay(row.strategyCall.atISO)}` : ""} · {(row.strategyCall.status ?? row.planning.callStatus).toLowerCase().replace(/_/g, " ")}</p>
-                <p className="text-muted">evidence: {row.strategyCall.evidence ?? "nothing recorded"}</p>
                 {row.strategyCall.problem && <p className="text-warning">{row.strategyCall.problem}</p>}
                 <Link href={planHref("calls")} className="text-[12px] font-medium text-brand hover:underline">Plan › Calls →</Link>
                 {/* Oct 12 2026: how this month is planned, when the client told us (owner/admin). */}
@@ -251,26 +257,20 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
                 Last on the thread: <span className="font-medium text-foreground/85">{lastMessage.authorLabel}</span> ({lastMessage.authorKind === "CLIENT" ? "client" : "office"}), {fmtDay(lastMessage.createdAt.toISOString())} — &ldquo;{lastMessage.body.slice(0, 140)}{lastMessage.body.length > 140 ? "…" : ""}&rdquo;
               </p>
             )}
-            {row.comms.everSent ? (
+            {remindersOn && (row.comms.everSent ? (
               <p>Last reminder: {row.comms.lastAction?.toLowerCase().replace(/_/g, " ")} · {fmtDay(row.comms.lastAt?.toISOString())}</p>
             ) : (
-              <p className="text-muted">No reminder has ever been sent for this month.</p>
-            )}
-            {row.comms.nextEligibleAt && <p className="text-muted">Next reminder eligible {fmtDay(row.comms.nextEligibleAt.toISOString())}</p>}
-            {row.comms.failure && <p className="text-warning">A reminder failed: {row.comms.failure.slice(0, 120)}</p>}
+              <p className="text-muted">No reminder has been sent for this month.</p>
+            ))}
           </div>
         </Section>
       )}
 
-      {/* FAILURES — anything automatic that errored on this client. */}
-      {row && row.failures.length > 0 && (
-        <Section icon={AlertTriangle} title="Failed automation" count={row.failures.length} tone="warning">
-          <ul className="space-y-1 text-[13px]">
-            {row.failures.slice(0, 6).map((x) => (
-              <li key={x.ref}><Link href={x.href} className="font-medium hover:underline">{x.title}</Link> <span className="text-muted-2">— {x.error.slice(0, 120)}</span></li>
-            ))}
-          </ul>
-        </Section>
+      {/* AUTOMATION ISSUES — one line; the detail lives on Monitoring. */}
+      {automationIssues > 0 && (
+        <Link href="/content/monitoring" className="flex min-h-11 items-center gap-2 rounded-xl border border-warning/40 bg-warning/5 px-4 py-2 text-[13px] font-medium text-warning hover:bg-warning/10">
+          <AlertTriangle className="size-4 shrink-0" aria-hidden /> {plural(automationIssues, "automation issue")} on this client · Monitoring →
+        </Link>
       )}
     </div>
   );

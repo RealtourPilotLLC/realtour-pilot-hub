@@ -44,7 +44,6 @@ export type ExceptionKind =
   | "unsent-replacement"
   | "unverified-render"
   | "library-missing"
-  | "legacy-identity"
   | "reopened-work"
   | "unmapped-scope"
   | "other-output"
@@ -104,7 +103,6 @@ export function emptyExceptionBoard(): OpsExceptionBoard {
       "unsent-replacement": { ...none },
       "unverified-render": { ...none },
       "library-missing": { ...none },
-      "legacy-identity": { ...none },
       "reopened-work": { ...none },
       "unmapped-scope": { ...none },
       "other-output": { ...none },
@@ -123,7 +121,6 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "unsent-replacement": "Approved replacement, not sent",
   "unverified-render": "1080p file held — sound not verified",
   "library-missing": "Approved video not in the client's library",
-  "legacy-identity": "Old library file needs its video confirmed",
   "reopened-work": "Reopened work",
   "unmapped-scope": "Product nobody has mapped",
   "other-output": "Order line with no known output",
@@ -730,64 +727,11 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
     });
   }
 
-  // 8. OLD LIBRARY FILES NOBODY HAS VOUCHED FOR (legacy identity, Sep 25 2026).
-  // A delivered file still on a positional Aryeo key (aryeo:<listing>:<n>) whose
-  // pairing no person has confirmed — the rows the Library tab flags "unverified
-  // legacy row" (workspaceData, same test). They cannot drift any more
-  // (portalLibrary keys by video id now), but which video each one IS was
-  // never proved; the identity tool on that tab settles it. One row per client.
-  // The positional shape is tested on the PortalVideo's CURRENT key, as the
-  // Library tab does: a row re-keyed by URL (portalLibrary.rekeyIndexedLibraryRows)
-  // is settled even while its old source row lingers.
-  const LEGACY_KEY = /^aryeo:[^:]+:\d+$/;
-  const excludedEnrollmentIds = excludedClientIds.length
-    ? (await prisma.contentEnrollment.findMany({ where: { clientId: { in: excludedClientIds } }, select: { id: true } })).map((e) => e.id)
-    : [];
-  const positional = (
-    await prisma.portalVideo
-      .findMany({ where: { source: "aryeo", externalKey: { startsWith: "aryeo:" }, ...(excludedEnrollmentIds.length ? { enrollmentId: { notIn: excludedEnrollmentIds } } : {}) }, select: { id: true, externalKey: true }, take: 5_000 })
-      .catch(() => [] as { id: string; externalKey: string }[])
-  ).filter((r) => LEGACY_KEY.test(r.externalKey));
-  const legacySources = positional.length
-    ? (await prisma.contentVideoSource
-        .findMany({ where: { kind: "PORTAL_VIDEO", confirmedAt: null, portalVideoId: { in: positional.map((r) => r.id) } }, select: { videoId: true, ref: true, portalVideoId: true, matchBasis: true, createdAt: true } })
-        .catch(() => [])).filter((x) => x.matchBasis !== "staff" && positional.some((r) => r.id === x.portalVideoId && r.externalKey === x.ref))
-    : [];
-  const legacyVideos = legacySources.length
-    ? new Map(
-        (await prisma.contentVideo
-          .findMany({ where: { id: { in: [...new Set(legacySources.map((x) => x.videoId))] }, status: { not: "ARCHIVED" }, ...clientScope }, select: { id: true, enrollmentId: true } })
-          .catch(() => [] as { id: string; enrollmentId: string }[])).map((v) => [v.id, v.enrollmentId]),
-      )
-    : new Map<string, string>();
-  const legacyByEnrollment = new Map<string, { count: number; since: Date }>();
-  for (const x of legacySources) {
-    const enrollmentId = legacyVideos.get(x.videoId);
-    if (!enrollmentId) continue;
-    const g = legacyByEnrollment.get(enrollmentId) ?? { count: 0, since: x.createdAt };
-    g.count++;
-    if (x.createdAt < g.since) g.since = x.createdAt;
-    legacyByEnrollment.set(enrollmentId, g);
-  }
-  const legacyEnrollments = legacyByEnrollment.size
-    ? await prisma.contentEnrollment.findMany({ where: { id: { in: [...legacyByEnrollment.keys()] } }, select: { id: true, clientId: true } }).catch(() => [] as { id: string; clientId: string }[])
-    : [];
-  await nameClients(legacyEnrollments.map((e) => e.clientId));
-  const legacyRows = [...legacyByEnrollment.entries()].sort((a, b) => b[1].count - a[1].count);
-  for (const [enrollmentId, g] of legacyRows.slice(0, cap)) {
-    out.push({
-      id: `legacy:${enrollmentId}`,
-      kind: "legacy-identity",
-      // History, not a live fault: the client already has these files.
-      severity: "medium",
-      title: programClientName.get(legacyEnrollments.find((e) => e.id === enrollmentId)?.clientId ?? "") ?? "A program client",
-      why: `${g.count} older delivered file${g.count === 1 ? " is" : "s are"} tied to a video by list position only, and nobody has confirmed which`,
-      owner: "Kyle",
-      nextAction: "Open the client's video list and confirm or relink each flagged file",
-      href: `/content/${enrollmentId}?tab=production&view=videos`,
-      ageDays: ageOf(g.since, now),
-    });
-  }
+  // 8. (retired Oct 13 2026, Jordan) OLD LIBRARY FILES NOBODY HAS VOUCHED
+  // FOR used to be a row here. It is history, not a live fault (the client
+  // already has those files), so it no longer takes a place on Kyle's Home
+  // exceptions; the client's Library tab still flags each unverified legacy
+  // row and carries the identity tool that settles it (workspaceData).
 
   // 9. REOPENED WORK (A52, Sep 25 2026). A job that went out and came back is
   // either dated — a client round's 48 business hours, the same business day
@@ -884,7 +828,6 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
       // Read whole (under the ceiling), so this is the pile too.
       "unverified-render": { all: heldRenders.length, high: heldRenders.filter((j) => heldHours(j) >= 24).length },
       "library-missing": { all: libraryFailures.length, high: libraryFailures.filter((e) => libraryHours(e) >= 24).length },
-      "legacy-identity": { all: legacyByEnrollment.size, high: 0 },
       "reopened-work": { all: reopened.length, high: reopened.filter((r) => r.overdue).length },
       "unmapped-scope": scope?.totals["unmapped-scope"] ?? { all: 0, high: 0 },
       "other-output": scope?.totals["other-output"] ?? { all: 0, high: 0 },

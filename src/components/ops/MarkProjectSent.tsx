@@ -27,17 +27,17 @@ export function MarkProjectSent({ projectId, cuts, onRecorded }: { projectId: st
           || (result.ok && (new Set(result.completed.map(v => v.submissionId)).size !== cuts.length || result.unconfirmed))) throw new Error("Unconfirmed delivery receipt");
         if (!result.ok) setMessage(result.message);
         if (result.completed.length) onRecorded(result.completed);
-      } catch { setMessage("Could not confirm the delivery records. Try Mark as sent again; existing records will be preserved. You do not need to send the files again."); }
+      } catch { setMessage("Could not confirm the delivery records. Try Mark as delivered again; existing records will be preserved. You do not need to send the files again."); }
       finally { clearTimeout(timer); guard.current = false; setBusy(false); }
     })();
   }
   return <div className="contents">
-    <Button className="border-transparent bg-emerald-700 text-white hover:bg-emerald-800" busy={busy} busyLabel="Saving…" onClick={() => { if (!guard.current) setConfirming(true); }}>Mark as sent</Button>
+    <Button className="border-transparent bg-emerald-700 text-white hover:bg-emerald-800" busy={busy} busyLabel="Saving…" onClick={() => { if (!guard.current) setConfirming(true); }}>Mark as delivered</Button>
     {message && <SaveStatus state="error" message={message} className="w-full" />}
-    {confirming && <ModalDialog label="Confirm sent" onCancel={() => setConfirming(false)} className="max-w-md">
-      <h3 className="text-lg font-semibold">Confirm sent</h3>
-      <p className="mt-2 text-sm">Confirm these {cuts.length} uploaded video{cuts.length === 1 ? " has" : "s have"} been sent to the client. This records delivery and sends no message.</p>
-      <div className="mt-5 flex flex-wrap justify-end gap-2"><Button variant="secondary" data-modal-initial-focus onClick={() => setConfirming(false)}>Cancel</Button><Button onClick={save}>Confirm sent</Button></div>
+    {confirming && <ModalDialog label="Confirm delivered" onCancel={() => setConfirming(false)} className="max-w-md">
+      <h3 className="text-lg font-semibold">Confirm delivered</h3>
+      <p className="mt-2 text-sm">Confirm these {cuts.length} uploaded video{cuts.length === 1 ? " has" : "s have"} been delivered to the client on the Aryeo listing. Aryeo&rsquo;s own delivery event normally records this by itself. This records delivery and sends no message.</p>
+      <div className="mt-5 flex flex-wrap justify-end gap-2"><Button variant="secondary" data-modal-initial-focus onClick={() => setConfirming(false)}>Cancel</Button><Button onClick={save}>Confirm delivered</Button></div>
     </ModalDialog>}
   </div>;
 }
