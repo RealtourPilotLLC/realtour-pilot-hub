@@ -736,10 +736,15 @@ export async function queueTopicRefresh(opts: { enrollmentId: string; kind: "BAN
 }
 
 /** Run up to `max` queued BANK/REFRESH runs, oldest first. A closed `ai_runs` switch stops the drain and leaves every run queued. */
-export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: number; now?: Date } = {}): Promise<{ ran: number; succeeded: number; failed: number; paused: string | null; lastError: string | null }> {
+export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: number; minStartMs?: number; now?: Date } = {}): Promise<{ ran: number; succeeded: number; failed: number; paused: string | null; lastError: string | null }> {
   const started = Date.now();
   const max = opts.max ?? 2;
   const budgetMs = opts.budgetMs ?? 60_000;
+  // Oct 13 2026: a refresh takes ~45–60 s, a whole bank longer. The hourly job
+  // used to START a second one with seconds left; the server stopped it
+  // mid-call and every client's card read "AI run topic_refresh failed
+  // (lease expired)". A run starts only with the time to finish it.
+  const minStartMs = opts.minStartMs ?? 0;
   await expireStaleRefreshLeases();
   const now = opts.now ?? new Date();
   const due = await prisma.contentTopicRefreshRun.findMany({
@@ -758,7 +763,7 @@ export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: nu
   let paused: string | null = null;
   let lastError: string | null = null;
   for (const run of due.filter((r) => !clientPlanned.has(r.enrollmentId))) {
-    if (ran >= max || Date.now() - started > budgetMs) break;
+    if (ran >= max || Date.now() - started > budgetMs || budgetMs - (Date.now() - started) < minStartMs) break;
     if (!(await claimQueuedRun(run.id, "topic-bank-cron"))) continue;
     ran++;
     let inputs: { pillarId?: string | null; keep?: number | null } = {};
@@ -827,7 +832,7 @@ const FAILED_INITIAL_BACKOFF_MS = 86_400_000;
  * approval, else queue a targeted refill for each pillar below target (at most
  * once a week per pillar). Then drain. Nothing here reaches a client.
  */
-export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; now?: Date } = {}): Promise<{ skipped: string } | { queued: number; initial: number; refills: number; drained: Awaited<ReturnType<typeof drainTopicRefreshQueue>> }> {
+export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; minStartMs?: number; now?: Date } = {}): Promise<{ skipped: string } | { queued: number; initial: number; refills: number; drained: Awaited<ReturnType<typeof drainTopicRefreshQueue>> }> {
   if (!(await isAutomationEnabled("topic_refresh"))) return { skipped: "topic_refresh is off" };
   const now = opts.now ?? new Date();
   let queued = 0, initial = 0, refills = 0;
@@ -869,7 +874,7 @@ export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; n
       lastError = err instanceof Error ? err.message : String(err);
     }
   }
-  const drained = await drainTopicRefreshQueue({ max: opts.max ?? 2, budgetMs: opts.budgetMs ?? 60_000, now });
+  const drained = await drainTopicRefreshQueue({ max: opts.max ?? 2, budgetMs: opts.budgetMs ?? 60_000, minStartMs: opts.minStartMs, now });
   // A pause Jordan asked for is not an error on the monitoring screen.
   await recordAutomationRun("topic_refresh", lastError ?? drained.lastError).catch(() => {});
   return { queued, initial, refills, drained };

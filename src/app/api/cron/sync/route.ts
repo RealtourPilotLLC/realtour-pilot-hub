@@ -425,14 +425,8 @@ export async function GET(req: NextRequest) {
     const { sweepAutoShare } = await import("@/lib/scriptAutoShare");
     return sweepAutoShare();
   }, { maxMs: 20_000 });
-  // CP-07: the topic bank keeps itself stocked — the initial bank after a
-  // strategy is approved, per-pillar refills when usable stock falls below the
-  // target. Behind `topic_refresh` (and `ai_runs` under it); every result is a
-  // suggestion Jordan reviews. Two runs per tick at most.
-  await step("topicBanks", async () => {
-    const { sweepTopicBanks } = await import("@/lib/contentTopics");
-    return sweepTopicBanks({ max: 2, budgetMs: 60_000 });
-  }, { maxMs: 75_000 });
+  // CP-07's topic banks moved to their own job (/api/cron/topics, every 15
+  // minutes, Oct 13 2026): squeezed in here they were cut off mid-run.
   // 6.3: the client's recommendations for each open month, re-ranked only
   // when the month's slots, plan or bank changed. Pure ranking — no AI, no
   // spend, nothing sent. Behind `topic_refresh` (off → skipped).

@@ -111,7 +111,15 @@ export async function failedAutomations(opts: { sinceDays?: number; take?: numbe
   ]);
   const out: FailedAutomation[] = [];
   for (const j of jobs) out.push({ kind: "transcript_job", ref: j.id, enrollmentId: j.enrollmentId, clientId: null, monthId: null, title: `${j.kind} transcript job ${j.state === "NEEDS_REVIEW" ? "needs a person" : "failed"}`, error: j.reviewReason ?? j.lastError ?? "no detail recorded", at: j.lastErrorAt ?? j.updatedAt, retryable: j.state === "FAILED", href: "/content/monitoring#transcripts" });
-  for (const r of runs) out.push({ kind: "ai_run", ref: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, monthId: monthIdOf(r.scopeJson), title: `AI run ${r.kind} ${r.status === "QUOTA_BLOCKED" ? "blocked by quota" : "failed"}`, error: r.error ?? "no detail recorded", at: r.errorAt ?? r.updatedAt, retryable: false, href: "/content/monitoring#ai-runs" });
+  // Oct 13 2026: a failed run that a LATER run of the same kind for the same
+  // client has since done successfully is history, not a failure someone owns
+  // (a run cut off mid-call by the server, then redone an hour later).
+  const succeededLater = runs.length
+    ? await prisma.programAiRun.findMany({ where: { status: "SUCCEEDED", kind: { in: [...new Set(runs.map((r) => r.kind))] }, enrollmentId: { in: [...new Set(runs.map((r) => r.enrollmentId).filter((x): x is string => !!x))] }, updatedAt: { gte: since } }, select: { kind: true, enrollmentId: true, updatedAt: true } }).catch(() => [])
+    : [];
+  const superseded = (r: { kind: string; enrollmentId: string | null; errorAt: Date | null; updatedAt: Date }) =>
+    !!r.enrollmentId && succeededLater.some((s) => s.kind === r.kind && s.enrollmentId === r.enrollmentId && s.updatedAt > (r.errorAt ?? r.updatedAt));
+  for (const r of runs.filter((x) => !superseded(x))) out.push({ kind: "ai_run", ref: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, monthId: monthIdOf(r.scopeJson), title: `AI run ${r.kind} ${r.status === "QUOTA_BLOCKED" ? "blocked by quota" : "failed"}`, error: r.error ?? "no detail recorded", at: r.errorAt ?? r.updatedAt, retryable: false, href: "/content/monitoring#ai-runs" });
   for (const r of reminders) out.push({ kind: "reminder", ref: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, monthId: r.monthId, title: `Reminder ${r.action} ${r.outcome ?? "failed"}`, error: r.lastError ?? r.outcome ?? "no detail recorded", at: r.updatedAt, retryable: true, href: "/content/monitoring#reminders" });
   for (const s of sessions) out.push({ kind: "session_booking", ref: s.id, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, title: `Session booking needs a person (${s.bookingState.toLowerCase()})`, error: s.lastError ?? "no detail recorded", at: s.updatedAt, retryable: s.bookingState !== "MISMATCH", href: `/content/${s.enrollmentId}#sessions` });
   for (const a of addresses) out.push({ kind: "session_address", ref: a.id, enrollmentId: a.enrollmentId, clientId: a.clientId, monthId: a.monthId, title: a.syncState === "UNKNOWN" ? "Filming address update unconfirmed" : "Filming address not on the booking", error: a.lastError ?? a.syncState.toLowerCase(), at: a.updatedAt, retryable: false, href: `/content/${a.enrollmentId}#sessions` });
