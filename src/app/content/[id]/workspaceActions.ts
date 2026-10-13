@@ -136,13 +136,14 @@ export async function setWorkflowFlagsAction(enrollmentId: string, flags: { clie
  * Oct 8 2026: the client's PROGRAM STYLE — strategy calls on/off, and "the
  * client plans their own content (we show up and shoot)". Owner or admin.
  * Ledgered; the open months re-derive. Nothing is sent to anyone.
+ * Oct 13 2026: and the VIDEO STYLE, Direct-to-camera or Skits (programStyle.setVideoStyle).
  */
-export async function setProgramStyleAction(enrollmentId: string, change: { strategyCalls?: boolean; clientPlanned?: boolean }): Promise<Result> {
+export async function setProgramStyleAction(enrollmentId: string, change: { strategyCalls?: boolean; clientPlanned?: boolean; videoStyle?: string }): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   if (typeof enrollmentId !== "string" || !enrollmentId) return { ok: false, message: "Enrollment not found." };
   try {
     const me = await actor();
-    const { setClientPlanned, setStrategyCalls } = await import("@/lib/programStyle");
+    const { setClientPlanned, setStrategyCalls, setVideoStyle } = await import("@/lib/programStyle");
     const said: string[] = [];
     if (typeof change.strategyCalls === "boolean") {
       const r = await setStrategyCalls(enrollmentId, change.strategyCalls, me.email);
@@ -155,6 +156,13 @@ export async function setProgramStyleAction(enrollmentId: string, change: { stra
       said.push(change.clientPlanned
         ? (r.changed ? "They plan their own content now — no topics, questions or scripts from us, and filming isn't held up by planning." : "Already set: they plan their own content.")
         : (r.changed ? "We plan their content again — topics, questions and scripts are back on." : "Already set: we plan their content."));
+    }
+    if (change.videoStyle !== undefined) {
+      if (change.videoStyle !== "DIRECT" && change.videoStyle !== "SKITS") return { ok: false, message: "The video style is Direct-to-camera or Skits." };
+      const r = await setVideoStyle(enrollmentId, change.videoStyle, me.email);
+      said.push(change.videoStyle === "SKITS"
+        ? (r.changed ? "Video style: Skits. New scripts are written as short skits in the same framework, and new topic ideas are skit concepts. Scripts already written stay as they are." : "Already set: Skits.")
+        : (r.changed ? "Video style: Direct-to-camera. New scripts are written to camera again. Scripts already written stay as they are." : "Already set: Direct-to-camera."));
     }
     touch(enrollmentId);
     return { ok: true, message: said.join(" ") || "Nothing changed." };

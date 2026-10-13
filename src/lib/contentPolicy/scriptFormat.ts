@@ -705,20 +705,79 @@ export function isStageDirectionLine(line: string): boolean {
   return !LONE_PLACEHOLDER_RE.test(t) || DIRECTION_WORD_RE.test(t);
 }
 const labelKey = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+
+// ---------------------------------------------------------------------------
+// SKITS WRITTEN BY US (Oct 13 2026, the per-account video style). A SKITS
+// account's drafts are short scenes inside the same five sections: speaker
+// lines ("SAM: …", "REPORTER (off camera): …"), [bracketed] directions,
+// on-screen text and sound effects. Only the dialogue is spoken, so only the
+// dialogue is counted against the house cap. These helpers read that shape;
+// a script with no speaker labels and no bracketed line is counted exactly
+// as before.
+// ---------------------------------------------------------------------------
+
+/** "On-screen text: …", "Time card: …", "SFX: …" written without brackets: shown or heard, never said by anyone. */
+const UNSPOKEN_CUE_RE = /^(?:on[\s-]?screen(?:\s+(?:text|time\s+card|card|caption))?|text\s+on\s+screen|time\s+card|title\s+card|end\s+card|super|lower\s+third|sfx|sound(?:\s+effects?)?|music)\s*:/i;
+export function isUnspokenCueLine(line: string): boolean {
+  return UNSPOKEN_CUE_RE.test(line.trim());
+}
+/** A direction inside a spoken line ("Okay. [Beat.] One more."): words in brackets with a lower-case letter. A placeholder ($[PRICE]) is capitals and is said. */
+const INLINE_DIRECTION_RE = /(?<!\$)\[[^\]]*[a-z][^\]]*\]/g;
+export function stripInlineDirections(line: string): string {
+  return line.replace(INLINE_DIRECTION_RE, " ").replace(/\s+/g, " ").trim();
+}
+const SKIT_SPEAKER_RE = /^([A-Z][A-Z0-9.'’&]*(?:\s+[A-Z][A-Z0-9.'’&]*){0,3}(?:\s*\([^()]{1,30}\))?)\s*:\s+\S/;
+
+/**
+ * The speaker labels of a skit's lines, as written ("SAM", "REPORTER (off
+ * camera)", "SAM (eyes closed)"), first-seen order. A section label, a cue
+ * ("SFX:") or "On-screen text:" is not a speaker.
+ */
+export function skitSpeakerLabels(texts: readonly (string | null | undefined)[]): string[] {
+  const out: string[] = [];
+  for (const text of texts) {
+    for (const raw of (text ?? "").split("\n")) {
+      const t = raw.trim();
+      if (!t || isUnspokenCueLine(t)) continue;
+      const m = SKIT_SPEAKER_RE.exec(t);
+      if (!m) continue;
+      const label = m[1].replace(/\s+/g, " ").trim();
+      if (isKnownLabel(label.replace(/\s*\([^()]*\)$/, "")) || /^(?:TP\s*\d|CTA|NOTE|NOTES|PS|OK|Q|A)$/.test(label)) continue;
+      if (!out.includes(label)) out.push(label);
+    }
+  }
+  return out;
+}
+
+/** The words of a skit line that someone says: its speaker label, any [direction] and any unspoken cue are left out. */
+function spokenOfSkitLine(raw: string, labels: ReadonlySet<string>): string {
+  let line = raw.trim();
+  const sp = /^([^:“”"[\]]{1,60}):\s+(.*)$/.exec(line);
+  if (sp && labels.has(labelKey(sp[1]))) line = sp[2];
+  if (isStageDirectionLine(line) || isUnspokenCueLine(line)) return "";
+  return stripInlineDirections(line);
+}
+
 function blockSpokenWords(block: SpokenBlock | null | undefined, speakerLabels: readonly string[]): number {
   if (!block) return 0;
   const bracketed = isStageDirectionLine;
   if (!speakerLabels.length && !block.lines.some(bracketed)) return countSpokenWords(block.text);
   const labels = new Set(speakerLabels.map(labelKey));
   let n = 0;
-  for (const raw of block.lines) {
-    let line = raw.trim();
-    const sp = /^([^:“”"[\]]{1,60}):\s+(.*)$/.exec(line);
-    if (sp && labels.has(labelKey(sp[1]))) line = sp[2];
-    if (bracketed(line)) continue;
-    n += countSpokenWords(line);
-  }
+  for (const raw of block.lines) n += countSpokenWords(spokenOfSkitLine(raw, labels));
   return n;
+}
+
+/** The first line of a block that someone says (a skit's opener, for the greeting check), else the block's text. */
+function firstSpokenText(block: SpokenBlock | null | undefined, speakerLabels: readonly string[]): string {
+  if (!block) return "";
+  if (!speakerLabels.length && !block.lines.some(isStageDirectionLine)) return block.text.trim();
+  const labels = new Set(speakerLabels.map(labelKey));
+  for (const raw of block.lines) {
+    const said = spokenOfSkitLine(raw, labels);
+    if (said) return said;
+  }
+  return "";
 }
 
 export function estimateSpokenSeconds(script: CanonicalScript, wordsPerSec: number = GENERATION_POLICY.timing.wordsPerSec): SpokenEstimate {
@@ -842,8 +901,11 @@ export type GeneratedScriptJson = {
   gaps?: Gap[];
 };
 
-export function scriptFromGeneratorOutput(json: GeneratedScriptJson, stamp: PolicyStamp | null, clientId: string | null = null): CanonicalScript {
+export function scriptFromGeneratorOutput(json: GeneratedScriptJson, stamp: PolicyStamp | null, clientId: string | null = null, opts: { skit?: boolean } = {}): CanonicalScript {
   const internal = emptyInternal();
+  // Oct 13 2026: a SKITS account's draft keeps its speaker labels, so only
+  // the dialogue is timed and the version reads as a skit. Never for DIRECT.
+  if (opts.skit) internal.speakerLabels = skitSpeakerLabels([json.hook, ...(json.points ?? []).map((p) => p.text), json.close]);
   internal.filmingNotes = json.filmingNotes ?? null;
   internal.contentPillarCheck = json.contentPillarCheck ?? null;
   internal.sourceExcerpts = json.sourceExcerpts ?? [];
@@ -1070,11 +1132,13 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
 
   if (!script.title.trim()) push("title.missing", "block", "The script has no title.", "title");
 
-  // Hook
+  // Hook. A skit's opener is its first spoken line, not its setup direction
+  // or a speaker label (Oct 13 2026); every other script reads as before.
+  const speakers = script.internal.speakerLabels ?? [];
   const hookText = script.hook?.text.trim() ?? "";
   if (!hookText) push("hook.missing", "block", "Every script must begin with a strong hook — none present.", "hook");
   else {
-    const opener = hookText.replace(/^[“"'‘]+/, "");
+    const opener = (firstSpokenText(script.hook, speakers) || hookText).replace(/^[“"'‘]+/, "");
     const banned = policy.hooks.bannedOpeners.find((b) => opener.toLowerCase().startsWith(b.toLowerCase()));
     const shape = greetingShape(opener);
     if (banned) push("hook.banned-opener", "block", `The hook opens with “${banned}…” — never begin with a greeting or an introduction.`, "hook", { opener: banned });
@@ -1089,7 +1153,7 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
 
   // Greeting / intro anywhere in the spoken body (spec: "No greetings or introductions").
   script.points.forEach((p, i) => {
-    const shape = greetingShape(p.text.trim());
+    const shape = greetingShape(firstSpokenText(p, speakers) || p.text.trim());
     if (shape === "block") push("intro.greeting", "block", `Talking point ${i + 1} contains a greeting or self-introduction.`, `points[${i}]`);
     else if (shape === "warn") push("intro.possible-greeting", "warn", `Talking point ${i + 1} may open with a greeting or an aside — confirm.`, `points[${i}]`);
   });

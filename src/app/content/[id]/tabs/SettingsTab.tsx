@@ -3,6 +3,7 @@ import { PortalAccessCard } from "@/components/content/PortalAccessCard";
 import { EnrollmentControls } from "@/components/content/Workspace";
 import { ProgramStyleCard } from "@/components/content/ProgramStyleCard";
 import { loadSettingsTab } from "../workspaceData";
+import { videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
 import type { TabCtx } from "./shared";
 
 // ---------------------------------------------------------------------------
@@ -24,7 +25,8 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
   return (
     <div className="space-y-5">
       {/* Oct 8 2026: strategy calls on/off and "we show up and shoot" — owner/admin. */}
-      <ProgramStyleCard enrollmentId={ctx.id} strategyCalls={s.callMode !== "NOT_INCLUDED"} clientPlanned={s.clientSuppliesTopics} canEdit={ctx.staffEyes} />
+      {/* Oct 13 2026: + video style, Direct-to-camera or Skits (overridesJson.videoStyle). */}
+      <ProgramStyleCard enrollmentId={ctx.id} strategyCalls={s.callMode !== "NOT_INCLUDED"} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />
       {ctx.staffEyes && (
         <EnrollmentControls
           enrollmentId={ctx.id} pkg={s.pkg} status={s.status} videosPerMonth={s.videosPerMonth} sessionsPerMonth={s.sessionsPerMonth}
