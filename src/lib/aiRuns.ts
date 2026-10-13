@@ -67,7 +67,10 @@ export type AiRunKind =
   | "import_split"
   // A08 (Sep 25 2026): a person's "revise the strategy with this feedback" —
   // staff-initiated only, never a sweep; writes a new version for review.
-  | "strategy_revise";
+  | "strategy_revise"
+  // Oct 14 2026: the automatic check after every AI script draft
+  // (scriptJudge.ts), and the auto-built creative identity (creativeIdentity.ts).
+  | "script_judge" | "creative_identity";
 
 // Anthropic first-party rates, USD per million tokens (cached Sep 2026). A
 // cost ESTIMATE for the ledger — the invoice is the truth; cache reads are

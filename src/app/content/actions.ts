@@ -418,13 +418,13 @@ export async function approveScript(scriptId: string, shownVersionNo: number | n
   } catch (e) { return fail(e); }
 }
 
-export async function reviseScriptAI(scriptId: string, instructions: string): Promise<Result> {
+export async function reviseScriptAI(scriptId: string, instructions: string, lockSections: string[] = []): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   if (!instructions.trim()) return { ok: false, message: "Tell the AI what to change first." };
   try {
     const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
     const me = await actor();
-    await reviseScriptWithInstructions(scriptId, instructions, { requestedBy: me.email });
+    await reviseScriptWithInstructions(scriptId, instructions, { requestedBy: me.email, lockSections });
     revalidatePath("/content");
     return { ok: true, message: "Revised as a new version — the previous one is kept." };
   } catch (e) { return fail(e); }
@@ -992,9 +992,36 @@ export async function approveStrategy(versionId: string): Promise<Result> {
         bankNote = " The topic bank is queued: it builds on its own once the automatic topic bank is switched on, or press Refresh topics on Video Topics to build it now.";
       }
     } catch { /* the approval stands; the bank can still be built by hand */ }
+    // Oct 14 2026: a NEW approved strategy re-derives the client's creative
+    // identity (one AI call, auto-approved), after the response and best
+    // effort. If it does not run here, the 15-minute AI cron sees the stale
+    // identity and builds it.
+    if (!r.alreadyApproved) {
+      const enrollmentId = v.enrollmentId;
+      const work = async () => {
+        try {
+          const { deriveCreativeIdentity } = await import("@/lib/creativeIdentity");
+          await deriveCreativeIdentity(enrollmentId, { requestedBy: me.email, unattended: false });
+        } catch { /* the cron retries a missing or stale identity */ }
+      };
+      try { after(work); } catch { void work(); }
+    }
     path(v.enrollmentId);
     if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : "Already approved — its pillars exist; nothing changed.") + bankNote };
     return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}. Release it to the portal when you want the client to see it.${bankNote}` };
+  } catch (e) { return fail(e); }
+}
+
+/** Oct 14 2026: "Rebuild" on the Strategy tab's Creative identity card: one AI call from the approved strategy, auto-approved. */
+export async function rebuildCreativeIdentityAction(enrollmentId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const me = await actor();
+    const { deriveCreativeIdentity } = await import("@/lib/creativeIdentity");
+    const r = await deriveCreativeIdentity(String(enrollmentId ?? ""), { requestedBy: me.email, unattended: false });
+    if (!r.ok) return { ok: false, message: r.reason };
+    path(enrollmentId);
+    return { ok: true, message: "Creative identity rebuilt from the approved strategy. Scripts and topic ideas use it from now on." };
   } catch (e) { return fail(e); }
 }
 
@@ -1639,7 +1666,7 @@ export async function queueOwedScriptsAction(monthId: string, includeThin = fals
 }
 
 /** "Ask AI to revise" (instructions) or "Tighten" (instruction built from the current version's estimate): queued; the current version is kept. */
-export async function queueScriptRevisionAction(scriptId: string, mode: "revise" | "tighten", instructions = ""): Promise<QueueResult> {
+export async function queueScriptRevisionAction(scriptId: string, mode: "revise" | "tighten", instructions = "", lockSections: string[] = []): Promise<QueueResult> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
@@ -1659,7 +1686,10 @@ export async function queueScriptRevisionAction(scriptId: string, mode: "revise"
       sent = "Sent for revision — the new version appears here when it's ready; the current one is kept.";
     }
     const { enqueueAiJob } = await import("@/lib/aiQueue");
-    const q = await enqueueAiJob({ job: { job: "script_revise", scriptId: s.id, instruction, label: mode }, enrollmentId: s.enrollmentId, clientId: s.clientId, requestedBy: me.email, title: s.title });
+    // Oct 14 2026: "Keep exactly: Hook / Re-hook / …", only on a revision (a tighten rewrites for length).
+    const { asLockSections } = await import("@/lib/contentPolicy");
+    const locks = mode === "revise" ? asLockSections(lockSections) : [];
+    const q = await enqueueAiJob({ job: { job: "script_revise", scriptId: s.id, instruction, label: mode, ...(locks.length ? { lockSections: locks } : {}) }, enrollmentId: s.enrollmentId, clientId: s.clientId, requestedBy: me.email, title: s.title });
     if (!q.ok) return { ok: false, message: q.message, runId: q.runId ?? undefined };
     kickQueue("click");
     revalidatePath("/content");
@@ -1697,7 +1727,7 @@ export async function retryAiJobAction(runId: string): Promise<QueueResult> {
     let r: QueueResult;
     if (j.job === "script_topic") r = await queueTopicDraft(j.topicId, j.monthId, me.email);
     else if (j.job === "strategy_draft") return queueStrategyDraftAction(prev.enrollmentId);
-    else if (j.job === "script_revise") return queueScriptRevisionAction(j.scriptId, j.label === "tighten" ? "tighten" : "revise", j.instruction);
+    else if (j.job === "script_revise") return queueScriptRevisionAction(j.scriptId, j.label === "tighten" ? "tighten" : "revise", j.instruction, j.lockSections ?? []);
     else {
       if (await prisma.contentScript.findFirst({ where: { topicId: j.topicId, monthId: j.monthId, historical: false }, select: { id: true } })) return { ok: false, message: "It already has a script — it's on the Scripts tab." };
       const q = await enqueueAiJob({ job: j, enrollmentId: prev.enrollmentId, clientId: prev.clientId, requestedBy: me.email, title: prev.title });

@@ -139,7 +139,8 @@ export async function generateScriptsForMonth(monthId: string, opts?: PipelineOp
     const claim = await prisma.contentTopic.updateMany({ where: { id: t.id, status: "SELECTED" }, data: { status: "SCRIPTED" } });
     if (claim.count === 0) { skipped++; continue; }
     try {
-      await generateScriptForTopic({ topicId: t.id, monthId, callRecordId: month.callRecordId, ...who(opts) });
+      // Oct 14 2026: a whole month in one loop, so the automatic check of each draft is left to the AI cron (checkDeadline 0).
+      await generateScriptForTopic({ topicId: t.id, monthId, callRecordId: month.callRecordId, ...who(opts), checkDeadline: 0 });
       generated++;
     } catch {
       // Give the topic back so a retry can script it.
@@ -154,9 +155,10 @@ export async function generateScriptsForMonth(monthId: string, opts?: PipelineOp
 // 3. AI revision — a NEW version following the reviewer's instruction. The
 // version being revised (and any hand edit in it) stays exactly as it was.
 // ---------------------------------------------------------------------------
-export async function reviseScriptWithInstructions(scriptId: string, instructions: string, opts?: PipelineOpts & { source?: "REVISION" | "CLIENT_REQUEST" }): Promise<void> {
+export async function reviseScriptWithInstructions(scriptId: string, instructions: string, opts?: PipelineOpts & { source?: "REVISION" | "CLIENT_REQUEST"; /** Oct 14 2026: "Keep exactly" sections, copied back by code. */ lockSections?: string[] | null }): Promise<void> {
   const { reviseScript } = await import("@/lib/contentGeneration");
-  await reviseScript(scriptId, instructions, who(opts).requestedBy, opts?.source ?? "REVISION");
+  const { asLockSections } = await import("@/lib/contentPolicy");
+  await reviseScript(scriptId, instructions, who(opts).requestedBy, opts?.source ?? "REVISION", { lockSections: asLockSections(opts?.lockSections ?? []) });
 }
 
 // ---------------------------------------------------------------------------

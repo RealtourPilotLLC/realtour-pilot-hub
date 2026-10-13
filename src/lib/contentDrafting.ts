@@ -307,7 +307,8 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
     try {
       if ((w.readiness === "FROM_ANSWERS" || w.readiness === "THIN_ANSWERS") && w.interviewId) {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
-        const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended, onlyIfUnscripted: true });
+        // Oct 14 2026: checkDeadline: the automatic check after the draft starts no model call past the sweep's clock (the AI cron finishes it).
+        const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended, onlyIfUnscripted: true, checkDeadline: opts.deadline ?? null });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "answers", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       } else {
         const { generateScriptForTopic } = await import("@/lib/contentGeneration");
@@ -319,6 +320,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
           callRecordId: w.callRecordId,
           selectedOnCall: w.readiness === "FROM_CALL",
           onlyIfUnscripted: true,
+          checkDeadline: opts.deadline ?? null,
         });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "topic", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       }

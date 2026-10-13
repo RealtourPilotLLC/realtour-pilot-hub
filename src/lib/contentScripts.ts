@@ -8,6 +8,7 @@ import {
   type ApprovedPillar, type CanonicalScript, type Finding, type Gap, type TalkingPointRole,
 } from "@/lib/contentPolicy";
 import { cleanUploadText, looksLikeSkit, readSkitScript } from "@/lib/scriptUploadParse";
+import { judgeFlagged, readJudge } from "@/lib/scriptJudgeRecord";
 
 // ---------------------------------------------------------------------------
 // Script VERSIONS (spec §6/§22/§27, Jordan's rulings). ContentScript is the
@@ -38,7 +39,8 @@ export type NewVersionOpts = {
   basedOnVersionId?: string | null; regeneratedSections?: string[] | null; changeSummary?: string | null;
   interviewId?: string | null; answerIds?: string[] | null; callRecordId?: string | null;
   strategyVersionId?: string | null; policyVersionId?: string | null; aiRunId?: string | null; importItemId?: string | null;
-  validation?: { ok: boolean; findings: Finding[] } | null; gaps?: Gap[] | null;
+  /** Oct 14 2026: an AI version also carries the writer's `angle` and the automatic check's `judge` record (scriptJudgeRecord.ts). Staff only. */
+  validation?: { ok: boolean; findings: Finding[]; angle?: unknown; judge?: unknown } | null; gaps?: Gap[] | null;
   createdBy: string;
   status?: "DRAFT" | "INTERNAL_REVIEW";
   /** Historical import: the script row is marked historical and never enters the review queue. */
@@ -470,6 +472,8 @@ export type QueueRow = {
   scriptId: string; versionId: string; versionNo: number; title: string; enrollmentId: string; clientId: string; clientName: string; monthId: string | null; monthKey: string | null;
   path: "interview" | "call" | "ai" | "manual" | "import"; pillarName: string | null; estimatedSeconds: number | null; spokenWordCount: number | null;
   validationOk: boolean | null; blockingFindings: number; gaps: number; createdAt: string; hasApprovedVersion: boolean; hasSharedVersion: boolean;
+  /** Oct 14 2026: still flagged by the automatic check after its fix rounds (scriptJudge.ts). */
+  judgeFlagged: boolean;
 };
 
 /**
@@ -498,8 +502,10 @@ export async function scriptsAwaitingReview(enrollmentId?: string | null): Promi
       path: v.interviewId ? "interview" : v.callRecordId ? "call" : v.source === "MANUAL" ? "manual" : v.source === "IMPORT" ? "import" : "ai",
       pillarName: pillars.find((p) => p.id === v.pillarId)?.name ?? v.categoryLabel ?? null, estimatedSeconds: v.estimatedSeconds, spokenWordCount: v.spokenWordCount,
       validationOk, blockingFindings: blocking, gaps, createdAt: v.createdAt.toISOString(), hasApprovedVersion: !!s.approvedVersionId, hasSharedVersion: !!s.sharedVersionId,
+      judgeFlagged: judgeFlagged(readJudge(v.validationJson)),
     };
-  }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  // Oct 14 2026: a draft the automatic check still flags sorts first; otherwise oldest first, as before.
+  }).sort((a, b) => Number(b.judgeFlagged) - Number(a.judgeFlagged) || a.createdAt.localeCompare(b.createdAt));
 }
 
 /**

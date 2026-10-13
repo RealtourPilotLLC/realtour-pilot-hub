@@ -9,10 +9,12 @@ import { assembleInterviewInputs } from "@/lib/contentInterview";
 import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameOf, type VersionParts } from "@/lib/contentScripts";
 import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDENTIAL_PHRASE_RE, type FactCategory } from "@/lib/clientFacts";
 import { CONTENT_RULES } from "@/lib/contentPipeline";
+import { pendingJudge } from "@/lib/scriptJudgeRecord";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
   GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, emphasisOfPillar, topicsForEmphasis, videoStyleFromOverrides,
-  type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument,
+  creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS,
+  type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -115,29 +117,69 @@ export async function scrubTranscriptForGeneration(clientId: string, text: strin
 
 export type BuiltContext = { ctx: ClientContext; enrollmentId: string; clientId: string; strategyVersionId: string | null; strategyLabel: string | null; policyVersionId: string; inputRefs: Record<string, unknown> };
 
-export async function buildClientContext(enrollmentId: string, opts: { monthId?: string | null; monthKey?: string | null; projectId?: string | null; priorScripts?: number } = {}): Promise<BuiltContext> {
+type VoiceCandidate = { id: string; title: string; body: string; monthId: string | null; kind: "approved" | "manual" | "import" };
+
+/**
+ * VOICE REFERENCES (Oct 14 2026). Only the three newest IMPORTED scripts were
+ * passed, so a client whose archive was never imported (five of them) had no
+ * voice reference at all, and the scripts Jordan approved or uploaded himself
+ * were never read. Now: this client's newest hub-approved scripts and MANUAL
+ * versions (uploads and hand edits) first, then imports. The caller takes at
+ * most three, each scrubbed exactly as before.
+ */
+async function voiceReferenceCandidates(enrollmentId: string, opts: { take: number; excludeScriptId?: string | null }): Promise<VoiceCandidate[]> {
+  const notThis = opts.excludeScriptId ? { id: { not: opts.excludeScriptId } } : {};
+  const [approved, manual, imports] = await Promise.all([
+    prisma.contentScript.findMany({ where: { enrollmentId, historical: false, approvedVersionId: { not: null }, ...notThis }, orderBy: { createdAt: "desc" }, take: opts.take * 3, select: { id: true, title: true, monthId: true, approvedVersionId: true, approvedAt: true, createdAt: true } }),
+    prisma.contentScriptVersion.findMany({ where: { enrollmentId, source: "MANUAL", ...(opts.excludeScriptId ? { scriptId: { not: opts.excludeScriptId } } : {}) }, orderBy: { createdAt: "desc" }, take: opts.take * 3, select: { scriptId: true, title: true, body: true, createdAt: true } }),
+    prisma.contentScript.findMany({ where: { enrollmentId, source: "import", ...notThis }, orderBy: { createdAt: "desc" }, take: opts.take * 3, select: { id: true, title: true, body: true, monthId: true } }),
+  ]);
+  const approvedBodies = approved.length ? await prisma.contentScriptVersion.findMany({ where: { id: { in: approved.map((a) => a.approvedVersionId!) } }, select: { id: true, body: true } }) : [];
+  const monthOf = new Map((manual.length ? await prisma.contentScript.findMany({ where: { id: { in: manual.map((m) => m.scriptId) } }, select: { id: true, monthId: true } }) : []).map((s) => [s.id, s.monthId]));
+  const first = [
+    ...approved.map((a) => ({ id: a.id, title: a.title, body: approvedBodies.find((v) => v.id === a.approvedVersionId)?.body ?? "", monthId: a.monthId, kind: "approved" as const, at: (a.approvedAt ?? a.createdAt).getTime() })),
+    ...manual.map((m) => ({ id: m.scriptId, title: m.title, body: m.body, monthId: monthOf.get(m.scriptId) ?? null, kind: "manual" as const, at: m.createdAt.getTime() })),
+  ].sort((a, b) => b.at - a.at);
+  const seen = new Set<string>();
+  const out: VoiceCandidate[] = [];
+  for (const r of [...first, ...imports.map((i) => ({ ...i, kind: "import" as const }))]) {
+    if (seen.has(r.id) || !r.body.trim()) continue;
+    seen.add(r.id);
+    out.push({ id: r.id, title: r.title, body: r.body, monthId: r.monthId, kind: r.kind });
+  }
+  return out;
+}
+
+export async function buildClientContext(enrollmentId: string, opts: { monthId?: string | null; monthKey?: string | null; projectId?: string | null; priorScripts?: number; /** A revision does not read its own script as a voice reference. */ excludeScriptId?: string | null } = {}): Promise<BuiltContext> {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
   if (!e) throw new Error("Enrollment not found.");
-  const [client, strategy, policy, facts, prior] = await Promise.all([
+  const take = opts.priorScripts ?? 3;
+  const [client, strategy, policy, facts, candidates, month] = await Promise.all([
     prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }),
     approvedStrategy(enrollmentId),
     activePolicyVersion(),
     factsForPrompt(e.clientId, { monthId: opts.monthId ?? null, projectId: opts.projectId ?? null }),
-    prisma.contentScript.findMany({ where: { enrollmentId, source: "import" }, orderBy: { createdAt: "desc" }, take: opts.priorScripts ?? 3, select: { id: true, title: true, body: true, monthId: true } }),
+    voiceReferenceCandidates(enrollmentId, { take, excludeScriptId: opts.excludeScriptId ?? null }),
+    opts.monthId ? prisma.contentMonth.findUnique({ where: { id: opts.monthId }, select: { prioritiesJson: true } }) : Promise.resolve(null),
   ]);
   const monthKeys = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
   const explicit = factLines(facts.filter((f) => f.category === "BRAND_PREFERENCE" || f.category === "PRODUCTION_PREFERENCE" || f.category === "DECISION"));
   const known = factLines(facts.filter((f) => !["BRAND_PREFERENCE", "PRODUCTION_PREFERENCE", "DECISION", "INTERNAL"].includes(f.category)));
   const [expl, kn] = await Promise.all([scrubOtherClients(e.clientId, explicit), scrubOtherClients(e.clientId, known)]);
   const priorScripts: ClientContext["priorScripts"] = [];
+  const prior: VoiceCandidate[] = [];
   let strippedScripts = 0;
-  for (const s of prior) {
+  for (const s of candidates) {
+    if (prior.length >= take) break;
     // A prior script that names another client (a referral story) is dropped whole.
     const r = await scrubOtherClients(e.clientId, [s.body]);
     if (r.stripped) { strippedScripts++; continue; }
     if (CONFIDENTIAL_RE.test(s.body)) { strippedScripts++; continue; }
+    prior.push(s);
     priorScripts.push({ title: s.title, text: s.body.slice(0, 2500), monthKey: s.monthId ? monthKeys.get(s.monthId) ?? null : null });
   }
+  // Oct 14 2026: this month's priorities (the call's, or typed by staff), scrubbed like the facts.
+  const priorities = month ? (await scrubOtherClients(e.clientId, monthPriorities(month.prioritiesJson))).kept.filter((p) => !CONFIDENTIAL_RE.test(p)) : [];
   const ctx: ClientContext = {
     clientId: e.clientId, clientName: client?.name ?? "Client",
     strategy: strategy ? { version: strategy.label, document: strategy.document } : null,
@@ -148,23 +190,41 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
     // Oct 13 2026: Direct-to-camera or Skits (Settings › Program style). Every
     // script and topic prompt built from this context reads it.
     videoStyle: videoStyleFromOverrides(e.overridesJson),
+    // Oct 14 2026: the auto-built creative identity (creativeIdentity.ts) and this month's priorities.
+    creativeIdentity: creativeIdentityFromOverrides(e.overridesJson),
+    monthPriorities: priorities,
   };
   return {
     ctx, enrollmentId, clientId: e.clientId, strategyVersionId: strategy?.versionId ?? null, strategyLabel: strategy?.label ?? null, policyVersionId: policy.id,
-    inputRefs: { strategyVersionId: strategy?.versionId ?? null, factIds: facts.map((f) => f.id), priorScriptIds: prior.map((p) => p.id), strippedLines: expl.stripped + kn.stripped + strippedScripts, policyHash: policyStamp(null).policyHash },
+    inputRefs: { strategyVersionId: strategy?.versionId ?? null, factIds: facts.map((f) => f.id), priorScriptIds: prior.map((p) => p.id), voiceKinds: prior.map((p) => p.kind), strippedLines: expl.stripped + kn.stripped + strippedScripts, policyHash: policyStamp(null).policyHash },
   };
 }
 
 // --- scripts ----------------------------------------------------------------------
+
+/** The writer's angle from a model answer (Oct 14 2026): the six fields, trimmed, or null when it sent none. */
+function cleanAngle(a: unknown): ScriptAngle | null {
+  if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+  const o = a as Record<string, unknown>;
+  const out = {} as ScriptAngle;
+  let any = false;
+  for (const k of ANGLE_FIELDS) {
+    const v = typeof o[k] === "string" ? (o[k] as string).replace(/\s+/g, " ").trim().slice(0, 400) : "";
+    out[k] = v;
+    if (v) any = true;
+  }
+  return any ? out : null;
+}
 
 /**
  * Oct 13 2026: a SKIT (a SKITS account's draft, or a revision of a skit) keeps
  * its lines, one per line, and its speaker labels: a scene flattened into one
  * paragraph would lose who says what, and the labels are what keep the
  * directions and the speakers out of the spoken-word count. A direct-to-camera
- * draft is stored exactly as before.
+ * draft is stored exactly as before. Oct 14 2026: the writer's angle comes back
+ * too (stored in validationJson, staff only).
  */
-function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, clientId: string | null = null, opts: { skit?: boolean } = {}): { parts: VersionParts; validation: ReturnType<typeof validateNewScript>; gaps: Gap[] } {
+function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, clientId: string | null = null, opts: { skit?: boolean } = {}): { parts: VersionParts; validation: ReturnType<typeof validateNewScript>; gaps: Gap[]; angle: ScriptAngle | null } {
   const script = scriptFromGeneratorOutput(json, policyStamp(null), clientId, { skit: !!opts.skit });
   const validation = validateNewScript(script);
   const said = (b: { text: string; lines: string[] } | null | undefined) => (b ? (opts.skit ? b.lines.join("\n") : b.text) : "");
@@ -174,7 +234,12 @@ function partsFromGenerated(json: GeneratedScriptJson, pillarId: string | null, 
     filmingNotes: script.internal.filmingNotes, sourceExcerpts: script.internal.sourceExcerpts, dimensionsCheck: (script.internal.contentPillarCheck as Record<string, string> | null) ?? null, placeholders: script.internal.placeholders,
     ...(opts.skit && script.internal.speakerLabels.length ? { speakerLabels: script.internal.speakerLabels } : {}),
   };
-  return { parts, validation, gaps: validation.gaps };
+  return { parts, validation, gaps: validation.gaps, angle: cleanAngle(json.angle) };
+}
+
+/** A new AI draft's validation record: the format check, the angle, and a judge still owed (scriptJudge.ts). */
+function draftValidation(validation: ReturnType<typeof validateNewScript>, angle: ScriptAngle | null, fixRounds = 0) {
+  return { ok: validation.ok, findings: validation.findings, angle, judge: pendingJudge(fixRounds) };
 }
 
 async function policyTopic(topicId: string): Promise<{ topic: Topic; row: NonNullable<Awaited<ReturnType<typeof prisma.contentTopic.findUnique>>> }> {
@@ -204,14 +269,83 @@ async function excerptsForTopic(topicId: string, monthId: string | null): Promis
 }
 
 /**
+ * THE CLIENT'S OWN LINES (Oct 14 2026). The call analysis keeps, per selected
+ * topic, the client's sharpest lines verbatim (ANALYSIS_SCHEMA quotableLines,
+ * stored beside the excerpts in the selection's evidence). Read like the
+ * excerpts: this month's selection first, then any; scrubbed of anything
+ * confidential or naming another client.
+ */
+export async function quotableLinesForTopic(topicId: string, monthId: string | null, clientId: string): Promise<string[]> {
+  const HAS = { contains: '"quotableLines"' };
+  const row =
+    (monthId ? await prisma.contentTopicSelection.findFirst({ where: { topicId, monthId, evidenceJson: HAS }, select: { evidenceJson: true } }) : null)
+    ?? (await prisma.contentTopicSelection.findFirst({ where: { topicId, evidenceJson: HAS }, orderBy: { createdAt: "desc" }, select: { evidenceJson: true } }))
+    ?? (await prisma.contentTopicEvent.findFirst({ where: { topicId, evidenceJson: HAS }, orderBy: { createdAt: "desc" }, select: { evidenceJson: true } }));
+  if (!row?.evidenceJson) return [];
+  let lines: string[] = [];
+  try {
+    const v = JSON.parse(row.evidenceJson) as { quotableLines?: unknown };
+    lines = Array.isArray(v.quotableLines) ? v.quotableLines.filter((x): x is string => typeof x === "string" && !!x.trim()).map((x) => x.trim().slice(0, 300)) : [];
+  } catch { return []; }
+  if (!lines.length) return [];
+  const secret = await confidentialFilter(clientId);
+  const cleared = lines.filter((l) => !CONFIDENTIAL_RE.test(l) && !CONFIDENTIAL_PHRASE_RE.test(l) && !secret(l));
+  return (await scrubOtherClients(clientId, cleared)).kept.slice(0, 6);
+}
+
+/**
+ * THE SOURCE A SCRIPT WAS WRITTEN FROM (Oct 14 2026). reviseScript always
+ * rebuilt its prompt on the transcript path with "SELECTED ON THE CALL: yes",
+ * so a script drafted from the client's WRITTEN answers lost those answers on
+ * every revision. The same choice the drafting sweep makes: the written
+ * answers when the script (or its topic this month) has a submitted
+ * interview, else the call excerpts. The revision and the judge both read it.
+ */
+export async function scriptSourceFor(
+  s: { id: string; topicId: string | null; monthId: string | null; clientId: string; interviewId: string | null; title: string },
+  base: { categoryLabel: string | null },
+): Promise<{ source: ScriptPromptSource; interviewId: string | null }> {
+  let interviewId = s.interviewId;
+  if (!interviewId && s.topicId && s.monthId) {
+    const iv = await prisma.contentInterview.findFirst({
+      where: { topicId: s.topicId, monthId: s.monthId, clientId: s.clientId, OR: [{ submittedAt: { not: null } }, { sentWithGapsAt: { not: null } }, { status: "SUBMITTED" }] },
+      orderBy: { updatedAt: "desc" }, select: { id: true },
+    });
+    interviewId = iv?.id ?? null;
+  }
+  const quotableLines = s.topicId ? await quotableLinesForTopic(s.topicId, s.monthId, s.clientId).catch(() => []) : [];
+  if (interviewId) {
+    const a = await assembleInterviewInputs(interviewId).catch(() => null);
+    if (a && a.clientId === s.clientId) return { source: { path: "written-answers", input: a.input, excerpts: a.excerpts, quotableLines }, interviewId };
+  }
+  const topic = s.topicId ? (await policyTopic(s.topicId)).topic : makeTopic({ title: s.title, pillarName: base.categoryLabel ?? "", clientId: s.clientId });
+  // Same other-client scrub as the first draft — a call excerpt naming another enrolled client never reaches a revision prompt either.
+  const rawExcerpts = s.topicId ? await excerptsForTopic(s.topicId, s.monthId) : [];
+  const scrub = await scrubOtherClients(s.clientId, rawExcerpts.map((e) => e.text));
+  return { source: { path: "transcript", topic, excerpts: rawExcerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: true, quotableLines }, interviewId: null };
+}
+
+/** After every AI draft (Oct 14 2026): the automatic judge and up to two fix rounds. Never throws; a failure leaves the draft as written. */
+async function checkDraft(scriptId: string, o: { requestedBy: string; unattended: boolean; deadline?: number | null }): Promise<void> {
+  try {
+    const { autoCheckScript } = await import("@/lib/scriptJudge");
+    await autoCheckScript(scriptId, o);
+  } catch (e) {
+    console.warn(`[script judge] ${scriptId}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
  * CP-08: the script prompt with the per-part word budgets — every script draft
  * names it, so a before/after on estimated length is attributable. v3 (Oct 6
  * 2026): the budgets rescaled for the 30–50 s target. v4 (Oct 12 2026): no
  * dashes in a script (the punctuation rule in the prompt, and a revision is
- * told to take out any the current version has).
+ * told to take out any the current version has). v5 (Oct 14 2026): the clean
+ * house brief, the angle first, audience psychology, section rules, creative
+ * identity, the client's own lines.
  */
-const SCRIPT_PROMPT_VERSION = "script.v4-no-dashes";
-/** Oct 13 2026: a SKITS account's prompt carries the skit block, so its runs say so; a DIRECT prompt is unchanged and keeps v4. */
+const SCRIPT_PROMPT_VERSION = "script.v5-angle";
+/** Oct 13 2026: a SKITS account's prompt carries the skit block, so its runs say so. */
 const scriptPromptVersion = (ctx: ClientContext) => (ctx.videoStyle === "SKITS" ? `${SCRIPT_PROMPT_VERSION}+skits` : SCRIPT_PROMPT_VERSION);
 
 export type GenerateScriptOpts = {
@@ -220,6 +354,8 @@ export type GenerateScriptOpts = {
   onlyIfUnscripted?: boolean;
   /** Oct 12 2026: the queued run a background worker claimed for this draft (aiQueue.ts) — adopted, not duplicated. */
   claimedRun?: ClaimedRun | null;
+  /** Oct 14 2026: the time (ms epoch) the automatic check must not start a model call past; what is left is finished by the AI cron. */
+  checkDeadline?: number | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -258,15 +394,17 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
   const built = await buildClientContext(row.enrollmentId, { monthId: o.monthId });
   const excerpts = o.excerpts ?? (await excerptsForTopic(o.topicId, o.monthId));
   const scrub = await scrubOtherClients(row.clientId, excerpts.map((e) => e.text));
-  const bundle = buildScriptPrompt(built.ctx, { path: "transcript", topic, excerpts: excerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: o.selectedOnCall ?? true });
+  const quotableLines = await quotableLinesForTopic(o.topicId, o.monthId, row.clientId).catch(() => []);
+  const bundle = buildScriptPrompt(built.ctx, { path: "transcript", topic, excerpts: excerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: o.selectedOnCall ?? true, quotableLines });
   if (o.onlyIfUnscripted) await assertUnscripted(o.topicId, o.monthId, null, `"${row.title}"`);
   const run = await runAiJson<GeneratedScriptJson>({
-    kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length },
+    kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length, quotableLines: quotableLines.length },
     promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
     dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: o.claimedRun ?? null,
   });
+  let out: { scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number };
   try {
-    const { parts, validation, gaps } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId, { skit: built.ctx.videoStyle === "SKITS" });
+    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, row.pillarId ?? (await resolvePillarByLabel(row.enrollmentId, run.output.category)), row.clientId, { skit: built.ctx.videoStyle === "SKITS" });
     if (!parts.title) parts.title = row.title;
     // monthId null = the bank-level script (IS NULL), never "any month's script".
     const existing = await prisma.contentScript.findFirst({ where: { topicId: o.topicId, monthId: o.monthId, historical: false }, select: { id: true } });
@@ -276,37 +414,42 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
     await claimRunWrite(run.runId);
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: row.enrollmentId, monthId: o.monthId, topicId: o.topicId, parts, source: "AI", createdBy: o.requestedBy, status: "INTERNAL_REVIEW",
-      callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: { ok: validation.ok, findings: validation.findings }, gaps,
+      callRecordId: o.callRecordId ?? null, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: draftValidation(validation, angle), gaps,
       changeSummary: `Drafted from the ${excerpts.length ? "call excerpts" : "topic"} (${validation.ok ? "passes the format check" : `${validation.findings.filter((f) => f.severity === "block").length} blocking finding(s)`}; ${gaps.length} gap(s))`,
     });
     await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
     await releaseRunKey(run.runId);
     await prisma.contentTopic.updateMany({ where: { id: o.topicId, status: "SELECTED" }, data: { status: "SCRIPTED" } });
     await recordTopicEvent(o.topicId, row.enrollmentId, "SCRIPTED", { kind: "AI" }, { monthId: o.monthId, sourceRef: `ContentScriptVersion:${r.versionId}` });
-    return { scriptId: r.scriptId, versionId: r.versionId, versionNo: r.versionNo, ok: validation.ok, findings: validation.findings.length, gaps: gaps.length };
+    out = { scriptId: r.scriptId, versionId: r.versionId, versionNo: r.versionNo, ok: validation.ok, findings: validation.findings.length, gaps: gaps.length };
   } finally {
     await releaseRunKey(run.runId); // idempotent; frees the key if the write above threw
   }
+  // Oct 14 2026: judged, and fixed when it fails (two rounds at most). The draft is written already; nothing here can lose it.
+  await checkDraft(out.scriptId, { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.checkDeadline ?? null });
+  return out;
 }
 
 /** Written-answer path: a DRAFT version from the interview's exact answer rows, gaps carried through, never filled. */
-export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean; claimedRun?: ClaimedRun | null } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
+export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean; claimedRun?: ClaimedRun | null; checkDeadline?: number | null } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
   await (await import("@/lib/programStyle")).assertWeWriteFor(a.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
   // The call's own words about this topic ride along beside the answers
   // (CP-08) — already confidential- and other-client-scrubbed.
-  const bundle = buildScriptPrompt(built.ctx, { path: "written-answers", input: a.input, excerpts: a.excerpts });
+  const quotableLines = a.topic.id ? await quotableLinesForTopic(a.topic.id, a.monthId, a.clientId).catch(() => []) : [];
+  const bundle = buildScriptPrompt(built.ctx, { path: "written-answers", input: a.input, excerpts: a.excerpts, quotableLines });
   // The sweep path (see AlreadyDraftedError): a script for this topic in this
   // month, or for these answers, means somebody drafted it while we queued.
   if (opts.onlyIfUnscripted) await assertUnscripted(a.topic.id!, a.monthId, interviewId, `"${a.topic.title}"`);
   const run = await runAiJson<GeneratedScriptJson>({
-    kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length },
+    kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length, quotableLines: quotableLines.length },
     promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`, holdDedupeKey: true,
     system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
   });
+  let out: { scriptId: string; versionId: string; ok: boolean; gaps: number };
   try {
-    const { parts, validation, gaps } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId, { skit: built.ctx.videoStyle === "SKITS" });
+    const { parts, validation, gaps, angle } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId, { skit: built.ctx.videoStyle === "SKITS" });
     if (!parts.title) parts.title = a.topic.title;
     const existing = await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } });
     if (existing && opts.onlyIfUnscripted) throw new AlreadyDraftedError(`"${a.topic.title}"`);
@@ -314,24 +457,54 @@ export async function generateScriptFromInterview(interviewId: string, requested
     const r = await createScriptVersion({
       scriptId: existing?.id ?? null, enrollmentId: a.enrollmentId, monthId: a.monthId, topicId: a.topic.id, parts, source: "AI", createdBy: requestedBy, status: "DRAFT",
       basedOnVersionId: existing?.currentVersionId ?? null, interviewId, answerIds: a.answerIds, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId,
-      validation: { ok: validation.ok, findings: validation.findings }, gaps: [...a.input.gaps, ...gaps],
+      validation: draftValidation(validation, angle), gaps: [...a.input.gaps, ...gaps],
       changeSummary: existing ? "New draft from the changed answers — the earlier version is kept." : `Drafted from ${a.input.completeness.substantiveAnswered}/${a.input.completeness.substantiveTotal} substantive answers`,
     });
     await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
     await releaseRunKey(run.runId);
     await prisma.contentTopic.updateMany({ where: { id: a.topic.id!, status: "SELECTED" }, data: { status: "SCRIPTED" } });
-    return { scriptId: r.scriptId, versionId: r.versionId, ok: validation.ok, gaps: a.input.gaps.length + gaps.length };
+    out = { scriptId: r.scriptId, versionId: r.versionId, ok: validation.ok, gaps: a.input.gaps.length + gaps.length };
   } finally {
     await releaseRunKey(run.runId); // idempotent; frees the key if the write above threw
   }
+  await checkDraft(out.scriptId, { requestedBy, unattended: opts.unattended ?? false, deadline: opts.checkDeadline ?? null });
+  return out;
 }
+
+/** Talking point index of each lockable point section. */
+const LOCK_POINT_INDEX: Partial<Record<LockableSection, number>> = { rehook: 0, buildup: 1, payoff: 2 };
+
+/** The current version's words for a locked section, exactly as stored. */
+function lockedText(base: { hook: string; close: string; captionCta: string | null; pointsJson: string }, key: LockableSection): string | null {
+  if (key === "hook") return base.hook;
+  if (key === "close") return base.close;
+  if (key === "captionCta") return base.captionCta;
+  const i = LOCK_POINT_INDEX[key];
+  return i == null ? null : pointsFromJson(base.pointsJson)[i]?.text ?? null;
+}
+
+export type ReviseScriptOpts = {
+  claimedRun?: ClaimedRun | null;
+  /** Oct 14 2026: sections copied back from the current version BY CODE after the model answers ("Keep exactly"). Default none. */
+  lockSections?: LockableSection[] | null;
+  /** The automatic fix runs unattended from the cron (gated by ai_runs); a person's revision is attended. */
+  unattended?: boolean;
+  /** Oct 14 2026: an automatic fix round (scriptJudge.ts) — written as the draft's own next version (source AI, same author), judged again. */
+  autoFix?: { round: number } | null;
+};
 
 /**
  * Revise / regenerate: a NEW version based on the current one, with the
  * instruction applied. The current version — and any manual edit in it — is
  * never overwritten; regeneratedSections says what changed.
+ *
+ * Oct 14 2026: the prompt is rebuilt from the script's ORIGINAL source
+ * (scriptSourceFor: the written answers when it came from them), the model is
+ * told to change only what the instruction asks, and locked sections are
+ * copied back word for word by code. (A dash in an old locked line is still
+ * taken out where every version is written: the no-dash rule wins.)
  */
-export async function reviseScript(scriptId: string, instructions: string, requestedBy: string, source: "REVISION" | "CLIENT_REQUEST" = "REVISION", opts: { claimedRun?: ClaimedRun | null } = {}): Promise<{ versionId: string; versionNo: number }> {
+export async function reviseScript(scriptId: string, instructions: string, requestedBy: string, source: "REVISION" | "CLIENT_REQUEST" = "REVISION", opts: ReviseScriptOpts = {}): Promise<{ versionId: string; versionNo: number; scriptId: string }> {
   const head = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true } });
   if (!head) throw new Error("Script not found.");
   // Historical imports are records of what was filmed — the AI never rewrites them (Jordan's ruling).
@@ -339,37 +512,58 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const baseId = await ensureScriptVersioned(scriptId);
   const [s, base] = await Promise.all([prisma.contentScript.findUnique({ where: { id: scriptId } }), prisma.contentScriptVersion.findUnique({ where: { id: baseId } })]);
   if (!s || !base) throw new Error("Script not found.");
-  const built = await buildClientContext(s.enrollmentId, { monthId: s.monthId });
+  const built = await buildClientContext(s.enrollmentId, { monthId: s.monthId, excludeScriptId: scriptId });
   // Oct 13 2026: a skit stays a skit. The version being revised is a skit when
   // it carries speaker labels (one we drafted for a SKITS account, or an
   // uploaded skit), whatever the account's style is today; a SKITS account's
   // revision is written as a skit too.
   const skit = built.ctx.videoStyle === "SKITS" || !!base.speakerLabelsJson;
   if (skit) built.ctx.videoStyle = "SKITS";
-  const topic = s.topicId ? (await policyTopic(s.topicId)).topic : makeTopic({ title: s.title, pillarName: base.categoryLabel ?? "", clientId: s.clientId });
-  // Same other-client scrub as the first draft — a call excerpt naming another enrolled client never reaches a revision prompt either.
-  const rawExcerpts = s.topicId ? await excerptsForTopic(s.topicId, s.monthId) : [];
-  const scrub = await scrubOtherClients(s.clientId, rawExcerpts.map((e) => e.text));
-  const bundle = buildScriptPrompt(built.ctx, { path: "transcript", topic, excerpts: rawExcerpts.filter((e) => scrub.kept.includes(e.text)), selectedOnCall: true });
-  const user = `${bundle.user}\n\nCURRENT VERSION (v${base.versionNo}) — keep what already works, change only what the reviewer asks:\n${base.body}\n\nREVIEWER'S INSTRUCTION: ${instructions.trim().slice(0, 2000)}\n\nPUNCTUATION: the new version has no em dash or en dash anywhere, even where the current version has one; use a comma, a period or "and" instead.`;
+  const { source: promptSource } = await scriptSourceFor(s, base);
+  const locks = asLockSections(opts.lockSections ?? []);
+  const bundle = buildScriptRevisePrompt(built.ctx, promptSource, { versionNo: base.versionNo, body: base.body }, instructions, { lockSections: locks });
   const run = await runAiJson<GeneratedScriptJson>({
-    kind: "script_revise", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId, basedOnVersionId: baseId }, inputRefs: { ...built.inputRefs, instruction: sha256(instructions) },
-    promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: false, dedupeKey: `revise:${scriptId}`,
-    system: bundle.system, prompt: user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
+    kind: "script_revise", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId, basedOnVersionId: baseId, ...(opts.autoFix ? { autoFixRound: opts.autoFix.round } : {}) },
+    inputRefs: { ...built.inputRefs, instruction: sha256(instructions), sourcePath: promptSource.path, lockSections: locks },
+    promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `revise:${scriptId}`,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
   });
-  const { parts, validation, gaps } = partsFromGenerated(run.output, base.pillarId, s.clientId, { skit });
+  // Locked sections: the model's words never reach the version. Put back
+  // before validating (so the check describes what is written) and again on
+  // the parts after the round trip through the canonical reader (byte for byte).
+  const json: GeneratedScriptJson = { ...run.output, points: [...(Array.isArray(run.output.points) ? run.output.points : [])] };
+  for (const k of locks) {
+    const t = lockedText(base, k);
+    if (k === "hook") json.hook = t ?? "";
+    else if (k === "close") json.close = t ?? "";
+    else if (k === "captionCta") json.captionCta = t;
+    else {
+      const i = LOCK_POINT_INDEX[k]!;
+      if (t != null) json.points[i] = { role: json.points[i]?.role ?? ["re-hook", "build-up", "payoff"][i], text: t };
+    }
+  }
+  const { parts, validation, gaps, angle } = partsFromGenerated(json, base.pillarId, s.clientId, { skit });
+  for (const k of locks) {
+    const t = lockedText(base, k);
+    if (k === "hook") parts.hook = t ?? parts.hook;
+    else if (k === "close") parts.close = t ?? parts.close;
+    else if (k === "captionCta") parts.captionCta = t;
+    else if (t != null && parts.points[LOCK_POINT_INDEX[k]!]) parts.points[LOCK_POINT_INDEX[k]!] = { ...parts.points[LOCK_POINT_INDEX[k]!], text: t };
+  }
   // The reviewer's revision must not silently recategorise the script.
   parts.categoryLabel = base.categoryLabel ?? parts.categoryLabel;
   parts.pillarId = base.pillarId;
   if (!parts.title) parts.title = base.title;
   const changed = (["hook", "points", "close", "captionCta"] as const).filter((k) => JSON.stringify(k === "points" ? parts.points.map((p) => p.text) : parts[k] ?? null) !== JSON.stringify(k === "points" ? pointsFromJson(base.pointsJson).map((p) => p.text) : base[k] ?? null));
+  const autoFix = opts.autoFix ?? null;
   const r = await createScriptVersion({
-    scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts, source, basedOnVersionId: baseId, regeneratedSections: changed, createdBy: requestedBy, status: "INTERNAL_REVIEW",
-    interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId, validation: { ok: validation.ok, findings: validation.findings }, gaps,
-    changeSummary: `${source === "CLIENT_REQUEST" ? "Client suggestion applied" : "Revised"}: ${instructions.trim().slice(0, 160)}`,
+    scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts, source: autoFix ? "AI" : source, basedOnVersionId: baseId, regeneratedSections: changed, createdBy: requestedBy, status: "INTERNAL_REVIEW",
+    interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId, aiRunId: run.runId,
+    validation: autoFix ? draftValidation(validation, angle, autoFix.round) : { ok: validation.ok, findings: validation.findings, angle }, gaps,
+    changeSummary: autoFix ? `Auto-fixed after the automatic check (round ${autoFix.round}): ${instructions.trim().slice(0, 160)}` : `${source === "CLIENT_REQUEST" ? "Client suggestion applied" : "Revised"}: ${instructions.trim().slice(0, 160)}`,
   });
   await setRunOutputRef(run.runId, `ContentScriptVersion:${r.versionId}`);
-  return { versionId: r.versionId, versionNo: r.versionNo };
+  return { versionId: r.versionId, versionNo: r.versionNo, scriptId };
 }
 
 // --- topic refresh ------------------------------------------------------------------
@@ -426,6 +620,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   }
   const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: strategyPillars.map((p) => p.name), pillarEmphasis });
   let created = 0, resurfaced = 0, duplicates = 0, notKept = 0;
+  const formulaic: string[] = [];
   const rows: Prisma.ContentTopicSuggestionCreateManyInput[] = [];
   for (const p of bank.pillars) {
     if (!p.pillarId) continue; // an unknown pillar name is a finding, never a new pillar
@@ -435,6 +630,9 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     for (const t of p.topics) {
       const hash = topicDedupeHash(t.title);
       if (blocked.has(hash)) { resurfaced++; continue; } // archived/rejected concepts never come back
+      // Oct 14 2026: a banned formulaic title shape the prompt asked the model not to use is dropped, and logged.
+      const shape = formulaicTitleShape(t.title);
+      if (shape) { formulaic.push(`${t.title} (${shape})`); continue; }
       if (existingHashes.has(hash)) { duplicates++; continue; }
       if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
       if (lightCap != null && rank >= lightCap) { notKept++; continue; }
@@ -444,6 +642,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     }
   }
   if (rows.length) await prisma.contentTopicSuggestion.createMany({ data: rows });
+  if (formulaic.length) console.warn(`[topic bank] run ${runId}: dropped ${formulaic.length} formulaic title(s): ${formulaic.join(" | ").slice(0, 600)}`);
   await setRunOutputRef(runRes.runId, `ContentTopicRefreshRun:${runId}`);
   const unknownPillars = validation.findings.filter((f) => f.code === "pillar.unknown").map((f) => f.message);
   const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...validation.gaps];
@@ -451,7 +650,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   await finishRefreshRun(runId, {
     status, generatedCount: created, pillarCount: bank.pillars.length, aiRunId: runRes.runId,
     missingContext: gaps.length || unknownPillars.length || !out.complete ? { gaps: gaps.map((g) => g.text), unknownPillars, complete: out.complete === true } : undefined,
-    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
+    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
   });
 }
 
@@ -471,7 +670,7 @@ type Excerpt = { speaker: "client" | "jordan" | "third-party"; speakerName?: str
 type Analysis = {
   callKind: "planning" | "discovery" | "review" | "other";
   plannedMonthKey: string | null;
-  selectedTopics: { title: string; concept: string; pillar: string | null; excerpts: Excerpt[] }[];
+  selectedTopics: { title: string; concept: string; pillar: string | null; excerpts: Excerpt[]; quotableLines?: string[] }[];
   discussedTopics: { title: string; concept: string; pillar: string | null; excerpts: Excerpt[] }[];
   rejectedIdeas: { title: string; reason: string | null }[];
   // CP-11: proposedValue / section / proposedText / confidential — what exactly
@@ -484,13 +683,24 @@ type Analysis = {
 
 const EXCERPT_SCHEMA = { type: "object", required: ["speaker", "text"], properties: { speaker: { type: "string", enum: ["client", "jordan", "third-party"] }, speakerName: { type: ["string", "null"] }, time: { type: ["string", "null"] }, text: { type: "string" } } };
 const TOPIC_SCHEMA = { type: "object", required: ["title", "concept", "excerpts"], properties: { title: { type: "string" }, concept: { type: "string" }, pillar: { type: ["string", "null"] }, excerpts: { type: "array", items: EXCERPT_SCHEMA } } };
+// Oct 14 2026: the client's own sharp lines about a topic they agreed to film,
+// for the script prompt ("CLIENT'S OWN LINES"). Optional, selected topics
+// only; the instruction rides in the field description, so the analysis
+// prompt's own wording is untouched.
+const SELECTED_TOPIC_SCHEMA = {
+  ...TOPIC_SCHEMA,
+  properties: {
+    ...TOPIC_SCHEMA.properties,
+    quotableLines: { type: "array", maxItems: 5, items: { type: "string" }, description: "Optional. The client's own sharpest opinions or phrasing about this topic, VERBATIM, client-spoken only (never Jordan's or anyone else's words). Leave empty when there is none." },
+  },
+};
 const ANALYSIS_SCHEMA = {
   type: "object",
   required: ["callKind", "plannedMonthKey", "selectedTopics", "discussedTopics", "rejectedIdeas", "facts", "strategyProposals", "priorities", "todos"],
   properties: {
     callKind: { type: "string", enum: ["planning", "discovery", "review", "other"] },
     plannedMonthKey: { type: ["string", "null"], description: "YYYY-MM the selected topics are FOR, or null" },
-    selectedTopics: { type: "array", items: TOPIC_SCHEMA, description: "Topics the CLIENT explicitly agreed to film — each with a client-spoken excerpt proving it" },
+    selectedTopics: { type: "array", items: SELECTED_TOPIC_SCHEMA, description: "Topics the CLIENT explicitly agreed to film — each with a client-spoken excerpt proving it" },
     discussedTopics: { type: "array", items: TOPIC_SCHEMA, description: "Ideas raised but not agreed — saved for the bank" },
     rejectedIdeas: { type: "array", items: { type: "object", required: ["title"], properties: { title: { type: "string" }, reason: { type: ["string", "null"] } } } },
     facts: { type: "array", items: { type: "object", required: ["body", "category", "scope", "confidential", "confidence"], properties: { body: { type: "string" }, category: { type: "string", enum: ["BRAND_PREFERENCE", "PRODUCTION_PREFERENCE", "PERFORMANCE_REPORTED", "DECISION", "COMMITMENT", "FEEDBACK", "PROPOSED_CHANGE"] }, fieldKey: { type: ["string", "null"], description: "e.g. editing.music, editing.pace, editing.captions, production.location_preference, production.preferred_days, production.wardrobe, production.teleprompter, brand.fonts, brand.website, brand.social, brand.voice — or null" }, scope: { type: "string", enum: ["PERMANENT", "MONTH", "PROJECT"] }, speaker: { type: ["string", "null"] }, confidential: { type: "boolean" }, confidence: { type: "number" }, excerpt: { anyOf: [EXCERPT_SCHEMA, { type: "null" }] }, proposedValue: { type: ["string", "null"], description: "When the client CHANGED a standing preference: the new standing value in a few words (e.g. 'Calm acoustic'). Otherwise null." } } } },
@@ -565,15 +775,21 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
   const sourceRef = o.callRecordId ? `ProgramCallRecord:${o.callRecordId}` : `ContentMonth:${o.monthId}`;
   const toExcerpts = (ex: Excerpt[] | undefined): SourceExcerpt[] => (Array.isArray(ex) ? ex : []).filter((x) => x && typeof x.text === "string").slice(0, 8).map((x) => ({ speaker: x.speaker === "client" || x.speaker === "jordan" ? x.speaker : "third-party", speakerName: x.speakerName ?? null, source: `call ${o.monthKey}${x.time ? ` ${x.time}` : ""}`, text: x.text.slice(0, 1200) }));
   let proposedSelections = 0, discussed = 0, kept = 0, withheld = 0;
+  // Oct 14 2026: a quotable line is kept only when it is really in the
+  // transcript (verbatim, ignoring case, spacing and punctuation).
+  const flat = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const transcriptFlat = flat(o.transcript);
+  const quotable = (q: unknown): string[] => (Array.isArray(q) ? q : []).filter((x): x is string => typeof x === "string" && flat(x).length >= 8 && transcriptFlat.includes(flat(x))).map((x) => x.trim().slice(0, 300)).slice(0, 5);
   for (const t of Array.isArray(out.selectedTopics) ? out.selectedTopics : []) {
     if (!t.title?.trim()) continue;
     const excerpts = toExcerpts(t.excerpts);
-    const r = await createTopic({ enrollmentId: o.enrollmentId, title: t.title, concept: t.concept, pillarLabel: t.pillar, source: "strategy_call", sourceRef, status: "SAVED", approvalState: "PROPOSED", actor, eventKind: "DISCUSSED", evidence: { excerpts }, note: "Raised on the call" });
+    const quotableLines = quotable(t.quotableLines);
+    const r = await createTopic({ enrollmentId: o.enrollmentId, title: t.title, concept: t.concept, pillarLabel: t.pillar, source: "strategy_call", sourceRef, status: "SAVED", approvalState: "PROPOSED", actor, eventKind: "DISCUSSED", evidence: { excerpts, ...(quotableLines.length ? { quotableLines } : {}) }, note: "Raised on the call" });
     // A call PROPOSES; a person reconciles (spec §5: discussed ≠ selected). A
     // re-analysis never downgrades what a person already decided: the topic
     // layer keeps SELECTED/RECONCILED rows, leaves REMOVED ones removed and
     // withholds rejected/archived topics — each with the mention on the history.
-    const sel = await selectTopicForMonth(r.id, targetMonthId, { source: "call", actor, callRecordId: o.callRecordId ?? null, evidence: { excerpts, clientSpoken: excerpts.some((e) => e.speaker === "client") }, status: "PROPOSED" });
+    const sel = await selectTopicForMonth(r.id, targetMonthId, { source: "call", actor, callRecordId: o.callRecordId ?? null, evidence: { excerpts, clientSpoken: excerpts.some((e) => e.speaker === "client"), ...(quotableLines.length ? { quotableLines } : {}) }, status: "PROPOSED" });
     // A topic agreed on the strategy call is the client's choice made with us:
     // it is confirmed at once (Jordan, Oct 13 2026, "both": no "needs
     // reconciling" step before its script is drafted). The same write as a
@@ -818,7 +1034,8 @@ export async function runTranscriptJob(job: TranscriptJobInput): Promise<Transcr
           const has = await prisma.contentScript.findFirst({ where: { topicId: s.topicId, monthId: month.id, historical: false }, select: { id: true } });
           if (has) { skipped++; continue; }
           await beat(); // one lease refresh per script — a month of drafts can outlast a 10-minute lease
-          const g = await generateScriptForTopic({ topicId: s.topicId, monthId: month.id, requestedBy, unattended, callRecordId: call.id });
+          // Oct 14 2026: checkDeadline 0 = the automatic check of these drafts is left to the AI cron (scriptJudge.sweepScriptChecks): this loop drafts a whole month with no clock of its own.
+          const g = await generateScriptForTopic({ topicId: s.topicId, monthId: month.id, requestedBy, unattended, callRecordId: call.id, checkDeadline: 0 });
           done.push(g.versionId);
         }
         return { ok: true, resultJson: { versionIds: done, skipped, pending: (await prisma.contentTopicSelection.count({ where: { monthId: month.id, status: "PROPOSED" } })) } };
@@ -1027,4 +1244,4 @@ export async function planInterviewQuestions(interviewId: string, o: { requested
   return { runId: run.runId, questions, followUps };
 }
 
-export const GENERATION_KINDS: AiRunKind[] = ["call_analysis", "strategy_draft", "strategy_revise", "topic_bank", "topic_refresh", "recommendation", "script_draft", "script_revise", "interview_plan"];
+export const GENERATION_KINDS: AiRunKind[] = ["call_analysis", "strategy_draft", "strategy_revise", "topic_bank", "topic_refresh", "recommendation", "script_draft", "script_revise", "interview_plan", "script_judge", "creative_identity"];

@@ -89,14 +89,25 @@ export async function GET(req: NextRequest) {
       const { sweepInterviewPlans, sweepOwedScripts, INTERVIEW_PLAN_MIN_START_MS, SCRIPT_DRAFT_MIN_START_MS } = await import("@/lib/contentDrafting");
       const plans = await sweepInterviewPlans({ max: 4, budgetMs: budget(), minStartMs: INTERVIEW_PLAN_MIN_START_MS });
       const drafts = await sweepOwedScripts({ max: 6, budgetMs: budget(), minStartMs: SCRIPT_DRAFT_MIN_START_MS });
-      return { plans, drafts };
+      // Oct 14 2026: the automatic check and fix a draft's own run had no time
+      // to finish (scriptJudge.ts). Behind `ai_runs` (unattended), like every
+      // model call here; each start is checked against what is left.
+      const { sweepScriptChecks, JUDGE_MIN_START_MS } = await import("@/lib/scriptJudge");
+      const checks = await sweepScriptChecks({ max: 4, budgetMs: budget(), minStartMs: JUDGE_MIN_START_MS });
+      return { plans, drafts, checks };
     },
     // CP-07: the initial bank after a strategy is approved, and per-pillar
     // refills when usable stock runs low. Behind `topic_refresh`; every result
     // is a suggestion Jordan reviews, nothing reaches a client.
     topicBanks: async () => {
       const { sweepTopicBanks } = await import("@/lib/contentTopics");
-      return sweepTopicBanks({ max: TOPIC_REFRESH_MAX, budgetMs: budget(), minStartMs: TOPIC_REFRESH_MIN_START_MS });
+      const banks = await sweepTopicBanks({ max: TOPIC_REFRESH_MAX, budgetMs: budget(), minStartMs: TOPIC_REFRESH_MIN_START_MS });
+      // Oct 14 2026: a creative identity missing or built from an older
+      // strategy version is (re)built, a few per run, before the next bank or
+      // script reads it. Behind `ai_runs` (unattended).
+      const { sweepCreativeIdentities } = await import("@/lib/creativeIdentity");
+      const identities = await sweepCreativeIdentities({ max: 3, budgetMs: budget(), minStartMs: 45_000 });
+      return { ...banks, identities };
     },
   };
   const order = aiWorkOrder(startedAt);

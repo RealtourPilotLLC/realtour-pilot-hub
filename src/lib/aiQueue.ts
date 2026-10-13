@@ -58,7 +58,7 @@ export type QueueJob =
   /** An owed draft from the client's written answers. */
   | { job: "script_interview"; topicId: string; monthId: string; interviewId: string }
   /** "Ask AI to revise" and "Tighten" on a script — a new version; the current one is kept. */
-  | { job: "script_revise"; scriptId: string; instruction: string; label: "revise" | "tighten" }
+  | { job: "script_revise"; scriptId: string; instruction: string; label: "revise" | "tighten"; /** Oct 14 2026: "Keep exactly" sections, copied back by code. */ lockSections?: string[] }
   /** "Draft from the discovery call". */
   | { job: "strategy_draft"; callRecordId: string };
 
@@ -189,7 +189,7 @@ async function claimNext(origin: string): Promise<ClaimedRow | null> {
 export type JobOutcome = "done" | "failed" | "cancelled" | "lost";
 
 /** Run one claimed row through its generator, which adopts the row. Never throws: the outcome is on the row. */
-async function runClaimed(row: ClaimedRow): Promise<JobOutcome> {
+async function runClaimed(row: ClaimedRow, checkDeadline: number | null = null): Promise<JobOutcome> {
   const claimed: ClaimedRun = { id: row.id, leaseBy: row.leaseBy };
   const by = row.requestedBy ?? "queue";
   let scope: StoredScope | null = null;
@@ -201,17 +201,18 @@ async function runClaimed(row: ClaimedRow): Promise<JobOutcome> {
         const { generateScriptForTopic } = await import("@/lib/contentGeneration");
         // onlyIfUnscripted: a script that appeared since the click (the
         // hourly sweep, an upload) is not given a second version by it.
-        await generateScriptForTopic({ topicId: scope.topicId, monthId: scope.monthId, requestedBy: by, unattended: false, callRecordId: scope.callRecordId ?? null, selectedOnCall: scope.selectedOnCall ?? true, onlyIfUnscripted: true, claimedRun: claimed });
+        await generateScriptForTopic({ topicId: scope.topicId, monthId: scope.monthId, requestedBy: by, unattended: false, callRecordId: scope.callRecordId ?? null, selectedOnCall: scope.selectedOnCall ?? true, onlyIfUnscripted: true, claimedRun: claimed, checkDeadline });
         break;
       }
       case "script_interview": {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
-        await generateScriptFromInterview(scope.interviewId, by, { unattended: false, onlyIfUnscripted: true, claimedRun: claimed });
+        await generateScriptFromInterview(scope.interviewId, by, { unattended: false, onlyIfUnscripted: true, claimedRun: claimed, checkDeadline });
         break;
       }
       case "script_revise": {
         const { reviseScript } = await import("@/lib/contentGeneration");
-        await reviseScript(scope.scriptId, scope.instruction, by, "REVISION", { claimedRun: claimed });
+        const { asLockSections } = await import("@/lib/contentPolicy");
+        await reviseScript(scope.scriptId, scope.instruction, by, "REVISION", { claimedRun: claimed, lockSections: asLockSections(scope.lockSections) });
         break;
       }
       case "strategy_draft": {
@@ -274,7 +275,8 @@ export async function drainAiQueue(opts: { origin?: string; budgetMs?: number; m
     const row = await claimNext(origin);
     if (!row) break;
     out.ran++;
-    out[await runClaimed(row)]++;
+    // Oct 14 2026: the draft's automatic check starts no model call past this worker's own budget (the AI cron finishes it).
+    out[await runClaimed(row, started + budgetMs)]++;
   }
   return out;
 }
@@ -387,7 +389,7 @@ function jobOf(s: StoredScope): QueueJob | null {
   switch (s.job) {
     case "script_topic": return { job: s.job, topicId: s.topicId, monthId: s.monthId, callRecordId: s.callRecordId ?? null, selectedOnCall: s.selectedOnCall ?? true };
     case "script_interview": return { job: s.job, topicId: s.topicId, monthId: s.monthId, interviewId: s.interviewId };
-    case "script_revise": return { job: s.job, scriptId: s.scriptId, instruction: s.instruction, label: s.label };
+    case "script_revise": return { job: s.job, scriptId: s.scriptId, instruction: s.instruction, label: s.label, ...(Array.isArray(s.lockSections) && s.lockSections.length ? { lockSections: s.lockSections } : {}) };
     case "strategy_draft": return { job: s.job, callRecordId: s.callRecordId };
     default: return null;
   }
