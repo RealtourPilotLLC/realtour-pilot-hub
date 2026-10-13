@@ -4,10 +4,21 @@ import { sweepRepliedOpenPhoneTasks } from "@/lib/integrations/openphone";
 import { syncSlackHistory } from "@/lib/integrations/slackSync";
 import { sweepReplySla } from "@/lib/commsSla";
 import { cronBudget } from "@/lib/cron";
+import type { OutboxKind } from "@/lib/outbox";
+import type { AutomationKey } from "@/lib/programAutomation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+
+/** The switch each content-program email answers to — the same pairs the
+ *  dispatch gate uses (programRolloutGate KIND). */
+const PROGRAM_KIND_SWITCH: Partial<Record<OutboxKind, AutomationKey>> = {
+  program_reminder: "reminders",
+  script_share: "script_share_email",
+  strategy_ready: "script_share_email",
+  program_message: "program_message_notice",
+};
 
 // COMMS cron (runs every few minutes — see vercel.json). Keeps communications
 // live: scans the inbox into tasks and closes OpenPhone reply tasks we've since
@@ -69,17 +80,37 @@ export async function GET(req: NextRequest) {
   // real but invisible, and the sweep that queued it meets its own accepted row
   // on every tick for ever.
   await step("outboxRecover", async () => {
-    const { recoverExpiredLeases, drainPending, unknownSendCount, outboxKind, isClientKind } = await import("@/lib/outbox");
+    const { recoverExpiredLeases, drainPending, unknownSendCount, outboxKind, isClientKind, isProgramKind } = await import("@/lib/outbox");
     const { clientTextWindowOpen, recordDrainedSend, recoveredTextStillTrue } = await import("@/lib/clientTextSweeps");
+    const { isAutomationEnabled } = await import("@/lib/programAutomation");
     const leases = await recoverExpiredLeases();
     let windowOpen: boolean | null = null; // one settings read per run, not per row
+    const switchOn = new Map<string, boolean>(); // one read per switch per run
     const recovered: string[] = [];
     const superseded: string[] = [];
+    const switchedOff: string[] = [];
     const drained = await drainPending({
       workerId: `cron-gmail-${Date.now().toString(36)}`,
       limit: 10,
       canSend: async (row) => {
-        if (!isClientKind(outboxKind(row.dedupeKey))) return true; // team texts ignore the window by design
+        const kind = outboxKind(row.dedupeKey);
+        // A PROGRAM email's own switch, asked BEFORE the send (automation audit
+        // item 13, Oct 13 2026). The dispatch gate inside deliver() refuses a
+        // switched-off kind too, but only by marking the row failed; asked
+        // here, the row is held — still pending — and the hourly
+        // programReminderReconcile cancels it with the reason, the path a
+        // switched-off reminder is meant to take. Never sent while it is off.
+        if (isProgramKind(kind) && kind) {
+          const key = PROGRAM_KIND_SWITCH[kind];
+          if (key) {
+            if (!switchOn.has(key)) switchOn.set(key, await isAutomationEnabled(key).catch(() => false));
+            if (!switchOn.get(key)) {
+              switchedOff.push(`${kind}: ${key} is off`);
+              return false;
+            }
+          }
+        }
+        if (!isClientKind(kind)) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
         if (!windowOpen) return false;
         // THE WINDOW IS NOT THE ONLY QUESTION (audit, Sep 17). "May we text a
@@ -114,6 +145,7 @@ export async function GET(req: NextRequest) {
       drained,
       ...(recovered.length > 0 ? { recovered } : {}),
       ...(superseded.length > 0 ? { superseded } : {}),
+      ...(switchedOff.length > 0 ? { heldSwitchedOff: switchedOff } : {}),
       unconfirmed: await unknownSendCount(),
     };
   });

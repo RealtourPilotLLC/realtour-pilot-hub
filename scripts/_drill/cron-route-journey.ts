@@ -46,6 +46,14 @@
 //   7. Across every run, parent and child: zero non-GET requests to
 //      api.aryeo.com (the GETs it did try are counted, so this is not vacuous).
 //
+// THE HOUR IS THREE ROUTES NOW (Oct 13 2026). The AI sweeps (transcript jobs,
+// the AI queue, script drafting, topic banks) moved from /api/cron/sync to the
+// 15-minute AI work job (/api/cron/topics), and the Aryeo order/appointment
+// sync, session requests/bookings and the Ready-to-send pass to the 15-minute
+// /api/cron/aryeo. So one "GET" here is all three, in the order a quarter
+// hour meets them — sync, aryeo, topics — each with the bearer, their bodies
+// merged; and the child in §5 is killed inside the AI work job's draft.
+//
 // NOT PROVEN HERE — and NOT to be reported as covered (CP-15 item 6 / §8
 // "normal Postgres duplicate races"): anything that needs TWO database
 // sessions. PGlite is one session behind the harness socket, and the harness
@@ -168,9 +176,12 @@ async function child() {
     process.kill(process.pid, "SIGKILL");
   };
   const { GET } = await import("@/app/api/cron/sync/route");
+  const { GET: GET_AI } = await import("@/app/api/cron/topics/route");
   const { NextRequest } = await import("next/server");
   fs.appendFileSync(TRACE, "CHILD GET START\n");
-  const res = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer drill-secret" } }));
+  await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer drill-secret" } }));
+  fs.appendFileSync(TRACE, "CHILD SYNC DONE, AI WORK JOB START\n");
+  const res = await GET_AI(new NextRequest("http://127.0.0.1/api/cron/topics", { headers: { authorization: "Bearer drill-secret" } }));
   const body = (await res.json()) as Record<string, unknown>;
   fs.appendFileSync(TRACE, `CHILD GET FINISHED (should not happen): ${JSON.stringify({ scriptDrafting: body.scriptDrafting, err: body.scriptDraftingError })}\n`);
   process.exit(3);
@@ -193,6 +204,8 @@ async function main() {
   const quiet = quietPrismaErrors();
   const { prisma } = await import("@/lib/prisma");
   const { GET } = await import("@/app/api/cron/sync/route");
+  const { GET: GET_ARYEO } = await import("@/app/api/cron/aryeo/route");
+  const { GET: GET_AI } = await import("@/app/api/cron/topics/route");
   const { NextRequest } = await import("next/server");
   const fx = await import("../_fixtures/representativeMonth");
   const { etMonthKey } = await import("@/lib/contentProgram");
@@ -201,10 +214,25 @@ async function main() {
   const MK = etMonthKey(new Date());
 
   type Body = Record<string, unknown> & { ok?: boolean; ms?: Record<string, number>; skipped?: string[]; timedOut?: string[]; deploy?: string };
+  // One quarter hour: the hourly sync, the Aryeo job, the AI work job (see
+  // the header). The first non-200 is the answer; the bodies are merged, step
+  // timings and skip lists included, and `ok` is all three.
   const get = async (auth: string | null = "Bearer drill-secret"): Promise<{ status: number; body: Body; wall: number }> => {
     const t0 = Date.now();
-    const res = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: auth ? { authorization: auth } : {} }) as NextRequestT);
-    return { status: res.status, body: (await res.json()) as Body, wall: Date.now() - t0 };
+    const headers: Record<string, string> = auth ? { authorization: auth } : {};
+    const parts: { status: number; body: Body }[] = [];
+    for (const [handler, p] of [[GET, "sync"], [GET_ARYEO, "aryeo"], [GET_AI, "topics"]] as const) {
+      const res = await handler(new NextRequest(`http://127.0.0.1/api/cron/${p}`, { headers }) as NextRequestT);
+      parts.push({ status: res.status, body: (await res.json()) as Body });
+    }
+    const status = parts.find((x) => x.status !== 200)?.status ?? 200;
+    const body: Body = {};
+    for (const x of parts) Object.assign(body, x.body);
+    body.ms = Object.assign({}, ...parts.map((x) => x.body.ms ?? {}));
+    body.skipped = parts.flatMap((x) => x.body.skipped ?? []);
+    body.timedOut = parts.flatMap((x) => x.body.timedOut ?? []);
+    body.ok = status === 200 && parts[0].body.ok === true && parts[1].body.ok === true;
+    return { status, body, wall: Date.now() - t0 };
   };
   const errorsOf = (b: Body) => Object.keys(b).filter((k) => k.endsWith("Error")).map((k) => `${k.slice(0, -5)}: ${String(b[k]).slice(0, 100)}`);
   const describe = (label: string, r: { status: number; body: Body; wall: number }) => {
@@ -261,7 +289,7 @@ async function main() {
     const wrong = await get("Bearer not-the-secret");
     c.ok("no Authorization header → 401", none.status === 401, JSON.stringify(none.body));
     c.ok("a wrong bearer → 401", wrong.status === 401, JSON.stringify(wrong.body));
-    c.ok("no CronRun row was started for either", (await prisma.cronRun.count({ where: { job: "sync" } })) === 0);
+    c.ok("no CronRun row was started for either, by any of the three routes", (await prisma.cronRun.count()) === 0);
   }
 
   // ---- the month ----------------------------------------------------------
@@ -440,9 +468,11 @@ async function main() {
     const hung = db.isInTransaction();
     if (hung) await db.exec("ROLLBACK");
     c.ok("the child died outside any transaction (nothing had to be rolled back for it)", !hung);
-    const dead = await prisma.cronRun.findFirst({ where: { job: "sync", startedAt: { gte: t0 } }, orderBy: { startedAt: "asc" } });
-    c.ok("it left a CronRun with no finishedAt", !!dead && dead.finishedAt === null, JSON.stringify({ id: dead?.id, finishedAt: dead?.finishedAt }));
-    c.ok("…whose checkpoint names the steps it finished before it died", Object.keys(summaryOf(dead?.summary).ms ?? {}).length > 10, `${Object.keys(summaryOf(dead?.summary).ms ?? {}).length} steps recorded`);
+    const syncRun = await prisma.cronRun.findFirst({ where: { job: "sync", startedAt: { gte: t0 } }, orderBy: { startedAt: "asc" } });
+    c.ok("the child's hourly sync finished first (it holds no model call any more)", !!syncRun?.finishedAt && trace.includes("CHILD SYNC DONE"), JSON.stringify({ finishedAt: syncRun?.finishedAt }));
+    const dead = await prisma.cronRun.findFirst({ where: { job: "topics", startedAt: { gte: t0 } }, orderBy: { startedAt: "asc" } });
+    c.ok("the AI work job it was killed in left a CronRun with no finishedAt", !!dead && dead.finishedAt === null, JSON.stringify({ id: dead?.id, finishedAt: dead?.finishedAt }));
+    c.ok("…whose checkpoint names the steps it finished before it died (the AI queue first)", "aiQueue" in (summaryOf(dead?.summary).ms ?? {}), `${Object.keys(summaryOf(dead?.summary).ms ?? {}).join(", ")} recorded`);
     const held = await prisma.programAiRun.findMany({ where: { status: "RUNNING" }, select: { id: true, kind: true, leaseUntil: true, dedupeKey: true, scopeJson: true } });
     c.ok("…and a RUNNING draft run for H holding its lease and dedupe key", held.length === 1 && held[0].kind === "script_draft" && !!held[0].dedupeKey && (held[0].leaseUntil?.getTime() ?? 0) > Date.now() && (held[0].scopeJson ?? "").includes(H), JSON.stringify(held));
     c.ok("H has no script", (await scriptsFor(H)).length === 0);

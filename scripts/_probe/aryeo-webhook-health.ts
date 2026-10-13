@@ -116,14 +116,16 @@ export async function webhookHealth(prisma: PrismaClient, opts: { days?: number;
     } catch { arm = { mode: "unreadable", watchingSince: null, armedAt: null, armedBy: null, proofAt: null, proofCredential: null, heldAt: null, heldReason: null }; }
   }
 
-  // The hourly passes that recover what a missing post would have carried.
-  const runs = await prisma.cronRun.findMany({ where: { job: "sync", startedAt: { gte: since } }, orderBy: { startedAt: "desc" }, take: 6, select: { startedAt: true, ok: true, summary: true } });
+  // The scheduled passes that recover what a missing post would have carried:
+  // webhookSilence in the hourly sync, readyToSendAryeo in the 15-minute Aryeo
+  // job since Oct 13 2026 (the hourly sync before that — both are read).
+  const runs = await prisma.cronRun.findMany({ where: { job: { in: ["sync", "aryeo"] }, startedAt: { gte: since } }, orderBy: { startedAt: "desc" }, take: 12, select: { job: true, startedAt: true, ok: true, summary: true } });
   const recovery: WebhookHealth["recovery"] = [];
   for (const r of runs) {
     let summary: Record<string, unknown> = {};
     try { summary = JSON.parse(r.summary ?? "{}") as Record<string, unknown>; } catch { /* unreadable run */ }
     for (const step of ["readyToSendAryeo", "webhookSilence"]) {
-      if (step in summary) recovery.push({ job: "sync", at: r.startedAt, ok: r.ok, step, result: JSON.stringify(summary[step]).slice(0, 240) });
+      if (step in summary) recovery.push({ job: r.job, at: r.startedAt, ok: r.ok, step, result: JSON.stringify(summary[step]).slice(0, 240) });
     }
   }
 
@@ -132,12 +134,12 @@ export async function webhookHealth(prisma: PrismaClient, opts: { days?: number;
   if (!rows.length) verdict.push(`No Aryeo post at all in ${days} days — delivery evidence is arriving only through the hourly recovery pass, if at all.`);
   else if (!lastRealEventAt) verdict.push(`Only self-tests and refusals in ${days} days — Aryeo itself has not posted.`);
   else verdict.push(`Aryeo last posted ${Math.round((now.getTime() - lastRealEventAt.getTime()) / 3_600_000)}h ago.`);
-  if (silentHandledEvents.length) verdict.push(`Handled delivery events never received in the window: ${silentHandledEvents.join(", ")} — the hourly readyToSendAryeo pass is the only source of that evidence.`);
+  if (silentHandledEvents.length) verdict.push(`Handled delivery events never received in the window: ${silentHandledEvents.join(", ")} — the scheduled readyToSendAryeo pass (every 15 minutes) is the only source of that evidence.`);
   if (totals.rejected) verdict.push(`${totals.rejected} post(s) REFUSED at the door — a subscription is posting without the secret (check the arm state and Aryeo's subscription list).`);
   if (totals.unsigned) verdict.push(`${totals.unsigned} post(s) accepted UNSIGNED — the receiver is ${arm?.mode ?? "without a saved secret"}, not enforcing.`);
   if (arm?.mode === "armed" && arm.proofAt) verdict.push(`Signature enforcement is ARMED since ${arm.armedAt ?? arm.proofAt} (proved by ${arm.proofCredential ?? "a verified post"}).`);
   if (totals.errored) verdict.push(`${totals.errored} post(s) errored in processing — the retry sweep (webhookRetry) re-runs these.`);
-  if (!recovery.some((r) => r.step === "readyToSendAryeo")) verdict.push("No recent hourly run recorded a readyToSendAryeo result — the recovery pass itself is not visible.");
+  if (!recovery.some((r) => r.step === "readyToSendAryeo")) verdict.push("No recent scheduled run recorded a readyToSendAryeo result — the recovery pass itself is not visible.");
   return { windowDays: days, arm, totals, lastRealEventAt, events, silentHandledEvents, recovery, verdict };
 }
 

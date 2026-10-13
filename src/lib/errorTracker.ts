@@ -14,7 +14,7 @@ import {
   STACK_MAX,
   type ErrorSource,
 } from "@/lib/errorScrub";
-import type { StepPersistence } from "@/lib/cronNoise";
+import { stepOutcome, type StepPersistence } from "@/lib/cronNoise";
 
 // ---------------------------------------------------------------------------
 // THE ERROR TRACKER (Oct 6 2026). Jordan: "I also want to make sure we are
@@ -210,9 +210,9 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
       lastUserRole: input.userRole ? String(input.userRole).slice(0, 20) : null,
     };
 
-    let existing: { id: string; recentPaths: string | null; status: string; context: string | null } | null;
+    let existing: { id: string; recentPaths: string | null; status: string; context: string | null; resolvedBy: string | null } | null;
     try {
-      existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true, status: true, context: true } });
+      existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true, status: true, context: true, resolvedBy: true } });
     } catch (e) {
       if (noteMissing(e)) return null;
       throw e;
@@ -249,7 +249,7 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
       } catch (e) {
         if ((e as { code?: string } | null)?.code !== "P2002") throw e;
         // Somebody else created it a moment ago — count this one on their row.
-        existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true, status: true, context: true } });
+        existing = await db.findUnique({ where: { fingerprint }, select: { id: true, recentPaths: true, status: true, context: true, resolvedBy: true } });
         if (!existing) return null;
       }
     }
@@ -290,12 +290,16 @@ export async function recordError(input: ErrorInput): Promise<RecordResult | nul
       data: { status: "OPEN", reopenedAt: now, reopenCount: { increment: 1 }, resolvedAt: null, resolvedBy: null },
     });
     const reopened = reopen.count === 1;
+    // A row the tracker closed ITSELF (it had stopped happening — B8) comes
+    // back OPEN, counted in the daily report, but without the "you marked
+    // this fixed and it is back" alert: nobody claimed it was fixed.
+    const wasAutoResolved = isAutoResolved(existing.resolvedBy);
     let alert: AlertOutcome | null = null;
     if (input.alert !== false && row.status !== "IGNORED") {
       if (transient) {
         // Quiet until it persists; then once, as "keeps failing".
         if (escalateNow) alert = await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: row.count, rule: transient.rule }, "persistent", now);
-      } else if (reopened) {
+      } else if (reopened && !wasAutoResolved) {
         alert = await alertForError({ id: row.id, fingerprint, message, route, source: input.source, count: row.count }, "reopened", now);
       }
     }
@@ -583,6 +587,145 @@ export async function errorDigest(now: Date = new Date()): Promise<{ sent: boole
     return { sent, open: open.length, recent: recent.length, watching: watching.length, ...(sent ? {} : { reason: "already sent today" }) };
   } catch (e) {
     if (noteMissing(e)) return { sent: false, open: 0, reason: "error table not present" };
+    throw e;
+  }
+}
+
+// ---- errors that stopped happening close themselves (B8, Oct 13 2026) -------------
+//
+// Jordan's Errors page filled with rows nobody would ever mark fixed: a cron
+// step that failed one night and has worked every run since, a page error from
+// a bug fixed two deploys ago. Each stays OPEN, in the daily report, for ever.
+// So a server-side error tied to a route or a step closes itself — status
+// FIXED (the page's "resolved"), resolvedBy saying why, starting "auto:" — once
+//   · a CRON STEP's error: that same step has since run cleanly
+//     AUTO_RESOLVE_CLEAN_RUNS times in a row (read from the job's own CronRun
+//     rows, the record cronNoise reads), or it has had at least one clean run
+//     and no recurrence for 24 hours, or the step no longer runs at all (three
+//     runs of its job since, none of them running it — a retired step);
+//   · any other server error keyed to a route or an area: no recurrence for
+//     24 hours.
+// Browser errors are left alone (a page nobody has opened since is not a fix).
+// Nothing is sent. The alerting rules are untouched (cronNoise.ts): if it
+// happens again it reopens as before — quietly, counted in the daily report,
+// because nobody claimed it was fixed (see recordError).
+
+export const AUTO_RESOLVE_CLEAN_RUNS = 3;
+export const AUTO_RESOLVE_QUIET_MS = 24 * 3600_000;
+const AUTO_PREFIX = "auto:";
+/** Server-side sources an auto-resolve may close. "cron" rows go through the step history. */
+const QUIET_RESOLVE_SOURCES: ErrorSource[] = ["server-request", "server-action", "route-handler", "background"];
+
+/** Did the tracker close this row itself (rather than a person)? */
+export function isAutoResolved(resolvedBy: string | null | undefined): boolean {
+  return typeof resolvedBy === "string" && resolvedBy.startsWith(AUTO_PREFIX);
+}
+
+type RunRow = { startedAt: Date; summary: string | null; error: string | null };
+
+/**
+ * Pure: should this cron step's open error close, given the job's runs that
+ * STARTED AFTER the error was last seen (newest first)? Returns the reason, or
+ * null to leave it open.
+ */
+export function cronStepResolution(step: string, lastSeenAt: Date, runsSince: RunRow[], now: Date): string | null {
+  let clean = 0;
+  let ran = false;
+  for (const r of runsSince) {
+    const o = stepOutcome(r, step);
+    if (o === "failed") break; // cannot be newer than lastSeenAt, but never count past one
+    if (o === "ok") { clean++; ran = true; }
+    else if (o === "timedOut") ran = true; // ran, no answer: neither a clean run nor a failure
+  }
+  if (clean >= AUTO_RESOLVE_CLEAN_RUNS) return `${AUTO_PREFIX} ran cleanly ${clean} times in a row since`;
+  if (clean >= 1 && now.getTime() - lastSeenAt.getTime() >= AUTO_RESOLVE_QUIET_MS) return `${AUTO_PREFIX} no recurrence in 24 h, and the step has run cleanly since`;
+  if (!ran && runsSince.length >= AUTO_RESOLVE_CLEAN_RUNS && now.getTime() - lastSeenAt.getTime() >= AUTO_RESOLVE_QUIET_MS) return `${AUTO_PREFIX} the step no longer runs (${runsSince.length} runs of its job since without it)`;
+  return null;
+}
+
+/** "cron:sync/orders" → { job: "sync", step: "orders" }. */
+function cronRoute(route: string | null): { job: string; step: string } | null {
+  const m = /^cron:([^/]+)\/(.+)$/.exec(route ?? "");
+  return m ? { job: m[1], step: m[2] } : null;
+}
+
+/** Close the open cron-step rows `rows` whose step's history says it stopped failing. */
+async function resolveCronRows(db: ErrorEventDelegate, rows: { id: string; route: string | null; lastSeenAt: Date }[], now: Date): Promise<number> {
+  let resolved = 0;
+  const byJob = new Map<string, { id: string; step: string; lastSeenAt: Date }[]>();
+  for (const r of rows) {
+    const c = cronRoute(r.route);
+    if (!c) continue;
+    byJob.set(c.job, [...(byJob.get(c.job) ?? []), { id: r.id, step: c.step, lastSeenAt: r.lastSeenAt }]);
+  }
+  for (const [job, list] of byJob) {
+    const oldest = new Date(Math.min(...list.map((x) => x.lastSeenAt.getTime())));
+    const runs = await prisma.cronRun.findMany({
+      where: { job, startedAt: { gt: oldest } },
+      orderBy: { startedAt: "desc" },
+      take: 200,
+      select: { startedAt: true, summary: true, error: true },
+    });
+    for (const x of list) {
+      const since = runs.filter((r) => r.startedAt.getTime() > x.lastSeenAt.getTime());
+      const why = cronStepResolution(x.step, x.lastSeenAt, since, now);
+      if (!why) continue;
+      // Conditional on lastSeenAt: an occurrence recorded since this read wins.
+      const r = await db.updateMany({ where: { id: x.id, status: "OPEN", lastSeenAt: x.lastSeenAt }, data: { status: "FIXED", resolvedAt: now, resolvedBy: why.slice(0, 120) } });
+      resolved += r.count;
+    }
+  }
+  return resolved;
+}
+
+/**
+ * From cron.ts finish(): the steps of `job` that just ran cleanly may close
+ * their own open errors. Bounded, never throws.
+ */
+export async function autoResolveCleanCronSteps(job: string, cleanSteps: string[], now: Date = new Date()): Promise<{ resolved: number }> {
+  try {
+    if (!errorTrackingEnabled() || cleanSteps.length === 0) return { resolved: 0 };
+    const db = table();
+    if (!db) return { resolved: 0 };
+    const rows = await db.findMany({
+      where: { status: "OPEN", source: "cron", route: { in: cleanSteps.map((s) => `cron:${job}/${s}`) } },
+      select: { id: true, route: true, lastSeenAt: true },
+      take: 50,
+    });
+    if (rows.length === 0) return { resolved: 0 };
+    return { resolved: await resolveCronRows(db, rows, now) };
+  } catch (e) {
+    noteMissing(e);
+    return { resolved: 0 };
+  }
+}
+
+/**
+ * Hourly (cron/sync): server errors quiet for 24 hours close; cron-step errors
+ * not seen for 24 hours are judged by their step's history (a retired step's
+ * error closes; a daily step that failed yesterday and has not run since does
+ * not). Never throws.
+ */
+export async function autoResolveQuietErrors(now: Date = new Date()): Promise<{ resolved: number; cron: number } | { skipped: string }> {
+  if (!errorTrackingEnabled()) return { skipped: "not the production deployment" };
+  const db = table();
+  if (!db) return { skipped: "error table not present" };
+  try {
+    const before = new Date(now.getTime() - AUTO_RESOLVE_QUIET_MS);
+    const server = await db.updateMany({
+      where: { status: "OPEN", source: { in: QUIET_RESOLVE_SOURCES }, route: { not: null }, lastSeenAt: { lt: before } },
+      data: { status: "FIXED", resolvedAt: now, resolvedBy: `${AUTO_PREFIX} no recurrence in 24 h` },
+    });
+    const quietCron = await db.findMany({
+      where: { status: "OPEN", source: "cron", route: { startsWith: "cron:" }, lastSeenAt: { lt: before } },
+      select: { id: true, route: true, lastSeenAt: true },
+      orderBy: { lastSeenAt: "asc" },
+      take: 100,
+    });
+    const cron = quietCron.length ? await resolveCronRows(db, quietCron, now) : 0;
+    return { resolved: server.count + cron, cron };
+  } catch (e) {
+    if (noteMissing(e)) return { skipped: "error table not present" };
     throw e;
   }
 }

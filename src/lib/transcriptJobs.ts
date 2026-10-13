@@ -118,8 +118,14 @@ const LEASE_MS = 10 * 60_000;
 // Backoff by attempt: 5 min, 30 min, 2 h. Past maxAttempts → NEEDS_REVIEW.
 const BACKOFF_MS = [5 * 60_000, 30 * 60_000, 120 * 60_000];
 
-/** Jobs per hourly run: the route's own bound (cron/sync driveTranscriptJobs max 5). */
-export const TRANSCRIPT_JOBS_PER_TICK = 5;
+/** Jobs per run of the 15-minute AI work job (cron/topics): the route's own bound. */
+export const TRANSCRIPT_JOBS_PER_TICK = 3;
+/** How often that job runs (vercel.json: 7,22,37,52). Readiness sizes "not draining" with it. */
+export const TRANSCRIPT_TICK_MS = 15 * 60_000;
+/** A job starts only with this much of the run's budget left (Oct 13 2026): a
+ *  call analysis or a strategy draft is a long model call, and one started with
+ *  seconds left was stopped mid-call and came back "lease expired", an attempt down. */
+export const TRANSCRIPT_JOB_MIN_START_MS = 120_000;
 
 /**
  * The switch that owns each kind's WORK, on top of transcript_jobs (R05, Sep
@@ -401,7 +407,7 @@ export async function availableHandlers(): Promise<TranscriptJobHandlers> {
 // ---------------------------------------------------------------------------
 // The driver.
 // ---------------------------------------------------------------------------
-export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: number; leaseBy?: string; now?: Date } = {}): Promise<
+export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: number; minStartMs?: number; leaseBy?: string; now?: Date } = {}): Promise<
   | { skipped: string }
   | { ran: number; succeeded: number; failed: number; needsReview: number; paused: string | null; waitingForHandler: number; recovered: number; waiting: number; held: { owner: number; backlog: number } }
 > {
@@ -411,6 +417,11 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
   const budget = opts.budgetMs ?? 60_000;
   const leaseBy = opts.leaseBy ?? "transcriptJobs";
   const max = opts.max ?? 5;
+  // START ONLY WITH TIME TO FINISH (Oct 13 2026). The loop used to claim a new
+  // job whenever ANY of its budget remained, so a call analysis could start
+  // with two seconds left; the run ended under it and the job came back
+  // "lease expired". 0 keeps the old rule (drills, a direct call).
+  const minStartMs = opts.minStartMs ?? 0;
   const handlers = await availableHandlers();
 
   // Recover work a dead run left RUNNING with an expired lease. A job that
@@ -523,7 +534,7 @@ export async function driveTranscriptJobs(opts: { max?: number; budgetMs?: numbe
   let ran = 0, succeeded = 0, failed = 0, needsReview = 0, waiting = 0;
   let lastError: string | null = null;
   let paused: string | null = null;
-  while (ran < max && Date.now() - started < budget && runnable.length > 0 && free.length > 0) {
+  while (ran < max && Date.now() - started < budget && budget - (Date.now() - started) >= minStartMs && runnable.length > 0 && free.length > 0) {
     // Oldest first, INGEST before the kinds that depend on it.
     const candidate = await prisma.programTranscriptJob.findFirst({
       where: { id: { in: free }, state: "QUEUED", kind: { in: runnable }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
@@ -671,7 +682,7 @@ export async function transcriptJobsSnapshot(): Promise<{
 // WHAT IS QUEUED NOW (R05, Sep 28 2026) — read-only. The batch the processor
 // would face the moment it is (or next) switched on, decided by the SAME
 // holdReasonFor the driver uses, so "runnable now" here is exactly what the
-// next hourly run may claim (up to five of them). Shown on the transcript_jobs
+// next run of the 15-minute AI work job may claim (up to TRANSCRIPT_JOBS_PER_TICK). Shown on the transcript_jobs
 // readiness row, in the confirm before the owner turns the processor on, and
 // beside the job lane on Settings → Calendly & calls.
 //

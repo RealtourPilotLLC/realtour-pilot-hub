@@ -254,7 +254,23 @@ export type DraftOpts = {
   /** Draft topics with no answers and no excerpts too. A person's explicit ask only. */
   includeThin?: boolean;
   max?: number;
+  /** Epoch ms the caller's run must be finished by (a scheduled job). With it,
+   *  no script is STARTED with less than `minStartMs` left before it — one
+   *  started with seconds to spare was stopped mid-call (Oct 13 2026). A
+   *  person's click passes neither and drafts the whole list. */
+  deadline?: number;
+  minStartMs?: number;
 };
+
+/** A drafted script is one model call of up to about a minute; the scheduled job starts one only with this long left. */
+export const SCRIPT_DRAFT_MIN_START_MS = 90_000;
+/** Phrasing one topic's questions is a shorter call. */
+export const INTERVIEW_PLAN_MIN_START_MS = 60_000;
+
+/** Is there time to start one more model call before `deadline`? No deadline = always. */
+function timeToStart(deadline: number | undefined, minStartMs: number | undefined): boolean {
+  return deadline === undefined || deadline - Date.now() >= (minStartMs ?? 0);
+}
 
 /**
  * Draft every script this month owes that has the evidence to be drafted.
@@ -273,7 +289,7 @@ export type DraftOpts = {
  * version to a script that exists. That skip is counted as raced, not failed
  * (Sep 24; cron-route-journey §4 drives it).
  */
-export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; paused: string | null; outcomes: DraftOutcome[] }> {
+export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts): Promise<{ drafted: number; skipped: number; failed: number; paused: string | null; outcomes: DraftOutcome[]; outOfTime: boolean }> {
   // Oct 8 2026: a client who plans their own content gets no scripts from us.
   const owner = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true } });
   if (owner) { const { assertWeWriteFor } = await import("@/lib/programStyle"); await assertWeWriteFor(owner.enrollmentId); }
@@ -282,8 +298,12 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
   const outcomes: DraftOutcome[] = [];
   const limit = opts.max ?? 8;
   let pausedBy: string | null = null;
+  let outOfTime = false;
 
   for (const w of todo.slice(0, limit)) {
+    // Checked before EACH script, not once per month: this loop used to write
+    // up to six scripts with no look at the clock at all.
+    if (!timeToStart(opts.deadline, opts.minStartMs)) { outOfTime = true; break; }
     try {
       if ((w.readiness === "FROM_ANSWERS" || w.readiness === "THIN_ANSWERS") && w.interviewId) {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
@@ -330,6 +350,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
     failed: outcomes.filter((o) => o.result === "failed").length,
     paused: pausedBy,
     outcomes,
+    outOfTime,
   };
 }
 
@@ -347,18 +368,22 @@ async function noteOutcome(w: ScriptWorkItem, result: "drafted" | "failed", erro
 }
 
 /**
- * The hourly settlement of both planning paths, across every open month.
+ * The scheduled settlement of both planning paths, across every open month
+ * (the 15-minute AI work job, cron/topics, since Oct 13 2026).
  *
  * Gated twice over: `script_drafting` here, `ai_runs` inside every generator.
  * Bounded by a wall clock as well as a count, because one month's drafts can
- * outlast a cron step on their own.
+ * outlast a cron step on their own — and every script starts only with
+ * `minStartMs` of the budget left (checked per script, inside the month).
  */
-export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; now?: Date } = {}): Promise<
-  { skipped: string } | { months: number; drafted: number; skipped: number; failed: number; waiting: number; thin: number; paused: string | null; detail: { monthKey: string; client: string | null; drafted: number; failed: number }[] }
+export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; minStartMs?: number; now?: Date } = {}): Promise<
+  { skipped: string } | { months: number; drafted: number; skipped: number; failed: number; waiting: number; thin: number; paused: string | null; outOfTime: boolean; detail: { monthKey: string; client: string | null; drafted: number; failed: number }[] }
 > {
   if (!(await isAutomationEnabled("script_drafting"))) return { skipped: "script_drafting is off" };
   const started = Date.now();
   const budgetMs = opts.budgetMs ?? 90_000;
+  const deadline = started + budgetMs;
+  const minStartMs = opts.minStartMs ?? 0;
   const maxScripts = opts.max ?? 6;
 
   // Open months on live enrollments only. A paused or ended client is not owed
@@ -381,9 +406,11 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   const detail: { monthKey: string; client: string | null; drafted: number; failed: number }[] = [];
   let lastError: string | null = null;
   let paused: string | null = null;
+  let outOfTime = false;
 
   for (const m of months) {
     if (drafted >= maxScripts || Date.now() - started > budgetMs) break;
+    if (!timeToStart(deadline, minStartMs)) { outOfTime = true; break; }
     let work: ScriptWorkItem[];
     try {
       work = await scriptWorkForMonth(m.id);
@@ -396,7 +423,8 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
     const ready = work.filter((w) => isAutoDraftable(w.readiness));
     if (!ready.length) continue;
     touched++;
-    const r = await draftOwedScriptsForMonth(m.id, { requestedBy: "cron", unattended: true, max: Math.max(1, maxScripts - drafted) });
+    const r = await draftOwedScriptsForMonth(m.id, { requestedBy: "cron", unattended: true, max: Math.max(1, maxScripts - drafted), deadline, minStartMs });
+    if (r.outOfTime) outOfTime = true;
     drafted += r.drafted;
     skipped += r.skipped;
     failed += r.failed;
@@ -406,13 +434,14 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
     // month would refuse in the same way. Stop, rather than walking forty
     // months to collect forty identical refusals.
     if (r.paused) { paused = r.paused; break; }
+    if (r.outOfTime) break;
   }
 
   // `paused` is deliberately NOT passed as the error: a stop Jordan asked for
   // must not light up the monitoring screen as a fault. lastError still carries
   // a real one, and a clean run still clears it.
   await recordAutomationRun("script_drafting", lastError).catch(() => {});
-  return { months: touched, drafted, skipped, failed, waiting, thin, paused, detail };
+  return { months: touched, drafted, skipped, failed, waiting, thin, paused, outOfTime, detail };
 }
 
 // ---------------------------------------------------------------------------
@@ -429,10 +458,12 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
 // interview is not "waiting on them" in scriptWorkForMonth — it falls through
 // to the call-excerpt check exactly as a missing one did.
 // ---------------------------------------------------------------------------
-export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: number } = {}): Promise<{ skipped: string } | { planned: number; alreadyPlanned: number; failed: number; paused: string | null; lastError: string | null }> {
+export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: number; minStartMs?: number } = {}): Promise<{ skipped: string } | { planned: number; alreadyPlanned: number; failed: number; paused: string | null; lastError: string | null }> {
   if (!(await isAutomationEnabled("script_drafting"))) return { skipped: "script_drafting is off" };
   const started = Date.now();
   const budgetMs = opts.budgetMs ?? 45_000;
+  const deadline = started + budgetMs;
+  const minStartMs = opts.minStartMs ?? 0;
   const max = opts.max ?? 5;
 
   // Oct 8 2026: no questions are planned for a client who plans their own content.
@@ -478,6 +509,8 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   for (const sel of selections) {
     if (planned >= max || Date.now() - started > budgetMs) break;
     if (scripted.has(`${sel.topicId}:${sel.monthId}`)) continue;
+    // A model call starts only with the time to finish it (Oct 13 2026).
+    if (!timeToStart(deadline, minStartMs)) break;
     const step = stepOf(sel.topicId, sel.monthId);
     if (step && NO_QUESTIONS.has(step)) continue;
     try {

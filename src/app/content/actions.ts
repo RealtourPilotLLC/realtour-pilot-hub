@@ -514,19 +514,10 @@ export async function saveScriptText(scriptId: string, body: string): Promise<Re
   } catch (e) { return fail(e); }
 }
 
-// Pull Calendly bookings + Drive transcripts on demand (cron does both too).
-export async function syncCallsNow(): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  const { syncStrategyCallsFromCalendly, sweepNotetakerTranscripts, sweepDriveTranscripts } = await import("@/lib/contentCalls");
-  const cal = await syncStrategyCallsFromCalendly().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
-  const nt = await sweepNotetakerTranscripts().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
-  const drv = await sweepDriveTranscripts().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
-  revalidatePath("/content");
-  const calMsg = "skipped" in cal ? `Calendly: ${cal.skipped}` : `Calendly: ${cal.stamped} scheduled, ${cal.completed} completed${cal.canceled ? `, ${cal.canceled} canceled` : ""}`;
-  const ntMsg = "skipped" in nt ? `Notetaker: ${nt.skipped}` : `Notetaker: ${nt.ingested} transcript${nt.ingested === 1 ? "" : "s"}`;
-  const drvMsg = "skipped" in drv ? `Drive: ${drv.skipped}` : `Drive: ${drv.ingested} transcript${drv.ingested === 1 ? "" : "s"}`;
-  return { ok: true, message: `${calMsg} · ${ntMsg} · ${drvMsg}.` };
-}
+// (syncCallsNow — the staff "sync calls" action that ran the retired legacy
+// Calendly / Notetaker / Drive sweeps on demand — was removed Oct 13 2026.
+// Nothing rendered its button any more; calls arrive through the mapped call
+// chain on the hourly sync.)
 
 // ---------------------------------------------------------------------------
 // Generators: seed the topic bank from strategy + call ideas; build the agent

@@ -112,7 +112,11 @@ async function main() {
   const { prisma } = await import("@/lib/prisma");
   const db = prisma as unknown as PrismaClient;
   const R = await import("@/lib/readiness");
-  const { AUTOMATION_KEYS, isAutomationKey } = await import("@/lib/programAutomation");
+  const { AUTOMATION_KEYS: ALL_AUTOMATION_KEYS, LISTED_AUTOMATION_KEYS, isAutomationKey } = await import("@/lib/programAutomation");
+  // Oct 13 2026: readiness has one row per LISTED switch — cut_transcripts and
+  // publishing (features that do not exist) are retired from every listing.
+  const AUTOMATION_KEYS = LISTED_AUTOMATION_KEYS;
+  const RETIRED = ALL_AUTOMATION_KEYS.filter((k) => !LISTED_AUTOMATION_KEYS.includes(k));
   const { AUTOMATION_EFFECTS } = await import("@/lib/programAutomationCopy");
   const { saveSecret } = await import("@/lib/integrations/connections");
   const { NEVER_SYNTHETIC_CLIENT_IDS, JORDAN_TEST_EMAIL } = await import("@/lib/testClients");
@@ -165,7 +169,8 @@ async function main() {
   {
     const rep = await report();
     const program = rep.rows.filter((r) => r.kind === "program");
-    c.ok(`one program row per switch (${AUTOMATION_KEYS.length})`, program.length === AUTOMATION_KEYS.length && program.every((r, i) => r.key === AUTOMATION_KEYS[i]));
+    c.ok(`one program row per listed switch (${AUTOMATION_KEYS.length})`, program.length === AUTOMATION_KEYS.length && program.every((r, i) => r.key === AUTOMATION_KEYS[i]));
+    c.ok(`no row for a retired switch (${RETIRED.join(", ")})`, RETIRED.join() === "publishing,cut_transcripts" && !program.some((r) => RETIRED.includes(r.key as (typeof RETIRED)[number])), RETIRED.join());
     c.ok("every program switch: enabled=false", program.every((r) => r.enabled.ok === false));
     c.ok("every program switch: configured=false (no row = never configured)", program.every((r) => r.configured.ok === false && /never configured/.test(r.configured.detail)));
     c.ok("every program switch: effective=false", program.every((r) => r.effective.ok === false));
@@ -396,7 +401,9 @@ async function main() {
     c.ok("every program row that reaches clients states a scope", rep.rows.filter((r) => r.kind === "program" && r.reaches === "clients").every((r) => !!r.scope));
     const deps = AUTOMATION_KEYS.flatMap((k) => (AUTOMATION_EFFECTS[k].requires?.switches ?? []).map((d) => [k, d] as const));
     c.ok("every dependency names a real switch, never itself", deps.every(([k, d]) => isAutomationKey(d) && d !== k));
-    c.ok("every switch has a cadence and recipients in the copy", AUTOMATION_KEYS.every((k) => ["hourly", "daily", "on-action"].includes(AUTOMATION_EFFECTS[k].cadence) && AUTOMATION_EFFECTS[k].recipients.length > 5));
+    c.ok("every switch has a cadence and recipients in the copy", AUTOMATION_KEYS.every((k) => ["every 15 minutes", "hourly", "daily", "on-action"].includes(AUTOMATION_EFFECTS[k].cadence) && AUTOMATION_EFFECTS[k].recipients.length > 5));
+    // Oct 13 2026: the AI sweeps are judged by the job that runs them.
+    c.ok("the three AI sweeps run every 15 minutes, hosted by the AI work job (topics)", (["transcript_jobs", "script_drafting", "topic_refresh"] as const).every((k) => AUTOMATION_EFFECTS[k].cadence === "every 15 minutes" && AUTOMATION_EFFECTS[k].host === "topics"));
     c.ok("the providers list covers every provider a switch needs", AUTOMATION_KEYS.every((k) => (AUTOMATION_EFFECTS[k].requires?.providers ?? []).every((p) => rep.providers.some((x) => x.id === p))));
     const probe = (await import("node:fs")).readFileSync(path.join(REPO, "scripts/_recon/cp15-config-probe.ts"), "utf8");
     c.ok("the probe builds its switch facts from readinessReport({ live: false }), in place of its old switch loop", /readinessReport\(\{ live: false \}\)/.test(probe) && !/for \(const key of AUTOMATION_KEYS\)/.test(probe));

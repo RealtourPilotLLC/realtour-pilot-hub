@@ -233,9 +233,12 @@ async function main() {
   ok("the PROPOSED topic is WAITING_ON_PLANNING", readiness.get(tProposed.id) === "WAITING_ON_PLANNING", String(readiness.get(tProposed.id)));
   ok("the bare topic is THIN", readiness.get(tThin.id) === "THIN", String(readiness.get(tThin.id)));
 
-  // The step body, verbatim from src/app/api/cron/sync/route.ts. Section 8
-  // reads the route and asserts these are the same two calls with the same
-  // bounds, so this stays honest if the route ever changes.
+  // The step body of the AI work job (src/app/api/cron/topics/route.ts since
+  // Oct 13 2026 — it was the hourly sync's). Section 8 reads the route and
+  // asserts these are the same two calls, questions first, with the same
+  // counts. The route sizes each sweep's budget from what is left of its run
+  // and adds a start-only-with-time-to-finish floor; here the budgets are
+  // fixed and there is no floor, because the stubbed model answers at once.
   const scriptDraftingStep = async () => {
     const plans = await sweepInterviewPlans({ max: 4, budgetMs: 30_000 });
     const drafts = await sweepOwedScripts({ max: 6, budgetMs: 45_000 });
@@ -465,25 +468,33 @@ async function main() {
   ok("with the switch back on, the same job runs — no person needed", after2?.state === "SUCCEEDED", `${after2?.state} · ${JSON.stringify(jr2).slice(0, 120)}`);
 
   const aiCallsAtSection8 = aiCalls;
-  head("8 · the hourly route's step is wired to exactly this — read from the source");
-  const routeSrc = fs.readFileSync(path.resolve(__dirname, "../../src/app/api/cron/sync/route.ts"), "utf8");
-  const stepBody = /await step\("scriptDrafting",([\s\S]*?)\}, \{ maxMs/.exec(routeSrc)?.[1] ?? "";
-  ok("the step exists in the hourly route", stepBody.length > 0);
+  head("8 · the AI work job's step is wired to exactly this — read from the source");
+  // Oct 13 2026: the step lives in the 15-minute AI work job (cron/topics).
+  const routeSrc = fs.readFileSync(path.resolve(__dirname, "../../src/app/api/cron/topics/route.ts"), "utf8");
+  const syncSrc = fs.readFileSync(path.resolve(__dirname, "../../src/app/api/cron/sync/route.ts"), "utf8");
+  const stepBody = /scriptDrafting: async \(\) => \{([\s\S]*?)\n {4}\},/.exec(routeSrc)?.[1] ?? "";
+  ok("the step exists in the AI work job", stepBody.length > 0);
+  ok("…and no longer in the hourly sync (it crowded the client texts there)", !/sweepOwedScripts|sweepInterviewPlans/.test(syncSrc));
   ok("it calls sweepInterviewPlans", /sweepInterviewPlans\(/.test(stepBody));
   ok("it calls sweepOwedScripts", /sweepOwedScripts\(/.test(stepBody));
   ok("questions are phrased BEFORE scripts are drafted", stepBody.indexOf("sweepInterviewPlans(") < stepBody.indexOf("sweepOwedScripts("));
-  ok("with the same bounds this drill ran", /max: 4, budgetMs: 30_000/.test(stepBody) && /max: 6, budgetMs: 45_000/.test(stepBody), "plans 4/30s, drafts 6/45s");
-  ok("the step itself is bounded", /await step\("scriptDrafting"[\s\S]*?maxMs: 90_000/.test(routeSrc));
+  ok("with the same counts this drill ran", /sweepInterviewPlans\(\{ max: 4,/.test(stepBody) && /sweepOwedScripts\(\{ max: 6,/.test(stepBody), "plans 4, drafts 6");
+  ok("every question set and every script starts only with the time to finish it", /minStartMs: INTERVIEW_PLAN_MIN_START_MS/.test(stepBody) && /minStartMs: SCRIPT_DRAFT_MIN_START_MS/.test(stepBody));
+  ok("each sweep's budget is what is left of the run, less the margin", (stepBody.match(/budgetMs: budget\(\)/g) ?? []).length === 2 && /remaining\(\) - MARGIN_MS/.test(routeSrc));
   ok("nothing in the step writes to a provider", !/openphone|gmail|aryeo|stripe|dropbox/i.test(stepBody));
-  ok("the route is on the hourly schedule", /"\/api\/cron\/sync"/.test(fs.readFileSync(path.resolve(__dirname, "../../vercel.json"), "utf8")));
+  ok("the job is on the 15-minute schedule", /"\/api\/cron\/topics",\s*"schedule": "7,22,37,52 \* \* \* \*"/.test(fs.readFileSync(path.resolve(__dirname, "../../vercel.json"), "utf8")));
 
   // The shell's own rule, executed: a cron route that loses its secret refuses.
   const { GET } = await import("@/app/api/cron/sync/route");
+  const { GET: GET_AI } = await import("@/app/api/cron/topics/route");
   const { NextRequest } = await import("next/server");
   const unauth = await GET(new NextRequest("http://127.0.0.1/api/cron/sync"));
   ok("the route refuses a request with no bearer token", unauth.status === 401, `${unauth.status}`);
   const wrong = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer not-the-secret" } }));
   ok("and refuses a wrong one", wrong.status === 401, `${wrong.status}`);
+  const unauthAi = await GET_AI(new NextRequest("http://127.0.0.1/api/cron/topics"));
+  const wrongAi = await GET_AI(new NextRequest("http://127.0.0.1/api/cron/topics", { headers: { authorization: "Bearer not-the-secret" } }));
+  ok("the AI work job refuses both the same way", unauthAi.status === 401 && wrongAi.status === 401, `${unauthAi.status} ${wrongAi.status}`);
   ok("no work was done by either refusal", aiCalls === aiCallsAtSection8, `${aiCalls - aiCallsAtSection8} calls`);
 
   head("9 · nothing left production, and nothing reached a client");
@@ -496,7 +507,7 @@ async function main() {
   const suggestions = await prisma.scriptSuggestion.count();
   ok("the sweep opened no work item for staff either — it only drafts", suggestions === 0, `${suggestions}`);
 
-  head("10 · the hourly route itself — GET /api/cron/sync, every step of it");
+  head("10 · the routes themselves — GET /api/cron/sync then /api/cron/topics, every step");
   // The same choices section 3 gave the step body, fresh: an answered topic, a
   // call topic, and a PROPOSED and a THIN one that must be left. Section 6's
   // unfinished topic is still owed too, and the route should pick it up.
@@ -528,9 +539,21 @@ async function main() {
   const owedIds = new Set(owed.map((w) => w.topicId));
   ok("the workspace says what is owed: both new topics, and section 6's unfinished one", owedIds.has(tRouteAnswers.id) && owedIds.has(tRouteCall.id) && owedIds.has(tStop2.id), owed.map((w) => `${w.title} (${w.readiness})`).join(" | "));
 
+  // One quarter hour (Oct 13 2026): the hourly sync, then the AI work job that
+  // now holds the drafting step. Bodies merged (step timings and skips too);
+  // the first non-200 is the answer; ok is the sync's own.
   const runRoute = async () => {
-    const res = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer drill-secret" } }));
-    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    const headers = { authorization: "Bearer drill-secret" };
+    const a = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers }));
+    const b = await GET_AI(new NextRequest("http://127.0.0.1/api/cron/topics", { headers }));
+    const ba = (await a.json()) as Record<string, unknown>;
+    const bb = (await b.json()) as Record<string, unknown>;
+    const body: Record<string, unknown> = { ...ba, ...bb, ok: ba.ok };
+    body.ms = { ...((ba.ms ?? {}) as Record<string, number>), ...((bb.ms ?? {}) as Record<string, number>) };
+    body.skipped = [...((ba.skipped ?? []) as string[]), ...((bb.skipped ?? []) as string[])];
+    if (ba.timedOut || bb.timedOut) body.timedOut = [...((ba.timedOut ?? []) as string[]), ...((bb.timedOut ?? []) as string[])];
+    else delete body.timedOut;
+    return { status: a.status !== 200 ? a.status : b.status, body };
   };
   const erroredSteps = (body: Record<string, unknown>) => Object.keys(body).filter((k) => k.endsWith("Error"));
   const aiBefore10 = aiCalls;

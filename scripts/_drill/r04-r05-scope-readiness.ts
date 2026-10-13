@@ -417,11 +417,15 @@ async function parentMain() {
     // =========================================================================
     c.head("2 · readiness = audience preview = dispatch, for every op");
     // =========================================================================
-    const programOps = Object.entries(AUTOMATION_EFFECTS).filter(([, e]) => e.launchGate === "programScope").map(([k]) => k);
+    // Oct 13 2026: a RETIRED switch (publishing — no Instagram app exists) has
+    // no readiness row any more; its op is still checked against dispatch below.
+    const { isRetiredAutomation } = await import("@/lib/programAutomation");
+    const programOps = Object.entries(AUTOMATION_EFFECTS).filter(([k, e]) => e.launchGate === "programScope" && !isRetiredAutomation(k)).map(([k]) => k);
     // Twelve since the Sep 28 review fix: caption_assistant (a client's own
     // "Draft a caption" button) was labelled internal and gated by its switch
     // alone. Eleven since Oct 6 2026: portal_layout_v2 retired (one layout).
-    c.ok("eleven client-reaching program switches read the rollout scope (caption_assistant included, portal_layout_v2 retired)", programOps.length === 11 && !programOps.includes("portal_layout_v2") && programOps.includes("caption_assistant") && programOps.every((k) => core.isProgramReachOp(k)), programOps.join(","));
+    // Ten LISTED since Oct 13 2026: publishing is retired from every listing.
+    c.ok("ten listed client-reaching program switches read the rollout scope (caption_assistant included; portal_layout_v2 and publishing retired)", programOps.length === 10 && !programOps.includes("portal_layout_v2") && !programOps.includes("publishing") && programOps.includes("caption_assistant") && programOps.every((k) => core.isProgramReachOp(k)), programOps.join(","));
     for (const k of programOps) await setSwitch(k, true);
     await setSwitch("reminders", true, JSON.stringify({ testClientsOnly: false }));
     await setSwitch("script_auto_share", true, JSON.stringify({ testClientsOnly: false }));
@@ -805,7 +809,8 @@ async function parentMain() {
       const tier = (n: string) => q.clients.find((x2) => x2.name === n)?.tier;
       c.ok("by client with its tier: T TEST, P PILOT, X REAL", tier(T.name) === "TEST" && tier(P.name) === "PILOT" && tier(X.name) === "REAL", JSON.stringify(q.clients));
       c.ok("runnable now 4 (T's two, P's one, X's one — the rollout holds no internal work); the draft waits on strategy_generation", q.runnableNow === 4 && q.waitingOnOwner === 1 && q.ownerOff[0]?.owner === "strategy_generation" && !/outside the rollout/.test(q.line), JSON.stringify({ r: q.runnableNow, o: q.waitingOnOwner }));
-      c.ok("oldest = the 5-day-old INGEST; five per tick; one tick to drain; 4 AI jobs", !!q.oldestQueuedAt && Date.now() - q.oldestQueuedAt.getTime() > 4 * DAY && q.perTick === 5 && q.ticksToDrain === 1 && q.aiJobs === 4);
+      // Oct 13 2026: three per run of the 15-minute AI work job (it was five per hourly sync).
+      c.ok("oldest = the 5-day-old INGEST; three per tick; two ticks to drain; 4 AI jobs", !!q.oldestQueuedAt && Date.now() - q.oldestQueuedAt.getTime() > 4 * DAY && q.perTick === 3 && q.ticksToDrain === 2 && q.aiJobs === 4, JSON.stringify({ perTick: q.perTick, ticks: q.ticksToDrain }));
       c.ok("the line reads as the owner needs it (off, the batch, the real client, the credit)", /^off — 5 waiting: INGEST 1 · ANALYZE 3 · STRATEGY_DRAFT 1 for 3 clients \(1 real: Xena Excluded Homes\)/.test(q.line) && /each AI job spends credit/.test(q.line), q.line);
       await tj.transcriptQueueBatch();
       c.ok("it wrote NOTHING (jobs, switches, audit byte-identical)", (await snap()) === before);

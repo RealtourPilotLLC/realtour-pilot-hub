@@ -1,15 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { syncAryeoOrders, syncAryeoAppointments } from "@/lib/integrations/aryeo";
 import { cronBudget } from "@/lib/cron";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// HOURLY sync — keep orders + shoots fresh. Incremental (stops at known orders),
-// so it's cheap. Heavy full-table jobs live in /api/cron/daily. Steps run under a
-// time budget so a slow one degrades gracefully (the rest are reported as
-// `skipped` and picked up next run) instead of being hard-killed mid-write.
+// HOURLY sync — statuses, tasks, client texts, repairs and the program's desk
+// work. Heavy full-table jobs live in /api/cron/daily. Steps run under a time
+// budget so a slow one degrades gracefully (the rest are reported as `skipped`
+// and picked up next run) instead of being hard-killed mid-write.
+//
+// WHAT MOVED OUT (Oct 13 2026):
+//   · Aryeo orders + appointments, the session-request reconcile, the session
+//     booking driver and the Ready-to-send Aryeo pass → /api/cron/aryeo, every
+//     15 minutes (Jordan: "the aryeo sync should be every 15 minutes, not every
+//     hour"). The :30 reconcile is still the safety net under it.
+//   · Every unattended model call — the transcript queue, the AI queue's safety
+//     net, the script-drafting sweep (and the topic banks before them) →
+//     /api/cron/topics, the 15-minute AI work job, where each call starts only
+//     with the time to finish. Here they could start with seconds left and
+//     crowded the client texts out of the hour.
+//   · The legacy call sweeps, the pasted-transcript auto-analysis and the
+//     "send the booking link" tasks are retired (the portal books calls itself;
+//     the Analyze button covers a pasted transcript).
 export async function GET(req: NextRequest) {
   // FAIL CLOSED: in prod/Vercel a missing CRON_SECRET must refuse, not open the
   // door — same rule as the auth gate (losing an env var never fails open).
@@ -38,9 +51,8 @@ export async function GET(req: NextRequest) {
     return alertQuietWebhookLanes();
   }, { maxMs: 30_000 });
 
-  await step("orders", () => syncAryeoOrders({ full: false }));
-  // Recent + future only, so the hourly run stays well under the time limit.
-  await step("appointments", () => syncAryeoAppointments({ recentOnlyDays: 21 }));
+  // (orders + appointments: /api/cron/aryeo, every 15 minutes — Oct 13 2026.
+  // Everything below reads what its latest run wrote, at most 15 minutes old.)
   // Orders that vanished from Aryeo (deleted / archived) while the hub still
   // holds a live job — the list scan can never see them. One GET per active
   // project (~35, ~9s); runs BEFORE statuses/tasks so those steps see the
@@ -68,8 +80,9 @@ export async function GET(req: NextRequest) {
   }, { maxMs: 45_000 });
 
   // Dropbox folder creation — took over from the broken Zapier Zap (Aug 2026).
-  // Runs after appointments so a fresh booking's shootDate is already on the
-  // project, and before statuses so the evidence sweep finds the folders.
+  // A fresh booking's shootDate is already on the project (the 15-minute Aryeo
+  // job wrote it), and this runs before statuses so the evidence sweep finds
+  // the folders.
   await step("dropboxFolders", async () => {
     const { ensureFoldersForUpcomingShoots } = await import("@/lib/dropboxFolders");
     return ensureFoldersForUpcomingShoots();
@@ -134,43 +147,22 @@ export async function GET(req: NextRequest) {
     const { sweepCarryover } = await import("@/lib/contentTopics");
     return sweepCarryover();
   }, { maxMs: 20_000 });
-  // Strategy calls: Calendly bookings stamp months, Drive transcripts ingest,
-  // fresh transcripts auto-analyze into topics + draft scripts (all of which
-  // wait in INTERNAL_REVIEW — the human-review rule holds), and on the 1st the
-  // booking-link drafts are minted for clients who haven't scheduled.
-  await step("contentCalls", async () => {
-    const { syncStrategyCallsFromCalendly, sweepDriveTranscripts, mintStrategyCallInvites } = await import("@/lib/contentCalls");
-    const cal = await syncStrategyCallsFromCalendly().catch(() => ({ skipped: "error" }));
-    // Transcripts come from the Drive/Meet (Gemini) docs — through the call
-    // records once a Calendly mapping is enabled, through the legacy sweep
-    // below until then (it stands down by itself). Calendly Notetaker is NOT a
-    // source: it answers 403 on our plan ("required features are not enabled")
-    // and Jordan closed it on Sep 21 — not a requirement. This step
-    // used to call it every hour anyway, under a comment calling it the primary
-    // source, and every call failed. It is no longer called from here;
-    // sweepNotetakerTranscripts stays in contentCalls.ts, and the staff "sync
-    // calls" button still runs it on demand (CP-15, Sep 24 2026).
-    const drv = await sweepDriveTranscripts().catch(() => ({ skipped: "error" }));
-    const inv = await mintStrategyCallInvites().catch(() => ({ minted: 0 }));
-    // Auto-process any transcript that landed without analysis (Drive sweep or
-    // an unanalyzed paste): topics + scripts, all held for review.
-    const { prisma } = await import("@/lib/prisma");
-    const fresh = await prisma.contentMonth.findMany({
-      where: { transcriptText: { not: null }, transcriptProcessedAt: null, historical: false },
-      select: { id: true },
-      take: 5,
-    });
-    let processed = 0;
-    for (const m of fresh) {
-      try {
-        const { processMonthTranscript, generateScriptsForMonth } = await import("@/lib/contentPipeline");
-        await processMonthTranscript(m.id);
-        await generateScriptsForMonth(m.id);
-        processed++;
-      } catch { /* one bad transcript must not stop the rest */ }
-    }
-    return { calendly: cal, drive: drv, invites: inv.minted, processed };
-  });
+  // (The old `contentCalls` step is RETIRED, Oct 13 2026 — Jordan approved B7
+  // and C12. It ran the legacy name-matched Calendly/Drive sweeps, which
+  // `legacy_call_sweeps` had already stood down; it auto-analysed any pasted
+  // transcript an hour later, which the Analyze button on the call does at
+  // once; and it minted a "send <client> their booking link" task for Kyle
+  // every month, which the portal's own call booking replaced. Calls arrive
+  // through the mapped call chain below (`contentCallRecords`). The library
+  // functions stay in contentCalls.ts; nothing schedules them.)
+  //
+  // The booking-link tasks still open from before are closed once, as
+  // CANCELLED (never COMPLETED: no link was sent). Cheap: one indexed count,
+  // and a no-op from the first tick after the last one is closed.
+  await step("retireCallInvites", async () => {
+    const { retireStrategyCallInvites } = await import("@/lib/contentCalls");
+    return retireStrategyCallInvites();
+  }, { maxMs: 15_000 });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /
   // delivery tasks for active jobs. Bounded to the active set, so it stays cheap.
@@ -196,23 +188,9 @@ export async function GET(req: NextRequest) {
     const { sweepOutputUnits } = await import("@/lib/deliverableOutputs");
     return sweepOutputUnits({ max: 40, budgetMs: 20_000 });
   }, { maxMs: 25_000 });
-  // FINISHED VIDEOS THAT MAY ALREADY BE UP THERE (Sep 17 2026). One Aryeo read
-  // per job with a row on the Ready-to-send card: it refreshes what the card
-  // says Aryeo is showing (the status sweep above stops carrying a job seven
-  // days after delivery, which froze 2051 Old Sumneytown Pike's counts at
-  // `videos: 0` while its video went up the next day), and it runs the delivery
-  // webhook's own proof — individual videos matched to individual cuts by time
-  // and length — on the jobs it applies to. That proof normally arrives with
-  // Aryeo's LISTING_DELIVERED event; the lane has been silent since Sep 7 and
-  // only Aryeo's team can switch it back on, so until they do, this is how it
-  // gets run at all. Never clears a row it cannot prove: those keep their place
-  // on the card and now carry the listing's own answer for Kyle to act on.
-  // Runs straight after `statuses` so it only pays for the jobs that pass did
-  // not already refresh.
-  await step("readyToSendAryeo", async () => {
-    const { sweepReadyToSendAgainstAryeo } = await import("@/lib/aryeoDelivery");
-    return sweepReadyToSendAgainstAryeo({ max: 12, budgetMs: 25_000 });
-  }, { maxMs: 30_000 });
+  // (FINISHED VIDEOS THAT MAY ALREADY BE UP THERE — the Ready-to-send card's
+  // Aryeo read and the delivery proof — moved to /api/cron/aryeo, every 15
+  // minutes, Oct 13 2026.)
   // Photos shot yesterday that still haven't been released to the client on
   // Aryeo → bell + a text to Kyle and Jordan. Hosted here, not in `daily`,
   // because daily fires 3-4am ET: inside SMS quiet hours (the text would be
@@ -322,8 +300,8 @@ export async function GET(req: NextRequest) {
   // (identity by verified email only; unmatched → review task), each record is
   // linked to its Google Calendar event, and its Gemini notes doc is attached
   // only when the calendar's summary + start both match, uniquely. Every step
-  // self-skips until an enabled mapping exists, so the legacy `contentCalls`
-  // step keeps today's behaviour until then. Nothing here messages a client.
+  // self-skips until an enabled mapping exists (the legacy name-matched sweeps
+  // that stood in before are retired). Nothing here messages a client.
   //
   // LAST in the hour, on purpose: the client-text sweeps above are
   // time-critical and the sync has been running 78–89 s of its 250 s budget;
@@ -341,20 +319,7 @@ export async function GET(req: NextRequest) {
     const review = await reconcileCallReviewTasks().catch(() => ({ closed: 0 }));
     return { bookings, calendar, transcripts, unlinked, review };
   }, { maxMs: 45_000 });
-  // Transcript jobs: INGEST (ours) + the AI kinds W1-C provides. Runs ONLY when
-  // the `transcript_jobs` automation is on (a missing row is off); with the
-  // switch off the step reports `skipped` and queued rows simply wait.
-  await step("transcriptJobs", async () => {
-    const { driveTranscriptJobs } = await import("@/lib/transcriptJobs");
-    return driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "sync-cron" });
-  }, { maxMs: 40_000 });
-  // THE DRAFTING CHAIN (F07/F08, Sep 22 2026). Both planning paths end here:
-  // a client's written answers, and a reconciled planning call. Until today
-  // neither reached a script on its own — SCRIPT_DRAFT was never enqueued by
-  // anything, and submitInterview set a status and stopped while the portal
-  // told the client "we'll draft the script from your answers". Behind
-  // `script_drafting` (off at the database) AND `ai_runs`; drafts land in the
-  // same review lane a hand-written one does.
+  // (Transcript jobs: /api/cron/topics, the 15-minute AI work job.)
   // F14: approved content cuts that never reached the client's library. The
   // approve-time write is best-effort by design (an approval must not fail over
   // it) and nothing looked again afterwards. Normally repairs nothing.
@@ -397,26 +362,8 @@ export async function GET(req: NextRequest) {
     // 45s (was 30s): the A42 check can rebuild a client's library, which is a
     // few seconds each on the rare hour one is missing a cut.
   }, { maxMs: 45_000 });
-  // Oct 12 2026: the AI queue's safety net. A person's "Draft script" (and the
-  // other queued AI buttons) run in after() the moment they are clicked; a
-  // worker killed mid-draft (the 300 s ceiling, a deploy) leaves its row to
-  // come back as QUEUED, and the open page's poll restarts it. This drains
-  // what is still waiting when nobody has the page open. Attended work — a
-  // person asked for each one — so no automation switch gates it; the queue's
-  // cap (three at once) and the daily AI quotas still hold.
-  await step("aiQueue", async () => {
-    const { drainAiQueueInParallel } = await import("@/lib/aiQueue");
-    return drainAiQueueInParallel({ origin: "cron", budgetMs: 30_000 });
-  }, { maxMs: 90_000 });
-  await step("scriptDrafting", async () => {
-    const { sweepInterviewPlans, sweepOwedScripts } = await import("@/lib/contentDrafting");
-    // Questions first: phrasing them for the topic has to happen BEFORE the
-    // client opens them, and a topic that gets answered this way produces a
-    // better script than the same topic drafted from a call excerpt.
-    const plans = await sweepInterviewPlans({ max: 4, budgetMs: 30_000 });
-    const drafts = await sweepOwedScripts({ max: 6, budgetMs: 45_000 });
-    return { plans, drafts };
-  }, { maxMs: 90_000 });
+  // (The AI queue's safety net and the script-drafting sweep: /api/cron/topics,
+  // the 15-minute AI work job, Oct 13 2026.)
   // 6.5: share a clean sweep-drafted script WITHOUT Jordan's individual
   // approval, after its hold. Behind `script_auto_share` — OFF at the database
   // (a missing row), so this reports `skipped`. The share email is its own
@@ -434,23 +381,8 @@ export async function GET(req: NextRequest) {
     const { sweepRecommendations } = await import("@/lib/contentTopics");
     return sweepRecommendations({ max: 60 });
   }, { maxMs: 20_000 });
-  // Session requests: REQUESTED → CONFIRMED when the Aryeo appointment (synced
-  // above) appears at the slot; CONFIRMED → CANCELLED when Aryeo cancels it;
-  // stale ones expire. Read-only against Aryeo — it reads the rows the
-  // appointments step just wrote.
-  await step("sessionRequests", async () => {
-    const { reconcileSessionRequests } = await import("@/lib/sessionRequests");
-    return reconcileSessionRequests();
-  }, { maxMs: 20_000 });
-  // CP-04: the booking adapter, its own step with its own budget — a real
-  // booking is several provider calls and must not share the reconcile's 20 s.
-  // `session_booking` OFF (a missing row) = `skipped`, zero calls; ON, it books
-  // only for clients the switch's config authorises (TEST fixtures), at most 3
-  // a run, and starts no new write with under 30 s left.
-  await step("sessionBookings", async () => {
-    const { driveSessionBookings } = await import("@/lib/sessionBooking");
-    return driveSessionBookings({ budgetMs: 60_000 });
-  }, { maxMs: 70_000 });
+  // (Session requests and CP-04's booking adapter: /api/cron/aryeo, every 15
+  // minutes, straight after the appointments they read — Oct 13 2026.)
   // CP-05: exact filming addresses. The local readback always runs (a row
   // whose project now shows the street is confirmed and Kyle's task closes);
   // the Aryeo PATCH runs only with `address_sync` ON for an authorised
@@ -583,14 +515,25 @@ export async function GET(req: NextRequest) {
   }, { maxMs: 15_000 });
   // ONBOARDING (spec §21): advance each discovery → strategy record and queue
   // the STRATEGY_DRAFT job for a confirmed discovery transcript. Behind
-  // `strategy_generation`; the generation itself runs in the transcriptJobs
-  // step above (W1-C's handler) and lands as a DRAFT for Jordan — nothing
+  // `strategy_generation`; the generation itself runs in the transcript queue
+  // (W1-C's handler, driven by the 15-minute AI work job, cron/topics) and
+  // lands as a DRAFT for Jordan — nothing
   // here approves, activates or releases a strategy.
   await step("programOnboarding", async () => {
     const { sweepOnboarding } = await import("@/lib/programOnboarding");
     return sweepOnboarding({ max: 25 });
   }, { maxMs: 15_000 });
   // (Frame.io integration removed Sep 1 2026 per the owner — review runs through the in-hub Review Room.)
+
+  // ERRORS THAT STOPPED HAPPENING CLOSE THEMSELVES (Oct 13 2026, B8). A server
+  // error tied to a route or a background area that has not recurred in 24
+  // hours is marked fixed with the reason (a cron step's own error closes
+  // sooner, from cron.ts, after three clean runs of that step). One bounded
+  // UPDATE; nothing is sent. If it happens again it reopens as before.
+  await step("errorAutoResolve", async () => {
+    const { autoResolveQuietErrors } = await import("@/lib/errorTracker");
+    return autoResolveQuietErrors();
+  }, { maxMs: 10_000 });
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
   await finish();

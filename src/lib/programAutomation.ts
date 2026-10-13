@@ -82,6 +82,25 @@ export const AUTOMATION_KEYS = [
 ] as const;
 export type AutomationKey = (typeof AUTOMATION_KEYS)[number];
 
+/**
+ * SWITCHES FOR FEATURES THAT DO NOT EXIST (Oct 13 2026, Jordan approved C12).
+ *   cut_transcripts — nothing in the hub calls requestCutTranscript or the
+ *     cut-transcript driver, and no speech-to-text provider is connected; the
+ *     switch read ON on Settings and in Readiness while doing nothing at all.
+ *   publishing — Instagram: no Meta app, no credentials; the driver is called
+ *     only by the drills.
+ * Both are left OUT of every listing (Settings, Readiness, the /content
+ * banner, monitoring) and count as off wherever the hub reports on its
+ * automations. The keys stay in AUTOMATION_KEYS (stored rows, the library
+ * code and its drills still name them), and the library code is kept.
+ */
+export const RETIRED_AUTOMATION_KEYS: readonly AutomationKey[] = ["cut_transcripts", "publishing"];
+export function isRetiredAutomation(k: string): boolean {
+  return (RETIRED_AUTOMATION_KEYS as readonly string[]).includes(k);
+}
+/** The switches the hub lists and judges — every key but the retired ones. */
+export const LISTED_AUTOMATION_KEYS: readonly AutomationKey[] = AUTOMATION_KEYS.filter((k) => !isRetiredAutomation(k));
+
 export function isAutomationKey(k: unknown): k is AutomationKey {
   return typeof k === "string" && (AUTOMATION_KEYS as readonly string[]).includes(k);
 }
@@ -140,9 +159,9 @@ export async function automationConfig<T extends Record<string, unknown>>(key: A
   return { ...defaults, ...(s.config ?? {}) } as T;
 }
 
-/** Every switch, for the monitoring screen. Missing rows are listed as disabled. */
+/** Every switch, for the monitoring screen and Settings. Missing rows are listed as disabled. Retired switches (RETIRED_AUTOMATION_KEYS) are not listed. */
 export async function allAutomations(): Promise<AutomationState[]> {
-  return Promise.all(AUTOMATION_KEYS.map((k) => getAutomation(k)));
+  return Promise.all(LISTED_AUTOMATION_KEYS.map((k) => getAutomation(k)));
 }
 
 /**

@@ -18,16 +18,21 @@ import { AryeoCutover, type CutoverState } from "@/components/connections/AryeoC
 import { TopazLane, type TopazLaneJob, type TopazLaneStats } from "@/components/connections/TopazLane";
 import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
 import { TranscriptionCard } from "@/components/connections/TranscriptionCard";
-import { InstagramCard } from "@/components/connections/InstagramCard";
 import { StripeWebhookCard } from "@/components/connections/StripeWebhookCard";
 import { AutohdrCard } from "@/components/connections/AutohdrCard";
 import { stripeWebhookStatus } from "@/lib/stripeSignups";
 import { transcriptionCardData } from "@/lib/cutTranscripts";
-import { instagramCardData } from "@/lib/publishing";
 import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
+
+// THE CARDS THIS PAGE SHOWS. Instagram publishing is HIDDEN (Oct 13 2026,
+// Jordan approved C12): no Meta app or credentials exist and the `publishing`
+// switch is retired from every listing (programAutomation.RETIRED_AUTOMATION_KEYS).
+// Its registry entry, card component and library stay for the day it is built.
+const HIDDEN_CARDS = new Set(["instagram"]);
+const CARDS = PROVIDERS.filter((p) => !HIDDEN_CARDS.has(p.id));
 
 // A read that leaves this machine gets a hard ceiling: null rather than a page
 // that hangs on somebody else's API. Declared out here, not inline, because the
@@ -170,7 +175,6 @@ export default async function ConnectionsPage({
     topazOpen,
     topazHistory,
     transcription,
-    instagram,
     stripeWebhook,
   ] = await Promise.all([
     webhookLaneHealth().catch(() => null),
@@ -223,12 +227,11 @@ export default async function ConnectionsPage({
     // Anything live or failed is always listed; the rest is the recent history.
     topazJobRows({ states: ["queued", "estimated", "uploading", "processing", "saving", "failed"], limit: 20 }).catch(() => []),
     topazJobRows({ limit: 12 }).catch(() => []),
-    // The two content-program cards (Sep 16): speech-to-text keys (§9) and
-    // Instagram publishing (§12). Both are plain database reads plus a
+    // The speech-to-text card (§9, Sep 16): a plain database read plus a
     // no-network configured() check — nothing here can reach a provider.
     // null = the read failed; the card slot then says so instead of 500ing.
+    // (Its Instagram sibling is hidden — see HIDDEN_CARDS.)
     transcriptionCardData().catch(() => null),
-    instagramCardData().catch(() => null),
     // The Stripe webhook card (Sep 25 2026): database reads only — whether a
     // signing secret is saved and readable, the last delivery and refusal,
     // and how signups were activated. Never calls Stripe.
@@ -351,14 +354,12 @@ export default async function ConnectionsPage({
   // rows that ARE one of those cards. Webhook-signing secrets ride in their own
   // Connection rows ("openphone_webhook", "aryeo_webhook") and would otherwise
   // inflate the numerator past M.
-  const providerIds = new Set(PROVIDERS.map((p) => p.id));
+  const providerIds = new Set(CARDS.map((p) => p.id));
   const connectedCount =
     connections.filter((c) => providerIds.has(c.provider) && c.status === "CONNECTED").length +
-    // The two Sep 16 cards have no Connection row under their own id:
-    // speech-to-text keys live under transcription_openai/_deepgram, and an
-    // Instagram connection is a ProgramPublishingAccount row.
-    (transcription?.providers.some((p) => p.configured) ? 1 : 0) +
-    (instagram?.accounts.some((a) => a.status === "CONNECTED") ? 1 : 0);
+    // The speech-to-text card has no Connection row under its own id: its keys
+    // live under transcription_openai/_deepgram.
+    (transcription?.providers.some((p) => p.configured) ? 1 : 0);
 
   // "Needs attention" is NOT a ratio — it's the alarm, so it covers every row
   // this screen is responsible for, minus only what's deliberately not a card:
@@ -376,7 +377,7 @@ export default async function ConnectionsPage({
       <PageHeader
         title="Connections"
         subtitle={
-          `${connectedCount} of ${PROVIDERS.length} services connected` +
+          `${connectedCount} of ${CARDS.length} services connected` +
           (errorCount > 0 ? ` · ${errorCount} need${errorCount === 1 ? "s" : ""} attention` : "")
         }
       />
@@ -521,7 +522,7 @@ export default async function ConnectionsPage({
         </Link>
 
         {SEGMENTS.map((segment) => {
-          const items = PROVIDERS.filter((p) => p.segment === segment);
+          const items = CARDS.filter((p) => p.segment === segment);
           if (items.length === 0) return null;
           return (
             <section key={segment}>
@@ -531,17 +532,10 @@ export default async function ConnectionsPage({
               </div>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((provider) => {
-                  // The two Sep 16 cards carry their own state and actions.
+                  // The Sep 16 speech-to-text card carries its own state and actions.
                   if (provider.id === "transcription") {
                     return transcription ? (
                       <TranscriptionCard key={provider.id} {...transcription} />
-                    ) : (
-                      <CardUnavailable key={provider.id} name={provider.name} />
-                    );
-                  }
-                  if (provider.id === "instagram") {
-                    return instagram ? (
-                      <InstagramCard key={provider.id} {...instagram} deployed={deployed} />
                     ) : (
                       <CardUnavailable key={provider.id} name={provider.name} />
                     );
