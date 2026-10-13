@@ -136,7 +136,7 @@ export type HomeActionsInput = {
   /** Booked sessions still missing an exact filming address (CP-05). */
   addressNeeded: number;
   /** Oct 12 2026: an over month's session to book this month too (lateSession.ts) — offered once its scripts are ready. */
-  lateSession?: { label: string; open: boolean } | null;
+  lateSession?: { label: string; open: boolean; /** Oct 13 2026: one session films both months; it is THIS month's filming action, not a second one. */ combined?: boolean } | null;
   setup: { complete: boolean; remaining: number } | null;
   ready: { count: number; withFile: boolean; single: { id: string; title: string } | null };
 };
@@ -204,7 +204,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       const detail = i.session.deferred ? "You chose to schedule later. Book any time." : i.session.earliestLabel ? `Sessions can start from ${i.session.earliestLabel}.` : null;
       add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
     }
-    if (i.lateSession?.open && i.perms.session) {
+    if (i.lateSession?.open && i.perms.session && !i.lateSession.combined) {
       add({ kind: "BOOK_SESSION", count: 1, title: `Book your ${i.lateSession.label} session`, detail: `Your ${i.lateSession.label} scripts are ready. It's filmed this month, beside this month's own session.`, cta: CTA_WORDS.BOOK, dest: "plan", step: "late" });
     }
     if (i.addressNeeded > 0 && i.perms.session) {

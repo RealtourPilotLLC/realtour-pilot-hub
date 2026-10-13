@@ -471,7 +471,11 @@ export async function sessionSlotsFor(a: {
   const { sessionGate, programSlotDays } = await import("@/lib/portal");
   const { planBookable, planExact, planAddressLine } = await import("@/lib/sessionAddress");
   const { aryeoProductFor } = await import("@/lib/contentProgram");
-  const product = aryeoProductFor(a.package);
+  // Oct 13 2026: one session for a late month and its host is a Video
+  // Accelerator session (4 hours): its times are that product's, that length.
+  const combined = await import("@/lib/monthLateSession").then((m) => m.combinedLateRecord(a.enrollmentId, a.monthId)).catch(() => null);
+  const sessionPackage = combined ? (await import("@/lib/lateSession")).COMBINED_SESSION_PACKAGE : a.package;
+  const product = aryeoProductFor(sessionPackage);
   if (!product) return { ok: false, message: "Your package has no filming calendar yet. Call or text Kyle.", days: [] };
   // A move is held to the gate of the session it moves (its own index; a
   // legacy row without one reads the next session to book).
@@ -505,7 +509,7 @@ export async function sessionSlotsFor(a: {
   const cfg = await travelConfig();
   // A19: ask Aryeo from this session's first allowed day (the gate), not from
   // tomorrow — a window that ran out before the 72 hours did offered nothing.
-  const base = await programSlotDays({ package: a.package, sessionMinutes: product.durationMinutes, from: gate.earliest });
+  const base = await programSlotDays({ package: sessionPackage, sessionMinutes: product.durationMinutes, from: gate.earliest });
   const earliest = gate.earliest.getTime();
   const open = base
     .map((d) => ({ ...d, slots: d.slots.filter((s) => new Date(s).getTime() >= earliest) }))

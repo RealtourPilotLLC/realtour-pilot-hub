@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 import { etMonthKey } from "@/lib/contentProgram";
 import { catchUpInto, sessionsForMonth } from "@/lib/catchUp";
+import { combinedLateInto } from "@/lib/lateSession";
 
 // ---------------------------------------------------------------------------
 // PROGRAM MONTH STATE (spec §4 / §19), Sep 16 2026.
@@ -1379,10 +1380,12 @@ export function assignSessionIndexes(occupants: readonly SessionOccupant[], requ
  * session a new booking is for; null when every session is taken.
  */
 export async function monthSessionIndexes(monthId: string, clientId: string, sessionsRequired: number, now: Date, db: ProgramDb = prisma): Promise<{ byKey: Map<string, number>; free: number[]; next: number | null; requestIndex: Map<string, number> }> {
+  // Oct 13 2026: a host month's combined late session holds its place too (sessionSourceMonthIds).
+  const sources = await sessionSourceMonthIds(monthId, db);
   const [count, requests] = await Promise.all([
     monthSessionCount(monthId, clientId, now, db),
     db.programSessionRequest.findMany({
-      where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] } },
+      where: { monthId: { in: sources }, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED", "CANCEL_REQUESTED"] } },
       select: { id: true, status: true, bookingState: true, supersedesId: true, projectId: true, aryeoAppointmentId: true, slotStart: true, sessionIndex: true },
     }),
   ]);
@@ -1451,9 +1454,35 @@ export async function sessionsRequiredForMonth(monthId: string, db: ProgramDb = 
  * client's allowance (the same rule sessionCapacity has carried since W1-A).
  * Appointments are read through their projects for the same reason.
  */
+/**
+ * THE MONTHS WHOSE SESSIONS COUNT FOR ONE MONTH (Oct 13 2026) — the one
+ * derived rule every session counter shares (monthSessionCount,
+ * monthSessionIndexes, sessionCapacity, monthProgress, the reminder
+ * evaluator). Normally just the month itself. A HOST month whose late month
+ * is filmed together with it in ONE session (lateSession.ts, `combined`) also
+ * counts that late month's sessions and asks: the one combined booking is
+ * filed on the late month (its lock, scripts gate, desk line, attach and
+ * reconcile all stay on it), and it is the host's session too, so the host
+ * never reads "1 session still to book" beside it. Pure over the bag.
+ */
+export function sessionSourcesFrom(monthId: string, monthKey: string, overridesJson: string | null | undefined): string[] {
+  const rec = overridesJson && overridesJson.includes("lateSessions") ? combinedLateInto(overridesJson, monthKey) : null;
+  return rec && rec.hostMonthId === monthId && rec.lateMonthId && rec.lateMonthId !== monthId ? [monthId, rec.lateMonthId] : [monthId];
+}
+
+/** sessionSourcesFrom, read (two small reads). */
+export async function sessionSourceMonthIds(monthId: string, db: ProgramDb = prisma): Promise<string[]> {
+  const m = await db.contentMonth.findUnique({ where: { id: monthId }, select: { monthKey: true, enrollmentId: true } });
+  if (!m) return [monthId];
+  const e = await db.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { overridesJson: true } });
+  return sessionSourcesFrom(monthId, m.monthKey, e?.overridesJson);
+}
+
 export async function monthSessionCount(monthId: string, clientId: string, now: Date, db: ProgramDb = prisma): Promise<BookedSessionCount> {
+  // Oct 13 2026: plus a combined late month's sessions, for its host (sessionSourceMonthIds).
+  const sources = await sessionSourceMonthIds(monthId, db);
   const projects = await db.project.findMany({
-    where: { contentMonthId: monthId, clientId, status: { not: "CANCELLED" } },
+    where: { contentMonthId: { in: sources }, clientId, status: { not: "CANCELLED" } },
     select: { id: true, shootDate: true, addressLine: true },
   });
   const appointments = projects.length
@@ -1463,7 +1492,7 @@ export async function monthSessionCount(monthId: string, clientId: string, now: 
       })
     : [];
   const confirmed = await db.programSessionRequest.findMany({
-    where: { monthId, status: "CONFIRMED" },
+    where: { monthId: { in: sources }, status: "CONFIRMED" },
     select: { id: true, projectId: true, aryeoAppointmentId: true, slotStart: true },
   });
   return countDistinctSessions({

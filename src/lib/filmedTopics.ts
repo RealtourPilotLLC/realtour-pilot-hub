@@ -119,6 +119,14 @@ export type SessionTopic = {
   folderPath: string | null;
   /** The photographer's latest note to the editor about this topic on THIS project. */
   note: string | null;
+  /**
+   * Oct 13 2026: the month this topic belongs to. The session's own month,
+   * except in ONE session filming a late month together with its host
+   * (lateSession.ts `combined`): the host month's topics ride along, and a
+   * confirmation files each video on its own month.
+   */
+  monthId?: string;
+  monthKey?: string;
 };
 
 /** A filming report on this project that has not landed yet — the page says so rather than pretending. */
@@ -175,16 +183,25 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
     select: { id: true, monthKey: true, enrollmentId: true, clientId: true, videosOwed: true },
   });
   if (!month) return null;
+  // Oct 13 2026: ONE session for a late month and its host films BOTH
+  // months' topics (lateSession.ts `combined`; the shoot sits on the late
+  // month). The people filming need all of them, so the host month's topics
+  // follow the late month's own. A read that fails throws, like every read here.
+  const { combinedHostOfLateMonth } = await import("@/lib/monthLateSession");
+  const host = await combinedHostOfLateMonth(month.id);
+  const months = host ? [month, host] : [month];
+  const monthIds = months.map((m) => m.id);
+  const keyOf = new Map(months.map((m) => [m.id, m.monthKey]));
 
-  const [allSelections, legacy, pendingRow] = await Promise.all([
+  const [allSelectionsRaw, legacyRaw, pendingRow] = await Promise.all([
     prisma.contentTopicSelection.findMany({
-      where: { monthId: month.id },
-      select: { id: true, topicId: true, status: true, rank: true, createdAt: true, overflow: true },
+      where: { monthId: { in: monthIds } },
+      select: { id: true, topicId: true, status: true, rank: true, createdAt: true, overflow: true, monthId: true },
       orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
     }),
     prisma.contentTopic.findMany({
-      where: { monthId: month.id, enrollmentId: month.enrollmentId, status: { in: HELD_ON_MONTH } },
-      select: { id: true },
+      where: { monthId: { in: monthIds }, enrollmentId: month.enrollmentId, status: { in: HELD_ON_MONTH } },
+      select: { id: true, monthId: true },
       orderBy: { createdAt: "asc" },
     }),
     prisma.contentFilmingReport.findFirst({
@@ -203,12 +220,17 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
         nextAttemptAtISO: pendingRow.nextAttemptAt?.toISOString() ?? null,
       }
     : null;
-  const hasSelectionRow = new Set(allSelections.map((s) => s.topicId));
-  const order: { topicId: string; selectionId: string | null; overflow: boolean }[] = [
-    ...allSelections.filter((s) => LIVE_SELECTION.includes(s.status)).map((s) => ({ topicId: s.topicId, selectionId: s.id, overflow: s.overflow })),
-    ...legacy.filter((t) => !hasSelectionRow.has(t.id)).map((t) => ({ topicId: t.id, selectionId: null, overflow: false })),
-  ];
-  const base = { monthId: month.id, monthKey: month.monthKey, enrollmentId: month.enrollmentId, clientId: month.clientId, owed: month.videosOwed, pendingReport };
+  // The session's own month first, then (combined) the host's, each in its own order.
+  const order: { topicId: string; selectionId: string | null; overflow: boolean; monthId: string }[] = [];
+  for (const [i, mid] of monthIds.entries()) {
+    const allSelections = allSelectionsRaw.filter((s) => s.monthId === mid);
+    const hasSelectionRow = new Set(allSelections.map((s) => s.topicId));
+    // The host's list never repeats a topic the session's own month already has.
+    const already = i === 0 ? null : new Set(order.map((o) => o.topicId));
+    for (const s of allSelections) if (LIVE_SELECTION.includes(s.status) && !already?.has(s.topicId)) order.push({ topicId: s.topicId, selectionId: s.id, overflow: s.overflow, monthId: mid });
+    for (const t of legacyRaw) if (t.monthId === mid && !hasSelectionRow.has(t.id) && !already?.has(t.id)) order.push({ topicId: t.id, selectionId: null, overflow: false, monthId: mid });
+  }
+  const base = { monthId: month.id, monthKey: month.monthKey, enrollmentId: month.enrollmentId, clientId: month.clientId, owed: month.videosOwed + (host?.videosOwed ?? 0), pendingReport };
   if (!order.length) return { ...base, topics: [] };
 
   const topicIds = order.map((s) => s.topicId);
@@ -219,17 +241,17 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
     // means two scripts on one topic answer differently between two renders of
     // the same page. Newest first, and the `.find()` below takes that one.
     prisma.contentScript.findMany({
-      where: { monthId: month.id, topicId: { in: topicIds }, historical: false },
+      where: { monthId: { in: monthIds }, topicId: { in: topicIds }, historical: false },
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
-      select: { id: true, topicId: true, title: true, sharedVersionId: true },
+      select: { id: true, topicId: true, title: true, sharedVersionId: true, monthId: true },
     }),
     // An ARCHIVED video is not the topic's video any more (the library sweep
     // archives duplicates); reading one here would report a confirmation that
     // no count anywhere includes.
     prisma.contentVideo.findMany({
-      where: { monthId: month.id, topicId: { in: topicIds }, status: { not: "ARCHIVED" } },
+      where: { monthId: { in: monthIds }, topicId: { in: topicIds }, status: { not: "ARCHIVED" } },
       orderBy: { createdAt: "asc" },
-      select: { id: true, topicId: true, projectId: true, filmedConfirmedAt: true, filmedConfirmedBy: true },
+      select: { id: true, topicId: true, projectId: true, filmedConfirmedAt: true, filmedConfirmedBy: true, monthId: true },
     }),
     prisma.contentPillar.findMany({ where: { enrollmentId: month.enrollmentId }, select: { id: true, name: true } }),
     prisma.contentTopicFolder.findMany({ where: { projectId, topicId: { in: topicIds } }, select: { topicId: true, dropboxPath: true } }),
@@ -274,9 +296,9 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
   return {
     ...base,
     topics: order.map((sel): SessionTopic => {
-      const sc = scripts.find((x) => x.topicId === sel.topicId) ?? null;
+      const sc = scripts.find((x) => x.topicId === sel.topicId && x.monthId === sel.monthId) ?? null;
       // The CONFIRMED row wins when a topic has more than one live video.
-      const mine = videos.filter((x) => x.topicId === sel.topicId);
+      const mine = videos.filter((x) => x.topicId === sel.topicId && x.monthId === sel.monthId);
       const v = mine.find((x) => x.filmedConfirmedAt) ?? mine[0] ?? null;
       const pid = pillarOf.get(sel.topicId) ?? null;
       return {
@@ -295,6 +317,8 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
         overflow: sel.overflow,
         folderPath: folderOf.get(sel.topicId) ?? null,
         note: noteOf.get(sel.topicId) ?? null,
+        monthId: sel.monthId,
+        monthKey: keyOf.get(sel.monthId) ?? month.monthKey,
       };
     }),
   };
@@ -446,8 +470,10 @@ export async function confirmFilmedTopics(
       for (const id of wanted) {
         const t = byId.get(id)!;
         // Read INSIDE the lock: a run that got here first has made the row this one must use.
+        // Oct 13 2026: a topic's video lives on the topic's own month (a combined session films two).
+        const topicMonthId = t.monthId ?? session.monthId, topicMonthKey = t.monthKey ?? session.monthKey;
         const rows = await tx.contentVideo.findMany({
-          where: { monthId: session.monthId, topicId: id, status: { not: "ARCHIVED" } },
+          where: { monthId: topicMonthId, topicId: id, status: { not: "ARCHIVED" } },
           orderBy: { createdAt: "asc" },
           select: { id: true, filmedConfirmedAt: true },
         });
@@ -464,8 +490,8 @@ export async function confirmFilmedTopics(
             data: {
               enrollmentId: session.enrollmentId,
               clientId: session.clientId,
-              monthId: session.monthId,
-              monthKey: session.monthKey,
+              monthId: topicMonthId,
+              monthKey: topicMonthKey,
               kind: t.overflow ? "EXTRA" : "PROGRAM",
               countsTowardAllowance: !t.overflow,
               title: t.title,
@@ -514,8 +540,9 @@ export async function confirmFilmedTopics(
   // Best-effort, as it always was — the video row is the record.
   const { recordTopicEvent, releaseCarryAfterLateFilming } = await import("@/lib/contentTopics");
   for (const id of outcome.newly) {
+    const topicMonthId = byId.get(id)?.monthId ?? session.monthId;
     await recordTopicEvent(id, session.enrollmentId, "FILMED", { kind: "STAFF", staffUserId: who }, {
-      monthId: session.monthId,
+      monthId: topicMonthId,
       sourceRef: `Project:${projectId}`,
       note: dateUnverified ? "Confirmed filmed on the upload portal — the session's end time is missing, so the production date needs verification." : null,
     }).catch(() => {});
@@ -523,7 +550,7 @@ export async function confirmFilmedTopics(
     // confirmed filmed here after all (a late confirmation). The carry is
     // undone — its later slot is freed (FILMED_LATE) and the script returns to
     // this month. A no-op for every topic that was never carried.
-    await releaseCarryAfterLateFilming(id, session.monthId).catch(() => false);
+    await releaseCarryAfterLateFilming(id, topicMonthId).catch(() => false);
   }
 
   return {

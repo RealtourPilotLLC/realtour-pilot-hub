@@ -1055,8 +1055,10 @@ export async function filmingBriefFor(projectId: string): Promise<FilmingBrief |
     topicIds.length
       ? prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true, sourceRef: true } })
       : Promise.resolve([] as { id: string; title: string; sourceRef: string | null }[]),
+    // Oct 13 2026: a combined session's host-month topics carry their own month's overflow.
     month && topicIds.length
-      ? prisma.contentTopicSelection.findMany({ where: { monthId: month.id, topicId: { in: topicIds } }, select: { topicId: true, overflow: true } })
+      ? import("@/lib/monthLateSession").then((m) => m.combinedHostOfLateMonth(month.id)).catch(() => null)
+          .then((host) => prisma.contentTopicSelection.findMany({ where: { monthId: { in: host ? [month.id, host.id] : [month.id] }, topicId: { in: topicIds } }, select: { topicId: true, overflow: true } }))
       : Promise.resolve([] as { topicId: string; overflow: boolean }[]),
     // A script written after the video was confirmed is not on the video row;
     // the topic's own newest live script stands in for it.

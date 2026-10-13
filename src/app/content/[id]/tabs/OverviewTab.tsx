@@ -106,9 +106,10 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
             lateMonthId: late.carrying.lateMonthId, lateLabel: late.carrying.lateLabel, state: late.carrying.state, filmed: late.carrying.filmed, startsAtISO: late.carrying.startsAtISO,
             scriptsReleased: late.carrying.scriptsReleased, scriptsReady: late.carrying.scriptsReady, scriptsSentOutside: late.carrying.scriptsSentOutside, lateVideosOwed: late.carrying.lateVideosOwed,
             by: late.carrying.by, at: late.carrying.at, undoRefusal: late.carrying.undoRefusal, lateHref: contentHref(id, { month: late.carrying.lateMonthKey }),
+            combine: late.carrying.combine,
           } : null}
           options={late.options.map((o) => ({ monthId: o.monthId, label: o.label, refusal: o.refusal, scriptsReleased: o.scriptsReleased }))}
-          filmingIn={late.filmingIn ? { hostLabel: late.filmingIn.hostLabel, hostHref: contentHref(id, { month: late.filmingIn.hostMonthKey }), state: late.filmingIn.state, startsAtISO: late.filmingIn.startsAtISO, by: late.filmingIn.by, at: late.filmingIn.at, undoRefusal: late.filmingIn.undoRefusal } : null}
+          filmingIn={late.filmingIn ? { hostLabel: late.filmingIn.hostLabel, hostHref: contentHref(id, { month: late.filmingIn.hostMonthKey }), state: late.filmingIn.state, startsAtISO: late.filmingIn.startsAtISO, by: late.filmingIn.by, at: late.filmingIn.at, undoRefusal: late.filmingIn.undoRefusal, combine: late.filmingIn.combine } : null}
           offer={late.offer ? { hostMonthId: late.offer.hostMonthId, hostLabel: late.offer.hostLabel, refusal: late.offer.refusal, scriptsReleased: late.offer.scriptsReleased } : null}
         />
       )}

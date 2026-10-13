@@ -828,6 +828,26 @@ export async function undoLateSessionAction(lateMonthId: string): Promise<Result
   } catch (e) { return { ...fail(e), outcome: "refused" }; }
 }
 
+/**
+ * One session or two (Oct 13 2026): film the late month together with the
+ * month that books it in ONE 4-hour Video Accelerator session (Starter
+ * only), or in two sessions. The same rule the client's own choice follows
+ * (monthLateSession.setLateCombined). Sends nothing, books nothing.
+ */
+export async function setLateCombinedAction(lateMonthId: string, combined: boolean): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof lateMonthId !== "string" || !ID.test(lateMonthId) || typeof combined !== "boolean") return { ok: false, outcome: "refused", message: "Month not found." };
+  const who = await actor();
+  try {
+    const { setLateCombined } = await import("@/lib/monthLateSession");
+    const r = await setLateCombined(lateMonthId, combined, who.name ?? who.email);
+    const m = await prisma.contentMonth.findUnique({ where: { id: lateMonthId }, select: { enrollmentId: true } });
+    if (m) revalidatePath(`/content/${m.enrollmentId}`);
+    revalidatePath("/content");
+    return { ok: true, outcome: "confirmed", message: r.message };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
 /** Jordan's message to the client, filled in with their portal link. Copy only — never sent from here. */
 export async function lateSessionMessageAction(lateMonthId: string): Promise<Result & { body?: string; url?: string }> {
   try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }

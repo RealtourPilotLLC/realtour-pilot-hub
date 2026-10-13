@@ -451,7 +451,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       },
       addressNeeded: home.schedule?.sessions.filter((x) => x.addressNeeded).length ?? 0,
       // Oct 12 2026: an over month's session to book now too, once its scripts are ready.
-      lateSession: home.planning?.late ? { label: home.planning.late.label, open: home.planning.late.state === "TO_BOOK" && home.planning.late.scriptsReady } : null,
+      lateSession: home.planning?.late ? { label: home.planning.late.label, open: home.planning.late.state === "TO_BOOK" && home.planning.late.scriptsReady, combined: home.planning.late.combine.combined } : null,
       setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
       ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
     }, contextBase);
@@ -482,9 +482,12 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
       attempt("schedule months", () => portalScheduleMonths(enrollment)),
     ]);
-    const thisMonth = p.ok && p.data && sm.ok ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? null : null;
     // Oct 12 2026: an over month's session booked this month too — its card and its released scripts.
     const lateP = p.ok ? p.data?.late ?? null : null;
+    // Oct 13 2026: when one session films both months, it IS this month's filming (this month has no tab of its own).
+    const thisMonth = p.ok && p.data && sm.ok
+      ? sm.data.find((m) => m.monthId === p.data!.monthId) ?? (lateP?.combine.combined ? sm.data.find((m) => m.monthId === lateP.monthId) ?? null : null)
+      : null;
     const lateScripts = lateP ? await import("@/lib/monthLateSession").then((m) => m.portalLateScripts(enrollment, lateP.monthId)).catch(() => []) : [];
     let days: PortalSlotDay[] = [];
     if (thisMonth && perms.session && !readOnly && !thisMonth.locked && (thisMonth.capacity.remaining > 0 || thisMonth.requests.some((r) => r.canChange))) {

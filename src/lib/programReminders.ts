@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { automationConfig, getAutomation, isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
-import { recalcProgramMonth, addBusinessDaysET, addWeekdayHoursET, preparationGate, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type DerivedMonthState } from "@/lib/programMonths";
+import { recalcProgramMonth, addBusinessDaysET, addWeekdayHoursET, preparationGate, replacesPendingMove, sessionIndexesFrom, sessionShortfall, sessionSourceMonthIds, type DerivedMonthState } from "@/lib/programMonths";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { isSyntheticClientRow, isVerifiedTestDestinationEmail } from "@/lib/testClients";
 import { sendThroughOutbox, programReminderKey, markFailed, maskToRef, TestClientSendRefusedError, type OutboxSendResult } from "@/lib/outbox";
@@ -854,9 +854,12 @@ function aryeoLastChangedAt(rawJson: string | null): Date | null {
  * session seen twice, so it is not added again.
  */
 async function monthFacts(monthId: string, clientId: string, now: Date, sessionsRequired: number) {
+  // Oct 13 2026: a host month's combined late session is its session too, and
+  // its ask waiting on the office is the client's ask (programMonths.sessionSourceMonthIds).
+  const sources = await sessionSourceMonthIds(monthId).catch(() => [monthId]);
   const [projects, requests, carryover, count, lostRequests] = await Promise.all([
     prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true, shootDate: true, status: true, addressLine: true } }),
-    prisma.programSessionRequest.findMany({ where: { monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { id: true, status: true, bookingState: true, projectId: true, aryeoAppointmentId: true, supersedesId: true, slotStart: true, sessionIndex: true } }),
+    prisma.programSessionRequest.findMany({ where: { monthId: { in: sources }, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED", "CONFIRMED"] } }, select: { id: true, status: true, bookingState: true, projectId: true, aryeoAppointmentId: true, supersedesId: true, slotStart: true, sessionIndex: true } }),
     // Work that arrived in this month from an earlier one. Whether the client
     // did not film it or WE were late is not recorded anywhere, and §3 says to
     // hand an unclear shortfall to Kyle rather than invent the answer — so the
@@ -1076,7 +1079,9 @@ export const secondSessionParagraph = (ordinal: number, required: number, videos
 };
 
 /** Oct 12 2026: a planned month whose session is booked late (lateSession.ts). Client words, no em dashes, ends with the way forward. */
-export const lateSessionParagraph = (lateMonthKey: string, hostMonthKey: string) =>
+export const lateSessionParagraph = (lateMonthKey: string, hostMonthKey: string, combinedVideos?: number | null) => combinedVideos
+  ? `Your ${lateMonthName(lateMonthKey, hostMonthKey)} and ${lateMonthName(hostMonthKey)} videos are filmed together this month, all ${combinedVideos} in one session. Pick a time in your portal and we'll confirm it.`
+  :
   `Your ${lateMonthName(lateMonthKey, hostMonthKey)} session is booking in ${lateMonthName(hostMonthKey)}, alongside ${lateMonthName(hostMonthKey)}'s own. Your ${lateMonthName(lateMonthKey, hostMonthKey)} scripts are ready, so pick a time in your portal and we'll confirm it.`;
 
 /** COMPLETE_ANSWERS for a later session whose own gate is shut (batch-3 review): what that session still needs. No em dashes (client words). */
@@ -1258,6 +1263,11 @@ async function evaluateMonth(
   if (action === "BOOK_SESSION" && lateIn && !sessionShut) {
     const ready = await import("@/lib/monthLateSession").then((m) => m.lateScriptsReady(month.id, lateRec)).then((r) => r.ready).catch(() => false);
     if (!ready) sessionShut = `${lateMonthName(month.monthKey, lateIn)}'s session is booking in ${lateMonthName(lateIn)}, but its scripts aren't ready yet — no booking ask until they are`;
+    // Oct 13 2026: one session for both months opens on the HOST month's gate too.
+    if (ready && lateRec?.combined) {
+      const hostLock = await import("@/lib/monthLateSession").then((m) => m.combinedHostGate(e.id, lateRec, now)).then((g) => g.locked ? g.reason : null).catch(() => "unreadable");
+      if (hostLock) sessionShut = `${lateMonthName(month.monthKey, lateIn)} is filmed together with ${lateMonthName(lateIn)} in one session, and ${lateMonthName(lateIn)} isn't ready to film yet — no booking ask until it is`;
+    }
   }
   if (action === "BOOK_SESSION") {
     state.nextSessionIndex = facts.nextSessionIndex;
@@ -1468,10 +1478,14 @@ async function evaluateMonth(
   const monthCatchUp = catchUpInto(e.overridesJson, month.monthKey);
   const catchUpOf = monthCatchUp ? catchUpMonthName(monthCatchUp.missedMonthKey, month.monthKey) : null;
   const monthVideos = e.videosPerMonth + (monthCatchUp?.extraVideos ?? 0);
+  // Oct 13 2026: both months' videos, filmed in one session.
+  const combinedVideos = action === "BOOK_SESSION" && lateIn && lateRec?.combined
+    ? await import("@/lib/monthLateSession").then((m) => m.combinedVideoCount(lateRec)).catch(() => null)
+    : null;
   const extraParagraph = milestone === "MID_MONTH"
     ? MID_MONTH_PARAGRAPH
     : action === "BOOK_SESSION" && lateIn
-      ? lateSessionParagraph(month.monthKey, lateIn)
+      ? lateSessionParagraph(month.monthKey, lateIn, combinedVideos)
     : action === "BOOK_SESSION" && sessionOrdinal && sessionOrdinal > 1
       ? secondSessionParagraph(sessionOrdinal, facts.sessionsRequired, monthVideos, catchUpOf)
       : action === "COMPLETE_ANSWERS" && sessionOrdinal && sessionOrdinal > 1

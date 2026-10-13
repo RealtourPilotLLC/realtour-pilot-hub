@@ -399,7 +399,10 @@ export function PortalScheduler({
           {/* Oct 12 2026: an over month's session, booked late beside this month's (lateSession.ts). */}
           {month.late && (
             <div className="mt-2"><StatusRow icon={Info} tone="muted">
-              Your {monthLabel(month.monthKey).split(" ")[0]} session, filmed in {monthLabel(month.late.hostMonthKey).split(" ")[0]}{month.late.scriptsReady ? ". It uses the scripts we already sent you." : "."}
+              {month.late.combined
+                // Oct 13 2026: one session films both months' videos.
+                ? `One session for your ${monthLabel(month.monthKey).split(" ")[0]} and ${monthLabel(month.late.hostMonthKey).split(" ")[0]} videos${month.late.combinedVideos ? ` (all ${month.late.combinedVideos})` : ""}, filmed in ${monthLabel(month.late.hostMonthKey).split(" ")[0]}. Plan on about 4 hours.`
+                : <>Your {monthLabel(month.monthKey).split(" ")[0]} session, filmed in {monthLabel(month.late.hostMonthKey).split(" ")[0]}{month.late.scriptsReady ? ". It uses the scripts we already sent you." : "."}</>}
             </StatusRow></div>
           )}
 

@@ -73,8 +73,12 @@ export async function forfeitedMonths(months: ForfeitMonthInput[] | string[], op
   if (out.size) {
     const rows = await db.contentMonth.findMany({ where: { id: { in: [...out] } }, select: { id: true, monthKey: true, enrollmentId: true } });
     const bags = new Map((await prisma.contentEnrollment.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.enrollmentId))] } }, select: { id: true, overridesJson: true } })).map((e) => [e.id, e.overridesJson]));
-    const { lateSessionOf } = await import("@/lib/lateSession");
+    const { lateSessionOf, combinedLateInto } = await import("@/lib/lateSession");
     for (const r of rows) if (lateSessionOf(bags.get(r.enrollmentId), r.monthKey)?.lateMonthId === r.id) out.delete(r.id);
+    // Oct 13 2026: a month filmed together with a late month in ONE session
+    // (the booking is filed on the late month) is not forfeited for "no
+    // session" either: that session is its own too.
+    for (const r of rows) if (combinedLateInto(bags.get(r.enrollmentId), r.monthKey)?.hostMonthId === r.id) out.delete(r.id);
   }
   return out;
 }
