@@ -165,13 +165,25 @@ export async function confidentialFilter(clientId: string, opts: { phrases?: boo
     if (phrases && CONFIDENTIAL_PHRASE_RE.test(text)) return true;
     const t = normalizeTitle(text);
     if (!t) return false;
+    // SHORT PIECES NEVER MATCH BY OVERLAP (Oct 14 2026). "Lehigh Valley." is
+    // two words that sit inside a long confidential note about a Lehigh
+    // Valley deal, so "the piece is inside the secret" called the client's
+    // own market a secret. A piece must have CONFIDENTIAL_MIN_PIECE_WORDS
+    // words before it can match by being contained in a secret or by sharing
+    // its words; a text that contains a WHOLE secret still matches.
+    const longEnough = t.split(" ").filter(Boolean).length >= CONFIDENTIAL_MIN_PIECE_WORDS;
     return prepared.some(({ n, words }) => {
-      if (t.includes(n) || n.includes(t)) return true;
+      if (t.includes(n)) return true;
+      if (!longEnough) return false;
+      if (n.includes(t)) return true;
       if (words.length < 3) return false;
       return words.filter((w) => t.includes(w)).length / words.length >= 0.6;
     });
   };
 }
+
+/** The fewest words a piece of text needs before it can match a confidential fact by overlap (Oct 14 2026). */
+export const CONFIDENTIAL_MIN_PIECE_WORDS = 6;
 
 /**
  * "Said in confidence" (A09 gap b, Sep 25 2026): a fact the extractor did

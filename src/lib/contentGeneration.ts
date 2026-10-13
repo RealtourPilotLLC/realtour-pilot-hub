@@ -462,6 +462,14 @@ type Analysis = {
   todos: string[];
 };
 
+// WHAT "CONFIDENTIAL" MEANS (Oct 14 2026). Jordan, Oct 13: "The only thing
+// that should be confidential is if they say so on the strategy call." It
+// used to be "told in confidence or commercially sensitive", which marked a
+// client's own market ("Lehigh Valley") confidential and then blocked their
+// strategy. Used by the call analysis (planning and discovery) for facts and
+// for strategy proposals.
+export const CONFIDENTIAL_ONLY_WHEN_ASKED =
+  "true ONLY when the client explicitly asks to keep it private or off camera (e.g. 'don't share this', 'off the record', 'between us', 'keep this private'). Commercially sensitive or personal is not enough on its own.";
 const EXCERPT_SCHEMA = { type: "object", required: ["speaker", "text"], properties: { speaker: { type: "string", enum: ["client", "jordan", "third-party"] }, speakerName: { type: ["string", "null"] }, time: { type: ["string", "null"] }, text: { type: "string" } } };
 const TOPIC_SCHEMA = { type: "object", required: ["title", "concept", "excerpts"], properties: { title: { type: "string" }, concept: { type: "string" }, pillar: { type: ["string", "null"] }, excerpts: { type: "array", items: EXCERPT_SCHEMA } } };
 const ANALYSIS_SCHEMA = {
@@ -474,7 +482,7 @@ const ANALYSIS_SCHEMA = {
     discussedTopics: { type: "array", items: TOPIC_SCHEMA, description: "Ideas raised but not agreed — saved for the bank" },
     rejectedIdeas: { type: "array", items: { type: "object", required: ["title"], properties: { title: { type: "string" }, reason: { type: ["string", "null"] } } } },
     facts: { type: "array", items: { type: "object", required: ["body", "category", "scope", "confidential", "confidence"], properties: { body: { type: "string" }, category: { type: "string", enum: ["BRAND_PREFERENCE", "PRODUCTION_PREFERENCE", "PERFORMANCE_REPORTED", "DECISION", "COMMITMENT", "FEEDBACK", "PROPOSED_CHANGE"] }, fieldKey: { type: ["string", "null"], description: "e.g. editing.music, editing.pace, editing.captions, production.location_preference, production.preferred_days, production.wardrobe, production.teleprompter, brand.fonts, brand.website, brand.social, brand.voice — or null" }, scope: { type: "string", enum: ["PERMANENT", "MONTH", "PROJECT"] }, speaker: { type: ["string", "null"] }, confidential: { type: "boolean" }, confidence: { type: "number" }, excerpt: { anyOf: [EXCERPT_SCHEMA, { type: "null" }] }, proposedValue: { type: ["string", "null"], description: "When the client CHANGED a standing preference: the new standing value in a few words (e.g. 'Calm acoustic'). Otherwise null." } } } },
-    strategyProposals: { type: "array", items: { type: "object", required: ["kind", "summary"], properties: { kind: { type: "string", enum: ["STRATEGY", "PILLAR", "AUDIENCE", "POSITIONING", "PREFERENCE"] }, summary: { type: "string" }, impact: { type: ["string", "null"] }, section: { type: ["string", "null"], description: "The heading, EXACTLY as listed under APPROVED STRATEGY SECTION HEADINGS, of the ONE section this changes — or null" }, proposedText: { type: ["string", "null"], description: "Replacement text for that one section only, in the section's own style — or null" }, confidential: { type: "boolean", description: "true when this was said in confidence or is commercially sensitive" } } } },
+    strategyProposals: { type: "array", items: { type: "object", required: ["kind", "summary"], properties: { kind: { type: "string", enum: ["STRATEGY", "PILLAR", "AUDIENCE", "POSITIONING", "PREFERENCE"] }, summary: { type: "string" }, impact: { type: ["string", "null"] }, section: { type: ["string", "null"], description: "The heading, EXACTLY as listed under APPROVED STRATEGY SECTION HEADINGS, of the ONE section this changes — or null" }, proposedText: { type: ["string", "null"], description: "Replacement text for that one section only, in the section's own style — or null" }, confidential: { type: "boolean", description: CONFIDENTIAL_ONLY_WHEN_ASKED } } } },
     priorities: { type: "array", items: { type: "string" } },
     todos: { type: "array", items: { type: "string" } },
   },
@@ -484,8 +492,8 @@ const ANALYSIS_SYSTEM = (videosOwed: number, history: string) =>
   "You are processing a call transcript for a real-estate agent's monthly video program. FIRST judge what kind of call this is (planning / discovery / review / other). " +
   "If it is a planning session, set plannedMonthKey to the month the topics are FOR (a call in the last third of a month usually plans the NEXT month). Use the call date in the prompt.\n" +
   "Report what the CLIENT actually agreed to, not everything mentioned: selectedTopics need a client-spoken excerpt each; discussedTopics are ideas without agreement; rejectedIdeas were explicitly declined. " +
-  "facts: NEW durable facts about the agent (preferences, decisions, commitments, reported results) — quote or closely paraphrase, with speaker and an excerpt; scope PROJECT for 'let's try X on this one', MONTH for this month only, PERMANENT otherwise; anything told in confidence or commercially sensitive is confidential=true. " +
-  "strategyProposals: only when the client changes positioning, audience, pillars or a standing preference — a proposal for staff, never a rewrite. Name the ONE approved section it changes (its heading exactly) and give replacement text for that section only; leave both null if no single section fits. Anything said in confidence is confidential=true. " +
+  "facts: NEW durable facts about the agent (preferences, decisions, commitments, reported results) — quote or closely paraphrase, with speaker and an excerpt; scope PROJECT for 'let's try X on this one', MONTH for this month only, PERMANENT otherwise; confidential=" + CONFIDENTIAL_ONLY_WHEN_ASKED + " " +
+  "strategyProposals: only when the client changes positioning, audience, pillars or a standing preference — a proposal for staff, never a rewrite. Name the ONE approved section it changes (its heading exactly) and give replacement text for that section only; leave both null if no single section fits. confidential=" + CONFIDENTIAL_ONLY_WHEN_ASKED + " " +
   "When a fact CHANGES a standing preference (music, pace, captions, wardrobe, filming days or location, fonts, website, social), set proposedValue to the new value in a few words; a person decides whether to apply it. priorities: this month's campaign priorities in the client's words. todos: action items either side committed to.\n" +
   `The plan owes ${videosOwed} videos this month — do not force the count.\n` +
   CONTENT_RULES + "\n\n" + SPEAKER_ATTRIBUTION_RULE + "\n\n" + NO_INVENTION_RULE + "\n\n" +
