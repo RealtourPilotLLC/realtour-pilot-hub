@@ -220,6 +220,10 @@ export async function syncEnrollments(): Promise<{ created: number; updated: num
   });
   const byClient = new Map(existing.map((e) => [e.clientId, e]));
   let created = 0, updated = 0, paused = 0;
+  // Oct 14 2026: programs that just became ACTIVE here (new, or re-flagged
+  // after a pause) are onboarded automatically after the pass, behind the
+  // auto_onboarding switch.
+  const becameActive: string[] = [];
 
   for (const c of social) {
     const plan = c.socialPlan && PACKAGE_RULES[c.socialPlan] ? c.socialPlan : "Accelerator";
@@ -230,6 +234,7 @@ export async function syncEnrollments(): Promise<{ created: number; updated: num
         data: { clientId: c.id, package: plan, ...rules, startedAt: new Date(), packageSource: "aryeo" },
       });
       created++;
+      becameActive.push(c.id);
     } else if (!cur.statusManual && (cur.status === "PAUSED" || (cur.package !== plan && cur.packageSource === "aryeo"))) {
       // Re-flagged in Aryeo → reactivate; plan changed in Aryeo → follow it
       // (manual packages are the admin's override and are left alone).
@@ -238,7 +243,12 @@ export async function syncEnrollments(): Promise<{ created: number; updated: num
         data: { status: "ACTIVE", ...(cur.packageSource === "aryeo" ? { package: plan, ...PACKAGE_RULES[plan] } : {}) },
       });
       updated++;
+      if (cur.status !== "ACTIVE") becameActive.push(c.id);
     }
+  }
+  if (becameActive.length) {
+    const { maybeAutoOnboard } = await import("@/lib/autoOnboarding");
+    for (const id of becameActive) await maybeAutoOnboard(id, "auto-onboarding (Aryeo plan sweep)", "program became active in the plan sweep");
   }
   // No longer flagged in Aryeo → pause (subscription lapsed), never delete.
   const socialIds = new Set(social.map((c) => c.id));

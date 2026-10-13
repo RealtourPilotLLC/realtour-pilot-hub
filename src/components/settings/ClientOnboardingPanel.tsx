@@ -14,7 +14,7 @@ import {
 } from "@/lib/clientOnboardingCore";
 import type { OnboardingDetail, OnboardingListRow, OnboardingMessageView, OnboardingToggleView } from "@/lib/clientOnboarding";
 import {
-  createOnboardingSeatAction, markOnboardingSentAction, sendOnboardingMessageAction, setOnboardedAction, setOnboardingToggleAction,
+  autoOnboardAllAction, autoOnboardClientAction, createOnboardingSeatAction, markOnboardingSentAction, sendOnboardingMessageAction, setOnboardedAction, setOnboardingToggleAction,
 } from "@/app/settings/onboarding/actions";
 import { approveStrategy, issuePortalLink, releaseStrategy } from "@/app/content/actions";
 
@@ -527,10 +527,45 @@ function History({ log }: { log: OnboardingLogEntry[] }) {
   );
 }
 
+// ---- "Do everything" (Oct 14 2026) ------------------------------------------------------------
+// Jordan, Oct 13: "Can you just automate this ... I just want everything done
+// for me at this point." One press runs every step below (lib/autoOnboarding);
+// the steps stay on the page so he can see what was done. The welcome email
+// goes at most once per client, ever.
+
+function DoEverything({ label, confirmText, busyText, op }: { label: string; confirmText: string; busyText: string; op: () => Promise<{ ok: boolean; message: string; lines: string[] }> }) {
+  const [confirming, setConfirming] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const { note, busy, run } = useAction();
+  return (
+    <div className="space-y-2 rounded-xl border border-brand/30 bg-brand/5 p-3">
+      {confirming
+        ? <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[13px]">{confirmText}</span>
+            <Button busy={busy} onClick={() => run(async () => { const r = await op(); setLines(r.lines); return r; }, () => setConfirming(false))}>Yes, do it</Button>
+            <Button variant="quiet" disabled={busy} onClick={() => setConfirming(false)}>Cancel</Button>
+          </div>
+        : <Button disabled={busy} onClick={() => { setLines([]); setConfirming(true); }}>{label}</Button>}
+      <Note note={note} busy={busy} busyText={busyText} />
+      {lines.length > 0 && <ul className="list-disc space-y-0.5 pl-5 text-[13px] text-muted">{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>}
+    </div>
+  );
+}
+
 // ---- the panel ---------------------------------------------------------------------------------
 
 export function ClientOnboardingPanel({ list, detail, selectedId, canAct }: { list: OnboardingListRow[]; detail: OnboardingDetail | null; selectedId: string | null; canAct: boolean }) {
+  const activeReal = list.filter((r) => !r.isTest && !r.paused).length;
   return (
+    <div className="min-w-0 space-y-4">
+    {canAct && activeReal > 0 && (
+      <DoEverything
+        label="Onboard all active clients"
+        confirmText={`Do every step for all ${activeReal} active clients? Each gets their strategy released, everything but "Share scripts without my approval" turned on, a portal account and their welcome email (once, never twice). Paused and TEST clients are skipped.`}
+        busyText="Onboarding every active client…"
+        op={() => autoOnboardAllAction()}
+      />
+    )}
     <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
       <ClientList list={list} selectedId={selectedId} />
       <div className="min-w-0 space-y-3" data-onboarding-detail={detail?.client.id ?? ""}>
@@ -538,8 +573,9 @@ export function ClientOnboardingPanel({ list, detail, selectedId, canAct }: { li
           // Keyed by client: another client's steps start fresh (no typed
           // email or open card carried over from the last one).
           ? <Steps key={detail.client.id} d={detail} canAct={canAct} />
-          : <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">Pick a client to see their onboarding steps. Nothing here is sent until you press Send now on a message.</p>}
+          : <p className="rounded-xl border border-dashed border-border p-4 text-sm text-muted">Pick a client to see their onboarding steps. Nothing here is sent until you press Send now on a message or Do everything.</p>}
       </div>
+    </div>
     </div>
   );
 }
@@ -555,6 +591,14 @@ function Steps({ d, canAct }: { d: OnboardingDetail; canAct: boolean }) {
         <h2 className="text-lg font-semibold">{d.client.name}{d.client.isTest && <span className="ml-2 rounded-full bg-brand/10 px-2 py-0.5 align-middle text-[11px] font-semibold text-brand">TEST</span>}</h2>
         <Link href={contentHref(d.enrollment.id)} className={cn(link, "text-sm")}>Open their content workspace</Link>
       </div>
+      {canAct && d.enrollment.status === "ACTIVE" && (
+        <DoEverything
+          label="Do everything for this client"
+          confirmText={`Do every step for ${d.client.name}? Their approved strategy is released, everything but "Share scripts without my approval" is turned on, their portal account is created and their welcome email is sent (once, never twice).${d.client.isTest ? " A TEST client's welcome goes to your test inbox only." : ""}`}
+          busyText={`Onboarding ${d.client.name}…`}
+          op={() => autoOnboardClientAction({ clientId: d.client.id })}
+        />
+      )}
       <StepCard step={step("account")} open={openKey === "account"}>
         <dl className="grid gap-x-4 gap-y-1 text-[13px] sm:grid-cols-[auto_1fr]">
           <dt className="text-muted">Client</dt><dd>{d.client.name}{d.client.company ? ` · ${d.client.company}` : ""}</dd>

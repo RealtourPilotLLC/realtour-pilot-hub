@@ -636,6 +636,13 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
         // (realClients is false under the lock), so "every client" is honest.
         // Per client since Oct 5 2026 (Client onboarding): name the pilot clients THIS switch reaches.
         if (aud && realClients) whoOf.set(key, aud.mode === "ALL" ? "every client with a program" : `pilot: ${(aud.clients.some((x) => x.tier === "PILOT") ? aud.clients.filter((x) => x.tier === "PILOT").map((x) => x.name) : pilotNamesAll).join(", ")}`);
+      } else if (e.launchGate === "everyActiveClient") {
+        // auto_onboarding (Oct 14 2026): it adds each newly active real
+        // client to the named list itself, so it reaches real clients the
+        // moment it is on, whoever the list names today.
+        scope = "each client at the moment their program becomes active (TEST clients are skipped); it adds them to the named clients itself";
+        realClients = enabled;
+        if (enabled) whoOf.set(key, "each newly active client");
       } else {
         // A client-reaching switch with no declared gate would be a copy
         // mistake; say so rather than guess an audience.

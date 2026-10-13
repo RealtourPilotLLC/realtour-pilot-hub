@@ -79,11 +79,15 @@ export type AutomationCadence = "every 15 minutes" | "hourly" | "daily" | "on-ac
  *   hubWriteScope  the provider writes: TEST fixtures on the switch, plus the
  *                  PROGRAM pilot when its "bookings" group is ticked (Jordan's
  *                  Sep 28 rule: one pilot list, programRolloutCore.withProgramPilot).
+ *   everyActiveClient  auto_onboarding (Oct 14 2026): it is what PUTS a newly
+ *                  active real client into the rollout (their own list on the
+ *                  named-client pilot), so its audience is every client whose
+ *                  program becomes ACTIVE, not the rollout's current list.
  * The old "reminderPolicy" and "testClientsOnly" gates meant "TEST clients, or
  * every real client once the lock is lifted"; they are gone, because lifting a
  * lock no longer means every real client.
  */
-export type LaunchGate = "programScope" | "hubWriteScope";
+export type LaunchGate = "programScope" | "hubWriteScope" | "everyActiveClient";
 
 /**
  * What the owner types to let the program reach EVERY client with a program
@@ -366,5 +370,14 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     recipients: "Each client seat (owner and assistant, not view-only) on a client the rollout reaches, by email, from info@",
     cadence: "hourly",
     launchGate: "programScope",
+  },
+  auto_onboarding: {
+    title: "Onboard new clients automatically",
+    onEffect: "When a client's program becomes active (they sign up on the website, a paused program is turned back on, or Aryeo flags a new plan), the hub does the whole Client onboarding page for them: releases their approved strategy, allows every feature except \"Share scripts without my approval\" (you still approve every script), creates their portal account with the email on file, sends their welcome email ONCE, and marks them onboarded. The welcome is never sent twice: not if one already went out from their payment, from Client onboarding, or from an earlier run. TEST clients and paused or ended programs are skipped.",
+    reaches: "clients",
+    requires: { providers: ["gmail"] },
+    recipients: "The new client: one welcome email at the email on file, from info@, and their portal account",
+    cadence: "on-action",
+    launchGate: "everyActiveClient",
   },
 };

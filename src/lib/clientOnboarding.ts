@@ -61,6 +61,21 @@ export async function readOnboardingRecord(clientId: string): Promise<Onboarding
 }
 
 /**
+ * Has Client onboarding already welcomed this client (Oct 14 2026)? The
+ * record's last welcome (sent, or marked sent by Jordan), or an onboarding
+ * welcome in the outbox under any press (the automatic one included). A failed
+ * outbox row has its dedupeKey cleared, so it does not count. How, or null.
+ * The payment grant (portalAccess.queueWelcome) asks this before it queues
+ * its own welcome, so a client is never welcomed twice.
+ */
+export async function welcomeAlreadySentFromOnboarding(clientId: string): Promise<string | null> {
+  const last = lastSentOf(await readOnboardingRecord(clientId), "welcome");
+  if (last) return `${last.kind === "sent" ? "sent" : "marked sent"} from Client onboarding`;
+  const row = await prisma.outboxMessage.findFirst({ where: { clientId, dedupeKey: { startsWith: `onboarding:welcome:${clientId}:` } }, select: { state: true } });
+  return row ? `sent from Client onboarding (${row.state})` : null;
+}
+
+/**
  * Change one client's record under its advisory lock, and write the AuditLog
  * row in the same transaction (unless the change was already audited by the
  * rollout writer — a toggle).

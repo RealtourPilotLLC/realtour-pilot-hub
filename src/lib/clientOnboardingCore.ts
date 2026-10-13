@@ -130,6 +130,25 @@ export const SWITCH_WOULD: Partial<Record<AutomationKey, string>> = {
 /** The step-3 toggles (bookings is chosen in step 6). */
 export const STEP3_TOGGLES = ONBOARDING_TOGGLES.filter((t) => t.key !== "bookings");
 
+/**
+ * WHAT "DO EVERYTHING" TURNS ON (Oct 14 2026, lib/autoOnboarding). Every
+ * toggle but "Share scripts without my approval": Jordan reviews every script
+ * before a client sees it. Bookings is attempted and skipped (Kyle books by
+ * hand) while automatic Aryeo booking is not proven yet.
+ */
+export const AUTO_ONBOARD_TOGGLES: readonly OnboardingToggleKey[] = [
+  "accounts", "messages", "emails", "revision_policy", "review_auto_approve", "topic_carryover", "caption_assistant", "bookings",
+];
+/** Never turned on automatically. */
+export const NEVER_AUTO_TOGGLES: readonly OnboardingToggleKey[] = ["script_auto_share"];
+
+/**
+ * The outbox identity of the AUTOMATIC welcome: one per client, for ever, so a
+ * second run (a double press, the hook after the button) collides with the
+ * first and sends nothing (onboardingKey → onboarding:welcome:<id>:auto-welcome-<id>).
+ */
+export const autoWelcomeIntentId = (clientId: string): string => `auto-welcome-${clientId}`.slice(0, 64);
+
 export const toggleOf = (key: OnboardingToggleKey): OnboardingToggle => ONBOARDING_TOGGLES.find((t) => t.key === key)!;
 export const isOnboardingToggleKey = (k: unknown): k is OnboardingToggleKey => typeof k === "string" && ONBOARDING_TOGGLES.some((t) => t.key === k);
 

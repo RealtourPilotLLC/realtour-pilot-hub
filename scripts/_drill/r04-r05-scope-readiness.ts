@@ -186,8 +186,11 @@ async function parentMain() {
   const point = (src: string, own: Record<string, string> = {}) =>
     src.replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${own[p] ?? path.join(REPO, "src", p)}${q}`);
   const baseFile = (name: string, src: string) => { const f = path.join(baseDir, name); fs.writeFileSync(f, src); return f; };
-  const oldCopyFile = baseFile("programAutomationCopy.base.ts", point(show("src/lib/programAutomationCopy.ts")));
-  const oldReadinessFile = baseFile("readiness.base.ts", point(show("src/lib/readiness.ts"), { "lib/programAutomationCopy": oldCopyFile.replace(/\.ts$/, "") }));
+  // Oct 14 2026: the old readiness walks AUTOMATION_KEYS, so it reads the old
+  // key list too (a key added since, auto_onboarding, has no old copy entry).
+  const oldAutomationFile = baseFile("programAutomation.base.ts", point(show("src/lib/programAutomation.ts")));
+  const oldCopyFile = baseFile("programAutomationCopy.base.ts", point(show("src/lib/programAutomationCopy.ts"), { "lib/programAutomation": oldAutomationFile.replace(/\.ts$/, "") }));
+  const oldReadinessFile = baseFile("readiness.base.ts", point(show("src/lib/readiness.ts"), { "lib/programAutomationCopy": oldCopyFile.replace(/\.ts$/, ""), "lib/programAutomation": oldAutomationFile.replace(/\.ts$/, "") }));
   const oldLayoutFile = baseFile("portalLayout.base.ts", point(show("src/lib/portalLayout.ts")));
   type OldLayoutDecision = (viewer: import("@/lib/portal").PortalViewer, clientName: string | null | undefined, query: { layout?: string | null }) => Promise<{ layout: "v1" | "v2"; why: string }>;
   const oldGenFile = baseFile("contentGeneration.base.ts", point(show("src/lib/contentGeneration.ts")));

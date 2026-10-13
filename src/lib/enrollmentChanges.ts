@@ -268,6 +268,12 @@ export async function setEnrollmentStatus(enrollmentId: string, status: "ACTIVE"
   await recordEnrollmentChange({ enrollmentId, clientId: e.clientId, field: "status", from: e.status, to: status, effectiveAt: now, effectiveMonthKey: etMonthKey(), changedBy: by, reason: reason ?? null, appliedAt: now });
   // statusManual: a human owns this status from here — the Aryeo sync must not flip it back.
   await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { status, statusManual: true } });
+  // Oct 14 2026: a program turned back on is onboarded automatically (behind
+  // the auto_onboarding switch; never a second welcome). Best-effort.
+  if (status === "ACTIVE") {
+    const { maybeAutoOnboard } = await import("@/lib/autoOnboarding");
+    await maybeAutoOnboard(e.clientId, by ? `auto-onboarding (${by})` : "auto-onboarding", `program ${enrollmentId} set ACTIVE from ${e.status}`);
+  }
 }
 
 export async function setBillingTerms(enrollmentId: string, terms: { type: string | null; rate: number | null; months: number | null }, by: string | null): Promise<void> {

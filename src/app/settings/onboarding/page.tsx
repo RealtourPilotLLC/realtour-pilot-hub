@@ -85,7 +85,7 @@ export default async function ClientOnboardingPage({ searchParams }: { searchPar
       </div>
       <PageHeader
         title="Client onboarding"
-        subtitle="One client at a time: what they get, their portal account, and the messages you send them. Nothing is sent unless you press Send now."
+        subtitle="One client at a time, or all at once with Do everything: what they get, their portal account, and their welcome. Nothing is sent unless you press Send now or Do everything."
         sticky={false}
       />
       <div className="mx-auto min-w-0 max-w-5xl p-4 pb-16 [overflow-wrap:anywhere] sm:p-6">
