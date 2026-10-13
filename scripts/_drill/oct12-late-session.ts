@@ -283,15 +283,18 @@ async function main() {
       late: { schedule: sSep ?? null, scripts }, selectedScheduleMonthId: null,
     } })));
     c.ok("Your Month (October) renders the line, both tabs and September's scripts", ym.includes("Your September session still needs booking, and October's too.") && ym.includes("September session (your scripts are ready)") && ym.includes("October session") && ym.includes("Your September scripts (2)") && ym.includes("Spring buyers move fast"), ym.slice(0, 400));
-    c.ok("…says September's scripts are ready and October's session follows October's own plan", ym.includes("Your September scripts are ready, so you can book that session now.") && ym.includes("October's session follows October's own plan."));
+    // C14 (Oct 13 2026): one sentence on the card.
+    c.ok("…says September's scripts are ready, in one sentence", ym.includes("Your September scripts are ready, so you can book that session now.") && !ym.includes("October's session follows October's own plan."));
     const pageHtml = text(html(await PortalPage({ viewer: v, path: "/portal/x", query: { tab: "plan" } })));
     c.ok("the real portal page (Your Month) shows it", pageHtml.includes("Your September session still needs booking, and October's too.") && pageHtml.includes("September session (your scripts are ready)"), pageHtml.slice(0, 300));
     const pageSep = text(html(await PortalPage({ viewer: v, path: "/portal/x", query: { tab: "plan", month: "2026-09" } })));
     c.ok("?month=2026-09 (the September tab remembered) keeps Your Month on October, with no 'not available' notice", pageSep.includes("October 2026") && pageSep.includes("Your September session still needs booking") && !pageSep.includes("That planning month is not available here"), pageSep.slice(0, 300));
     const homeHtml = text(html(await PortalPage({ viewer: v, path: "/portal/x", query: {} })));
-    c.ok("Home shows the line and offers 'Book your September session'", homeHtml.includes("Your September session still needs booking, and October's too.") && homeHtml.includes("Book your September session"), homeHtml.slice(0, 300));
+    // C14 (Oct 13 2026): the line is said once, in Your Month; Home's next step names the September session.
+    c.ok("Home offers the September session in its next step (the line itself lives in Your Month)", !homeHtml.includes("Your September session still needs booking, and October's too.") && /Book your September session|Your September session and this month's are both ready to book/.test(homeHtml), homeHtml.slice(0, 300));
     const schedHtml = text(html(await PortalPage({ viewer: v, path: "/portal/x", query: { tab: "schedule" } })));
-    c.ok("Schedule shows the line and the September tab", schedHtml.includes("Your September session still needs booking") && schedHtml.includes("September session (your scripts are ready)"));
+    // C14 (Oct 13 2026): Schedule is a read-only list; the September session is still to book, linked to Your Month.
+    c.ok("Schedule lists the September session as still to book (no repeat of the line)", !schedHtml.includes("Your September session still needs booking") && schedHtml.includes("September session (your scripts are ready)") && schedHtml.includes("Still to book"));
     const ha = homeActions({ status: "ACTIVE", readOnly: false, perms: { session: true, suggest: true, request: true, approve: true, profile: true }, review: { count: 0, single: null, soonestDeadlineLabel: null }, scripts: [], unread: 0, planning: null, month: null, toAnswer: [], session: { offerBooking: false, required: 1, missing: 1 }, addressNeeded: 0, setup: null, ready: { count: 0, withFile: false, single: null }, lateSession: { label: "September", open: true } });
     c.ok("(the Home action lands on the late card)", ha.primary?.kind === "BOOK_SESSION" && ha.primary.title === "Book your September session" && ha.primary.href.endsWith("#step-late"), JSON.stringify(ha.primary));
 

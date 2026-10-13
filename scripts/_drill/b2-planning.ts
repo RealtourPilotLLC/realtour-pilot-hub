@@ -473,7 +473,8 @@ async function main() {
     const ptT = find(planPageT, "PlanTab")[0];
     const ymT = ptT?.props.d.yourMonth ? YourMonth({ d: { ...ptT.props.d.yourMonth, topics: ptT.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } }) : null;
     const curT = ymT ? find(ymT, "li").filter((e) => e.props["aria-current"] === "step") : [];
-    c.ok("the page: one current step (#step-filming) with the embedded picker and the saved choice", curT.length === 1 && curT[0].props.id === "step-filming" && find(ymT, "PortalScheduler")[0]?.props.embedded === true && find(ymT, "ScheduleLaterButton")[0]?.props.deferred === true);
+    // C14 (Oct 13 2026): the "Schedule later" button is gone from Your Month; a choice already saved still reads in the step (above).
+    c.ok("the page: one current step (#step-filming) with the embedded picker, and no 'Schedule later' button (C14)", curT.length === 1 && curT[0].props.id === "step-filming" && find(ymT, "PortalScheduler")[0]?.props.embedded === true && find(ymT, "ScheduleLaterButton").length === 0);
     const filmingTopics = find(ymT, "section").find((e) => e.props.id === "this-month");
     c.ok("filming opens one work area and folds the topic bank", !!filmingTopics && find(filmingTopics, "details")[0]?.props.open === false);
     await prisma.contentEnrollment.update({ where: { id: T.enrollmentId }, data: { status: "ENDED" } });
@@ -606,7 +607,8 @@ async function main() {
     const sac = code(read("src/components/portal/ScriptApprovalCard.tsx"));
     c.ok("OLD: 'Select for {Mon}', 'Swap for another topic', 'Read & approve the script', 'I'll film this' / 'Change something'", /Select for \{shortMonth/.test(show("src/components/portal/TopicBank.tsx")) && /Read &amp; approve the script/.test(show("src/components/portal/TopicBank.tsx")) && /I&rsquo;ll film this/.test(show("src/components/portal/ScriptApprovalCard.tsx")));
     c.ok("NEW: none of those remain in the rendered code", !/Select for|Use for \{|Swap for another topic|Read &amp; approve/.test(tb) && !/I&rsquo;ll film this|Change something/.test(sac));
-    c.ok("…the buttons read CTA_WORDS: Choose this topic / Choose another topic / Review script / Approve script / Request changes", /CTA_WORDS\.CHOOSE/.test(tb) && /CTA_WORDS\.SWAP/.test(tb) && /CTA_WORDS\.REVIEW/.test(tb) && /CTA_WORDS\.APPROVE/.test(sac) && /CTA_WORDS\.CHANGES/.test(sac));
+    // C14 (Oct 13 2026): the "Scripted, not filmed" swap strip (CTA_WORDS.SWAP) is hidden from clients.
+    c.ok("…the buttons read CTA_WORDS: Choose this topic / Review script / Approve script / Request changes (no swap button since C14)", /CTA_WORDS\.CHOOSE/.test(tb) && !/CTA_WORDS\.SWAP/.test(tb) && /CTA_WORDS\.REVIEW/.test(tb) && /CTA_WORDS\.APPROVE/.test(sac) && /CTA_WORDS\.CHANGES/.test(sac));
     const cta = words.CTA_WORDS;
     c.ok("the words are §11's", cta.CHOOSE === "Choose this topic" && cta.SWAP === "Choose another topic" && cta.ANSWER === "Answer questions" && cta.REVIEW === "Review script" && cta.APPROVE === "Approve script" && cta.CHANGES === "Request changes" && cta.BOOK === "Book filming" && cta.LATER === "Schedule later");
     const nav = (await import("@/lib/portalNav")).portalNav({ publishedResources: 0 });

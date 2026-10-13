@@ -27,8 +27,8 @@ export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; call
         <Button variant="secondary" onClick={() => setConfirm(true)}><PenLine aria-hidden className="size-4" /> Choose my topics here instead</Button>
       ) : (
         <div className="rounded-xl border border-border bg-surface p-3 text-sm">
-          <p>Choose your topics here? You&rsquo;ll pick topics and answer a few short questions per topic. You can book filming as soon as your answers are in, for a time at least three weekdays (72 weekday hours) later.</p>
-          {callBooked && <p className="mt-1 text-xs text-muted">Your booked call stays on the calendar. Cancel it on Calendly separately if you no longer need it.</p>}
+          <p>Choose your topics here? You&rsquo;ll pick topics and answer a few short questions per topic. You can book filming as soon as your answers are in, for a time at least three business days later.</p>
+          {callBooked && <p className="mt-1 text-xs text-muted">Your booked call stays on the calendar. You can cancel it in Your Month if you no longer need it.</p>}
           <div className="mt-2 flex flex-wrap gap-2">
             <Button onClick={go} busy={busy} busyLabel="Saving choice…">Yes, choose them here</Button>
             <Button variant="secondary" onClick={() => setConfirm(false)} disabled={busy}>Keep the call</Button>

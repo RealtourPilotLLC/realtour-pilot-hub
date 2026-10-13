@@ -201,7 +201,8 @@ async function main() {
   {
     const before = seen.length;
     const off = await pk.draftCaptionForVideo(ada.viewer, ada.video.id);
-    c.ok("switch OFF: refused in plain words", !off.ok && /switched off/.test(off.message), off.message);
+    // Oct 13 2026: the refusal no longer talks about switches or a launch; it says what the client can do.
+    c.ok("switch OFF: refused in plain words", !off.ok && /Write your caption below/.test(off.message) && !/switched|launch/.test(off.message), off.message);
     await setSwitch(true);
     const bo = await program("Bo Unapproved TEST", ["DM me PRICE."]);
     const unapproved = await pk.draftCaptionForVideo(bo.viewer, bo.video.id);

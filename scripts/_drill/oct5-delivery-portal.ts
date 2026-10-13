@@ -345,7 +345,8 @@ async function main() {
     c.head("9 · plain client words");
     // =======================================================================
     c.ok("no 'Desk-assisted booking' on the scheduler", !/Desk-assisted booking/.test(src("src/components/portal/PortalScheduler.tsx")));
-    c.ok("the link says Schedule, as the menu does", !/in Appointments/.test(src("src/components/portal/YourMonth.tsx")) && /Manage filming in Schedule/.test(src("src/components/portal/YourMonth.tsx")));
+    // C14 (Oct 13 2026): filming is booked, changed and cancelled in Your Month itself; it no longer sends the client to Schedule.
+    c.ok("Your Month manages filming itself (no 'in Appointments', no 'Manage filming in Schedule')", !/in Appointments/.test(src("src/components/portal/YourMonth.tsx")) && !/Manage filming in Schedule/.test(src("src/components/portal/YourMonth.tsx")));
     c.ok("no 'photographer' for a video session", !/your photographer/.test(src("src/lib/portalHome.ts")));
 
     c.head("isolation");

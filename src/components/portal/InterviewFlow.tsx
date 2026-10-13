@@ -177,14 +177,14 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           {iv.next.isFollowUp && !editKey && <p className="mt-0.5 text-[11px] text-muted-2">{iv.nextIsGap ? "We ask only because nothing we have covers this yet. Two at most." : "Asked once, only because something important was missing."}</p>}
           <textarea autoFocus value={visibleText} onChange={(e) => { updateText(e.target.value); setReplacedDraft(null); }} rows={4} placeholder="Say it the way you'd say it to a client…" aria-label="Your answer" className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand" />
           <p role="status" className={cn("mt-1 text-xs", draftState === "failed" ? "text-danger" : "text-muted")}>
-            {draftState === "saved" ? `Draft kept in this tab through a refresh. Use ${editKey ? "Save new answer" : "Save & next"} to send it to the team.` : draftState === "failed" ? `This tab couldn't access your draft. Try again; ${editKey ? "Save new answer" : "Save & next"} sends the words currently shown to the team.` : editKey ? "These are your saved words. Use Save new answer to send a change." : "This answer has not been sent yet."}
+            {draftState === "saved" ? `Draft kept. Use ${editKey ? "Save new answer" : "Save & next"} to send it.` : draftState === "failed" ? "We couldn't keep a draft in this tab, so send your answer when it's ready." : editKey ? "These are your saved words. Use Save new answer to send a change." : "This answer has not been sent yet."}
           </p>
           {draftState === "failed" && <button type="button" onClick={retryDraft} className="min-h-11 text-sm font-semibold text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Try draft storage again</button>}
           {/* WHAT THEY ALREADY SAID ON A CALL — optional and editable, with its
               source. Never pre-filled: they choose to start from it. */}
           {iv.suggestions.length > 0 && (
             <div className="mt-2">
-              <div className="flex items-center gap-1 text-[11px] font-semibold text-muted-2"><MessageSquareQuote className="size-3" /> {iv.suggestions.every((sg) => sg.from === "profile") ? "From your profile notes" : iv.suggestions.some((sg) => sg.from === "profile") ? "From your call and your profile notes" : "From your planning call"}: use one as a start if it fits (optional)</div>
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-muted-2"><MessageSquareQuote className="size-3" /> {iv.suggestions.every((sg) => sg.from === "profile") ? "From your profile notes" : iv.suggestions.some((sg) => sg.from === "profile") ? "From your call and your profile notes" : "From your strategy call"}: use one as a start if it fits (optional)</div>
               <ul className="mt-1 space-y-1">
                 {iv.suggestions.map((sg) => (
                   <li key={sg.id}>
@@ -221,7 +221,7 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
             {!editKey && <button type="button" disabled={busy} onClick={() => answer("DONT_KNOW")} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">I don&rsquo;t know</button>}
             {editKey && <button type="button" onClick={() => { setEditKey(null); setText(""); setTextKey(null); setSuggestionId(null); setSuggestionKey(null); setSuggestionChoice(null); setReplacedDraft(null); }} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Cancel</button>}
           </div>
-          <p className="mt-2 text-xs text-muted">Only {editKey ? "Save new answer" : "Save & next"} records your answer for the team. The draft survives a refresh in this tab, but may be lost when the tab closes. A draft on its own doesn&rsquo;t start your script or open filming.</p>
+          <p className="mt-2 text-xs text-muted">Your answer reaches the team when you press {editKey ? "Save new answer" : "Save & next"}.</p>
         </div>
       )}
 

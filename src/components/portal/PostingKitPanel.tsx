@@ -2,9 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Copy, Loader2, Sparkles, TriangleAlert } from "lucide-react";
+import { Copy, Loader2, Sparkles, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalDraftCaption, portalMarkPosted, portalSaveCaption } from "@/app/portal/actions";
+import { portalDraftCaption, portalSaveCaption } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { DownloadButton } from "@/components/portal/DownloadButton";
 import type { CaptionView, DownloadPlan } from "@/lib/postingKit";
@@ -14,8 +14,8 @@ import type { CaptionView, DownloadPlan } from "@/lib/postingKit";
 // door — the href carries a media token, never the portal link), the editable
 // caption (a save is a new version; nothing overwrites), "Draft a caption"
 // which the server refuses with a reason while the assistant is off, and the
-// client-recorded facts — Download started / Saved, and Marked as posted by
-// me — which are never a verified publication. "Started" (the door opened)
+// client-recorded download facts — Download started / Saved. ("Mark as posted
+// by me" was hidden in C14, Oct 13 2026: the action and column remain.) "Started" (the door opened)
 // and "Saved" (the page received every byte) are shown apart on purpose
 // (CP-12): the first used to be labelled "Downloaded".
 //
@@ -29,7 +29,7 @@ import type { CaptionView, DownloadPlan } from "@/lib/postingKit";
 const KIND_LABEL: Record<string, string> = { CAPTION: "Caption", SHORT_CAPTION: "Shorter caption", CTA: "Call to action", COVER_TITLE: "Cover title" };
 const fmt = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-export function PostingKitPanel({ videoId, title, downloadHref, download, finalLabel, finalNote, captions, assistant, postedAtISO, downloadStartedAtISO, downloadCompletedAtISO, canEdit, transcriptGap, access }: {
+export function PostingKitPanel({ videoId, title, downloadHref, download, finalLabel, finalNote, captions, assistant, downloadStartedAtISO, downloadCompletedAtISO, canEdit, transcriptGap, access }: {
   videoId: string;
   title: string;
   downloadHref: string | null;
@@ -40,7 +40,8 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
   finalNote: string | null;
   captions: CaptionView[];
   assistant: { enabled: boolean; why: string | null };
-  postedAtISO: string | null;
+  /** Kept for callers; "Mark as posted" is no longer shown (C14, Oct 13 2026). */
+  postedAtISO?: string | null;
   downloadStartedAtISO: string | null;
   downloadCompletedAtISO: string | null;
   canEdit: boolean;
@@ -61,7 +62,6 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
   const copy = async (text: string, id: string) => { try { await navigator.clipboard.writeText(text); setCopied(id); setTimeout(() => setCopied(null), 1500); } catch { setMsg({ ok: false, text: "Couldn't copy. Select the text and copy it by hand." }); } };
   const save = () => { if (!editing) return; start(async () => { const r = await portalSaveCaption(portalAuthFromLocation(), videoId, editing).catch(() => ({ ok: false, message: "That didn't save. Try again." })); if (r.ok) setEditing(null); done(r); }); };
   const draft = () => start(async () => done(await portalDraftCaption(portalAuthFromLocation(), videoId).catch(() => ({ ok: false, message: "The assistant couldn't run just now. Try again in a moment." }))));
-  const mark = (posted: boolean) => start(async () => done(await portalMarkPosted(portalAuthFromLocation(), videoId, posted).catch(() => ({ ok: false, message: "That didn't save. Try again." }))));
 
   return (
     <div className="space-y-4">
@@ -142,23 +142,6 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
         </div>
       </div>
 
-      {/* Client-recorded facts */}
-      <div className="rounded-xl border border-border bg-surface p-3">
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Posted?</div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-2">
-          {postedAtISO ? (
-            <>
-              <span className="inline-flex items-center gap-1 text-sm text-success"><CheckCircle2 className="size-4" /> Marked as posted by you · {fmt(postedAtISO)}</span>
-              {canEdit && <button type="button" onClick={() => mark(false)} disabled={busy} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Undo</button>}
-            </>
-          ) : canEdit ? (
-            <button type="button" onClick={() => mark(true)} disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Mark as posted by me</button>
-          ) : (
-            <span className="text-sm text-muted">Not marked as posted.</span>
-          )}
-        </div>
-        <p className="mt-1 text-[11px] text-muted-2">A note for you and for us. We don&rsquo;t check the platform, so this only records what you tell us.</p>
-      </div>
       {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>
   );

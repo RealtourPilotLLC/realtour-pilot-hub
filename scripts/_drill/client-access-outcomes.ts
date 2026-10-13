@@ -52,7 +52,7 @@ async function main() {
     const generic = await requestPortalLoginLink(fd); loginFails = true; const swallowed = await requestPortalLoginLink(fd);
     c.ok("public reply is identical for completed and swallowed failure, without account or send proof", generic.ok && swallowed.ok && generic.message === swallowed.message && generic.message.startsWith("Request received.") && !generic.message.includes("on its way") && generic.message.includes("cannot confirm an account or email delivery"));
     live = false; const off = await requestPortalLoginLink(fd);
-    c.ok("public off-gate response preserves privacy and does not claim a recorded debt or future send", off.ok && off.message.includes("isn't switched on") && !off.message.includes("noted") && !off.message.includes("on its way") && loginEmails.length === 3);
+    c.ok("public off-gate response preserves privacy and does not claim a recorded debt or future send", off.ok && off.message.includes("isn't ready for your account") && !off.message.includes("noted") && !off.message.includes("on its way") && loginEmails.length === 3);
     c.ok("wrapper-only contract fixture performs no database/provider/login/send mutation", fence.faked.length === 0 && fence.blocked.length === 0);
     c.summary();
   } finally { fence.restore(); }

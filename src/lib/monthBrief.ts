@@ -124,17 +124,17 @@ export async function addBriefFile(monthId: string, file: { name: string; size: 
   if (!m || m.historical) return { ok: false, message: "That month isn't open for a brief." };
   const refusal = briefFileRefusal(file.name, file.size);
   if (refusal) return { ok: false, message: refusal };
-  if (file.bytes.byteLength !== file.size) return { ok: false, message: "That upload didn't arrive whole — try again." };
+  if (file.bytes.byteLength !== file.size) return { ok: false, message: "That upload didn't arrive whole. Try again." };
   const existing = await prisma.appSetting.count({ where: { key: { startsWith: `${briefMonthPrefix(m.id)}f:` } } });
-  if (existing >= BRIEF_FILES_MAX) return { ok: false, message: `This month's brief already has ${BRIEF_FILES_MAX} files — remove one first, or paste the rest in the notes.` };
-  if (!(await underDailyCap(m.enrollmentId))) return { ok: false, message: "That's the upload limit for today — try again tomorrow, or send it to us in Messages." };
+  if (existing >= BRIEF_FILES_MAX) return { ok: false, message: `This month's brief already has ${BRIEF_FILES_MAX} files. Remove one first, or paste the rest in the notes.` };
+  if (!(await underDailyCap(m.enrollmentId))) return { ok: false, message: "That's the upload limit for today. Try again tomorrow, or send it to us in Messages." };
   const id = randomBytes(12).toString("hex");
   const ext = path.extname(file.name).toLowerCase();
   const stored = `${STORAGE_PREFIX}/content-briefs/${m.enrollmentId}/${m.monthKey}/${id}${ext}`;
   try {
     await dropboxUpload(stored, file.bytes, { autorename: false });
   } catch {
-    return { ok: false, message: "The upload didn't stick — try again in a minute." };
+    return { ok: false, message: "The upload didn't stick. Try again in a minute." };
   }
   const row: BriefFile = { id, name: file.name, size: file.size, mime: briefMimeFor(file.name), path: stored, by, atISO: new Date().toISOString() };
   const { id: _omit, ...value } = row; void _omit;
@@ -148,7 +148,7 @@ export async function saveBriefNotes(monthId: string, text: string, by: BriefBy)
   const m = await monthRow(monthId);
   if (!m || m.historical) return { ok: false, message: "That month isn't open for a brief." };
   const clean = (text ?? "").replace(/\r\n/g, "\n").trim();
-  if (clean.length > BRIEF_NOTES_MAX) return { ok: false, message: `Notes can be up to ${BRIEF_NOTES_MAX.toLocaleString("en-US")} characters — attach a document for anything longer.` };
+  if (clean.length > BRIEF_NOTES_MAX) return { ok: false, message: `Notes can be up to ${BRIEF_NOTES_MAX.toLocaleString("en-US")} characters. Attach a document for anything longer.` };
   const key = briefNotesKey(m.id);
   if (!clean) {
     await prisma.appSetting.deleteMany({ where: { key } });

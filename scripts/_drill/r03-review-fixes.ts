@@ -287,7 +287,7 @@ async function main(): Promise<void> {
     c.ok("NEW: the kit offers 'Draft a caption' to T and the pilot client, NOT to the excluded client", (await kit(capT)) && (await kit(capP)) && !(await kit(capX)));
     const m0 = modelCalls;
     const dx = await pk.draftCaptionForVideo(capX.viewer, capX.video.id);
-    c.ok("NEW: a click on the excluded client's portal drafts nothing and calls no model", !dx.ok && /switched off/.test(dx.message) && modelCalls === m0, dx.message);
+    c.ok("NEW: a click on the excluded client's portal drafts nothing and calls no model", !dx.ok && /Write your caption below/.test(dx.message) && modelCalls === m0, dx.message); // Oct 13 2026: the refusal no longer mentions a switch
     const dp = await pk.draftCaptionForVideo(capP.viewer, capP.video.id);
     c.ok("NEW: the pilot client's click drafts (one model call)", dp.ok && modelCalls === m0 + 1, dp.message);
     await writeRollout(pilotOf([P.clientId, capP.fx.clientId], core.opsForGroups(["accounts", "emails", "bookings"])));

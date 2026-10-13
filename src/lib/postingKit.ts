@@ -331,7 +331,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     downloadStartedAtISO: lastStarted?.createdAt.toISOString() ?? null,
     downloadCompletedAtISO: lastCompleted?.createdAt.toISOString() ?? null,
     download,
-    assistant: { enabled: assistantOn, why: assistantOn ? null : "Caption drafting is switched off until the program launches. We'll write your caption with the script for now, or you can write one below." },
+    assistant: { enabled: assistantOn, why: assistantOn ? null : "We'll write your caption with the script, or you can write one below." },
     access: { download: !!e.file, captions: !!e.captionRef, why, blockedBy: e.blockedBy, basis: e.basis },
   };
 }
@@ -461,7 +461,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   // The switch AND the rollout (op caption_assistant) — the same question the
   // kit's button asked, so a client never gets a draft the kit did not offer.
   if (!(await assistantFor(viewer.enrollment.clientId))) {
-    return { ok: false, message: `Caption drafting is switched off until the program launches. Write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
+    return { ok: false, message: `Write your caption below and it's saved with this video, or ${TEXT_KYLE} and we'll draft one.` };
   }
   const submissionId = target.submissionId;
   const [script, transcript] = await Promise.all([
@@ -518,7 +518,7 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
     });
     out = r.output; runId = r.runId;
   } catch (e) {
-    return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit. Try again tomorrow, or write one below." : "The caption assistant couldn't draft just now — try again in a moment, or write one below." };
+    return { ok: false, message: e instanceof Error && /quota/i.test(e.message) ? "The caption assistant has hit today's limit. Try again tomorrow, or write one below." : "The caption assistant couldn't draft just now. Try again in a moment, or write one below." };
   }
   const draftSubmissionId = target.ref;
   // No invented offers, whatever the model wrote (see INVENTED_OFFER).

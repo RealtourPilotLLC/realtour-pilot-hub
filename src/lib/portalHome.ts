@@ -139,6 +139,14 @@ export type HomeActionsInput = {
   lateSession?: { label: string; open: boolean; /** Oct 13 2026: one session films both months; it is THIS month's filming action, not a second one. */ combined?: boolean } | null;
   setup: { complete: boolean; remaining: number } | null;
   ready: { count: number; withFile: boolean; single: { id: string; title: string } | null };
+  /**
+   * Oct 13 2026 (A1): the plain shared link carries no person, so it can never
+   * approve (portalAccess.LEGACY_TOKEN). Its review step asks them to sign in
+   * instead of telling them to approve. `signInHref` is the sign-in page when
+   * email sign-in is live for this client, else null (they sign in from their
+   * invitation email).
+   */
+  linkVisitor?: { signInHref: string | null } | null;
 };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -152,12 +160,23 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
   const out: HomeAction[] = [];
   // `step`: the Your Month step the action lands on (#step-<key>) — Home's next
   // step opens the guided plan where that step is, not a separate page.
-  const add = (a: Omit<HomeAction, "href"> & { extra?: string; step?: string }) => out.push({ kind: a.kind, count: a.count, title: a.title, detail: a.detail, cta: a.cta, dest: a.dest, href: `${portalHref(base, a.dest, a.extra)}${a.step ? `#step-${a.step}` : ""}` });
+  const add = (a: Omit<HomeAction, "href"> & { extra?: string; step?: string; href?: string }) => out.push({ kind: a.kind, count: a.count, title: a.title, detail: a.detail, cta: a.cta, dest: a.dest, href: a.href ?? `${portalHref(base, a.dest, a.extra)}${a.step ? `#step-${a.step}` : ""}` });
 
   // A reply is something to read, not something to start: it reaches a paused account too.
   if (i.unread > 0) add({ kind: "READ_REPLY", count: i.unread, title: i.unread === 1 ? "A new reply from the team" : `${i.unread} new replies from the team`, detail: null, cta: "Read it", dest: "messages" });
   if (!i.readOnly && i.status === "ACTIVE") {
-    if (i.review.count > 0 && (i.perms.approve || i.perms.request)) {
+    if (i.review.count > 0 && i.linkVisitor) {
+      // A1: the link can watch, not decide. Say so, and point at the sign-in.
+      const one = i.review.single;
+      add({
+        kind: "REVIEW_VIDEOS", count: i.review.count,
+        title: one ? `“${one.title}” is ready for your review` : `${plural(i.review.count, "video")} ready for your review`,
+        detail: i.linkVisitor.signInHref ? "Sign in to approve or request changes." : "Sign in from your invitation email to approve or request changes.",
+        cta: i.linkVisitor.signInHref ? "Sign in" : one ? "Watch it" : "Watch them", dest: "library",
+        extra: one ? `v=${one.id}` : "st=review",
+        ...(i.linkVisitor.signInHref ? { href: i.linkVisitor.signInHref } : {}),
+      });
+    } else if (i.review.count > 0 && (i.perms.approve || i.perms.request)) {
       add({
         kind: "REVIEW_VIDEOS", count: i.review.count,
         title: i.review.single ? `Review “${i.review.single.title}”` : `Review ${plural(i.review.count, "video")} waiting on you`,
@@ -188,7 +207,8 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;
     if (undecided && !cp && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "CHOOSE_ROUTE", count: 1, title: `How would you like to plan ${i.month?.label ?? "this month"}?`, detail: "Choose your topics here, or talk them through on a call.", cta: "Choose", dest: "plan", step: "route" });
-    } else if (i.planning && (i.planning.planningMode !== "WRITTEN" || cp) && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && !cp && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+      // A3 (Oct 13 2026): a client who plans their own content is never asked to book a strategy call.
       add({ kind: "BOOK_CALL", count: 1, title: "Book your strategy call", detail: "We plan the month on it.", cta: "Book the call", dest: "plan", step: "call" });
     }
     // On the call route the topics are chosen together on the call — browsing
@@ -197,18 +217,23 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       const n = i.month.owed - i.month.selected;
       add({ kind: "PICK_TOPICS", count: n, title: `Choose ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Choose topics", dest: "plan", extra: "pv=bank" });
     }
+    // Oct 13 2026: an over month's late session and this month's own are
+    // booked from ONE card in Your Month, so they are ONE action here — two
+    // used to sit side by side (and shared a React key).
+    const lateOpen = !!i.lateSession?.open && i.perms.session && !i.lateSession.combined;
     if (i.session.offerBooking && i.perms.session) {
       const booked = i.session.required - i.session.missing;
       // "Schedule later" keeps the booking visibly outstanding (§6.7) — the
       // same action, saying the client chose it, never a second one.
-      const detail = i.session.deferred ? "You chose to schedule later. Book any time." : i.session.earliestLabel ? `Sessions can start from ${i.session.earliestLabel}.` : null;
-      add({ kind: "BOOK_SESSION", count: i.session.missing, title: i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail, cta: CTA_WORDS.BOOK, dest: "plan", step: "filming" });
-    }
-    if (i.lateSession?.open && i.perms.session && !i.lateSession.combined) {
-      add({ kind: "BOOK_SESSION", count: 1, title: `Book your ${i.lateSession.label} session`, detail: `Your ${i.lateSession.label} scripts are ready. It's filmed this month, beside this month's own session.`, cta: CTA_WORDS.BOOK, dest: "plan", step: "late" });
+      const detail = lateOpen
+        ? `Your ${i.lateSession!.label} session and this month's are both ready to book.`
+        : i.session.deferred ? "You chose to schedule later. Book any time." : i.session.earliestLabel ? `Sessions can start from ${i.session.earliestLabel}.` : null;
+      add({ kind: "BOOK_SESSION", count: i.session.missing + (lateOpen ? 1 : 0), title: lateOpen ? "Book your filming sessions" : i.session.required > 1 && booked > 0 ? `Book your next filming session (${booked} of ${i.session.required} booked)` : "Book your filming session", detail, cta: CTA_WORDS.BOOK, dest: "plan", step: lateOpen ? "late" : "filming" });
+    } else if (lateOpen) {
+      add({ kind: "BOOK_SESSION", count: 1, title: `Book your ${i.lateSession!.label} session`, detail: `Your ${i.lateSession!.label} scripts are ready. It's filmed this month, beside this month's own session.`, cta: CTA_WORDS.BOOK, dest: "plan", step: "late" });
     }
     if (i.addressNeeded > 0 && i.perms.session) {
-      add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So our team arrives at the right door for your filming.", cta: "Add the address", dest: "schedule" });
+      add({ kind: "COMPLETE_ADDRESS", count: i.addressNeeded, title: i.addressNeeded === 1 ? "Add the exact address for your session" : `Add the exact address for ${plural(i.addressNeeded, "session")}`, detail: "So our team arrives at the right door for your filming.", cta: "Add the address", dest: "plan", step: "filming" });
     }
     if (i.setup && !i.setup.complete && i.setup.remaining > 0 && i.perms.profile) {
       add({ kind: "FINISH_SETUP", count: i.setup.remaining, title: `Finish setting up your account (${plural(i.setup.remaining, "step")} left)`, detail: "Your editor uses these on every video.", cta: "Continue setup", dest: "brand" });

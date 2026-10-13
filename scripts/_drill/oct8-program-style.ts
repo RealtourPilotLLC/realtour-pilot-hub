@@ -347,7 +347,8 @@ async function main() {
     const gateCalls = await portal.sessionGate(D.enrollmentId, D.monthId, { now: now() });
     const dPlanCalls = (await portal.portalPlanning(dV.enrollment))!;
     const callSteps = stepsOf(dPlanCalls, { locked: false, reason: "" }, { briefFiles: 0, briefNotes: false });
-    c.ok("with calls on too: a 'Book your strategy call' step appears, and filming stays open", !gateCalls.locked && callSteps.map((s) => s.key).join(",") === "brief,call,filming", callSteps.map((s) => `${s.key}:${s.state}`).join(" | "));
+    // A3 (Oct 13 2026, Jordan): a client who plans their own videos never gets a strategy-call step, even with calls on.
+    c.ok("with calls on too: still no strategy-call step (A3), and filming stays open", !gateCalls.locked && callSteps.map((s) => s.key).join(",") === "brief,filming", callSteps.map((s) => `${s.key}:${s.state}`).join(" | "));
     await ws.setProgramStyleAction(D.enrollmentId, { strategyCalls: false });
     // Off again: the planning gate comes back.
     await ws.setProgramStyleAction(D.enrollmentId, { clientPlanned: false });

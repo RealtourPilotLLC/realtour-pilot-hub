@@ -44,12 +44,12 @@ export function MonthBriefPanel({ mode, monthId, files: initialFiles, notes: ini
     form.set("file", file);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/portal/brief");
-    xhr.onerror = () => patch(tempId, { state: "failed", message: "That upload didn't go through — check your connection and try again." });
+    xhr.onerror = () => patch(tempId, { state: "failed", message: "That upload didn't go through. Check your connection and try again." });
     xhr.onload = () => {
       let j: { ok?: boolean; message?: string; file?: { id: string; name: string; size: number; byKind: "client" | "staff"; byLabel: string; atISO: string; href: string } } = {};
       try { j = JSON.parse(xhr.responseText); } catch { /* handled below */ }
       if (xhr.status === 413) { patch(tempId, { state: "failed", message: `Files up to ${BRIEF_MAX_LABEL} upload here.` }); return; }
-      if (!j.ok || !j.file) { patch(tempId, { state: "failed", message: j.message || "That upload didn't go through — try again." }); return; }
+      if (!j.ok || !j.file) { patch(tempId, { state: "failed", message: j.message || "That upload didn't go through. Try again." }); return; }
       const f = j.file;
       setFiles((cur) => cur.map((x) => (x.id === tempId ? { id: f.id, name: f.name, size: f.size, byKind: f.byKind, byLabel: f.byLabel, atISO: f.atISO, href: f.href } : x)));
     };
@@ -121,7 +121,7 @@ export function MonthBriefPanel({ mode, monthId, files: initialFiles, notes: ini
         {canEdit ? (
           <>
             <textarea id={`brief-notes-${monthId}`} value={text} onChange={(e) => setText(e.target.value)} maxLength={BRIEF_NOTES_MAX} rows={4}
-              placeholder={mode === "staff" ? "Paste their plan for the month — topics, scripts, shots." : "Paste your plan for the month — topics, scripts, shots you want."}
+              placeholder={mode === "staff" ? "Paste their plan for the month — topics, scripts, shots." : "Paste your plan for the month: topics, scripts, shots you want."}
               className={`mt-1 block w-full rounded-xl border border-border bg-surface px-3 py-2 text-base sm:text-sm ${focusRing}`} />
             <button type="button" onClick={saveNotes} disabled={busy || text === savedText} className={`mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 font-semibold text-white disabled:opacity-50 ${focusRing}`}>
               Save notes

@@ -55,6 +55,8 @@ export type VideoDetailData = {
   readOnly: boolean;
   /** Set only on the emailed-link seat, which can never approve: where to go to get a seat that can. */
   signInHref: string | null;
+  /** A1 (Oct 13 2026): the plain shared link. It watches; signing in is how to approve or request changes. */
+  linkVisitor?: boolean;
   /** 9.6b: the current version is still in its 1080p pass — nothing to play yet. */
   finishing?: boolean;
 };
@@ -158,7 +160,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
       )}
 
       {nothingAtAll ? (
-        <Empty icon={Clapperboard}>No videos yet. They land here once each session is filmed and edited. <Link href={href("schedule")} className="font-medium text-brand hover:underline">Book your session</Link> to get the first one moving.</Empty>
+        <Empty icon={Clapperboard}>No videos yet. They land here once each session is filmed and edited. <Link href={href("plan")} className="font-medium text-brand hover:underline">Book your filming in Your Month</Link> to get the first one moving.</Empty>
       ) : view.matched === 0 ? (
         <Empty icon={Search}>
           {view.q ? <>Nothing matches &ldquo;{view.q}&rdquo;{view.st !== "all" ? ` under “${filterLabel}”` : ""}. <Link href={q({})} className="font-medium text-brand hover:underline">Show every video</Link></> : <>No videos under &ldquo;{filterLabel}&rdquo; right now. <Link href={q({})} className="font-medium text-brand hover:underline">Show every video</Link></>}
@@ -235,7 +237,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           {d.video.kind !== "PROGRAM" && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">{d.video.kind === "LISTING" ? "Listing video, not part of your monthly program" : d.video.kind === "EXTRA" ? "Extra" : d.video.kind.toLowerCase()}</span>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
-          {d.video.pillarName && <span>Pillar: {d.video.pillarName}</span>}
+          {d.video.pillarName && <span>{d.video.pillarName}</span>}
           {d.video.section === "PREVIOUS" ? <span>Previous content</span> : d.video.monthKey && <span>{monthLabel(d.video.monthKey)}</span>}
           {d.video.section !== "PREVIOUS" && d.video.filmedAtISO && <span className="inline-flex items-center gap-1"><Camera className="size-3" aria-hidden /> Filmed {fmtShort(d.video.filmedAtISO)}</span>}
           {d.video.deliveredAtISO && <span>Delivered {fmtShort(d.video.deliveredAtISO)}</span>}
@@ -249,8 +251,8 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           <div className="mt-2"><LoadFailed what="this video's versions" /></div>
         ) : hasCut ? (
           <div className="mt-2">
-            {d.perms.request && !d.readOnly && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note. Send them all as one change request, or approve this version.</p>}
-            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} />
+            {d.perms.request && !d.readOnly && !d.linkVisitor && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note. Send them all as one change request, or approve this version.</p>}
+            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} />
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>

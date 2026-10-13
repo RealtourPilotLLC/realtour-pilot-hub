@@ -16,7 +16,7 @@ import {
   EXTRA_ROUND_ROUTES_IMMEDIATELY, URGENT_CONTACT, type ReviewPanel,
 } from "@/lib/reviewWindows";
 import { clip } from "@/lib/text";
-import { TEXT_KYLE } from "@/lib/portalWords";
+import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 import { attributeLines, type Requester } from "@/lib/reviewAttribution";
 
 // ---------------------------------------------------------------------------
@@ -492,11 +492,11 @@ export async function supersedeEarlierRounds(enrollmentId: string, sub: { id: st
 /** What a lost race says, by the state the window is in now. */
 function stateWords(state: string | undefined): string {
   switch (state) {
-    case "APPROVED": return "This version was just approved — nothing else to send on it.";
+    case "APPROVED": return "This version was just approved, so there's nothing else to send on it.";
     case "AUTO_APPROVED": return `This version was approved when its review window closed. If something still needs changing, text or call us at ${URGENT_CONTACT}.`;
-    case "CHANGES_REQUESTED": return "You've asked for changes on this version — approve the new version when it arrives.";
-    case "SUPERSEDED": case "REMOVED": return "A newer version of this video has replaced this one — review the new version instead.";
-    default: return "Someone else acted on this version a moment ago — reload to see where it stands.";
+    case "CHANGES_REQUESTED": return "You've asked for changes on this version. Approve the new version when it arrives.";
+    case "SUPERSEDED": case "REMOVED": return "A newer version of this video has replaced this one. Review the new version instead.";
+    default: return "Someone else acted on this version a moment ago. Reload to see where it stands.";
   }
 }
 
@@ -519,7 +519,7 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
   // approval on an old cut can never approve its replacement (spec §8).
   const history = await cutHistory(viewer, submissionId);
   const me = history.find((h) => h.submissionId === submissionId);
-  if (!me || !me.isCurrent) return { ok: false, message: "A newer version of this video has replaced this one — approve the new version instead." };
+  if (!me || !me.isCurrent) return { ok: false, message: "A newer version of this video has replaced this one. Approve the new version instead." };
   // A genuine prior approval is an idempotent receipt, even if a later
   // finishing attempt is held or its file lookup is temporarily unavailable.
   // An orphan claimed window still needs a new approval and passes the gate.
@@ -529,20 +529,20 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
       where: { submissionId, enrollmentId: viewer.enrollment.id, decision: "APPROVE", receiptState: { not: "SUPERSEDED" } },
       orderBy: { decidedAt: "desc" }, select: { id: true, basis: true },
     });
-    if (live) return { ok: true, decisionId: live.id, duplicate: true, message: live.basis === "AUTO_EXPIRY" ? "Already approved — this version was approved when its review window closed." : "Already approved — this version is marked as yours." };
+    if (live) return { ok: true, decisionId: live.id, duplicate: true, message: live.basis === "AUTO_EXPIRY" ? "Already approved. This version was approved when its review window closed." : "Already approved. This version is marked as yours." };
   }
   // Use the same final-file rule as the client player and download. Refuse
   // before ensureWindow/claimWindow: a held render or a failed read must not
   // claim a window or mint the approval that would itself unlock the export.
   try {
     if ((await clientCutFiles([submissionId])).get(submissionId)?.kind === "finishing") {
-      return { ok: false, message: "This video is still being finished — approve it when the final version is ready." };
+      return { ok: false, message: "This video is still being finished. Approve it when the final version is ready." };
     }
   } catch {
-    return { ok: false, message: "We couldn't confirm this video's final file — try again in a minute. Nothing was approved." };
+    return { ok: false, message: "We couldn't confirm this video's final file. Try again in a minute. Nothing was approved." };
   }
   const open = await prisma.portalComment.findMany({ where: { submissionId, enrollmentId: viewer.enrollment.id, status: "OPEN", parentId: null }, select: { id: true } });
-  if (open.length > 0 && choice === "NONE") return { ok: false, message: "You have notes on this video — tell us whether to send them along or set them aside, then approve." };
+  if (open.length > 0 && choice === "NONE") return { ok: false, message: "You have notes on this video. Tell us whether to send them along or set them aside, then approve." };
   const staff = viewer.actor.kind === "STAFF";
   const now = new Date();
 
@@ -561,14 +561,14 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
         where: { submissionId, enrollmentId: viewer.enrollment.id, decision: "APPROVE", receiptState: { not: "SUPERSEDED" } },
         orderBy: { decidedAt: "desc" }, select: { id: true, basis: true },
       });
-      if (live) return { ok: true, decisionId: live.id, duplicate: true, message: live.basis === "AUTO_EXPIRY" ? "Already approved — this version was approved when its review window closed." : "Already approved — this version is marked as yours." };
+      if (live) return { ok: true, decisionId: live.id, duplicate: true, message: live.basis === "AUTO_EXPIRY" ? "Already approved. This version was approved when its review window closed." : "Already approved. This version is marked as yours." };
       orphan = true;
       if (w.state === "AUTO_APPROVED" && !(await claimWindow(w.id, ["AUTO_APPROVED"], "APPROVED", { decisionId: null }, { closedAt: now, closedReason: staff ? "STAFF" : "CLIENT" }))) {
         const again = await prisma.contentReviewWindow.findUnique({ where: { id: w.id }, select: { state: true } });
         return { ok: false, message: stateWords(again?.state) };
       }
     } else if (w.state === "SUPERSEDED" || w.state === "REMOVED") {
-      return { ok: false, message: "A newer version of this video has replaced this one — approve the new version instead." };
+      return { ok: false, message: "A newer version of this video has replaced this one. Approve the new version instead." };
     } else if (w.state === "CHANGES_REQUESTED") {
       // The client asked for changes on THIS version; approving it too would
       // put both verdicts on one cut. Staff may set the request aside.
@@ -581,7 +581,7 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     } else if (!(await claimWindow(w.id, ["OPEN"], "APPROVED", {}, { closedAt: now, closedReason: staff ? "STAFF" : "CLIENT" }))) {
       const again = await prisma.contentReviewWindow.findUnique({ where: { id: w.id }, select: { state: true, decisionId: true } });
       if (again?.state === "APPROVED" || again?.state === "AUTO_APPROVED") {
-        return { ok: true, decisionId: again.decisionId ?? "", duplicate: true, message: "Already approved — this version is marked as yours." };
+        return { ok: true, decisionId: again.decisionId ?? "", duplicate: true, message: "Already approved. This version is marked as yours." };
       }
       return { ok: false, message: stateWords(again?.state) };
     }
@@ -597,7 +597,7 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     // A throw is a failure like any other: the window must not be left
     // claimed APPROVED with nothing behind it.
     console.error("[clientDecisions] approval did not record", submissionId, e);
-    r = { ok: false, message: "That didn't save — try again." };
+    r = { ok: false, message: "That didn't save. Please try again." };
   }
   if (!r.ok) {
     // Give the window back: nothing was decided.
@@ -617,15 +617,15 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     // The client's request had flipped the cut out of APPROVED; it stands again.
     await prisma.reviewSubmission.updateMany({ where: { id: submissionId, status: "CHANGES_REQUESTED", clientRequestedAt: { not: null } }, data: { status: "APPROVED" } }).catch(() => {});
   }
-  if (r.duplicate) return { ok: true, decisionId: r.decisionId, duplicate: true, message: "Already approved — this version is marked as yours." };
+  if (r.duplicate) return { ok: true, decisionId: r.decisionId, duplicate: true, message: "Already approved. This version is marked as yours." };
   // Notes sent along with the approval: Kyle's task, written now so it can't
   // be lost; his bell and Slack follow in the background (the portal action).
   if (choice === "INCLUDE" && open.length) await fileApprovalNotesTask(r.decisionId).catch((e) => console.error("[clientDecisions] approval notes task", r.decisionId, e));
   return {
     ok: true, decisionId: r.decisionId, duplicate: false,
     message: overridden !== null
-      ? "Approved on the client's behalf — their change request on this version is set aside. Close the editor's revision card if the work should stop."
-      : "Approved — this exact version is now marked as yours. If a new cut ever replaces it, that one will ask for its own approval.",
+      ? "Approved on the client's behalf. Their change request on this version is set aside. Close the editor's revision card if the work should stop."
+      : "Approved. This exact version is now marked as yours. If a new cut ever replaces it, that one will ask for its own approval.",
   };
 }
 
@@ -703,7 +703,7 @@ export async function recordClientApproval(input: {
   } catch {
     const again = await prisma.clientDecision.findUnique({ where: { dedupeKey }, select: { id: true } });
     if (again) return { ok: true, decisionId: again.id, duplicate: true };
-    return { ok: false, message: "That didn't save — try again." };
+    return { ok: false, message: "That didn't save. Please try again." };
   }
   // The caches: the cut's approval pointer and the logical video's.
   await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { clientApprovedDecisionId: decision.id } }).catch(() => {});
@@ -768,18 +768,18 @@ export async function requestChangesOnCut(
   // A retried submit of an attempt that already landed: the same receipt, nothing written.
   if (requestKey) {
     const seen = await prisma.clientDecision.findFirst({ where: { submissionId, enrollmentId: viewer.enrollment.id, requestKey }, select: { id: true } });
-    if (seen) return { ok: true, decisionId: seen.id, duplicate: true, message: "We already have this request — it's with your editor." };
+    if (seen) return { ok: true, decisionId: seen.id, duplicate: true, message: "We already have this request. It's with your editor." };
     const seenAdd = await prisma.revisionBrief.findFirst({ where: { submissionId, sourceDetail: { endsWith: `:rk:${requestKey}` } }, select: { decisionId: true } });
-    if (seenAdd) return { ok: true, decisionId: seenAdd.decisionId, duplicate: true, message: "Added to your open request — your editor has been notified." };
+    if (seenAdd) return { ok: true, decisionId: seenAdd.decisionId, duplicate: true, message: "Added to your open request. Your editor has been notified." };
   }
   const history = await cutHistory(viewer, submissionId);
   const me = history.find((h) => h.submissionId === submissionId);
-  if (!me || !me.isCurrent) return { ok: false, message: "A newer version of this video has replaced this one — review the new version instead." };
+  if (!me || !me.isCurrent) return { ok: false, message: "A newer version of this video has replaced this one. Review the new version instead." };
 
   const staff = viewer.actor.kind === "STAFF";
   const owner = { enrollmentId: viewer.enrollment.id, clientId: viewer.enrollment.clientId };
   const w = await ensureWindow(submissionId, owner);
-  if (!w) return { ok: false, message: `That version isn't open for review — ${TEXT_KYLE} and we'll sort it out.` };
+  if (!w) return { ok: false, message: `That version isn't open for review. ${TEXT_KYLE_START} and we'll sort it out.` };
   // R03 (Sep 28 2026): THIS client's policy. The late refusal (d) and the
   // extra-round fee (e) follow from it, so a client outside the program
   // rollout — or a window released before they joined it — is never refused
@@ -884,7 +884,7 @@ export async function requestChangesOnCut(
       return addToOpenRequest(ctx, w.id);
     }
     await giveBack(null);
-    return { ok: false, message: `That didn't send — try again in a moment, or ${TEXT_KYLE}.` };
+    return { ok: false, message: `That didn't send. Please try again in a moment, or ${TEXT_KYLE}.` };
   }
   // The pointer is written only onto the window THIS request holds. A request
   // that stalled past the repair's two minutes finds its window given back
@@ -929,7 +929,7 @@ export async function requestChangesOnCut(
   if (!round) {
     await withdraw(decision.id);
     await giveBack(decision.id);
-    return { ok: false, message: `That didn't send — try again in a moment, or ${TEXT_KYLE}.` };
+    return { ok: false, message: `That didn't send. Please try again in a moment, or ${TEXT_KYLE}.` };
   }
   // A request stamped before the deadline can land after the sweep handed the
   // window to the office: its "no answer" card is answered (R04).
@@ -980,7 +980,7 @@ export async function requestChangesOnCut(
   const whenReady = (await clientHearsWhenReady(viewer.enrollment.clientId)) ? "We'll let you know when the new version is ready." : "Kyle will reach out when the new version is ready.";
   return {
     ok: true, decisionId: decision.id, duplicate: false,
-    message: `${routed ? "Sent to the editor." : "Received — it's on its way to your editor."} ${whenReady} Your request is on record below.${feeLine}`,
+    message: `${routed ? "Sent to the editor." : "Received. It's on its way to your editor."} ${whenReady} Your request is on record below.${feeLine}`,
   };
 }
 
@@ -1116,12 +1116,12 @@ async function addToOpenRequest(ctx: RequestCtx, windowId: string): Promise<Requ
       const made = await prisma.portalComment.create({ data: { submissionId, projectId: ctx.full.projectId, enrollmentId: viewer.enrollment.id, timeSec: null, body: ctx.overall, status: "OPEN", ...stamp(viewer) }, select: { id: true } }).catch(() => null);
       if (made) await recordLinkComment(viewer, made.id);
     }
-    return { ok: true, decisionId: null, duplicate: true, message: "Received — it goes with your request." };
+    return { ok: true, decisionId: null, duplicate: true, message: "Received. It goes with your request." };
   }
   const d = await prisma.clientDecision.findUnique({ where: { id: w.decisionId } });
   if (!d || d.decision !== "REQUEST_CHANGES") return { ok: false, message: stateWords(w.state) };
   if (ctx.requestKey && d.requestKey === ctx.requestKey) {
-    return { ok: true, decisionId: d.id, duplicate: true, message: "We already have this request — it's with your editor." };
+    return { ok: true, decisionId: d.id, duplicate: true, message: "We already have this request. It's with your editor." };
   }
   if (viewer.actor.kind !== "STAFF") {
     const recent = await prisma.revisionBrief.findMany({
@@ -1148,7 +1148,7 @@ async function addToOpenRequest(ctx: RequestCtx, windowId: string): Promise<Requ
     kind: a.kind === "STAFF" ? "CLIENT_STAFF" : "CLIENT",
     userId: a.kind === "CLIENT" ? a.clientUserId : a.kind === "STAFF" ? a.staffUserId : null,
   });
-  return { ok: true, decisionId: d.id, duplicate: true, message: "Added to your open request — your editor has been notified." };
+  return { ok: true, decisionId: d.id, duplicate: true, message: "Added to your open request. Your editor has been notified." };
 }
 
 async function raiseAddendum(

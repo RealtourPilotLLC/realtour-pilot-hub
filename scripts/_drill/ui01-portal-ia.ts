@@ -425,7 +425,8 @@ async function main() {
 
     // Finding 10 — the card the client just acted on stays; a just-answered script stays a card.
     const tb = read("src/components/portal/TopicBank.tsx");
-    c.ok("TopicBank keeps the card the client just acted on (v2), until the filter or month changes", /const justActed = \(t: PortalTopic\) => !!msg\?\.topicId && msg\.topicId === t\.id;/.test(tb) && /!t\.scriptedNotFilmed && \(justActed\(t\) \|\|/.test(tb) && /setFilterTouched\(true\); setMsg\(null\);/.test(tb));
+    // C14 (Oct 13 2026): no filter chips and no "Scripted, not filmed" strip; a carried script sits in its month's list.
+    c.ok("TopicBank keeps the card the client just acted on (v2), until the month changes", /const justActed = \(t: PortalTopic\) => !!msg\?\.topicId && msg\.topicId === t\.id;/.test(tb) && /justActed\(t\) \|\| \(view === "month"/.test(tb) && !/setFilterTouched/.test(tb) && /setMonthId\(m\.id\); setMsg\(null\);/.test(tb));
     const tNow = await portal.portalTopics(testOwner.enrollment);
     const pmNow = home.planModel(tNow, monthKey);
     const pmLater = home.planModel(tNow, monthKey, new Date(Date.now() + home.JUST_DECIDED_MS + 60_000));
@@ -433,7 +434,7 @@ async function main() {
     c.ok("…and My Plan's Scripts view renders those as cards in the same keyed list", /plan\.justDecided/.test(read("src/components/portal/tabs/PlanTab.tsx")) && /cards\.map\(\(t\) =>/.test(read("src/components/portal/tabs/PlanTab.tsx")));
 
     // Finding 15 — the bank's chips are the bank's.
-    c.ok("the v2 bank offers All · Suggested · Filmed only, and counts only what is in the bank", /BANK_FILTER_KEYS: readonly \(PortalTopicState \| "ALL"\)\[\] = \["ALL", "SUGGESTED", "FILMED"\]/.test(tb) && /if \(view === "bank" && \(t\.scriptedNotFilmed \|\| !inBank\(t, openIds\)\)\) continue;/.test(tb) && /chosenThisMonth/.test(tb));
+    c.ok("the v2 bank keeps its bank-only filter keys (an address filter lands on All), shows no filter chips (C14), and points at the month's chosen topics", /BANK_FILTER_KEYS: readonly \(PortalTopicState \| "ALL"\)\[\] = \["ALL", "SUGGESTED", "FILMED"\]/.test(tb) && /!BANK_FILTER_KEYS\.includes\(filter\) \? "ALL" : filter/.test(tb) && /chosenThisMonth/.test(tb) && !/aria-label="Filter topics"/.test(tb));
 
     // Findings 13 / 16 — the v2 pages' words and weight.
     const sched = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "schedule" } });
@@ -442,13 +443,14 @@ async function main() {
     c.ok("v2 Schedule names 'Your Month', not a 'Video Topics' page that is not in the nav, and routes the choice there", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "Your Month" && find(sched, "ScheduleTab")[0]?.props.routeHref === "?tab=plan#step-route");
     const schedReal = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
     c.ok("…and a real client's Schedule says the same (the old 'Video Topics' wording went with the old layout)", find(schedReal, "ScheduleTab")[0]?.props.topicsLabel === "Your Month");
-    const hv2 = find((await homeOf(testOwner)).tree, "AppointmentCards", new Set(["HomeV2"]))[0];
-    c.ok("Home's appointment cards are quiet (links, not two more orange buttons) and point at Your Month", hv2?.props.plan?.label === "Open Your Month" && hv2.props.plan?.href === "?tab=plan" && !/bookCls = quiet/.test(read("src/components/portal/tabs/HomeTab.tsx")) && /const bookCls = "mt-1\.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline/.test(read("src/components/portal/tabs/HomeTab.tsx")));
+    const hv2 = find((await homeOf(testOwner)).tree, "AppointmentCards", new Set(["HomeV2"]));
+    // C14 (Oct 13 2026): Home has no appointment cards; the month card lists what is coming up and links to Schedule.
+    c.ok("Home has no appointment cards (C14): the month card's coming-up lines link to Schedule, never a booking button", hv2.length === 0 && !/function AppointmentCards/.test(read("src/components/portal/tabs/HomeTab.tsx")) && /href=\{href\("schedule"\)\}/.test(read("src/components/portal/tabs/HomeTab.tsx")) && !/Book the session/.test(read("src/components/portal/tabs/HomeTab.tsx")));
     c.ok("the video-change hint names no page (v1 'My Videos' / v2 'Content Library')", !/My Videos|Content Library/.test((await import("@/lib/programMessages")).VIDEO_CHANGES_HINT));
     const team = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "team" } });
     const st = find(team, "SettingsTab")[0]?.props.d;
     c.ok("v2 Settings & Team links 'Brand Profile' (the nav's word) with Kyle's line, not 'text us'", st?.profileLabel === "Brand Profile" && /Kyle at \(215\) 645-4889/.test(st?.contactLine ?? ""), JSON.stringify({ l: st?.profileLabel, c: st?.contactLine }));
-    c.ok("v2 video page calls the pillar a Pillar", /<span>Pillar: \{d\.video\.pillarName\}<\/span>/.test(read("src/components/portal/tabs/VideosTab.tsx")) && !/Topic: \{d\.video\.pillarName\}/.test(read("src/components/portal/tabs/VideosTab.tsx")));
+    c.ok("v2 video page shows the topic area without a 'Pillar:' label (C14)", /<span>\{d\.video\.pillarName\}<\/span>/.test(read("src/components/portal/tabs/VideosTab.tsx")) && !/Pillar: /.test(read("src/components/portal/tabs/VideosTab.tsx")));
 
     // Finding 20 — the month card marks extras.
     const hm = read("src/components/portal/tabs/HomeTab.tsx");

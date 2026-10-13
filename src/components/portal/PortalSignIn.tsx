@@ -85,13 +85,12 @@ export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?
           )}
           {!emailSignIn && !done && (
             <p className="mt-4 rounded-xl border border-border bg-surface px-3 py-2.5 text-center text-sm text-muted">
-              Email sign-in isn&rsquo;t switched on yet. Reply to any text or email from us and we&rsquo;ll get you in.
+              Email sign-in isn&rsquo;t ready for your account yet. Reply to any text or email from us and we&rsquo;ll get you in.
             </p>
           )}
           {attempt.held && (
             <div role="alert" className="mt-4 space-y-3 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm leading-relaxed">
-              <p>We couldn’t confirm your sign-in request. It may already have been processed. Check your inbox or open your portal if you already signed in. Reply to any text or email from us and ask our team to check before requesting another link.</p>
-              <p>This tab holds repeat requests. Reloading does not confirm what happened; unsaved email input is kept only while this form stays open.</p>
+              <p>We couldn’t confirm your sign-in request and it may already have been processed, so check your inbox before asking for another link.</p>
               <ActionLink href="/portal/me">Open your portal</ActionLink>
             </div>
           )}

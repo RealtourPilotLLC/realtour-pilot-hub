@@ -1,22 +1,21 @@
 import Link from "next/link";
-import { CalendarClock, Camera, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Clock, Download, ListChecks, MapPin, PenLine, Sparkles, Video } from "lucide-react";
+import { CalendarClock, Camera, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Clock, ListChecks, Sparkles, Video } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import { homeSessionView, readOnlyNotice, type PortalPlanning, type PortalScheduleMonth, type PortalTopicsData } from "@/lib/portal";
 import type { LibraryAttention, VideoListRow } from "@/lib/contentVideos";
 import type { ClientMonthProgress } from "@/lib/monthProgress";
 import type { HomeAction } from "@/lib/portalHome";
 import { awaitingScript } from "@/lib/portalHome";
-import { SCRIPT_WORDS, TOPIC_WORDS, VIDEO_WORDS, planStepWord } from "@/lib/portalWords";
-import { Card, CardTitle, CountBadge, StatusChip, fmtDate, fmtShort, fmtTime, tzShort } from "@/components/portal/ui";
-import { cn } from "@/lib/utils";
-import { SetupCard, type SetupCardData } from "@/components/portal/PortalProfile";
+import { SCRIPT_WORDS, TOPIC_WORDS, planStepWord } from "@/lib/portalWords";
+import { Card, CardTitle, CountBadge, StatusChip, fmtDate, fmtTime, tzShort } from "@/components/portal/ui";
+import type { SetupCardData } from "@/components/portal/PortalProfile";
 
 // ---------------------------------------------------------------------------
-// HOME answers four questions (spec §1): what to do next, when the two
-// appointments are, what we're creating this month, which videos need review
-// or are ready. Everything is real data or an honest "couldn't load"; an empty
-// state names the next action. The old layout's HomeTab was removed with that
-// layout (Oct 6 2026); HomeV2 below is the Home every client sees.
+// HOME answers three questions (spec §1, simplified Oct 13 2026): what to do
+// next, where this month stands, and when the next call and filming are.
+// Everything is real data or an honest "couldn't load"; an empty state names
+// the next action. The old layout's HomeTab was removed with that layout
+// (Oct 6 2026); HomeV2 below is the Home every client sees.
 // ---------------------------------------------------------------------------
 
 export type HomeData = {
@@ -45,8 +44,9 @@ export type HomeData = {
   /** WHICH read-only state, so this tab and the banner above it never say
    *  different things about the same account (review blocker, Sep 17). */
   readOnlyState: "PAUSED" | "ENDED" | null;
-  /** CP-06: the account-setup checklist (derived, never stored as done), each
-   *  item with its link already built. Absent for a read-only viewer. */
+  /** CP-06: the account-setup checklist (derived, never stored as done). Home
+   *  ranks it as a next-step action (FINISH_SETUP); the checklist itself lives
+   *  on the Brand Profile page. Absent for a read-only viewer. */
   setup?: SetupCardData | null;
   /** CP-13: replies on the program conversation this viewer has not opened. */
   messages?: { unread: number; href: string } | null;
@@ -54,150 +54,19 @@ export type HomeData = {
   brief?: { files: number; notes: boolean; href: string } | null;
 };
 
-/**
- * The two appointment cards — strategy call and content session(s), from the
- * same derivations as the Schedule page.
- *
- * Home has ONE dominant action, so the "Book the call" / "Book the session"
- * links here are drawn as quiet links, never more filled buttons beside it
- * (Sep 24). `plan` is Your Month: where the month's questions are answered
- * and the planning route is chosen, and what to call it. (The old layout's
- * loud buttons and "Video Topics" wording went with it, Oct 6 2026.)
- */
-export function AppointmentCards({ d, href, plan }: {
-  d: HomeData; href: (tab: string, extra?: string) => string;
-  /** Where the month's questions are answered, and what to call it. */
-  plan: { href: string; label: string };
-}) {
-  const bookCls = "mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
-  const p = d.planning;
-  const tz = p?.timezone ?? "America/New_York";
-  // Each time is labelled with its own date's zone (EST in late November),
-  // never today's (Sep 28).
-  const zoneOf = (iso: string) => tzShort(tz, new Date(iso));
-  const sessionRequests = d.schedule?.requests.filter((r) => ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"].includes(r.status)) ?? [];
-  const sv = homeSessionView(d.progress, d.schedule, { canBook: d.perms.session, readOnly: d.readOnly });
-  const pendingAsks = sessionRequests.filter((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED");
-  const locationFor = (startISO: string | null) =>
-    sessionRequests.find((r) => r.locationText && r.slotStartISO && startISO && r.slotStartISO === startISO)?.locationText
-      ?? (sv.cards.length === 1 ? sessionRequests.find((r) => r.locationText)?.locationText : null) ?? null;
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      <Card>
-        <CardTitle icon={CalendarClock}>Strategy call</CardTitle>
-        {d.planningFailed ? (
-          <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load this month&rsquo;s plan. Refresh to try again.</p>
-        ) : !p ? (
-          <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
-        ) : p.clientPlanned && (p.callStatus === "NOT_REQUIRED" || p.callMode === "NOT_INCLUDED") ? (
-          <p className="mt-2 text-sm text-muted">Your program doesn&rsquo;t include a strategy call.</p>
-        ) : p.planningMode === "WRITTEN" && !p.clientPlanned && p.officePlanned ? (
-          // Oct 12 2026: the office planned the month by writing its scripts.
-          <div className="mt-2 text-sm">
-            <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> No call this month</div>
-            <p className="mt-0.5 text-xs text-muted">We planned {monthLabel(p.monthKey)} and wrote your scripts. You&rsquo;ll review them in Your Month.</p>
-            <Link href={plan.href} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">{plan.label} <ChevronRight className="size-3" /></Link>
-          </div>
-        ) : p.planningMode === "WRITTEN" && !p.clientPlanned ? (
-          <div className="mt-2 text-sm">
-            <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing</div>
-            <p className="mt-0.5 text-xs text-muted">{p.answersSubmitted ? "Your answers are in. We're preparing the month." : "No call this month. Answer the questions in Your Month."}</p>
-            <Link href={plan.href} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">{plan.label} <ChevronRight className="size-3" /></Link>
-          </div>
-        ) : p.callStatus === "COMPLETED" ? (
-          <div className="mt-2 text-sm">
-            <div className="flex items-center gap-1.5 font-medium text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtShort(p.callAtISO, tz)}` : ""}</div>
-            <p className="mt-0.5 text-xs text-muted">{monthLabel(p.monthKey)} is planned.</p>
-          </div>
-        ) : p.callStatus === "SCHEDULED" && p.callAtISO ? (
-          <div className="mt-2 text-sm">
-            <div className="rounded-md bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">Booked</div>
-            <div className="mt-1 font-medium">{fmtDate(p.callAtISO, tz)}</div>
-            <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {zoneOf(p.callAtISO)}</div>
-            {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <span className="mt-1 block text-xs text-muted-2">Video call. The link is in your calendar invite.</span>}
-            {!d.readOnly && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Need to move it? →</Link>}
-          </div>
-        ) : p.callStatus === "NOT_REQUIRED" ? (
-          <p className="mt-2 text-sm text-muted">Your program doesn&rsquo;t include a strategy call.</p>
-        ) : p.callStatus === "SKIPPED" ? (
-          // SKIPPED = no call on THIS month, not "no calls on this program".
-          // A card headed "Strategy call" that offers no way to get one is a
-          // dead end; the same state on the Schedule tab keeps the link.
-          <div className="mt-2 text-sm">
-            <p className="text-muted">No call this month.</p>
-            {!d.readOnly && <a href={d.bookingUrl} target={/^https?:/.test(d.bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">Book one anyway <ChevronRight className="size-3" /></a>}
-          </div>
-        ) : (
-          <div className="mt-2 text-sm">
-            <div className="text-muted">Not booked yet</div>
-            {!d.readOnly && <a href={d.bookingUrl} target={/^https?:/.test(d.bookingUrl) ? "_blank" : undefined} rel="noopener noreferrer" className={bookCls}>Book the call <ChevronRight className="size-3.5" /></a>}
-            {/* The route is chosen in Your Month (§6.4). */}
-            {p.noCallEligible && !d.readOnly && <Link href={`${plan.href}#step-route`} className="mt-1 block text-xs text-muted hover:underline">or choose your topics here →</Link>}
-          </div>
-        )}
-      </Card>
-      {d.scheduleFailed || (!d.progress && d.countsFailed) ? (
-        <Card>
-          <CardTitle icon={Camera}>Content session</CardTitle>
-          <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your filming sessions. Refresh to try again.</p>
-        </Card>
-      ) : !d.schedule && sv.cards.length === 0 ? (
-        <Card>
-          <CardTitle icon={Camera}>Content session</CardTitle>
-          <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
-        </Card>
-      ) : (
-        <>
-          {sv.cards.map((c, i) => {
-            const loc = c.state === "BOOKED" ? locationFor(c.startsAtISO) : null;
-            return (
-              <Card key={i}>
-                <CardTitle icon={Camera}>{sv.required > 1 ? `Content session ${i + 1} of ${sv.required}` : "Content session"}</CardTitle>
-                <div className="mt-2 text-sm">
-                  <div className={cn("inline-block rounded-md px-1.5 py-0.5 text-[10px] font-semibold", c.state === "BOOKED" || c.state === "FILMED" ? "bg-success-soft text-success" : "bg-brand-soft text-brand")}>{c.label}</div>
-                  {c.startsAtISO && <div className="mt-1 font-medium">{fmtDate(c.startsAtISO, tz)}</div>}
-                  {c.startsAtISO && <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(c.startsAtISO, tz)} {zoneOf(c.startsAtISO)}</div>}
-                  {c.note && <p className="mt-0.5 text-xs text-muted">{c.note}</p>}
-                  {loc && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {loc}</div>}
-                  {c.state === "BOOKED" && !d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Reschedule or cancel →</Link>}
-                </div>
-              </Card>
-            );
-          })}
-          {sv.missing > 0 && (
-            <Card>
-              <CardTitle icon={Camera}>{sv.required > 1 ? (sv.missing === 1 ? `Content session ${sv.required} of ${sv.required}` : `Content sessions: ${sv.missing} of ${sv.required} to book`) : "Content session"}</CardTitle>
-              {pendingAsks.length ? (
-                <div className="mt-2 text-sm">
-                  <div className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">{pendingAsks[0].label}</div>
-                  {pendingAsks[0].slotStartISO && <div className="mt-1 font-medium">{fmtDate(pendingAsks[0].slotStartISO, tz)} · {fmtTime(pendingAsks[0].slotStartISO, tz)} {zoneOf(pendingAsks[0].slotStartISO)}</div>}
-                  {pendingAsks[0].locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {pendingAsks[0].locationText}</div>}
-                  {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Change or cancel →</Link>}
-                </div>
-              ) : !d.schedule ? (
-                <p className="mt-2 text-sm text-muted">Your next program month isn&rsquo;t open yet.</p>
-              ) : (
-                <div className="mt-2 text-sm">
-                  <div className="text-muted">{d.schedule.locked ? d.schedule.reason : "Not booked yet"}</div>
-                  {sv.offerBooking && <Link href={href("schedule")} className={bookCls}>Book the session <ChevronRight className="size-3.5" /></Link>}
-                  {d.schedule.locked && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">See scheduling →</Link>}
-                </div>
-              )}
-            </Card>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 // ===========================================================================
 // HOME (UI-01, Sep 24 2026; the name HomeV2 is historical — it is the only
 // Home since Oct 6 2026). ONE next step, big, with one button; everything
-// else that is waiting folded beneath it; the setup checklist until it is
-// done; this month; the appointments; what is ready to download. The step
-// comes from lib/portalHome.homeActions, which only ranks facts the page
-// already loaded.
+// else that is waiting folded beneath it; then one short card about this
+// month. The step comes from lib/portalHome.homeActions, which only ranks
+// facts the page already loaded.
+//
+// C14 (Oct 13 2026, Jordan: simplify the portal). Home used to repeat itself:
+// the setup checklist, two appointment cards, "Ready to download" and the
+// month card's "waiting on your review" each said again what a next-step
+// action already said. They are gone; each to-do appears ONCE (the next step,
+// or "Also waiting on you"), and the month card says where the month stands
+// and when the next call and filming are, linking to Schedule's list.
 // ===========================================================================
 
 const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -210,7 +79,6 @@ export function HomeV2({ d, actions, href }: {
 }) {
   const { primary, more } = actions;
   const notice = d.readOnly ? readOnlyNotice(d.readOnlyState ?? "ENDED") : null;
-  const readyRows = d.videos?.rows.filter((v) => (v.state === "APPROVED" || v.state === "DELIVERED") && v.downloadable) ?? [];
   return (
     <div className="mt-6 space-y-4">
       <h1 className="text-2xl font-semibold tracking-tight">Hi {d.first}</h1>
@@ -239,7 +107,8 @@ export function HomeV2({ d, actions, href }: {
         )}
       </section>
 
-      {/* 2. Everything else that is waiting — folded, never hidden. */}
+      {/* 2. Everything else that is waiting — folded, never hidden. Keyed by
+          kind AND address: two actions of one kind stay two rows. */}
       {more.length > 0 && (
         <details className="group rounded-2xl border border-border bg-surface/70 px-4 backdrop-blur">
           <summary className={`flex min-h-12 cursor-pointer list-none items-center gap-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${focusRing}`}>
@@ -248,7 +117,7 @@ export function HomeV2({ d, actions, href }: {
           </summary>
           <ul className="space-y-1.5 pb-3">
             {more.map((a) => (
-              <li key={a.kind}>
+              <li key={`${a.kind}:${a.href}`}>
                 <Link href={a.href} className={`flex min-h-12 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium ${focusRing}`}>
                   <span className="min-w-0 flex-1">{a.title}{a.detail && <span className="block text-xs font-normal text-muted">{a.detail}</span>}</span>
                   <ChevronRight className="size-4 shrink-0 text-muted-2" aria-hidden />
@@ -259,32 +128,41 @@ export function HomeV2({ d, actions, href }: {
         </details>
       )}
 
-      {/* 3. Account setup, until it is complete (CP-06). */}
-      {d.setup && !d.readOnly && !d.setup.complete && <SetupCard d={d.setup} />}
-
-      {/* 4. This month. */}
+      {/* 3. This month, in short. */}
       <MonthCardV2 d={d} href={href} />
+    </div>
+  );
+}
 
-      {/* 5. Appointments. */}
-      <section aria-label="Appointments">
-        <AppointmentCards d={d} href={href} plan={{ href: href("plan"), label: "Open Your Month" }} />
-      </section>
-
-      {/* 6. Ready to download. */}
-      {readyRows.length > 0 && (
-        <Card>
-          <CardTitle icon={Download} action={<Link href={href("videos", "st=approved")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>All approved →</Link>}>Ready to download</CardTitle>
-          <ul className="mt-2 space-y-1">
-            {readyRows.slice(0, 4).map((v) => (
-              <li key={v.id}>
-                <Link href={href("videos", `v=${v.id}`)} className={`flex min-h-11 items-center gap-2 rounded-xl px-2 text-sm hover:bg-surface ${focusRing}`}>
-                  <span className="min-w-0 flex-1 truncate">{v.title}</span> <StatusChip word={VIDEO_WORDS[v.state]} /> <ChevronRight className="size-3.5 shrink-0 text-muted-2" aria-hidden />
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
+/** The month's next call and filming, one line each. Schedule holds the full list. */
+function ComingUp({ d, href }: { d: HomeData; href: (tab: string, extra?: string) => string }) {
+  const p = d.planning;
+  const tz = p?.timezone ?? "America/New_York";
+  const now = new Date().getTime();
+  const zoneOf = (iso: string) => tzShort(tz, new Date(iso));
+  const when = (iso: string) => `${fmtDate(iso, tz)} at ${fmtTime(iso, tz)} ${zoneOf(iso)}`;
+  const rows: { key: string; icon: typeof CalendarClock; text: string; meet?: string | null }[] = [];
+  if (p && p.callStatus === "SCHEDULED" && p.callAtISO && Date.parse(p.callAtISO) > now - 3600_000) {
+    rows.push({ key: "call", icon: CalendarClock, text: `Strategy call: ${when(p.callAtISO)}`, meet: p.meetLink ?? null });
+  }
+  const sv = homeSessionView(d.progress, d.schedule, { canBook: d.perms.session, readOnly: d.readOnly });
+  sv.cards.forEach((c, i) => {
+    if (c.state === "BOOKED" && c.startsAtISO && Date.parse(c.startsAtISO) > now) rows.push({ key: `film-${i}`, icon: Camera, text: `Filming session: ${when(c.startsAtISO)}` });
+  });
+  const asked = d.schedule?.requests.find((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") ?? null;
+  if (sv.requested && asked) rows.push({ key: "asked", icon: Clock, text: `Filming session requested${asked.slotStartISO ? ` for ${when(asked.slotStartISO)}` : ""}. We're confirming it.` });
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <ul className="space-y-1 text-sm">
+        {rows.map((r) => (
+          <li key={r.key} className="flex flex-wrap items-center gap-x-1.5">
+            <r.icon className="size-4 shrink-0 text-brand" aria-hidden /> <span>{r.text}</span>
+            {r.meet && <a href={r.meet} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-medium text-brand hover:underline"><Video className="size-3.5" aria-hidden /> Join on Google Meet</a>}
+          </li>
+        ))}
+      </ul>
+      <Link href={href("schedule")} className={`mt-1 inline-flex min-h-11 items-center gap-1 text-xs font-medium text-brand hover:underline ${focusRing}`}>See what&rsquo;s coming up <ChevronRight className="size-3.5" aria-hidden /></Link>
     </div>
   );
 }
@@ -295,16 +173,19 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
   const selected = d.topics && month ? d.topics.groups.flatMap((g) => g.topics).filter((t) => !t.declined && t.selection?.monthId === month.id) : [];
   const prod = d.progress?.production ?? null;
   const filmedWork = !!d.progress && (d.progress.sessions.cards.some((s) => s.state === "FILMED") || d.progress.production.delivered > 0 || d.progress.production.approved > 0 || d.progress.production.awaitingYou > 0);
+  // Filming already happened but its topics are not on the month's plan yet:
+  // a topic list would read as "choose again", so the card leaves it out.
   const topicHistoryNeedsReview = filmedWork && !!month && (
     month.selected === 0 ||
     selected.length < month.selected
   );
+  // C14: the Library files a client-approved video under "Approved", so it is
+  // never counted as "in production or review" here.
+  const approvedWaiting = prod?.approvedWaiting ?? 0;
+  const inProgress = d.program ? Math.max(0, d.program.total - d.program.delivered - approvedWaiting) : 0;
   return (
     <Card>
       <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
-      {d.planning?.catchUp && d.planning.monthKey === d.monthKey && <p className="mt-1 text-sm font-medium text-brand">{d.planning.catchUp.line}</p>}
-      {/* Oct 12 2026: an over month's session booked this month too (lateSession.ts). */}
-      {d.planning?.late && d.planning.monthKey === d.monthKey && <p className="mt-1 text-sm font-medium text-brand">{d.planning.late.line}</p>}
       {/* A count that failed to load is unknown, not zero. */}
       {d.countsFailed || !d.program ? (
         <p className="mt-2 text-xs text-warning">We couldn&rsquo;t count this month&rsquo;s videos just now. Refresh to try again, or open your Content Library to see them.</p>
@@ -318,25 +199,21 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
             <div className="h-full rounded-full bg-gradient-to-r from-brand to-orange-400" style={{ width: `${Math.min(100, (d.program.delivered / Math.max(1, d.videosOwed)) * 100)}%` }} />
           </div>
           <ul className="mt-2 space-y-0.5 text-xs text-muted">
-            {prod && prod.awaitingYou > 0 && <li><Link href={href("videos", "st=review")} className="font-medium text-brand hover:underline">{prod.awaitingYou === 1 ? "1 video is" : `${prod.awaitingYou} videos are`} waiting on your review</Link></li>}
-            {d.program.total > d.program.delivered && <li>{d.program.total - d.program.delivered} in production or review</li>}
+            {approvedWaiting > 0 && <li>{approvedWaiting} approved</li>}
+            {inProgress > 0 && <li>{inProgress} in production or review</li>}
             {prod && !prod.known && <li>We&rsquo;re still adding this month&rsquo;s delivered videos to your library. This count will catch up shortly.</li>}
           </ul>
         </>
       )}
       {d.planning?.clientPlanned ? (
-        // Oct 8 2026: they plan their own videos — no topics to choose, just their brief.
+        // Oct 8 2026: they plan their own videos. Adding the brief is a next-step action, not repeated here.
         <p className="mt-3 text-sm text-muted">
-          You plan this month&rsquo;s videos.{" "}
-          {d.brief && (d.brief.files > 0 || d.brief.notes)
-            ? <>Your brief is in. <Link href={d.brief.href} className="font-medium text-brand hover:underline">See it or add more</Link>.</>
-            : !d.readOnly && d.perms.suggest ? <Link href={d.brief?.href ?? `${href("plan")}#step-brief`} className="font-medium text-brand hover:underline">Add your creative brief (optional)</Link> : null}
+          You plan this month&rsquo;s videos, and we film and edit them.
+          {d.brief && (d.brief.files > 0 || d.brief.notes) && <> Your brief is in. <Link href={d.brief.href} className="font-medium text-brand hover:underline">See it or add more</Link>.</>}
         </p>
       ) : d.topicsFailed ? (
         <p className="mt-2 text-xs text-warning">Couldn&rsquo;t load your topics. Refresh to try again.</p>
-      ) : topicHistoryNeedsReview ? (
-        <p className="mt-3 text-sm text-muted">Your filming and videos for this month are on file. We&rsquo;re still linking your earlier topics to it, so you don&rsquo;t need to choose them again.</p>
-      ) : selected.length > 0 ? (
+      ) : topicHistoryNeedsReview ? null : selected.length > 0 ? (
         <div className="mt-3">
           {/* The heading counts within the allowance; the surplus is said out
               loud and each extra says so on its own chip — five rows under
@@ -344,7 +221,6 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
               and the headline all come from the one planning reader, so the
               heading and the rows can no longer disagree. */}
           <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Topics this month{month ? ` · ${month.selected} of ${month.owed}${month.overflow > 0 ? ` · +${month.overflow} extra` : ""}` : ""}</div>
-          {month?.planning && <p className="mt-0.5 text-xs text-muted">{month.planning.headline.text}{month.planning.progress ? ` · ${month.planning.progress}` : ""}</p>}
           <ul className="mt-1 space-y-1.5">
             {selected.map((t) => (
               <li key={t.id} className="flex flex-wrap items-center gap-1.5 text-sm">
@@ -355,8 +231,9 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
           </ul>
         </div>
       ) : d.topics ? (
-        <p className="mt-3 text-sm text-muted">No topics chosen for {monthLabel(d.monthKey)} yet.{d.planning?.monthKey === d.monthKey && d.planning.planningMode === "CALL" ? (d.planning.callStatus === "COMPLETED" ? " We're confirming them from your call." : " We'll choose them together on your call.") : d.perms.suggest && !d.readOnly ? <> <Link href={href("topics")} className="font-medium text-brand hover:underline">Pick from your topic bank</Link>.</> : null}</p>
+        <p className="mt-3 text-sm text-muted">No topics chosen for {monthLabel(d.monthKey)} yet.{d.planning?.monthKey === d.monthKey && d.planning.planningMode === "CALL" ? (d.planning.callStatus === "COMPLETED" ? " We're confirming them from your call." : " We'll choose them together on your call.") : null}</p>
       ) : null}
+      <ComingUp d={d} href={href} />
     </Card>
   );
 }

@@ -44,7 +44,7 @@ const STATE_LABEL: Record<CutVersion["clientState"], [mine: string, theirs: stri
   NOT_RELEASED: ["Not shared with you", "Not shared with you"],
 };
 
-export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null }: {
+export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null, linkVisitor = false }: {
   /** Oldest → newest; assetUrl already carries the media token. */
   versions: CutVersion[];
   perms: { comment: boolean; request: boolean; approve: boolean };
@@ -53,6 +53,12 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   /** On the emailed link seat nobody may approve. Where the client goes to get
    *  a seat that can — the only route out of "waiting for approval". */
   signInHref?: string | null;
+  /**
+   * A1 (Oct 13 2026): the plain shared link. It can never approve (portalAccess
+   * LEGACY_TOKEN), so it watches here and is asked to sign in to decide:
+   * no note box, no request or approve buttons, one clear line instead.
+   */
+  linkVisitor?: boolean;
 }) {
   const router = useRouter();
   const current = versions.find((v) => v.isCurrent) ?? null;
@@ -111,7 +117,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   const closed = !!review?.closed && !requested;
   const ackText = serverAck ?? review?.ackText ?? null;
   const needsAck = !requested && (!!serverAck || !!review?.nextRoundNeedsAck);
-  const canWrite = !readOnly && perms.comment && !approved;
+  const canWrite = !readOnly && perms.comment && !approved && !linkVisitor;
   const done = (r: { ok: boolean; message: string }) => { setMsg({ ok: r.ok, text: r.message }); if (r.ok) router.refresh(); };
   // "your" is right when the reader is the one it is waiting ON, or the one who
   // acted. Nobody has decided an AWAITING version, so there is no actor to
@@ -257,8 +263,18 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
         </div>
       )}
 
+      {/* A1: the shared link watches; a signed-in seat decides. */}
+      {linkVisitor && !readOnly && !approved && (
+        <div className="rounded-xl border border-brand/25 bg-brand-soft/30 p-3 text-sm">
+          <p className="font-semibold">Sign in to approve or request changes.</p>
+          {signInHref
+            ? <a href={signInHref} className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Sign in</a>
+            : <p className="mt-1 text-xs text-muted">Use the sign-in link in your invitation email, or {contactLine()} and we&rsquo;ll send you one.</p>}
+        </div>
+      )}
+
       {/* The two decisions — separate, explicit. */}
-      {!readOnly && !approved && (perms.request || perms.approve) && !(closed && !perms.approve) && (
+      {!linkVisitor && !readOnly && !approved && (perms.request || perms.approve) && !(closed && !perms.approve) && (
         <div className="border-t border-border pt-3">
           {!asking && !approving && (
             <div className="flex flex-wrap gap-2">
@@ -277,10 +293,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
             </div>
           )}
           {!perms.approve && perms.request && !asking && !requested && (
-            <p className="mt-1.5 text-[11px] text-muted-2">
-              Only the program owner can approve a version.
-              {signInHref && <> <a href={signInHref} className="font-semibold text-brand hover:underline">Sign in with your email</a> to approve it yourself.</>}
-            </p>
+            <p className="mt-1.5 text-[11px] text-muted-2">Only the program owner can approve a version.</p>
           )}
           {asking && (
             <div className="space-y-2">
