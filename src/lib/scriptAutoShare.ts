@@ -71,6 +71,8 @@ export async function autoShareEligible(versionId: string, opts: { now?: Date; c
   if (!v.validationJson) reasons.push("no format check on record");
   if (findings.some((f) => f.severity === "block")) reasons.push("a blocking format finding");
   if (cfg.requireInTarget && findings.some((f) => f.code === "timing.out-of-range")) reasons.push("a length warning (clearly under 30 seconds or well over a minute)");
+  // Oct 14 2026: over the house 110-word ceiling waits for a person, whatever requireInTarget says (a person may still approve it).
+  if (findings.some((f) => f.code === "length.over-cap")) reasons.push("over the 110-word ceiling");
 
   // The strategy it was drafted from is still the approved one.
   const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: v.enrollmentId, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true } });

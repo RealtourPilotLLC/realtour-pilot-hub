@@ -121,8 +121,9 @@ export const INTERVIEW_QUESTION_PLAN: readonly InterviewQuestion[] = [
     id: "story",
     order: 5,
     rule: "Explore an engaging story, contrast, demonstration, or visual approach when appropriate.",
-    captures: "Entertainment as curiosity, contrast or a visual — never forced humour.",
-    template: "Is there a contrast, a before/after, a place, or something we could show on camera that makes this land?",
+    // Oct 14 2026: neutral, so it never discourages humour on a Skits account ("never forced humour" fought them).
+    captures: "Entertainment: a contrast, a funny moment, or something we could show.",
+    template: "Is there a contrast, a funny moment, a before/after, or something we could show on camera that makes this land?",
     substantive: false,
     skippable: true,
     allowDontKnow: true,

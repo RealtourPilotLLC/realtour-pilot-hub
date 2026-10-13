@@ -35,7 +35,13 @@
 // dashes are ever written into the scripts") — the punctuation rule every
 // prompt carries; scriptFormat.stripScriptDashes enforces it where a version
 // is written and validateNewScript reports one that gets through.
-export const GENERATION_POLICY_VERSION = "2026-10-12.1";
+// 2026-10-14.1: a clean house brief (Oct 14 2026). The April GPT text no
+// longer reaches a prompt (HOUSE_SCRIPTING_RULES instead), the overrides that
+// only contradicted it are gone, the devices are worded for a personal brand,
+// and the script prompt decides the viewer and angle first, carries the
+// audience psychology and per-section rules, and reads the client's creative
+// identity (prompts.ts).
+export const GENERATION_POLICY_VERSION = "2026-10-14.1";
 
 /** The three roles, in order. Stored as roles; the label style is a rendering choice (C-A3). */
 export type TalkingPointRole = "re-hook" | "build-up" | "payoff";
@@ -133,15 +139,24 @@ export const QUALITY_DIMENSIONS: readonly { name: QualityDimension; means: strin
 ];
 
 // ---------------------------------------------------------------------------
-// Rules text — the GPT system prompt is the BASE, verbatim (manifest §2.1).
-// Where §27 / Jordan's rulings override it (exactly three points; caption CTA;
-// dimensions not pillars) the override is stated in POLICY_OVERRIDES below and
-// wins. The verbatim text is kept whole so the archive's origin stays legible.
-// ONE EDIT to the verbatim text (Oct 6 2026): its three length sentences said
-// "20 to 30 second(s)"; they now say 30 to 50, Jordan's Oct 6 target, so no
-// prompt carries the superseded number even inside the "base" block.
+// Rules text. Until Oct 14 2026 the April Scripting GPT system prompt below was
+// pasted into every prompt as "BASE RULES" and then overridden line by line,
+// so each prompt contradicted itself ("3 to 4 talking points" vs "exactly
+// three", a mandatory Trust and Credibility "PILLAR RULE" vs "quality
+// dimensions, not categories", topic-extraction duties inside a one-script
+// prompt, a four-slot SCRIPT FORMAT). Oct 14 2026: the verbatim text is KEPT
+// here as the record of where the house rules came from (and in the policy
+// hash), but it never reaches a prompt. HOUSE_SCRIPTING_RULES carries its good
+// parts; only the standing rulings that are rules in their own right stay in
+// POLICY_OVERRIDES. Property-only listing-reel doctrine (camera and edit
+// rules, feature wording) is not part of the monthly personal-brand brief;
+// the psychology it shares with personal branding is (prompts.ts,
+// AUDIENCE_PSYCHOLOGY_BLOCK).
+// (Oct 6 2026: the verbatim text's three length sentences were edited from
+// "20 to 30" to 30 to 50.)
 // ---------------------------------------------------------------------------
 
+/** The April 2026 Scripting GPT text, verbatim. A record only: never sent to a model (Oct 14 2026). */
 export const SCRIPTING_GPT_INSTRUCTIONS_VERBATIM = `You are an elite short-form real estate personal branding script strategist for Realtour Pilot.
 
 Your job is to turn strategy call transcripts, past scripts, content strategy documents, hook examples, and scripting reference materials into high-performing 30 to 50 second personal branding video scripts for real estate agents.
@@ -248,20 +263,38 @@ SUCCESS DEFINITION
 A successful output feels like a skilled strategist turned a real conversation into high-performing, natural, filmable content.`;
 
 /**
- * Where the current policy overrides the verbatim GPT text. These are the
- * rulings (manifest §7 C-A1…A7 + §9). Each line is authoritative over the base.
+ * THE HOUSE SCRIPTING RULES (Oct 14 2026): the good parts of the April GPT
+ * text, said once, for the monthly personal-brand program. No dash is used as
+ * punctuation here: the model mirrors the punctuation of what it reads.
  */
+export const HOUSE_SCRIPTING_RULES = `You write monthly personal-brand videos for Realtour Pilot's real estate agents. The subject is the agent: their expertise, their judgment, their personality and the people they serve. A viewer should come away trusting this agent, remembering them, and knowing why they would call them. This is not listing content: never sell a specific property.
+
+Every script is:
+- strategic: one clear idea that serves the client's approved strategy, the linked pillar and the audience the strategy names;
+- specific to this client: their market, their opinions, their examples and their way of saying things, taken from their answers, their call lines and accepted facts. A script any other agent could read word for word is not finished;
+- sharp and natural on camera: written for the ear, in short sentences, the way this client would explain it to a client across the table. It sounds conversational, never like a blog post;
+- in the client's brand voice, for the client's audience.
+
+HOOK STANDARDS: the first line earns the next one. A strong hook is specific: a misconception the client can correct, a strong opinion they will defend, a surprising truth, or a concern the viewer already has. No weak intros: never a greeting, the agent's name, "Welcome back", "Here are 3 tips" or "A lot of people ask me".
+
+Exactly three talking points, in this order: Re-hook, Build up, Payoff. Trust, Value, Credibility and Entertainment are qualities every video builds through its content; they are not categories and not a checklist.`;
+
 /** Jordan, Oct 6 2026: "between 30-50 seconds long, sometimes a minute". */
 const TARGET_SEC = [30, 50] as const;
 /** Manifest §4.3: the measured rate of natural spoken delivery. */
 const WORDS_PER_SEC = 2.2;
 
+/**
+ * Standing rulings (manifest §7 C-A1…A7 + §9, and Jordan's later rulings).
+ * Oct 14 2026: the lines that existed only to contradict the old base text
+ * ("never 3 to 4", "the four-slot SCRIPT FORMAT above is historical", "the
+ * CONTENT PILLAR CHECK block") went with it; each rule here stands on its own.
+ */
 export const POLICY_OVERRIDES: readonly string[] = [
-  "TALKING POINTS: exactly three, never “3 to 4”. Roles in order: Talking Point 1 = Re-hook, Talking Point 2 = Build up, Talking Point 3 = Payoff. The four-slot SCRIPT FORMAT above is historical; the canonical output format is the one in CANONICAL SCRIPT PRESENTATION below.",
-  `LENGTH: spoken content targets ${TARGET_SEC[0]}–${TARGET_SEC[1]} seconds of natural delivery; about a minute is acceptable when the idea needs it. Roughly ${Math.round(TARGET_SEC[0] * WORDS_PER_SEC)}–${Math.round(TARGET_SEC[1] * WORDS_PER_SEC)} spoken words is a drafting heuristic, not proof of duration. There is no per-client, per-session or per-script duration override, and no length belongs in a client's style notes. Tighten rather than force rapid delivery. (Jordan, Oct 6 2026: “video length varies for all clients. They should be between 30-50 seconds long, sometimes a minute, but I don't think that's important to note anywhere.”)`,
-  "CLOSE: the close is a memorable takeaway or a natural invitation that lands with authority. A direct contact CTA (“DM me PLAN”) belongs in the optional caption CTA, not in the spoken close, when that better fits the strategy.",
-  "TRUST / VALUE / CREDIBILITY / ENTERTAINMENT are quality dimensions built through the actual content of every video. They are not topic categories and not a scoring rubric. The CONTENT PILLAR CHECK block is internal reviewer metadata only — one line per dimension, never a number, never client-visible.",
-  "ARCHIVE = VOICE, POLICY = FORMAT: historical examples establish the client’s voice and style, but the current policy controls the format. Older scripts with four talking points, and older scripts of any length, do not override the three-point requirement or the current length target. (Jordan, Sep 16 2026: “historical examples establish your voice and style, but your current instructions control the format. Older scripts with four talking points should not override your requirement for three points …” — the length he named then was replaced on Oct 6 2026; see LENGTH.)",
+  `LENGTH: spoken content targets ${TARGET_SEC[0]} to ${TARGET_SEC[1]} seconds of natural delivery; about a minute is acceptable when the idea needs it. Roughly ${Math.round(TARGET_SEC[0] * WORDS_PER_SEC)} to ${Math.round(TARGET_SEC[1] * WORDS_PER_SEC)} spoken words is a drafting heuristic, not proof of duration, and ${Math.round(TARGET_SEC[1] * WORDS_PER_SEC)} is the ceiling. There is no per-client, per-session or per-script duration override, and no length belongs in a client's style notes. Tighten rather than force rapid delivery. (Jordan, Oct 6 2026: “video length varies for all clients. They should be between 30-50 seconds long, sometimes a minute, but I don't think that's important to note anywhere.”)`,
+  "CLOSE: a memorable final line. The direct contact ask (“DM me PLAN”) belongs in the optional caption CTA, not in the spoken close, unless the strategy says otherwise.",
+  "QUALITY DIMENSIONS: Trust, Value, Credibility and Entertainment are built through the actual content of every video. The contentPillarCheck field is internal reviewer notes, one short line per dimension, never a number, never client-visible.",
+  "ARCHIVE = VOICE, POLICY = FORMAT: historical examples establish the client’s voice and style, but the current policy controls the format. Older scripts with four talking points, and older scripts of any length, do not override the three-point requirement or the current length target. (Jordan, Sep 16 2026.)",
   "TRUTHFULNESS: never invent client stories, transaction outcomes, local statistics, credentials, personal anecdotes, offers, or guarantees. Anything the sources do not support becomes an explicit gap object in the output, never a plausible sentence in the script.",
   "SPEAKER ATTRIBUTION: only statements the client made are the client’s experience. Jordan’s suggestions, devil’s-advocate lines and hook ideas on a call are his; third parties mentioned on a call are not the client and never enter the client’s file as theirs.",
 ];
@@ -297,16 +330,16 @@ export const HOOK_TYPES: readonly { name: string; source: string; note: string }
     source: "Video Structure Framework (Jordan, Oct 6 2026)",
     note: "Immediately relevant to a buyer or seller; give viewers a reason to keep watching.",
   },
-  { name: "Comparative positioning", source: "spec §27 / Scripting Success §4", note: "Why this over that — used only when authentic." },
+  { name: "Comparative positioning", source: "spec §27 / Scripting Success §4", note: "Why this over that, used only when authentic." },
   {
     name: "Affluence through association",
     source: "spec §27 / Anatomy §4",
-    note: "Tie the idea to a culturally or locally significant reference; never a false affiliation.",
+    note: "Tie the idea to a respected local reference the viewer recognises; never a false affiliation.",
   },
   {
-    name: "Pattern interruption / genuine surprise (“WTF effect”)",
+    name: "Pattern interruption / genuine surprise",
     source: "spec §27 / Anatomy §5",
-    note: "Genuine surprise or curiosity — not invented claims, forced profanity, or false affiliations.",
+    note: "Genuine surprise or curiosity; never an invented claim, forced profanity or a false affiliation.",
   },
 ];
 
@@ -317,6 +350,29 @@ export const HOOK_TYPES: readonly { name: string; source: string; note: string }
  * scriptFormat.ts so a legitimate hook that merely starts with one is not rejected.
  */
 export const BANNED_OPENERS: readonly string[] = ["Hi, I'm", "Hi I'm", "Hi, I am", "Hello, I'm", "Hello I'm", "Hey guys", "Hey everyone", "Hi everyone", "Hello everyone", "Welcome back", "Welcome to"];
+
+/**
+ * THE PART BUDGETS (CP-08, Sep 24 2026). The word total on its own did
+ * not keep drafts short: the model met it by compressing EVERYTHING it was
+ * given into long lines, and two drafts were estimated at about 39 s and 51 s
+ * from their word counts (an estimate, never a measurement). Budgets per part
+ * plus "evidence, not copy" address the cause.
+ *
+ * Oct 6 2026: rescaled with the 30–50 s target (Jordan). The budgets sum to
+ * the heuristic's ceiling — 16 + 3 × 26 + 16 = 110 words ≈ 50 s at 2.2 words
+ * per second — so a draft that fills every part still lands inside the target.
+ * Oct 14 2026: moved here from prompts.ts so the validator reads the same
+ * numbers; the script schema's field descriptions read them too (they said
+ * 12 / 14 / 10, which no prose rule agreed with), and the validator warns
+ * over 110 spoken words and on a hook over 16.
+ */
+export const SCRIPT_PART_BUDGETS = { hookWords: 16, pointWords: 26, closeWords: 16 } as const;
+
+/** Stock phrases no spoken line should lean on (Oct 14 2026): a validator warning, and named in the script prompt's section rules. */
+export const STOCK_PHRASES: readonly string[] = ["nobody talks about", "no one talks about", "here's the truth", "let that sink in"];
+
+/** Lines that claim a real client event: in an acted skit they are a warning (Oct 14 2026, the fiction rule). */
+export const REAL_CLIENT_CLAIM_RE = /\b(?:my clients?|a client of mine|one of my clients|true story|this really happened|this actually happened)\b/i;
 
 /** Weak hook shapes the GPT bans — a warning, since they are shapes rather than openers. */
 export const WEAK_HOOK_PATTERNS: readonly string[] = ["Here are 3 tips", "Here are three tips", "A lot of people ask me", "People always ask me"];
@@ -333,20 +389,24 @@ export const ADVISORY_HOOK_RULES = {
   origin: "Scripting Automation Plan §12 / Premium Reel Scripting Plan §8 (May 13 2026) — listing-reel doctrine, imported as advisory.",
 } as const;
 
-/** Named devices the spec invokes, each tagged with its listing-video origin and the “only when authentic” caveat. */
+/**
+ * Named devices, phrased for a personal brand (Oct 14 2026). The listing
+ * training's psychology carries over (Jordan, Oct 14: "the same psychology
+ * applies"); its property-only mechanics do not: "Scripting to edit", "Agent
+ * on camera immediately" (camera rules) and "no highlighting obvious
+ * features" (property wording) left this list, and the rest are worded for
+ * an agent's own video. Each is used only when authentic.
+ */
 export const CREATIVE_DEVICES: readonly { name: string; source: string; rule: string }[] = [
-  { name: "Re-hook", source: "Anatomy §3, §9", rule: "Re-engage the audience midway with another compelling statement; keep viewers engaged throughout." },
-  { name: "Middle context", source: "Anatomy §1 / Scripting Success §7", rule: "Provide relevant details while maintaining engagement; connect the beginning and end seamlessly." },
-  { name: "Storytelling", source: "Scripting Success §5", rule: "The most impactful videos tell a story." },
-  { name: "Bold statement", source: "Scripting Success §3", rule: "The bolder the statement, the more memorable the video — used only when the agent means it." },
-  { name: "Affluence through association", source: "Anatomy §4", rule: "Tie the idea to culturally or locally significant references to add perceived value; never a false affiliation." },
-  { name: "WTF effect", source: "Anatomy §5 (narrowed by spec §27)", rule: "Genuine surprise or curiosity, not invented claims, forced profanity, or false affiliations." },
-  { name: "Scripting sins", source: "Anatomy §6", rule: "No “Welcome”, no introducing the agent by name, no highlighting obvious features, no clichés." },
-  { name: "Pattern utilization", source: "Anatomy §7", rule: "Recognize successful scripting patterns, adapt them, then develop a unique style." },
-  { name: "Viral cheat codes", source: "Anatomy §9", rule: "Replicate successful frameworks while adding the client’s own touch." },
-  { name: "Scripting to edit", source: "Anatomy §8", rule: "Anticipate the edit: smooth transitions, impactful visuals." },
-  { name: "Comparative hook prompt", source: "Scripting Success §4 / Anatomy §11", rule: "Ask why someone should choose this over that; use the defensive answer as the narrative." },
-  { name: "Agent on camera immediately", source: "Scripting Success §2", rule: "The agent’s face and voice from the first moment; no establishing shots first." },
+  { name: "Re-hook", source: "Anatomy §3, §9", rule: "Re-engage the viewer midway with something new: a complication, a consequence or a sharper question." },
+  { name: "Middle context", source: "Anatomy §1 / Scripting Success §7", rule: "Give the reasoning or the example that connects the opening to the ending." },
+  { name: "Storytelling", source: "Scripting Success §5", rule: "The most impactful videos tell a story: a short, true one from the sources." },
+  { name: "Bold statement", source: "Scripting Success §3", rule: "The bolder the statement, the more memorable the video, used only when the agent means it." },
+  { name: "Affluence through association", source: "Anatomy §4", rule: "Tie the idea to a respected local reference the viewer recognises; never a false affiliation." },
+  { name: "Genuine surprise", source: "Anatomy §5 (narrowed by spec §27)", rule: "A pattern interruption or real surprise; never an invented claim, forced profanity or a false affiliation." },
+  { name: "Scripting sins", source: "Anatomy §6", rule: "No “Welcome”, no introducing the agent by name, no clichés." },
+  { name: "Pattern utilization", source: "Anatomy §7 / §9", rule: "Adapt what works, then make it this client's own; never a template with the nouns swapped." },
+  { name: "Comparative hook prompt", source: "Scripting Success §4 / Anatomy §11", rule: "Ask why someone should choose this over that (this approach, this agent, this decision); use the client's honest answer as the narrative." },
   { name: "Spoken rhythm", source: "Plans §12/§7", rule: "Write for spoken rhythm, not reading: short sentences, fragments, pauses, breathing room." },
   { name: "Show your face / authentic story / polarization", source: "10 Laws #1, #2, #4, #9", rule: "Be visible, be bold about beliefs and experiences, accept that strong opinions polarize." },
 ];
@@ -356,6 +416,7 @@ export const EXCLUDED_DOCTRINE: readonly string[] = [
   "Scripting Success §10 / Anatomy §1: a spoken transactional CTA (“Send me a message for a private tour”) — listing-video doctrine; the contact ask lives in the caption.",
   "Scripting Automation Plan / Premium Reel Plan: 11-word hook cap and the eight reel archetypes — stay in the premium-reel prompt library.",
   "Scripting Success §6 voiceover ban vs Premium plan voiceover allowance — out of scope; personal-branding scripts are agent-led.",
+  "Oct 14 2026: listing-reel camera and edit rules (“Scripting to edit”, “Agent on camera immediately”), property feature wording and the listing advisory words (ADVISORY_HOOK_RULES) are not printed in the monthly personal-brand prompts; the advisory words remain an info-only validator note.",
 ];
 
 // ---------------------------------------------------------------------------
@@ -437,40 +498,48 @@ export const GENERATION_POLICY: GenerationPolicy = {
 // Assembled rules text for prompts (one string, deterministic).
 // ---------------------------------------------------------------------------
 
+/**
+ * Oct 14 2026: the house brief, the standing rulings and the framework, with
+ * no pasted GPT text to contradict them. Nothing in the assembled text uses an
+ * em or en dash as punctuation (the framework and role lines are printed
+ * "Heading: definition" here; videoStructureFrameworkLines keeps its own
+ * shape for the strategy template).
+ */
 export function policyRulesText(policy: GenerationPolicy = GENERATION_POLICY): string {
   const roles = policy.talkingPoints.specs
-    .map((s, i) => `Talking Point ${i + 1}: ${s.label} — ${s.definition}`)
+    .map((s, i) => `Talking Point ${i + 1}: ${s.label}. ${s.definition}`)
     .join("\n");
   const dims = policy.qualityDimensions.map((d) => `- ${d.name} means ${d.means}.`).join("\n");
-  const hookTypes = policy.hooks.types.map((h) => `- ${h.name} (${h.source}): ${h.note}`).join("\n");
-  const devices = policy.devices.map((d) => `- ${d.name} [${d.source}]: ${d.rule}`).join("\n");
+  const hookTypes = policy.hooks.types.map((h) => `- ${h.name}: ${h.note}`).join("\n");
+  const devices = policy.devices.map((d) => `- ${d.name}: ${d.rule}`).join("\n");
   return [
     `GENERATION POLICY ${policy.version}`,
     "",
-    "=== BASE RULES (Realtour Pilot Content Scripting GPT – System Instructions, verbatim) ===",
-    SCRIPTING_GPT_INSTRUCTIONS_VERBATIM,
+    "=== HOUSE SCRIPTING RULES (Realtour Pilot monthly personal-brand videos) ===",
+    HOUSE_SCRIPTING_RULES,
     "",
-    "=== CURRENT POLICY OVERRIDES (these win over the base text above) ===",
+    "=== STANDING RULINGS ===",
     ...policy.overrides.map((o) => `- ${o}`),
     "",
     "=== VIDEO STRUCTURE FRAMEWORK (the same for every client; a client document's own framework never replaces it) ===",
     FRAMEWORK_PREAMBLE,
-    ...videoStructureFrameworkLines(),
+    `${FRAMEWORK_HOOK.heading}: ${FRAMEWORK_HOOK.definition}`,
+    ...policy.talkingPoints.specs.map((s) => `${s.frameworkHeading}: ${s.definition}`),
+    `${FRAMEWORK_CLOSE.heading}: ${FRAMEWORK_CLOSE.definition}`,
     "",
-    "=== TALKING POINT ROLES (the framework's three talking points, verbatim) ===",
+    "=== TALKING POINT ROLES (the framework's three talking points) ===",
     roles,
     "",
     "=== TIMING ===",
-    `Target ${policy.timing.targetSec[0]}–${policy.timing.targetSec[1]} seconds of natural spoken delivery; about a minute is acceptable when the idea needs it. Drafting heuristic ${policy.timing.heuristicWords[0]}–${policy.timing.heuristicWords[1]} spoken words at about ${policy.timing.wordsPerSec} words per second. Count only: ${policy.timing.spokenParts.join("; ")}. Exclude: ${policy.timing.excludedParts.join("; ")}. Word count is a heuristic, not proof of duration; validate with a natural read. No duration overrides exist.`,
+    `Target ${policy.timing.targetSec[0]} to ${policy.timing.targetSec[1]} seconds of natural spoken delivery; about a minute is acceptable when the idea needs it. Drafting heuristic ${policy.timing.heuristicWords[0]} to ${policy.timing.heuristicWords[1]} spoken words at about ${policy.timing.wordsPerSec} words per second; ${policy.timing.heuristicWords[1]} is the ceiling. Count only: ${policy.timing.spokenParts.join("; ")}. Exclude: ${policy.timing.excludedParts.join("; ")}. Word count is a heuristic, not proof of duration; validate with a natural read. No duration overrides exist.`,
     "",
-    "=== QUALITY DIMENSIONS (never categories, never a score) ===",
+    "=== QUALITY DIMENSIONS (qualities to build, never categories, never a score) ===",
     dims,
     "",
     "=== HOOK TYPES ===",
     hookTypes,
-    `Never open with a greeting or an introduction — e.g. ${policy.hooks.bannedOpeners.map((b) => `“${b}…”`).join(", ")} — and never introduce the agent by name (“I'm <name>…”, “My name is…”).`,
-    `Weak shapes to avoid: ${policy.hooks.weakPatterns.map((b) => `“${b}…”`).join(", ")}.`,
-    `Advisory (listing-reel origin, warn only): avoid ${policy.hooks.advisory.bannedWords.join(", ")}; ${policy.hooks.advisory.oneBreathTest} ${policy.hooks.advisory.noEngagementBait}`,
+    `Never open with a greeting or an introduction (for example ${policy.hooks.bannedOpeners.map((b) => `“${b}…”`).join(", ")}), and never introduce the agent by name (“I'm <name>…”, “My name is…”).`,
+    `Weak shapes to avoid: ${policy.hooks.weakPatterns.map((b) => `“${b}…”`).join(", ")}. ${policy.hooks.advisory.noEngagementBait}`,
     "",
     "=== NAMED DEVICES (use only when authentic and suitable) ===",
     devices,

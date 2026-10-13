@@ -31,6 +31,9 @@ import {
   countSpokenWords,
   makeGap,
   roleFromLabel,
+  STOCK_PHRASES,
+  REAL_CLIENT_CLAIM_RE,
+  SCRIPT_PART_BUDGETS,
 } from "./policy";
 // One normaliser for pillar labels across the layer: the topic bank already
 // matches a generated pillar name against the approved strategy's with it, and
@@ -768,6 +771,32 @@ function blockSpokenWords(block: SpokenBlock | null | undefined, speakerLabels: 
   return n;
 }
 
+/** Oct 14 2026: the hook's spoken-word budget (SCRIPT_PART_BUDGETS.hookWords) — the "hook.long" warning. */
+const HOOK_WORD_CAP = SCRIPT_PART_BUDGETS.hookWords;
+
+/** What a block SAYS: the text, or for a skit its dialogue with labels, directions and cues left out. */
+function blockSpokenText(block: SpokenBlock | null | undefined, speakerLabels: readonly string[]): string {
+  if (!block) return "";
+  if (!speakerLabels.length && !block.lines.some(isStageDirectionLine)) return block.text;
+  const labels = new Set(speakerLabels.map(labelKey));
+  return block.lines.map((raw) => spokenOfSkitLine(raw, labels)).filter(Boolean).join(" ");
+}
+
+const CONTENT_STOPWORDS = new Set(
+  ("a an the and or but so of to in on for with at by from as is are was were be been being it its it's this that these those there here what when where why how who which " +
+    "you your you're yours we our us i i'm me my he she they them their his her do does did don't not no yes can can't will would should could just really very more most " +
+    "if then than about into out up down over all any some one get got have has had make makes like know think").split(" "),
+);
+/** The content words of a line, lower-cased, apostrophes kept inside words. */
+function contentWords(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of text.toLowerCase().replace(/[’‘]/g, "'").split(/[^a-z0-9']+/)) {
+    const w = raw.replace(/^'+|'+$/g, "");
+    if (w.length > 2 && !CONTENT_STOPWORDS.has(w)) out.add(w);
+  }
+  return out;
+}
+
 /** The first line of a block that someone says (a skit's opener, for the greeting check), else the block's text. */
 function firstSpokenText(block: SpokenBlock | null | undefined, speakerLabels: readonly string[]): string {
   if (!block) return "";
@@ -887,6 +916,8 @@ export function renderScript(script: CanonicalScript, opts: RenderScriptOptions 
 // ---------------------------------------------------------------------------
 
 export type GeneratedScriptJson = {
+  /** Oct 14 2026: the viewer and angle the writer decided first (prompts.ANGLE_BLOCK). Internal, staff-only. */
+  angle?: Partial<Record<"viewer" | "belief" | "stake" | "angle" | "clientTake" | "payoff", string>> | null;
   title: string;
   category: string;
   pillarId?: string | null;
@@ -1214,6 +1245,45 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
       "spoken",
       { seconds: estimate.seconds, words: estimate.words, targetLo: lo, targetHi: hi, warnBelow: estimate.tolerance[0], warnAbove: estimate.tolerance[1], over },
     );
+  }
+
+  // THE CRAFT CHECKS (Oct 14 2026), all warnings. Counted on what is SAID:
+  // a skit's dialogue only, as the timing above.
+  //   · over the 110-word ceiling (the timing warning only fires past a
+  //     minute; this one fires at the house cap and holds auto-share back:
+  //     scriptAutoShare.ts);
+  //   · a hook over its 16-word budget;
+  //   · a re-hook that repeats the hook (Jordan's most common hand edit: "The
+  //     Re-hook should be a re-hook and not recycle the first hook");
+  //   · stock phrases;
+  //   · in a skit, a line that claims a real client event (the fiction rule).
+  const cap = policy.timing.heuristicWords[1];
+  if (estimate.words > cap) {
+    push("length.over-cap", "warn", `${estimate.words} spoken words is over the ${cap}-word ceiling. Tighten it before it is shared.`, "spoken", { words: estimate.words, cap });
+  }
+  if (estimate.breakdown.hook > HOOK_WORD_CAP) {
+    push("hook.long", "warn", `The hook is ${estimate.breakdown.hook} spoken words; keep it to one breath (${HOOK_WORD_CAP} at most).`, "hook", { words: estimate.breakdown.hook, cap: HOOK_WORD_CAP });
+  }
+  const rehook = script.points.find((p) => p.role === "re-hook") ?? script.points[0] ?? null;
+  if (script.hook && rehook) {
+    const hookWords = contentWords(blockSpokenText(script.hook, speakers));
+    const reWords = contentWords(blockSpokenText(rehook, speakers));
+    const shared = [...reWords].filter((w) => hookWords.has(w)).length;
+    if (reWords.size >= 2 && shared / reWords.size >= 0.5) {
+      push("rehook.repeats-hook", "warn", "The re-hook repeats the hook. It should add something new: a complication, a consequence, a contrast or a sharper question.", `points[${script.points.indexOf(rehook)}]`, { shared, rehookWords: reWords.size });
+    }
+  }
+  const saidParts: [string, string][] = [
+    ["hook", blockSpokenText(script.hook, speakers)], ...script.points.map((p, i): [string, string] => [`talking point ${i + 1}`, blockSpokenText(p, speakers)]), ["close", blockSpokenText(script.close, speakers)],
+  ];
+  const norm = (t: string) => t.toLowerCase().replace(/[’‘]/g, "'");
+  for (const phrase of STOCK_PHRASES) {
+    const where = saidParts.filter(([, t]) => norm(t).includes(phrase)).map(([w]) => w);
+    if (where.length) push("style.stock-phrase", "warn", `Stock phrase “${phrase}” in the ${where.join(", ")}. Say the specific thing instead.`, "spoken", { phrase, where: where.join(",") });
+  }
+  if (speakers.length) {
+    const claims = saidParts.filter(([, t]) => REAL_CLIENT_CLAIM_RE.test(t)).map(([w]) => w);
+    if (claims.length) push("skit.real-client-claim", "warn", `The ${claims.join(", ")} ${claims.length === 1 ? "claims" : "claim"} a real client event. A skit is an acted scene: never present it as something that happened to a real client.`, "spoken", { where: claims.join(",") });
   }
 
   // Pillar linkage (gate 7) and, when the caller supplies the client's pillars,

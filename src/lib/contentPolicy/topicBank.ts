@@ -320,6 +320,24 @@ export function renderTopicBank(bank: TopicBank, opts: { frontMatter?: boolean }
 // Validator
 // ---------------------------------------------------------------------------
 
+/**
+ * FORMULAIC TITLE SHAPES (Oct 14 2026). The topic-bank prompt bans them
+ * (TOPIC_ORIGINALITY_RULE); this is the cheap check after generation, so one
+ * that gets through is dropped and counted rather than offered to Jordan.
+ */
+export const FORMULAIC_TITLE_SHAPES: readonly { name: string; re: RegExp }[] = [
+  { name: "What X Actually …", re: /^what\b.*\bactually\b/i },
+  { name: "Why X Matters More Than …", re: /^why\b.*\bmatters?\s+more\s+than\b/i },
+  { name: "The ___ Nobody Talks About", re: /\b(?:nobody|no one)\s+(?:ever\s+)?(?:talks|is talking|tells you)\s+about\b/i },
+  { name: "What I Do When …", re: /^what\s+i\s+do\s+when\b/i },
+];
+
+/** The banned shape a title has, or null. */
+export function formulaicTitleShape(title: string): string | null {
+  const t = (title ?? "").replace(/[’]/g, "'").trim();
+  return FORMULAIC_TITLE_SHAPES.find((s) => s.re.test(t))?.name ?? null;
+}
+
 const STOPWORDS = new Set(
   "a an the and or of to in on for with your you our we us is are was be it its this that what when where why how before after about into from by at as do does did not no yes vs versus one".split(" "),
 );

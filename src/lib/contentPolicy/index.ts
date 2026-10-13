@@ -45,3 +45,4 @@ export * from "./scriptFormat";
 export * from "./topicBank";
 export * from "./interview";
 export * from "./prompts";
+export * from "./creativeIdentity";
