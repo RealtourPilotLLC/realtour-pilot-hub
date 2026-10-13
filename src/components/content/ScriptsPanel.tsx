@@ -32,7 +32,13 @@ import { approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevision
 
 export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[];
   /** A skit kept as written (speaker lines, directions): its length is a note, and Tighten would rewrite it, so it isn't offered. */
-  skit?: boolean };
+  skit?: boolean;
+  /** Oct 14 2026: the writer's angle (viewer, belief, stake, angle, clientTake, payoff). Staff only, never the portal. */
+  angle?: Record<string, string> | null;
+  /** Oct 14 2026: the automatic check's line ("Checked: passed", "Auto-fixed 1 time", "Still flagged: …", "Not checked"). */
+  check?: { tone: "ok" | "warn" | "muted"; text: string } | null;
+  /** Still flagged by the automatic check: sorts first in the review queue. */
+  flagged?: boolean };
 /** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
 export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
 
@@ -65,7 +71,11 @@ function band(seconds: number | null): "under" | "on" | "over" | null {
 
 type QueueResult = { ok: boolean; message: string; runId?: string };
 /** A script's revision as the row shows it: the queued run, or a click whose answer has not been rendered yet. */
-type RevCtl = { server: QueueItemUi | null; sending: boolean; onRevise: (mode: "revise" | "tighten", instructions?: string) => void; onRetry: () => void };
+type RevCtl = { server: QueueItemUi | null; sending: boolean; onRevise: (mode: "revise" | "tighten", instructions?: string, lockSections?: string[]) => void; onRetry: () => void };
+
+/** Oct 14 2026: "Keep exactly" on a revision: these sections are copied back word for word by code. */
+const LOCKS: [string, string][] = [["hook", "Hook"], ["rehook", "Re-hook"], ["buildup", "Build up"], ["payoff", "Payoff"], ["close", "Close"], ["captionCta", "Caption CTA"]];
+const ANGLE_LABELS: [string, string][] = [["viewer", "Viewer"], ["belief", "Belief"], ["stake", "Stake"], ["angle", "Angle"], ["clientTake", "Client's take"], ["payoff", "Payoff"]];
 
 export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwner, owed = [], revising = {}, drafting = {}, queueActive = [] }: {
   enrollmentId?: string; scripts: ScriptUi[]; queueCount: number; scriptOwner: string; owed?: OwedUi[];
@@ -96,11 +106,12 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
     const server = revising[s.id] ?? null;
     return {
       server, sending: sending.has(s.id),
-      onRevise: (mode, instructions = "") => void send(s.id, () => queueScriptRevisionAction(s.id, mode, instructions)),
+      onRevise: (mode, instructions = "", lockSections = []) => void send(s.id, () => queueScriptRevisionAction(s.id, mode, instructions, lockSections)),
       onRetry: () => { if (server) void send(s.id, () => retryAiJobAction(server.runId)); },
     };
   };
-  const queue = scripts.filter((s) => !s.historical && s.versions[0] && (s.versions[0].status === "DRAFT" || s.versions[0].status === "INTERNAL_REVIEW"));
+  // Oct 14 2026: a draft the automatic check still flags comes first.
+  const queue = scripts.filter((s) => !s.historical && s.versions[0] && (s.versions[0].status === "DRAFT" || s.versions[0].status === "INTERNAL_REVIEW")).sort((a, b) => Number(!!b.versions[0]?.flagged) - Number(!!a.versions[0]?.flagged));
   const rest = scripts.filter((s) => !queue.includes(s) && !s.historical);
   const historical = scripts.filter((s) => s.historical);
   return (
@@ -135,6 +146,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
   const cur = s.versions[0] ?? null;
   const [body, setBody] = useState(cur?.body ?? "");
   const [instr, setInstr] = useState("");
+  const [locks, setLocks] = useState<string[]>([]);
   // A HISTORICAL import is never paced against the policy. 129 of the 174
   // versions in production estimate over 30 s and almost all of them are
   // archive scripts with four talking points — what was filmed, not an overrun
@@ -239,6 +251,22 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
             {cur.gaps.map((g, i) => <p key={`g${i}`} className="text-muted">Gap ({g.kind}): {g.text}{g.question ? ` → ${g.question}` : ""}</p>)}
           </div>
         )}
+        {/* Oct 14 2026: the automatic check's line and the writer's angle. Staff only: neither is ever sent to the portal. */}
+        {cur && !s.historical && (cur.check || cur.angle) && mode !== "edit" && (
+          <div className="mt-1.5 space-y-0.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-1.5 text-[11px]">
+            {cur.check && <p className={cur.check.tone === "ok" ? "text-success" : cur.check.tone === "warn" ? "font-medium text-warning" : "text-muted"}>{cur.check.text}</p>}
+            {cur.angle && (
+              <details>
+                <summary className="cursor-pointer text-muted"><span className="font-semibold">Angle:</span> {cur.angle.angle ?? cur.angle.payoff ?? ""}{cur.angle.viewer ? ` · for ${cur.angle.viewer}` : ""}</summary>
+                <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-muted">
+                  {ANGLE_LABELS.filter(([k]) => cur.angle?.[k]).map(([k, label]) => (
+                    <div key={k} className="contents"><dt className="font-medium">{label}</dt><dd>{cur.angle?.[k]}</dd></div>
+                  ))}
+                </dl>
+              </details>
+            )}
+          </div>
+        )}
         {mode === "edit" ? (
           <div className="mt-2">
             <AutoTextarea value={body} onChange={(e) => setBody(e.target.value)} minRows={8} className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs leading-relaxed" />
@@ -251,8 +279,17 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         {mode === "revise" && (
           <div className="mt-2">
             <AutoTextarea value={instr} onChange={(e) => setInstr(e.target.value)} minRows={2} placeholder="Tell the AI what to change — the current version is kept as is" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs" />
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+              <span className="font-medium">Keep exactly:</span>
+              {LOCKS.map(([k, label]) => (
+                <label key={k} className="inline-flex items-center gap-1">
+                  <input type="checkbox" checked={locks.includes(k)} onChange={(e) => setLocks((prev) => (e.target.checked ? [...prev, k] : prev.filter((x) => x !== k)))} />
+                  {label}
+                </label>
+              ))}
+            </div>
             <div className="mt-1.5 flex gap-1.5">
-              <button disabled={revBusy || !instr.trim()} onClick={() => { rev?.onRevise("revise", instr); setInstr(""); setMode("read"); }} className={`${btn} inline-flex items-center gap-1 bg-brand text-white`}><Sparkles className="size-3" /> Regenerate as new version</button>
+              <button disabled={revBusy || !instr.trim()} onClick={() => { rev?.onRevise("revise", instr, locks); setInstr(""); setLocks([]); setMode("read"); }} className={`${btn} inline-flex items-center gap-1 bg-brand text-white`}><Sparkles className="size-3" /> Regenerate as new version</button>
               <button onClick={() => setMode("read")} className={quiet}>Cancel</button>
             </div>
           </div>

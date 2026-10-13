@@ -15,6 +15,7 @@ import {
   renamePillarAction, resolveStrategyProposal, reviseStrategy, saveMonthPriorities, saveStrategyBackfill, setDutyOwner, waiveDiscoveryAction, type StrategyPreview,
 } from "@/app/content/actions";
 import { setPillarEmphasisAction } from "@/app/content/actions";
+import { CreativeIdentityCard, type CreativeIdentityUi } from "@/components/content/CreativeIdentityCard";
 
 // ---------------------------------------------------------------------------
 // Strategy tab (spec §3/§21): versions never overwrite; approve and release
@@ -69,7 +70,9 @@ const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2";
 
-export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], workingVersionNo = null, discovery = null, queueActive = [] }: {
+export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapping, owners, staff, isOwner, month, targets = {}, sections = [], workingVersionNo = null, discovery = null, queueActive = [], creativeIdentity = null, hasApprovedStrategy = false }: {
+  /** Oct 14 2026: the auto-built creative identity card. */
+  creativeIdentity?: CreativeIdentityUi | null; hasApprovedStrategy?: boolean;
   enrollmentId: string; versions: VersionRow[]; proposals: ProposalRow[]; pillars: PillarRowUi[]; mapping: MappingRowUi[]; owners: OwnerUi[];
   staff: { id: string; name: string }[]; isOwner: boolean; month: { id: string; label: string; priorities: string[]; sourceRef: string | null } | null;
   targets?: Record<string, ProposalTargetUi>; sections?: { id: string; heading: string }[]; workingVersionNo?: number | null; discovery?: DiscoveryUi | null;
@@ -220,6 +223,9 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
           ))}
         </div>
       </Section>
+
+      {/* Oct 14 2026: the auto-built creative identity (read-only, Rebuild). */}
+      <CreativeIdentityCard enrollmentId={enrollmentId} data={creativeIdentity} hasApprovedStrategy={hasApprovedStrategy} />
 
       {/* This month's priorities (apart from the foundation) */}
       {month && <PrioritiesCard month={month} busy={busy} onSave={(t) => run(() => saveMonthPriorities(month.id, t))} />}

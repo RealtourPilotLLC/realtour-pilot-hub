@@ -1,12 +1,14 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { monthLabel, ownersFor } from "@/lib/contentProgram";
-import { withCanonicalFrameworkSections } from "@/lib/contentPolicy";
+import { withCanonicalFrameworkSections, creativeIdentityFromOverrides } from "@/lib/contentPolicy";
+import type { CreativeIdentityUi } from "@/components/content/CreativeIdentityCard";
 import { parseStoredSections, openStrategyProposals, strategyVersions, monthPriorities } from "@/lib/contentStrategy";
 import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
 import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions } from "@/lib/contentTopics";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
 import { scriptsAwaitingReview } from "@/lib/contentScripts";
+import { readAngle, readJudge, judgeLine, judgeFlagged } from "@/lib/scriptJudgeRecord";
 import { factsForReview, factCounts } from "@/lib/clientFacts";
 import { importBatches, importReviewItems } from "@/lib/contentImport";
 import { activePolicyVersion } from "@/lib/aiRuns";
@@ -52,8 +54,15 @@ export async function loadStrategyTab(enrollmentId: string, month: { id: string;
   const pil: PillarRowUi[] = pillars.map((p) => ({ id: p.id, name: p.name, purpose: p.purpose, focusAreas: p.focusAreas, aliases: p.aliases, status: p.status, emphasis: p.emphasis }));
   const mapping: MappingRowUi[] = mappingRaw.filter((m) => !dismissed.has(m.label));
   const ow: OwnerUi[] = Object.values(owners).map((o) => ({ duty: o.duty, label: o.label, scope: o.scope, appUserId: o.appUserId }));
+  // Oct 14 2026: the auto-built creative identity, read-only, with the strategy version it was built from.
+  const enr = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const ci = creativeIdentityFromOverrides(enr?.overridesJson ?? null);
+  const approvedNow = versions.filter((v) => v.status === "APPROVED").sort((a, b) => b.versionNo - a.versionNo)[0] ?? null;
+  const creativeIdentity: CreativeIdentityUi | null = ci
+    ? { identity: ci, builtFromVersionNo: versions.find((v) => v.id === ci.strategyVersionId)?.versionNo ?? null, stale: !!approvedNow && approvedNow.id !== ci.strategyVersionId, derivedAt: ci.derivedAt || null }
+    : null;
   return {
-    discovery, queueActive: queue.active,
+    discovery, queueActive: queue.active, creativeIdentity, hasApprovedStrategy: !!approvedNow,
     versions: vrows, proposals: prows, pillars: pil, mapping, owners: ow, staff: staff.map((s) => ({ id: s.id, name: s.name ?? s.email })),
     month: month ? { id: month.id, label: monthLabel(month.monthKey), priorities: monthPriorities(month.prioritiesJson), sourceRef: month.prioritiesSourceRef } : null,
   };
@@ -178,6 +187,8 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
         estimatedSeconds: v.estimatedSeconds, spokenWordCount: v.spokenWordCount, pointCount: points, findings, gaps, strategyVersionNo: strategyVs.find((x) => x.id === v.strategyVersionId)?.versionNo ?? null, policyVersionNo: policies.find((x) => x.id === v.policyVersionId)?.versionNo ?? null,
         answerCount: answers, path: v.interviewId ? "written answers" : v.callRecordId ? "call" : v.source.toLowerCase().replace("_", " "), basedOnVersionNo: basedOn, regeneratedSections: regenerated,
         skit: !!v.speakerLabelsJson,
+        // Oct 14 2026: the writer's angle and the automatic check's line (staff only).
+        angle: readAngle(v.validationJson), check: judgeLine(readJudge(v.validationJson)), flagged: judgeFlagged(readJudge(v.validationJson)),
       };
     };
     // A pre-versioning script shows its legacy body as an implicit v1 until an action lifts it.
