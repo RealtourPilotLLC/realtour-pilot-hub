@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarClock, ClipboardCopy, Loader2, Undo2 } from "lucide-react";
-import { lateSessionAction, lateSessionMessageAction, undoLateSessionAction } from "@/app/content/actions";
+import { lateSessionAction, lateSessionMessageAction, setLateCombinedAction, undoLateSessionAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // "Bring September's session into October" (Oct 12 2026) — on the client
@@ -21,6 +21,13 @@ import { lateSessionAction, lateSessionMessageAction, undoLateSessionAction } fr
 
 type State = "TO_BOOK" | "REQUESTED" | "BOOKED";
 
+/**
+ * Oct 13 2026: one session or two for the late month and its host
+ * (monthLateSession.CombineChoice). `offered` false = not a Starter program,
+ * so there is nothing to choose; `refusal` = why it can't change right now.
+ */
+export type LateCombineProps = { combined: boolean; offered: boolean; refusal: string | null; videos: number; combinedHours: number; separateHours: number };
+
 export type LateSessionControlProps = {
   monthId: string;
   monthName: string;
@@ -29,11 +36,12 @@ export type LateSessionControlProps = {
     lateMonthId: string; lateLabel: string; state: State; filmed: boolean; startsAtISO: string | null;
     scriptsReleased: number; scriptsReady: boolean; scriptsSentOutside: boolean; lateVideosOwed: number;
     by: string | null; at: string; undoRefusal: string | null; lateHref: string;
+    combine?: LateCombineProps | null;
   } | null;
   /** Earlier months it could book (host side), each with its reason when it can't. */
   options: { monthId: string; label: string; refusal: string | null; scriptsReleased: number }[];
   /** This (over) month's session is booked late (late side). */
-  filmingIn: { hostLabel: string; hostHref: string; state: State; startsAtISO: string | null; by: string | null; at: string; undoRefusal: string | null } | null;
+  filmingIn: { hostLabel: string; hostHref: string; state: State; startsAtISO: string | null; by: string | null; at: string; undoRefusal: string | null; combine?: LateCombineProps | null } | null;
   /** This (over) month could be booked late in `hostLabel` (late side). */
   offer: { hostMonthId: string; hostLabel: string; refusal: string | null; scriptsReleased: number } | null;
 };
@@ -75,6 +83,19 @@ export function LateSessionControl(p: LateSessionControlProps) {
       {copied && <textarea readOnly aria-label="Message to the client" value={copied} rows={4} className="mt-2 w-full rounded-lg border border-border bg-surface p-2 text-[13px] leading-relaxed" onFocus={(e) => e.currentTarget.select()} />}
     </>
   );
+  // Oct 13 2026: "Filming: one 4-hour session (all 4 videos)" or "two sessions", with the switch.
+  const combineRow = (lateMonthId: string, c: LateCombineProps | null | undefined) => {
+    if (!c || (!c.offered && !c.combined)) return null;
+    return (
+      <div className="mt-2 text-[13px]">
+        <p>Filming: <span className="font-medium">{c.combined ? `one ${c.combinedHours}-hour session (all ${c.videos} videos), on the Video Accelerator product` : `two sessions, ${c.separateHours} hours each`}</span></p>
+        <button type="button" className={`${control} mt-1`} disabled={busy || !!c.refusal} onClick={() => run(() => setLateCombinedAction(lateMonthId, !c.combined))}>
+          {c.combined ? `Switch to two ${c.separateHours}-hour sessions` : `Switch to one ${c.combinedHours}-hour session`}
+        </button>
+        {c.refusal && <p className="mt-1 text-muted">{c.refusal}</p>}
+      </div>
+    );
+  };
   const scriptsCheckbox = (label: string, released: number) => released > 0 ? (
     <p className="mt-2 text-[13px] text-muted">{released} {label} script{released === 1 ? " is" : "s are"} released in their portal, so the session opens right away.</p>
   ) : (
@@ -102,6 +123,7 @@ export function LateSessionControl(p: LateSessionControlProps) {
               : <span className="text-warning">No {c.lateLabel} scripts shared yet. Their {c.lateLabel} session opens once you share them (Plan › Scripts › Upload).</span>}
           </li>
         </ul>
+        {combineRow(c.lateMonthId, c.combine)}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button type="button" className={control} disabled={busy} onClick={() => copy(c.lateMonthId)}>
             {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <ClipboardCopy className="size-3.5" aria-hidden />} Copy a message
@@ -127,6 +149,7 @@ export function LateSessionControl(p: LateSessionControlProps) {
           Its topics, scripts and videos stay on {p.monthName}, and nothing here is chased as overdue while {f.hostLabel} runs.
           {f.by ? ` Approved by ${f.by}` : ""}{f.at ? ` on ${fmt(f.at)}` : ""}.
         </p>
+        {combineRow(p.monthId, f.combine)}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button type="button" className={control} disabled={busy} onClick={() => copy(p.monthId)}>
             {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <ClipboardCopy className="size-3.5" aria-hidden />} Copy a message

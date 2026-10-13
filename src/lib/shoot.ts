@@ -428,8 +428,10 @@ export async function withOfficeApprovedScripts(
 ): Promise<SessionBrief> {
   const topicIds = session.topics.map((t) => t.topicId);
   if (!topicIds.length) return session;
+  // Oct 13 2026: one session for a late month and its host films the host's topics too.
+  const host = await import("@/lib/monthLateSession").then((m) => m.combinedHostOfLateMonth(monthId));
   const scripts = await prisma.contentScript.findMany({
-    where: { monthId, topicId: { in: topicIds }, historical: false },
+    where: { monthId: { in: host ? [monthId, host.id] : [monthId] }, topicId: { in: topicIds }, historical: false },
     orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
     select: { id: true, topicId: true, approvedVersionId: true, sharedVersionId: true },
   });

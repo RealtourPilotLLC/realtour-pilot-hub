@@ -707,7 +707,7 @@ export async function sessionGate(enrollmentId: string, monthId: string, opts: {
       return closedGate(now, "That session isn't part of this month.", { callStatus: ctx.d.strategyCallStatus, callAt: ctx.d.strategyCallAt, planningMode: ctx.d.planningMode });
     }
   }
-  return gateFromDerived(ctx.d, sessionIndex, now, ctx.preparationGate);
+  return withHostEarliest(gateFromDerived(ctx.d, sessionIndex, now, ctx.preparationGate), ctx.hostEarliest);
 }
 
 /**
@@ -721,15 +721,24 @@ export async function sessionGatesFor(enrollmentId: string, monthId: string, opt
   const { monthSessionIndexes } = await import("@/lib/programMonths");
   const next = (await monthSessionIndexes(monthId, ctx.clientId, ctx.d.sessionsRequired, now).catch(() => null))?.next ?? null;
   return {
-    next: gateFromDerived(ctx.d, next, now, ctx.preparationGate),
-    sessions: Array.from({ length: ctx.d.sessionsRequired }, (_, i) => gateFromDerived(ctx.d, i + 1, now, ctx.preparationGate)),
+    next: withHostEarliest(gateFromDerived(ctx.d, next, now, ctx.preparationGate), ctx.hostEarliest),
+    sessions: Array.from({ length: ctx.d.sessionsRequired }, (_, i) => withHostEarliest(gateFromDerived(ctx.d, i + 1, now, ctx.preparationGate), ctx.hostEarliest)),
   };
+}
+
+/** Oct 13 2026: one session for two months starts no earlier than the HOST month's own gate allows either. */
+function withHostEarliest(g: SessionGate, hostEarliest: Date | null): SessionGate {
+  return !g.locked && hostEarliest && hostEarliest > g.earliest ? { ...g, earliest: hostEarliest } : g;
 }
 
 const closedGate = (now: Date, reason: string, extra: Partial<SessionGate> = {}): SessionGate =>
   ({ locked: true, reason, earliest: now, callStatus: "NOT_SCHEDULED", callAt: null, planningMode: "UNDECIDED", sessionIndex: null, preparation: null, ...extra });
 
-type GateContext = { d: import("@/lib/programMonths").DerivedMonthState; clientId: string; preparationGate: typeof import("@/lib/programMonths").preparationGate };
+type GateContext = {
+  d: import("@/lib/programMonths").DerivedMonthState; clientId: string; preparationGate: typeof import("@/lib/programMonths").preparationGate;
+  /** Oct 13 2026: a late month filmed together with its host — the host's own (open) gate's earliest start. */
+  hostEarliest: Date | null;
+};
 
 async function gateContext(enrollmentId: string, monthId: string, now: Date): Promise<GateContext | SessionGate> {
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return closedGate(now, "Pick one of your program months.");
@@ -739,14 +748,29 @@ async function gateContext(enrollmentId: string, monthId: string, now: Date): Pr
   // Oct 12 2026: an over month whose session is booked late (lateSession.ts)
   // opens only once its scripts are ready, and only while its host month runs.
   // Every other month reads exactly as before (the check is for over months).
+  let hostEarliest: Date | null = null;
   if (month.monthKey < etMonthKey(now)) {
     const lock = await import("@/lib/monthLateSession").then((m) => m.lateGateLock(enrollmentId, { id: monthId, monthKey: month.monthKey, status: month.status, historical: month.historical }, now)).catch(() => null);
     if (lock) return closedGate(now, lock);
+    // Oct 13 2026: ONE session for the late month and its host films the
+    // host's videos too, so it needs the host month's gate open as well
+    // (its topics chosen and answered, its call held, whatever that month's
+    // own plan asks), and starts no earlier than that gate allows.
+    const ls = await import("@/lib/monthLateSession");
+    const combined = await ls.combinedLateRecord(enrollmentId, monthId).catch(() => null);
+    if (combined) {
+      const host = await ls.combinedHostGate(enrollmentId, combined, now);
+      if (host.locked) {
+        const { combinedHostLock } = await import("@/lib/lateSession");
+        return closedGate(now, combinedHostLock(combined.lateMonthKey, combined.hostMonthKey, host.reason));
+      }
+      hostEarliest = host.earliest;
+    }
   }
   const { recalcProgramMonth, preparationGate } = await import("@/lib/programMonths");
   const r = await recalcProgramMonth(monthId, { dryRun: true, now });
   if (!r) return closedGate(now, "Pick one of your program months.");
-  return { d: r.after, clientId: month.clientId, preparationGate };
+  return { d: r.after, clientId: month.clientId, preparationGate, hostEarliest };
 }
 
 /** preparationGate for one session, the 24-hour floor, and the client's words for a lock. */
@@ -821,7 +845,7 @@ export type PortalScheduleMonth = {
    * booked late, alongside `hostMonthKey`'s. Its gate is its own plan's (and
    * its scripts being ready), never the host month's.
    */
-  late?: { hostMonthKey: string; scriptsReady: boolean } | null;
+  late?: { hostMonthKey: string; scriptsReady: boolean; /** Oct 13 2026: ONE session films both months (the host month has no tab of its own then). */ combined?: boolean; combinedVideos?: number } | null;
   /** What the month's tab says when a late session sits beside it: "September session (your scripts are ready)" / "October session". */
   tabLabel?: string | null;
 };
@@ -866,24 +890,33 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
   const lateRecs = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } })
     .then((e) => import("@/lib/lateSession").then((l) => l.readLateSessions(e?.overridesJson).filter((r) => open.some((m) => m.id === r.hostMonthId && m.monthKey === r.hostMonthKey))))
     .catch(() => []);
-  const lateInfo = new Map<string, { hostMonthKey: string; scriptsReady: boolean; tabLabel: string }>();
+  const lateInfo = new Map<string, { hostMonthKey: string; scriptsReady: boolean; tabLabel: string; combined: boolean; combinedVideos: number }>();
   const hostTab = new Map<string, string>();
+  // Oct 13 2026: a host month filmed together with its late month books
+  // nothing of its own: the one session is the late month's tab.
+  const hostHidden = new Set<string>();
   const lateRows: typeof open = [];
   if (lateRecs.length) {
-    const { bookableLateRecord, lateScriptsReady, lateMonthState } = await import("@/lib/monthLateSession");
-    const { lateSlotLabel, hostSlotLabel } = await import("@/lib/lateSession");
+    const { bookableLateRecord, lateScriptsReady, lateMonthState, combinedVideoCount } = await import("@/lib/monthLateSession");
+    const { lateSlotLabel, hostSlotLabel, combinedSlotLabel } = await import("@/lib/lateSession");
     const rows = await prisma.contentMonth.findMany({ where: { id: { in: lateRecs.map((r) => r.lateMonthId) }, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, status: true, historical: true, schedulingDeferredAt: true, planningChosenBy: true } });
     for (const r of lateRecs) {
       const row = rows.find((x) => x.id === r.lateMonthId && x.monthKey === r.lateMonthKey);
       if (!row || !(await bookableLateRecord(enrollment.id, row).catch(() => null))) continue;
       if ((await lateMonthState(row.id, enrollment.clientId, new Date()).catch(() => null))?.filmed) continue;
       const scripts = await lateScriptsReady(row.id, r).catch(() => ({ released: 0, ready: r.scriptsSentOutside }));
-      lateInfo.set(row.id, { hostMonthKey: r.hostMonthKey, scriptsReady: scripts.ready, tabLabel: lateSlotLabel(r.lateMonthKey, r.hostMonthKey, scripts.ready) });
-      hostTab.set(r.hostMonthId, hostSlotLabel(r.hostMonthKey));
+      if (r.combined) {
+        const videos = await combinedVideoCount(r).catch(() => 4);
+        lateInfo.set(row.id, { hostMonthKey: r.hostMonthKey, scriptsReady: scripts.ready, tabLabel: combinedSlotLabel(r.lateMonthKey, r.hostMonthKey, videos), combined: true, combinedVideos: videos });
+        hostHidden.add(r.hostMonthId);
+      } else {
+        lateInfo.set(row.id, { hostMonthKey: r.hostMonthKey, scriptsReady: scripts.ready, tabLabel: lateSlotLabel(r.lateMonthKey, r.hostMonthKey, scripts.ready), combined: false, combinedVideos: 0 });
+        hostTab.set(r.hostMonthId, hostSlotLabel(r.hostMonthKey));
+      }
       lateRows.push({ id: row.id, monthKey: row.monthKey, schedulingDeferredAt: row.schedulingDeferredAt, planningChosenBy: row.planningChosenBy });
     }
   }
-  const months = [...lateRows, ...open].sort((a, b) => a.monthKey.localeCompare(b.monthKey));
+  const months = [...lateRows, ...open.filter((m) => !hostHidden.has(m.id))].sort((a, b) => a.monthKey.localeCompare(b.monthKey));
   // A21: "Schedule later" is per session (ProgramSessionPlan); the month's own
   // stamp (batch 2) stands for session 1 when no plan row says otherwise.
   const plans = await prisma.programSessionPlan.findMany({ where: { monthId: { in: months.map((m) => m.id) } }, select: { monthId: true, sessionIndex: true, schedulingDeferredAt: true } }).catch(() => []);
@@ -960,7 +993,7 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
       sessionIndex: gate.sessionIndex,
       sessionGates: gates.sessions.map((g, i) => ({ index: g.sessionIndex ?? i + 1, locked: g.locked, reason: g.reason, earliestISO: g.locked ? null : g.earliest.toISOString() })),
       deferredAtISO: deferredAt ? deferredAt.toISOString() : null,
-      late: lateInfo.has(m.id) ? { hostMonthKey: lateInfo.get(m.id)!.hostMonthKey, scriptsReady: lateInfo.get(m.id)!.scriptsReady } : null,
+      late: lateInfo.has(m.id) ? { hostMonthKey: lateInfo.get(m.id)!.hostMonthKey, scriptsReady: lateInfo.get(m.id)!.scriptsReady, combined: lateInfo.get(m.id)!.combined, combinedVideos: lateInfo.get(m.id)!.combinedVideos } : null,
       tabLabel: lateInfo.get(m.id)?.tabLabel ?? hostTab.get(m.id) ?? null,
     });
   }

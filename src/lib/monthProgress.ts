@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { countDistinctSessions, replacesPendingMove, sessionIndexesFrom, sessionShortfall, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
+import { countDistinctSessions, replacesPendingMove, sessionIndexesFrom, sessionShortfall, sessionSourceMonthIds, sessionSourcesFrom, type BookedSessionCount, type CountedSession, type ProgramDb } from "@/lib/programMonths";
 import { catchUpFrom, catchUpInto, sessionsForMonth } from "@/lib/catchUp";
 import { lateMonthName, lateSessionOf, lateSessionsInto } from "@/lib/lateSession";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
@@ -228,11 +228,22 @@ type SessionProjectRow = {
 type SessionApptRow = { aryeoId: string; projectId: string; startAt: Date | null; endAt: Date | null; status: string | null; completedAt: Date | null; assignedTo: { name: string } | null };
 type SessionRequestRow = { id: string; monthId: string; status: string; bookingState: string; projectId: string | null; aryeoAppointmentId: string | null; slotStart: Date | null; supersedesId: string | null; sessionIndex: number | null };
 
-type SessionRows = { projects: SessionProjectRow[]; appointments: SessionApptRow[]; requests: SessionRequestRow[] };
+/**
+ * `sources` (Oct 13 2026): the months whose sessions count for each month —
+ * programMonths.sessionSourcesFrom, the ONE rule monthSessionCount uses too
+ * (a host month also counts the late month it films together with). A month
+ * missing from the map counts only itself.
+ */
+type SessionRows = { projects: SessionProjectRow[]; appointments: SessionApptRow[]; requests: SessionRequestRow[]; sources: Map<string, string[]> };
+const sourcesOf = (monthId: string, rows: SessionRows) => rows.sources.get(monthId) ?? [monthId];
 
 /** The rows the session counter reads, for many months, scoped to each month's OWN client (monthSessionCount's rule). */
-async function loadSessionRows(db: ProgramDb, months: { id: string; clientId: string }[]): Promise<SessionRows> {
-  if (months.length === 0) return { projects: [], appointments: [], requests: [] };
+async function loadSessionRows(db: ProgramDb, monthsIn: { id: string; clientId: string; sources?: string[] }[]): Promise<SessionRows> {
+  const sources = new Map(monthsIn.map((m) => [m.id, m.sources?.length ? m.sources : [m.id]]));
+  if (monthsIn.length === 0) return { projects: [], appointments: [], requests: [], sources };
+  // A combined late month is read too, scoped to its host's client (the same client).
+  const months = [...monthsIn];
+  for (const m of monthsIn) for (const extra of m.sources ?? []) if (!months.some((x) => x.id === extra)) months.push({ id: extra, clientId: m.clientId });
   const clientOf = new Map(months.map((m) => [m.id, m.clientId]));
   const [projectsRaw, requests] = await Promise.all([
     db.project.findMany({
@@ -257,18 +268,19 @@ async function loadSessionRows(db: ProgramDb, months: { id: string; clientId: st
         select: { aryeoId: true, projectId: true, startAt: true, endAt: true, status: true, completedAt: true, assignedTo: { select: { name: true } } },
       })
     : [];
-  return { projects, appointments, requests };
+  return { projects, appointments, requests, sources };
 }
 
 /** countDistinctSessions with EXACTLY monthSessionCount's inputs — the capacity check and this reader must never count differently. */
 function countFor(monthId: string, rows: SessionRows, now: Date): BookedSessionCount {
-  const projects = rows.projects.filter((p) => p.contentMonthId === monthId);
+  const src = sourcesOf(monthId, rows);
+  const projects = rows.projects.filter((p) => !!p.contentMonthId && src.includes(p.contentMonthId));
   const ids = new Set(projects.map((p) => p.id));
   return countDistinctSessions({
     now,
     appointments: rows.appointments.filter((a) => ids.has(a.projectId)).map((a) => ({ appointmentId: a.aryeoId, projectId: a.projectId, startAt: a.startAt, endAt: a.endAt, cancelled: a.status === "CANCELED" })),
     projects: projects.map((p) => ({ projectId: p.id, shootDate: p.shootDate, addressLine: p.addressLine })),
-    confirmedRequests: rows.requests.filter((r) => r.monthId === monthId && r.status === "CONFIRMED").map((r) => ({ requestId: r.id, projectId: r.projectId, appointmentId: r.aryeoAppointmentId, slotStart: r.slotStart })),
+    confirmedRequests: rows.requests.filter((r) => src.includes(r.monthId) && r.status === "CONFIRMED").map((r) => ({ requestId: r.id, projectId: r.projectId, appointmentId: r.aryeoAppointmentId, slotStart: r.slotStart })),
   });
 }
 
@@ -278,7 +290,7 @@ function countFor(monthId: string, rows: SessionRows, now: Date): BookedSessionC
  * count. Takes a transaction client like monthSessionCount does.
  */
 export async function monthBookedSessions(monthId: string, clientId: string, now: Date, db: ProgramDb = prisma): Promise<BookedSessionCount> {
-  return countFor(monthId, await loadSessionRows(db, [{ id: monthId, clientId }]), now);
+  return countFor(monthId, await loadSessionRows(db, [{ id: monthId, clientId, sources: await sessionSourceMonthIds(monthId, db) }]), now);
 }
 
 type EvidenceRows = {
@@ -366,7 +378,8 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
   const liveMonths = [...monthOf.values()];
 
   const [sessionRows, videos, selections, monthTopics, scripts, ownerMaps] = await Promise.all([
-    loadSessionRows(prisma, liveMonths.map((m) => ({ id: m.id, clientId: m.clientId }))),
+    // Oct 13 2026: each month's session sources, from the bags already read (no extra statement).
+    loadSessionRows(prisma, liveMonths.map((m) => ({ id: m.id, clientId: m.clientId, sources: sessionSourcesFrom(m.id, m.monthKey, enrollmentOf.get(m.enrollmentId)?.overridesJson) }))),
     // The LIBRARY, keyed exactly as programCountsByMonth and the overview key
     // it (enrollment × obligation month, ARCHIVED excluded), so the portal's
     // meter and Jordan's rows count the same rows.
@@ -495,18 +508,22 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     const count: BookedSessionCount = mid ? countFor(mid, sessionRows, now) : { sessions: [], booked: 0, filmed: 0, accountedFor: 0, duplicatesFolded: 0 };
     const myProjects = sessionRows.projects.filter((p) => mid && p.contentMonthId === mid);
     const myProjectIds = new Set(myProjects.map((p) => p.id));
+    // Oct 13 2026: the session side reads every month whose sessions count
+    // here (a host month: the combined late month's shoot and asks too).
+    const sessionSrc = mid ? sourcesOf(mid, sessionRows) : [];
+    const sessionProjectIds = new Set(sessionRows.projects.filter((p) => !!p.contentMonthId && sessionSrc.includes(p.contentMonthId)).map((p) => p.id));
     const myVideos = videos.filter((v) => v.enrollmentId === e.id && v.monthKey === pair.monthKey);
     // A24: each session's index — its request's own, else slot order — so a
     // Pro card says "Session 2" for the session booked AS session 2.
-    const indexes = sessionIndexesFrom(count, sessionRows.requests.filter((r) => r.monthId === mid), required);
+    const indexes = sessionIndexesFrom(count, sessionRows.requests.filter((r) => sessionSrc.includes(r.monthId)), required);
     const facts = classifySessions(count, sessionRows, {
-      reports: reports.filter((r) => myProjectIds.has(r.projectId)),
-      cuts: subs.filter((s) => myProjectIds.has(s.projectId)),
+      reports: reports.filter((r) => sessionProjectIds.has(r.projectId)),
+      cuts: subs.filter((s) => sessionProjectIds.has(s.projectId)),
       confirmedVideos: myVideos.filter((v) => !!v.filmedConfirmedAt),
     }, indexes.byKey);
     const shortfall = sessionShortfall(required, count);
     const countedKeys = new Set(count.sessions.map((x) => x.key));
-    const myRequests = sessionRows.requests.filter((r) => r.monthId === mid);
+    const myRequests = sessionRows.requests.filter((r) => sessionSrc.includes(r.monthId));
     // The same "not already a counted session" filter sessionCapacity applies.
     const pendingRequests = myRequests.filter((r) =>
       (r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") &&

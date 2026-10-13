@@ -419,8 +419,10 @@ export async function portalRequestSession(
     // honour), so this one comparison enforces both.
     if (slot < gate.earliest) return fail(tooSoon(gate.earliest));
     startISO = slot.toISOString();
-    // The package's session length, so the desk sees the whole block.
-    const hours = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { sessionHours: true } }))?.sessionHours ?? 2;
+    // The package's session length, so the desk sees the whole block — or
+    // (Oct 13 2026) the Video Accelerator's 4 hours for one session that films
+    // a late month together with its host.
+    const hours = await sessionHoursFor(enrollment.id, monthId);
     endISO = new Date(slot.getTime() + hours * 3600_000).toISOString();
   }
   if (!startISO && !when) return fail("Pick a time from the list (or tell us what works).");
@@ -450,7 +452,9 @@ export async function portalRequestSession(
     if (!/^[0-9a-f-]{20,40}$/i.test(creativeId)) return fail("Pick a videographer from the list.");
     const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }))?.package ?? null;
     const { aryeoProductFor } = await import("@/lib/contentProgram");
-    const product = aryeoProductFor(pkg);
+    // Oct 13 2026: a combined session's videographer is one assigned to the Accelerator product.
+    const combined = await import("@/lib/monthLateSession").then((m) => m.combinedLateRecord(enrollment.id, monthId)).catch(() => null);
+    const product = aryeoProductFor(combined ? (await import("@/lib/lateSession")).COMBINED_SESSION_PACKAGE : pkg);
     if (!product) return fail("Pick a videographer from the list.");
     const { productProvidersFor } = await import("@/lib/integrations/aryeo");
     const roster = await productProvidersFor(product.productId).catch(() => null);
@@ -517,6 +521,17 @@ export async function portalRequestSession(
   };
 }
 
+/**
+ * How long one session for this month runs, in hours: the package's own, or
+ * (Oct 13 2026) the Video Accelerator's 4 hours when the month is a late
+ * month filmed together with its host in one session (lateSession.ts).
+ */
+async function sessionHoursFor(enrollmentId: string, monthId: string): Promise<number> {
+  const combined = await import("@/lib/monthLateSession").then((m) => m.combinedLateRecord(enrollmentId, monthId)).catch(() => null);
+  if (combined) return (await import("@/lib/lateSession")).COMBINED_SESSION_HOURS;
+  return (await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { sessionHours: true } }))?.sessionHours ?? 2;
+}
+
 /** Move one of the client's own sessions (CP-04). Inside 24 hours → Kyle's number. */
 export async function portalRescheduleSession(
   auth: PortalAuth,
@@ -543,7 +558,7 @@ export async function portalRescheduleSession(
   if (slot < gate.earliest) return fail(tooSoon(gate.earliest));
   const creativeId = String(input.creativeTeamMemberId ?? "").trim();
   const creative = creativeId && /^[0-9a-f-]{20,40}$/i.test(creativeId) ? { teamMemberId: creativeId, name: null } : null;
-  const hours = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { sessionHours: true } }))?.sessionHours ?? 2;
+  const hours = await sessionHoursFor(v.enrollment.id, r.monthId);
   const a = v.actor;
   const actor =
     a.kind === "CLIENT" ? { kind: "CLIENT" as const, clientUserId: a.clientUserId }
@@ -600,6 +615,33 @@ export async function portalSessionSlots(
   const pkg = (await prisma.contentEnrollment.findUnique({ where: { id: v.enrollment.id }, select: { package: true } }))?.package ?? null;
   const { sessionSlotsFor } = await import("@/lib/sessionTravel");
   return sessionSlotsFor({ enrollmentId: v.enrollment.id, monthId: month.id, sessionIndex: idx, package: pkg, moveRequestId: moveId });
+}
+
+/**
+ * ONE SESSION OR TWO (Oct 13 2026). The client's choice for a late month and
+ * the month that books it: "All 4 videos in one 4-hour session" (a Video
+ * Accelerator-length session, Starter only) or "Two sessions, 2 hours each".
+ * The same door as booking (requestSession: a viewer seat, a paused program
+ * or a read-only visit cannot), and the same rules the office's control
+ * follows (monthLateSession.setLateCombined): it can change only while
+ * neither month has a session booked, filmed or asked for. Sends nothing.
+ */
+export async function portalChooseFilmingSessions(auth: PortalAuth, lateMonthId: string, combined: boolean): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const id = String(lateMonthId ?? "");
+  if (!/^[a-z0-9]{10,40}$/i.test(id) || typeof combined !== "boolean") return fail("Pick how you'd like to film.");
+  // Only a late month this enrollment may book right now (its host month still running).
+  const month = await bookableMonthForEnrollment(v.enrollment.id, id);
+  const { setLateCombined, bookableLateRecord } = await import("@/lib/monthLateSession");
+  if (!month || !(await bookableLateRecord(v.enrollment.id, { id: month.id, monthKey: month.monthKey, status: "OPEN", historical: month.historical }).catch(() => null))) return fail("Pick how you'd like to film.");
+  try {
+    const r = await setLateCombined(month.id, combined, choiceBy(v));
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: r.message };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
+  }
 }
 
 /** The exact filming address for one session, from the signed-in portal (CP-05). */

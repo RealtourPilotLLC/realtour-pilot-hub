@@ -2,10 +2,11 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { MONTHLY_PLAN_RE } from "@/lib/videoStyles";
 import { isAutomationEnabled } from "@/lib/programAutomation";
-import { monthSessionCount, monthSessionIndexes, recalcProgramMonth, replacesPendingMove, sessionShortfall, type ProgramDb } from "@/lib/programMonths";
+import { monthSessionCount, monthSessionIndexes, recalcProgramMonth, replacesPendingMove, sessionShortfall, sessionSourceMonthIds, type ProgramDb } from "@/lib/programMonths";
 import { isTestClientName } from "@/lib/testClients";
 import { sessionsForMonth } from "@/lib/catchUp";
 import { aryeoProductFor, etMonthKey } from "@/lib/contentProgram";
+import { COMBINED_SESSION_PACKAGE, combinedDeskLine, combinedLateInto, combinedLateOf, lateMonthName, type LateSessionRecord } from "@/lib/lateSession";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
@@ -117,9 +118,12 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
     db.contentMonth.findUnique({ where: { id: monthId }, select: { monthKey: true } }),
   ]);
   const count = enrollment ? await monthSessionCount(monthId, enrollment.clientId, now, db) : { sessions: [], booked: 0, filmed: 0, accountedFor: 0, duplicatesFolded: 0 };
+  // Oct 13 2026: a host month's combined late session (filed on the late
+  // month) holds the host's place while it waits on the office, too.
+  const sources = await sessionSourceMonthIds(monthId, db);
   const requests = await db.programSessionRequest.findMany({
-    where: { enrollmentId, monthId, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED"] } },
-    select: { id: true, projectId: true, aryeoAppointmentId: true, kind: true, extraApprovedBy: true, status: true, bookingState: true, supersedesId: true },
+    where: { enrollmentId, monthId: { in: sources }, status: { in: ["REQUESTED", "RESCHEDULE_REQUESTED", "CONFIRMED"] } },
+    select: { id: true, monthId: true, projectId: true, aryeoAppointmentId: true, kind: true, extraApprovedBy: true, status: true, bookingState: true, supersedesId: true },
   });
   // A CONFIRMED request is already inside `count` (it is one of the things
   // countDistinctSessions folds), so only the asks the office has not answered
@@ -136,7 +140,8 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
       !(r.aryeoAppointmentId && countedKeys.has(`appt:${r.aryeoAppointmentId}`)) &&
       !(r.projectId && countedKeys.has(`project:${r.projectId}`)),
   );
-  const extrasApproved = requests.filter((r) => r.kind === "EXTRA_SESSION" && r.extraApprovedBy).length;
+  // Extras are the month's own: a combined late month's extra is not the host's.
+  const extrasApproved = requests.filter((r) => r.monthId === monthId && r.kind === "EXTRA_SESSION" && r.extraApprovedBy).length;
   // The MONTH's sessions (Oct 7 2026): the package's plus a catch-up it carries.
   const sessionsPerMonth = enrollment ? sessionsForMonth(enrollment, monthRow?.monthKey) : 1;
   const allowed = sessionsPerMonth + extrasApproved;
@@ -158,7 +163,7 @@ export async function sessionCapacity(enrollmentId: string, monthId: string, opt
  */
 export async function createSessionRequest(input: CreateSessionRequestInput): Promise<CreateSessionRequestResult> {
   const [enrollment, month] = await Promise.all([
-    prisma.contentEnrollment.findUnique({ where: { id: input.enrollmentId }, select: { id: true, clientId: true, status: true, timezone: true } }),
+    prisma.contentEnrollment.findUnique({ where: { id: input.enrollmentId }, select: { id: true, clientId: true, status: true, timezone: true, overridesJson: true } }),
     prisma.contentMonth.findUnique({ where: { id: input.monthId }, select: { id: true, enrollmentId: true, monthKey: true, historical: true } }),
   ]);
   if (!enrollment) return { ok: false, reason: "This program membership is not active." };
@@ -175,6 +180,16 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   const location = clip((input.slot.locationText ?? "").trim(), 300);
 
   const kind = input.kind ?? "CONTENT_SESSION";
+  // Oct 13 2026 (lateSession.ts): a late month filmed together with its host
+  // in ONE Video Accelerator-length session. The request is filed here, on the
+  // late month; it books the Accelerator product, and only the desk books it.
+  // A host month whose late month is combined books nothing of its own.
+  const combined = kind === "CONTENT_SESSION" ? combinedLateOf(enrollment.overridesJson, month.monthKey) : null;
+  const combinedInto = kind === "CONTENT_SESSION" && !combined ? combinedLateInto(enrollment.overridesJson, month.monthKey) : null;
+  if (combinedInto && combinedInto.hostMonthId === month.id) {
+    const l = lateMonthName(combinedInto.lateMonthKey, month.monthKey), h = lateMonthName(month.monthKey);
+    return { ok: false, reason: `Your ${h} videos are filmed in one session with your ${l} videos. Book that session, or choose two sessions first.` };
+  }
   const dedupeKey = `${enrollment.id}:${month.id}:${start ? start.toISOString() : input.sessionIndex != null ? `flex:${input.sessionIndex}` : "flex"}`;
   const now = new Date();
   // WHAT THIS REPLACES (review of CP-04, Sep 24 2026). A new time for a session
@@ -202,14 +217,16 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   // the same read-only check the write itself makes, so a real client is never
   // QUEUED while only a fixture is authorised. Everyone else: the desk, as today.
   let hubBooks = false;
-  let deskReason: string | null = null;
+  let deskReason: string | null = combined
+    ? `this is one ${lateMonthName(combined.hostMonthKey)} session filming ${lateMonthName(combined.lateMonthKey, combined.hostMonthKey)} and ${lateMonthName(combined.hostMonthKey)} together (a Video Accelerator-length booking), which the office books by hand`
+    : null;
   // §6.6 W02: the plan the slot was offered for, read now (the version must
   // still be the one the client saw).
   const plan = input.plan?.planId
     ? await prisma.programSessionPlan.findUnique({ where: { id: input.plan.planId } })
     : null;
   if (input.plan?.planId && (!plan || plan.monthId !== month.id || plan.enrollmentId !== enrollment.id)) return { ok: false, reason: "Add the exact filming address for this session first." };
-  if (start && (await isAutomationEnabled("session_booking"))) {
+  if (start && !combined && (await isAutomationEnabled("session_booking"))) {
     const { planBookable } = await import("@/lib/sessionAddress");
     if (booked) deskReason = `this moves a session already on the calendar${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}, and the hub only books new sessions`;
     else if (deskHeld) deskReason = "this replaces an ask Kyle may already have booked by hand";
@@ -227,7 +244,8 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
       if (gate.ok) hubBooks = true; else deskReason = gate.reason;
     }
   }
-  const product = aryeoProductFor((await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }))?.package);
+  // The combined session books the Accelerator product (4 hours), never the package's own.
+  const product = aryeoProductFor(combined ? COMBINED_SESSION_PACKAGE : (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { package: true } }))?.package);
   const planLine = plan ? clip((await import("@/lib/sessionAddress")).planAddressLine(plan), 300) : null;
 
   // A24 — SIMULTANEOUS REQUESTS MUST NOT CREATE DUPLICATE PRO SESSIONS.
@@ -251,13 +269,20 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   // and without the casts every call raised 42883 — which is how cut uploads
   // were broken for four hours.
   const [lockA, lockB] = monthLockKey(enrollment.id, month.id);
+  // A combined session belongs to BOTH months: the host's lock is taken too,
+  // always after the late month's (one fixed order everywhere, setLateCombined
+  // included), so a change of the choice or a host booking racing this ask is
+  // one after the other.
+  const hostLock = combined ? monthLockKey(enrollment.id, combined.hostMonthId) : null;
   type Settled =
     | { kind: "duplicate"; id: string; status: string; capacity: CapacityCheck }
     | { kind: "full"; capacity: CapacityCheck }
     | { kind: "taken"; capacity: CapacityCheck }
-    | { kind: "created"; id: string; capacity: CapacityCheck };
+    | { kind: "created"; id: string; capacity: CapacityCheck }
+    | { kind: "refused"; reason: string; capacity: CapacityCheck };
   const settled = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}::int4, ${lockB}::int4)`;
+    if (hostLock) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${hostLock[0]}::int4, ${hostLock[1]}::int4)`;
     // Read INSIDE the lock, so it is the capacity as of this decision.
     const capacity = await sessionCapacity(enrollment.id, month.id, { now, db: tx });
     // The duplicate check comes BEFORE the capacity check: a second click on
@@ -273,6 +298,15 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
       ? await tx.programSessionRequest.count({ where: { id: input.supersedesId, enrollmentId: enrollment.id, monthId: month.id, status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"] } } })
       : 0;
     if (kind === "CONTENT_SESSION" && capacity.remaining + freed <= 0) return { kind: "full", capacity } satisfies Settled;
+    // Oct 13 2026: re-read the choice INSIDE the locks (a switch to two
+    // sessions a moment ago wins), and refuse a combined session while the
+    // host month already has a session of its own booked or asked for.
+    if (combined) {
+      const bag = await tx.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } });
+      if (!combinedLateOf(bag?.overridesJson, month.monthKey)) return { kind: "refused", reason: "How you film these months just changed. Reload the page and pick a time again.", capacity } satisfies Settled;
+      const hostOwn = await combinedHostOwnSessions(tx, combined, enrollment.clientId);
+      if (hostOwn) return { kind: "refused", reason: `Your ${lateMonthName(combined.hostMonthKey)} session is already booked or requested, so the two months can't be filmed in one session now. Choose two sessions instead.`, capacity } satisfies Settled;
+    }
     // A24: ONE live ask per session. Two different times picked for the same
     // Pro session (two tabs) both fit a two-session capacity, and the second
     // would then stand in for session 2 without ever passing session 2's
@@ -365,6 +399,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   if (settled.kind === "duplicate") {
     return { ok: true, id: settled.id, status: settled.status, duplicate: true, capacity: settled.capacity, message: "We already have this request. It shows as requested until we confirm it." };
   }
+  if (settled.kind === "refused") return { ok: false, reason: settled.reason, capacity: settled.capacity };
   if (settled.kind === "taken") {
     return { ok: false, reason: "That session is already requested or booked. It shows on your page, and you can change its time there.", capacity: settled.capacity };
   }
@@ -388,6 +423,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   }
   if (input.supersedesId) await closeDeskTask(input.supersedesId, "CANCELLED").catch(() => {});
   await recalcProgramMonth(month.id);
+  if (combined) await recalcProgramMonth(combined.hostMonthId).catch(() => null);
   // The capacity quoted back is the one the decision was made on, re-read after
   // the write so the caller sees the session it just used up.
   const after = await sessionCapacity(enrollment.id, month.id, { now });
@@ -400,6 +436,19 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
       ? `Booking your session now. It shows as booked as soon as the calendar confirms it.${remainingNote}`
       : `Requested. Kyle books it in our calendar by hand, so it shows as requested until he confirms it.${remainingNote}`,
   };
+}
+
+/**
+ * Oct 13 2026: the host month's OWN sessions beside a combined late session
+ * (lateSession.ts) — anything filed or linked on the host month itself: a
+ * live ask, a confirmed request, or a shoot. Read inside the locks.
+ */
+async function combinedHostOwnSessions(db: ProgramDb, rec: LateSessionRecord, clientId: string): Promise<boolean> {
+  const [live, shoots] = await Promise.all([
+    db.programSessionRequest.count({ where: { monthId: rec.hostMonthId, kind: "CONTENT_SESSION", status: { in: ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED", "CANCEL_REQUESTED"] }, bookingState: { not: "CONFLICT" } } }),
+    db.project.count({ where: { contentMonthId: rec.hostMonthId, clientId, status: { not: "CANCELLED" } } }),
+  ]);
+  return live > 0 || shoots > 0;
 }
 
 /**
@@ -508,6 +557,12 @@ const DESK_TITLE: Record<DeskMode, string> = {
   UNDO_MOVE: "Check a withdrawn move",
 };
 
+/** The videos one combined session films: both months' own (Starter: 2 + 2). */
+async function combinedVideos(rec: LateSessionRecord): Promise<number> {
+  const rows = await prisma.contentMonth.findMany({ where: { id: { in: [rec.lateMonthId, rec.hostMonthId] } }, select: { videosOwed: true } });
+  return rows.reduce((n, m) => n + m.videosOwed, 0) || 4;
+}
+
 async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason?: string | null): Promise<void> {
   const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId } });
   if (!r) return;
@@ -553,8 +608,15 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   const lateLine = lateRec
     ? await import("@/lib/lateSession").then(({ lateMonthName: n }) => {
         const l = n(lateRec.lateMonthKey, lateRec.hostMonthKey), h = n(lateRec.hostMonthKey);
+        // Oct 13 2026: filmed together with the host month in one session.
+        if (lateRec.combined && r.kind !== "EXTRA_SESSION") return `This is ${l}'s session, approved to film late in ${h}, together with ${h}'s own: it films ${l}'s and ${h}'s scripts in one session. Once it's booked, check the job sits on ${l} (Production › Sessions), not on ${h}.`;
         return `This is ${l}'s session, approved to film late in ${h}. It uses ${l}'s scripts. Once it's booked, check the job sits on ${l} (Production › Sessions), not on ${h}.`;
       })
+    : null;
+  // Oct 13 2026: ONE Video Accelerator appointment for both months. Never a
+  // second product item on the order.
+  const combinedLine = lateRec?.combined && r.kind !== "EXTRA_SESSION" && (mode === "BOOK" || mode === "RESCHEDULE")
+    ? combinedDeskLine(lateRec.lateMonthKey, lateRec.hostMonthKey, await combinedVideos(lateRec).catch(() => 4))
     : null;
   const instruction: Record<DeskMode, string> = {
     BOOK: "Book it in Aryeo — the request flips to CONFIRMED on its own when the appointment appears (hourly), and the client sees the date.",
@@ -567,6 +629,7 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
   const description = [
     `Content session request for ${month?.monthKey ?? "their month"} (${r.kind === "EXTRA_SESSION" ? "EXTRA session" : "package session"}).`,
     lateLine,
+    combinedLine,
     ordinalLine,
     `Time: ${when}`,
     earliestLine,

@@ -14,6 +14,8 @@ import type { MonthBriefView } from "@/lib/monthBriefCore";
 import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalLateScript } from "@/lib/monthLateSession";
+import { combineChoiceWords } from "@/lib/lateSession";
+import { LateFilmingChoice } from "@/components/portal/LateFilmingChoice";
 
 // ---------------------------------------------------------------------------
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
@@ -179,8 +181,8 @@ export function YourMonth({ d }: { d: YourMonthData }) {
                 {step.key === "filming" && (d.scheduleFailed ? (
                   <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
                 ) : s && step.state === "current" && !s.locked && p.late ? (
-                  // Both sessions are booked from the one card above.
-                  <Link href="#step-late" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>Book it above, beside your {p.late.label} session <ChevronRight className="size-4" aria-hidden /></Link>
+                  // Both sessions are booked from the one card above (Oct 13 2026: or the one session for both months).
+                  <Link href="#step-late" className={cn("mt-1.5 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-brand hover:underline", focusRing)}>{p.late.combine.combined ? `Book it above: one session for your ${p.late.label} and ${p.late.hostLabel} videos` : `Book it above, beside your ${p.late.label} session`} <ChevronRight className="size-4" aria-hidden /></Link>
                 ) : s && step.state === "current" && !s.locked ? (
                   <div className="mt-3">
                     <PortalScheduler key={`${s.monthId}:${d.selectedSessionIndex ?? "next"}`} months={[s]} bookingUrl={d.bookingUrl} days={d.slotDays} readOnly={!d.can.session || d.readOnly} timezone={p.timezone} selectedMonthId={s.monthId} selectedSessionIndex={d.selectedSessionIndex} embedded />
@@ -228,17 +230,29 @@ export function YourMonth({ d }: { d: YourMonthData }) {
  */
 function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNullable<PortalPlanning["late"]>; hostName: string }) {
   const s = d.schedule;
-  const months = [d.late?.schedule ?? null, s].filter((m): m is PortalScheduleMonth => !!m);
+  // Oct 13 2026: one session for both months has ONE tab (the late month's); this month has none of its own.
+  const combined = late.combine.combined;
+  const months = (combined ? [d.late?.schedule ?? null] : [d.late?.schedule ?? null, s])
+    .filter((m, i, all): m is PortalScheduleMonth => !!m && all.findIndex((x) => x?.monthId === m.monthId) === i);
   const scripts = d.late?.scripts ?? [];
+  const words = combineChoiceWords(late.combine.videos);
   const pick = d.selectedScheduleMonthId && months.some((m) => m.monthId === d.selectedScheduleMonthId) ? d.selectedScheduleMonthId : late.monthId;
   return (
     <section id="step-late" aria-labelledby="late-session-line" className="scroll-mt-24 rounded-2xl border border-brand/40 bg-surface/70 p-4 shadow-sm backdrop-blur">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-brand">{late.label} session</div>
       <h3 id="late-session-line" className="break-words text-base font-semibold leading-snug">{late.line}</h3>
       <p className="mt-1 text-sm text-muted">
-        {late.scriptsReady ? `Your ${late.label} scripts are ready, so you can book that session now.` : `We're finishing your ${late.label} scripts. That session opens as soon as they're ready.`}
-        {s ? ` ${hostName}'s session follows ${hostName}'s own plan.` : ""}
+        {combined
+          ? `This one session films your ${late.label} and ${hostName} videos together, so it opens once your ${late.label} scripts are ready and ${hostName} is planned.`
+          : <>
+              {late.scriptsReady ? `Your ${late.label} scripts are ready, so you can book that session now.` : `We're finishing your ${late.label} scripts. That session opens as soon as they're ready.`}
+              {s ? ` ${hostName}'s session follows ${hostName}'s own plan.` : ""}
+            </>}
       </p>
+      {/* Oct 13 2026: one session for both months, or two (Starter only). */}
+      {late.combine.offered && (
+        <LateFilmingChoice lateMonthId={late.monthId} combined={combined} refusal={late.combine.refusal} readOnly={!d.can.session || d.readOnly} words={words} />
+      )}
       {d.scheduleFailed ? (
         <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
       ) : months.length > 0 ? (

@@ -40,6 +40,14 @@ export type LateSessionRecord = {
   hostMonthId: string;
   /** Staff said the late month's scripts already reached the client outside the hub (Jordan emailed them). */
   scriptsSentOutside: boolean;
+  /**
+   * Oct 13 2026: film BOTH months in ONE Video Accelerator-length session
+   * (Starter only: 2 + 2 videos in one 4-hour block) instead of two 2-hour
+   * sessions. The one request is filed on the LATE month; the host month
+   * counts it as its own session too (programMonths.sessionSourceMonthIds).
+   * Absent/false = two sessions, the Oct 12 behaviour.
+   */
+  combined?: boolean;
   by: string | null;
   at: string;
 };
@@ -64,7 +72,7 @@ export function readLateSessions(overridesJson: string | null | undefined): Late
     if (typeof r.hostMonthKey !== "string" || !MONTH_KEY.test(r.hostMonthKey) || r.hostMonthKey <= key) continue;
     out.push({
       lateMonthKey: key, lateMonthId: String(r.lateMonthId ?? ""), hostMonthKey: r.hostMonthKey, hostMonthId: String(r.hostMonthId ?? ""),
-      scriptsSentOutside: r.scriptsSentOutside === true, by: typeof r.by === "string" ? r.by : null, at: String(r.at ?? ""),
+      scriptsSentOutside: r.scriptsSentOutside === true, combined: r.combined === true, by: typeof r.by === "string" ? r.by : null, at: String(r.at ?? ""),
     });
   }
   return out.sort((a, b) => a.lateMonthKey.localeCompare(b.lateMonthKey));
@@ -80,6 +88,38 @@ export function lateSessionOf(overridesJson: string | null | undefined, monthKey
 export function lateSessionsInto(overridesJson: string | null | undefined, hostMonthKey: string | null | undefined): LateSessionRecord[] {
   if (!hostMonthKey) return [];
   return readLateSessions(overridesJson).filter((r) => r.hostMonthKey === hostMonthKey);
+}
+
+// ---- one combined session (Oct 13 2026) ------------------------------------
+//
+// Jordan: "I'd like to give the option to film 4 in one session if needing to
+// catch up or 2 separate sessions ... So essentially they would be using the
+// video accelerator package to catch up." Offered only on Starter (one 2-hour
+// session of 2 videos a month): the combined session is a Video Accelerator
+// session (4 hours, ARYEO_CONTENT_PRODUCTS.Accelerator). Accelerator and Pro
+// clients are never offered it (Pro's two sessions may never merge, §3).
+
+/** The one package a late month may be combined on, and the product the combined session books. */
+export const COMBINE_PACKAGE = "Starter";
+export const COMBINED_SESSION_PACKAGE = "Accelerator";
+/** Starter's session and the Accelerator-length one, in hours (contentProgram's catalogue: 120 / 240 minutes). */
+export const SEPARATE_SESSION_HOURS = 2;
+export const COMBINED_SESSION_HOURS = 4;
+
+/** May a late month on this package be filmed together with its host? */
+export function combineOffered(pkg: string | null | undefined): boolean {
+  return pkg === COMBINE_PACKAGE;
+}
+
+/** This (late) month's record, when it is filmed together with its host in one session. */
+export function combinedLateOf(overridesJson: string | null | undefined, lateMonthKey: string | null | undefined): LateSessionRecord | null {
+  const r = lateSessionOf(overridesJson, lateMonthKey);
+  return r?.combined ? r : null;
+}
+
+/** The late month this (host) month films together with, in one session — or null. */
+export function combinedLateInto(overridesJson: string | null | undefined, hostMonthKey: string | null | undefined): LateSessionRecord | null {
+  return lateSessionsInto(overridesJson, hostMonthKey).find((r) => r.combined) ?? null;
 }
 
 /** The bag with this late month's record set (record) or removed (null). Other keys are untouched. */
@@ -112,12 +152,49 @@ export function hostSlotLabel(hostMonthKey: string): string {
   return `${lateMonthName(hostMonthKey)} session`;
 }
 
+/** The combined session's name: "September and October session (all 4 videos)". */
+export function combinedSlotLabel(lateMonthKey: string, hostMonthKey: string, videos: number): string {
+  return `${lateMonthName(lateMonthKey, hostMonthKey)} and ${lateMonthName(hostMonthKey)} session (all ${videos} videos)`;
+}
+
+/** The two choices, in the client's words ("All 4 videos in one 4-hour session" / "Two sessions, 2 hours each"). */
+export function combineChoiceWords(videos: number): { heading: string; combined: string; separate: string } {
+  return {
+    heading: "How would you like to film?",
+    combined: `All ${videos} videos in one ${COMBINED_SESSION_HOURS}-hour session`,
+    separate: `Two sessions, ${SEPARATE_SESSION_HOURS} hours each`,
+  };
+}
+
 /** The one line on Your Month, Home and Schedule. */
-export function latePortalLine(i: { lateMonthKey: string; hostMonthKey: string; state: LateState; hostStillToBook: boolean; bookedLabel?: string | null }): string {
+export function latePortalLine(i: { lateMonthKey: string; hostMonthKey: string; state: LateState; hostStillToBook: boolean; bookedLabel?: string | null; combinedVideos?: number | null }): string {
   const late = lateMonthName(i.lateMonthKey, i.hostMonthKey), host = lateMonthName(i.hostMonthKey);
+  if (i.combinedVideos) {
+    const both = `${late} and ${host} session (all ${i.combinedVideos} videos)`;
+    if (i.state === "BOOKED") return `Your ${both} is booked${i.bookedLabel ? ` for ${i.bookedLabel}` : ""}.`;
+    if (i.state === "REQUESTED") return `Your ${both} is requested, and we'll confirm the time.`;
+    return `Your ${both} still needs booking.`;
+  }
   if (i.state === "BOOKED") return `Your ${late} session is booked${i.bookedLabel ? ` for ${i.bookedLabel}` : ""}.${i.hostStillToBook ? ` ${host}'s still needs booking.` : ""}`;
   if (i.state === "REQUESTED") return `Your ${late} session is requested, and we'll confirm the time.${i.hostStillToBook ? ` ${host}'s still needs booking.` : ""}`;
   return i.hostStillToBook ? `Your ${late} session still needs booking, and ${host}'s too.` : `Your ${late} session still needs booking.`;
+}
+
+/** The combined session's lock while the HOST month is not ready to film yet (client words, the host gate's own reason inside). */
+export function combinedHostLock(lateMonthKey: string, hostMonthKey: string, hostReason: string): string {
+  const late = lateMonthName(lateMonthKey, hostMonthKey), host = lateMonthName(hostMonthKey);
+  // The host gate's words say "this month"; here two months are in play, so name it.
+  const reason = hostReason.trim().replace(/\bthis month\b/g, host).replace(/\bThis month\b/g, host);
+  return `Your ${late} and ${host} session films both months, so it opens once ${host} is ready to film. ${reason} If you'd rather not wait, choose two sessions and book ${late}'s now.`;
+}
+
+/**
+ * Kyle's desk line for a combined session (Oct 13 2026). One appointment, one
+ * product: the hub never adds a second product item to an order.
+ */
+export function combinedDeskLine(lateMonthKey: string, hostMonthKey: string, videos: number): string {
+  const late = lateMonthName(lateMonthKey, hostMonthKey), host = lateMonthName(hostMonthKey);
+  return `One ${COMBINED_SESSION_HOURS}-hour Video Accelerator session covering ${late} and ${host} (${videos} videos): book ONE appointment, ${COMBINED_SESSION_HOURS} hours, on the Video Accelerator product as the order's only product.`;
 }
 
 /** The late slot's lock while its scripts are not ready yet (client words). */
