@@ -73,7 +73,7 @@ async function main() {
     const { finalFileChoicesAction, recordFinalFileCheckAction, readFinalFileCheckReceiptAction } = await import("@/app/ops/finalRenditionActions");
     const { GET: finalPreview } = await import("@/app/api/review/cut/[id]/final/route");
     const { GET: reviewOriginal } = await import("@/app/api/review/cut/[id]/stream/route");
-    const { markVideoSent, readyToSend, completePortalDelivery } = await import("@/lib/readyToSend");
+    const { markVideoSent, readyToSend } = await import("@/lib/readyToSend");
     const { mediaToken } = await import("@/lib/portalMedia");
     const { PROGRAM_ROLLOUT_SETTING_KEY, serializeProgramRollout, CLOSED_ROLLOUT } = await import("@/lib/programRolloutCore");
     const since = new Date(Date.now() - 60_000).toISOString();
@@ -287,16 +287,17 @@ async function main() {
     const publishedWindow = await prisma.contentReviewWindow.findUnique({ where: { submissionId: gated.id } });
     c.ok("verified Topaz auto-publishes exact version without fake human checks", publication.published && !!publishedCut.clientReleasedAt && !!publishedCut.sentToClientAt && beforeChecks === 0 && await prisma.finalRenditionCheck.count({ where: { submissionId: gated.id } }) === 0, JSON.stringify(publication));
     // Oct 12 2026 (Jordan): the home screen says it was delivered via the
-    // content program, with Upload to Aryeo (Download + Aryeo listing) or Mark
-    // as completed.
+    // content program, with an optional Upload to Aryeo (Download + Aryeo listing).
     const deliveredRow = (await homeRows()).find((r) => r.submissionId === gated.id);
     c.ok("the home screen lists the published video as delivered via the content program", !!deliveredRow && !!deliveredRow.file?.downloadHref && deliveredRow.deliveredAtISO === publishedCut.sentToClientAt?.toISOString() && deliveredRow.waitingForSignUp === false, JSON.stringify(deliveredRow));
-    const completed = await completePortalDelivery(gated.id, "Kyle TEST", { aryeo: true });
-    const closeOut = await prisma.auditLog.findUnique({ where: { id: `monthly-portal-followup:${gated.id}` } });
-    c.ok("Mark as completed records who and the Aryeo choice, and the client's video is untouched", completed.ok && closeOut?.actor === "Kyle TEST" && /"aryeoUploadChosen":true/.test(closeOut.detail) && !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } })).clientReleasedAt);
-    c.ok("…the row leaves the home screen", !(await homeRows()).some((r) => r.submissionId === gated.id));
-    c.ok("…a second press says it is already done", (await completePortalDelivery(gated.id, "Kyle TEST")).message === "Already marked completed.");
-    c.ok("a video the portal never received cannot be completed here", !(await completePortalDelivery(sibling.id, "Kyle TEST")).ok);
+    // Oct 13 2026 (Jordan): these close by themselves. No "Mark as completed";
+    // the row is information for a week after delivery, then drops off.
+    const handoffRow = await prisma.auditLog.findUnique({ where: { id: `monthly-portal-handoff:${gated.id}` } });
+    await prisma.auditLog.update({ where: { id: handoffRow!.id }, data: { createdAt: new Date(Date.now() - 8 * 24 * 3_600_000) } });
+    c.ok("…and a week after delivery it leaves the home screen by itself", !(await homeRows()).some((r) => r.submissionId === gated.id));
+    await prisma.auditLog.update({ where: { id: handoffRow!.id }, data: { createdAt: new Date() } });
+    await prisma.auditLog.create({ data: { id: `monthly-portal-followup:${gated.id}`, actor: "Kyle TEST", action: "monthly_portal_followup", target: gated.id, detail: "{}" } });
+    c.ok("…and one somebody closed with the retired button stays hidden", !(await homeRows()).some((r) => r.submissionId === gated.id));
     c.ok("review clock starts at actual publication, not earlier approval", !!publishedWindow && publishedWindow.openedAt.getTime() === publishedCut.clientReleasedAt?.getTime() && publishedWindow.openedAt > approvedBeforeProcessing);
     await cv.publishApprovedCutToLibrary(gated.id);
     const repeatedPublication = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } });

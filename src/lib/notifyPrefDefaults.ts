@@ -198,7 +198,8 @@ const allOff = (): NotifyPrefs => ({
  * "EDITOR" for anyone holding an editor key (Kim and John Mark are MANAGER /
  * VA on the roster — the key is what makes them editors). `isOwner` wins over
  * the role: Jordan is PHOTOGRAPHER on the roster and the owner by login.
- *   · owner        — tags: text + Slack; a video waiting on review: text.
+ *   · owner        — tags: text + Slack; a video waiting on review: bell only
+ *                    (a text only past the backup window — Oct 13 2026).
  *   · editor       — tags, messages on their jobs, job pings: Slack.
  *   · photographer — tags, shoot changes and messages on the jobs they shot:
  *                    text (James and Harrison have no Slack habit; a text with
@@ -230,7 +231,11 @@ function roleDefaults(role: string, isOwner: boolean): NotifyPrefs {
   const p = allOff();
   if (isOwner) {
     p.mention = { ...both };
-    p.review_ready = { ...sms };
+    // Oct 13 2026 (Jordan): NOT a text for every cut waiting on review — the
+    // bell still shows each one, and reviewerAssignment.reviewCoverSweep texts
+    // him once per cut that has waited past the backup window (the primary's
+    // coverOfferHours, then the backup's). A saved matrix still wins.
+    p.review_ready = { slack: false, sms: false };
     // He shoots too (PHOTOGRAPHER on the roster) and the old bridge texted him
     // about his own shoots — reschedules, missing footage, cull (25 rows in 90
     // days, Sep 15 review). Keep that on; the switch is his to flip.

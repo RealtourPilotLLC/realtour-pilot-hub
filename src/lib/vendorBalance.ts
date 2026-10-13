@@ -255,12 +255,6 @@ export async function autohdrBalanceView(now = new Date(), opts: { money?: boole
 
 // ---- tasks --------------------------------------------------------------------
 
-async function personFor(key: string): Promise<{ id: string; key: string } | null> {
-  const people = await prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true } });
-  const hit = people.find((m) => slugForName(m.name) === key);
-  return hit ? { id: hit.id, key } : null;
-}
-
 /** Jordan: his roster row, found through the OWNER login rather than a name. */
 async function ownerPerson(): Promise<{ id: string | null; key: string }> {
   const login = await prisma.appUser.findFirst({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } });
@@ -272,44 +266,22 @@ async function ownerPerson(): Promise<{ id: string | null; key: string }> {
   return byName ? { id: byName.id, key: slugForName(byName.name) } : { id: null, key: "jordan" };
 }
 
-const weekdayET = (d: Date) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(d));
-
 /**
- * Kyle's Monday check (Jordan, Sep 25). One task per check day, due 5 PM ET,
- * skipped when a reading already landed that day. No owner set = no task.
+ * THE WEEKLY CHECK IS RETIRED (Jordan, Oct 13 2026). It asked Kyle every Monday
+ * to read a number the hub cannot read itself (readAutohdrBalance is a stub —
+ * there is no verified AutoHDR balance endpoint), so it was a standing chore
+ * built on nothing. What stays: AutoHDR's own credit/payment emails still become
+ * ONE task a day for Jordan (handleAutohdrMail), the reading form stays on
+ * Settings for whoever wants to log a number, and a threshold still compares
+ * against it. Kept as an export so the daily cron's call keeps compiling; it
+ * files nothing and closes any check task still open from before.
  */
 export async function ensureWeeklyBalanceCheck(now = new Date()): Promise<{ created: boolean; reason: string }> {
-  const s = await vendorBalanceSettings();
-  if (!s.checkOwnerKey) return { created: false, reason: "no check owner set" };
-  if (weekdayET(now) !== s.checkWeekday) return { created: false, reason: "not the check day" };
-  const day = etDayKey(now);
-  const dayStart = etAt(day, 0);
-  const already = await prisma.vendorBalanceReading.findFirst({ where: { vendorKey: AUTOHDR_KEY, observedAt: { gte: dayStart } }, select: { id: true } });
-  if (already) return { created: false, reason: "a reading already landed today" };
-  const who = await personFor(s.checkOwnerKey);
-  const dedupeKey = `autohdr-balance-check-${day}`;
-  if (await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } })) return { created: false, reason: "already filed" };
-  try {
-    await prisma.smartTask.create({
-      data: {
-        taskType: "vendor_balance_check",
-        title: "Check the AutoHDR credit balance",
-        summary: "Weekly check: log in to AutoHDR, note the credits (and dollar balance) left, and record it on Settings → AutoHDR balance. Jordan tops up — the hub never buys credits. Recording the reading closes this task.",
-        reasonCreated: "Weekly AutoHDR balance check (Jordan, Sep 25: Kyle checks on Mondays)",
-        source: "system",
-        sourceDetail: "/settings/autohdr",
-        priority: "MEDIUM",
-        dueAt: etAt(day, 17),
-        assignedKey: s.checkOwnerKey,
-        ownerId: who?.id ?? null,
-        dedupeKey,
-      },
-    });
-  } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") return { created: false, reason: "already filed" };
-    throw e;
-  }
-  return { created: true, reason: "filed" };
+  await prisma.smartTask.updateMany({
+    where: { dedupeKey: { startsWith: "autohdr-balance-check-" }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "CANCELLED", completedAt: now, sourceDetail: "Weekly AutoHDR check retired (Oct 13 2026)" },
+  }).catch(() => null);
+  return { created: false, reason: "weekly check retired: AutoHDR's balance can't be read automatically; its low-credit emails alert Jordan" };
 }
 
 const BALANCE_MAIL_RE = /credit|balance|insufficient|top.?up|out of|running low|payment (?:failed|declined)|card (?:failed|declined)/i;

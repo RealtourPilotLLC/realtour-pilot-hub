@@ -210,7 +210,7 @@ async function main() {
 
     c.ok("the nightly review found the pair and only filed a question", dupes.candidates >= 1 && dupes.tasksFiled >= 1);
     c.ok("no client was deleted or merged by any automated path", (await prisma.client.count()) === clientsBefore && (await prisma.auditLog.count({ where: { action: "client_merge" } })) === mergesBefore);
-    c.ok("the Monday check filed a task (a reading request, not a purchase)", check.created);
+    c.ok("the retired Monday check files nothing (Oct 13 2026)", !check.created);
     c.ok("zero outbound calls from all of it", fence.blocked.length === 0 && fence.faked.length === 0, fence.blocked.join(", "));
   }
 

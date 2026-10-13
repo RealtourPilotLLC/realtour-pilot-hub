@@ -374,6 +374,29 @@ export async function markVideoUploadedAction(submissionId: string, expectedFing
 }
 
 /**
+ * "Mark as delivered" (Oct 13 2026): the single manual fallback for a listing
+ * video, when the Aryeo listing check and delivery event can't settle it.
+ * Records the upload and the delivery together; sends nothing.
+ */
+export async function markVideoDeliveredAction(submissionId: string, expectedFingerprint: string): Promise<{ ok: boolean; message: string; sent?: boolean; unconfirmed?: boolean }> {
+  try {
+    await requireAdmin();
+    const me = await getCurrentUser();
+    if (!me || me.impersonating) return { ok: false, message: "Leave preview mode before recording a delivery." };
+    if (typeof submissionId !== "string" || !submissionId || submissionId.length > 200 || typeof expectedFingerprint !== "string" || !expectedFingerprint || expectedFingerprint.length > 5000) {
+      return { ok: false, message: "Reopen this video's current version." };
+    }
+    const { markDeliveredByHand } = await import("@/lib/projectDelivery");
+    const result = await markDeliveredByHand(submissionId, expectedFingerprint, { id: me.id ?? null, name: me.name ?? me.email ?? "Office" });
+    revalidatePath("/"); revalidatePath("/ops"); revalidatePath("/tasks");
+    return result;
+  } catch (error) {
+    console.error("Delivery acknowledgement failed", error);
+    return { ok: false, unconfirmed: true, message: "The delivery record could not be confirmed. Refresh before trying again; do not upload or send the video again because this save failed." };
+  }
+}
+
+/**
  * Undo a "Mark as Uploaded" pressed by mistake — owner/admin, the same ET day,
  * audited (deliveryUploads.undoUpload). The card moves the row back at once;
  * this only has to agree. Records only; Aryeo is not touched.

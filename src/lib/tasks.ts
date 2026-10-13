@@ -743,6 +743,10 @@ export function specsForProject(p: {
   tier?: SlaTier | null;
   /** Project.promisedDueAt — the sold deadline, see PendingDueInput */
   promisedDueAt?: Date | null;
+  /** Oct 13 2026: the job belongs to a content-program month, so its videos go
+   *  to the client's portal (approval → 1080p → portal), not through Aryeo:
+   *  the QC card carries no Video rows, and a video-only month has no card. */
+  portalVideos?: boolean;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -860,7 +864,9 @@ export function specsForProject(p: {
     // "QA <type>" tasks. Due at the SOONEST pending item's turnaround. Only the
     // pending (unchecked) items are work; if everything's live we skip it (and
     // the reconciler closes any existing one).
-    const qcTypes = dedupeTypes(p.deliverables);
+    const qcTypes = dedupeTypes(p.deliverables).filter((d) => !(p.portalVideos && TYPE_CATEGORY_LABEL[d] === "Video"));
+    // A portal month's card (if it has photos at all) is a plain gallery card.
+    const monthlyCard = monthly && !p.portalVideos;
     // Build the checklist category-by-category: the auto-checked "QC <category>"
     // evidence row, then — ONLY once that category is live on Aryeo — the guided
     // failure-mode sub-items Kyle must actually verify. Appending sub-items only
@@ -926,7 +932,7 @@ export function specsForProject(p: {
     // done, and one job = one card. (The old delivery-spec keys fall out of
     // expectedKeys, so the reconciler retires existing open ones.)
     qcItems.push({
-      label: monthly
+      label: monthlyCard
         ? "Produce + deliver this month's content (Aryeo + branded email)"
         : "Deliver the gallery (Aryeo + branded email)",
       done: galleryDelivered,
@@ -961,7 +967,7 @@ export function specsForProject(p: {
         reasonCreated: "Media in production — QC each deliverable, then deliver",
         // Sep 8: the ticks are optional (qcGateComplete) — say so, so the card
         // never promises a close it can't deliver.
-        summary: monthly
+        summary: monthlyCard
           ? "Monthly personal-branding / social content (7–10 business-day turnaround). QC each piece as it lands, then produce + deliver this month's content. The checks below are reminders, not gates — the card closes on its own once everything is live and delivered."
           : "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then deliver the gallery via Aryeo + the branded email. The checks below are reminders, not gates — the card closes on its own once every category is live and the gallery is out.",
         // The card is due when the JOB is due — the LATEST still-pending
@@ -2184,7 +2190,7 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
-      id: true, title: true, clientId: true, statusEvidence: true, packageName: true, shootDate: true, deliveredAt: true,
+      id: true, title: true, clientId: true, statusEvidence: true, packageName: true, shootDate: true, deliveredAt: true, contentMonthId: true,
       // The batch this job owes, the office's number first (Sep 13) — see
       // effectiveVideosOwed below.
       videosOwedOverride: true, videosFilmed: true,
@@ -2193,6 +2199,11 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
     },
   });
   if (!project) return;
+  // A CONTENT-PROGRAM MONTH'S JOB (Oct 13 2026): its videos are delivered to
+  // the client's portal, which tells the client itself, so there is no
+  // delivery text to send, and waiting on Aryeo's video count for one (below)
+  // would wait on a number that never moves.
+  if (project.contentMonthId) return;
   // The hub flipped this job DELIVERED because the ORDER changed (an item
   // was removed and the reconcile just caught up — 632 Greenridge: Aryeo
   // delivered Aug 26, reconciled Sep 1), not because media landed. "Your
@@ -4429,6 +4440,8 @@ type TaskProject = {
   /** the promise this job was SOLD under (Sep 18 column) — rides along with
    *  `include`, and caps every date this reconciler writes */
   promisedDueAt?: Date | null;
+  /** the content-program month this job films (rides along with `include`) */
+  contentMonthId?: string | null;
 };
 
 // Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
@@ -4576,6 +4589,8 @@ async function syncOneProjectTasks(
     // overdue. Branding now means the monthly window, here and on the status
     // card, off the one column.
     tier: slaTierOf(p),
+    // Oct 13 2026: a content-program month's videos go to the portal.
+    portalVideos: !!p.contentMonthId,
   });
   // The vendor's piece arrived (the status sweep just refreshed this
   // evidence, and `tasks` runs right after it) → its chase is done.

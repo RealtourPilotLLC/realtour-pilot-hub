@@ -161,7 +161,8 @@ async function main() {
     const aRow = await cut(a.id);
     c.ok("NEW: Aryeo's signed delivery closes the row by itself", !!aRow.sentToClientAt && !(await rowOf(a.id)), `${signed.note} (${Date.now() - t0}ms)`);
     c.ok("…recorded as 'Aryeo (delivery confirmed)', naming the video that proved it", (aRow.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && (aRow.sentToClientBy ?? "").includes("Cinematic Video"), aRow.sentToClientBy ?? "");
-    c.ok("…and never as Kyle's upload: no upload receipt was invented", !(await du.uploadsFor([a.id])).has(a.id) && (await prisma.auditLog.count({ where: { target: a.id, action: "video_uploaded" } })) === 0 && !/kyle|upload/i.test(aRow.sentToClientBy ?? ""));
+    // Oct 13 2026: the listing check records the upload it sees, as itself.
+    c.ok("…and never as Kyle's upload: any receipt is the Aryeo listing check's", [...(await du.uploadsFor([a.id])).values()].every((r) => r.actor === du.LISTING_CHECK_ACTOR && r.actorId === null) && !/kyle/i.test(aRow.sentToClientBy ?? ""));
     const aLine = await prisma.activity.findFirst({ where: { projectId: A.id, body: { startsWith: "Video delivered" } }, select: { body: true } });
     c.ok("the timeline says 'Video delivered (Aryeo confirmed)'", (aLine?.body ?? "").startsWith("Video delivered (Aryeo confirmed)"), aLine?.body ?? "none");
     const aOut = await prisma.deliverableOutput.findUniqueOrThrow({ where: { id: a.outputId } });
@@ -196,7 +197,7 @@ async function main() {
     const sweptB = await ad.sweepReadyToSendAgainstAryeo({ max: 12 });
     const bRow = await cut(b.id);
     c.ok("NEW: an accepted delivery text closes the row on the hourly check", !!bRow.sentToClientAt && !(await rowOf(b.id)), JSON.stringify(sweptB.jobs.find((j) => j.projectId === B.id)?.note));
-    c.ok("…as Aryeo's confirmation, with no upload receipt", (bRow.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && !(await du.uploadsFor([b.id])).has(b.id), bRow.sentToClientBy ?? "");
+    c.ok("…as Aryeo's confirmation, with no person's upload receipt", (bRow.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && [...(await du.uploadsFor([b.id])).values()].every((r) => r.actor === du.LISTING_CHECK_ACTOR), bRow.sentToClientBy ?? "");
 
     const LC = "01a0c0c0-1111-7222-8333-444455550003";
     const C = await mkJob("33 Early Text Ct", LC);
@@ -256,7 +257,7 @@ async function main() {
     const refused = await du.recordUploaded(f.id, { id: null, name: "Kyle" }, await fp(f.id));
     c.ok("OLD: the card offered Mark as Uploaded here and the server refused it", !refused.ok && atHead("src/components/ops/ReadyToSendCard.tsx").includes("{!usesPortal(v) && !v.uploaded && v.uploadFingerprint && <MarkUploaded"), refused.message);
     c.ok("NEW: the row knows its listing is missing", fRow?.listingMissing === true && fRow.deliveryDestination === "aryeo-listing");
-    c.ok("…and the card hides the button for it", src("src/components/ops/ReadyToSendCard.tsx").includes("!v.listingMissing && v.uploadFingerprint && <MarkUploaded") && src("src/components/ops/ReadyToSendCard.tsx").includes("Link the Aryeo listing first"));
+    c.ok("…and the card hides the button for it", src("src/components/ops/ReadyToSendCard.tsx").includes("!v.listingMissing && v.uploadFingerprint && <MarkDelivered") && src("src/components/ops/ReadyToSendCard.tsx").includes("Link the Aryeo listing first"));
     const fMsg = fRow ? deliveryReadyMessage(fRow, "https://hub.invalid") : null;
     c.ok("Kyle's Slack says the same one step, linked to the job", !!fMsg && fMsg.title.startsWith("Link the Aryeo listing") && /Refresh from Aryeo/.test(fMsg.slackDm) && fMsg.href === `/projects/${F.id}` && !/Mark as Uploaded/.test(fMsg.slackDm), fMsg?.title);
     c.ok("a linked job is unchanged", (await rowOf(cc.id))?.listingMissing === false);

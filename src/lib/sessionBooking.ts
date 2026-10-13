@@ -1118,6 +1118,14 @@ export async function hubBookedAttempt(r: Pick<ProgramSessionRequest, "id" | "ar
   return prisma.programBookingAttempt.findFirst({ where: { requestId: r.id, kind: "CREATE", state: "CONFIRMED", aryeoAppointmentId: r.aryeoAppointmentId } });
 }
 
+/** Oct 13 2026: the hub CREATED this appointment, on any request row — a move
+ *  Kyle confirmed by hand lands on a new row but keeps the hub's appointment,
+ *  and that session is still one the hub can move (requestReschedule). */
+export async function hubCreatedAppointment(aryeoAppointmentId: string | null | undefined): Promise<boolean> {
+  if (!aryeoAppointmentId) return false;
+  return (await prisma.programBookingAttempt.count({ where: { kind: "CREATE", state: "CONFIRMED", aryeoAppointmentId } })) > 0;
+}
+
 type PendingChange = { kind: "CANCEL" | "RESCHEDULE"; attemptId: string; newStart?: string; newEnd?: string; by: string | null; reason?: string | null };
 const readChange = (json: string | null): PendingChange | null => { try { return json ? (JSON.parse(json) as PendingChange) : null; } catch { return null; } };
 

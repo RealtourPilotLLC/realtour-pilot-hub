@@ -217,36 +217,21 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("3 · Kyle's Monday check");
+  c.head("3 · the weekly check is retired (Jordan, Oct 13 2026): no Monday task");
   {
-    at("2026-09-26T19:30:00-04:00");
-    c.ok("Saturday: no check task", (await vb.ensureWeeklyBalanceCheck()).created === false);
+    // A check task filed before the retirement is closed by the next daily run.
+    await prisma.smartTask.create({ data: { taskType: "vendor_balance_check", title: "Check the AutoHDR credit balance", source: "system", priority: "MEDIUM", assignedKey: "kyle", dedupeKey: "autohdr-balance-check-2026-09-21" } });
     at("2026-09-28T04:00:00-04:00"); // Monday, the daily cron's hour
     const r = await vb.ensureWeeklyBalanceCheck();
-    const t = await prisma.smartTask.findUnique({ where: { dedupeKey: "autohdr-balance-check-2026-09-28" } });
-    c.ok("Monday: one task, to Kyle", r.created && t?.assignedKey === "kyle" && t.ownerId === kyleTm.id);
-    c.ok("…due 5 PM EDT (21:00Z)", t?.dueAt?.toISOString() === "2026-09-28T21:00:00.000Z", t?.dueAt?.toISOString());
-    c.ok("a second run files nothing more", !(await vb.ensureWeeklyBalanceCheck()).created && (await prisma.smartTask.count({ where: { taskType: "vendor_balance_check" } })) === 1);
+    c.ok("Monday: no check task is filed", !r.created && /retired/.test(r.reason), r.reason);
+    c.ok("…and none exists for that day", !(await prisma.smartTask.findUnique({ where: { dedupeKey: "autohdr-balance-check-2026-09-28" } })));
+    c.ok("…and an old open check task is closed", (await prisma.smartTask.findUnique({ where: { dedupeKey: "autohdr-balance-check-2026-09-21" } }))?.status === "CANCELLED");
     at("2026-09-28T09:00:00-04:00");
     const rec = await vb.recordBalanceReading({ credits: 400, recordedBy: "kyle-vb@drill.invalid" });
-    const t2 = await prisma.smartTask.findUnique({ where: { dedupeKey: "autohdr-balance-check-2026-09-28" } });
-    c.ok("recording the reading closes the check", rec.ok && t2?.status === "COMPLETED");
+    c.ok("a reading can still be recorded", rec.ok);
     c.ok("an empty reading is refused", !(await vb.recordBalanceReading({ recordedBy: "x" })).ok);
-
     at("2026-10-05T03:00:00-04:00");
     await vb.recordBalanceReading({ credits: 380, recordedBy: "kyle-vb@drill.invalid" });
-    at("2026-10-05T04:00:00-04:00");
-    const early = await vb.ensureWeeklyBalanceCheck();
-    c.ok("a reading already in that Monday → no task", !early.created && /already landed/.test(early.reason), early.reason);
-
-    at("2026-11-02T04:00:00-05:00"); // the Monday after the clocks go back
-    await vb.ensureWeeklyBalanceCheck();
-    const t3 = await prisma.smartTask.findUnique({ where: { dedupeKey: "autohdr-balance-check-2026-11-02" } });
-    c.ok("after the DST change: due 5 PM EST (22:00Z)", t3?.dueAt?.toISOString() === "2026-11-02T22:00:00.000Z", t3?.dueAt?.toISOString());
-    await vb.saveVendorBalanceSettings({ checkOwnerKey: null }, "drill");
-    at("2026-11-09T04:00:00-05:00");
-    c.ok("no check owner → no weekly task", (await vb.ensureWeeklyBalanceCheck()).reason === "no check owner set");
-    await vb.saveVendorBalanceSettings({ checkOwnerKey: "kyle" }, "drill");
     // Clean slate for the view.
     await prisma.vendorBalanceReading.deleteMany({});
   }

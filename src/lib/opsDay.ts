@@ -9,7 +9,7 @@ import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
 import { actionableQcCount, nextPendingDue, pendingDuesByCategory, sameDayAddOns, hasSameDayAddOn, sameDayDue, slaTierOf, OWED_DELIVERABLE_WHERE, CLOSED_BY_HAND } from "@/lib/tasks";
-import { qcCategoryStates, qcWaitingOnMediaOnly } from "@/lib/qcCategories";
+import { TYPE_CATEGORY_LABEL, qcCategoryStates, qcWaitingOnMediaOnly } from "@/lib/qcCategories";
 import { scrubMoney } from "@/lib/text";
 import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
@@ -573,6 +573,7 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
             select: {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true, aryeoOrderId: true,
+              contentMonthId: true,
               // The office's due (Sep 13) — it replaces the video's promise on
               // the card's per-category line, exactly as it does on the
               // Pipeline row below.
@@ -674,7 +675,14 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
   ]);
 
   const todayKey = today.key;
-  const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
+  // A content-program month's job whose deliverables are all videos has no
+  // QC card here (Oct 13 2026): its videos go to the client's portal through
+  // the Review Room and the 1080p pass, never through Aryeo. The task
+  // reconciler stops minting those cards (tasks.specsForProject portalVideos);
+  // this keeps an older one off the screen until it is retired.
+  const portalVideoOnly = (pr: { contentMonthId: string | null; deliverables: { type: string }[] } | null) =>
+    !!pr?.contentMonthId && pr.deliverables.every((d) => TYPE_CATEGORY_LABEL[d.type] === "Video");
+  const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null && !portalVideoOnly(t.project)).map((t) => {
     let itemsLeft = 0;
     let actionable = 0;
     let items: { label: string; done?: boolean }[] = [];

@@ -229,7 +229,8 @@ async function main() {
   });
   ok("THE CUT IS STAMPED SENT — the fix", sub?.sentToClientAt != null, sub?.sentToClientBy ?? "nothing");
   ok("the stamp names the video that proved it", (sub?.sentToClientBy ?? "").includes("Cinematic Video"));
-  ok("NEW: no upload receipt was needed, and none was invented", !(await uploadsFor([cut.submissionId])).has(cut.submissionId) && (sub?.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)"), sub?.sentToClientBy ?? "");
+  // Oct 13 2026: the listing check may record the upload it saw — as itself, never as a person.
+  ok("NEW: no person's upload receipt was needed; any receipt is the Aryeo listing check's", [...(await uploadsFor([cut.submissionId])).values()].every((r) => r.actor === "Aryeo listing check" && r.actorId === null) && (sub?.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)"), sub?.sentToClientBy ?? "");
 
   const out = await prisma.deliverableOutput.findUnique({
     where: { id: cut.outputId },

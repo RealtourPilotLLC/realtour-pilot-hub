@@ -305,8 +305,10 @@ async function main() {
     c.ok("…with no money and no billing term in it", kd.every((m) => !/\$|\d{3,},?\d*\.\d\d|month-to-month|pay in full/i.test(m.text)), kd.map((m) => m.text).join(" | "));
     const task = await prisma.smartTask.findFirst({ where: { title: { contains: "Book the brand discovery call — Paula Prospect" } }, select: { id: true, dueAt: true, priority: true, assignedKey: true } });
     c.ok("the discovery-call task is due TODAY (5:00 PM ET), not in two days", task?.dueAt?.toISOString() === edt(10, 6, 17, 0).toISOString(), task?.dueAt?.toISOString());
-    c.ok("…and it pinged Kyle by name on Slack, with the due time in ET", kd.some((m) => /New on your list: Book the brand discovery call — Paula Prospect · due .*5:00 PM ET/.test(m.text) && m.text.includes(`task=${task?.id}`)), kd.map((m) => m.text).join(" | "));
-    c.ok("two lines for one signup, no more", kd.length === 2, String(kd.length));
+    // Oct 13 2026 (Jordan): a HIGH desk task no longer DMs at once — the
+    // morning and 4 PM digests carry it; only URGENT pings immediately.
+    c.ok("Oct 13: the HIGH discovery-call task does not DM Kyle at once (the digests carry it)", !kd.some((m) => /New on your list/.test(m.text)) && !!task, kd.map((m) => m.text).join(" | "));
+    c.ok("one line for one signup, no more", kd.length === 1, String(kd.length));
     const s1 = slack.length;
     const again = await ss.processCheckoutSession(JSON.parse(JSON.stringify(session)), "webhook");
     c.ok("the same checkout again: nothing re-sent", again === "known" && dms(S.kyle, s1).length === 0, String(again));
@@ -338,10 +340,12 @@ async function main() {
     delete process.env.PROGRAM_DESK_TASKS_FOR_TEST;
     c.ok("a TEST client's task (even when a probe forces it) pings nobody", dms(S.kyle, s3).length === 0 && (await prisma.smartTask.count({ where: { dedupeKey: "drill-test-client-1" } })) === 1);
     const s4 = slack.length;
-    await desk.openProgramDeskTask({ dedupeKey: "program-draft-failed:drill", clientId: paula.id, clientName: "Paula Prospect", title: "Script draft keeps failing — Paula Prospect · “Market update”", lines: ["x"], assignedKey: "jordan", reasonCreated: "drill", reopenIfClosed: true });
-    c.ok("a HIGH task on JORDAN's list pings Jordan, not Kyle", dms(S.jordan, s4).length === 1 && dms(S.kyle, s4).length === 0 && /Script draft keeps failing/.test(dms(S.jordan, s4)[0]?.text ?? ""));
+    await desk.openProgramDeskTask({ dedupeKey: "drill-high-jordan", clientId: paula.id, clientName: "Paula Prospect", title: "A HIGH task for Jordan", lines: ["x"], assignedKey: "jordan", reasonCreated: "drill", reopenIfClosed: true, priority: "HIGH" });
+    c.ok("Oct 13: a HIGH desk task pings nobody at once", dms(S.jordan, s4).length === 0 && dms(S.kyle, s4).length === 0 && (await prisma.smartTask.count({ where: { dedupeKey: "drill-high-jordan", status: "OPEN" } })) === 1);
+    await desk.openProgramDeskTask({ dedupeKey: "program-draft-failed:drill", clientId: paula.id, clientName: "Paula Prospect", title: "Script draft keeps failing — Paula Prospect · “Market update”", lines: ["x"], assignedKey: "jordan", reasonCreated: "drill", reopenIfClosed: true, priority: "URGENT" });
+    c.ok("an URGENT task on JORDAN's list pings Jordan, not Kyle", dms(S.jordan, s4).length === 1 && dms(S.kyle, s4).length === 0 && /Script draft keeps failing/.test(dms(S.jordan, s4)[0]?.text ?? ""));
     await prisma.smartTask.updateMany({ where: { dedupeKey: "program-draft-failed:drill" }, data: { status: "COMPLETED", completedAt: new Date() } });
-    await desk.openProgramDeskTask({ dedupeKey: "program-draft-failed:drill", clientId: paula.id, clientName: "Paula Prospect", title: "Script draft keeps failing — Paula Prospect · “Market update”", lines: ["x"], assignedKey: "jordan", reasonCreated: "drill", reopenIfClosed: true });
+    await desk.openProgramDeskTask({ dedupeKey: "program-draft-failed:drill", clientId: paula.id, clientName: "Paula Prospect", title: "Script draft keeps failing — Paula Prospect · “Market update”", lines: ["x"], assignedKey: "jordan", reasonCreated: "drill", reopenIfClosed: true, priority: "URGENT" });
     c.ok("…a reopened one is back on the list and says so", dms(S.jordan, s4).length === 2 && /Back on your list/.test(dms(S.jordan, s4)[1]?.text ?? ""), dms(S.jordan, s4).map((m) => m.text).join(" | "));
   }
 

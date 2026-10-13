@@ -3,8 +3,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Clapperboard,
-  ClipboardCheck, Clock, CloudSun, Coffee, ExternalLink, Hourglass, Inbox,
-  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Send, Sunrise, Wrench, Zap,
+  ClipboardCheck, Clock, CloudSun, ExternalLink, Hourglass, Inbox,
+  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Send, Sunrise, Zap,
   Flag,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -192,25 +192,19 @@ const BLOCKS: BlockDef[] = [
   { key: "tower", from: 9 * 60, to: 9 * 60 + 30, time: "9:00 – 9:30", title: "Morning Control Tower", short: "Tower", icon: Sunrise, goal: "Know what's happening today, what needs attention, and what could go wrong — before the day gets moving." },
   { key: "qc-am", from: 9 * 60 + 30, to: 10 * 60 + 15, time: "9:30 – 10:15", title: "QC + Morning Deliveries", short: "QC", icon: ClipboardCheck, goal: "Catch mistakes before the client does; get finished work delivered early. Only what's due today lives here — the backlog has its own card." },
   { key: "overdue", from: 10 * 60 + 15, to: 10 * 60 + 30, time: "10:15 – 10:30", title: "Overdue Check", short: "Overdue", icon: AlarmClock, goal: "Everything past its promised date gets a decision today: chase it, close it, or tell the client. Nothing sits late in silence." },
-  { key: "comms-1", from: 10 * 60 + 30, to: 11 * 60, time: "10:30 – 11:00", title: "Client Communication Sweep #1", short: "Comms 1", icon: MessageSquare, goal: "Nobody waits wondering if we got their message." },
+  // Oct 13 2026 (Jordan, "as simple as possible"): the day used to carry three
+  // identical comms sweeps, two identical tomorrow-prep blocks, a Lunch block
+  // ("Eat.") and a fixed admin paragraph. One of each list stays; the others
+  // printed the same rows again later in the day.
+  { key: "comms-1", from: 10 * 60 + 30, to: 11 * 60, time: "10:30 – 11:00", title: "Client Communication Sweep", short: "Comms", icon: MessageSquare, goal: "Nobody waits wondering if we got their message." },
   { key: "prep", from: 11 * 60, to: 11 * 60 + 30, time: "11:00 – 11:30", title: "Tomorrow + Upcoming Prep", short: "Tomorrow", icon: Route, goal: "Tomorrow is operationally ready before today ends — problems get solved the day before, not 30 minutes before the shoot." },
   { key: "loops", from: 11 * 60 + 30, to: 12 * 60, time: "11:30 – 12:00", title: "Open Loops + Follow-Ups", short: "Loops", icon: RefreshCw, goal: "Nothing stays stuck because someone forgot to follow up. Ask: what am I waiting on that could become a problem?" },
-  { key: "lunch", from: 12 * 60, to: 13 * 60, time: "12:00 – 1:00", title: "Lunch", short: "Lunch", icon: Coffee, goal: "Protected — unless there's a genuine operational or client emergency." },
   // Video Review (Jordan, Sep 1): "a card for videos in revision and videos
   // waiting on review." Every uploaded cut gets a verdict here; the pipeline
   // check moves to 1:30 so nothing overlaps.
   { key: "video-review", from: 13 * 60, to: 13 * 60 + 30, time: "1:00 – 1:30", title: "Video Review", short: "Video", icon: PlayCircle, goal: "Every cut the editors uploaded gets a verdict today — approve it, or send it back with notes. Cuts in revisions stay listed until the next version lands." },
   { key: "pipeline", from: 13 * 60 + 30, to: 14 * 60, time: "1:30 – 2:00", title: "Production Pipeline Check", short: "Pipeline", icon: ListChecks, goal: "Know what's due today, what's holding each job up, and what's coming — before the client asks." },
-  { key: "comms-2", from: 14 * 60, to: 14 * 60 + 30, time: "2:00 – 2:30", title: "Client Communication Sweep #2", short: "Comms 2", icon: MessageSquare, goal: "Proactive, not reactive — if something changed, the client hears it from us first." },
-  { key: "systems", from: 14 * 60 + 30, to: 15 * 60 + 10, time: "2:30 – 3:10", title: "Systems + Admin Work", short: "Admin", icon: Wrench, goal: "Keep the backend organized — without letting admin work interfere with active client needs." },
   { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", short: "Monthly", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
-  // "Final QC + Deliveries" (4:15-5:00) was dropped Sep 1 — Jordan: it duplicated
-  // the morning QC + Deliveries block and the Production Pipeline Check. Its
-  // slot folds into Next-Day Finalization so the timeline has no dead gap.
-  // (Inside a gap blockKeyForNow now picks the NEXT block, Sep 8 — the old
-  // fallback to the LAST block would have lit up Daily Closeout at 4:15.)
-  { key: "final-prep", from: 15 * 60 + 30, to: 17 * 60, time: "3:30 – 5:00", title: "Next-Day Finalization", short: "Finalize", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
-  { key: "comms-3", from: 17 * 60, to: 17 * 60 + 30, time: "5:00 – 5:30", title: "Client Communication Sweep #3", short: "Comms 3", icon: MessageSquare, goal: "Don't carry simple client questions into the next business day." },
   { key: "closeout", from: 17 * 60 + 30, to: 18 * 60, time: "5:30 – 6:00", title: "Daily Closeout", short: "Closeout", icon: Moon, goal: "Review the whole operation before ending the day — escalate anything that needs Jordan." },
 ];
 
@@ -277,7 +271,7 @@ const rushWhat = (s: OpsShoot) =>
 function rushFor(key: string, d: OpsDay): number {
   switch (key) {
     case "tower": return rushShoots(d.todayShoots).length;
-    case "prep": case "final-prep": return rushShoots(d.tomorrowShoots).length;
+    case "prep": return rushShoots(d.tomorrowShoots).length;
     default: return 0;
   }
 }
@@ -337,13 +331,13 @@ function ReadyChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?
 // null = the block is guidance, not a list (lunch, admin).
 function countFor(key: string, d: OpsDay, board: { today: unknown[] }): number | null {
   switch (key) {
-    // The Tower's shoots render in their own section now, so its badge is the
-    // one number the block itself is about: today's shoot count.
-    case "tower": return d.todayShoots.length;
+    // The Tower no longer repeats today's shoots (the today line and the
+    // shoots section carry them, Oct 13 2026); its rush chip still shows.
+    case "tower": return null;
     case "qc-am": return listingQc(d).filter((q) => q.bucket === "today").length;
     case "overdue": return listingQc(d).filter((q) => q.bucket === "overdue").length;
-    case "comms-1": case "comms-2": case "comms-3": return d.unanswered.count;
-    case "prep": case "final-prep": return d.tomorrowShoots.length;
+    case "comms-1": return d.unanswered.count;
+    case "prep": return d.tomorrowShoots.length;
     // The badge counts what the block RENDERS by default: this viewer's loops
     // that are overdue or promised today. The rest are stated and reachable in
     // the block itself, so the number never points at a list that hides rows.
@@ -684,7 +678,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const nowMin = etMinutes(now);
   const currentKey = blockKeyForNow(nowMin);
 
-  const qcOverdue = listingQc(d).filter((q) => q.bucket === "overdue").length;
+  const qcOverdueRows = listingQc(d).filter((q) => q.bucket === "overdue");
+  const qcOverdue = qcOverdueRows.length;
+  // OVERDUE QC COUNTED ONCE (Oct 13 2026): a job whose QC card is past due is
+  // also a job past its promised date on the tracker. It is counted on the QC
+  // row only; the past-due row counts the late jobs that are NOT already there.
+  const qcOverdueJobs = new Set(qcOverdueRows.map((q) => q.projectId));
+  const pastDueOther = board.unavailable ? 0 : board.today.filter((j) => j.overdue && !qcOverdueJobs.has(j.id)).length;
   const qcToday = listingQc(d).filter((q) => q.bucket === "today").length;
   const loops = tallyLoops(d.openLoops);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
@@ -729,13 +729,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const needsFinishing = d.readySend.needsFinishing?.length ?? 0;
   const notTold = d.readySend.notTold?.length ?? 0;
   const incidents = d.readySend.noticeIncidents?.length ?? 0;
-  // Oct 12 2026: branding videos the portal already has — upload to Aryeo or mark completed.
-  const viaProgram = d.readySend.portalDelivered?.length ?? 0;
+  // Branding videos the portal already has are NOT counted here (Jordan, Oct
+  // 13 2026): they are delivered, so they close by themselves and only show on
+  // the card as an informational list for a week (with the optional Aryeo upload).
   add({
-    key: "delivery-steps", group: "waiting", count: needsFinishing + notTold + incidents + viaProgram,
-    label: `delivery step${needsFinishing + notTold + incidents + viaProgram === 1 ? "" : "s"} to finish`,
+    key: "delivery-steps", group: "waiting", count: needsFinishing + notTold + incidents,
+    label: `delivery step${needsFinishing + notTold + incidents === 1 ? "" : "s"} to finish`,
     detail: [
-      viaProgram ? `${viaProgram} delivered via the content program to close out` : null,
       needsFinishing ? `${needsFinishing} to finish sending` : null,
       notTold ? `${notTold} client${notTold === 1 ? "" : "s"} not told yet` : null,
       incidents ? `${incidents} notice${incidents === 1 ? "" : "s"} failed` : null,
@@ -772,9 +772,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   add({
     // Withheld while the board is unreadable — a flag that says "0 past due"
     // off a failed query is worse than no flag.
-    key: "past-due", group: "risk", count: board.unavailable ? 0 : board.overdueCount,
-    label: `job${board.overdueCount === 1 ? "" : "s"} past their promised date`,
-    detail: "at the top of the tracker's Due-today tab",
+    key: "past-due", group: "risk", count: pastDueOther,
+    label: `job${pastDueOther === 1 ? "" : "s"} past their promised date`,
+    detail: qcOverdue > 0 ? `at the top of the tracker's Due-today tab · not counting ${qcOverdue} with QC past due (its own row)` : "at the top of the tracker's Due-today tab",
     href: "#pipeline", tone: "danger",
   });
   add({
@@ -1125,30 +1125,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
           </Suspense>
         )}
 
-        {/* How the day is meant to run — the standing rules, not a queue. */}
-        <details className="group/rules rounded-2xl border border-border bg-surface">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm font-semibold">
-            <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/rules:rotate-0" />
-            How the day runs
-            <span className="font-normal text-muted">· priority order and when to escalate</span>
-          </summary>
-          <div className="border-t border-border px-5 py-4">
-            <h3 className="text-sm font-semibold">Priority order — the inbox is not the task list</h3>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
-              1. Active client issue happening right now · 2. Today&rsquo;s shoot · 3. Today&rsquo;s delivery ·
-              4. Tomorrow&rsquo;s shoot · 5. Overdue project or revision · 6. Client communication ·
-              7. Production follow-up · 8. Routine admin · 9. Long-term internal projects
-            </p>
-            <h3 className="mt-4 text-sm font-semibold">Escalate exceptions, not routine</h3>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-muted">
-              Jordan doesn&rsquo;t need &ldquo;a project was delivered.&rdquo; Bring him in when: a client is seriously unhappy,
-              wants something outside scope or against policy, an important relationship is at risk, a major
-              production mistake happened, tomorrow can&rsquo;t be staffed, or the decision is above your authority.
-              Everything else — handle it.
-            </p>
-          </div>
-        </details>
-
         {/* Where the work lives — each destination once (the sidebar has them too). */}
         <nav aria-label="Your work destinations" className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm text-muted">
           {(!me || canAccess(me, "tasks")) && <Link href={scopeHref("/tasks?tab=work&who=me")} className="inline-flex min-h-11 items-center hover:text-foreground">My work</Link>}
@@ -1288,20 +1264,8 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
       // real job: the day's opening numbers, each linked to its own list.
       return (
         <div className="space-y-3">
-          <a href="#shoots" className="flex items-center gap-2 rounded-xl border border-border px-3.5 py-2.5 text-sm hover:bg-surface-2/60">
-            <Camera className="size-4 shrink-0 text-muted-2" />
-            <span className="min-w-0 flex-1">
-              {d.todayShoots.length === 0 ? (
-                "No shoots on today's calendar."
-              ) : (
-                <>
-                  <span className="font-semibold">{d.todayShoots.length} shoot{d.todayShoots.length === 1 ? "" : "s"} today</span>
-                  <span className="text-muted"> — {d.todayShoots.map((s) => `${s.timeISO ? fmtTime(s.timeISO) : "time TBD"} ${s.photographer ?? "unassigned"}`).join(" · ")}</span>
-                </>
-              )}
-            </span>
-            <ArrowRight className="size-3.5 shrink-0 text-muted-2" />
-          </a>
+          {/* Today's shoots are NOT repeated here (Oct 13 2026): the today line
+              at the top and the "Today's shoots" section already carry them. */}
           {/* Same-day rush — the one order detail that changes what today IS
               for the whole team: those photos / that floor plan ship before
               close of business, not tomorrow morning. Red, first, unmissable
@@ -1352,8 +1316,6 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
       return <MonthlyCard d={d} />;
 
     case "comms-1":
-    case "comms-2":
-    case "comms-3":
       return (
         <div className="space-y-2">
           {d.unanswered.count === 0 ? (
@@ -1407,7 +1369,6 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
       );
 
     case "prep":
-    case "final-prep":
       return (
         <div className="space-y-3">
           <ShootList shoots={d.tomorrowShoots} empty="Nothing on tomorrow's calendar yet." showGaps />
@@ -1424,9 +1385,6 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
       // The first screen has one compact summary; this block holds the existing
       // delivery controls. Both Home and Review Room links open this block.
       return <VideoReviewCard d={d} showReady includeTest={includeTest} />;
-
-    case "lunch":
-      return <p className="text-sm text-muted">Eat. The hub holds the fort.</p>;
 
     case "pipeline":
       // The Project Tracker, merged in whole (Jordan, Sep 2). Its three tabs
@@ -1496,14 +1454,6 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
             </div>
           )}
         </div>
-      );
-
-    case "systems":
-      return (
-        <p className="text-[13px] leading-relaxed text-muted">
-          Lower-priority block: Aryeo cleanup · client record updates · Dropbox organization · SOP maintenance ·
-          review requests · process improvements. Drop it instantly if a client needs something.
-        </p>
       );
 
     case "closeout":
@@ -2267,7 +2217,7 @@ function VideoReviewCard({ d, showReady = true, includeTest = false }: { d: OpsD
           looking at videos. */}
       {showReady && (
         <div>
-          <ReadyToSendHeading n={d.readySend.ready.length + (d.readySend.portalDelivered?.length ?? 0)} />
+          <ReadyToSendHeading n={d.readySend.ready.length} />
           <div className="mt-2">
             <ReadyToSendCard board={d.readySend} includeTest={includeTest} />
           </div>

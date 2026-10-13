@@ -11,7 +11,7 @@ import { topazSettings } from "@/lib/settings";
 import { cutReleasedAt, publicationRequiredAt, publicationFailuresFor } from "@/lib/contentVideos";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import type { TopazState } from "@/lib/topazJobs";
-import { monthlyOwnerAccess, claimMonthlyFinalDelivery, monthlyPortalHandoffId } from "@/lib/monthlyFinal";
+import { monthlyOwnerAccess, claimMonthlyFinalDelivery } from "@/lib/monthlyFinal";
 import { portalReason } from "@/lib/deliveryReadyMessage";
 
 // ===========================================================================
@@ -348,13 +348,14 @@ export type NotTold = { submissionId: string; projectId: string; street: string;
 
 /**
  * DELIVERED VIA THE CONTENT PROGRAM (Jordan, Oct 12 2026): "branding content
- * should go straight to the portal once it's approved and ran through topaz.
+ * should go straight to the portal once its approved and ran through topaz.
  * Then, on the home screen, it should say that it was delivered via the
- * content program, with the option to upload it to Aryeo or the option to mark
- * as completed. If upload to aryeo is selected, we should be able to see the
- * button to download it and the button to the aryeo listing."
- * One row per version the hub published to a client's portal since that day,
- * until a person marks it completed.
+ * content program, with the option to upload it to Aryeo".
+ * Oct 13 2026 (Jordan): these close BY THEMSELVES. The portal already has the
+ * video, so there is nothing for anybody to press: one informational row per
+ * version the hub published to a client's portal in the last
+ * PORTAL_DELIVERED_SHOW_DAYS days, never counted as work. The old "Mark as
+ * completed" button is gone; a row somebody completed with it stays hidden.
  */
 export type PortalDelivered = {
   submissionId: string;
@@ -378,7 +379,7 @@ export type PortalDelivered = {
 export type ReadyBoard = {
   ready: ReadyVideo[];
   rendering: RenderingVideo[];
-  /** Oct 12 2026: branding videos the portal has, waiting for "Mark as completed". */
+  /** Branding videos the portal has, shown for a week as information only (never counted as work). */
   portalDelivered?: PortalDelivered[];
   needsFinishing: NeedsFinishing[];
   notTold?: NotTold[];
@@ -439,18 +440,21 @@ async function deliveryExitExtras(projectId?: string, recordHealth = false, incl
 const HOUR = 3_600_000;
 
 // ---------------------------------------------------------------------------
-// DELIVERED VIA THE CONTENT PROGRAM — the follow-up row (see PortalDelivered).
+// DELIVERED VIA THE CONTENT PROGRAM — the informational row (see PortalDelivered).
 // The list is every portal handoff (monthlyFinal's monthly-portal-handoff
-// audit row) since Oct 12 with no completion row (monthly-portal-followup) yet.
-// Nothing here reaches a client or Aryeo: Download hands Kyle the checked
-// file, the Aryeo button opens the listing, and "Mark as completed" records
-// that the office is done with it.
+// audit row) in the last PORTAL_DELIVERED_SHOW_DAYS days (and since Oct 12),
+// minus any a person closed with the retired "Mark as completed" button
+// (monthly-portal-followup). Nothing here reaches a client or Aryeo: Download
+// hands Kyle the checked file and the Aryeo button opens the listing.
 // ---------------------------------------------------------------------------
 export const PORTAL_FOLLOW_UP_SINCE = new Date("2026-10-12T04:00:00Z");
+/** How long a portal-delivered branding video stays on the home card as information. */
+export const PORTAL_DELIVERED_SHOW_DAYS = 7;
 export const portalFollowUpId = (submissionId: string) => `monthly-portal-followup:${submissionId}`;
 
 async function portalDeliveredRows(projectId?: string, excludeClientIds?: string[]): Promise<PortalDelivered[]> {
-  const handoffs = await prisma.auditLog.findMany({ where: { action: "monthly_portal_handoff", createdAt: { gte: PORTAL_FOLLOW_UP_SINCE } }, select: { target: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 300 });
+  const showFrom = new Date(Math.max(PORTAL_FOLLOW_UP_SINCE.getTime(), Date.now() - PORTAL_DELIVERED_SHOW_DAYS * 24 * HOUR));
+  const handoffs = await prisma.auditLog.findMany({ where: { action: "monthly_portal_handoff", createdAt: { gte: showFrom } }, select: { target: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 300 });
   const ids = [...new Set(handoffs.map((h) => h.target).filter((t): t is string => !!t))];
   if (!ids.length) return [];
   const done = new Set((await prisma.auditLog.findMany({ where: { id: { in: ids.map(portalFollowUpId) } }, select: { target: true } })).map((r) => r.target));
@@ -500,30 +504,6 @@ async function portalDeliveredRows(projectId?: string, excludeClientIds?: string
     });
   }
   return rows.sort((a, b) => a.deliveredAtISO.localeCompare(b.deliveredAtISO));
-}
-
-/**
- * "Mark as completed" on a branding video the portal already has. Records the
- * office's close-out (who, when, and whether they chose the Aryeo upload) and
- * a line on the job's timeline. Idempotent: a second press says so. Touches
- * nothing the client sees.
- */
-export async function completePortalDelivery(submissionId: string, by: string | null, opts: { aryeo?: boolean } = {}): Promise<{ ok: boolean; message: string }> {
-  const handoff = await prisma.auditLog.findUnique({ where: { id: monthlyPortalHandoffId(submissionId) }, select: { id: true } });
-  if (!handoff) return { ok: false, message: "This video wasn't delivered through the content program, so there is nothing to complete here." };
-  const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, round: true } });
-  if (!cut) return { ok: false, message: "That video no longer exists." };
-  const who = by ?? "the office";
-  try {
-    await prisma.$transaction([
-      prisma.auditLog.create({ data: { id: portalFollowUpId(submissionId), actor: who.slice(0, 120), action: "monthly_portal_followup", target: submissionId, detail: JSON.stringify({ aryeoUploadChosen: !!opts.aryeo, at: new Date().toISOString() }) } }),
-      prisma.activity.create({ data: { projectId: cut.projectId, type: "SYSTEM", body: `Branding video v${cut.round} marked completed by ${who}: delivered via the content program${opts.aryeo ? ", with the Aryeo upload chosen" : ""}.`.slice(0, 500) } }),
-    ]);
-  } catch (e) {
-    if ((e as { code?: string }).code === "P2002") return { ok: true, message: "Already marked completed." };
-    throw e;
-  }
-  return { ok: true, message: "Marked as completed." };
 }
 
 /** "5642 Limeport Rd, Coopersburg, PA" -> "5642 Limeport Rd". */

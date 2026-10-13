@@ -396,7 +396,11 @@ async function main() {
   await prisma.appSetting.deleteMany({ where: { key: { startsWith: "aryeo-wh-seen-" } } });
   await handleAryeoActivity("LISTING_DELIVERED", deliveryEvent, { authenticated: true });
   const delivered = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } });
-  ok("NEW: a signed delivery settles the non-Topaz cut with no upload receipt", !!delivered.sentToClientAt && (delivered.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && !(await uploadsFor([limeport.id])).has(limeport.id), delivered.sentToClientBy ?? "");
+  // Oct 13 2026: the listing check now records the upload it sees (actor
+  // "Aryeo listing check"), so the only receipt allowed here is that one —
+  // never a person's.
+  const autoReceipt = (await uploadsFor([limeport.id])).get(limeport.id);
+  ok("NEW: a signed delivery settles the non-Topaz cut with no person's upload receipt", !!delivered.sentToClientAt && (delivered.sentToClientBy ?? "").startsWith("Aryeo (delivery confirmed)") && (!autoReceipt || (autoReceipt.actor === "Aryeo listing check" && autoReceipt.actorId === null)), delivered.sentToClientBy ?? "");
   await handleAryeoActivity("LISTING_DELIVERED", deliveryEvent, { authenticated: true });
   ok("duplicate authenticated occurrence preserves timestamp and one ledger record", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: limeport.id } })).sentToClientAt?.getTime() === delivered.sentToClientAt?.getTime() && await prisma.auditLog.count({ where: { target: L3, action: "aryeo_listing_delivery_event" } }) === 1);
 
