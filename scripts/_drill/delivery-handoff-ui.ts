@@ -170,15 +170,11 @@ async function main() {
     const board: ReadyBoard = { ready: [ready], rendering: [], needsFinishing: [], notTold: [] };
     const monthlyHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board }));
     c.ok("actual monthly row passes destination into record control and orders final check before recording", !monthlyHTML.includes("Record portal handoff") && !monthlyHTML.includes("Check client-viewable file") && !monthlyHTML.includes("example.test/listing"));
+    // Oct 13 2026 (Jordan): branding content is delivered through the portal, everything else through
+    // Aryeo — the card no longer offers "Upload to Aryeo instead?" for a monthly video.
     const branding = { ...ready, deliveryDestination: "client-portal" as const, canChooseAryeo: true, destinationFingerprint: "branding-choice", uploadFingerprint: "branding-final" };
     const brandingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [branding] } }));
-    c.ok("branding alternative appears below always-visible file buttons", brandingHTML.includes("Upload to Aryeo instead?") && brandingHTML.indexOf("Upload to Aryeo instead?") > brandingHTML.indexOf("Watch it"));
-    card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [branding] } }));
-    const brandRow = namedComponent(tree(), "ReadyRow")!;
-    (brandRow.props.onAryeoChosen as () => void)();
-    c.ok("confirmed choice moves branding into upload queue immediately while preserving month identity", words(tree()).includes("Ready for upload") && !words(tree()).includes("Portal delivery needs attention") && namedComponent(tree(), "ReadyRow")!.props.v !== branding && (namedComponent(tree(), "ReadyRow")!.props.v as ReadyVideo).monthlyProgram);
-    branding.uploadFingerprint = "branding-replacement"; branding.destinationFingerprint = "branding-choice-replacement";
-    c.ok("local choice cannot leak onto a replaced source", words(tree()).includes("Portal delivery needs attention") && !words(tree()).includes("Ready for upload"));
+    c.ok("a branding video is never offered 'Upload to Aryeo instead?' on the card", !brandingHTML.includes("Upload to Aryeo instead?"));
     const { ChooseAryeoDelivery } = await import("../../src/components/ops/ChooseAryeoDelivery");
     let chosen = 0;
     card!.stop(); card = mountHooks(() => ChooseAryeoDelivery({ submissionId: "branding-cut", fingerprint: "branding-final", onChosen: () => chosen++ }));
@@ -192,17 +188,18 @@ async function main() {
     await (elements(tree(), "button")[0].onClick as () => Promise<void>)();
     c.ok("committed headers finish choice even when the response body never completes", chosen === 1 && destinationCalls === beforeChoices + 1 && !elements(tree(), "button")[0].disabled);
     const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source" }] } }));
-    c.ok("actual listing row retains Aryeo destination, link and original Mark-as-sent action", listingHTML.includes("example.test/listing") && !listingHTML.includes("Mark as sent") && listingHTML.includes("Mark as Uploaded"));
+    // Oct 13 2026: listing videos close themselves (upload seen on the listing + Aryeo's delivered event); one fallback button.
+    c.ok("actual listing row keeps its Aryeo link and ONE fallback: Mark as delivered", listingHTML.includes("example.test/listing") && listingHTML.includes("Mark as delivered") && !listingHTML.includes("Mark as Uploaded") && !listingHTML.includes(">Mark as sent<"));
     c.ok("files and upload is an always-visible section, never a disclosure", listingHTML.includes('aria-label="Files and upload"') && !listingHTML.includes('<summary class="cursor-pointer text-sm font-medium">Files and upload'));
     const listing = { ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source", overdue: true };
     const uploadedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: { id: "receipt", at: ready.approvedAtISO, by: "Kyle" } }] } }));
     // Watch opens the in-page player (Oct 5 playback release): a button now, not a link.
-    c.ok("uploaded-not-sent is expanded with only title, overdue and requested actions", uploadedHTML.includes("Uploaded, not sent") && uploadedHTML.includes("Past due") && uploadedHTML.includes("Aryeo listing") && / Watch<\/button>/.test(uploadedHTML) && uploadedHTML.includes("Mark as sent") && !uploadedHTML.includes("Files and upload") && !uploadedHTML.includes("Download") && !uploadedHTML.includes("Mark as Uploaded") && !uploadedHTML.includes("<details") && !uploadedHTML.includes("Undo upload"));
+    c.ok("uploaded-not-sent is expanded with only title, overdue and requested actions", uploadedHTML.includes("On Aryeo, waiting for delivery") && uploadedHTML.includes("Past due") && uploadedHTML.includes("Aryeo listing") && / Watch<\/button>/.test(uploadedHTML) && uploadedHTML.includes("Mark as delivered") && !uploadedHTML.includes("Files and upload") && !uploadedHTML.includes("Download") && !uploadedHTML.includes("Mark as Uploaded") && !uploadedHTML.includes("<details") && !uploadedHTML.includes("Undo upload"));
     card!.stop(); card = mountHooks(() => ReadyToSendCard({ board: { ...board, ready: [listing] } }));
     const uploadRow = namedComponent(tree(), "ReadyRow")!;
     (uploadRow.props.onUploaded as () => void)();
     const uploadedRow = namedComponent(tree(), "UploadedRow")!;
-    c.ok("confirmed upload moves exact row between queues immediately", !!uploadedRow && !namedComponent(tree(), "ReadyRow") && words(tree()).includes("Uploaded, not sent"));
+    c.ok("confirmed upload moves exact row between queues immediately", !!uploadedRow && !namedComponent(tree(), "ReadyRow") && words(tree()).includes("On Aryeo, waiting for delivery"));
     (uploadedRow.props.onSent as (v: unknown) => void)([{ submissionId: listing.submissionId, fingerprint: listing.uploadFingerprint }]);
     c.ok("confirmed send removes exact row from uploaded-not-sent immediately", !namedComponent(tree(), "UploadedRow") && words(tree()).includes("No new files ready"));
     listing.uploadFingerprint = "replacement-source";
@@ -211,12 +208,12 @@ async function main() {
       { ...listing, cutLabel: "Personal Branding Reel — Video 1 of 2", uploaded: { id: "one", at: ready.approvedAtISO, by: "Kyle" } },
       { ...listing, submissionId: "second-cut", cutLabel: "Personal Branding Reel — Video 2 of 2", uploaded: { id: "two", at: ready.approvedAtISO, by: "Kyle" } },
     ] } }));
-    c.ok("same project has one concise unsent item and one set of actions", groupedHTML.includes("Personal Branding - Not Sent") && (groupedHTML.match(/>Mark as sent</g) ?? []).length === 1 && (groupedHTML.match(/ Watch<\/button>/g) ?? []).length === 1 && !groupedHTML.includes("Video 2 of 2"));
+    c.ok("same project has one concise unsent item and one set of actions", groupedHTML.includes("Personal Branding - Not Sent") && (groupedHTML.match(/>Mark as delivered</g) ?? []).length === 1 && (groupedHTML.match(/ Watch<\/button>/g) ?? []).length === 1 && !groupedHTML.includes("Video 2 of 2"));
 
     // ---- Oct 5 wave 2 · no linked Aryeo listing: one plain next step --------
     const linkedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: null }] } }));
     const unlinkedHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...listing, uploaded: null, listingMissing: true }] } }));
-    c.ok("OLD shape still holds for a linked job: Mark as Uploaded is offered", linkedHTML.includes("Mark as Uploaded") && !linkedHTML.includes("Link the Aryeo listing first"));
+    c.ok("a linked job offers the one fallback, Mark as delivered", linkedHTML.includes("Mark as delivered") && !linkedHTML.includes("Link the Aryeo listing first"));
     c.ok("NEW: no listing → no Mark as Uploaded the server would refuse", !unlinkedHTML.includes("Mark as Uploaded") && !unlinkedHTML.includes("record the upload"));
     c.ok("…and one plain next step that links to the job", unlinkedHTML.includes("Link the Aryeo listing first") && unlinkedHTML.includes(`href="/projects/${listing.projectId}"`) && unlinkedHTML.includes("Refresh from Aryeo"));
 
@@ -239,19 +236,19 @@ async function main() {
     const groupCuts = [{ submissionId: "group-one", fingerprint: "group-fp-one" }, { submissionId: "group-two", fingerprint: "group-fp-two" }];
     const groupCompleted: UploadedTarget[] = [];
     card!.stop(); card = mountHooks(() => MarkProjectSent({ projectId: "group-project", cuts: groupCuts, onRecorded: cuts => { groupCompleted.push(...cuts); } }));
-    click("Mark as sent"); click("Cancel");
+    click("Mark as delivered"); click("Cancel");
     c.ok("cancel group confirmation records nothing", groupCalls.length === 0 && groupCompleted.length === 0);
-    click("Mark as sent"); const confirmGroup = button("Confirm sent")!.onClick as () => void; confirmGroup(); confirmGroup();
+    click("Mark as delivered"); const confirmGroup = button("Confirm delivered")!.onClick as () => void; confirmGroup(); confirmGroup();
     c.ok("group save serializes one exact visible snapshot", groupCalls.length === 1 && groupCalls[0].projectId === "group-project" && JSON.stringify(groupCalls[0].cuts) === JSON.stringify(groupCuts));
     groupResult.resolve({ ok: false, completed: [groupCuts[0]], message: "Second video bookkeeping needs repair" }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("partial group receipt removes only confirmed members and names remaining work", groupCompleted.length === 1 && groupCompleted[0].submissionId === groupCuts[0].submissionId && words(tree()).includes("Second video bookkeeping"));
-    groupResult = deferred(); click("Mark as sent"); click("Confirm sent");
+    groupResult = deferred(); click("Mark as delivered"); click("Confirm delivered");
     groupResult.resolve({ ok: true, completed: [{ submissionId: "unknown-cut", fingerprint: "other" }], message: "Invalid success" }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("mismatched group response cannot remove another cut", groupCompleted.length === 1 && words(tree()).includes("Could not confirm"));
-    groupResult = deferred(); click("Mark as sent"); click("Confirm sent");
+    groupResult = deferred(); click("Mark as delivered"); click("Confirm delivered");
     groupResult.reject(new Error("Response lost after possible commit")); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("lost group response ends saving and permits explicit idempotent retry", groupCompleted.length === 1 && !!button("Mark as sent") && !elements(tree(), "Button")[0].disabled && words(tree()).includes("You do not need to send"));
-    groupResult = deferred(); click("Mark as sent"); click("Confirm sent");
+    c.ok("lost group response ends saving and permits explicit idempotent retry", groupCompleted.length === 1 && !!button("Mark as delivered") && !elements(tree(), "Button")[0].disabled && words(tree()).includes("You do not need to send"));
+    groupResult = deferred(); click("Mark as delivered"); click("Confirm delivered");
     groupResult.resolve({ ok: true, completed: groupCuts, message: "Recorded" }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("full group receipt removes confirmed versions without a root render", groupCompleted.length === 3 && groupCompleted.at(-1)?.submissionId === groupCuts[1].submissionId);
     markers.clear(); result = deferred(); let sentRemoved = 0;

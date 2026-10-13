@@ -105,7 +105,9 @@ async function main() {
       routine?.defaultOpen === true && elements(reviewTree, "HomeRoutine").every((r) => r.defaultOpen !== true));
     const blocks = elements(routine.children, "Block");
     const keys = blocks.map((b) => (b.def as { key: string }).key);
-    c.ok("optional checklist retains all 15 existing block anchors", keys.length === 15 && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => keys.includes(id)) && String(routine.attention).includes("urgent work"));
+    // Oct 13 2026 (Jordan's audit): the duplicated comms/prep blocks, Lunch and the fixed admin text came out;
+    // every anchor the page links to must still exist.
+    c.ok("optional checklist keeps every block the page links to (duplicates removed Oct 13)", keys.length >= 8 && new Set(keys).size === keys.length && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => keys.includes(id)) && String(routine.attention).includes("urgent work"), keys.join(","));
     c.ok("urgent work section precedes the optional routine", namesOf(opsTree).indexOf("NeedsToday") < namesOf(opsTree).indexOf("HomeRoutine"));
     const videoBlock = (function find(tree: unknown): unknown {
       if (Array.isArray(tree)) return tree.map(find).find(Boolean);

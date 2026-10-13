@@ -84,7 +84,8 @@ function block(html: string, open: RegExp): string {
   return html.slice(start);
 }
 const sectionsInOrder = (html: string) => [...html.matchAll(/data-brief-section="([a-z]+)"/g)].map((m) => m[1]);
-const externalLinks = (html: string) => [...html.matchAll(/href="(https?:[^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
+// Oct 13 2026: the raw-footage link resolves the live folder at click time (/api/dropbox/open/<job>?folder=rawVideo).
+const externalLinks = (html: string) => [...html.matchAll(/href="((?:https?:|\/api\/dropbox\/open\/)[^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
 
 const JARGON = [
   "goes by the job", "shared by all", "Chosen logo", "no choice recorded", "output-specific", "Shared job script",
@@ -224,7 +225,7 @@ async function main() {
     c.ok("the script is OPEN by default with a Copy button, and an approved script wears no warning", /<section[^>]*data-brief-section="script"[\s\S]*?<details open=""/.test(article1) && article1.includes('aria-label="Copy the script"') && !article1.includes("data-not-approved"));
     c.ok("a blank script section is not drawn as '(empty)'", !kim1Text.includes("(empty)") && !/Caption CTA/i.test(text(block(article1, /data-brief-section="script"/))));
     const links1 = externalLinks(article1);
-    const footageLinks = (links: string[]) => links.filter((u) => u.includes("/isolated/oct5/"));
+    const footageLinks = (links: string[]) => links.filter((u) => u.includes("/isolated/oct5/") || u.startsWith("/api/dropbox/open/"));
     c.ok("one footage link — this topic's own clips — and no duplicate links in the brief", footageLinks(links1).length === 1 && links1.some((u) => u.includes("01-First%20weekend") || u.includes("01-First weekend")) && new Set(links1).size === links1.length, links1.join(" | "));
     c.ok("the raw job folder is linked nowhere else on the page", count(kim1, "isolated/oct5/maple/oct\"") + count(kim1, "isolated/oct5/maple/oct/02-RAW-Video\"") === 0, String(count(kim1, "maple/oct")));
     const dueBlock = text(block(article1, /<div[^>]*data-due/));
