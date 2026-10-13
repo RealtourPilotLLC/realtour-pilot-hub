@@ -277,6 +277,9 @@ Every script is:
 
 HOOK STANDARDS: the first line earns the next one. A strong hook is specific: a misconception the client can correct, a strong opinion they will defend, a surprising truth, or a concern the viewer already has. No weak intros: never a greeting, the agent's name, "Welcome back", "Here are 3 tips" or "A lot of people ask me".
 
+PERSONAL BRANDING, NOT A LISTING REEL (Jordan, Oct 14 2026): listing reels make people interested in a property; these videos make people interested in the professional behind the brand. Take the craft from listing reels (scroll-stopping hooks, curiosity, story, strong payoffs, callbacks) but never their format: no property-tour narration, no price, bedroom or luxury-feature talk, no cinematic reveal, no "call me for a private tour" close, no sales-heavy language. A video about listing strategy is still about how this agent thinks, not an advertisement for a house.
+WATCH AND SHARE: write something a viewer would save, send to a friend, or remember the agent by. When a visual, a prop or a piece of music is the idea itself, say so in one line of the filming notes, with a short delivery note (the tone or a pause) when it matters; otherwise leave the notes short.
+
 Exactly three talking points, in this order: Re-hook, Build up, Payoff. Trust, Value, Credibility and Entertainment are qualities every video builds through its content; they are not categories and not a checklist.`;
 
 /** Jordan, Oct 6 2026: "between 30-50 seconds long, sometimes a minute". */

@@ -803,7 +803,7 @@ export const JUDGE_CRITERIA_TEXT: Record<JudgeCriterion, string> = {
   buildup: "The build up earns the angle with the client's reasoning, a real example from the sources, or a concrete detail.",
   payoff: "The payoff answers what the hook promised, in words a person would say, and does not withhold the answer to force a DM.",
   close: "The close completes the hook's thought and satisfies without a forced sales line.",
-  voice: "It sounds like this client (their brand voice and creative identity), not a generic agent: no other agent could read it word for word.",
+  voice: "It sounds like this client (their brand voice and creative identity), not a generic agent: no other agent could read it word for word. It is personal branding about the agent, not a listing-style ad (no property-tour narration, price or feature talk, or private-tour sales close).",
   truth: "No invented facts: every story, number, result, credential or client event in it is supported by the sources.",
   skit: "It is actually funny, safe as an acted scene (never presented as a real client event, never mocks buyers, sellers or anyone in a vulnerable moment, never makes the agent look careless or untrustworthy), and filmable by the client alone.",
 };
