@@ -75,6 +75,14 @@ export const AUTOMATION_KEYS = [
   // task are internal and always on; this only decides whether a CLIENT is
   // emailed that the office replied (lib/programMessages.ts).
   "program_message_notice", // §13 "Kyle replied to your message" email to the client's seats, once per unread run, client hours only
+  // Oct 14 2026 (Jordan, Oct 13: "Can you just automate this and turn
+  // everything on ... I want a sign-up email to go out and for everything to
+  // be activated"). When a program becomes ACTIVE (a website signup, a
+  // reactivation, the Aryeo plan sweep), the whole Client onboarding panel is
+  // done for that client by lib/autoOnboarding.autoOnboardClient: strategy
+  // released, features allowed (never "share scripts without my approval"),
+  // portal account, ONE welcome email, marked onboarded.
+  "auto_onboarding", // Client onboarding done automatically when a program becomes active
   // "portal_layout_v2" (UI-01, Sep 24 2026) RETIRED Oct 6 2026: the new
   // portal layout is the only layout (Jordan: "I want to just be fully
   // transitioned to the new layout"), so there is nothing left to switch. A

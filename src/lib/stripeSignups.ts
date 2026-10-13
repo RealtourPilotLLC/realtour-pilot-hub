@@ -840,6 +840,17 @@ async function activateSignup(sig: {
   console.info(`[signup] ${sig.checkoutId}: ${access}; discovery ${discovery.outcome}${"detail" in discovery && discovery.detail ? ` (${discovery.detail})` : ""}`);
   if (discovery.outcome === "conflict" && "detail" in discovery && discovery.detail) note = `${note ? note + " " : ""}${discovery.detail}`;
 
+  // ---- CLIENT ONBOARDING, DONE FOR THEM (Oct 14 2026). Behind the
+  // auto_onboarding switch; AFTER the access grant on purpose (onProgramActivated
+  // above runs before it): when the grant already welcomed them, the
+  // automatic onboarding sees that welcome and sends none; when the grant held
+  // it (not in the rollout yet), onboarding allows them, opens the account at
+  // the held address, clears the hold and sends the one welcome. Best-effort.
+  {
+    const { maybeAutoOnboard } = await import("@/lib/autoOnboarding");
+    await maybeAutoOnboard(client.id, "auto-onboarding (website signup)", `signup ${sig.checkoutId}`);
+  }
+
   try {
     const { notifyInApp, opsAlert } = await import("@/lib/notify");
     const rung = await prisma.notification.count({ where: { dedupeKey: `signup-${sig.checkoutId}-0` } }).catch(() => 1);

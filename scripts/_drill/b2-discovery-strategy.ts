@@ -650,14 +650,15 @@ async function main() {
     const ps = await portalStrategy({ id: nadia.enrollmentId, clientId: nadia.clientId });
     c.ok("the portal shows the released version without the framework, captions or the team's notes", !!ps && !ps.sections.some((s) => s.id === "gaps" || /framework|caption/i.test(s.heading)) && ps.sections.some((s) => s.id === "content-goals"), ps?.sections.map((s) => s.heading).join(" | "));
 
-    // A confidential fact repeated in a section blocks the release, naming the section.
+    // Oct 14 2026 (Jordan: "Nothing in the content strategy should be
+    // confidential"): a sentence that repeats a confidential FACT no longer
+    // blocks the release, and approving releases it in the same press.
     await facts.createFact({ clientId: nadia.clientId, enrollmentId: nadia.enrollmentId, category: "DECISION", body: "Her broker is leaving the firm at the end of the year", source: "call", confidential: true });
     const dir = (await sectionsOf(clean)).find((s) => s.id === "video-structure-framework")!;
     await actions.editStrategySection(clean, "video-structure-framework", `${dir.text}\nHer broker is leaving the firm at the end of the year, so the brand stands on its own.`);
     const leaky = await latest();
-    await actions.approveStrategy(leaky);
-    const r2 = await actions.releaseStrategy(leaky);
-    c.ok("release is refused when a section repeats a confidential fact — the section is named", !r2.ok && /Video Structure Framework" section repeats something marked confidential/.test(r2.message), r2.message);
+    const ap = await actions.approveStrategy(leaky);
+    c.ok("Oct 14: a section repeating a confidential fact is no longer refused — approving released it", ap.ok && /Released to the portal/.test(ap.message) && !!(await version(leaky)).releasedAt, ap.message);
 
     // A legacy "Accepted proposal" section: refused by the release; dropped by the portal even if released the OLD way.
     const pid = await cs.createStrategyProposal({ enrollmentId: nadia.enrollmentId, kind: "POSITIONING", summary: "Lean into relocation buyers", sourceKind: "call" });

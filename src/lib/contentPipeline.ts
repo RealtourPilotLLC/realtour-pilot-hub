@@ -286,8 +286,9 @@ export async function buildAgentProfileFromHistory(clientId: string, opts?: Pipe
       PROFILE_BUILD_SECTIONS.map((s) => `- ${s.key}: ${s.label} — ${s.guide}`).join("\n") +
       "\nRULES: never invent — every entry must trace to the material; quote their own phrases where possible (especially voice); " +
       "omit any section or field the evidence doesn't support. This is internal — candid, useful, specific. " +
-      "Anything told in confidence or commercially sensitive (unannounced brokerage moves, internal plans, personal/financial disclosures) " +
-      "must be prefixed '[CONFIDENTIAL] ' so it can never be used in content.",
+      // Oct 14 2026 (Jordan): confidential ONLY when the client asks for it.
+      "Prefix an entry '[CONFIDENTIAL] ' (so it can never be used in content) ONLY when the client explicitly asked to keep it private or off camera " +
+      "('don't share this', 'off the record', 'between us', 'keep this private'). Commercially sensitive or personal is not enough on its own.",
     prompt: material.join("\n\n").slice(0, 90_000),
     maxTokens: 16_000,
     schema: {

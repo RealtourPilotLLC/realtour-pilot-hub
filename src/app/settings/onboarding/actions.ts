@@ -79,6 +79,49 @@ export async function markOnboardingSentAction(input: { clientId: string; messag
   } catch (e) { return fail(e); }
 }
 
+// ---- "Do everything" (Oct 14 2026) -------------------------------------------
+// Jordan, Oct 13: "Can you just automate this ... I just want everything done
+// for me at this point." Both run lib/autoOnboarding, which goes through the
+// same functions as the buttons above (and their checks). The welcome is sent
+// at most once per client, ever.
+
+export type AutoOnboardResult = Result & { lines: string[] };
+
+/** Every step for ONE client, the welcome email included. Owner only. */
+export async function autoOnboardClientAction(input: { clientId: string }): Promise<AutoOnboardResult> {
+  let me: { email: string; id: string | null };
+  try { me = await owner(); } catch (e) { return { ...fail(e), lines: [] }; }
+  try {
+    const { autoOnboardClient } = await import("@/lib/autoOnboarding");
+    const r = await autoOnboardClient(input.clientId, me.email, { sendWelcome: true, allowTest: true, byAppUserId: me.id });
+    revalidatePath("/settings/onboarding");
+    revalidatePath("/settings");
+    if (r.outcome === "skipped") return { ok: false, message: `${r.name} was skipped: ${r.reason}.`, lines: [] };
+    return {
+      ok: r.outcome === "onboarded",
+      message: r.outcome === "onboarded" ? `${r.name} is onboarded.` : `${r.name}: done as far as it can go. Something below needs you.`,
+      lines: [
+        ...r.steps.map((s) => `${s.key}: ${s.status}. ${s.detail}`),
+        ...(r.duplicates.length ? [`Another client record looks like this one (not used; check it): ${r.duplicates.join("; ")}`] : []),
+      ],
+    };
+  } catch (e) { return { ...fail(e), lines: [] }; }
+}
+
+/** Every ACTIVE, non-TEST program client, one after another. Owner only. */
+export async function autoOnboardAllAction(): Promise<AutoOnboardResult> {
+  let me: { email: string; id: string | null };
+  try { me = await owner(); } catch (e) { return { ...fail(e), lines: [] }; }
+  try {
+    const { autoOnboardAll, reportLine } = await import("@/lib/autoOnboarding");
+    const all = await autoOnboardAll(me.email, { sendWelcome: true, byAppUserId: me.id });
+    revalidatePath("/settings/onboarding");
+    revalidatePath("/settings");
+    const done = all.filter((r) => r.outcome === "onboarded").length;
+    return { ok: done === all.length, message: `${done} of ${all.length} active clients are onboarded.${done < all.length ? " The rest need you (below)." : ""}`, lines: all.map(reportLine) };
+  } catch (e) { return { ...fail(e), lines: [] }; }
+}
+
 /** Step 7: the Onboarded checkbox. */
 export async function setOnboardedAction(input: { clientId: string; done: boolean }): Promise<Result> {
   let me: { email: string };

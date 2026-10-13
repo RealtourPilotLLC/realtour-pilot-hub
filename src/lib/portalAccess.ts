@@ -588,6 +588,15 @@ async function queueWelcome(input: {
   // R03 (Sep 28 2026): "on" also means "this client is inside the rollout".
   // A real client outside it gets no welcome even with the switch on; the
   // TEST exception above is unchanged.
+  // ONE WELCOME, WHICHEVER ROAD SENT IT (Oct 14 2026). Client onboarding (the
+  // owner's Send now, "marked sent", or autoOnboarding's automatic welcome)
+  // may already have welcomed this client before their payment's grant opens
+  // the seat. Then this one is "already": nothing is queued, and the debt is
+  // settled. A teammate's invitation is a different person's and still goes.
+  if (input.reason === "welcome") {
+    const { welcomeAlreadySentFromOnboarding } = await import("@/lib/clientOnboarding");
+    if (await welcomeAlreadySentFromOnboarding(input.clientId)) return { welcome: "already", keepDebt: false };
+  }
   const invitesOn = await isAutomationEnabled("portal_invites");
   const reach = invitesOn ? await programReach("portal_invites", input.clientId) : null;
   const allowed = (invitesOn && !!reach?.ok) || (input.isTestClient && isVerifiedTestDestinationEmail(input.email));

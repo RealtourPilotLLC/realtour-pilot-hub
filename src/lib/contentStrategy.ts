@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { sha256 } from "@/lib/aiRuns";
 import { createPillar, listPillars } from "@/lib/contentPillars";
-import { CONFIDENTIAL_RE, confidentialFilter } from "@/lib/clientFacts";
+import { CONFIDENTIAL_RE } from "@/lib/clientFacts";
 import {
   parseStrategyDocument, normalizeStrategyLines, validateStrategyStructure, detectStructureVersion, isFrameworkSection, withCanonicalFramework,
   type ParsedStrategy, type StrategyDocument, type StrategyStructureVersion,
@@ -273,12 +273,20 @@ export function isInternalStrategySection(s: { id: string }): boolean {
   return s.id === "gaps" || s.id.startsWith("proposal-");
 }
 
-/** A section's text in checkable pieces — lines, then sentences — so one confidential sentence is found without a long section tripping the word-overlap rule on its own. */
-function checkablePieces(text: string): string[] {
-  return text.split(/\n+|(?<=[.!?])\s+/).map((x) => x.trim()).filter((x) => x.split(/\s+/).length >= 2);
-}
-
-/** Release to the portal — a separate act from approval; only an approved version can be released. */
+/**
+ * Release to the portal — only an approved version can be released (since
+ * Oct 14 2026 approving releases it too: content/actions.approveStrategy).
+ *
+ * NO CONFIDENTIAL-FACT CHECK (Oct 14 2026). Jordan, Oct 13: "Nothing in the
+ * content strategy should be confidential. The only thing that should be
+ * confidential is if they say so on the strategy call." The A09 check that
+ * matched each sentence against the client's confidential facts refused
+ * Bernadette Rabel's strategy because its Brand Overview says "Lehigh
+ * Valley." (her market), which a migrated note marked confidential also
+ * names. The strategy is written by us for the client; the two checks that
+ * stay are the team's working-notes sections and a literal [CONFIDENTIAL]
+ * marker in the text.
+ */
 export async function releaseStrategyVersion(versionId: string, by: string): Promise<void> {
   const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { id: true, status: true, strategyId: true, sectionsJson: true, clientId: true } });
   if (!v) throw new Error("Strategy version not found.");
@@ -290,15 +298,6 @@ export async function releaseStrategyVersion(versionId: string, by: string): Pro
   // confidential knowledge anywhere in the text stops the release outright.
   const leaking = sections.find((s) => CONFIDENTIAL_RE.test(s.text) || CONFIDENTIAL_RE.test(s.heading));
   if (leaking) throw new Error(`The "${leaking.heading}" section carries a [CONFIDENTIAL] marker — take it out (as a new version) before releasing this to the client.`);
-  // A09: nor may it repeat something this client said in confidence — a fact
-  // marked confidential, found by the same test the generators use. The
-  // "said in confidence" phrases are left out here: strategy prose is written
-  // by us, and "buy with confidence" is not a secret.
-  const secret = await confidentialFilter(v.clientId, { phrases: false });
-  for (const s of sections) {
-    const hit = checkablePieces(s.text).find(secret);
-    if (hit) throw new Error(`The "${s.heading}" section repeats something marked confidential ("${hit.slice(0, 80)}${hit.length > 80 ? "…" : ""}") — take it out (as a new version) before releasing this to the client.`);
-  }
   const now = new Date();
   await prisma.contentStrategyVersion.update({ where: { id: versionId }, data: { releasedAt: now, releasedBy: by } });
   await prisma.contentStrategy.update({ where: { id: v.strategyId }, data: { releasedAt: now, releasedBy: by } });
