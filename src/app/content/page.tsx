@@ -10,16 +10,16 @@ import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { cn, nameColor } from "@/lib/utils";
 import { monthLabel, etMonthKey } from "@/lib/contentProgram";
-import { programRevenue, billingLabel, agreementValue, type RevenueRow } from "@/lib/contentBilling";
 import { signupsNeedingReview } from "@/lib/stripeSignups";
 import { dismissSignupReview, setRosterView } from "@/app/content/actions";
 import { SweepButton } from "@/components/content/SweepButton";
-import { BadgeDollarSign, BookOpen, ChevronDown, Activity, LayoutGrid, ListChecks, Phone, Rows3, Settings2 } from "lucide-react";
+import { BookOpen, Activity, LayoutGrid, ListChecks, Phone, Rows3, Settings2 } from "lucide-react";
 import { programOverview, ALL_OPEN, OVERVIEW_FILTERS, type OverviewFilterKey, type OverviewRow as Row } from "@/lib/programOverview";
 import { OverviewRow } from "@/components/content/OverviewRow";
 import { ClientMonthCard, PkgChip } from "@/components/content/ClientMonthCard";
 import { contentHref, resolveRosterView, ROSTER_VIEW_COOKIE } from "@/lib/contentNav";
 import { allAutomations } from "@/lib/programAutomation";
+import { AUTOMATION_EFFECTS } from "@/lib/programAutomationCopy";
 
 export const dynamic = "force-dynamic";
 
@@ -59,19 +59,33 @@ export default async function ContentProgramPage({
   // Money is the OWNER's view alone — admins and creatives never see billing.
   // (Open local dev counts as the owner, same as the feedback board's rule.)
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
-  const revenue = ownerEyes ? await programRevenue().catch(() => null) : null;
   // Website signups the activation sweep couldn't finish cleanly (guessed
   // terms, package conflicts, transient failures). Owner-only — the notes name
   // billing terms.
   const reviewSignups = ownerEyes ? await signupsNeedingReview().catch(() => []) : [];
 
-  // THE one read, for both views, plus the automation switches (a banner when
-  // ANY is on, so nobody is surprised that something is acting on its own).
+  // THE one read, for both views, plus the automation switches — for a banner
+  // only when one needs a look (Oct 13 2026, below).
   const [overview, switches] = await Promise.all([
     programOverview({ monthKey: monthParam, includeEnded, includeTest, now }),
     allAutomations().catch(() => []),
   ]);
-  const switchedOn = switches.filter((s) => s.enabled);
+  // Oct 13 2026: the banner used to list EVERY switched-on automation by its
+  // internal key, on every load — permanent wallpaper once nearly all of them
+  // were on. It now appears only when one needs a look: an automation that is
+  // on and whose last run FAILED, or one that is on but does nothing because a
+  // switch it depends on is TURNED OFF (the Settings panel's "on, but
+  // blocked"). Named by title, not key.
+  const isOn = (k: string) => switches.some((s) => s.key === k && s.enabled);
+  const automationProblems = switches
+    .filter((s) => s.enabled)
+    .flatMap((s) => {
+      const e = AUTOMATION_EFFECTS[s.key];
+      const offDeps = (e.requires?.switches ?? []).filter((d) => !isOn(d));
+      if (s.lastError) return [`${e.title}: last run failed`];
+      if (offDeps.length) return [`${e.title}: does nothing while ${offDeps.map((d) => AUTOMATION_EFFECTS[d].title).join(" and ")} ${offDeps.length > 1 ? "are" : "is"} off`];
+      return [];
+    });
   const rows = overview.rows;
   const shown = filter ? rows.filter((r) => r.flags.includes(filter)) : rows;
   // Enrollment facts, counted once per client (an "all open months" view can
@@ -167,15 +181,14 @@ export default async function ContentProgramPage({
           </div>
         )}
 
-        {/* AUTOMATION BANNER — nothing on this program runs by itself unless a
-            person switched it on; when one IS on, everybody looking at this
-            page can see it and where to turn it off. */}
-        {switchedOn.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-brand/40 bg-brand-soft/40 px-4 py-2.5 text-[13px]">
-            <Settings2 className="size-4 shrink-0 text-brand" />
-            <span>
-              <span className="font-semibold">{switchedOn.length} automation{switchedOn.length === 1 ? " is" : "s are"} switched on:</span>{" "}
-              {switchedOn.map((s) => s.key.replace(/_/g, " ")).join(", ")}
+        {/* AUTOMATION BANNER — only when an automation needs a look: its last
+            run failed, or it is on but a switch it needs is off (see above). */}
+        {automationProblems.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-warning/50 bg-warning-soft/40 px-4 py-2.5 text-[13px]">
+            <Settings2 className="size-4 shrink-0 text-warning" />
+            <span className="min-w-0">
+              <span className="font-semibold">{automationProblems.length === 1 ? "An automation needs a look:" : `${automationProblems.length} automations need a look:`}</span>{" "}
+              {automationProblems.join(" · ")}
             </span>
             <Link href="/settings#program-automations" className="ml-auto shrink-0 font-medium text-brand hover:underline">Settings →</Link>
           </div>
@@ -345,10 +358,10 @@ export default async function ContentProgramPage({
           </div>
         )}
 
-        {/* REVENUE & BILLING — owner-only, collapsed until asked for (Jordan
-            Aug 25: "how much we are making off each person and if they paid in
-            full, paid monthly, or monthly with a 1yr contract"). */}
-        {revenue && revenue.length > 0 && <RevenuePanel rows={revenue} />}
+        {/* (The owner's "Revenue & billing" panel was HIDDEN Oct 13 2026: its
+            "collected" column was every QuickBooks payment, and Jordan does not
+            use QuickBooks, so it read $0 or stale for everyone. A client's
+            terms are still on their Settings tab; lib/contentBilling.ts is kept.) */}
 
         <p className="text-xs text-muted-2">
           <Clapperboard className="mr-1 inline size-3.5" />
@@ -356,57 +369,6 @@ export default async function ContentProgramPage({
         </p>
       </div>
     </div>
-  );
-}
-
-// Owner-only money panel: one row per active client — the terms as signed,
-// and what QuickBooks has actually collected from them this year (all
-// services, deliberately: it answers "how much do we make off this person").
-function RevenuePanel({ rows }: { rows: RevenueRow[] }) {
-  const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
-  const collected = rows.reduce((s, r) => s + r.collectedThisYear, 0);
-  const recurring = rows
-    .filter((r) => r.billingType === "MONTHLY_CONTRACT" || r.billingType === "MONTH_TO_MONTH")
-    .reduce((s, r) => s + (r.billingRate ?? 0), 0);
-  const TYPE_CHIP: Record<string, string> = {
-    PAID_IN_FULL: "bg-success/15 text-success",
-    MONTHLY_CONTRACT: "bg-brand/15 text-brand",
-    MONTH_TO_MONTH: "bg-[#8b93e6]/20 text-[#8b93e6]",
-    TRIAL: "bg-warning/15 text-warning",
-  };
-  return (
-    <details className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-5 py-3 hover:bg-surface-2">
-        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-        <span className="flex size-7 items-center justify-center rounded-lg bg-success/15 text-success"><BadgeDollarSign className="size-4" /></span>
-        <h2 className="text-sm font-semibold">Revenue &amp; billing</h2>
-        <span className="ml-auto text-xs text-muted">
-          <span className="font-semibold text-foreground">{money(collected)}</span> collected this year · {money(recurring)}/mo recurring
-        </span>
-      </summary>
-      <div className="divide-y divide-border border-t border-border">
-        {rows.map((r) => {
-          const value = agreementValue(r.billingType, r.billingRate, r.billingMonths);
-          return (
-            <Link key={r.enrollmentId} href={contentHref(r.enrollmentId, { tab: "settings" })} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 hover:bg-surface-2/60">
-              <Avatar name={r.clientName} color={nameColor(r.clientName)} size={24} />
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{r.clientName}</span>
-              <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", TYPE_CHIP[r.billingType ?? ""] ?? "bg-surface-2 text-muted-2")}>
-                {billingLabel(r.billingType, r.billingRate, r.billingMonths)}
-              </span>
-              {value != null && <span className="hidden text-[11px] text-muted-2 sm:inline">agreement {money(value)}</span>}
-              <span className={cn("w-28 shrink-0 text-right text-sm font-semibold tabular-nums", r.collectedThisYear === 0 && "text-warning")}>
-                {money(r.collectedThisYear)}
-                <span className="ml-1 text-[10px] font-normal text-muted-2">this yr</span>
-              </span>
-            </Link>
-          );
-        })}
-      </div>
-      <p className="border-t border-border px-5 py-2 text-[11px] text-muted-2">
-        Collected = every QuickBooks payment from this person in {new Date().getFullYear()} (all services, not just content). $0 on a trial = not invoiced or not paid yet. Edit terms on the client&rsquo;s Settings tab.
-      </p>
-    </details>
   );
 }
 

@@ -1,0 +1,77 @@
+import { NextRequest, NextResponse } from "next/server";
+import { cronBudget, authorizeCron } from "@/lib/cron";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 300;
+
+// ---------------------------------------------------------------------------
+// THE ARYEO SYNC (every 15 minutes at :10 :25 :40 :55 — see vercel.json).
+// Oct 13 2026, Jordan: "the aryeo sync should be every 15 minutes, not every
+// hour."
+//
+// Until today orders and appointments came in once an hour, at the top of the
+// hourly sync, so a booking made at 9:05 reached the hub after ten, and so did
+// everything that reads it: a session request turning CONFIRMED, the booking
+// driver's next step, and what the Ready-to-send card says Aryeo is showing.
+// Those now live here, four times an hour:
+//   · orders        the incremental sweep (stops at known orders — cheap);
+//   · appointments  recent + future only (21 days back), as the hourly did;
+//   · sessionRequests  REQUESTED → CONFIRMED when the appointment appears at
+//                      the slot, CONFIRMED → CANCELLED when Aryeo cancels it,
+//                      stale ones expire — database-only, reads the rows the
+//                      appointments step just wrote;
+//   · sessionBookings  CP-04's booking adapter — `session_booking` OFF = zero
+//                      calls; ON, only clients its config authorises, at most
+//                      3 a run, no new write with under 30 s left. Aryeo's
+//                      customer notifications stay OFF (notifyCustomer false),
+//                      exactly as before;
+//   · readyToSendAryeo  one Aryeo listing read per job on the Ready-to-send
+//                      card (at most 12): it files what the listing shows
+//                      (the card's evidence line) and runs the delivery proof
+//                      that marks a video sent only when it can only be that
+//                      cut. Never clears a row it cannot prove.
+//
+// Rate: the incremental order page(s), 2-4 appointment calls and ≤12 listing
+// reads a run — well inside what Aryeo allowed the hourly sync, ×4.
+//
+// Offset from everything else that talks to Aryeo: the hourly sync is at :00
+// (it no longer reads orders or appointments itself), the :30 reconcile walks
+// the full order/appointment history in page slices and runs ~4 minutes, and
+// this job's budget (240 s) ends each run well before the next one of those
+// starts. The :30 reconcile remains the safety net under this one.
+// ---------------------------------------------------------------------------
+export async function GET(req: NextRequest) {
+  const denied = authorizeCron(req);
+  if (denied) return denied;
+  const { step, out, finish } = cronBudget(240_000, Date.now(), "aryeo");
+
+  await step("orders", async () => {
+    const { syncAryeoOrders } = await import("@/lib/integrations/aryeo");
+    return syncAryeoOrders({ full: false });
+  }, { maxMs: 100_000 });
+  await step("appointments", async () => {
+    const { syncAryeoAppointments } = await import("@/lib/integrations/aryeo");
+    return syncAryeoAppointments({ recentOnlyDays: 21 });
+  }, { maxMs: 90_000 });
+  await step("sessionRequests", async () => {
+    const { reconcileSessionRequests } = await import("@/lib/sessionRequests");
+    return reconcileSessionRequests();
+  }, { maxMs: 20_000 });
+  // Its own step with its own budget — a real booking is several provider
+  // calls and must not share the reconcile's 20 s.
+  await step("sessionBookings", async () => {
+    const { driveSessionBookings } = await import("@/lib/sessionBooking");
+    return driveSessionBookings({ budgetMs: 60_000 });
+  }, { maxMs: 70_000 });
+  // The Ready-to-send card's Aryeo evidence and the delivery proof. Aryeo's
+  // LISTING_DELIVERED webhook has been silent since Sep 7 and only Aryeo's
+  // team can switch it back on; until they do, this is how the proof runs.
+  await step("readyToSendAryeo", async () => {
+    const { sweepReadyToSendAgainstAryeo } = await import("@/lib/aryeoDelivery");
+    return sweepReadyToSendAgainstAryeo({ max: 12, budgetMs: 25_000 });
+  }, { maxMs: 30_000 });
+
+  await finish();
+  return NextResponse.json({ ok: true, ...out });
+}

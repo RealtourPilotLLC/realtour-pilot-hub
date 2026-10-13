@@ -17,6 +17,10 @@
       "schedule": "7,22,37,52 * * * *"
     },
     {
+      "path": "/api/cron/aryeo",
+      "schedule": "10,25,40,55 * * * *"
+    },
+    {
       "path": "/api/cron/reconcile",
       "schedule": "30 * * * *"
     },

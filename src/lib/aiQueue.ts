@@ -15,11 +15,11 @@ import { LEASE_MS, QUEUE_LEASE_PREFIX, assertQuota, expireStaleRuns, type AiRunK
 // status QUEUED, holding the generator's own dedupe key, attributed to the
 // person — and answers. The row is the durable "drafting" marker the page
 // reads across refreshes, and the key is the claim: a double click, a second
-// tab or the hourly sweep collides on it (Postgres, unique dedupeKey), so a
+// tab or the scheduled sweep collides on it (Postgres, unique dedupeKey), so a
 // topic is never drafted twice.
 //
 // THE WORK runs in a worker the click hands to after() (and the poll, and the
-// hourly cron): it claims the oldest QUEUED row under a lease
+// 15-minute AI work job, cron/topics): it claims the oldest QUEUED row under a lease
 // ("queue:<origin>:<id>") and the generator ADOPTS that row (runAiJson's
 // claimedRun) — one row per draft from the click to the version, never a
 // second run for the same draft.
@@ -34,8 +34,9 @@ import { LEASE_MS, QUEUE_LEASE_PREFIX, assertQuota, expireStaleRuns, type AiRunK
 // deploy can kill it. A queue-owned RUNNING row past its 10-minute lease is put
 // back to QUEUED (runAiJson's own cleanup leaves queue rows to us) and retried
 // — up to QUEUE_MAX_ATTEMPTS claims — by the next worker: the page's poll
-// starts one while anything is waiting, and the hourly cron/sync drains the
-// rest when nobody is looking.
+// starts one while anything is waiting, and the 15-minute AI work job
+// (cron/topics, Oct 13 2026 — it used to be the hourly cron/sync) drains the
+// rest when nobody is looking, starting a draft only with time to finish it.
 //
 // ATTENDED. A queued job is a person's click carried out later: it runs with
 // unattended=false whatever the automation switches say (the ai_runs switch
@@ -258,14 +259,18 @@ export type DrainResult = { ran: number; done: number; failed: number; cancelled
  * One worker: claim → run → claim the next, until nothing is waiting, the
  * cap is full, or the budget is spent (whatever it has claimed, it finishes).
  */
-export async function drainAiQueue(opts: { origin?: string; budgetMs?: number; max?: number } = {}): Promise<DrainResult> {
+export async function drainAiQueue(opts: { origin?: string; budgetMs?: number; max?: number; minStartMs?: number } = {}): Promise<DrainResult> {
   const started = Date.now();
   const budgetMs = opts.budgetMs ?? WORKER_BUDGET_MS;
   const max = opts.max ?? 25;
+  // Oct 13 2026: the scheduled worker claims a job only with the time to finish
+  // it — a draft started with seconds left was stopped mid-call and came back
+  // QUEUED an attempt down. 0 keeps the old rule (the click's own worker).
+  const minStartMs = opts.minStartMs ?? 0;
   const origin = (opts.origin ?? "worker").replace(/[^a-z0-9-]/gi, "").slice(0, 20) || "worker";
   const out: DrainResult = { ran: 0, done: 0, failed: 0, cancelled: 0, lost: 0, requeued: 0 };
   out.requeued = (await recoverStaleQueuedRuns().catch(() => ({ requeued: 0, failed: 0 }))).requeued;
-  while (out.ran < max && Date.now() - started < budgetMs) {
+  while (out.ran < max && Date.now() - started < budgetMs && budgetMs - (Date.now() - started) >= minStartMs) {
     const row = await claimNext(origin);
     if (!row) break;
     out.ran++;
@@ -274,9 +279,9 @@ export async function drainAiQueue(opts: { origin?: string; budgetMs?: number; m
   return out;
 }
 
-/** The hourly cron: up to QUEUE_CONCURRENCY workers side by side (the cap still holds — they share it). */
-export async function drainAiQueueInParallel(opts: { origin?: string; budgetMs?: number } = {}): Promise<DrainResult & { waiting: number }> {
-  const results = await Promise.all(Array.from({ length: QUEUE_CONCURRENCY }, () => drainAiQueue({ origin: opts.origin ?? "cron", budgetMs: opts.budgetMs })));
+/** The 15-minute AI work job (cron/topics): up to QUEUE_CONCURRENCY workers side by side (the cap still holds — they share it). */
+export async function drainAiQueueInParallel(opts: { origin?: string; budgetMs?: number; minStartMs?: number; maxPerWorker?: number } = {}): Promise<DrainResult & { waiting: number }> {
+  const results = await Promise.all(Array.from({ length: QUEUE_CONCURRENCY }, () => drainAiQueue({ origin: opts.origin ?? "cron", budgetMs: opts.budgetMs, minStartMs: opts.minStartMs, max: opts.maxPerWorker })));
   const sum = results.reduce<DrainResult>((a, r) => ({ ran: a.ran + r.ran, done: a.done + r.done, failed: a.failed + r.failed, cancelled: a.cancelled + r.cancelled, lost: a.lost + r.lost, requeued: a.requeued + r.requeued }), { ran: 0, done: 0, failed: 0, cancelled: 0, lost: 0, requeued: 0 });
   const waiting = await prisma.programAiRun.count({ where: { status: "QUEUED", scopeJson: { contains: VIA } } });
   return { ...sum, waiting };

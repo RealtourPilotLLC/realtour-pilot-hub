@@ -346,9 +346,14 @@ async function main() {
       const poll = await A.aiQueueStatusAction(F.enrollmentId);
       const requeued = await prisma.programAiRun.findUniqueOrThrow({ where: { id } });
       c.ok("the poll re-queues the dead worker's row (the reason on it) and starts a worker", poll.ok && requeued.status === "QUEUED" && /Interrupted on try 1/.test(requeued.error ?? "") && requeued.leaseBy === null && pendingAfter.length === 1, `${requeued.status} ${requeued.error}`);
-      pendingAfter.length = 0; // nobody has the page open: the hourly cron finds it
-      const cronSrc = fs.readFileSync(path.join(REPO, "src/app/api/cron/sync/route.ts"), "utf8");
-      c.ok("the hourly cron/sync has an aiQueue step that drains it", /step\("aiQueue"/.test(cronSrc) && /drainAiQueueInParallel/.test(cronSrc));
+      pendingAfter.length = 0; // nobody has the page open: the scheduled job finds it
+      // Oct 13 2026: the drain moved from the hourly cron/sync to the
+      // 15-minute AI work job (cron/topics), where a worker claims a draft
+      // only with the time to finish it.
+      const cronSrc = fs.readFileSync(path.join(REPO, "src/app/api/cron/topics/route.ts"), "utf8");
+      const syncSrc = fs.readFileSync(path.join(REPO, "src/app/api/cron/sync/route.ts"), "utf8");
+      c.ok("the 15-minute AI work job (cron/topics) has an aiQueue step that drains it, starting only with time to finish", /step\("aiQueue"/.test(cronSrc) && /drainAiQueueInParallel\(\{[^}]*minStartMs/.test(cronSrc));
+      c.ok("…and the hourly cron/sync no longer does (it crowded the hour there)", !/drainAiQueueInParallel/.test(syncSrc));
       const drained = await q.drainAiQueueInParallel({ origin: "cron", budgetMs: 30_000 });
       const done = await prisma.programAiRun.findUniqueOrThrow({ where: { id } });
       c.ok("the cron's drain drafts it — attempt 2, ONE run row, one script", drained.done === 1 && done.status === "SUCCEEDED" && done.attempts === 2 && (await runsFor(T(9).id)).length === 1 && !!(await scriptOf(T(9).id)), JSON.stringify(drained));

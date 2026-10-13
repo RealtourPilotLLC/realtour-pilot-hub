@@ -827,7 +827,8 @@ const REFILL_COOLDOWN_MS = 7 * 86_400_000;
 const FAILED_INITIAL_BACKOFF_MS = 86_400_000;
 
 /**
- * HOURLY, behind `topic_refresh`. For each ACTIVE enrollment with an approved
+ * EVERY 15 MINUTES (the AI work job, cron/topics — Oct 13 2026), behind
+ * `topic_refresh`. For each ACTIVE enrollment with an approved
  * strategy and pillars: queue the initial bank if none has run since the
  * approval, else queue a targeted refill for each pillar below target (at most
  * once a week per pillar). Then drain. Nothing here reaches a client.

@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { AUTOMATION_KEYS, type AutomationKey } from "@/lib/programAutomation";
+import { AUTOMATION_KEYS, LISTED_AUTOMATION_KEYS, type AutomationKey } from "@/lib/programAutomation";
 import { AUTOMATION_EFFECTS, type AutomationCadence, type ReadinessConfigCheck, type ReadinessProvider } from "@/lib/programAutomationCopy";
 import { deployStamp, lastRunDeploy } from "@/lib/cron";
 import { cronHealthByJob } from "@/lib/cronHealth";
@@ -237,7 +237,7 @@ function providerState(id: ReadinessProvider, conns: Map<string, ConnRow>): { co
 // job's vercel.json cadence since its last recorded start; a job with no rows
 // is "never recorded", which is unknown, not late.
 const HOUR = 3_600_000;
-const CADENCE_MS: Record<AutomationCadence, number | null> = { hourly: HOUR, daily: 24 * HOUR, "on-action": null };
+const CADENCE_MS: Record<AutomationCadence, number | null> = { "every 15 minutes": HOUR / 4, hourly: HOUR, daily: 24 * HOUR, "on-action": null };
 
 async function cronFreshness(now: Date): Promise<{ crons: CronFreshness[]; lastSyncSummary: Record<string, unknown> | null }> {
   const [health, lastSync] = await Promise.all([
@@ -383,7 +383,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   // header): the stored value once (for the header and the hub pilots), and
   // one programAudience per client-reaching op (its lock, its line, its
   // clients). The call processor's batch, from the driver's own hold rule.
-  const scopeOps = AUTOMATION_KEYS.filter((k) => AUTOMATION_EFFECTS[k].launchGate === "programScope" && isProgramReachOp(k)) as unknown as ProgramReachOp[];
+  const scopeOps = LISTED_AUTOMATION_KEYS.filter((k) => AUTOMATION_EFFECTS[k].launchGate === "programScope" && isProgramReachOp(k)) as unknown as ProgramReachOp[];
   const rolloutMod = await import("@/lib/programRollout");
   const [rolloutRead, audienceList, signInAudience, transcriptQueue] = await Promise.all([
     rolloutMod.loadProgramRollout().then((r) => ({ ok: true as const, ...r })).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message.split("\n")[0].slice(0, 200) : String(e) })),
@@ -506,7 +506,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   const rows: ReadinessRow[] = [];
 
   // ---- the content-program switches ---------------------------------------
-  for (const key of AUTOMATION_KEYS) {
+  for (const key of LISTED_AUTOMATION_KEYS) {
     const e = AUTOMATION_EFFECTS[key];
     const s = stored.get(key) ?? null;
     const enabled = s?.enabled === true;
@@ -580,7 +580,12 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
     const cadenceMs = CADENCE_MS[e.cadence];
     const lastRunAt = s?.lastRunAt ?? null;
     const stale = Boolean(enabled && effective.ok && cadenceMs && lastRunAt && now.getTime() - lastRunAt.getTime() > 2 * cadenceMs);
-    const hostLate = Boolean(enabled && effective.ok && e.cadence === "hourly" && sync?.stale);
+    // The run that drives it: its own host job when it has one (the AI sweeps
+    // run in the 15-minute "topics" job since Oct 13 2026 — judging them by the
+    // hourly sync called a healthy topic bank late, or a stalled one fine),
+    // else the hourly sync for an hourly switch.
+    const host = e.host ? cron.crons.find((c) => c.job === e.host) ?? null : e.cadence === "hourly" ? sync : null;
+    const hostLate = Boolean(enabled && effective.ok && host?.stale);
     // A provider it needs is connected but refused the hub last time: still
     // working (the key is used), not healthy (review, Sep 28 — see providerState).
     const refused = provs.find((p) => providerNow.get(p)?.connected && providerNow.get(p)?.status === "error") ?? null;
@@ -597,7 +602,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
           : stale
             ? { ok: false, lastRunAt, lastError: null, stale: true, detail: `late: last ran ${agoWords(lastRunAt!, now)}, and it runs ${e.cadence}` }
             : hostLate
-              ? { ok: false, lastRunAt, lastError: null, stale: true, detail: `the hourly run is late: it last started ${agoWords(sync!.lastRunAt!, now)}` }
+              ? { ok: false, lastRunAt, lastError: null, stale: true, detail: `${host!.job === "sync" ? "the hourly run" : `the ${e.cadence} run (${host!.job})`} is late: it last started ${host!.lastRunAt ? agoWords(host!.lastRunAt, now) : "at an unrecorded time"}` }
               : refused
                 ? { ok: false, lastRunAt, lastError: providerNow.get(refused)?.lastError ?? null, stale: false, detail: `${PROVIDERS[refused].label} is connected but refused the hub last time${providerNow.get(refused)?.lastError ? `: ${providerNow.get(refused)!.lastError!.slice(0, 160)}` : ""}` }
                 : lastRunAt
@@ -656,7 +661,7 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
   // switch is never "healthy" while it stands — but it is not a whole-switch
   // blocker, so a switch whose other path runs is not called "NOT working".
   const rowOf = (k: string) => rows.find((r) => r.key === k) ?? null;
-  for (const key of AUTOMATION_KEYS) {
+  for (const key of LISTED_AUTOMATION_KEYS) {
     const partial = AUTOMATION_EFFECTS[key].requires?.partial ?? [];
     const row = rowOf(key);
     if (!row || !partial.length) continue;
@@ -672,12 +677,16 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
     }
   }
   // The processor itself: on and working, but its oldest runnable job has
-  // waited longer than the queue's own length explains (two hours, plus an
-  // hour for every batch of five ahead of it) → it is not draining.
+  // waited longer than the queue's own length explains (two hours, plus half
+  // an hour for every batch ahead of it) → it is not draining. The batch is
+  // TRANSCRIPT_JOBS_PER_TICK of the 15-minute AI work job (Oct 13 2026; it was
+  // five an hour on the hourly sync); half an hour, not fifteen minutes, per
+  // batch because a tick starts a job only with the time to finish it and
+  // shares its run with the other AI sweeps, so not every tick takes a full one.
   const tj = rowOf("transcript_jobs");
   if (tj && tj.effective.ok && tj.healthy.ok !== false && q?.oldestRunnableSince) {
     const waitedMs = now.getTime() - q.oldestRunnableSince.getTime();
-    const allowMs = 2 * HOUR + q.ticksToDrain * HOUR;
+    const allowMs = 2 * HOUR + q.ticksToDrain * (HOUR / 2);
     if (waitedMs > allowMs) {
       tj.healthy = { ok: false, lastRunAt: tj.healthy.lastRunAt, lastError: null, stale: true, detail: `queue not draining: a runnable job has waited ${agoWords(q.oldestRunnableSince, now).replace(" ago", "")} (${q.runnableNow} runnable)` };
     }
@@ -794,7 +803,9 @@ export async function readinessReport(opts: { live?: boolean; now?: Date } = {})
 
   // ---- providers and the launch gate -------------------------------------------
   const usedBy = new Map<ReadinessProvider, string[]>();
-  for (const key of AUTOMATION_KEYS) for (const p of AUTOMATION_EFFECTS[key].requires?.providers ?? []) usedBy.set(p, [...(usedBy.get(p) ?? []), AUTOMATION_EFFECTS[key].title]);
+  for (const key of LISTED_AUTOMATION_KEYS) for (const p of AUTOMATION_EFFECTS[key].requires?.providers ?? []) usedBy.set(p, [...(usedBy.get(p) ?? []), AUTOMATION_EFFECTS[key].title]);
+  // (A connection only a retired switch used — speech-to-text, the Instagram
+  // app — is still listed, with nothing under "used by" since Oct 13 2026.)
   const providers: ProviderReadiness[] = READINESS_PROVIDER_IDS.map((id) => {
     const st = providerNow.get(id)!;
     return { id, label: PROVIDERS[id].label, connected: st.connected, status: st.status, lastError: st.lastError, lastSyncedAt: st.lastSyncedAt, usedBy: usedBy.get(id) ?? [] };

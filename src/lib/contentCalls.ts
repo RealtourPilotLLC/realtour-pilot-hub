@@ -322,6 +322,11 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
 // whose call had already happened, one for a TEST client. So an invite now
 // carries a clock and a name, and the hourly pass retires it the moment the
 // month leaves NOT_SCHEDULED, whoever moved it.
+//
+// RETIRED Oct 13 2026 (Jordan approved C12/B7): the portal books the strategy
+// call itself (in-portal booking, lib/callBooking.ts), so nobody is asked to
+// send a link any more. Nothing mints these now; retireStrategyCallInvites
+// (below, from the hourly sync) cancels the ones still open, once.
 // ---------------------------------------------------------------------------
 const INVITE_KEY_PREFIX = "content-call-invite-";
 const DONE = ["COMPLETED", "CANCELLED"];
@@ -395,119 +400,17 @@ async function reopenStrategyCallInvite(monthId: string, now: Date): Promise<num
   return r.count;
 }
 
-// Every open invite checked against its month, hourly. Closes the rows whose
-// month moved on (whoever moved it), cancels the moot ones, and gives the rest
-// — including the nine minted before any of this existed — their clock, their
-// name, and HIGH priority from the 10th, when a link that still hasn't gone
-// out is costing the month. A human's pick of assignee is never overwritten.
-async function reconcileStrategyCallInvites(now: Date): Promise<{ closed: number; dated: number }> {
-  const open = await prisma.smartTask.findMany({
-    where: { dedupeKey: { startsWith: INVITE_KEY_PREFIX }, status: { notIn: DONE } },
-    select: { id: true, dedupeKey: true, dueAt: true, assignedKey: true, assignedManually: true, priority: true, createdAt: true },
-  });
-  if (open.length === 0) return { closed: 0, dated: 0 };
-  const monthIdOf = (t: { dedupeKey: string | null }) => t.dedupeKey!.slice(INVITE_KEY_PREFIX.length);
-  const months = await prisma.contentMonth.findMany({
-    where: { id: { in: open.map(monthIdOf) } },
-    select: { id: true, monthKey: true, strategyCallStatus: true, enrollmentId: true, clientId: true },
-  });
-  const [enrollments, clients] = await Promise.all([
-    prisma.contentEnrollment.findMany({ where: { id: { in: months.map((m) => m.enrollmentId) } }, select: { id: true, status: true } }),
-    prisma.client.findMany({ where: { id: { in: months.map((m) => m.clientId) } }, select: { id: true, name: true } }),
-  ]);
-  const monthOf = new Map(months.map((m) => [m.id, m]));
-  const enrollmentStatus = new Map(enrollments.map((e) => [e.id, e.status]));
-  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
-
-  let closed = 0, dated = 0;
-  for (const t of open) {
-    const month = monthOf.get(monthIdOf(t));
-    // Nobody should send this link: the month is gone, the client is a test
-    // record, the enrollment ended, or the call was waived (SKIPPED /
-    // NOT_REQUIRED). Moot is CANCELLED, not COMPLETED — the Done ledger must
-    // not credit a link that was never sent (same rule as confirmation texts).
-    const moot =
-      !month ||
-      isTestClientName(nameOf.get(month.clientId)) ||
-      enrollmentStatus.get(month.enrollmentId) !== "ACTIVE" ||
-      !["NOT_SCHEDULED", "SCHEDULED", "COMPLETED"].includes(month.strategyCallStatus);
-    if (moot) {
-      await prisma.smartTask.update({ where: { id: t.id }, data: { status: "CANCELLED" } });
-      closed++;
-      continue;
-    }
-    if (month.strategyCallStatus !== "NOT_SCHEDULED") {
-      await prisma.smartTask.update({ where: { id: t.id }, data: { status: "COMPLETED", completedAt: now } });
-      closed++;
-      continue;
-    }
-    const data: { dueAt?: Date; assignedKey?: string; priority?: string } = {};
-    if (!t.dueAt) data.dueAt = strategyCallInviteDueAt(month.monthKey, t.createdAt);
-    if (!t.assignedKey && !t.assignedManually) data.assignedKey = STRATEGY_CALL_INVITE_ASSIGNEE;
-    if ((t.priority === "MEDIUM" || t.priority === "LOW") && now >= etAt(`${month.monthKey}-10`, 0)) data.priority = "HIGH";
-    if (Object.keys(data).length === 0) continue;
-    await prisma.smartTask.update({ where: { id: t.id }, data });
-    if (data.dueAt) dated++;
-  }
-  return { closed, dated };
-}
-
-// The hourly invite pass: reconcile what's open (above), then draft for every
-// current month that still needs a call and has no draft yet.
-export async function mintStrategyCallInvites(): Promise<{ minted: number; closed: number; dated: number }> {
-  const now = new Date();
-  const { closed, dated } = await reconcileStrategyCallInvites(now);
-  const key = etMonthKey(now);
-  const months = await prisma.contentMonth.findMany({
-    // planningMode WRITTEN = the client chose to plan without a call this month
-    // (spec §19): they must never get the book-call draft as well.
-    where: { monthKey: key, strategyCallStatus: "NOT_SCHEDULED", historical: false, OR: [{ planningMode: null }, { planningMode: { not: "WRITTEN" } }] },
-    select: { id: true, clientId: true, enrollmentId: true },
-  });
-  if (months.length === 0) return { minted: 0, closed, dated };
-  // ACTIVE enrollments whose call mode includes a call. Mike Ciunci
-  // (strategyCallRequired=false) got a September draft on Sep 1 because only
-  // the month's frozen status was consulted; the enrollment is the rule.
-  const active = new Set(
-    (await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, callMode: true, strategyCallRequired: true } }))
-      .filter((e) => (e.callMode ? e.callMode !== "NOT_INCLUDED" : e.strategyCallRequired))
-      .map((e) => e.id),
-  );
-  const clients = await prisma.client.findMany({
-    where: { id: { in: months.map((m) => m.clientId) } },
-    select: { id: true, name: true },
-  });
-  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
-  const monthName = now.toLocaleDateString("en-US", { month: "long", timeZone: "America/New_York" });
-
-  let minted = 0;
-  for (const m of months) {
-    if (!active.has(m.enrollmentId)) continue;
-    const name = nameOf.get(m.clientId) ?? "the client";
-    if (isTestClientName(name)) continue;
-    const dedupeKey = `${INVITE_KEY_PREFIX}${m.id}`;
-    const exists = await prisma.smartTask.findFirst({ where: { dedupeKey }, select: { id: true } });
-    if (exists) continue;
-    const firstName = name.split(/\s+/)[0];
-    await prisma.smartTask.create({
-      data: {
-        title: `Send ${name} their ${monthName} strategy-call booking link`,
-        description:
-          `Draft (review, then send from your phone or the client's thread):\n\n` +
-          `"Hi ${firstName}! Time to plan your ${monthName} content. Once you book your strategy call, everything else falls into place on our end. ` +
-          `Grab a time here: ${STRATEGY_CALL_BOOKING_URL}"`,
-        taskType: "comms_followup",
-        status: "OPEN",
-        source: "content_program",
-        clientId: m.clientId,
-        dedupeKey,
-        dueAt: strategyCallInviteDueAt(key, now),
-        assignedKey: STRATEGY_CALL_INVITE_ASSIGNEE,
-      },
-    });
-    minted++;
-  }
-  return { minted, closed, dated };
+// The booking-link tasks are retired (Oct 13 2026): the portal books the call
+// itself. Every invite row still open is CANCELLED — never COMPLETED: the Done
+// ledger must not credit a link nobody sent (the rule the old reconcile used
+// for a moot row). The count comes first, so the hourly tick writes nothing at
+// all once the last one is closed. (mintStrategyCallInvites and its hourly
+// reconcile were removed with it.)
+export async function retireStrategyCallInvites(): Promise<{ cancelled: number }> {
+  const where = { dedupeKey: { startsWith: INVITE_KEY_PREFIX }, status: { notIn: DONE } };
+  if ((await prisma.smartTask.count({ where })) === 0) return { cancelled: 0 };
+  const r = await prisma.smartTask.updateMany({ where, data: { status: "CANCELLED" } });
+  return { cancelled: r.count };
 }
 
 // ---------------------------------------------------------------------------

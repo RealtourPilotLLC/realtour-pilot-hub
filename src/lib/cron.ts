@@ -257,6 +257,22 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
         if (id) await prisma.cronRun.update({ where: { id }, data });
         else await prisma.cronRun.create({ data: { job, startedAt: new Date(startedAtMs), ...data } });
 
+        // B8 (Oct 13 2026): a step that just ran cleanly may close its own
+        // open error on /settings/errors — after AUTO_RESOLVE_CLEAN_RUNS clean
+        // runs in a row (this one included: its row was written just above).
+        // Capped at 3 s and never throws; the alerting below is untouched.
+        const clean = Object.keys(timings).filter((n) => !(`${n}Error` in out) && !timedOut.includes(n));
+        if (clean.length) {
+          try {
+            const { autoResolveCleanCronSteps } = await import("@/lib/errorTracker");
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([
+              autoResolveCleanCronSteps(job, clean),
+              new Promise((resolve) => { timer = setTimeout(resolve, 3000); }),
+            ]).finally(() => clearTimeout(timer));
+          } catch { /* closing a stale error is housekeeping, never the run's problem */ }
+        }
+
         // Slack-ping on failure/skip — deduped against the PREVIOUS run so a
         // persistent failure pings once (and again if the failure changes).
         // A run whose only trouble is a quiet transient error (quietErrors)

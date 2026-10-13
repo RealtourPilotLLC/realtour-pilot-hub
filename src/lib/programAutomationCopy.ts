@@ -68,7 +68,7 @@ export type ReadinessConfigCheck =
   | "reminderPolicy" // the stored reminder policy passes the evaluator's own validator
   | "callApiMode" // call_booking config.mode is "API" (EMBED means the portal embeds Calendly and the hub books nothing)
   | "noCallMapping"; // legacy sweeps stand down while any Calendly mapping is enabled
-export type AutomationCadence = "hourly" | "daily" | "on-action";
+export type AutomationCadence = "every 15 minutes" | "hourly" | "daily" | "on-action";
 /**
  * Who a client-reaching switch may touch (R03, Sep 28 2026).
  *   programScope   the rollout scope (lib/programRolloutCore.rolloutDecision),
@@ -104,6 +104,10 @@ export type AutomationEffect = {
   requires?: { switches?: AutomationKey[]; providers?: ReadinessProvider[]; config?: ReadinessConfigCheck[]; partial?: PartialDependency[] };
   recipients: string;
   cadence: AutomationCadence;
+  /** The cron job (its vercel.json path segment) whose run drives the switch,
+   *  when that is not the hourly "sync". Readiness reads "the run is late"
+   *  from that job (Oct 13 2026: the AI sweeps moved to "topics"). */
+  host?: string;
   launchGate?: LaunchGate;
 };
 
@@ -123,11 +127,12 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
   },
   transcript_jobs: {
     title: "Transcript processing",
-    onEffect: "The call processor: queued call transcripts are pulled in and analysed automatically into topics, answers, facts and script inputs, and queued strategy drafts are written, spending AI credit per run (AI runs must also be on). By default it only takes jobs queued AFTER you first turn it on: anything already waiting is skipped unless you choose to include it (Settings → Calendly & calls, which shows the count). It works for every client with a call on file, whatever the rollout says: everything it writes is internal, and the rollout only limits what reaches clients. Five jobs per hourly run. Results still land as proposals a person reviews; nothing is released to a client. The Analyze button on a call, Draft strategy now, Draft owed scripts and Re-analyse run straight away and do not use this queue.",
+    onEffect: "The call processor: queued call transcripts are pulled in and analysed automatically into topics, answers, facts and script inputs, and queued strategy drafts are written, spending AI credit per run (AI runs must also be on). By default it only takes jobs queued AFTER you first turn it on: anything already waiting is skipped unless you choose to include it (Settings → Calendly & calls, which shows the count). It works for every client with a call on file, whatever the rollout says: everything it writes is internal, and the rollout only limits what reaches clients. Up to three jobs every 15 minutes, each started only with the time to finish it. Results still land as proposals a person reviews; nothing is released to a client. The Analyze button on a call, Draft strategy now, Draft owed scripts and Re-analyse run straight away and do not use this queue.",
     reaches: "internal",
     requires: { switches: ["ai_runs"], providers: ["ai"] },
     recipients: "Nobody is messaged. Results wait as proposals on the client file, drafts in Jordan's queue",
-    cadence: "hourly",
+    cadence: "every 15 minutes",
+    host: "topics",
   },
   script_drafting: {
     title: "Prepare and draft what a month owes",
@@ -141,7 +146,8 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
       partial: [{ switch: "transcript_jobs", why: "scripts drafted from a planning call need the call's analysis; the written-answers path does not" }],
     },
     recipients: "Nobody is messaged. Drafts wait in Jordan's script review queue",
-    cadence: "hourly",
+    cadence: "every 15 minutes",
+    host: "topics",
   },
   ai_runs: {
     title: "AI runs (master switch)",
@@ -212,7 +218,9 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     reaches: "internal",
     requires: { switches: ["ai_runs"], providers: ["ai"] },
     recipients: "Nobody is messaged. Suggestions wait on Video Topics for Jordan",
-    cadence: "hourly",
+    // Oct 13 2026: its own 15-minute job (cron/topics), no longer the hourly sync.
+    cadence: "every 15 minutes",
+    host: "topics",
   },
   topic_carryover: {
     title: "Carry unfilmed scripts into the new month",

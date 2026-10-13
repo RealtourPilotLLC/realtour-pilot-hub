@@ -6,28 +6,103 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 // ---------------------------------------------------------------------------
-// THE TOPIC BANKS (every 15 minutes — see vercel.json). Oct 13 2026.
+// THE AI WORK JOB (every 15 minutes — see vercel.json). The path and the job
+// name stay "topics" (the CronRun rows and /connections key on the last path
+// segment); what it hosts is every unattended model call the program makes.
 //
-// CP-07: the initial bank after a strategy is approved, and per-pillar refills
-// when usable stock runs low. Behind `topic_refresh` (and `ai_runs` under it);
-// every result is a suggestion Jordan reviews, nothing reaches a client.
+// Oct 13 2026, first: CP-07's topic banks. One refresh takes 45–60 seconds (a
+// whole bank longer), and squeezed into the end of the hourly sync the second
+// run of a tick always started with seconds left, the server stopped it
+// mid-call and it read "AI run topic_refresh failed — lease expired" on every
+// client's card (Jordan: "Everyone's topic idea refreshes have failed").
 //
-// It used to be one step near the end of the hourly sync with ~60 seconds.
-// One refresh takes 45–60 seconds (a whole bank longer), so the second run of
-// a tick always started with seconds left, the server stopped it mid-call and
-// it read "AI run topic_refresh failed — lease expired" on every client's
-// card (Jordan: "Everyone's topic idea refreshes have failed"). Here it has
-// its own budget, and a run starts only with 150 seconds left to finish.
+// Oct 13 2026, later the same day: the rest of the hourly sync's AI work moved
+// here for the same reason (Jordan approved B6). The transcript queue, the AI
+// queue's safety net and the script-drafting sweep each STARTED a model call
+// whenever any of their budget remained, and between them they took up to
+// three minutes of the sync's 250 s, crowding the client texts and everything
+// after them. Here:
+//   · nothing else shares the run — the hourly sync is model-free again;
+//   · EVERY call starts only with the time to finish it (minStartMs, checked
+//     before each job, draft, question set and refresh, not once per step);
+//   · the run's own clock is the budget: each step gets what is left of it,
+//     less a margin, so a call that started in time ends before the platform's
+//     300 s ceiling;
+//   · the AI queue (a person's click carried out later) goes first; the other
+//     three take turns going first, so a long backlog in one cannot starve
+//     the others four ticks an hour.
+// Every step keeps its own switch (`ai_runs` under each): off = `skipped`.
 // ---------------------------------------------------------------------------
+
+/** The run stops starting steps here (300 s ceiling): 20 s for finish() and the response. */
+const RUN_BUDGET_MS = 280_000;
+/** What each step leaves unspent of the run's budget, so a call that started in
+ *  time — and runs a little long — still ends before the run's own budget, and
+ *  the steps after it are never `skipped` (a skip pages Jordan). */
+const MARGIN_MS = 25_000;
+/** A queued draft (script, revision, strategy) is one model call; a worker claims one only with this long left. */
+const AI_QUEUE_MIN_START_MS = 90_000;
+/** A topic refresh is 45–60 s, a whole bank longer. */
+const TOPIC_REFRESH_MIN_START_MS = 150_000;
+/** At most two refreshes fit one run (Oct 13 2026: it was 3, which the budget could never reach): the first at 0 s, the second while 150 s of the ~255 s remain. */
+const TOPIC_REFRESH_MAX = 2;
+
+/** The three unattended sweeps, in the order a tick with index 0 runs them. */
+const AI_WORK_ROTATION = ["transcriptJobs", "scriptDrafting", "topicBanks"] as const;
+type AiWorkStep = (typeof AI_WORK_ROTATION)[number];
+
+/** Which sweep goes first this tick: a quarter-hour counter, so each leads in turn. */
+function aiWorkOrder(startedAtMs: number): AiWorkStep[] {
+  const shift = Math.floor(startedAtMs / (15 * 60_000)) % AI_WORK_ROTATION.length;
+  return [...AI_WORK_ROTATION.slice(shift), ...AI_WORK_ROTATION.slice(0, shift)];
+}
+
 export async function GET(req: NextRequest) {
   const denied = authorizeCron(req);
   if (denied) return denied;
   const startedAt = Date.now();
-  const { step, out, finish, remaining } = cronBudget(270_000, startedAt, "topics");
-  await step("topicBanks", async () => {
-    const { sweepTopicBanks } = await import("@/lib/contentTopics");
-    return sweepTopicBanks({ max: 3, budgetMs: Math.max(0, remaining() - 10_000), minStartMs: 150_000 });
+  const { step, out, finish, remaining } = cronBudget(RUN_BUDGET_MS, startedAt, "topics");
+  const budget = () => Math.max(0, remaining() - MARGIN_MS);
+
+  // A person's queued click first (Oct 12 2026): the page's own worker normally
+  // runs it at once; this drains what a killed worker or a closed page left.
+  // Attended work — no automation switch gates it; the queue's cap of three and
+  // the daily AI quotas still hold. Two per worker at most, so a long queue
+  // cannot take the whole run from the sweeps below.
+  await step("aiQueue", async () => {
+    const { drainAiQueueInParallel } = await import("@/lib/aiQueue");
+    return drainAiQueueInParallel({ origin: "cron", budgetMs: budget(), minStartMs: AI_QUEUE_MIN_START_MS, maxPerWorker: 2 });
   });
+
+  const run: Record<AiWorkStep, () => Promise<unknown>> = {
+    // Transcript jobs: INGEST + the AI kinds (call analysis, strategy drafts,
+    // fact extraction). Behind `transcript_jobs` (a missing row is off).
+    transcriptJobs: async () => {
+      const { driveTranscriptJobs, TRANSCRIPT_JOBS_PER_TICK, TRANSCRIPT_JOB_MIN_START_MS } = await import("@/lib/transcriptJobs");
+      return driveTranscriptJobs({ max: TRANSCRIPT_JOBS_PER_TICK, budgetMs: budget(), minStartMs: TRANSCRIPT_JOB_MIN_START_MS, leaseBy: "ai-cron" });
+    },
+    // THE DRAFTING CHAIN (F07/F08, Sep 22 2026): a client's written answers
+    // and a reconciled planning call both end in a draft in the review lane.
+    // Behind `script_drafting` AND `ai_runs`. Questions first: phrasing them
+    // for the topic has to happen BEFORE the client opens them.
+    scriptDrafting: async () => {
+      const { sweepInterviewPlans, sweepOwedScripts, INTERVIEW_PLAN_MIN_START_MS, SCRIPT_DRAFT_MIN_START_MS } = await import("@/lib/contentDrafting");
+      const plans = await sweepInterviewPlans({ max: 4, budgetMs: budget(), minStartMs: INTERVIEW_PLAN_MIN_START_MS });
+      const drafts = await sweepOwedScripts({ max: 6, budgetMs: budget(), minStartMs: SCRIPT_DRAFT_MIN_START_MS });
+      return { plans, drafts };
+    },
+    // CP-07: the initial bank after a strategy is approved, and per-pillar
+    // refills when usable stock runs low. Behind `topic_refresh`; every result
+    // is a suggestion Jordan reviews, nothing reaches a client.
+    topicBanks: async () => {
+      const { sweepTopicBanks } = await import("@/lib/contentTopics");
+      return sweepTopicBanks({ max: TOPIC_REFRESH_MAX, budgetMs: budget(), minStartMs: TOPIC_REFRESH_MIN_START_MS });
+    },
+  };
+  const order = aiWorkOrder(startedAt);
+  out.order = order;
+  for (const name of order) await step(name, run[name]);
+
   await finish();
   return NextResponse.json(out);
 }

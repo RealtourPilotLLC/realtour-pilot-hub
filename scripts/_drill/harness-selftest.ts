@@ -248,9 +248,31 @@ async function main() {
   const aiBefore = aiCalls;
 
   const { GET } = await import("@/app/api/cron/sync/route");
+  const { GET: GET_ARYEO } = await import("@/app/api/cron/aryeo/route");
+  const { GET: GET_AI } = await import("@/app/api/cron/topics/route");
   const { NextRequest } = await import("next/server");
+  // ONE QUARTER HOUR IS THREE ROUTES (Oct 13 2026): the hourly sync, the
+  // 15-minute Aryeo job (orders, appointments, sessions, Ready-to-send) and the
+  // 15-minute AI work job (the drafting sweep among them). Bodies merged, step
+  // timings and skip lists included; the status is the first non-200; ok is
+  // the two that report it.
+  const runHour = async (): Promise<{ status: number; json: () => Promise<Record<string, unknown>> }> => {
+    const headers = { authorization: "Bearer drill-secret" };
+    const parts: { status: number; body: Record<string, unknown> }[] = [];
+    for (const [handler, p] of [[GET, "sync"], [GET_ARYEO, "aryeo"], [GET_AI, "topics"]] as const) {
+      const r = await handler(new NextRequest(`http://127.0.0.1/api/cron/${p}`, { headers }));
+      parts.push({ status: r.status, body: (await r.json()) as Record<string, unknown> });
+    }
+    const merged: Record<string, unknown> = Object.assign({}, ...parts.map((x) => x.body));
+    merged.ms = Object.assign({}, ...parts.map((x) => (x.body.ms ?? {}) as Record<string, number>));
+    merged.skipped = parts.flatMap((x) => (x.body.skipped ?? []) as string[]);
+    const tos = parts.flatMap((x) => (x.body.timedOut ?? []) as string[]);
+    if (tos.length) merged.timedOut = tos; else delete merged.timedOut;
+    merged.ok = parts[0].body.ok === true && parts[1].body.ok === true;
+    return { status: parts.find((x) => x.status !== 200)?.status ?? 200, json: async () => merged };
+  };
   const started = Date.now();
-  const res = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer drill-secret" } }));
+  const res = await runHour();
   const wall = Date.now() - started;
   const body = (await res.json()) as Record<string, unknown>;
   const ms = (body.ms ?? {}) as Record<string, number>;
@@ -304,7 +326,7 @@ async function main() {
   const strippedBefore4b = server.patchStats.strippedReady;
   const versions2Before = await prisma.contentScriptVersion.count();
   const started2 = Date.now();
-  const res2 = await GET(new NextRequest("http://127.0.0.1/api/cron/sync", { headers: { authorization: "Bearer drill-secret" } }));
+  const res2 = await runHour();
   const wall2 = Date.now() - started2;
   const body2 = (await res2.json()) as Record<string, unknown>;
   const ms2 = (body2.ms ?? {}) as Record<string, number>;

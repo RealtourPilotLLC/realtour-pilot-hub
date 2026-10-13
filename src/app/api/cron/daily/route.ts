@@ -31,18 +31,10 @@ export async function GET(req: NextRequest) {
     return syncStripe();
   }, { maxMs: 60_000 });
 
-  // Books: pull the recent QuickBooks ledger, then re-run the classification
-  // engine so Finance → Overview stays current. categoriseBooks MUST follow the
-  // sync: it persists the `category` that trueProfitAndLoss reads.
-  await step("booksSync", async () => {
-    const { syncQuickBooks } = await import("@/lib/integrations/quickbooks");
-    const sinceKey = new Date(Date.now() - 45 * 864e5).toISOString().slice(0, 10);
-    return syncQuickBooks({ sinceKey });
-  }, { maxMs: 60_000 });
-  await step("booksClassify", async () => {
-    const { categoriseBooks } = await import("@/lib/bookkeeping");
-    return categoriseBooks({ sinceKey: "2026-01-01" });
-  }, { maxMs: 45_000, after: "booksSync" });
+  // (The QuickBooks steps — booksSync, and booksClassify which only re-sorts
+  // the QuickBooks ledger it pulled — were STOPPED Oct 13 2026: Jordan does
+  // not use QuickBooks. The library code and the ledger already pulled are
+  // kept; nothing schedules a pull any more.)
   // Payday morning: "your $X lands today" to every paid creative.
   await step("paydayPings", async () => {
     const { paydayPings } = await import("@/lib/payroll");
