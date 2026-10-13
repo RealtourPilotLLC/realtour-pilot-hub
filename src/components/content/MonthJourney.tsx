@@ -124,6 +124,7 @@ export function MonthJourney({ input, size = "card", hrefs = {}, contextLabel }:
           </div>
         );
       })}
+      {input.includes && <p className="col-span-5 mt-1.5 text-left text-ui-status text-muted">{input.includes}</p>}
       {steps.some((s) => s.why) && <ul className="col-span-5 mt-2 space-y-1 text-left text-sm text-warning">
         {steps.filter((s) => s.why).map((s) => <li key={s.key}>{s.label}: {s.why}</li>)}
       </ul>}

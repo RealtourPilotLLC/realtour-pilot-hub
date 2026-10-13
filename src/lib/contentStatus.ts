@@ -50,6 +50,8 @@ export type JourneyInput = {
   clientPlanned?: boolean;
   /** Oct 8 2026: the month ended with nothing done on it — forfeited, nothing owed. */
   forfeited?: boolean;
+  /** Oct 13 2026: an earlier month's session filmed in this one (lateSession.ts), already counted in the numbers above — said in one line. */
+  includes?: string;
 };
 
 export type JourneyStepKey = "call" | "topics" | "scripts" | "shoot" | "delivered";

@@ -2,11 +2,11 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { catchUpFrom, sessionsForMonth } from "@/lib/catchUp";
-import { lateSessionOf } from "@/lib/lateSession";
+import { lateSessionOf, lateSessionsInto } from "@/lib/lateSession";
 import { callModeOf, deriveMonthState, enrollmentWindowOverrideHours, preparationGate, type CallMode, type PreparationStatus } from "@/lib/programMonths";
 import { ownersForMany, pairKey, UNASSIGNED_OWNERS, type OwnerMap } from "@/lib/programOwners";
 import { failedAutomationIndex, type FailedAutomation } from "@/lib/programMonitoring";
-import { monthProgressMany, progressKey, journeyInputFrom, type MonthProgress } from "@/lib/monthProgress";
+import { monthProgressMany, progressKey, journeyInputFrom, hostJourney, type MonthProgress } from "@/lib/monthProgress";
 import { contentHref, type StaffTab } from "@/lib/contentNav";
 import type { JourneyInput } from "@/lib/contentStatus";
 import { isSyntheticClientRow } from "@/lib/testClients";
@@ -770,6 +770,20 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       priority,
       journey: progress ? journeyInputFrom(progress) : null,
     });
+  }
+
+  // Oct 13 2026: a month that also films an earlier month's session (lateSession.ts)
+  // reads as both months' work: topics, scripts, sessions and videos add up.
+  const hosts = rowsSpec.filter((r) => r.month && lateSessionsInto(r.enrollment.overridesJson, r.key).length);
+  for (const spec of hosts) {
+    const row = rows.find((r) => r.enrollmentId === spec.enrollment.id && r.monthId === spec.month!.id);
+    const p = progressOf(spec.enrollment.id, spec.month!.id, spec.key);
+    if (!row || !p) continue;
+    const j = await hostJourney(p, { now }).catch(() => null);
+    if (!j || !j.includes) continue;
+    row.journey = j;
+    row.production = { ...row.production, owed: j.videosOwed, delivered: j.delivered };
+    row.session = { ...row.session, required: j.sessionsRequired, confirmed: j.sessionsConfirmed, missing: Math.max(0, j.sessionsRequired - j.sessionsConfirmed) };
   }
 
   rows.sort((a, b) => a.priority - b.priority || a.monthKey.localeCompare(b.monthKey) || a.clientName.localeCompare(b.clientName));

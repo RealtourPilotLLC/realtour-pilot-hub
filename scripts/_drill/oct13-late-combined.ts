@@ -152,6 +152,17 @@ async function main() {
     c.ok("only Starter may combine (Accelerator and Pro never)", core.combineOffered("Starter") && !core.combineOffered("Accelerator") && !core.combineOffered("Pro") && !core.combineOffered(null));
 
     // =======================================================================
+    {
+      // Oct 13 2026 (Jordan): "Arielle's says 0/2 topics, shouldn't it be 2/4? And also maybe mention 2 sessions."
+      const { journeyWithLate } = await import("@/lib/monthProgress");
+      const base = { callStatus: "SKIPPED", topicsSelected: 0, scriptsReady: 0, videosOwed: 2, sessionsRequired: 1, sessionsConfirmed: 0, sessionsFilmedConfirmed: 0, delivered: 0, inReview: 0 };
+      const lateJ = { ...base, callStatus: "COMPLETED", topicsSelected: 2, scriptsReady: 2 };
+      const two = journeyWithLate(base, lateJ, { lateMonthName: "September", combined: false });
+      const one = journeyWithLate(base, lateJ, { lateMonthName: "September", combined: true });
+      c.ok("October with September's session reads 2/4 topics, 2/4 scripts, 4 videos, 2 sessions, and says so", two.topicsSelected === 2 && two.videosOwed === 4 && two.scriptsReady === 2 && two.sessionsRequired === 2 && two.includes === "Includes September's session (2 videos), filmed this month: 2 sessions in all.", JSON.stringify(two));
+      c.ok("…and ONE session when the two months are filmed together", one.sessionsRequired === 1 && one.videosOwed === 4 && one.includes === "Includes September's 2 videos: one 4-hour session films all 4.", JSON.stringify(one));
+    }
+
     c.head("§2 · not offered on Accelerator");
     // =======================================================================
     const C = await lateClient("Cara Accel TEST", "Accelerator");

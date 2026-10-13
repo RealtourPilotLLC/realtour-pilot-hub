@@ -850,6 +850,52 @@ export function journeyInputFrom(p: MonthProgress): JourneyInput {
   };
 }
 
+/**
+ * A HOST MONTH'S JOURNEY WITH THE LATE MONTH IT FILMS (Jordan, Oct 13 2026:
+ * "Arielle's says 0/2 topics, shouldn't it be 2/4? And also maybe mention 2
+ * sessions"). October that also films September's session reads as the work
+ * of both: topics, scripts, videos owed and delivered add up; sessions add up
+ * when they are two, and stay one when the two months are filmed in one 4-hour
+ * session (that one session is already counted on the host). Pure.
+ */
+export function journeyWithLate(host: JourneyInput, late: JourneyInput, o: { lateMonthName: string; combined: boolean }): JourneyInput {
+  const add = (a: number | undefined, b: number | undefined) => (a ?? 0) + (b ?? 0);
+  const videos = host.videosOwed + late.videosOwed;
+  return {
+    ...host,
+    topicsSelected: host.topicsSelected + late.topicsSelected,
+    scriptsReady: host.scriptsReady + late.scriptsReady,
+    scriptsAwaiting: add(host.scriptsAwaiting, late.scriptsAwaiting),
+    videosOwed: videos,
+    sessionsRequired: o.combined ? host.sessionsRequired : host.sessionsRequired + late.sessionsRequired,
+    sessionsConfirmed: o.combined ? host.sessionsConfirmed : host.sessionsConfirmed + late.sessionsConfirmed,
+    sessionsFilmedConfirmed: o.combined ? host.sessionsFilmedConfirmed : host.sessionsFilmedConfirmed + late.sessionsFilmedConfirmed,
+    delivered: host.delivered + late.delivered,
+    clientApproved: add(host.clientApproved, late.clientApproved),
+    inReview: host.inReview + late.inReview,
+    includes: o.combined
+      ? `Includes ${o.lateMonthName}'s ${late.videosOwed} videos: one 4-hour session films all ${videos}.`
+      : `Includes ${o.lateMonthName}'s session (${late.videosOwed} videos), filmed this month: ${host.sessionsRequired + late.sessionsRequired} sessions in all.`,
+  };
+}
+
+/** The journey a month's screens draw: its own, plus any earlier month's session it films (lateSession.ts). */
+export async function hostJourney(p: MonthProgress, opts: { now?: Date } = {}): Promise<JourneyInput> {
+  const own = journeyInputFrom(p);
+  if (!p.monthId) return own;
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: p.enrollmentId }, select: { overridesJson: true } }).catch(() => null);
+  const { lateSessionsInto, lateMonthName } = await import("@/lib/lateSession");
+  const recs = e ? lateSessionsInto(e.overridesJson, p.monthKey) : [];
+  if (!recs.length) return own;
+  const lates = await monthProgressMany(recs.map((r) => ({ enrollmentId: p.enrollmentId, monthId: r.lateMonthId, monthKey: r.lateMonthKey })), { now: opts.now }).catch(() => null);
+  let j = own;
+  for (const r of recs) {
+    const lp = lates?.get(progressKey(p.enrollmentId, r.lateMonthId, r.lateMonthKey));
+    if (lp) j = journeyWithLate(j, journeyInputFrom(lp), { lateMonthName: lateMonthName(r.lateMonthKey, r.hostMonthKey), combined: !!r.combined });
+  }
+  return j;
+}
+
 /** "Unknown: why — owner: action", the one way every staff screen says it. */
 export const unknownLine = (u: MonthUnknown) => `Unknown: ${u.why} — ${u.owner}: ${u.action}`;
 
@@ -879,8 +925,8 @@ export type StaffMonthView = {
 };
 
 /** What the client file's Overview shows for a month — pure over the reader. */
-export function staffMonthView(p: MonthProgress): StaffMonthView {
-  const journey = journeyInputFrom(p);
+export function staffMonthView(p: MonthProgress, journeyOverride?: JourneyInput | null): StaffMonthView {
+  const journey = journeyOverride ?? journeyInputFrom(p);
   return {
     journey,
     steps: journeySteps(journey),

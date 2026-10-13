@@ -43,7 +43,8 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   }
   const given = progress ? new Map([[progressKey(id, month.id, month.monthKey), progress]]) : undefined;
   const { row, onboarding, lastMessage } = await loadOverviewTab(id, month.monthKey, given);
-  const view = progress ? staffMonthView(progress) : null;
+  // Oct 13 2026: a month that also films an earlier month's session shows both months' work.
+  const view = progress ? staffMonthView(progress, await (await import("@/lib/monthProgress")).hostJourney(progress).catch(() => null)) : null;
   const f = row ? overviewFacts(row) : null;
   const owed = row?.production.owed ?? month.videosOwed;
   // Oct 7 2026: "Approve a catch-up session" — owner/admin only, an exception

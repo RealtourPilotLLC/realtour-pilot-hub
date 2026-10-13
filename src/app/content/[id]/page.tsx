@@ -95,7 +95,7 @@ export default async function ContentClientPage({
   // THE MONTH'S PROGRESS — the one reader (CP-10), read once here and handed
   // to whichever tab is open. The badges come from it too.
   const progress = month ? await monthProgress(id, month.id).catch(() => null) : null;
-  const pview = progress ? staffMonthView(progress) : null;
+  const pview = progress ? staffMonthView(progress, await (await import("@/lib/monthProgress")).hostJourney(progress).catch(() => null)) : null;
   const [strategyReview, messagesWaiting] = await Promise.all([
     prisma.contentStrategyVersion.count({ where: { enrollmentId: id, status: "INTERNAL_REVIEW" } }).catch(() => 0),
     import("@/lib/programMessages").then((m) => m.unansweredCount(id)).catch(() => 0),
