@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etMonthKey, aryeoProductFor, RESUBSCRIBE_URL } from "@/lib/contentProgram";
+import { etMonthKey, aryeoProductFor, portalLastMonthKey, RESUBSCRIBE_URL } from "@/lib/contentProgram";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
@@ -879,7 +879,7 @@ export const OPEN_REQUEST_STATUSES = ["REQUESTED", "CONFIRMED", "RESCHEDULE_REQU
  */
 export async function portalScheduleMonths(enrollment: { id: string; clientId: string }): Promise<PortalScheduleMonth[]> {
   const open = await prisma.contentMonth.findMany({
-    where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
+    where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey(), lte: portalLastMonthKey() } },
     orderBy: { monthKey: "asc" },
     take: 3,
     select: { id: true, monthKey: true, schedulingDeferredAt: true, planningChosenBy: true },
@@ -1372,7 +1372,8 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
   const decisions = await scriptDecisionsFor(enrollment.id, scripts.map((s) => s.id)).catch(() => new Map());
   const monthKeyOf = new Map(monthsRaw.map((m) => [m.id, m.monthKey]));
-  const openMonth = new Map(monthsRaw.map((m) => [m.id, !m.historical && m.monthKey >= etMonthKey()]));
+  const lastKey = portalLastMonthKey();
+  const openMonth = new Map(monthsRaw.map((m) => [m.id, !m.historical && m.monthKey >= etMonthKey() && m.monthKey <= lastKey]));
   const filmed = new Set(footage.map((v) => v.topicId).filter((x): x is string => !!x));
   const strategyLabelOf = new Map(versionsOfStrategies.map((v) => [v.id, `v${v.versionNo}`]));
   const versionIds = scripts.map((s) => s.sharedVersionId ?? s.approvedVersionId ?? s.currentVersionId).filter((x): x is string => !!x);
@@ -1385,7 +1386,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   // R01: the open months through the ONE planning reader — which rows are the
   // allowance and which are extras, each topic's step, the month's headline.
   // A failed read leaves `plan` / `planning` null (unknown), never a guess.
-  const openIds = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey).slice(0, 3).map((m) => m.id);
+  const openIds = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey && m.monthKey <= lastKey).slice(0, 3).map((m) => m.id);
   const planned = await import("@/lib/planningFacts").then((m) => m.planningFactsForMonths(openIds)).catch(() => null);
 
   const toTopic = (t: (typeof candidates)[number], pillarName: string): PortalTopic => {
@@ -1540,7 +1541,7 @@ export async function topicForEnrollment(enrollmentId: string, topicId: string, 
 export async function openMonthForEnrollment(enrollmentId: string, monthId: string) {
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return null;
   const m = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true, historical: true, videosOwed: true } });
-  if (!m || m.enrollmentId !== enrollmentId || m.historical || m.monthKey < etMonthKey()) return null;
+  if (!m || m.enrollmentId !== enrollmentId || m.historical || m.monthKey < etMonthKey() || m.monthKey > portalLastMonthKey()) return null;
   return m;
 }
 
@@ -1866,7 +1867,7 @@ export function planningUndoRefusal(i: { callStatus: string; planningMode: strin
 export async function portalPlanning(enrollment: { id: string; clientId: string }, monthId?: string | null): Promise<PortalPlanning | null> {
   const month = monthId
     ? await prisma.contentMonth.findFirst({ where: { id: monthId, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, historical: true, videosOwed: true } })
-    : await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, historical: true, videosOwed: true } });
+    : await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey(), lte: portalLastMonthKey() } }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, historical: true, videosOwed: true } });
   if (!month) return null;
   const { recalcProgramMonth } = await import("@/lib/programMonths");
   const { planningForMonth } = await import("@/lib/planningFacts");

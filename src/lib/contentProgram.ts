@@ -180,6 +180,23 @@ export function etMonthKey(d: Date = new Date()): string {
   return `${y}-${m}`;
 }
 
+/**
+ * The LAST month a client may see in the portal (Jordan, Oct 13 2026: "I
+ * shouldn't have even seen November yet"). This ET month, and the next one
+ * from the 24th on: the day the hub starts planning the following month
+ * (contentCallRecords' nextMonthFromDay). A month row further ahead (one made
+ * early by mistake, like Arielle Roemer's November) never shows or takes a
+ * choice before then.
+ */
+export const PORTAL_NEXT_MONTH_FROM_DAY = 24;
+export function portalLastMonthKey(d: Date = new Date()): string {
+  const day = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", day: "numeric" }).format(d));
+  const cur = etMonthKey(d);
+  if (day < PORTAL_NEXT_MONTH_FROM_DAY) return cur;
+  const [y, m] = cur.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
 export function monthLabel(monthKey: string): string {
   const [y, m] = monthKey.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });

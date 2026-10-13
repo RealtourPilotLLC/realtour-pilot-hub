@@ -447,13 +447,23 @@ async function main() {
 
     // ======================================================================
     c.head("12 · a client's own idea goes straight into the month");
-    const O = await buildContentMonth(prisma as unknown as PrismaClient, { name: "Own Idea Drill TEST", package: "Starter", monthKey: NEXT, project: false });
+    // Oct 13 2026: the portal shows (and takes choices for) next month only from the 24th, so this month is the open one.
+    const O = await buildContentMonth(prisma as unknown as PrismaClient, { name: "Own Idea Drill TEST", package: "Starter", monthKey: CUR, project: false });
     const past = (await prisma.contentMonth.create({ data: { enrollmentId: O.enrollmentId, clientId: O.clientId, monthKey: LONG_AGO, videosOwed: 2, historical: true, status: "IMPORTED" }, select: { id: true } })).id;
     const oldR = await oldPortal.portalSuggestTopic({ token: O.portalToken }, { title: "Old path idea for a closed month", monthId: past });
     const oldSel = oldR.id ? await prisma.contentTopicSelection.count({ where: { topicId: oldR.id } }) : 0;
     c.ok("OLD: a closed month still said success, with no selection", oldR.ok && oldSel === 0, oldR.message);
     const bad = await portalActions.portalSuggestTopic({ token: O.portalToken }, { title: "New path idea for a closed month", monthId: past });
     c.ok("NEW: a closed month is an honest failure", !bad.ok, bad.message);
+    {
+      const { portalLastMonthKey } = await import("@/lib/contentProgram");
+      const ahead = (await prisma.contentMonth.create({ data: { enrollmentId: O.enrollmentId, clientId: O.clientId, monthKey: NEXT, videosOwed: 2, status: "OPEN" }, select: { id: true } })).id;
+      const early = await portalActions.portalSuggestTopic({ token: O.portalToken }, { title: "An idea for next month, too early", monthId: ahead });
+      const visible = portalLastMonthKey() >= NEXT;
+      c.ok(visible ? "(from the 24th next month is open: skipped)" : "next month before the 24th is not open to the client yet", visible || !early.ok, early.message);
+      await prisma.contentTopicSelection.deleteMany({ where: { monthId: ahead } });
+      await prisma.contentMonth.delete({ where: { id: ahead } });
+    }
     const good = await portalActions.portalSuggestTopic({ token: O.portalToken }, { title: "Why spring listings start in January", monthId: O.monthId });
     const goodSel = good.id ? await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: good.id, monthId: O.monthId } } }) : null;
     c.ok("with a month: created AND selected (SELECTED, no approval needed)", good.ok && good.selected === true && goodSel?.status === "SELECTED", good.message);

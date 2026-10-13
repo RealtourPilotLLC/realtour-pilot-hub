@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { etMonthKey, monthLabel } from "@/lib/contentProgram";
+import { etMonthKey, monthLabel, portalLastMonthKey } from "@/lib/contentProgram";
 import { portalBookingLinks, type PortalCallBookingView } from "@/lib/callBooking";
 import {
   recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress, readOnlyNotice, homeSessionView,
@@ -119,7 +119,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // The same first three open months exposed by portalTopics/ScheduleMonths.
   // A query never selects another enrollment's month or reopens history.
   const contextMonths = portalMonthKey(query.month) ? await prisma.contentMonth.findMany({
-    where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } },
+    where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey(), lte: portalLastMonthKey() } },
     orderBy: { monthKey: "asc" }, take: 3, select: { id: true, monthKey: true },
   }) : [];
   // Oct 12 2026: the scheduler may name an over month whose session is booked

@@ -1,7 +1,7 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { etMonthKey } from "@/lib/contentProgram";
+import { etMonthKey, portalLastMonthKey } from "@/lib/contentProgram";
 import { lockAdvisory } from "@/lib/dbLocks";
 import type { PortalViewer } from "@/lib/portal";
 import type { Invitee, ScheduledEvent } from "@/lib/integrations/calendly";
@@ -416,7 +416,7 @@ export async function portalCallBookingView(viewer: PortalViewer, monthId: strin
 export async function portalBookingLinks(viewer: PortalViewer, opts: { planHref: string | null; monthId?: string | null; now?: Date }): Promise<{ bookingUrl: string | null; view: PortalCallBookingView | null }> {
   const now = opts.now ?? new Date();
   const month = await prisma.contentMonth.findFirst({
-    where: { enrollmentId: viewer.enrollment.id, ...(opts.monthId ? { id: opts.monthId } : {}), historical: false, monthKey: { gte: etMonthKey(now) } },
+    where: { enrollmentId: viewer.enrollment.id, ...(opts.monthId ? { id: opts.monthId } : {}), historical: false, monthKey: { gte: etMonthKey(now), lte: portalLastMonthKey(now) } },
     orderBy: { monthKey: "asc" },
     select: { id: true, planningMode: true },
   });
