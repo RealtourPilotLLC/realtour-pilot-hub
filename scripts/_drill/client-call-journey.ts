@@ -155,7 +155,7 @@ async function main() {
     await drive();
     c.ok("successful analysis cannot erase a newer error written while it runs", (await prisma.programCallRecord.findUniqueOrThrow({ where: { id: monthly } })).lastError === "ANALYZE: newer source needs review");
     const selections = await prisma.contentTopicSelection.findMany({ where: { monthId: f.monthId }, orderBy: { rank: "asc" } });
-    c.ok("monthly analysis proposes exactly two source-backed topics for the requested month", selections.length === 2 && selections.every((s) => s.status === "PROPOSED" && s.source === "call" && words.some((text) => s.evidenceJson?.includes(text))) && (await prisma.programCallRecord.findUniqueOrThrow({ where: { id: monthly } })).transcriptState === "ANALYZED");
+    c.ok("monthly analysis confirms exactly two source-backed topics for the requested month (Oct 13: confirmed on arrival)", selections.length === 2 && selections.every((s) => s.status === "RECONCILED" && words.some((text) => s.evidenceJson?.includes(text))) && (await prisma.programCallRecord.findUniqueOrThrow({ where: { id: monthly } })).transcriptState === "ANALYZED");
     const stillReleased = await prisma.contentStrategyVersion.findUniqueOrThrow({ where: { id: strategy.id } });
     c.ok("monthly analysis leaves the released brand strategy intact", stillReleased.status === "APPROVED" && !!stillReleased.releasedAt && await prisma.contentStrategyVersion.count({ where: { enrollmentId: f.enrollmentId } }) === 1);
     await as(kyle);

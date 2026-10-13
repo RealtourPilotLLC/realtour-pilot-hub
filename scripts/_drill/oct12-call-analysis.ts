@@ -27,7 +27,7 @@
 //      AI is still waiting in after()), the job is held under the person's
 //      lease, a second click is refused; then the work runs: PROPOSED topics,
 //      PROPOSED facts, analysisRunId, job SUCCEEDED with the run, INGEST done;
-//      the reader says "Analyzed Oct 12 — 2 topic proposals · 1 fact to review".
+//      the reader says "Analyzed Oct 12 — 2 topics confirmed · 1 fact to review".
 //   7  Re-analyze: a topic staff confirmed stays confirmed, a rejected one stays
 //      rejected; a new run id.
 //   8  The automatic run's reasons, read-only, on Joe's call: both off · AI runs
@@ -275,14 +275,15 @@ async function main() {
       c.ok("the run ledger: call_analysis, SUCCEEDED, requested by Kyle, dedupe key free again", run.kind === "call_analysis" && run.status === "SUCCEEDED" && run.requestedBy === kyle.email && run.dedupeKey === null, JSON.stringify({ k: run.kind, s: run.status, by: run.requestedBy }));
       const sels = await prisma.contentTopicSelection.findMany({ where: { monthId: J.monthId } });
       const topics = await prisma.contentTopic.findMany({ where: { enrollmentId: J.enrollmentId } });
-      c.ok("topics: 2 PROPOSED selections on October, 3 topics all PROPOSED, none client-visible", sels.length === 2 && sels.every((s) => s.status === "PROPOSED" && s.callRecordId === john) && topics.length === 3 && topics.every((t) => t.approvalState === "PROPOSED" && !t.clientVisible), JSON.stringify(sels.map((s) => s.status)));
+      // Oct 13 2026 (Jordan, "both"): a call's topics are confirmed on arrival (the same write as Keep).
+      c.ok("topics: 2 CONFIRMED (reconciled) selections on October, none client-visible", sels.length === 2 && sels.every((s) => s.status === "RECONCILED") && topics.length === 3 && topics.every((t) => t.approvalState === "PROPOSED" && !t.clientVisible), JSON.stringify(sels.map((s) => s.status)));
       const facts = await prisma.clientFact.findMany({ where: { clientId: J.clientId } });
       c.ok("the fact is PROPOSED for staff review (an attended run never auto-accepts)", facts.length === 1 && facts[0].status === "PROPOSED" && !facts[0].autoAccepted, JSON.stringify(facts.map((f) => [f.status, f.autoAccepted])));
       const after1 = await A.callAnalysisStatusAction(john);
-      c.ok("status: \"Analyzed Oct 12 — 2 topic proposals · 1 fact to review\", Re-analyze offered", after1.call?.state === "analyzed" && after1.call.resultLine === "Analyzed Oct 12 — 2 topic proposals · 1 fact to review" && after1.call.canAnalyze, after1.call?.resultLine ?? "");
+      c.ok("status: \"Analyzed Oct 12 — 2 topics confirmed · 1 fact to review\", Re-analyze offered", after1.call?.state === "analyzed" && after1.call.resultLine === "Analyzed Oct 12 — 2 topics confirmed · 1 fact to review" && after1.call.canAnalyze, after1.call?.resultLine ?? "");
       monthCalls = await ca.loadCallTranscripts({ monthId: J.monthId });
       const html = card(monthCalls);
-      c.ok("the card: \"its topics are proposed on Video Topics\", the result, Re-analyze", html.includes("Strategy call held — its topics are proposed on Video Topics") && html.includes("Analyzed Oct 12 — 2 topic proposals · 1 fact to review — confirm them on Video Topics") && html.includes("Re-analyze") && !html.includes("Analyze the call"), html.slice(0, 500));
+      c.ok("the card: \"its topics are confirmed on Video Topics\", the result, Re-analyze", html.includes("Strategy call held — its topics are confirmed on Video Topics") && html.includes("Analyzed Oct 12 — 2 topics confirmed · 1 fact to review") && html.includes("Re-analyze") && !html.includes("Analyze the call"), html.slice(0, 500));
       const row = await rowOf(J);
       c.ok("the Overview no longer reports the call: evidence \"transcript analysed\", no problem", row.strategyCall.evidence === "transcript analysed" && row.strategyCall.problem === null && !/Transcript in/.test(row.nextAction.text), `${row.strategyCall.evidence} | ${row.nextAction.text}`);
     }
@@ -303,7 +304,7 @@ async function main() {
       c.ok("a second model call and a NEW run on the call", modelCalls.length === 2 && rec.analysisRunId !== firstRun && rec.transcriptState === "ANALYZED");
       c.ok("the confirmed topic stays RECONCILED; the rejected one stays REJECTED and off the month", keep.status === "RECONCILED" && drop.status === "REJECTED" && drop.approvalState === "REJECTED" && dropSel.status === "REMOVED", `${keep.status} / ${drop.status} ${dropSel.status}`);
       const st = await A.callAnalysisStatusAction(john);
-      c.ok("status: \"Analyzed Oct 12 — 0 topic proposals · 1 already decided, kept · …\"", st.call?.state === "analyzed" && /^Analyzed Oct 12 — 0 topic proposals · 1 already decided, kept/.test(st.call.resultLine ?? ""), st.call?.resultLine ?? "");
+      c.ok("status: \"Analyzed Oct 12 — 0 topics confirmed · 1 already decided, kept · …\"", st.call?.state === "analyzed" && /^Analyzed Oct 12 — 0 topics confirmed · 1 already decided, kept/.test(st.call.resultLine ?? ""), st.call?.resultLine ?? "");
     }
 
     // =========================================================================
@@ -386,7 +387,7 @@ async function main() {
       const before = modelCalls.length;
       const an = await legacy.analyzeTranscript(L.monthId);
       const m = await prisma.contentMonth.findUniqueOrThrow({ where: { id: L.monthId } });
-      c.ok("save + Analyze (the month's own path): one model call, the month stamped, its topics proposed", saved.ok && an.ok && modelCalls.length === before + 1 && !!m.transcriptProcessedAt && (await prisma.contentTopicSelection.count({ where: { monthId: L.monthId, status: "PROPOSED" } })) === 2, an.message);
+      c.ok("save + Analyze (the month's own path): one model call, the month stamped, its topics confirmed", saved.ok && an.ok && modelCalls.length === before + 1 && !!m.transcriptProcessedAt && (await prisma.contentTopicSelection.count({ where: { monthId: L.monthId, status: "RECONCILED" } })) === 2, an.message);
     }
 
     // =========================================================================
@@ -409,7 +410,7 @@ async function main() {
       plannedGuess = "2026-10";
       const nov = await prisma.contentMonth.findUnique({ where: { enrollmentId_monthKey: { enrollmentId: Ar.enrollmentId, monthKey: "2026-11" } } });
       c.ok("the analysis ran", r.ok, r.message);
-      c.ok("its topic proposals stay on September, the month the call is filed on", (await prisma.contentTopicSelection.count({ where: { monthId: Ar.monthId, status: "PROPOSED" } })) === 2);
+      c.ok("its topics stay on September, the month the call is filed on", (await prisma.contentTopicSelection.count({ where: { monthId: Ar.monthId, status: "RECONCILED" } })) === 2);
       c.ok("no November month is created, and none reads 'strategy call completed'", !nov, JSON.stringify(nov && { status: nov.strategyCallStatus }));
     }
 

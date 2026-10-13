@@ -223,7 +223,7 @@ export async function loadCallTranscripts(
       const run = c.analysisRunId ? runOf.get(c.analysisRunId) : null;
       const at = run?.finishedAt ?? run?.createdAt ?? null;
       proposals = discovery ? r.bankIdeas ?? 0 : r.proposedSelections ?? 0;
-      const parts = [discovery ? plural(proposals, "topic idea") + " for the bank" : plural(proposals, "topic proposal")];
+      const parts = [discovery ? plural(proposals, "topic idea") + " for the bank" : `${plural(proposals, "topic")} confirmed`];
       if (!discovery && r.keptSelections) parts.push(`${r.keptSelections} already decided, kept`);
       if (r.facts) parts.push(`${plural(r.facts, "fact")} to review`);
       if (r.proposals) parts.push(plural(r.proposals, "strategy proposal"));

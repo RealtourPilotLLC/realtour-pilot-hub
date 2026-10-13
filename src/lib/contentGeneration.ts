@@ -546,6 +546,16 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
     // layer keeps SELECTED/RECONCILED rows, leaves REMOVED ones removed and
     // withholds rejected/archived topics — each with the mention on the history.
     const sel = await selectTopicForMonth(r.id, targetMonthId, { source: "call", actor, callRecordId: o.callRecordId ?? null, evidence: { excerpts, clientSpoken: excerpts.some((e) => e.speaker === "client") }, status: "PROPOSED" });
+    // A topic agreed on the strategy call is the client's choice made with us:
+    // it is confirmed at once (Jordan, Oct 13 2026, "both": no "needs
+    // reconciling" step before its script is drafted). The same write as a
+    // person's Keep. Anything the topic layer withheld (rejected, declined,
+    // removed by a person) never reaches here, and ideas the client turned
+    // down on the call stay proposed rejections for a person to rule on.
+    if (sel.outcome === "PROPOSED") {
+      const { reconcileSelection } = await import("@/lib/contentTopics");
+      await reconcileSelection(r.id, targetMonthId, true, actor).catch(() => null);
+    }
     if (sel.outcome === "PROPOSED") proposedSelections++;
     else if (sel.outcome === "KEPT") kept++;
     else withheld++;

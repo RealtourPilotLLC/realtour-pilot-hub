@@ -306,7 +306,8 @@ export async function rejectTopic(topicId: string, by: string, reason: string | 
   const t = await prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, status: true } });
   if (!t) throw new Error("Topic not found.");
   await prisma.contentTopic.update({ where: { id: topicId }, data: { approvalState: "REJECTED", rejectionReason: reason?.slice(0, 1000) ?? null, status: "REJECTED", monthId: null } });
-  await prisma.contentTopicSelection.updateMany({ where: { topicId, status: { in: ["SELECTED", "PROPOSED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: by } });
+  // RECONCILED too (Oct 13 2026): a call's topics are confirmed on arrival now, so a rejected one must leave its month.
+  await prisma.contentTopicSelection.updateMany({ where: { topicId, status: { in: ["SELECTED", "PROPOSED", "RECONCILED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: by } });
   await recordTopicEvent(topicId, t.enrollmentId, "REJECTED", { kind: "STAFF", staffUserId: by }, { fromStatus: t.status, toStatus: "REJECTED", note: reason });
 }
 

@@ -119,7 +119,7 @@ export function CallTranscriptItem({ call, variant = "card", showCall = true, sh
       {c.state === "analyzing" && (
         <p className="mt-1 flex items-center gap-1.5 text-muted"><Loader2 className="size-3.5 animate-spin" aria-hidden /> Analyzing — about a minute. You can leave this page.</p>
       )}
-      {c.resultLine && c.state !== "analyzing" && <p className="mt-1 text-success">{c.resultLine}{c.state === "analyzed" && c.callType === "MONTHLY_STRATEGY" ? " — confirm them on Video Topics" : ""}</p>}
+      {c.resultLine && c.state !== "analyzing" && <p className="mt-1 text-success">{c.resultLine}</p>}
       {(c.state === "in" || c.state === "failed") && c.autoLine && <p className="mt-1 text-[12px] text-muted">{c.autoLine}</p>}
       {c.error && c.state !== "analyzing" && <p className="mt-1 break-words text-[12px] text-warning">{c.error}</p>}
       {c.waitLine && <p className="mt-1 text-[12px] text-muted">{c.waitLine}</p>}

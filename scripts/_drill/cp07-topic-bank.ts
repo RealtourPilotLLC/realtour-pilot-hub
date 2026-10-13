@@ -484,7 +484,7 @@ async function main() {
     const ids13 = page13.groups.flatMap((g) => g.topics.map((t) => t.id));
     c.ok("NEW: the discussed idea is not on the client's page", !ids13.includes(discT.id));
     c.ok("NEW: the 'declined on the call' idea is not either", !ids13.includes(rejT.id));
-    c.ok("the call's PROPOSED pick IS shown (they chose it out loud)", ids13.includes(pickT.id) && page13.groups.flatMap((g) => g.topics).find((t) => t.id === pickT.id)?.selection?.status === "PROPOSED");
+    c.ok("the call's pick IS shown, confirmed (they chose it out loud; Oct 13 2026)", ids13.includes(pickT.id) && ["PROPOSED", "RECONCILED"].includes(page13.groups.flatMap((g) => g.topics).find((t) => t.id === pickT.id)?.selection?.status ?? ""));
     const byId = await portalActions.portalSelectTopic({ token: A.portalToken }, discT.id, A.monthId);
     c.ok("a portal action cannot reach the hidden idea by id", !byId.ok, byId.message);
     await ct.approveTopic(discT.id, STAFF_EMAIL);

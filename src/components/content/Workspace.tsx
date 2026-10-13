@@ -64,7 +64,7 @@ export function StrategyCallCard({
   const title =
     !required || cur === "NOT_REQUIRED" ? "Strategy call — not needed for this client"
     : cur === "SKIPPED" ? "Strategy call — skipped this month"
-    : cur === "COMPLETED" ? (analyzed || (linkedDone && !linkedIn.length) ? "Strategy call held — its topics are proposed on Video Topics" : linkedIn.length ? "Strategy call held — transcript in, not analyzed yet" : "Strategy call held")
+    : cur === "COMPLETED" ? (analyzed || (linkedDone && !linkedIn.length) ? "Strategy call held — its topics are confirmed on Video Topics" : linkedIn.length ? "Strategy call held — transcript in, not analyzed yet" : "Strategy call held")
     : cur === "SCHEDULED" ? `Strategy call booked${at ? ` for ${fmtCallTime(at)}` : ""}`
     : "The strategy call isn't booked yet";
 
