@@ -289,12 +289,18 @@ async function main() {
     // =======================================================================
     c.head("§9 · the booking: ONE request on September, 4 hours, Accelerator, booked like any other");
     // =======================================================================
+    // Automatic booking ON (as in production), so the request goes through the real booking decision.
+    await prisma.programAutomation.upsert({ where: { key: "session_booking" }, create: { key: "session_booking", enabled: true, enabledBy: "drill", enabledAt: now() }, update: { enabled: true } });
     const ask = await portalActions.portalRequestSession(auth, { monthId: sep.id, slotISO: slot.toISOString(), planId: addr.planId!, addressVersion: addr.addressVersion!, sessionIndex: 1 });
     const req = ask.requestId ? await prisma.programSessionRequest.findUnique({ where: { id: ask.requestId } }) : null;
     c.ok("the client books it: filed on SEPTEMBER, session 1", ask.ok && req?.monthId === sep.id && req.sessionIndex === 1 && req.slotStart?.getTime() === slot.getTime(), ask.message);
     c.ok("…4 hours long, on the Video Accelerator product (product and variant)", !!req && req.slotEnd?.getTime() === slot.getTime() + 4 * 3_600_000 && req.productId === ARYEO_CONTENT_PRODUCTS.Accelerator.productId && req.variantId === ARYEO_CONTENT_PRODUCTS.Accelerator.variantId, JSON.stringify({ end: req?.slotEnd, p: req?.productId }));
     // Jordan, Oct 13: "I don't want Kyle to have to manually schedule anything."
     c.ok("…never sent to Kyle just for being a 4-hour session", !!req && !/office books by hand|filming September and October together/.test(req.lastError ?? ""), `${req?.bookingState} ${req?.lastError}`);
+    // Audit, Oct 13: a leftover `!combined` skipped the whole booking decision, so the
+    // request fell to the desk with NO reason. It must be queued for the hub, or name
+    // an ordinary reason (no creative, no exact address, unchecked drive, scope).
+    c.ok("…it goes through the same booking decision as any session (queued, or an ordinary named reason)", !!req && (req.bookingState === "QUEUED" || /^desk-assisted: \S/.test(req.lastError ?? "")), `${req?.bookingState} ${req?.lastError}`);
     const { bookingProductFor } = await import("@/lib/sessionBooking");
     c.ok("…and the automatic booking books the request's own product: Video Accelerator, 240 minutes", !!req && bookingProductFor(req, "Starter")?.productId === ARYEO_CONTENT_PRODUCTS.Accelerator.productId && bookingProductFor(req, "Starter")?.durationMinutes === 240 && bookingProductFor({ productId: null }, "Starter")?.durationMinutes === 120);
     const desk = req ? await prisma.smartTask.findUnique({ where: { dedupeKey: `content-session-request-${req.id}` } }) : null;

@@ -229,7 +229,7 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
     ? await prisma.programSessionPlan.findUnique({ where: { id: input.plan.planId } })
     : null;
   if (input.plan?.planId && (!plan || plan.monthId !== month.id || plan.enrollmentId !== enrollment.id)) return { ok: false, reason: "Add the exact filming address for this session first." };
-  if (start && !combined && (await isAutomationEnabled("session_booking"))) {
+  if (start && (await isAutomationEnabled("session_booking"))) {
     const { planBookable } = await import("@/lib/sessionAddress");
     if (booked) deskReason = `this moves a session already on the calendar${booked.aryeoAppointmentId ? ` (appointment ${booked.aryeoAppointmentId})` : ""}, and the hub only books new sessions`;
     else if (deskHeld) deskReason = "this replaces an ask Kyle may already have booked by hand";
