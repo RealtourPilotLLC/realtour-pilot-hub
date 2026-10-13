@@ -992,9 +992,33 @@ export async function approveStrategy(versionId: string): Promise<Result> {
         bankNote = " The topic bank is queued: it builds on its own once the automatic topic bank is switched on, or press Refresh topics on Video Topics to build it now.";
       }
     } catch { /* the approval stands; the bank can still be built by hand */ }
+    // APPROVING RELEASES IT (Oct 14 2026). Jordan, Oct 13: "Can you just
+    // automate this ... I just want everything done for me." An approved
+    // version goes to the client's portal in the same press, through the same
+    // releaseStrategyToPortal the Release button uses, so the "strategy ready"
+    // email is queued exactly as a Release would queue it: only while
+    // script_share_email is on AND the rollout reaches this client (with the
+    // reminders policy's testClientsOnly lock); otherwise it is suppressed and
+    // the message says why. If the release refuses (the team's working-notes
+    // section, a [CONFIDENTIAL] marker), the approval stands and the message
+    // says why it is not in their portal. An already-released version is not
+    // released again (no second notice).
+    let releaseNote = "";
+    try {
+      const { releaseStrategyToPortal } = await import("@/lib/programOnboarding");
+      const after = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { status: true, releasedAt: true } });
+      if (after?.status === "APPROVED" && !after.releasedAt) {
+        const rel = await releaseStrategyToPortal(versionId, me.email);
+        releaseNote = ` ${rel.message}`;
+      } else if (after?.releasedAt) {
+        releaseNote = " It is already in their portal.";
+      }
+    } catch (e) {
+      releaseNote = ` Not released to their portal: ${e instanceof Error ? e.message : String(e)}`;
+    }
     path(v.enrollmentId);
-    if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : "Already approved — its pillars exist; nothing changed.") + bankNote };
-    return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}. Release it to the portal when you want the client to see it.${bankNote}` };
+    if (r.alreadyApproved) return { ok: true, message: (r.pillarsCreated ? `Already approved · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document.` : "Already approved — its pillars exist; nothing changed.") + releaseNote + bankNote };
+    return { ok: true, message: `Approved under your name${r.pillarsCreated ? ` · ${r.pillarsCreated} pillar${r.pillarsCreated === 1 ? "" : "s"} created from the document` : ""}.${releaseNote}${bankNote}` };
   } catch (e) { return fail(e); }
 }
 

@@ -194,6 +194,13 @@ export type OnboardingDetail = {
     /** A newer version still being written (DRAFT), when nothing waits for approval. */
     draftNo: number | null;
     approved: { id: string; versionNo: number; approvedAt: string | null; approvedBy: string | null; releasedAt: string | null } | null;
+    /**
+     * The version their portal actually shows (Oct 14 2026): the newest released
+     * one, read the way the portal reads it (portal.ts portalStrategy). It can be
+     * an OLDER version than `approved` when a newer approval was never released,
+     * which is how "I released it" and "not released" were both true.
+     */
+    inPortal: { versionNo: number; releasedAt: string } | null;
     /** Releasing would ALSO queue the "strategy ready" email right now (its switch and this client's toggle are both on). */
     releaseEmails: boolean;
   };
@@ -236,11 +243,12 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
   const { AUTOMATION_EFFECTS } = await import("@/lib/programAutomationCopy");
   const switchKeys = [...new Set(ONBOARDING_TOGGLES.flatMap((t) => t.switches))];
 
-  const [month, inReview, draft, approved, loaded, switchRows, seats, record, recipients] = await Promise.all([
+  const [month, inReview, draft, approved, inPortal, loaded, switchRows, seats, record, recipients] = await Promise.all([
     prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { id: true, status: true, strategyCallStatus: true } }),
     prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "INTERNAL_REVIEW" }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true } }),
     prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "DRAFT" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } }),
     prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, approvedAt: true, approvedBy: true, releasedAt: true } }),
+    prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, clientId: client.id, releasedAt: { not: null }, status: { in: ["APPROVED", "SUPERSEDED", "SHARED"] } }, orderBy: { versionNo: "desc" }, select: { versionNo: true, releasedAt: true } }),
     loadProgramRollout().then((l) => ({ rollout: l.rollout, problem: l.problem })).catch((e) => ({ rollout: { ...CLOSED_ROLLOUT } as ProgramRollout, problem: `the rollout could not be read (${errText(e)})` })),
     prisma.programAutomation.findMany({ where: { key: { in: switchKeys } }, select: { key: true, enabled: true, lastRunAt: true, lastError: true, lastErrorAt: true } }),
     prisma.clientMembership.findMany({ where: { enrollmentId: enrollment.id }, orderBy: { invitedAt: "asc" }, select: { id: true, clientUserId: true, role: true, revokedAt: true } }),
@@ -298,7 +306,7 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
   const steps = onboardingSteps({
     isTest, paused: enrollment.status !== "ACTIVE",
     emails: recipients.filter((r) => r.channel === "email").map((r) => r.toRef),
-    strategy: { inReview: inReview?.versionNo ?? null, draftNo: inReview ? null : draft?.versionNo ?? null, approvedNo: approved?.versionNo ?? null, released: !!approved?.releasedAt },
+    strategy: { inReview: inReview?.versionNo ?? null, draftNo: inReview ? null : draft?.versionNo ?? null, approvedNo: approved?.versionNo ?? null, released: !!approved?.releasedAt, portalNo: inPortal?.versionNo ?? null },
     allowed, liveOwnerSeat, record, autoBooking: !isTest && toggleOn(toggleOf("bookings"), allowed),
   });
 
@@ -313,6 +321,7 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
       inReview: inReview ? { id: inReview.id, versionNo: inReview.versionNo } : null,
       draftNo: inReview ? null : draft?.versionNo ?? null,
       approved: approved ? { id: approved.id, versionNo: approved.versionNo, approvedAt: approved.approvedAt?.toISOString() ?? null, approvedBy: approved.approvedBy, releasedAt: approved.releasedAt?.toISOString() ?? null } : null,
+      inPortal: inPortal?.releasedAt ? { versionNo: inPortal.versionNo, releasedAt: inPortal.releasedAt.toISOString() } : null,
       releaseEmails,
     },
     rollout: { mode: rollout.mode, pilotState: pilotStateOf(rollout, now), endsOn: rollout.pilot?.expiresAt ? pilotLastDay(rollout.pilot.expiresAt) : null, problem },

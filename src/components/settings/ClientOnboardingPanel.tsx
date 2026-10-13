@@ -158,7 +158,7 @@ function StrategyStep({ d, canAct }: { d: OnboardingDetail; canAct: boolean }) {
           <p>Version {s.inReview.versionNo} is waiting for your approval. <Link href={read} className={link}>Read it on Plan › Strategy</Link>.</p>
           {canAct && (confirming === "approve"
             ? <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[13px]">Approve version {s.inReview.versionNo} under your name?{s.approved ? ` It replaces version ${s.approved.versionNo} as the approved one.` : ""} The client sees it only once you release it.</span>
+                <span className="text-[13px]">Approve version {s.inReview.versionNo} under your name?{s.approved ? ` It replaces version ${s.approved.versionNo} as the approved one.` : ""} Approving also releases it to their portal.</span>
                 <Button busy={busy} onClick={() => run(() => approveStrategy(s.inReview!.id), () => setConfirming(null))}>Yes, approve</Button>
                 <Button variant="quiet" disabled={busy} onClick={() => setConfirming(null)}>Cancel</Button>
               </div>
@@ -169,7 +169,11 @@ function StrategyStep({ d, canAct }: { d: OnboardingDetail; canAct: boolean }) {
         <div className="space-y-2">
           <p>
             Version {s.approved.versionNo} approved{s.approved.approvedBy ? ` by ${s.approved.approvedBy}` : ""}{s.approved.approvedAt ? ` on ${dayET(s.approved.approvedAt)}` : ""}.{" "}
-            {s.approved.releasedAt ? `Released to their portal on ${dayET(s.approved.releasedAt)}.` : "Not released to their portal yet."}
+            {s.approved.releasedAt
+              ? `Released to their portal on ${dayET(s.approved.releasedAt)}.`
+              : s.inPortal && s.inPortal.versionNo !== s.approved.versionNo
+                ? `Not released yet. Their portal still shows version ${s.inPortal.versionNo} (released ${dayET(s.inPortal.releasedAt)}).`
+                : "Not released to their portal yet."}
           </p>
           {!s.approved.releasedAt && (
             <p className="text-[13px] text-muted">

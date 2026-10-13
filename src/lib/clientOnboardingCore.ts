@@ -275,7 +275,8 @@ export type StepFacts = {
   isTest: boolean;
   paused: boolean;
   emails: string[];
-  strategy: { inReview: number | null; draftNo?: number | null; approvedNo: number | null; released: boolean };
+  /** portalNo (Oct 14 2026): the version their portal shows, when an older one than approvedNo is released. */
+  strategy: { inReview: number | null; draftNo?: number | null; approvedNo: number | null; released: boolean; portalNo?: number | null };
   allowed: ProgramReachOp[];
   liveOwnerSeat: boolean;
   record: OnboardingRecord;
@@ -303,7 +304,9 @@ export function onboardingSteps(f: StepFacts): OnboardingStep[] {
         : s.released
           ? `v${s.approvedNo} approved and released to their portal`
           : s.approvedNo
-            ? `v${s.approvedNo} is approved but not released to their portal yet`
+            ? s.portalNo && s.portalNo !== s.approvedNo
+              ? `v${s.approvedNo} is approved but not released; their portal still shows v${s.portalNo}`
+              : `v${s.approvedNo} is approved but not released to their portal yet`
             : s.draftNo
               ? `v${s.draftNo} is still a draft`
               : "No strategy on file yet",
