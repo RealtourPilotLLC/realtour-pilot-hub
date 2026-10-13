@@ -617,33 +617,6 @@ export async function portalSessionSlots(
   return sessionSlotsFor({ enrollmentId: v.enrollment.id, monthId: month.id, sessionIndex: idx, package: pkg, moveRequestId: moveId });
 }
 
-/**
- * ONE SESSION OR TWO (Oct 13 2026). The client's choice for a late month and
- * the month that books it: "All 4 videos in one 4-hour session" (a Video
- * Accelerator-length session, Starter only) or "Two sessions, 2 hours each".
- * The same door as booking (requestSession: a viewer seat, a paused program
- * or a read-only visit cannot), and the same rules the office's control
- * follows (monthLateSession.setLateCombined): it can change only while
- * neither month has a session booked, filmed or asked for. Sends nothing.
- */
-export async function portalChooseFilmingSessions(auth: PortalAuth, lateMonthId: string, combined: boolean): Promise<R> {
-  const v = await viewerFor(auth, "requestSession");
-  if (typeof v === "string") return fail(v);
-  const id = String(lateMonthId ?? "");
-  if (!/^[a-z0-9]{10,40}$/i.test(id) || typeof combined !== "boolean") return fail("Pick how you'd like to film.");
-  // Only a late month this enrollment may book right now (its host month still running).
-  const month = await bookableMonthForEnrollment(v.enrollment.id, id);
-  const { setLateCombined, bookableLateRecord } = await import("@/lib/monthLateSession");
-  if (!month || !(await bookableLateRecord(v.enrollment.id, { id: month.id, monthKey: month.monthKey, status: "OPEN", historical: month.historical }).catch(() => null))) return fail("Pick how you'd like to film.");
-  try {
-    const r = await setLateCombined(month.id, combined, choiceBy(v));
-    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: r.message };
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
-  }
-}
-
 /** The exact filming address for one session, from the signed-in portal (CP-05). */
 export async function portalSubmitSessionAddress(
   auth: PortalAuth,

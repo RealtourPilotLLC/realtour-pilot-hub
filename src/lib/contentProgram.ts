@@ -89,6 +89,11 @@ export const ARYEO_CONTENT_PRODUCTS: Record<ProgramPackage, AryeoContentProduct>
 const isProgramPackage = (p: string | null | undefined): p is ProgramPackage =>
   p === "Starter" || p === "Accelerator" || p === "Pro";
 
+/** One of the content products by its Aryeo product id (a session request carries the one it was offered on). */
+export function aryeoProductById(productId: string | null | undefined): AryeoContentProduct | null {
+  return productId ? Object.values(ARYEO_CONTENT_PRODUCTS).find((p) => p.productId === productId) ?? null : null;
+}
+
 /** The Aryeo product a package books, or null for an unknown package name. */
 export function aryeoProductFor(pkg: string | null | undefined): AryeoContentProduct | null {
   return isProgramPackage(pkg) ? ARYEO_CONTENT_PRODUCTS[pkg] : null;

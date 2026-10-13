@@ -217,9 +217,12 @@ export async function createSessionRequest(input: CreateSessionRequestInput): Pr
   // the same read-only check the write itself makes, so a real client is never
   // QUEUED while only a fixture is authorised. Everyone else: the desk, as today.
   let hubBooks = false;
-  let deskReason: string | null = combined
-    ? `this is one ${lateMonthName(combined.hostMonthKey)} session filming ${lateMonthName(combined.lateMonthKey, combined.hostMonthKey)} and ${lateMonthName(combined.hostMonthKey)} together (a Video Accelerator-length booking), which the office books by hand`
-    : null;
+  // Oct 13 2026 (Jordan: "I don't want Kyle to have to manually schedule
+  // anything"): a combined late session books itself like any other — the
+  // request carries the Video Accelerator product and the adapter books that
+  // product's 4 hours (sessionBooking.bookingProductFor). The desk only takes
+  // it for the same reasons it takes any session.
+  let deskReason: string | null = null;
   // §6.6 W02: the plan the slot was offered for, read now (the version must
   // still be the one the client saw).
   const plan = input.plan?.planId

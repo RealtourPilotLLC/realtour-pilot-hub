@@ -88,9 +88,9 @@ export function LateSessionControl(p: LateSessionControlProps) {
     if (!c || (!c.offered && !c.combined)) return null;
     return (
       <div className="mt-2 text-[13px]">
-        <p>Filming: <span className="font-medium">{c.combined ? `one ${c.combinedHours}-hour session (all ${c.videos} videos), on the Video Accelerator product` : `two sessions, ${c.separateHours} hours each`}</span></p>
+        <p>Session: <span className="font-medium">{c.combined ? `one Video Accelerator ${c.combinedHours}-hour session (all ${c.videos} videos)` : `two Video Starter sessions, ${c.separateHours} hours each`}</span></p>
         <button type="button" className={`${control} mt-1`} disabled={busy || !!c.refusal} onClick={() => run(() => setLateCombinedAction(lateMonthId, !c.combined))}>
-          {c.combined ? `Switch to two ${c.separateHours}-hour sessions` : `Switch to one ${c.combinedHours}-hour session`}
+          {c.combined ? `Back to two Video Starter sessions` : `Use a Video Accelerator ${c.combinedHours}-hour session (all ${c.videos} videos)`}
         </button>
         {c.refusal && <p className="mt-1 text-muted">{c.refusal}</p>}
       </div>

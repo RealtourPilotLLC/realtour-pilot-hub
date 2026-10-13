@@ -6,7 +6,7 @@ import {
   type AryeoBookedAppointment, type HubWriteDecision, type HubWritePermit,
 } from "@/lib/integrations/aryeo";
 import { automationConfig, recordAutomationRun } from "@/lib/programAutomation";
-import { aryeoProductFor, type AryeoContentProduct } from "@/lib/contentProgram";
+import { aryeoProductById, aryeoProductFor, type AryeoContentProduct } from "@/lib/contentProgram";
 import { URGENT_CONTACT } from "@/lib/reviewWindows";
 import { etAt, etDayKey } from "@/lib/datetime";
 import { isWeekendET } from "@/lib/portal";
@@ -426,6 +426,18 @@ async function gateMoved(ctx: Ctx): Promise<string | null> {
   return null;
 }
 
+/**
+ * The product a request books: the one stored on it when it is a content
+ * product — a combined late session (one session filming two months) is
+ * offered and filed on the Video Accelerator product, 4 hours — else the
+ * package's own. Every length below (recheck, the appointment's end, the
+ * read-back, the conflict check) follows it. Jordan, Oct 13 2026: "I don't
+ * want Kyle to have to manually schedule anything."
+ */
+export function bookingProductFor(r: Pick<ProgramSessionRequest, "productId">, pkg: string | null | undefined): AryeoContentProduct | null {
+  return aryeoProductById(r.productId) ?? aryeoProductFor(pkg);
+}
+
 async function loadCtx(r: ProgramSessionRequest, now: Date, worker: string, deadline: number, cfg: BookingConfig): Promise<Ctx | null> {
   const [client, enrollment, month, plan] = await Promise.all([
     prisma.client.findUnique({ where: { id: r.clientId }, select: { id: true, name: true, aryeoCustomerId: true } }),
@@ -434,7 +446,7 @@ async function loadCtx(r: ProgramSessionRequest, now: Date, worker: string, dead
     r.planId ? prisma.programSessionPlan.findUnique({ where: { id: r.planId } }) : Promise.resolve(null),
   ]);
   if (!client || !enrollment) return null;
-  return { r, client, enrollment, plan, month, product: aryeoProductFor(enrollment.package), cfg, now, worker, deadline };
+  return { r, client, enrollment, plan, month, product: bookingProductFor(r, enrollment.package), cfg, now, worker, deadline };
 }
 
 const budgetLeft = (ctx: Ctx) => ctx.deadline - Date.now();
@@ -1214,7 +1226,7 @@ export async function rescheduleHubBooking(requestId: string, newStart: Date, op
     prisma.client.findUnique({ where: { id: r.clientId }, select: { id: true, name: true } }),
     prisma.contentEnrollment.findUnique({ where: { id: r.enrollmentId }, select: { package: true } }),
   ]);
-  const product = aryeoProductFor(enrollment?.package);
+  const product = bookingProductFor(r, enrollment?.package);
   if (!product) return { ok: false, state: "REFUSED", message: "No Aryeo product on file for this package." };
   const newEnd = new Date(newStart.getTime() + product.durationMinutes * 60_000);
   const gate = await hubWritePermit({ switchKey: "session_booking", client: client ? { id: client.id, name: client.name } : null, operation: "appointments.reschedule" });

@@ -14,8 +14,6 @@ import type { MonthBriefView } from "@/lib/monthBriefCore";
 import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalLateScript } from "@/lib/monthLateSession";
-import { combineChoiceWords } from "@/lib/lateSession";
-import { LateFilmingChoice } from "@/components/portal/LateFilmingChoice";
 
 // ---------------------------------------------------------------------------
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
@@ -235,7 +233,6 @@ function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNul
   const months = (combined ? [d.late?.schedule ?? null] : [d.late?.schedule ?? null, s])
     .filter((m, i, all): m is PortalScheduleMonth => !!m && all.findIndex((x) => x?.monthId === m.monthId) === i);
   const scripts = d.late?.scripts ?? [];
-  const words = combineChoiceWords(late.combine.videos);
   const pick = d.selectedScheduleMonthId && months.some((m) => m.monthId === d.selectedScheduleMonthId) ? d.selectedScheduleMonthId : late.monthId;
   return (
     <section id="step-late" aria-labelledby="late-session-line" className="scroll-mt-24 rounded-2xl border border-brand/40 bg-surface/70 p-4 shadow-sm backdrop-blur">
@@ -249,10 +246,7 @@ function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNul
               {s ? ` ${hostName}'s session follows ${hostName}'s own plan.` : ""}
             </>}
       </p>
-      {/* Oct 13 2026: one session for both months, or two (Starter only). */}
-      {late.combine.offered && (
-        <LateFilmingChoice lateMonthId={late.monthId} combined={combined} refusal={late.combine.refusal} readOnly={!d.can.session || d.readOnly} words={words} />
-      )}
+      {/* Oct 13 2026: one Video Accelerator session for both months is the office's call (Settings on the client file), never the client's. */}
       {d.scheduleFailed ? (
         <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
       ) : months.length > 0 ? (

@@ -160,8 +160,8 @@ async function main() {
     c.ok("Cara (Accelerator): the choice is not offered", !cChoice.offered && !cChoice.combined, JSON.stringify(cChoice));
     const cBag = await bagOf(C.enrollmentId);
     const cStaff = await actions.setLateCombinedAction(C.sep.id, true);
-    const cPortal = await portalActions.portalChooseFilmingSessions({ token: C.portalToken }, C.sep.id, true);
-    c.ok("…the office's switch and the portal both refuse, in plain words", !cStaff.ok && /only offered on the Starter package/.test(cStaff.message) && !cPortal.ok && /only offered on the Starter package/.test(cPortal.message) && !/—/.test(cPortal.message), `${cStaff.message} | ${cPortal.message}`);
+    c.ok("…the office's button refuses, in plain words", !cStaff.ok && /only offered on the Starter package/.test(cStaff.message), cStaff.message);
+    c.ok("…and the client has no way to choose it (Jordan, Oct 13: the office turns it on)", !("portalChooseFilmingSessions" in portalActions));
     c.ok("…and nothing was written", (await bagOf(C.enrollmentId)) === cBag);
     const cPlanning = (await portal.portalPlanning((await viewer(C.portalToken)).enrollment, C.monthId))!;
     const cYm = text(html(createElement(YourMonth, { d: ymData(cPlanning, await portal.portalTopics((await viewer(C.portalToken)).enrollment), null) })));
@@ -182,7 +182,7 @@ async function main() {
     await signIn(admin);
 
     // =======================================================================
-    c.head("§4 · the client chooses one session");
+    c.head("§4 · the office turns on one Video Accelerator 4-hour session (the client never chooses)");
     // =======================================================================
     const v = await viewer(A.portalToken);
     const planning0 = (await portal.portalPlanning(v.enrollment, A.monthId))!;
@@ -190,16 +190,16 @@ async function main() {
     const ym0Html = html(createElement(YourMonth, { d: ymData(planning0, await portal.portalTopics(v.enrollment), null) }));
     const ym0 = text(ym0Html);
     const checked = [...ym0Html.matchAll(/aria-checked="(true|false)"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => `${m[1]}:${text(m[2]).trim()}`);
-    c.ok("Your Month: 'How would you like to film?' with both options, two sessions marked", ym0.includes("How would you like to film?") && checked.join("|") === "false:All 4 videos in one 4-hour session|true:Two sessions, 2 hours each", `${checked.join("|")} · ${ym0.slice(0, 200)}`);
-    const chose = await portalActions.portalChooseFilmingSessions(auth, sep.id, true);
+    c.ok("Your Month shows the client no choice", !ym0.includes("How would you like to film?") && checked.length === 0, `${checked.join("|")} · ${ym0.slice(0, 200)}`);
+    const chose = await actions.setLateCombinedAction(sep.id, true);
     const rec1 = core.lateSessionOf(await bagOf(A.enrollmentId), "2026-09");
-    c.ok("the client picks one session: saved, in plain words (no em dash)", chose.ok && chose.message === "Saved. September and October are filmed together in one 4-hour session (all 4 videos)." && rec1?.combined === true, chose.message);
+    c.ok("the office turns it on: saved, in plain words (no em dash)", chose.ok && chose.message === "Saved. September and October are filmed together in one 4-hour session (all 4 videos)." && rec1?.combined === true, chose.message);
     const ledger = await prisma.programEnrollmentChange.findMany({ where: { enrollmentId: A.enrollmentId }, orderBy: { createdAt: "asc" } });
-    c.ok("one more ledger row, stamped with the client", ledger.length === 2 && /Film September and October together in one 4-hour Video Accelerator session/.test(ledger[1].reason ?? "") && (ledger[1].changedBy ?? "").startsWith("link") === true, ledger.map((l) => `${l.changedBy}: ${l.reason}`).join(" | "));
-    const again = await portalActions.portalChooseFilmingSessions(auth, sep.id, true);
-    c.ok("choosing it again is a no-op that says so", again.ok && /^Already set\./.test(again.message) && (await prisma.programEnrollmentChange.count({ where: { enrollmentId: A.enrollmentId } })) === 2, again.message);
-    const notLate = await portalActions.portalChooseFilmingSessions(auth, A.monthId, true);
-    c.ok("the portal action refuses a month that is not a late month", !notLate.ok, notLate.message);
+    c.ok("one more ledger row, stamped with the staff member", ledger.length === 2 && /Film September and October together in one 4-hour Video Accelerator session/.test(ledger[1].reason ?? "") && !!ledger[1].changedBy && !(ledger[1].changedBy ?? "").startsWith("link"), ledger.map((l) => `${l.changedBy}: ${l.reason}`).join(" | "));
+    const again = await actions.setLateCombinedAction(sep.id, true);
+    c.ok("pressing it again is a no-op that says so", again.ok && /^Already set\./.test(again.message) && (await prisma.programEnrollmentChange.count({ where: { enrollmentId: A.enrollmentId } })) === 2, again.message);
+    const notLate = await actions.setLateCombinedAction(A.monthId, true);
+    c.ok("the button refuses a month that is not a late month", !notLate.ok, notLate.message);
 
     // =======================================================================
     c.head("§5 · ONE entry in the scheduler");
@@ -265,17 +265,20 @@ async function main() {
     c.ok("…from October's floor", slots.earliestISO === gSep.earliest.toISOString(), slots.earliestISO ?? "");
 
     // =======================================================================
-    c.head("§9 · the booking: ONE request on September, 4 hours, Accelerator, desk");
+    c.head("§9 · the booking: ONE request on September, 4 hours, Accelerator, booked like any other");
     // =======================================================================
     const ask = await portalActions.portalRequestSession(auth, { monthId: sep.id, slotISO: slot.toISOString(), planId: addr.planId!, addressVersion: addr.addressVersion!, sessionIndex: 1 });
     const req = ask.requestId ? await prisma.programSessionRequest.findUnique({ where: { id: ask.requestId } }) : null;
     c.ok("the client books it: filed on SEPTEMBER, session 1", ask.ok && req?.monthId === sep.id && req.sessionIndex === 1 && req.slotStart?.getTime() === slot.getTime(), ask.message);
     c.ok("…4 hours long, on the Video Accelerator product (product and variant)", !!req && req.slotEnd?.getTime() === slot.getTime() + 4 * 3_600_000 && req.productId === ARYEO_CONTENT_PRODUCTS.Accelerator.productId && req.variantId === ARYEO_CONTENT_PRODUCTS.Accelerator.variantId, JSON.stringify({ end: req?.slotEnd, p: req?.productId }));
-    c.ok("…desk-assisted, never queued for the hub's own Aryeo booking", !!req && req.bookingState === "NONE" && /desk-assisted: this is one October session filming September and October together/.test(req.lastError ?? ""), `${req?.bookingState} ${req?.lastError}`);
+    // Jordan, Oct 13: "I don't want Kyle to have to manually schedule anything."
+    c.ok("…never sent to Kyle just for being a 4-hour session", !!req && !/office books by hand|filming September and October together/.test(req.lastError ?? ""), `${req?.bookingState} ${req?.lastError}`);
+    const { bookingProductFor } = await import("@/lib/sessionBooking");
+    c.ok("…and the automatic booking books the request's own product: Video Accelerator, 240 minutes", !!req && bookingProductFor(req, "Starter")?.productId === ARYEO_CONTENT_PRODUCTS.Accelerator.productId && bookingProductFor(req, "Starter")?.durationMinutes === 240 && bookingProductFor({ productId: null }, "Starter")?.durationMinutes === 120);
     const desk = req ? await prisma.smartTask.findUnique({ where: { dedupeKey: `content-session-request-${req.id}` } }) : null;
     const deskText = desk?.description ?? "";
-    c.ok("Kyle's desk task: ONE 4-hour Video Accelerator appointment, the order's only product",
-      deskText.includes("One 4-hour Video Accelerator session covering September and October (4 videos): book ONE appointment, 4 hours, on the Video Accelerator product as the order's only product.") &&
+    c.ok("if it does land on Kyle's desk (a fallback), his task still says ONE 4-hour Video Accelerator appointment",
+      !desk || deskText.includes("One 4-hour Video Accelerator session covering September and October (4 videos): book ONE appointment, 4 hours, on the Video Accelerator product as the order's only product.") &&
       deskText.includes("together with October's own: it films September's and October's scripts in one session") && deskText.includes("check the job sits on September"),
       deskText.split("\n").slice(0, 4).join(" / "));
 
@@ -303,9 +306,8 @@ async function main() {
     c.head("§11 · the choice can't change while the session is live");
     // =======================================================================
     const bagLive = await bagOf(A.enrollmentId);
-    const back = await portalActions.portalChooseFilmingSessions(auth, sep.id, false);
-    const backStaff = await actions.setLateCombinedAction(sep.id, false);
-    c.ok("switching back to two sessions is refused (portal and office), in plain words", !back.ok && back.message === "The September and October session is already booked or requested, so this can't change now. Cancel that session first to change it." && !backStaff.ok && backStaff.message === back.message && (await bagOf(A.enrollmentId)) === bagLive, back.message);
+    const back = await actions.setLateCombinedAction(sep.id, false);
+    c.ok("switching back to two sessions is refused, in plain words", !back.ok && back.message === "The September and October session is already booked or requested, so this can't change now. Cancel that session first to change it." && (await bagOf(A.enrollmentId)) === bagLive, back.message);
     const undo = await actions.undoLateSessionAction(sep.id);
     c.ok("…and so is undoing the late session", !undo.ok && /already booked or asked for/.test(undo.message) && (await bagOf(A.enrollmentId)) === bagLive, undo.message);
     const planning3 = (await portal.portalPlanning(v.enrollment, A.monthId))!;
@@ -315,7 +317,7 @@ async function main() {
       monthId: A.monthId, monthName: "October", options: [], filmingIn: null, offer: null,
       carrying: { lateMonthId: sep.id, lateLabel: "September", state: panel.carrying!.state, filmed: false, startsAtISO: null, scriptsReleased: 2, scriptsReady: true, scriptsSentOutside: false, lateVideosOwed: 2, by: "Kyle", at: now().toISOString(), undoRefusal: panel.carrying!.undoRefusal, lateHref: "/content/x?month=2026-09", combine: panel.carrying!.combine },
     })));
-    c.ok("the office's card: 'Filming: one 4-hour session (all 4 videos)', the switch, and why it's locked", staffHtml.includes("Filming: one 4-hour session (all 4 videos), on the Video Accelerator product") && staffHtml.includes("Switch to two 2-hour sessions") && staffHtml.includes(back.message), staffHtml.slice(0, 400));
+    c.ok("the office's card: 'Session: one Video Accelerator 4-hour session (all 4 videos)', the button, and why it's locked", staffHtml.includes("Session: one Video Accelerator 4-hour session (all 4 videos)") && staffHtml.includes("Back to two Video Starter sessions") && staffHtml.includes(back.message), staffHtml.slice(0, 400));
 
     // =======================================================================
     c.head("§12 · cancel reopens both months");
@@ -323,14 +325,14 @@ async function main() {
     const cancelled = await portalActions.portalCancelSessionRequest(auth, req!.id);
     const capOct2 = await srq.sessionCapacity(A.enrollmentId, A.monthId, { now: now() }), capSep2 = await srq.sessionCapacity(A.enrollmentId, sep.id, { now: now() });
     c.ok("cancelling the one request frees September's session AND October's", cancelled.ok && capOct2.remaining === 1 && capSep2.remaining === 1, JSON.stringify({ m: cancelled.message, capOct2, capSep2 }));
-    const two = await portalActions.portalChooseFilmingSessions(auth, sep.id, false);
+    const two = await actions.setLateCombinedAction(sep.id, false);
     const smTwo = await portal.portalScheduleMonths(v.enrollment);
-    c.ok("now the client can switch to two sessions: two tabs again, 'September session…' and 'October session'", two.ok && two.message === "Saved. September and October are filmed in two sessions, 2 hours each." && smTwo.find((m) => m.monthId === sep.id)?.tabLabel === "September session (your scripts are ready)" && smTwo.find((m) => m.monthId === A.monthId)?.tabLabel === "October session", `${two.message} ${smTwo.map((m) => m.tabLabel).join(" | ")}`);
+    c.ok("now the office can switch back to two sessions: two tabs again, 'September session…' and 'October session'", two.ok && two.message === "Saved. September and October are filmed in two sessions, 2 hours each." && smTwo.find((m) => m.monthId === sep.id)?.tabLabel === "September session (your scripts are ready)" && smTwo.find((m) => m.monthId === A.monthId)?.tabLabel === "October session", `${two.message} ${smTwo.map((m) => m.tabLabel).join(" | ")}`);
     // Two sessions: September's own gate (tomorrow's floor) asks Starter's 2-hour calendar, with no later start day.
     await prisma.appSetting.create({ data: { key: `portal-aryeo-slots:v4:${ARYEO_CONTENT_PRODUCTS.Starter.productId}:120:${PROGRAM_SLOT_HORIZON_DAYS}`, value: JSON.stringify({ at: Date.now(), days: [day("2026-10-22", et(10, 22, 10), 120)] }) } });
     const twoSlots = await portalActions.portalSessionSlots(auth, sep.id, 1);
     c.ok("…and September's times are the Starter product's 2-hour ones again (Oct 22, not the 4-hour Oct 21)", twoSlots.ok && twoSlots.days.some((d) => d.date === "2026-10-22") && twoSlots.days.every((d) => d.date !== "2026-10-21"), JSON.stringify(twoSlots.days.map((d) => d.date)));
-    const one = await portalActions.portalChooseFilmingSessions(auth, sep.id, true);
+    const one = await actions.setLateCombinedAction(sep.id, true);
     c.ok("…and back to one session", one.ok && core.lateSessionOf(await bagOf(A.enrollmentId), "2026-09")?.combined === true && (await prisma.programEnrollmentChange.count({ where: { enrollmentId: A.enrollmentId } })) === 4, one.message);
 
     // =======================================================================
