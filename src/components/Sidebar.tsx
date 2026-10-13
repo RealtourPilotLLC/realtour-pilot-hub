@@ -5,6 +5,7 @@ import { useId } from "react";
 import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
   Clapperboard,
   SlidersHorizontal,
   LayoutDashboard,
@@ -119,6 +120,8 @@ const SECTIONS: NavSection[] = [
       // item — Jordan: "client assets should be in the clients tab".
       { label: "Clients", href: "/clients", icon: Users, key: "clients" },
       { label: "Content Program", href: "/content", icon: Clapperboard, key: "content" },
+      // Oct 14 2026 (Jordan): every program client's portal activity. Owner and admin only (filtered below).
+      { label: "Client activity", href: "/content/activity", icon: Activity, key: "content" },
       // People = the merged Team (workload cards, admin-visible) + Logins &
       // access (AppUser allowlist, owner-only) hub. Lives in Operations next to
       // Clients — both are "who we work with" directories, and it reads cleaner
@@ -224,6 +227,8 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
         (i) => i.href !== "/resources/video-styles" && i.href !== "/quality" && i.href !== "/coaching",
       );
     }
+    // Client activity is the owner's and admin's view (the page redirects anyone else).
+    if (user && user.role !== "OWNER" && user.role !== "ADMIN") items = items.filter((i) => i.href !== "/content/activity");
     // "My Pay" is a person's own payout view. Photographers always have it;
     // owner/admin see it ONLY with an explicit mypay:true override (James:
     // admin powers for the creative-manager role, his own pay visible, the
