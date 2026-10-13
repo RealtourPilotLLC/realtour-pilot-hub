@@ -48,6 +48,8 @@ export type LateSessionRecord = {
    * Absent/false = two sessions, the Oct 12 behaviour.
    */
   combined?: boolean;
+  /** Oct 13 2026 (Jordan): the office OFFERED the client the one 4-hour session; the client then chooses (combined). */
+  combineOffered?: boolean;
   by: string | null;
   at: string;
 };
@@ -72,7 +74,7 @@ export function readLateSessions(overridesJson: string | null | undefined): Late
     if (typeof r.hostMonthKey !== "string" || !MONTH_KEY.test(r.hostMonthKey) || r.hostMonthKey <= key) continue;
     out.push({
       lateMonthKey: key, lateMonthId: String(r.lateMonthId ?? ""), hostMonthKey: r.hostMonthKey, hostMonthId: String(r.hostMonthId ?? ""),
-      scriptsSentOutside: r.scriptsSentOutside === true, combined: r.combined === true, by: typeof r.by === "string" ? r.by : null, at: String(r.at ?? ""),
+      scriptsSentOutside: r.scriptsSentOutside === true, combined: r.combined === true, combineOffered: r.combineOffered === true, by: typeof r.by === "string" ? r.by : null, at: String(r.at ?? ""),
     });
   }
   return out.sort((a, b) => a.lateMonthKey.localeCompare(b.lateMonthKey));

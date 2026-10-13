@@ -153,7 +153,8 @@ export type LateOption = { monthId: string; monthKey: string; label: string; ref
  * the package may combine (Starter). `refusal`: why the choice can't change
  * right now (null = it can). `videos`: both months' videos together.
  */
-export type CombineChoice = { combined: boolean; offered: boolean; refusal: string | null; videos: number; combinedHours: number; separateHours: number };
+/** offered: the CLIENT sees the choice (Starter, and the office offered it). canOffer: the office may offer it (Starter). officeOffered: the office's switch. */
+export type CombineChoice = { combined: boolean; offered: boolean; canOffer: boolean; officeOffered: boolean; refusal: string | null; offerRefusal: string | null; videos: number; combinedHours: number; separateHours: number };
 export type LateSessionPanel = {
   monthId: string;
   monthKey: string;
@@ -326,7 +327,7 @@ export async function combinedVideoCount(rec: Pick<LateSessionRecord, "lateMonth
  * booked, filmed or asked for — a booking would otherwise sit on a choice
  * that no longer matches it. Pass the transaction when deciding under the locks.
  */
-export async function combineRefusal(lateMonthId: string, want: boolean, opts: { now?: Date; db?: ProgramDb } = {}): Promise<string | null> {
+export async function combineRefusal(lateMonthId: string, want: boolean, opts: { now?: Date; db?: ProgramDb; office?: boolean } = {}): Promise<string | null> {
   const db = opts.db ?? prisma;
   const m = await db.contentMonth.findUnique({ where: { id: lateMonthId }, select: { id: true, enrollmentId: true, clientId: true, monthKey: true, status: true, historical: true } });
   if (!m) return "That month is no longer on file.";
@@ -335,6 +336,7 @@ export async function combineRefusal(lateMonthId: string, want: boolean, opts: {
   if (!e || !rec || rec.lateMonthId !== m.id) return `${name(m.monthKey)}'s session isn't being booked late.`;
   const late = name(rec.lateMonthKey, rec.hostMonthKey), host = name(rec.hostMonthKey);
   if (want && !combineOffered(e.package)) return `Filming ${late} and ${host} in one session is only offered on the Starter package (one ${SEPARATE_SESSION_HOURS}-hour session a month). Each month keeps its own session.`;
+  if (want && !rec.combineOffered && !opts.office) return `One ${COMBINED_SESSION_HOURS}-hour session for ${late} and ${host} isn't offered for these months. Call or text Kyle if you'd like it.`;
   if (e.status !== "ACTIVE") return `The program is ${e.status.toLowerCase()}, so how ${late} and ${host} are filmed can't change now.`;
   const hostRow = await db.contentMonth.findUnique({ where: { id: rec.hostMonthId }, select: { enrollmentId: true, status: true, historical: true } });
   if (m.status !== "OPEN" || m.historical || !hostRow || hostRow.enrollmentId !== m.enrollmentId || hostRow.status !== "OPEN" || hostRow.historical) return `Booking for these months has closed, so how they are filmed can't change now.`;
@@ -359,7 +361,11 @@ export async function combineChoice(rec: LateSessionRecord, opts: { now?: Date }
     combineRefusal(rec.lateMonthId, !rec.combined, opts),
     combinedVideoCount(rec),
   ]);
-  return { combined: !!rec.combined, offered: !!rec.combined || combineOffered(pkg), refusal, videos, combinedHours: COMBINED_SESSION_HOURS, separateHours: SEPARATE_SESSION_HOURS };
+  const canOffer = combineOffered(pkg);
+  const officeOffered = !!rec.combineOffered;
+  // Taking the offer back while the client is on one session = going back to two: the same refusal.
+  const offerRefusal = !canOffer ? await combineRefusal(rec.lateMonthId, true, { ...opts, office: true }) : officeOffered && rec.combined ? await combineRefusal(rec.lateMonthId, false, opts) : null;
+  return { combined: !!rec.combined, offered: !!rec.combined || (canOffer && officeOffered), canOffer, officeOffered, refusal, offerRefusal, videos, combinedHours: COMBINED_SESSION_HOURS, separateHours: SEPARATE_SESSION_HOURS };
 }
 
 /**
@@ -418,6 +424,49 @@ export async function setLateCombined(lateMonthId: string, combined: boolean, by
     ? `${out.changed ? "Saved." : "Already set."} ${l} and ${h} are filmed together in one ${COMBINED_SESSION_HOURS}-hour session${videos ? ` (all ${videos} videos)` : ""}.`
     : `${out.changed ? "Saved." : "Already set."} ${l} and ${h} are filmed in two sessions, ${SEPARATE_SESSION_HOURS} hours each.`;
   return { record: out.record, changed: out.changed, message };
+}
+
+/**
+ * THE OFFICE OFFERS THE 4-HOUR CATCH-UP SESSION (Jordan, Oct 13 2026: "Let her
+ * choose"). Turns the client's choice on for this late month: their portal then
+ * asks "one 4-hour session or two 2-hour sessions" (setLateCombined, the
+ * client's pick; two sessions until they pick). Taking the offer back also
+ * puts the months back on two sessions, refused while a session is booked or
+ * asked for. Starter only. Ledgered; sends nothing.
+ */
+export async function setLateCombineOffer(lateMonthId: string, offered: boolean, by: string | null, opts: { now?: Date } = {}): Promise<{ changed: boolean; message: string }> {
+  const now = opts.now ?? new Date();
+  const m = await prisma.contentMonth.findUnique({ where: { id: lateMonthId }, select: { id: true, enrollmentId: true, monthKey: true } });
+  if (!m) throw new Error("That month is no longer on file.");
+  const e0 = await prisma.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { overridesJson: true } });
+  const rec0 = e0 ? lateSessionOf(e0.overridesJson, m.monthKey) : null;
+  if (!rec0 || rec0.lateMonthId !== m.id) throw new Error(`${name(m.monthKey)}'s session isn't being booked late.`);
+  if (!offered && rec0.combined) await setLateCombined(lateMonthId, false, by, { now });
+  if (offered) { const r = await combineRefusal(lateMonthId, true, { now, office: true }); if (r) throw new Error(r); }
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { id: true, clientId: true, overridesJson: true } });
+  const rec = e ? lateSessionOf(e.overridesJson, m.monthKey) : null;
+  if (!e || !rec) throw new Error(`${name(m.monthKey)}'s session isn't being booked late.`);
+  const l = name(rec.lateMonthKey, rec.hostMonthKey), h = name(rec.hostMonthKey);
+  if (!!rec.combineOffered === offered) return { changed: false, message: offered ? `Already offered: the client chooses one ${COMBINED_SESSION_HOURS}-hour session or two ${SEPARATE_SESSION_HOURS}-hour sessions.` : "Not offered." };
+  const { combineOffered: _o, ...rest } = rec;
+  void _o;
+  const next: LateSessionRecord = offered ? { ...rest, combineOffered: true } : rest;
+  const w = await prisma.contentEnrollment.updateMany({ where: { id: e.id, overridesJson: e.overridesJson }, data: { overridesJson: withLateSession(e.overridesJson, m.monthKey, next) } });
+  if (w.count !== 1) throw new Error("This program changed while you were working. Reload and try again.");
+  await prisma.programEnrollmentChange.create({
+    data: {
+      enrollmentId: e.id, clientId: e.clientId, field: "overrides",
+      fromValue: JSON.stringify({ lateSession: ref(rec), combineOffered: !!rec.combineOffered }), toValue: JSON.stringify({ lateSession: ref(rec), combineOffered: offered }),
+      effectiveAt: now, effectiveMonthKey: rec.lateMonthKey,
+      reason: offered
+        ? `Offered the client one ${COMBINED_SESSION_HOURS}-hour Video Accelerator session for ${l} and ${h} (they choose it or two ${SEPARATE_SESSION_HOURS}-hour sessions).`
+        : `Stopped offering one ${COMBINED_SESSION_HOURS}-hour session for ${l} and ${h}: two ${SEPARATE_SESSION_HOURS}-hour sessions.`,
+      source: "manual", billingTruth: false, changedBy: by, appliedAt: now,
+    },
+  });
+  return { changed: true, message: offered
+    ? `Offered. ${l} and ${h}: the client chooses one ${COMBINED_SESSION_HOURS}-hour session or two ${SEPARATE_SESSION_HOURS}-hour sessions in their portal.`
+    : `No longer offered. ${l} and ${h} are filmed in two ${SEPARATE_SESSION_HOURS}-hour sessions.` };
 }
 
 /**

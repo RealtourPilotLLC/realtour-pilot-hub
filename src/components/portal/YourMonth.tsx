@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { combineChoiceWords } from "@/lib/lateSession";
+import { LateFilmingChoice } from "@/components/portal/LateFilmingChoice";
 import { CheckCircle2, ChevronRight, Circle, Clock, ExternalLink } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalPlanning, PortalScheduleMonth, PortalSlotDay, PortalTopicsData } from "@/lib/portal";
@@ -246,7 +248,10 @@ function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNul
               {s ? ` ${hostName}'s session follows ${hostName}'s own plan.` : ""}
             </>}
       </p>
-      {/* Oct 13 2026: one Video Accelerator session for both months is the office's call (Settings on the client file), never the client's. */}
+      {/* Oct 13 2026: once the office offers it, the client chooses one 4-hour session or two 2-hour sessions. */}
+      {late.combine.offered && (
+        <LateFilmingChoice lateMonthId={late.monthId} combined={combined} refusal={late.combine.refusal} readOnly={!d.can.session || d.readOnly} words={combineChoiceWords(late.combine.videos)} />
+      )}
       {d.scheduleFailed ? (
         <div className="mt-2"><LoadFailed what="your filming calendar" /></div>
       ) : months.length > 0 ? (

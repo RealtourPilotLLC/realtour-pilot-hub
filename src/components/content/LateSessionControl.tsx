@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarClock, ClipboardCopy, Loader2, Undo2 } from "lucide-react";
-import { lateSessionAction, lateSessionMessageAction, setLateCombinedAction, undoLateSessionAction } from "@/app/content/actions";
+import { lateSessionAction, lateSessionMessageAction, setLateCombineOfferAction, undoLateSessionAction } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // "Bring September's session into October" (Oct 12 2026) — on the client
@@ -26,7 +26,7 @@ type State = "TO_BOOK" | "REQUESTED" | "BOOKED";
  * (monthLateSession.CombineChoice). `offered` false = not a Starter program,
  * so there is nothing to choose; `refusal` = why it can't change right now.
  */
-export type LateCombineProps = { combined: boolean; offered: boolean; refusal: string | null; videos: number; combinedHours: number; separateHours: number };
+export type LateCombineProps = { combined: boolean; offered: boolean; canOffer: boolean; officeOffered: boolean; refusal: string | null; offerRefusal: string | null; videos: number; combinedHours: number; separateHours: number };
 
 export type LateSessionControlProps = {
   monthId: string;
@@ -85,14 +85,19 @@ export function LateSessionControl(p: LateSessionControlProps) {
   );
   // Oct 13 2026: "Filming: one 4-hour session (all 4 videos)" or "two sessions", with the switch.
   const combineRow = (lateMonthId: string, c: LateCombineProps | null | undefined) => {
-    if (!c || (!c.offered && !c.combined)) return null;
+    if (!c || (!c.canOffer && !c.combined)) return null;
+    // Oct 13 2026 (Jordan: "Let her choose"): the office offers it, the client picks in their portal.
     return (
       <div className="mt-2 text-[13px]">
-        <p>Session: <span className="font-medium">{c.combined ? `one Video Accelerator ${c.combinedHours}-hour session (all ${c.videos} videos)` : `two Video Starter sessions, ${c.separateHours} hours each`}</span></p>
-        <button type="button" className={`${control} mt-1`} disabled={busy || !!c.refusal} onClick={() => run(() => setLateCombinedAction(lateMonthId, !c.combined))}>
-          {c.combined ? `Back to two Video Starter sessions` : `Use a Video Accelerator ${c.combinedHours}-hour session (all ${c.videos} videos)`}
+        <p>
+          {c.officeOffered
+            ? <>{c.combinedHours}-hour catch-up session: <span className="font-medium">offered</span>. The client chose <span className="font-medium">{c.combined ? `one Video Accelerator ${c.combinedHours}-hour session (all ${c.videos} videos)` : `two Video Starter sessions, ${c.separateHours} hours each`}</span>{c.combined ? "" : " (until they pick otherwise)"}.</>
+            : <>Session: <span className="font-medium">two Video Starter sessions, {c.separateHours} hours each</span>.</>}
+        </p>
+        <button type="button" className={`${control} mt-1`} disabled={busy || !!c.offerRefusal} onClick={() => run(() => setLateCombineOfferAction(lateMonthId, !c.officeOffered))}>
+          {c.officeOffered ? `Stop offering the ${c.combinedHours}-hour session` : `Offer a ${c.combinedHours}-hour catch-up session (all ${c.videos} videos)`}
         </button>
-        {c.refusal && <p className="mt-1 text-muted">{c.refusal}</p>}
+        {c.offerRefusal && <p className="mt-1 text-muted">{c.offerRefusal}</p>}
       </div>
     );
   };

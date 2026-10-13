@@ -848,6 +848,21 @@ export async function setLateCombinedAction(lateMonthId: string, combined: boole
   } catch (e) { return { ...fail(e), outcome: "refused" }; }
 }
 
+/** Oct 13 2026: offer (or stop offering) the client one 4-hour catch-up session; the client chooses in the portal. */
+export async function setLateCombineOfferAction(lateMonthId: string, offered: boolean): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  if (typeof lateMonthId !== "string" || !ID.test(lateMonthId) || typeof offered !== "boolean") return { ok: false, outcome: "refused", message: "Month not found." };
+  const who = await actor();
+  try {
+    const { setLateCombineOffer } = await import("@/lib/monthLateSession");
+    const r = await setLateCombineOffer(lateMonthId, offered, who.name ?? who.email);
+    const m = await prisma.contentMonth.findUnique({ where: { id: lateMonthId }, select: { enrollmentId: true } });
+    if (m) revalidatePath(`/content/${m.enrollmentId}`);
+    revalidatePath("/content");
+    return { ok: true, outcome: "confirmed", message: r.message };
+  } catch (e) { return { ...fail(e), outcome: "refused" }; }
+}
+
 /** Jordan's message to the client, filled in with their portal link. Copy only — never sent from here. */
 export async function lateSessionMessageAction(lateMonthId: string): Promise<Result & { body?: string; url?: string }> {
   try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
