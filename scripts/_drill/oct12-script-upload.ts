@@ -536,7 +536,7 @@ async function main() {
       const sys = { kind: "AI" } as const;
       const mkDraft = async (title: string) => {
         const t = await createTopic({ enrollmentId: G.enrollmentId, title, source: "strategy_call", status: "SAVED", approvalState: "PROPOSED", actor: sys });
-        await selectTopicForMonth(t.id, G.monthId, { source: "call", actor: sys, status: "RECONCILED" });
+        await selectTopicForMonth(t.id, G.monthId, { source: "call", actor: sys, status: "RECONCILED" as never });
         const v = await createScriptVersion({ enrollmentId: G.enrollmentId, monthId: G.monthId, topicId: t.id, parts: { title, hook: `${title}: the hook.`, points: [{ role: "RE_HOOK", text: "One." }, { role: "BUILD_UP", text: "Two." }, { role: "PAYOFF", text: "Three." }], close: "Call me." }, source: "AI", status: "INTERNAL_REVIEW", createdBy: "cron" } as never);
         return { topicId: t.id, scriptId: (v as { scriptId: string }).scriptId };
       };
