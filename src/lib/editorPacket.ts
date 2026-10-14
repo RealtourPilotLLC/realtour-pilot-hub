@@ -625,6 +625,11 @@ export async function buildEditorPacketPdf(
     { size: 9, f: bold, color: meta.version ? INK : WARN },
   );
 
+  // Oct 14 2026 (Jordan): revision requests at the top of the brief.
+  if (manifest.revisionAsks.length) {
+    heading("Open revision requests");
+    for (const r of manifest.revisionAsks) text(`-  ${r}`);
+  }
   if (meta.missing.length) {
     heading("Missing when this packet was made");
     for (const g of meta.missing) text(`-  ${g.label} (${g.owner})`, { color: WARN });
@@ -664,10 +669,6 @@ export async function buildEditorPacketPdf(
     heading("Script");
     text(manifest.job.scriptStatus ? `Status: ${manifest.job.scriptStatus}` : null);
     text(manifest.job.studioScript);
-  }
-  if (manifest.revisionAsks.length) {
-    heading("Open revision requests");
-    for (const r of manifest.revisionAsks) text(`-  ${r}`);
   }
   if (manifest.job.specialRequests.length) {
     heading("Special requests");

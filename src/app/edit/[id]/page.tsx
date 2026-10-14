@@ -121,7 +121,8 @@ const SCRIPTED_STYLE_RE = /^(standard_reel_agent_intro|premium_|personal_brandin
 //
 // Read top to bottom as ONE selected video (Oct 5 2026 — the order and the
 // reasons are spelled out above the render below): header, Make this,
-// Script, Footage, Brand, Client, Music, Changes to make; then Send to Review
+// Script, Footage, Brand, Client, Music; then Send to Review. Changes to make (when it came
+// back) sits first, right under the header (Oct 14 2026)
 // and the team messages; everything else folded; the office's writing tools
 // last. Earlier orderings (Sep 2: media first, "What to make" above the
 // instructions, the client rail) are folded into it: the footage link is the
@@ -1245,6 +1246,39 @@ export default async function EditBriefPage({
               </div>
             )}
           </header>
+          {/* CHANGES TO MAKE — first, right under the header (Oct 14 2026,
+              Jordan: "revision requests should be at the top of the editor
+              brief"). Only when it came back. */}
+          {showChanges && (
+            <section id="video-changes" data-brief-section="changes" className="min-w-0 space-y-3 rounded-2xl border border-danger/30 bg-danger-soft/20 p-4">
+              <h3 className={H3}>Changes to make</h3>
+              {/* The reviewer's timestamped notes live on the cut itself
+                  (Send to Review, below), where each is played and marked
+                  fixed — said here once, not copied. */}
+              {activeSub && openOnActive > 0 && (
+                <p className="text-sm" data-cut-notes>
+                  {openOnActive} note{openOnActive === 1 ? "" : "s"} to fix on v{activeSub.round}{verdictOf(activeSub)?.by ? ` from ${verdictOf(activeSub)!.by!.split(/\s+/)[0]}` : ""} — on the cut under Send to Review, each at its moment in the video.
+                </p>
+              )}
+              {briefsHere.length === 0 && thisVideoAsks.length > 0 && (
+                <div className="space-y-2" data-asks="video">
+                  <p className={LABEL}>What the client asked{revisionAskedBy ? ` · ${revisionAskedBy}` : ""}</p>
+                  {thisVideoAsks.map((ask, i) => <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{ask}</p>)}
+                </div>
+              )}
+              {briefsHere.length === 0 && jobWideAsks.length > 0 && (
+                <div className="space-y-2" data-asks="job">
+                  <p className={LABEL}>For every video on this job</p>
+                  {jobWideAsks.map((ask, i) => <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{ask}</p>)}
+                </div>
+              )}
+              {briefsHere.length > 0 && <details><summary className="flex min-h-11 cursor-pointer items-center text-sm">The client&apos;s original request</summary>
+                <RevisionBriefCard briefs={briefsHere} bounced={[]} canTick={false} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
+              </details>}
+              {unassignedIssues.length > 0 && <div className="rounded-lg border border-warning/30 p-3 text-sm"><p className="font-medium">Not tied to a video yet — Kyle will confirm which</p><RevisionIssuesPanel issues={unassignedIssues} canReview={false} /></div>}
+              <RevisionIssuesPanel issues={selectedIssues} canReview={false} />
+            </section>
+          )}
 
           {/* 2 · MAKE THIS */}
           {isVideoJob && (
@@ -1450,37 +1484,6 @@ export default async function EditBriefPage({
             </section>
           )}
 
-          {/* 8 · CHANGES TO MAKE — only when it came back. */}
-          {showChanges && (
-            <section id="video-changes" data-brief-section="changes" className="min-w-0 space-y-3 rounded-2xl border border-danger/30 bg-danger-soft/20 p-4">
-              <h3 className={H3}>Changes to make</h3>
-              {/* The reviewer's timestamped notes live on the cut itself
-                  (Send to Review, below), where each is played and marked
-                  fixed — said here once, not copied. */}
-              {activeSub && openOnActive > 0 && (
-                <p className="text-sm" data-cut-notes>
-                  {openOnActive} note{openOnActive === 1 ? "" : "s"} to fix on v{activeSub.round}{verdictOf(activeSub)?.by ? ` from ${verdictOf(activeSub)!.by!.split(/\s+/)[0]}` : ""} — on the cut under Send to Review, each at its moment in the video.
-                </p>
-              )}
-              {briefsHere.length === 0 && thisVideoAsks.length > 0 && (
-                <div className="space-y-2" data-asks="video">
-                  <p className={LABEL}>What the client asked{revisionAskedBy ? ` · ${revisionAskedBy}` : ""}</p>
-                  {thisVideoAsks.map((ask, i) => <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{ask}</p>)}
-                </div>
-              )}
-              {briefsHere.length === 0 && jobWideAsks.length > 0 && (
-                <div className="space-y-2" data-asks="job">
-                  <p className={LABEL}>For every video on this job</p>
-                  {jobWideAsks.map((ask, i) => <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{ask}</p>)}
-                </div>
-              )}
-              {briefsHere.length > 0 && <details><summary className="flex min-h-11 cursor-pointer items-center text-sm">The client&apos;s original request</summary>
-                <RevisionBriefCard briefs={briefsHere} bounced={[]} canTick={false} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
-              </details>}
-              {unassignedIssues.length > 0 && <div className="rounded-lg border border-warning/30 p-3 text-sm"><p className="font-medium">Not tied to a video yet — Kyle will confirm which</p><RevisionIssuesPanel issues={unassignedIssues} canReview={false} /></div>}
-              <RevisionIssuesPanel issues={selectedIssues} canReview={false} />
-            </section>
-          )}
         </article>
 
         {/* SEND TO REVIEW — upload a version, the cut in front of them, the

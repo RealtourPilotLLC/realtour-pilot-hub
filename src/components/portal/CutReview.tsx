@@ -117,7 +117,10 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   const closed = !!review?.closed && !requested;
   const ackText = serverAck ?? review?.ackText ?? null;
   const needsAck = !requested && (!!serverAck || !!review?.nextRoundNeedsAck);
-  const canWrite = !readOnly && perms.comment && !approved && !linkVisitor;
+  // Oct 14 2026: an approved version can still take notes and a change
+  // request (it reopens the video for the editor), when it is the newest one.
+  const reopenable = approved && !!current.isCurrent && perms.request && !linkVisitor && !readOnly;
+  const canWrite = !readOnly && perms.comment && (!approved || reopenable) && !linkVisitor;
   const done = (r: { ok: boolean; message: string }) => { setMsg({ ok: r.ok, text: r.message }); if (r.ok) router.refresh(); };
   // "your" is right when the reader is the one it is waiting ON, or the one who
   // acted. Nobody has decided an AWAITING version, so there is no actor to
@@ -274,18 +277,21 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
       )}
 
       {/* The two decisions — separate, explicit. */}
-      {!linkVisitor && !readOnly && !approved && (perms.request || perms.approve) && !(closed && !perms.approve) && (
+      {reopenable && !asking && (
+        <p className="border-t border-border pt-3 text-xs text-muted">Want something changed after all? Pause where you want the change, leave a note, then send your change request. The video goes back to your editor.</p>
+      )}
+      {!linkVisitor && !readOnly && (!approved || (reopenable && open.length > 0)) && (perms.request || perms.approve) && !(closed && !perms.approve && !reopenable) && (
         <div className="border-t border-border pt-3">
           {!asking && !approving && (
             <div className="flex flex-wrap gap-2">
-              {perms.request && !closed && (
+              {perms.request && (!closed || reopenable) && (
                 <button type="button" onClick={() => setAsking(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                   <Send className="size-3.5" /> Submit change request{open.length ? ` (${open.length} note${open.length === 1 ? "" : "s"})` : ""}
                 </button>
               )}
               {/* Asked for changes on this version? Its approval is the NEW
                   version's to give — the server refuses both verdicts on one cut. */}
-              {perms.approve && !requested && (
+              {perms.approve && !requested && !approved && (
                 <button type="button" onClick={() => setApproving(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                   <ThumbsUp className="size-3.5" /> Approve this version
                 </button>

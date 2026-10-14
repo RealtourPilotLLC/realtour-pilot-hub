@@ -33,12 +33,16 @@ import type { ReachRefusalCode, ReachTier } from "@/lib/programRolloutCore";
 //      SmartTask per account, refreshed by each new message and closed by the
 //      reply — never taskType client_reply, which the reply queue auto-closes
 //      the moment ANY text goes out to the client (tasks.ts).
-//   2. IT IS NOT A SECOND REVISION SYSTEM. A message that reads like a video
-//      change ("the music at 0:12") is stored as a message and nothing more:
-//      no RevisionBrief, no PortalComment, no revision task. The composer says
-//      where video changes go, and the confirmation repeats it when
-//      classifyComm thinks the message is one. Kyle sees a chip, and moving it
-//      is a person's decision.
+//   2. A VIDEO CHANGE REOPENS THE VIDEO (Oct 14 2026; it used to be stored
+//      as a message only). Jordan: a change asked "in the content program
+//      portal" reopens the video for revisions "just as the normal review
+//      process is". A message that reads like a video change ("the music at
+//      0:12") AND names the video, or comes from a client with exactly one
+//      approved video in the last 45 days, reopens that video and goes to its
+//      editor as a revision (lib/cutReopen, raiseRevisionDetailed pinned to
+//      the cut). It stays a message too, so the office still answers it.
+//      Unclear which video: stored as a message with the chip, and moving it
+//      is a person's decision, as before.
 //   3. NOTHING HERE MESSAGES A CLIENT UNLESS A SWITCH SAYS SO. The staff side is
 //      internal and live: a bell row for the owner (bell only — `program_message`
 //      is deliberately NOT mapped in notifyPrefs.KIND_TO_EVENT, so nobody's
@@ -329,13 +333,36 @@ export async function postClientMessage(
     const first = await prisma.programMessage.findFirst({ where: { enrollmentId: e.id, authorKind: "CLIENT", handledAt: null }, orderBy: { createdAt: "asc" }, select: { id: true } });
     await announce({ id: e.id, clientName: e.clientName }, owner, first?.id ?? row.id, clip(body.replace(/\s+/g, " "), 120));
   }
-  const { classifyComm } = await import("@/lib/comms");
+  const { classifyComm, askMedium } = await import("@/lib/comms");
   const looksLikeChange = classifyComm(body).isRevision;
   const who = owner.label && owner.label !== "unassigned" ? owner.label.split(/\s+/)[0] : "The team";
+  // Rule 2: a change to an approved video reopens it for the editor.
+  let sentToEditor: string | null = null;
+  if (looksLikeChange && (ref?.kind === "VIDEO" || askMedium(body) === "video")) {
+    try {
+      const { approvedProgramVideoFor, reopenApprovedCut } = await import("@/lib/cutReopen");
+      const target = await approvedProgramVideoFor(e.id, ref?.kind === "VIDEO" ? ref.id : null);
+      if (target) {
+        const by = actorLabel(viewer).slice(0, 120);
+        const r = await reopenApprovedCut(target.submissionId, { by, why: `They asked in a portal message: “${clip(body, 300)}”`, source: "portal" });
+        const { raiseRevisionDetailed } = await import("@/lib/comms");
+        const raised = await raiseRevisionDetailed({
+          projectId: target.projectId, clientId: e.clientId, clientName: e.clientName, note: body, source: "portal_message", threadRef: `program-message:${row.id}`,
+          requestedBy: { name: by, kind: "CLIENT" }, reopened: r.reopened,
+          pin: { submissionId: target.submissionId, outputId: target.outputId, cutKey: target.cutKey, decisionId: null, roundId: null, videoLabel: target.videoLabel },
+        });
+        if (raised.ok) sentToEditor = target.videoLabel;
+      }
+    } catch (err) {
+      console.error("[programMessages] reopening the video failed; the message stands", row.id, err);
+    }
+  }
   return {
     ok: true,
     id: row.id,
-    message: `Sent. ${who} will reply here.${looksLikeChange ? ` ${VIDEO_CHANGES_HINT}` : ""}`,
+    message: sentToEditor
+      ? `Sent. We've passed this to your editor as a change to ${sentToEditor}, and ${who.toLowerCase() === "the team" ? "the team" : who} will reply here.`
+      : `Sent. ${who} will reply here.${looksLikeChange ? ` ${VIDEO_CHANGES_HINT}` : ""}`,
   };
 }
 

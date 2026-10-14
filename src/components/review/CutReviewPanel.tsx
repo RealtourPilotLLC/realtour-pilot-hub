@@ -11,7 +11,6 @@ import { addCutNote, approveCut, askCutChange, replyCutNote, requestCutChanges, 
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
 import { byLine, statusLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
-import { StaffCutRevisionForm } from "./StaffCutRevisionForm";
 import type { CutTakeBackInfo } from "./types";
 import { fmtClock, parseClock } from "./types";
 import { reviewStage, verifiedFixIds } from "@/lib/reviewStage";
@@ -158,7 +157,6 @@ export function CutReviewPanel({
   const [err, setErr] = useState<string | null>(null);
   const [uncertainRead, setUncertainRead] = useState<UnknownReviewRead | null>(null);
   const needsReload = reviewRetryBlocked(uncertainRead, readStamp);
-  const [staffRevisionOpen, setStaffRevisionOpen] = useState(false);
   const [approvalWarning, setApprovalWarning] = useState<string | null>(null);
   // The verdict this reviewer just gave, shown the instant they press it — the
   // cut is closed from here on, while the move to the next one happens.
@@ -429,6 +427,22 @@ export function CutReviewPanel({
             {/* WHO RULED, AND WHEN (Sep 28) — the badge said what, never who. A
                 client's send-back on an approved cut says it was the client. */}
             {verdictLine(submission.verdict) && <span className="text-[13px] text-muted">{verdictLine(submission.verdict)}</span>}
+            {/* REOPEN FOR REVISIONS (Oct 14 2026, Jordan: no revision form; the
+                approved video reopens "just as the normal review process is").
+                Notes on the video, then this: the same send-back as any cut. */}
+            {canDecide && submission.status === "APPROVED" && submission.deliverableId && (
+              <span className="mt-1 flex flex-col items-end gap-1">
+                <button
+                  onClick={() => decide("send-back", () => requestCutChanges(submission.id, { reopen: true }))}
+                  disabled={pending || needsReload || (openEditorNotes === 0 && !typedEditorFix)}
+                  title={openEditorNotes === 0 && !typedEditorFix ? "Add a note on the video for each change first" : `Reopen this video and send ${openEditorNotes + (typedEditorFix ? 1 : 0)} change${openEditorNotes + (typedEditorFix ? 1 : 0) === 1 ? "" : "s"} to ${editorLabel}`}
+                  className="inline-flex min-h-11 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-warning/40 bg-warning/10 px-4 py-2 text-sm font-medium text-warning hover:bg-warning/20 disabled:opacity-50"
+                >
+                  <Undo2 className="size-4" /> Reopen for revisions{openEditorNotes + (typedEditorFix ? 1 : 0) > 0 ? ` (${openEditorNotes + (typedEditorFix ? 1 : 0)})` : ""}
+                </button>
+                <span className="max-w-xs text-right text-[12px] text-muted">Client wants a change? Add a note on the video for each one, then reopen. {editorLabel} is told right away.</span>
+              </span>
+            )}
           </span>
         ) : heldForCheck ? (
           <span className="text-sm text-muted">Waiting on {editorLabel}&rsquo;s check — nothing to rule on yet.</span>
@@ -459,16 +473,6 @@ export function CutReviewPanel({
           </div>
         )}
       </div>
-      {canDecide && submission.status === "APPROVED" && submission.deliverableId && (
-        <div className="space-y-2">
-          <button type="button" onClick={() => setStaffRevisionOpen((v) => !v)} className="inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium text-brand hover:bg-surface-2 hover:underline">
-            {staffRevisionOpen ? "Close revision form" : "Request changes to this video"}
-          </button>
-          {staffRevisionOpen && (
-            <StaffCutRevisionForm projectId={projectId} fixedTarget={{ submissionId: submission.id, label: cutLabel ?? "this video", round: submission.round, fileName: submission.fileName }} />
-          )}
-        </div>
-      )}
       {/* Somebody other than the chain took this version (gap 15) — say who
           and when, not just "covering". */}
       {canDecide && submission.reviewerMove && (

@@ -801,13 +801,11 @@ export async function requestChangesOnCut(
 
   // (a) An approved version: the client's verdict stands. Staff may reopen it
   // — at (g), once everything below has had its say.
+  // Oct 14 2026 (Jordan): a client may reopen their own approved video too,
+  // "just as the normal review process is": notes on the video, then the
+  // change request. It is a round like any other (the policy below counts it
+  // and asks for the fee where one applies); the approval is set aside at (g).
   const reopening = w.state === "APPROVED" || w.state === "AUTO_APPROVED";
-  if (reopening && !staff) {
-    return {
-      ok: false,
-      message: w.state === "AUTO_APPROVED" ? stateWords("AUTO_APPROVED") : `You've already approved this version. If something still needs changing, ${TEXT_KYLE} and we'll sort it out.`,
-    };
-  }
   // (b) Something to send: a note on the video, or an overall note. An
   // addendum needs one too — a one-character "note" used to raise a brief,
   // reopen the editor's task and ring three people.
@@ -821,7 +819,8 @@ export async function requestChangesOnCut(
   // (d) Past the deadline the window is closed to a CLIENT's new request.
   const held = enforced(w, policy);
   const late = () => lateRefusal(w, viewer);
-  if (held && !staff && now.getTime() > w.deadlineAt.getTime()) return late();
+  // A reopen of an approved video is not a late review: the window's deadline was for the first answer.
+  if (held && !staff && !reopening && now.getTime() > w.deadlineAt.getTime()) return late();
 
   // (e) The ledger: which round this would be, and whether it is included.
   // Checked BEFORE the window is taken, so a refused ask consumes nothing.
@@ -1254,6 +1253,8 @@ export async function routePortalRequest(decisionId: string): Promise<{ taskId: 
     r = await raiseRevisionDetailed({
       projectId: d.projectId, clientId: d.clientId, clientName: client?.name ?? null, propertyAddress: cut.project?.title ?? null, note: compiled, source: "portal",
       pin: { submissionId: d.submissionId, outputId: round?.outputId ?? (await outputIdFor(cut)), cutKey: cut.deliverableId ? slotKeyOf(cut.deliverableId, cut.slot) : null, decisionId, roundId: round?.id ?? null, videoLabel: label },
+      // Oct 14 2026: a request that set an approval aside reopened the video; the editor's bell says so.
+      reopened: (await prisma.clientDecision.count({ where: { supersededById: decisionId, decision: "APPROVE" } }).catch(() => 0)) > 0,
       // The decision's person — the client, or our staff on their behalf (gap 10).
       requestedBy: requesterOfDecision(d),
     });

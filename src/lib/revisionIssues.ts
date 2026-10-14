@@ -470,7 +470,12 @@ export async function mirrorNoteStatus(noteId: string, status: "OPEN" | "FIXED" 
     if (!i) return;
     const to = status === "FIXED" ? "ADDRESSED" : status === "RESOLVED" ? "VERIFIED" : "OPEN";
     if (i.state === to || i.state === "DUPLICATE" || i.state === "NOT_APPLICABLE") return;
-    if (to === "OPEN" && i.state === "VERIFIED") return; // a reopen of a verified fix is a new round, not a toggle
+    // A reopen of a fix VERIFIED IN A LATER VERSION is a new round, not a
+    // toggle. One resolved by hand on the same version (no version stamped)
+    // and reopened is a slip of the finger: it goes back to open (Oct 14 2026,
+    // Georgiana's start-frame note sat "verified" for an hour after its note
+    // was reopened 12 seconds later).
+    if (to === "OPEN" && i.state === "VERIFIED" && i.verifiedInSubmissionId) return;
     const now = new Date();
     const won = await prisma.revisionIssue.updateMany({
       where: { id: i.id, state: i.state },
@@ -479,7 +484,7 @@ export async function mirrorNoteStatus(noteId: string, status: "OPEN" | "FIXED" 
           ? { state: to, addressedAt: now, addressedBy: actor.name.slice(0, 120) }
           : to === "VERIFIED"
             ? { state: to, verifiedAt: now, verifiedBy: actor.name.slice(0, 120) }
-            : { state: to, addressedAt: null, addressedBy: null, addressedInSubmissionId: null },
+            : { state: to, addressedAt: null, addressedBy: null, addressedInSubmissionId: null, verifiedAt: null, verifiedBy: null },
     });
     if (won.count) await event(prisma, i.id, to === "OPEN" ? "REOPENED_BY_HAND" : to, actor, { from: i.state, to, note: `note marked ${status.toLowerCase()}` });
   } catch { /* the note's own status already changed */ }

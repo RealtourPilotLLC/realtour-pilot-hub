@@ -439,16 +439,11 @@ async function main() {
     const okG = await raiseRevision({ projectId: G.id, clientId: gina, clientName: "Gina Torres", propertyAddress: G.street, note: ask, source: "gmail", requestedBy: { name: "Gina Torres", kind: "EMAIL" } });
     const okH = await raiseRevision({ projectId: H.id, clientId: gina, clientName: "Gina Torres", propertyAddress: H.street, note: ask, source: "gmail", requestedBy: { name: "Gina Torres", kind: "EMAIL" } });
     c.ok("the client's two emails land as revision cards (the real raiseRevision)", okG && okH);
-    const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gv1.id }, select: { status: true, decidedBy: true, decidedAt: true } });
-    c.ok("the approved cut's record is untouched — still APPROVED, James's verdict and time (the client keeps it)", cut.status === "APPROVED" && cut.decidedBy === "James Livingston" && cut.decidedAt?.getTime() === edt(10, 17, 10).getTime(), JSON.stringify(cut));
-
-    // OLD: the ladder before Oct 6 read the cuts' statuses only.
-    const rounds = await prisma.reviewSubmission.findMany({ where: { projectId: G.id }, select: { status: true } });
-    const oldLadder = rounds.some((r) => r.status === "CHANGES_REQUESTED") ? "Revisions" : rounds.some((r) => r.status === "PENDING") ? "Ready for review" : "Approved";
-    c.ok("OLD: the same rows read Approved — the editor's queue never showed the email", oldLadder === "Approved");
-    const { cutKeyOf } = await import("@/lib/reviewCuts");
-    const gCuts = (await prisma.reviewSubmission.findMany({ where: { projectId: G.id } })).map((s) => ({ ...s, cutKey: cutKeyOf(s) }));
-    c.ok("OLD: …and with no client asks folded in there is nothing a reminder could find", openRevisionAsks({ cuts: gCuts, roundOwed: false, revisionTasks: [], revisionRequestedAt: null }).length === 0);
+    const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gv1.id }, select: { status: true, decidedBy: true, decidedAt: true, clientRequestedBy: true, clientRequestedAt: true } });
+    // Oct 14 2026 (Jordan): a client's change on an approved video REOPENS it, "just as the normal review process is".
+    c.ok("the approved video reopens for revisions; James's verdict and time stay, the client's ask is stamped beside them", cut.status === "CHANGES_REQUESTED" && cut.decidedBy === "James Livingston" && cut.decidedAt?.getTime() === edt(10, 17, 10).getTime() && cut.clientRequestedBy === "Gina Torres" && Math.abs((cut.clientRequestedAt?.getTime() ?? 0) - edt(10, 18, 9, 30).getTime()) < 60_000, JSON.stringify(cut));
+    const reopenLine = await prisma.activity.findFirst({ where: { projectId: G.id, body: { startsWith: "Reopened for revisions from a client email" } } });
+    c.ok("…and the job's timeline says it was reopened from the client's email", !!reopenLine, reopenLine?.body ?? "none");
 
     const q = await buildEditorQueue();
     const g = q.notDone.find((r) => r.id === G.id);

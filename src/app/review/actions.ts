@@ -1480,7 +1480,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
 // `opts.notFixedIssueIds` (§8.3): fixes the editor marked done that the
 // reviewer says are NOT done — they go back REOPENED, stamped missed in this
 // version. Absent (the plain button), no fix is judged either way.
-export async function requestCutChanges(submissionId: string, opts?: { notFixedIssueIds?: string[] | null }): Promise<{ ok: boolean; message: string }> {
+export async function requestCutChanges(submissionId: string, opts?: { notFixedIssueIds?: string[] | null; reopen?: boolean }): Promise<{ ok: boolean; message: string }> {
   { const refused = await previewRefusal(); if (refused) return refused; }
   try {
     await requireCutReviewer(); // same desk as approveCut (§8.1)
@@ -1508,12 +1508,34 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
   // the client's portal library has no remover anywhere in this file. Pulling
   // an approved cut is the office's call and it has a sanctioned door —
   // canReplaceApprovedCut behind takeBackGuard — and this path went round it.
-  if (submission.status === "APPROVED") {
+  // ---- REOPENING AN APPROVED VIDEO (Oct 14 2026) ---------------------------
+  // Jordan: a client asks for a change after approval or delivery, and "I
+  // want the video to be able to be re-opened for review / revisions in the
+  // review room ... just as the normal review process is" (no revision form).
+  // So the CURRENT approved version takes notes and a send-back like any cut:
+  // the cut goes back to the editor as the next round, the job to Revisions,
+  // and the ledger around it follows (lib/cutReopen.reopenBookkeeping). A
+  // stale tab still cannot un-approve anything: only the newest version of
+  // that video reopens, and only by the compare-and-set below. The approved
+  // copy in 05-Final-Video is moved aside by the next approval, and the client
+  // keeps the delivered video meanwhile (they already have it).
+  const reopening = submission.status === "APPROVED";
+  // A STALE TAB STILL CANNOT UN-APPROVE (Sep 20 journey 1c): only the explicit
+  // "Reopen for revisions" press reopens. A Request changes rendered before
+  // someone approved is refused as before.
+  if (reopening && !opts?.reopen) {
     return {
       ok: false,
-      message:
-        "That cut is already approved, so sending it back here would leave the approved copy in the Final folder and the video on the client's portal. Use Take back on the cut, or have the editor upload a replacement, then rule on that version.",
+      message: "That cut was approved a moment ago, so this send-back was not applied. If the client wants a change, reload and use Reopen for revisions on the approved video.",
     };
+  }
+  if (reopening) {
+    if (!submission.deliverableId) {
+      return { ok: false, message: "This older cut isn't tied to a video on the order, so it can't be reopened here. Have the editor upload the corrected version instead." };
+    }
+    const { newerVersionOf } = await import("@/lib/cutReopen");
+    const newer = await newerVersionOf(submission);
+    if (newer) return { ok: false, message: `A newer version (v${newer.round}) of this video is already in. Put the notes on that one.` };
   }
   if (submission.status === "SUPERSEDED") {
     return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };
@@ -1711,7 +1733,12 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
   // REVIEW; a delivered job still exits via resolveRevision, so the comms
   // engine's post-delivery meaning holds.
   const st = submission.project?.status;
-  if (st === "REVIEW" || st === "EDITING" || st === "REVISION") {
+  if (reopening) {
+    // A delivered job goes back to Revisions too, and a program video's
+    // approval and window follow (one helper for every way a video reopens).
+    const { reopenBookkeeping } = await import("@/lib/cutReopen");
+    await reopenBookkeeping(submission, { by: authorName ?? "The review desk", why: `${open.length} note${s} sent to the editor.`, source: "review_room" });
+  } else if (st === "REVIEW" || st === "EDITING" || st === "REVISION") {
     await prisma.project.update({
       where: { id: submission.projectId },
       // A bounce is a human status write, and a human write ends the office's
@@ -1722,7 +1749,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
   }
   await timelineLine(
     submission.projectId,
-    `Changes requested on the round-${submission.round} cut (${open.length} note${s})${authorName ? ` by ${authorName}` : ""}.`,
+    `${reopening ? `Reopened for revisions: the approved round-${submission.round} cut went back` : `Changes requested on the round-${submission.round} cut`} (${open.length} note${s})${authorName ? ` by ${authorName}` : ""}.`,
     ruler?.teamMemberId ?? null,
   );
 
@@ -1753,7 +1780,8 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
     ? await notifyInApp(
         {
           kind: "review_changes",
-          title: `Changes requested — ${street}`,
+          // Oct 14 2026: an approved video sent back reads as what it is.
+          title: `${reopening ? "Reopened for revisions" : "Changes requested"} — ${street}`,
           body: sentBy,
           href: editHref,
           targets: [{ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: editHref }],
@@ -1840,7 +1868,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
           if (targets.length === 0) return;
           await notifyInApp({
             kind: "review_changes",
-            title: `Changes requested — ${street}`,
+            title: `${reopening ? "Reopened for revisions" : "Changes requested"} — ${street}`,
             body: sentBy,
             href: editHref,
             targets,
@@ -1892,7 +1920,7 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
   return {
     ok: true,
     message: isTeamEditor
-      ? `Sent ${open.length} change${s} to ${editorMeta(editorKey!)?.name ?? editorKey} — round ${round} is on their edit card.`
+      ? `${reopening ? "Reopened for revisions. " : ""}Sent ${open.length} change${s} to ${editorMeta(editorKey!)?.name ?? editorKey} — round ${round} is on their edit card.`
       : outsideEditor
         ? `${open.length} change${s} added to the edit card as round ${round} — ${outsideEditor} has no login here, so ${
             rulerIsOffice && !officeToTell.length ? `relay them to ${outsideEditor} yourself (it's on your task list)` : officeToTell.length ? `${officeFirst} ${relayWords}` : `the office ${relayWords}`

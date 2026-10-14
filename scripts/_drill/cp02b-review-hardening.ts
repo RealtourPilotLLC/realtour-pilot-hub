@@ -207,8 +207,9 @@ async function main() {
     c.ok("NEW: the repair opens it APPROVED, pointing at that approval (not OPEN)", w1?.source === "REPAIR" && w1.state === "APPROVED" && w1.decisionId === (a.ok ? a.decisionId : "-"), `${w1?.source}/${w1?.state}`);
     await note(W, x1, "change the music");
     const r = await cd.requestChangesOnCut(W.viewer, x1, "");
-    c.ok("NEW: a change request on it is refused — the approval stands", !r.ok && /already approved/.test(r.message), r.message);
-    c.ok("  …no REQUEST_CHANGES was written, and the download stays", (await prisma.clientDecision.count({ where: { submissionId: x1, decision: "REQUEST_CHANGES" } })) === 0 && (await entitlementOf(x1)).basis === "CLIENT_APPROVED");
+    // Oct 14 2026: a change request on an approved version reopens it (Jordan).
+    c.ok("NEW: a change request on it reopens it — the approval is set aside, the window reads changes requested", r.ok && (await windowOf(x1))?.state === "CHANGES_REQUESTED", r.message);
+    c.ok("  …one REQUEST_CHANGES written, the APPROVE superseded", (await prisma.clientDecision.count({ where: { submissionId: x1, decision: "REQUEST_CHANGES" } })) === 1 && (await prisma.clientDecision.findFirstOrThrow({ where: { submissionId: x1, decision: "APPROVE" } })).receiptState === "SUPERSEDED");
 
     // The same gap met first by the client's own action: ensureWindow's REPAIR branch.
     const x2 = await mkCut(W, 2, 1);
@@ -218,7 +219,8 @@ async function main() {
     await note(W, x2, "stale tab note");
     const r2 = await cd.requestChangesOnCut(W.viewer, x2, "");
     const w2 = await windowOf(x2);
-    c.ok("NEW: ensureWindow's REPAIR branch reads the decisions too — APPROVED, the request refused", !r2.ok && w2?.source === "REPAIR" && w2.state === "APPROVED", `${w2?.state} · ${r2.message}`);
+    // The repair opened it APPROVED (the decisions were read): the request then REOPENED it, so its APPROVE is superseded.
+    c.ok("NEW: ensureWindow's REPAIR branch reads the decisions too — APPROVED, so the request reopened it", r2.ok && w2?.source === "REPAIR" && w2.state === "CHANGES_REQUESTED" && (await prisma.clientDecision.findFirstOrThrow({ where: { submissionId: x2, decision: "APPROVE" } })).receiptState === "SUPERSEDED", `${w2?.state} · ${r2.message}`);
     // A fresh release has no decisions and still opens OPEN.
     const x3 = await mkCut(W, 3, 1);
     await release(x3);

@@ -536,7 +536,10 @@ export async function recordClientCommunication(opts: {
 // A tie is "unclear", which keeps the job with Kyle to triage rather than
 // guessing. "cut" only counts as a video word when it names a CUT (rough/final/
 // new cut, re-cut): "cut out the trash can" is a photo retouch.
-const VIDEO_WORDS = /\b(video|reel|clip|footage|(?:rough|final|first|new)\s+cut|re-?cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll)\b/gi;
+// Oct 14 2026: "the seated version of me speaking on the back deck ... swap
+// that frame with the standing version" (Georgiana) read as a PHOTO ask: the
+// words people use about a talking-head video now count as video words too.
+const VIDEO_WORDS = /\b(video|reel|clip|footage|(?:rough|final|first|new)\s+cut|re-?cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll|speaking|talking|voice-?over|scene|frames?|on-?screen text|stabiliz\w*|zoom(?:ed|ing)? in|punch(?:ed)? in)\b/gi;
 const PHOTO_WORDS = /\b(photos?|pictures?|pics?|images?|shots?|stills?|headshots?|retouch\w*|edit(?:ed|ing)? (?:this|these|the)? ?(?:photo|picture|pic|image|shot)s?|twilight|floor ?plan|virtual(?:ly)? stag\w*)\b/gi;
 const REQUEST_SENTENCE = /\b(can|could|would|will|are you able|is it possible|possible to|any chance|please|need|want|send me|resend|swap|replace|remove|add)\b|\?/i;
 
@@ -614,6 +617,8 @@ export type RevisionPin = {
  *  that is already with the editor. */
 type DetailedRevisionOpts = RaiseRevisionOpts & {
   pin?: RevisionPin;
+  /** Oct 14 2026: the ask reopened an approved video (lib/cutReopen); the editor's bell says so. */
+  reopened?: boolean;
   /** Notes added to an OPEN request: a new brief on the SAME task, no new round. */
   addendum?: { n: number; requestKey?: string | null };
 };
@@ -916,14 +921,15 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
       if (inHouse(owner) && owner !== holder) targets.push({ roles: ["EDITOR"], userKey: `editor:${owner}`, href: `/edit/${project.id}` });
       await notifyInApp({
         kind: opts.addendum ? "revision_addendum" : "revision_raised",
-        title: `${opts.addendum ? "More notes" : "Revision"} — ${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`,
+        title: `${opts.addendum ? "More notes" : opts.reopened ? "Reopened for revisions" : "Revision"} — ${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`,
         // Who asked, in front of what they asked (Sep 28).
         body: clip(askedBy ? `${askedBy}: ${taskNote}` : taskNote, 140),
         href: `/projects/${project.id}`,
         targets,
         dedupeKey: opts.pin.decisionId
           ? (opts.addendum ? `portal-addendum-${opts.pin.decisionId}-${opts.addendum.n}` : `portal-round-${opts.pin.roundId ?? opts.pin.decisionId}`)
-          : `staff-cut-${opts.threadRef ?? opts.pin.submissionId}`,
+          // A text thread carries many asks: each different ask rings (Oct 14 2026).
+          : `staff-cut-${opts.threadRef ?? opts.pin.submissionId}-${crypto.createHash("sha1").update(taskNote).digest("hex").slice(0, 10)}`,
       });
     } catch { /* non-fatal */ }
   }
@@ -1047,6 +1053,39 @@ export async function applySavedStaffRevision(briefId: string): Promise<void> {
 
 /** Every text / email / call path: the revision, as a yes or no. */
 export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
+  // THE SAME WORDS TWICE ARE ONE ASK (Oct 14 2026). Georgiana sent one text
+  // three times in ten minutes and each became its own item for the editor.
+  // An identical ask on this job in the last day is already with them.
+  const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const words = norm(opts.note);
+  if (words.length >= 8) {
+    const recent = await prisma.revisionBrief.findMany({ where: { projectId: opts.projectId, createdAt: { gte: new Date(Date.now() - 86_400_000) } }, select: { originalText: true }, take: 30 }).catch(() => []);
+    if (recent.some((b) => norm(b.originalText) === words)) return true;
+  }
+  // AN ASK ABOUT THE DELIVERED VIDEO REOPENS IT (Oct 14 2026, Jordan: a
+  // client's change by text should reopen the video "just as the normal review
+  // process is", no revision form). When the job has exactly one current
+  // approved video and the words are about video (or the job is video only),
+  // that video goes back to the editor: the cut reopens (lib/cutReopen) and
+  // the brief is pinned to it. Several videos, or a photo ask: as before.
+  try {
+    const medium = askMedium(opts.note);
+    const project = await prisma.project.findUnique({ where: { id: opts.projectId }, select: { deliverables: { where: { removedFromOrderAt: null }, select: { type: true } } } });
+    const videoOnly = !!project?.deliverables.length && project.deliverables.every((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    if (medium === "video" || (medium === "unclear" && videoOnly)) {
+      const { soleApprovedVideo, reopenApprovedCut } = await import("@/lib/cutReopen");
+      const target = await soleApprovedVideo(opts.projectId);
+      if (target) {
+        const src = (opts.source || "").toLowerCase();
+        const how = src.includes("gmail") || src.includes("email") ? "email" : src.includes("call") || src.includes("voicemail") || src.includes("phone") ? "call" : "text";
+        const who = opts.requestedBy?.name?.trim() || opts.clientName?.trim() || "The client";
+        const r = await reopenApprovedCut(target.submissionId, { by: who, why: `They asked: “${clip(opts.note, 300)}”`, source: how });
+        return (await raiseRevisionDetailed({ ...opts, reopened: r.reopened, pin: { submissionId: target.submissionId, outputId: target.outputId, cutKey: target.cutKey, decisionId: null, roundId: null, videoLabel: target.videoLabel } })).ok;
+      }
+    }
+  } catch (e) {
+    console.error("[revision] reopening the delivered video failed; raising it as before", opts.projectId, e);
+  }
   return (await raiseRevisionDetailed(opts)).ok;
 }
 

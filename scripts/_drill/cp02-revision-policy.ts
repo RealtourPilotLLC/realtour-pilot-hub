@@ -608,13 +608,13 @@ async function main() {
     c.ok("  …the request is SUPERSEDED by the approval, its round CANCELLED", req.receiptState === "SUPERSEDED" && req.supersededById === (sa.ok ? sa.decisionId : "-") && (await prisma.contentRevisionRound.findFirstOrThrow({ where: { decisionId: req.id } })).state === "CANCELLED");
     c.ok("  …so the video's rounds used drop by one", (await rw.roundsUsed(kw!.videoKey)) === before - 1, `${before} → ${await rw.roundsUsed(kw!.videoKey)}`);
 
-    // (c) Staff may reopen an approved version; the client may not.
+    // (c) An approved version reopens on a change request, the client's own
+    // too (Oct 14 2026, Jordan: "just as the normal review process is").
     await note(K, k1, "after all, one more");
     const cr = await cd.requestChangesOnCut(K.viewer, k1, "");
-    c.ok("the client cannot send changes on a version already approved", !cr.ok && /already approved/.test(cr.message), cr.message);
-    const sr = await cd.requestChangesOnCut(K.staff, k1, "");
     const appr = await prisma.clientDecision.findFirstOrThrow({ where: { submissionId: k1, decision: "APPROVE" } });
-    c.ok("staff reopen: the request lands, the approval is superseded, the cut's cache cleared", sr.ok && (await windowOf(k1))?.state === "CHANGES_REQUESTED" && appr.receiptState === "SUPERSEDED" && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: k1 } })).clientApprovedDecisionId === null, sr.message);
+    c.ok("the client's request on an approved version reopens it: the request lands, the approval is superseded, the cut's cache cleared", cr.ok && (await windowOf(k1))?.state === "CHANGES_REQUESTED" && appr.receiptState === "SUPERSEDED" && (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: k1 } })).clientApprovedDecisionId === null, cr.message);
+    c.ok("  …and it is a round on the video's ledger like any other", (await prisma.contentRevisionRound.count({ where: { submissionId: k1, state: { not: "CANCELLED" } } })) >= 1);
 
     // (d) v2 released over v1, then v2 taken back: v1 is current again and its
     // window reopens with its original deadline and a hold.

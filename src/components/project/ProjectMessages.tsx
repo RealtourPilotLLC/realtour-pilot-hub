@@ -6,7 +6,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/utils";
 import { closeConversation, markProjectMessagesRead, postProjectMessage, reopenConversation } from "@/app/projects/messageActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
-import { StaffCutRevisionForm } from "@/components/review/StaffCutRevisionForm";
+import { messageToRevision, type ApprovedRevisionTarget } from "@/app/review/staffRevisionActions";
 
 export type ProjectMsg = {
   id: string;
@@ -75,7 +75,15 @@ function ProjectMessagesForProject({
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string | null; body: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
-  const [revisionFrom, setRevisionFrom] = useState<string | null>(null);
+  // Oct 14 2026: one click sends a message's words to the editor as a revision
+  // (the approved video reopens); several videos → pick one. No form.
+  const [revision, setRevision] = useState<{ messageId: string; busy: boolean; text: string | null; ok: boolean; choices: ApprovedRevisionTarget[] } | null>(null);
+  const sendRevision = (messageId: string, submissionId?: string) => {
+    setRevision({ messageId, busy: true, text: null, ok: false, choices: [] });
+    void messageToRevision(projectId, messageId, submissionId ?? null)
+      .then((r) => setRevision({ messageId, busy: false, text: r.message, ok: r.ok, choices: r.choices ?? [] }))
+      .catch(() => setRevision({ messageId, busy: false, text: "That didn't go through. Try again.", ok: false, choices: [] }));
+  };
   const [pending, start] = useTransition();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const lastMessageRef = useRef<HTMLDivElement>(null);
@@ -180,11 +188,20 @@ function ProjectMessagesForProject({
               )}
               <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">{renderBody(m.body, team)}</p>
               {canRequestRevision && !readOnly && (
-                <div className="mt-1.5 space-y-2">
-                  <button type="button" onClick={() => setRevisionFrom((v) => v === m.id ? null : m.id)} className="text-[11px] font-medium text-brand hover:underline">
-                    {revisionFrom === m.id ? "Close revision form" : "Turn this into a revision request"}
+                <div className="mt-1.5 space-y-1.5">
+                  <button type="button" disabled={revision?.messageId === m.id && revision.busy} onClick={() => sendRevision(m.id)} className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline disabled:opacity-60">
+                    {revision?.messageId === m.id && revision.busy && <Loader2 className="size-3 animate-spin" />} Send to the editor as a revision
                   </button>
-                  {revisionFrom === m.id && <StaffCutRevisionForm projectId={projectId} sourceMessage={{ id: m.id, body: m.body }} />}
+                  {revision?.messageId === m.id && revision.text && (
+                    <p role="status" className={cn("text-[11px]", revision.ok ? "text-success" : "text-muted")}>{revision.text}</p>
+                  )}
+                  {revision?.messageId === m.id && revision.choices.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {revision.choices.map((c) => (
+                        <button key={c.submissionId} type="button" onClick={() => sendRevision(m.id, c.submissionId)} className="rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-2">{c.label} (v{c.round})</button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -318,3 +318,55 @@ export async function discardStaffRevision(projectId: string, requestKey: string
     return reject(e instanceof Error ? e.message : "Could not discard this request. Try again.");
   }
 }
+
+/**
+ * ONE CLICK FROM A TEAM MESSAGE (Oct 14 2026, Jordan: "Right now it makes us
+ * fill out a revision form. I dont want that."). The message's words reopen
+ * the approved video and go to its editor, exactly as a client's text does
+ * (lib/cutReopen). With one approved video on the job it just goes; with
+ * several, the answer lists them and the button for the chosen one sends it.
+ */
+export async function messageToRevision(projectId: string, messageId: string, submissionId?: string | null): Promise<{ ok: boolean; message: string; choices?: ApprovedRevisionTarget[] }> {
+  try {
+    await requireCutReviewer();
+    const me = await getCurrentUser();
+    if (me?.impersonating) return reject(PREVIEW_REFUSED);
+    const msg = await prisma.projectMessage.findFirst({ where: { id: messageId, projectId }, select: { body: true } });
+    if (!msg?.body.trim()) return reject("That message was not found on this job.");
+    const { soleApprovedVideo, reopenApprovedCut } = await import("@/lib/cutReopen");
+    let target: { submissionId: string; outputId: string | null; cutKey: string | null; videoLabel: string } | null = null;
+    if (submissionId) {
+      const cur = await currentApproved(projectId, submissionId);
+      if (!cur) return reject("That video is no longer the current approved version. Reload and pick again.");
+      target = { submissionId: cur.cut.id, outputId: cur.outputId, cutKey: cur.key, videoLabel: cur.label };
+    } else {
+      target = await soleApprovedVideo(projectId);
+      if (!target) {
+        const choices = await approvedRevisionTargets(projectId);
+        if (!choices.length) return reject("No approved video on this job to reopen. If the cut is still in review, put the change on it as a note in the Review Room.");
+        return { ok: false, message: "Which video is this about?", choices };
+      }
+    }
+    const actor = me?.realName ?? me?.name ?? LOCAL_DEV_AUTHOR;
+    const r = await reopenApprovedCut(target.submissionId, { by: actor, why: `From the team chat: “${msg.body.slice(0, 300)}”`, source: "review_room" });
+    if (!r.ok) return reject(r.message);
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true, client: { select: { name: true } } } });
+    const { raiseRevisionDetailed } = await import("@/lib/comms");
+    const raised = await raiseRevisionDetailed({
+      projectId, clientId: project?.clientId ?? null, clientName: project?.client.name ?? null, propertyAddress: project?.title ?? null,
+      note: msg.body, source: "team_message", threadRef: `project-message:${messageId}`,
+      requestedBy: { name: `${actor} (relaying the client)`, kind: "CLIENT_STAFF", userId: me?.id ?? null },
+      reopened: r.reopened,
+      pin: { submissionId: target.submissionId, outputId: target.outputId, cutKey: target.cutKey, decisionId: null, roundId: null, videoLabel: target.videoLabel },
+    });
+    revalidatePath(`/review/${projectId}`);
+    revalidatePath(`/edit/${projectId}`);
+    revalidatePath(`/projects/${projectId}`);
+    if (!raised.ok) return reject("The video reopened, but the revision did not record. Try again, or add the change as a note on the video in the Review Room.");
+    const task = raised.taskId ? await prisma.smartTask.findUnique({ where: { id: raised.taskId }, select: { assignedKey: true } }) : null;
+    const who = task?.assignedKey && task.assignedKey !== "kyle" ? editorMeta(task.assignedKey)?.name ?? task.assignedKey : "Kyle for routing";
+    return { ok: true, message: `${target.videoLabel} reopened for revisions and sent to ${who}.` };
+  } catch (e) {
+    return reject(e instanceof Error ? e.message : "Could not send this as a revision. Try again.");
+  }
+}
