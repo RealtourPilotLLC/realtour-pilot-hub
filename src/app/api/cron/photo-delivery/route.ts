@@ -16,6 +16,8 @@ export const maxDuration = 300;
 //   sync      open photo jobs, read the edited gallery (the Aryeo listing,
 //             or the Dropbox finals folder), move EDITING → EDITED
 //   link      find each job's AutoHDR shoot (free reads)
+//   fixes     run the fixes a person approved (never without that click, and
+//             only while the owner's fixRunnerEnabled switch is on)
 //   verify    compare delivered Aryeo listings with the approved set
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
@@ -41,6 +43,12 @@ export async function GET(req: NextRequest) {
     const { linkOpenJobs } = await import("@/lib/photoDelivery/autohdrLink");
     return linkOpenJobs(6);
   }, { maxMs: 30_000 });
+
+  await step("fixes", async () => {
+    // Approved fixes only; new submissions only while the owner's switch is on.
+    const { driveFixes } = await import("@/lib/photoDelivery/fixRunner");
+    return driveFixes({ budgetMs: 45_000, leaseBy: `pd-cron-${new Date(startedAt).toISOString()}` });
+  }, { maxMs: 60_000 });
 
   await step("verify", async () => {
     const { verifyDeliveringJobs } = await import("@/lib/photoDelivery/verifySweep");

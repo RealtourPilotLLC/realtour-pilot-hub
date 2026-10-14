@@ -74,6 +74,28 @@ export async function transformPrice(transform: string): Promise<number | null> 
   }
 }
 
+/**
+ * The strategy a finding can actually use: the model's pick if AutoHDR's live
+ * catalogue offers its transform, else the rule's next listed strategy that it
+ * does. (Oct 14 live read: the API has no camera_removal, so a reflection
+ * falls back to autoremove with a mask or a reedit prompt.) Non-credit
+ * strategies (editor, reshoot, review) pass through untouched.
+ */
+export function resolveStrategy(preferred: FixStrategy, ruleStrategies: FixStrategy[], offered: Set<string> | null, hasBox: boolean, hasPrompt: boolean): FixStrategy {
+  const usable = (s: FixStrategy) => {
+    const t = STRATEGY_TRANSFORM[s];
+    if (!t) return true;
+    if (!offered || !offered.has(t)) return false;
+    if (s === "AUTOREMOVE_MASK" && !hasBox) return false; // a mask needs a box
+    if (s === "REEDIT_PROMPT" && !hasPrompt) return false;
+    if (s === "STYLE_RERENDER") return false; // needs a chosen model: a person's call
+    return true;
+  };
+  if (usable(preferred)) return preferred;
+  for (const s of ruleStrategies) if (s !== preferred && STRATEGY_TRANSFORM[s] && usable(s)) return s;
+  return STRATEGY_TRANSFORM[preferred] ? "HUMAN_REVIEW" : preferred;
+}
+
 export async function buildFixCart(jobId: string): Promise<FixCart> {
   const [job, settings, credits, thresholds] = await Promise.all([
     prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, autohdrPhotoshootId: true } }),
@@ -84,15 +106,18 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   if (!job) throw new Error("Photo job not found.");
   const findings = await prisma.photoQcFinding.findMany({
     where: { jobId, status: "OPEN", severity: { in: ["CRITICAL", "MAJOR", "MINOR"] } },
-    select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true },
+    select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true, bboxJson: true, reeditPrompt: true },
   });
   const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true } });
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
+  const { capabilityCatalog } = await import("./catalog");
+  const catalog = await capabilityCatalog().catch(() => null);
+  const offered = catalog ? new Set(catalog.map((c) => c.name)) : null;
   const lines: CartLine[] = [];
   for (const f of findings) {
     if (f.confidence < settings.displayConfidenceFloor) continue; // low confidence never enters the cart
-    const strategy = f.fixStrategy as FixStrategy;
     const rule = ruleById(f.ruleId);
+    const strategy = resolveStrategy(f.fixStrategy as FixStrategy, (rule?.fixStrategies ?? []) as FixStrategy[], offered, !!f.bboxJson, !!f.reeditPrompt);
     const transform = STRATEGY_TRANSFORM[strategy] ?? null;
     let humanCall: CartLine["humanCall"] = HUMAN[strategy] ?? null;
     if (f.isPermanentFeature || rule?.permanentFeatureRisk) humanCall = "permanent-feature";
@@ -120,6 +145,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   const unknown = runnable.some((l) => l.credits == null);
   const estimatedCredits = unknown ? null : runnable.filter((l) => l.selectedByDefault).reduce((s, l) => s + (l.credits ?? 0), 0);
   const blockers: string[] = [];
+  if (!settings.fixRunnerEnabled) blockers.push("AutoHDR fixes are switched off until Jordan approves the first live test (Photo Delivery settings).");
   if (!credits?.connected) blockers.push("The AutoHDR API is not connected (Connections → AutoHDR).");
   else if (!job.autohdrPhotoshootId) blockers.push("This job's AutoHDR shoot has not been found yet, so fixes cannot run on it.");
   if (unknown && runnable.length) blockers.push("AutoHDR's price list could not be read, so the cost is unknown.");

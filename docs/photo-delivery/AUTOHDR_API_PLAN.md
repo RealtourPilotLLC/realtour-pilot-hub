@@ -61,3 +61,14 @@ Three use cases for a media company's own software. Prices shown there are illus
 | **Client Order**: the client picks an editing style (e.g. Classic included, Architectural +$35) and per-shoot add-ons (Fire, Grass, TV screens, Declutter) when ordering | Create-time `indoor_model_id` / `outdoor_model_id` and `enhancements` exist only when the HUB creates the shoot through the API. Today edits come from AutoHDR's own integrations, which use the account defaults. | Decision for Jordan: switching to API-created shoots means taking raws out of whatever AutoHDR currently watches, or every shoot is edited (and charged) twice. Not built until he decides. |
 | **Client Revisions**: the client asks for a change on a delivered photo | `reedit` / `autoremove` / `autofill` / fixed transforms on the existing shoot within 7 days; after that a new `display` shoot from the delivered JPEG. | Built as the staff Fix Cart first (staff approve every paid edit); a client request page comes after, feeding the same cart. |
 | **Client Upsells**: offer a virtual twilight, staging or a different look on a listing photo | `twilight` (looks), `single_angle_staging`, `style`, priced from the live catalog; retail price set by Jordan. | Needs Jordan's retail prices. Checkout reuses the existing Stripe checkout; a paid order becomes a queued fix that staff release. |
+
+## 6. First free live reads (Oct 14 2026, 02:50 UTC, read-only token)
+
+- `GET /v1/me`: the read-only token was granted exactly `photoshoots:read presets:read`; balance 399.
+- `GET /v1/capabilities` (9): `autofill` 1, `autoremove` 1 (NOT free through the API), `declutter` 1, `grass` 1, `reedit` 1, `repaint` 0 (`params.color`), `single_angle_staging` 5 (`params.room_type`, `params.furniture_style`), `style` per model, `twilight` 5 (15 looks, 5 each). **No `camera_removal`**: photographer/tripod reflections fall back to the rule's next strategy (`autoremove` with a mask, or `reedit`).
+- `GET /v1/models` (25): predefined (Classic, Lisa, Iris variants, Twilight Golden/Pink/Purple, Ember Twilight/Golden Hour/Dusk) and custom (Aura, Fuse, Brut, Kasl, Editorial, Luxe, True); `style_credit_cost` 1 to 5.
+- `GET /v1/photoshoots` (16 in 7 days): almost all named `<Street> (<Client>)`, i.e. created by the Dropbox watcher from the job folders. The edits reach the Aryeo listing (files named `<Street> (N of M).jpg`), not Dropbox.
+- `downloaded` is true for every photo of the delivered shoots checked (52/52, 66/66, 32/32, 70/70): the Aryeo hand-off pays the first download, so re-downloading a fixed version later is free. A shoot not yet pushed to Aryeo shows 0 downloaded.
+- History of a delivered photo: `Original` (no parent) → the model step (head).
+- `GET /v1/presets`: 2 public presets.
+These numbers are a snapshot; the hub reads them live every time.

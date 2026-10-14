@@ -16,6 +16,10 @@ import { getSetting, putSetting } from "@/lib/settings";
 //   autoFixZeroCredit  plan §8.3 optional: auto-run 0-credit fixes on
 //                  non-CRITICAL findings at confidence >= 0.9. Default OFF.
 //   adminCreditCap Kyle may approve fix batches up to this many credits.
+//   fixRunnerEnabled  AutoHDR fixes actually run. OFF until Jordan approves the
+//                  first live paid test (Oct 14: "require explicit approval
+//                  before any paid API test"); until then a batch cannot be
+//                  approved and nothing is sent to AutoHDR.
 //   aryeoTags      mirror pipeline status into Aryeo order tags/notes. OFF:
 //                  Aryeo writes wait for Jordan's go-ahead.
 //   p3AllPhotos    run the original-vs-edited pass on every photo.
@@ -27,6 +31,7 @@ export type PhotoDeliverySettings = {
   qcShadow: boolean;
   maxBuildPhase: 1 | 2 | 3;
   autoFixZeroCredit: boolean;
+  fixRunnerEnabled: boolean;
   adminCreditCap: number;
   dailyAutoCreditCap: number;
   aryeoTags: boolean;
@@ -47,6 +52,7 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   qcShadow: true,
   maxBuildPhase: 1,
   autoFixZeroCredit: false,
+  fixRunnerEnabled: false,
   adminCreditCap: 25,
   dailyAutoCreditCap: 0,
   aryeoTags: false,
@@ -73,6 +79,7 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     qcShadow: bool(raw.qcShadow, d.qcShadow),
     maxBuildPhase: phase,
     autoFixZeroCredit: bool(raw.autoFixZeroCredit, d.autoFixZeroCredit),
+    fixRunnerEnabled: bool(raw.fixRunnerEnabled, d.fixRunnerEnabled),
     adminCreditCap: num(raw.adminCreditCap, d.adminCreditCap, 0, 10_000),
     dailyAutoCreditCap: num(raw.dailyAutoCreditCap, d.dailyAutoCreditCap, 0, 10_000),
     aryeoTags: bool(raw.aryeoTags, d.aryeoTags),

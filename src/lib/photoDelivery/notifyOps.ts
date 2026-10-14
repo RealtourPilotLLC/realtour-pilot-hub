@@ -59,7 +59,9 @@ export async function alertOwnerAndKyle(a: OpsAlert): Promise<{ announced: numbe
     const { ownerId, kyleId } = await opsRecipients();
     const want = a.to ?? "both";
     const people: Array<{ id: string; role: "OWNER" | "ADMIN"; slot: number }> = [];
-    if (ownerId && want !== "kyle") people.push({ id: ownerId, role: "OWNER", slot: 0 });
+    // Addressed to Kyle but no delivery owner resolves: the owner gets it
+    // rather than an ops channel nobody reads (a person, never silence).
+    if (ownerId && (want !== "kyle" || !kyleId)) people.push({ id: ownerId, role: "OWNER", slot: 0 });
     if (kyleId && kyleId !== ownerId && want !== "owner") people.push({ id: kyleId, role: "ADMIN", slot: 1 });
     const { notifyStaffSms, logDelivery, opsAlert } = await import("@/lib/notify");
     const title = noLongDashes(a.title).slice(0, 90);

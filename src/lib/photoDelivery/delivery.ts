@@ -86,6 +86,8 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
 }
 
 export type DeliverySteps = {
+  /** Photos fixed through AutoHDR since they went on the listing: swap these in Aryeo. */
+  replacements: { photoId: string; photoName: string; versionId: string; downloadUrl: string; label: string; at: string }[];
   listingUrl: string | null;
   orderUrl: string | null;
   folderPath: string | null;
@@ -163,7 +165,25 @@ export async function deliverySteps(jobId: string): Promise<DeliverySteps> {
   const message =
     profile?.deliveryMessage?.trim() ||
     `Your photos for ${street} are ready. Thank you for trusting us with this listing. If anything needs a second look, reply here and we will take care of it. Realtour Pilot Team`;
+  // The newest stored fix per photo is what Kyle uploads in place of the
+  // listing's copy (the hub cannot upload to Aryeo).
+  // Once the listing's copy is replaced, the sync records a newer "Replaced"
+  // version, and the photo drops off this list by itself.
+  const versions = await prisma.photoVersion.findMany({
+    where: { photo: { jobId, status: "ACTIVE" } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, source: true, label: true, createdAt: true, derivJson: true, photoId: true, photo: { select: { name: true } } },
+  });
+  const seenPhoto = new Set<string>();
+  const replacements: DeliverySteps["replacements"] = [];
+  for (const f of versions) {
+    if (seenPhoto.has(f.photoId)) continue;
+    seenPhoto.add(f.photoId); // the newest version of each photo decides
+    if (f.source !== "FIX" || !f.derivJson?.includes('"file"')) continue;
+    replacements.push({ photoId: f.photoId, photoName: f.photo.name, versionId: f.id, downloadUrl: `/api/photo-fixes/${f.id}`, label: f.label, at: f.createdAt.toISOString() });
+  }
   return {
+    replacements,
     listingUrl: project?.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : null,
     orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
     folderPath: job.deliveryPath ?? job.finalsPath,

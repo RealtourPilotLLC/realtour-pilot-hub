@@ -267,25 +267,28 @@ export type AutohdrCapability = {
   description?: string;
   [k: string]: unknown;
 };
-export type AutohdrModel = { id: number; name: string; type?: string; style_credit_cost?: number | null; [k: string]: unknown };
+export type AutohdrModel = { id: number; name: string; description?: string | null; type: string; variant: "indoor" | "outdoor" | "indoor/outdoor" | string; thumbnail_url?: string | null; style_credit_cost: number };
 // Shapes verified against AutoHDR's published OpenAPI spec (v0.1.0, read Oct 13 2026).
 export type AutohdrPhotoshoot = { photoshoot_id: number; address?: string | null; status?: string; created_at?: string; updated_at?: string; image_count?: number; [k: string]: unknown };
 export type AutohdrPhoto = { image_uuid: string; image_version_uuid: string; name?: string; downloaded?: boolean; [k: string]: unknown };
 export type AutohdrHistoryStep = { image_version_uuid: string; parent_image_version_uuid: string | null; is_head?: boolean; label?: string; description?: string; created_at?: string };
+/** TransformJobResponse, as published (openapi v0.1.0). */
 export type AutohdrTransformJob = {
   job_id: string;
-  status?: "queued" | "running" | "succeeded" | "failed" | string;
-  status_url?: string;
-  updated_at?: string;
-  failure_message?: string | null;
-  transform_name?: string;
-  image_uuid?: string;
+  photoshoot_id: number;
+  image_uuid: string;
+  /** the INPUT version the transform ran on */
+  image_version_uuid: string;
+  transform_name: string;
+  transform_version: number;
+  status: "queued" | "running" | "succeeded" | "failed";
+  status_url?: string | null;
+  submitted_at: string;
+  updated_at: string;
+  /** null when succeeded with nothing to change (a no-op, refunded) */
   output_image_version_uuid?: string | null;
-  credits_charged?: number | null;
-  refunded?: boolean | null;
   failure_code?: string | null;
-  submitted_at?: string;
-  [k: string]: unknown;
+  failure_message?: string | null;
 };
 
 /** Lists come back either bare or wrapped ({ data | items | photoshoots | … }). */
