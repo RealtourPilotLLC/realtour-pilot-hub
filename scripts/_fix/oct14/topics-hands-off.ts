@@ -33,7 +33,7 @@ async function main() {
     const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: (r as { runId: string }).runId }, select: { status: true, changeSummary: true } });
     console.log("   ", run?.status, run?.changeSummary?.slice(0, 200));
     const t = await portalTopics(e!);
-    const pickable = t.groups.reduce((n: number, g: { topics: { declined?: boolean; state: string }[] }) => n + g.topics.filter((x) => !x.declined && x.state === "SUGGESTED").length, 0);
+    const pickable = t.groups.reduce((n, g) => n + g.topics.filter((x) => !x.declined && x.state === "SUGGESTED").length, 0);
     console.log(`   client now sees ${t.groups.length} pillar groups, ${pickable} topics to pick`);
   }
 }
