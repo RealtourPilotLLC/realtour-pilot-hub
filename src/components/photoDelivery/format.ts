@@ -82,6 +82,8 @@ export const STRATEGY_LABEL: Record<string, string> = {
   CAMERA_REMOVAL: "Camera removal",
   GRASS: "Grass",
   STYLE_RERENDER: "Style re-render",
+  VIRTUAL_TWILIGHT: "Virtual twilight",
+  VIRTUAL_STAGING: "Virtual staging",
   REVERT_VERSION: "Revert version",
   EDITOR_MANUAL: "Editor by hand",
   RESHOOT: "Reshoot",

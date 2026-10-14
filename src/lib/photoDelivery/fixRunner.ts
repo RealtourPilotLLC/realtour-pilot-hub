@@ -395,6 +395,13 @@ async function resolveSubmitting(op: Op): Promise<void> {
 }
 
 // ---- the check after a fix (free) -----------------------------------------------------------
+/** What an add-on edit should have done, for the check after it (they carry no written prompt). */
+const ADDON_INSTRUCTION: Record<string, string> = {
+  twilight: "Turn the photo into a twilight shot: a dusk or sunset sky with warm lights glowing in the windows",
+  single_angle_staging: "Virtually stage the room with realistic furniture and decor",
+  declutter: "Remove the general clutter and small loose items (not the furniture)",
+  style: "Re-render the photo with the twilight look: a dusk sky with lights on",
+};
 type FixCheck = { verdict: "fixed" | "not-fixed" | "damaged" | "unchecked"; note: string };
 export async function checkFix(input: { shootId: number; imageUuid: string; output: string; prompt: string }): Promise<FixCheck> {
   const { describePhoto, jsonFrom } = await import("./fixPolicy");
@@ -468,7 +475,7 @@ async function pollStep(op: Op): Promise<"done" | "waiting"> {
     await logJobEvent(op.jobId, "fix-runner", `the fixed ${photo.name} could not be saved yet (${(e as Error).message}); AutoHDR keeps it for 7 days`, { operationId: op.id });
   }
   // The check after the fix (free): was it fixed properly?
-  const check = await checkFix({ shootId: job.autohdrPhotoshootId, imageUuid: j.image_uuid, output, prompt: op.prompt ?? "" });
+  const check = await checkFix({ shootId: job.autohdrPhotoshootId, imageUuid: j.image_uuid, output, prompt: op.prompt || ADDON_INSTRUCTION[op.transformName ?? ""] || "" });
   const where = hubShoot != null ? "It is the current version in AutoHDR and goes out with the push to Aryeo." : "Replace this photo on the Aryeo listing.";
   if (check.verdict === "damaged" && j.image_version_uuid) {
     // Clearly broken: put the previous version back (free) and say so.

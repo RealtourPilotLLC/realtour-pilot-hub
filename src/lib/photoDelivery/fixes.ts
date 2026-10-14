@@ -38,6 +38,9 @@ export type CartLine = {
   /** Why this line cannot run automatically, when it cannot. */
   humanCall: null | "permanent-feature" | "privacy" | "color-truth" | "reshoot" | "editor" | "review" | "no-autohdr";
   selectedByDefault: boolean;
+  /** Oct 14 2026: an ordered add-on (virtual twilight, staging, declutter, twilight look): its transform settings. */
+  params?: Record<string, unknown> | null;
+  addOn?: boolean;
 };
 
 export type FixCart = {
@@ -106,7 +109,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   if (!job) throw new Error("Photo job not found.");
   const findings = await prisma.photoQcFinding.findMany({
     where: { jobId, status: "OPEN", severity: { in: ["CRITICAL", "MAJOR", "MINOR"] } },
-    select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true, bboxJson: true, reeditPrompt: true },
+    select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true, bboxJson: true, reeditPrompt: true, source: true, coercedJson: true },
   });
   const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true } });
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
@@ -117,6 +120,21 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   for (const f of findings) {
     if (f.confidence < settings.displayConfidenceFloor) continue; // low confidence never enters the cart
     const rule = ruleById(f.ruleId);
+    if (f.source === "ADDON") {
+      // An ordered add-on, suggested at QC: one click, never selected by default.
+      const strategy = (rule?.fixStrategies[0] ?? "HUMAN_REVIEW") as FixStrategy;
+      const transform = STRATEGY_TRANSFORM[strategy] ?? null;
+      let params: Record<string, unknown> | null = null;
+      try { params = (JSON.parse(f.coercedJson ?? "{}") as { params?: Record<string, unknown> }).params ?? null; } catch { params = null; }
+      let credits: number | null = transform ? await transformPrice(transform) : null;
+      if (transform === "style") {
+        const { modelCatalog } = await import("./catalog");
+        credits = (await modelCatalog().catch(() => null))?.find((m) => m.id === params?.model_id)?.style_credit_cost ?? null;
+      }
+      const humanCall: CartLine["humanCall"] = !transform || (offered && !offered.has(transform)) ? "review" : !job.autohdrPhotoshootId ? "no-autohdr" : null;
+      lines.push({ findingIds: [f.id], photoId: f.photoId, photoName: f.photoId ? nameOf.get(f.photoId) ?? null : null, ruleId: f.ruleId, label: rule?.shortLabel ?? f.ruleId, specificIssue: f.specificIssue, severity: f.severity as Severity, confidence: f.confidence, strategy, transform, credits: humanCall ? 0 : credits, humanCall, selectedByDefault: false, params, addOn: true });
+      continue;
+    }
     const strategy = resolveStrategy(f.fixStrategy as FixStrategy, (rule?.fixStrategies ?? []) as FixStrategy[], offered, !!f.bboxJson, !!f.reeditPrompt);
     const transform = STRATEGY_TRANSFORM[strategy] ?? null;
     let humanCall: CartLine["humanCall"] = HUMAN[strategy] ?? null;
@@ -223,6 +241,7 @@ export async function approveFixBatch(input: { jobId: string; findingIds: string
             strategy: l.strategy,
             transformName: l.transform,
             estimatedCredits: l.credits ?? 0,
+            paramsJson: l.params ? JSON.stringify(l.params) : null,
             status: "QUEUED",
           },
         });

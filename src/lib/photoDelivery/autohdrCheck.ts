@@ -51,7 +51,7 @@ const CHECK_RULES = [
 ] as const;
 
 const ALLOWED = new Set<string>(CHECK_RULES);
-export const CHECK_PROMPT_VERSION = 1;
+export const CHECK_PROMPT_VERSION = 2; // 2: light + furnished (Oct 14 2026)
 const PER_PHOTO_TRIES = 3;
 const CONCURRENCY = 4;
 
@@ -60,7 +60,8 @@ export function checkPrompt(off: Set<string> = new Set()): string {
   const lines = CHECK_RULES.filter((id) => !off.has(id)).map((id) => `${id}: ${ruleById(id)?.shortLabel ?? id.toLowerCase().replace(/_/g, " ")}`);
   return [
     "You are checking a real estate listing photo before it goes to the client.",
-    'Answer ONLY with JSON: {"room":"<room type>","issues":[{"id":"<one id from the list>","where":"<short location in the frame>","confidence":<0 to 1>}]}.',
+    'Answer ONLY with JSON: {"room":"<room type>","light":"day|twilight|night","furnished":"empty|sparse|furnished","issues":[{"id":"<one id from the list>","where":"<short location in the frame>","confidence":<0 to 1>}]}.',
+    "light: twilight = shot at dusk with a sunset or dusk sky and lights on. furnished: for an interior, how much furniture is in the room.",
     "Report only problems you can actually see in this photo. An empty list is a good answer.",
     "Ids:",
     ...lines,
@@ -70,12 +71,12 @@ export function checkPrompt(off: Set<string> = new Set()): string {
 export type CheckIssue = { ruleId: string; where: string; confidence: number };
 
 /** Read describe's answer. Pure. Unknown ids, duplicates and junk are dropped. */
-export function parseCheckAnswer(text: string, off: Set<string> = new Set()): { room: string | null; issues: CheckIssue[] } | null {
+export function parseCheckAnswer(text: string, off: Set<string> = new Set()): { room: string | null; light: string | null; furnished: string | null; issues: CheckIssue[] } | null {
   const body = text.replace(/```(?:json)?/gi, "").trim();
   const start = body.indexOf("{");
   const end = body.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
-  let j: { room?: unknown; issues?: unknown };
+  let j: { room?: unknown; issues?: unknown; light?: unknown; furnished?: unknown };
   try {
     j = JSON.parse(body.slice(start, end + 1));
   } catch {
@@ -94,14 +95,15 @@ export function parseCheckAnswer(text: string, off: Set<string> = new Set()): { 
     const c = typeof r.confidence === "number" && Number.isFinite(r.confidence) ? Math.min(1, Math.max(0, r.confidence)) : 0.6;
     issues.push({ ruleId: id, where, confidence: c });
   }
-  return { room: typeof j.room === "string" ? j.room.slice(0, 60) : null, issues };
+  const pick = (v: unknown, allowed: string[]) => (typeof v === "string" && allowed.includes(v.toLowerCase()) ? v.toLowerCase() : null);
+  return { room: typeof j.room === "string" ? j.room.slice(0, 60) : null, light: pick(j.light, ["day", "twilight", "night"]), furnished: pick(j.furnished, ["empty", "sparse", "furnished"]), issues };
 }
 
-type Progress = { done: Record<string, number>; errors: Record<string, number>; skipped: string[]; rooms: Record<string, string> };
+type Progress = { done: Record<string, number>; errors: Record<string, number>; skipped: string[]; rooms: Record<string, string>; light?: Record<string, string>; furnished?: Record<string, string> };
 const readProgress = (json: string | null | undefined): Progress => {
   try {
     const p = JSON.parse(json ?? "{}") as Partial<Progress>;
-    return { done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {} };
+    return { done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {} };
   } catch {
     return { done: {}, errors: {}, skipped: [], rooms: {} };
   }
@@ -197,6 +199,8 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
         if (!parsed) { progress.errors[a.p.id] = (progress.errors[a.p.id] ?? 0) + 1; continue; }
         progress.done[a.p.id] = parsed.issues.length;
         if (parsed.room) progress.rooms[a.p.id] = parsed.room;
+        if (parsed.light) (progress.light ??= {})[a.p.id] = parsed.light;
+        if (parsed.furnished) (progress.furnished ??= {})[a.p.id] = parsed.furnished;
         checked++;
         for (const iss of parsed.issues) {
           const rule = ruleById(iss.ruleId);

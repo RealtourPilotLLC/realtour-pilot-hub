@@ -5,13 +5,25 @@
     "sectionName": "Exposure, Lighting, and HDR",
     "checklistText": "Ghosting on foliage and moving elements: doubled or semi-transparent edges where something moved between brackets (AutoHDR QC checklist, Oct 13 2026)",
     "shortLabel": "HDR ghosting",
-    "rooms": ["ANY"],
+    "rooms": [
+      "ANY"
+    ],
     "pass": "P1_PHOTO",
     "detector": "VISION_PHOTO",
     "defaultSeverity": "MAJOR",
-    "escalateTo": { "severity": "CRITICAL", "when": "the ghosting is on the primary or hero exterior, or covers a large, obvious part of the frame" },
-    "deescalateTo": { "severity": "MINOR", "when": "a small, peripheral ghost a viewer is unlikely to notice" },
-    "fixStrategies": ["EDITOR_MANUAL", "STYLE_RERENDER", "HUMAN_REVIEW"],
+    "escalateTo": {
+      "severity": "CRITICAL",
+      "when": "the ghosting is on the primary or hero exterior, or covers a large, obvious part of the frame"
+    },
+    "deescalateTo": {
+      "severity": "MINOR",
+      "when": "a small, peripheral ghost a viewer is unlikely to notice"
+    },
+    "fixStrategies": [
+      "EDITOR_MANUAL",
+      "STYLE_RERENDER",
+      "HUMAN_REVIEW"
+    ],
     "autohdrTransform": "style",
     "responsibility": "EDITOR",
     "postFixable": "SOMETIMES",
@@ -29,12 +41,19 @@
     "sectionName": "Composition and Shot Quality",
     "checklistText": "Test shots, misfires and accidental captures in the delivery set (AutoHDR QC checklist, Oct 13 2026)",
     "shortLabel": "Misfire / test shot",
-    "rooms": ["ANY"],
+    "rooms": [
+      "ANY"
+    ],
     "pass": "P1_PHOTO",
     "detector": "VISION_PHOTO",
     "defaultSeverity": "MAJOR",
-    "escalateTo": { "severity": "CRITICAL", "when": "the frame is unusable: mostly black or white, lens cap, floor or ceiling only, or the photographer's hand or feet" },
-    "fixStrategies": ["ADMIN_ACTION"],
+    "escalateTo": {
+      "severity": "CRITICAL",
+      "when": "the frame is unusable: mostly black or white, lens cap, floor or ceiling only, or the photographer's hand or feet"
+    },
+    "fixStrategies": [
+      "ADMIN_ACTION"
+    ],
     "autohdrTransform": null,
     "responsibility": "ADMIN",
     "postFixable": "YES",
@@ -52,12 +71,21 @@
     "sectionName": "Reflections, Dust, Glare, and Unwanted Objects",
     "checklistText": "Drone visible in windows, glass, mirrors or other reflections (AutoHDR QC checklist, Oct 13 2026)",
     "shortLabel": "Drone in reflection",
-    "rooms": ["ANY"],
+    "rooms": [
+      "ANY"
+    ],
     "pass": "P1_PHOTO",
     "detector": "VISION_PHOTO",
     "defaultSeverity": "MAJOR",
-    "deescalateTo": { "severity": "MINOR", "when": "a tiny, distant speck that is only identifiable on close inspection" },
-    "fixStrategies": ["AUTOREMOVE_MASK", "REEDIT_PROMPT", "EDITOR_MANUAL"],
+    "deescalateTo": {
+      "severity": "MINOR",
+      "when": "a tiny, distant speck that is only identifiable on close inspection"
+    },
+    "fixStrategies": [
+      "AUTOREMOVE_MASK",
+      "REEDIT_PROMPT",
+      "EDITOR_MANUAL"
+    ],
     "autohdrTransform": "autoremove",
     "reeditPromptTemplate": "Remove the drone reflected in the {location}. Keep the glass, frame and reflection of the scene unchanged. Change nothing else in the photo.",
     "responsibility": "PHOTOGRAPHER",
@@ -69,5 +97,109 @@
     "priorityRank": 2,
     "groupKey": "DRONE_REFLECTION",
     "visionHint": "Look for a drone (a small quadcopter shape, often with visible rotors) reflected in windows, glass doors, pools, car paint or other shiny surfaces, especially in aerial and exterior photos. Do not flag birds, insects or distant aircraft in the sky."
+  },
+  {
+    "section": 19,
+    "sectionName": "Ordered add-ons",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MINOR",
+    "responsibility": "ADMIN",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 90,
+    "id": "ADDON_VIRTUAL_TWILIGHT",
+    "checklistText": "The client ordered a virtual twilight: suggest the photo(s) to turn into a twilight shot (Jordan, Oct 14 2026)",
+    "shortLabel": "Virtual twilight (ordered)",
+    "fixStrategies": [
+      "VIRTUAL_TWILIGHT",
+      "HUMAN_REVIEW"
+    ],
+    "autohdrTransform": "twilight",
+    "groupKey": "ADDON_VIRTUAL_TWILIGHT"
+  },
+  {
+    "section": 19,
+    "sectionName": "Ordered add-ons",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MINOR",
+    "responsibility": "ADMIN",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 90,
+    "id": "ADDON_VIRTUAL_STAGING",
+    "checklistText": "The client ordered virtual staging: suggest the empty room(s) to stage (Jordan, Oct 14 2026)",
+    "shortLabel": "Virtual staging (ordered)",
+    "fixStrategies": [
+      "VIRTUAL_STAGING",
+      "HUMAN_REVIEW"
+    ],
+    "autohdrTransform": "single_angle_staging",
+    "groupKey": "ADDON_VIRTUAL_STAGING"
+  },
+  {
+    "section": 19,
+    "sectionName": "Ordered add-ons",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MINOR",
+    "responsibility": "ADMIN",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 90,
+    "id": "ADDON_VIRTUAL_DECLUTTER",
+    "checklistText": "The client ordered virtual decluttering: suggest the most cluttered room(s) (Jordan, Oct 14 2026)",
+    "shortLabel": "Virtual declutter (ordered)",
+    "fixStrategies": [
+      "DECLUTTER",
+      "HUMAN_REVIEW"
+    ],
+    "autohdrTransform": "declutter",
+    "groupKey": "ADDON_VIRTUAL_DECLUTTER"
+  },
+  {
+    "section": 19,
+    "sectionName": "Ordered add-ons",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MINOR",
+    "responsibility": "ADMIN",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 90,
+    "id": "ADDON_REAL_TWILIGHT_LOOK",
+    "checklistText": "A real twilight was ordered and this dusk photo was edited with the day look: re-render it with the twilight model (Jordan, Oct 14 2026)",
+    "shortLabel": "Twilight photo: twilight look",
+    "fixStrategies": [
+      "STYLE_RERENDER",
+      "HUMAN_REVIEW"
+    ],
+    "autohdrTransform": "style",
+    "groupKey": "ADDON_REAL_TWILIGHT_LOOK"
   }
 ]

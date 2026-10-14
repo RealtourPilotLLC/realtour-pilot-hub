@@ -102,6 +102,8 @@ type ExpectedDeliverables = {
   twilightReal?: number;
   twilightVirtual?: number;
   virtualStagingCount?: number;
+  /** Oct 14 2026: virtual decluttering ordered (photos). */
+  virtualDeclutterCount?: number;
   floorPlan?: boolean;
   sqft?: number;
   propertyType?: string;
@@ -138,7 +140,10 @@ export async function expectedFor(projectId: string): Promise<ExpectedDeliverabl
   for (const d of p.deliverables) {
     const title = `${d.productTitle ?? ""} ${d.label ?? ""}`.toLowerCase();
     const q = Math.max(1, d.quantity ?? 1);
-    if (d.type === "DRONE") {
+    if (/declutter/.test(title)) {
+      out.virtualDeclutterCount = (out.virtualDeclutterCount ?? 0) + q;
+      (out.source as Record<string, string>).virtualDeclutterCount = `deliverable: ${d.productTitle ?? "virtual declutter"}`;
+    } else if (d.type === "DRONE") {
       out.droneCount = (out.droneCount ?? 0) + (/\b(\d+)\s*(photos|images)\b/.exec(title) ? Number(/\b(\d+)\s*(photos|images)\b/.exec(title)![1]) : q);
       out.source.droneCount = `deliverable: ${d.productTitle ?? "drone"}`;
     } else if (d.type === "TWILIGHT") {

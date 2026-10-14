@@ -41,13 +41,15 @@ export type RoomScope = "ANY" | "INTERIOR" | "EXTERIOR" | "WET_ROOMS" | "BATHROO
 
 export const FIX_STRATEGIES = [
   "AUTOREMOVE_MASK", "DECLUTTER", "REEDIT_PROMPT", "CAMERA_REMOVAL", "GRASS", "STYLE_RERENDER",
+  // Oct 14 2026: ordered add-ons suggested at QC (virtual twilight, virtual staging).
+  "VIRTUAL_TWILIGHT", "VIRTUAL_STAGING",
   "REVERT_VERSION", "EDITOR_MANUAL", "RESHOOT", "ADMIN_ACTION", "HUMAN_REVIEW", "NONE",
 ] as const;
 export type FixStrategy = (typeof FIX_STRATEGIES)[number];
 export type AutohdrTransform = "autoremove" | "declutter" | "reedit" | "camera_removal" | "grass" | "style" | "twilight" | "single_angle_staging";
 
 /** Strategies that spend (or can spend) AutoHDR credits through a transform. */
-export const AUTOHDR_STRATEGIES: ReadonlySet<FixStrategy> = new Set(["AUTOREMOVE_MASK", "DECLUTTER", "REEDIT_PROMPT", "CAMERA_REMOVAL", "GRASS", "STYLE_RERENDER"]);
+export const AUTOHDR_STRATEGIES: ReadonlySet<FixStrategy> = new Set(["AUTOREMOVE_MASK", "DECLUTTER", "REEDIT_PROMPT", "CAMERA_REMOVAL", "GRASS", "STYLE_RERENDER", "VIRTUAL_TWILIGHT", "VIRTUAL_STAGING"]);
 /** The AutoHDR transform each credit strategy runs. */
 export const STRATEGY_TRANSFORM: Partial<Record<FixStrategy, AutohdrTransform>> = {
   AUTOREMOVE_MASK: "autoremove",
@@ -56,6 +58,8 @@ export const STRATEGY_TRANSFORM: Partial<Record<FixStrategy, AutohdrTransform>> 
   CAMERA_REMOVAL: "camera_removal",
   GRASS: "grass",
   STYLE_RERENDER: "style",
+  VIRTUAL_TWILIGHT: "twilight",
+  VIRTUAL_STAGING: "single_angle_staging",
 };
 
 export type QcRule = {

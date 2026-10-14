@@ -26,7 +26,7 @@ import { createFakeAutohdr } from "./_fake-autohdr";
 
 installNextStubs();
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const fake = createFakeAutohdr({ transforms: [{ name: "reedit", credit_cost: 1 }, { name: "autoremove", credit_cost: 1, requires_mask: true }], models: [], balance: 200, clientId: "cid", clientSecret: "drill-secret-1234567890" });
+const fake = createFakeAutohdr({ transforms: [{ name: "reedit", credit_cost: 1 }, { name: "autoremove", credit_cost: 1, requires_mask: true }, { name: "twilight", credit_cost: 5 }, { name: "single_angle_staging", credit_cost: 5 }, { name: "declutter", credit_cost: 1 }, { name: "style", credit_cost: null }], models: [{ id: 6, name: "Twilight Golden", type: "predefined", variant: "outdoor", style_credit_cost: 1 }], balance: 200, clientId: "cid", clientSecret: "drill-secret-1234567890" });
 const fence = fenceFetch(async (url, init) => (await fake.handle(url, init)) ?? (url.startsWith("https://slack.com/api/") ? json({ ok: true, channel: "D1", ts: "1" }) : null));
 
 async function main() {
@@ -179,6 +179,40 @@ async function main() {
     await runner.driveFixes({ budgetMs: 60_000, leaseBy: "drill" });
     const over = await prisma.photoFixOperation.findFirstOrThrow({ where: { jobId: D.job.id, seq: 0 } });
     c.ok("21st credit on one shoot: not sent", over.status === "ESCALATED" && /automatic fix maximum/.test(over.error ?? "") && fake.posts("/v1/transforms").length === posts0, over.error ?? "");
+
+    // ======================================================================
+    c.head("6 · ordered add-ons at QC");
+    const fixes = await import("@/lib/photoDelivery/fixes");
+    const verdictMod = await import("@/lib/photoDelivery/qc/verdict");
+    const E = await mkJob("50 Order Ln", 4);
+    await prisma.photoJob.update({ where: { id: E.job.id }, data: { expectedJson: JSON.stringify({ requestedFeatures: [], source: {}, twilightVirtual: 1, virtualStagingCount: 1, virtualDeclutterCount: 1, twilightReal: 1 }) } });
+    await prisma.photoQcRun.update({ where: { id: E.qcRun.id }, data: { checksJson: JSON.stringify({ done: {}, errors: {}, skipped: [], rooms: { [E.photos[0].id]: "front exterior", [E.photos[1].id]: "living room", [E.photos[2].id]: "kitchen", [E.photos[3].id]: "front exterior" }, light: { [E.photos[0].id]: "day", [E.photos[1].id]: "day", [E.photos[2].id]: "day", [E.photos[3].id]: "twilight" }, furnished: { [E.photos[1].id]: "empty", [E.photos[2].id]: "furnished" } }) } });
+    await find(E.job.id, E.qcRun.id, E.photos[2].id, "KIT_DIRTY_DISHES_SINK", "sink", 0.9, { arbitration: "CONFIRMED" });
+    await find(E.job.id, E.qcRun.id, E.photos[2].id, "KIT_PAPER_TOWEL_ROLLS", "counter", 0.9, { arbitration: "CONFIRMED" });
+    const sg = await policy.suggestAddOns(E.job.id);
+    const adds = await prisma.photoQcFinding.findMany({ where: { jobId: E.job.id, source: "ADDON" } });
+    const addOf = (rule: string) => adds.find((a) => a.ruleId === rule);
+    c.ok("3 suggestions + 1 real twilight re-render", sg.suggested === 3 && sg.twilightRerenders === 1, JSON.stringify(sg));
+    c.ok("virtual twilight on the daytime front exterior (not the dusk one)", addOf("ADDON_VIRTUAL_TWILIGHT")?.photoId === E.photos[0].id);
+    c.ok("virtual staging on the empty living room, with the room type", addOf("ADDON_VIRTUAL_STAGING")?.photoId === E.photos[1].id && /"room_type":"living_room"/.test(addOf("ADDON_VIRTUAL_STAGING")?.coercedJson ?? ""));
+    c.ok("virtual declutter on the most cluttered room", addOf("ADDON_VIRTUAL_DECLUTTER")?.photoId === E.photos[2].id);
+    const twOp = await prisma.photoFixOperation.findFirst({ where: { jobId: E.job.id, transformName: "style" }, include: { batch: true } });
+    c.ok("the dusk photo is re-rendered with the twilight model automatically (not the fix budget)", twOp?.photoId === E.photos[3].id && /"model_id":6/.test(twOp.paramsJson ?? "") && twOp.batch.approvedBy === "auto-twilight" && twOp.estimatedCredits === 1);
+    c.ok("suggestions never make a verdict worse", verdictMod.jobVerdict(adds.filter((a) => a.ruleId !== "ADDON_REAL_TWILIGHT_LOOK").map((a) => ({ ...a, photoIds: null })), {}).verdict === "PASS");
+    c.ok("…and never enter the automatic fix plan", policy.fixClass("ADDON_VIRTUAL_TWILIGHT") === "never");
+    const again2 = await policy.suggestAddOns(E.job.id);
+    c.ok("suggested once per check", !!again2.skipped && /already/.test(again2.skipped), JSON.stringify(again2));
+    const cart = await fixes.buildFixCart(E.job.id);
+    const line = (rule: string) => cart.lines.find((l) => l.ruleId === rule);
+    c.ok("in the Fix Cart, priced live, not pre-selected: twilight 5, staging 5, declutter 1", line("ADDON_VIRTUAL_TWILIGHT")?.credits === 5 && line("ADDON_VIRTUAL_STAGING")?.credits === 5 && line("ADDON_VIRTUAL_DECLUTTER")?.credits === 1 && cart.lines.filter((l) => l.addOn).every((l) => !l.selectedByDefault && !l.humanCall), JSON.stringify(cart.lines.filter((l) => l.addOn).map((l) => [l.ruleId, l.credits, l.humanCall])));
+    await prisma.photoJob.update({ where: { id: E.job.id }, data: { stage: "QC_REVIEW" } });
+    const ap = await fixes.approveFixBatch({ jobId: E.job.id, findingIds: [addOf("ADDON_VIRTUAL_STAGING")!.id], mode: "SELECTED", by: "Jordan", role: "OWNER" });
+    const stOp = await prisma.photoFixOperation.findFirst({ where: { jobId: E.job.id, transformName: "single_angle_staging" } });
+    c.ok("one click: a staging edit with the room type", ap.ok && /"room_type":"living_room"/.test(stOp?.paramsJson ?? ""), ap.ok ? "" : ap.message);
+    for (let i = 0; i < 4; i++) await runner.driveFixes({ budgetMs: 60_000, leaseBy: "drill" });
+    const sentStyle = fake.posts("/v1/transforms").find((x) => (x.body as { transform_name: string }).transform_name === "style")?.body as { model_id?: number } | undefined;
+    const sentStage = fake.posts("/v1/transforms").find((x) => (x.body as { transform_name: string }).transform_name === "single_angle_staging")?.body as { params?: { room_type?: string } } | undefined;
+    c.ok("sent: style with the twilight model, staging with the room", sentStyle?.model_id === 6 && sentStage?.params?.room_type === "living_room", JSON.stringify([sentStyle, sentStage]));
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

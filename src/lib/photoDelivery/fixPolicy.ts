@@ -319,6 +319,12 @@ export async function driveAutoFixPlanning(opts: { budgetMs: number }): Promise<
     looked++;
   }
   const planned: { jobId: string; photos: number; credits: number; asIs: boolean }[] = [];
+  // Ordered add-ons: suggested (and real twilights re-rendered) once the second look is done.
+  const checked = await prisma.photoJob.findMany({ where: { stage: { in: ["QC_REVIEW", "READY"] }, stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) }, qcRuns: { some: { trigger: "AUTOHDR_CHECK", status: "DONE" } }, findings: { none: { source: "AHDR", status: "OPEN", arbitration: "NOT_REQUIRED" } } }, select: { id: true }, take: 10 });
+  for (const j of checked) {
+    if (deadline - Date.now() < 10_000) break;
+    await suggestAddOns(j.id).catch((e) => console.warn("add-on suggestions failed", j.id, (e as Error).message));
+  }
   if (settings.autoFix) {
     const jobs = await prisma.photoJob.findMany({ where: { stage: { in: ["QC_REVIEW", "READY"] }, lastQcRunId: { not: null }, stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) } }, select: { id: true }, take: 10 });
     for (const j of jobs) {
@@ -328,4 +334,101 @@ export async function driveAutoFixPlanning(opts: { budgetMs: number }): Promise<
     }
   }
   return { looked, planned };
+}
+
+// ---------------------------------------------------------------------------
+// ORDERED ADD-ONS AT QC (Oct 14 2026). Jordan: "if someone orders virtual
+// twilight, that gets suggested at QC, and same with virtual staging or virtual
+// declutter." And: "real twilights should be edited with the twilight photo
+// model." From the order (job.expectedJson) and what the free check saw on
+// each photo (room, light, furnishing):
+//   · virtual twilight → the front exterior(s), suggested (one click, 5 credits)
+//   · virtual staging  → the emptiest rooms, suggested with the room type
+//   · virtual declutter → the most cluttered rooms, suggested (1 credit)
+//   · a REAL twilight  → every dusk photo edited with the day look is
+//     re-rendered with the twilight model, automatically (the order pays for
+//     it; it is not part of the $5-$10 fix budget)
+// Suggestions are findings with source ADDON: shown with the issues, never a
+// defect in a verdict, never in the automatic fix plan.
+// ---------------------------------------------------------------------------
+const STAGE_ROOM: [RegExp, string][] = [[/bed/i, "bedroom"], [/dining/i, "dining_room"], [/kitchen/i, "kitchen"], [/living|family|great|den|lounge|sitting/i, "living_room"], [/office|study/i, "office"]];
+const FRONT = /exterior|front|facade|façade|outside|street/i;
+const NOT_FRONT = /back|rear|yard|patio|deck|pool|garden/i;
+
+type CheckMaps = { rooms: Record<string, string>; light: Record<string, string>; furnished: Record<string, string> };
+type Expected = { twilightReal?: number; twilightVirtual?: number; virtualStagingCount?: number; virtualDeclutterCount?: number };
+
+export async function suggestAddOns(jobId: string): Promise<{ suggested: number; twilightRerenders: number; skipped?: string }> {
+  const settings = await photoDeliverySettings();
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, expectedJson: true, autohdrPhotoshootId: true } });
+  if (!job) return { suggested: 0, twilightRerenders: 0, skipped: "no job" };
+  const run = await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "DONE" }, orderBy: { startedAt: "desc" }, select: { id: true, checksJson: true } });
+  if (!run) return { suggested: 0, twilightRerenders: 0, skipped: "no finished free check" };
+  if (await prisma.photoQcFinding.count({ where: { jobId, qcRunId: run.id, source: "ADDON" } })) return { suggested: 0, twilightRerenders: 0, skipped: "already suggested for this check" };
+  let expected: Expected = {};
+  try { expected = JSON.parse(job.expectedJson ?? "{}") as Expected; } catch { expected = {}; }
+  const want = { twilight: expected.twilightVirtual ?? 0, staging: expected.virtualStagingCount ?? 0, declutter: expected.virtualDeclutterCount ?? 0, real: expected.twilightReal ?? 0 };
+  if (!want.twilight && !want.staging && !want.declutter && !want.real) return { suggested: 0, twilightRerenders: 0, skipped: "no add-ons ordered" };
+  let maps: CheckMaps = { rooms: {}, light: {}, furnished: {} };
+  try { const p = JSON.parse(run.checksJson ?? "{}") as Partial<CheckMaps>; maps = { rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {} }; } catch { /* nothing seen */ }
+  const photos = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true, name: true, sequence: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, contentHash: true } });
+  const room = (id: string) => maps.rooms[id] ?? "";
+  type Pick = { photoId: string; ruleId: string; text: string; params?: Record<string, unknown> };
+  const picks: Pick[] = [];
+  if (want.twilight) {
+    const day = (id: string) => (maps.light[id] ?? "day") === "day";
+    const fronts = photos.filter((p) => FRONT.test(room(p.id)) && !NOT_FRONT.test(room(p.id)) && day(p.id));
+    const exteriors = fronts.length ? fronts : photos.filter((p) => /exterior|outside/i.test(room(p.id)) && day(p.id));
+    for (const p of exteriors.slice(0, want.twilight)) picks.push({ photoId: p.id, ruleId: "ADDON_VIRTUAL_TWILIGHT", text: `Ordered: virtual twilight. Suggested here: the ${room(p.id) || "exterior"}.` });
+  }
+  if (want.staging) {
+    const stageable = photos
+      .map((p) => ({ p, type: STAGE_ROOM.find(([re]) => re.test(room(p.id)))?.[1] ?? null, f: maps.furnished[p.id] }))
+      .filter((x) => x.type && (x.f === "empty" || x.f === "sparse"))
+      .sort((a, b) => Number(b.f === "empty") - Number(a.f === "empty") || a.p.sequence - b.p.sequence);
+    for (const x of stageable.slice(0, want.staging)) picks.push({ photoId: x.p.id, ruleId: "ADDON_VIRTUAL_STAGING", text: `Ordered: virtual staging. Suggested here: ${x.f === "empty" ? "an empty" : "a sparsely furnished"} ${room(x.p.id) || "room"}.`, params: { room_type: x.type } });
+  }
+  if (want.declutter) {
+    const prep = await prisma.photoQcFinding.findMany({ where: { jobId, status: { in: ["OPEN", "IGNORED"] }, photoId: { in: photos.map((p) => p.id) } }, select: { photoId: true, ruleId: true } });
+    const count = new Map<string, number>();
+    for (const f of prep) if (fixClass(f.ruleId) === "prep") count.set(f.photoId!, (count.get(f.photoId!) ?? 0) + 1);
+    const messy = photos.filter((p) => (count.get(p.id) ?? 0) > 0).sort((a, b) => (count.get(b.id) ?? 0) - (count.get(a.id) ?? 0) || a.sequence - b.sequence);
+    for (const p of messy.slice(0, want.declutter)) picks.push({ photoId: p.id, ruleId: "ADDON_VIRTUAL_DECLUTTER", text: `Ordered: virtual declutter. Suggested here: ${count.get(p.id)} clutter item${count.get(p.id) === 1 ? "" : "s"} in the ${room(p.id) || "room"}.` });
+  }
+  const dusk = want.real ? photos.filter((p) => maps.light[p.id] === "twilight" || maps.light[p.id] === "night") : [];
+  for (const p of dusk) picks.push({ photoId: p.id, ruleId: "ADDON_REAL_TWILIGHT_LOOK", text: "Real twilight photo edited with the day look: re-render it with the twilight model.", params: { model_id: settings.realTwilightModelId } });
+  if (!picks.length) {
+    await logJobEvent(jobId, "add-ons", `ordered add-ons: no photo fits yet (twilight ${want.twilight}, staging ${want.staging}, declutter ${want.declutter}, real twilight ${want.real})`);
+    return { suggested: 0, twilightRerenders: 0 };
+  }
+  const created = [];
+  for (const k of picks) {
+    const rule = ruleById(k.ruleId)!;
+    const p = photos.find((x) => x.id === k.photoId)!;
+    created.push(await prisma.photoQcFinding.create({
+      data: { qcRunId: run.id, jobId, photoId: k.photoId, ruleId: k.ruleId, groupKey: rule.groupKey, pass: "P1_PHOTO", source: "ADDON", specificIssue: k.text, explanation: "Ordered by the client; suggested by the free photo check.", severity: "MINOR", confidence: 0.9, responsibility: "ADMIN", fixStrategy: rule.fixStrategies[0], arbitration: "CONFIRMED", contentHash: p.contentHash, coercedJson: k.params ? JSON.stringify({ params: k.params }) : null, rulesVersion: "addons-2026-10-14" },
+    }));
+  }
+  // Real twilights: re-rendered with the twilight model now (the order pays; not the fix budget).
+  let rerenders = 0;
+  const realOnes = created.filter((f) => f.ruleId === "ADDON_REAL_TWILIGHT_LOOK");
+  if (realOnes.length && settings.autoFix) {
+    const { modelCatalog } = await import("./catalog");
+    const price = (await modelCatalog().catch(() => null))?.find((m) => m.id === settings.realTwilightModelId)?.style_credit_cost ?? null;
+    const shootable = realOnes.filter((f) => { const p = photos.find((x) => x.id === f.photoId); return !!p?.autohdrImageUuid && !!shootIdOf(p, job.autohdrPhotoshootId); });
+    if (price != null && shootable.length) {
+      await prisma.$transaction(async (tx) => {
+        const b = await tx.photoFixBatch.create({ data: { jobId, mode: "AUTO", estimatedCredits: price * shootable.length, estimatedUsdCents: 0, approvedBy: "auto-twilight", status: "PENDING" } });
+        for (const f of shootable) {
+          await tx.photoFixOperation.create({ data: { batchId: b.id, jobId, photoId: f.photoId!, findingIdsJson: JSON.stringify([f.id]), seq: 0, strategy: "STYLE_RERENDER", transformName: "style", paramsJson: JSON.stringify({ model_id: settings.realTwilightModelId }), estimatedCredits: price, status: "QUEUED" } });
+          await tx.photoQcFinding.update({ where: { id: f.id }, data: { status: "APPROVED_FIX", decidedBy: "auto-twilight", decidedAt: new Date() } });
+        }
+      });
+      rerenders = shootable.length;
+      if (["QC_REVIEW", "READY"].includes(job.stage)) await setStage(jobId, ["QC_REVIEW", "READY"], "FIXING", "auto-twilight", { why: `real twilight: ${rerenders} dusk photo${rerenders === 1 ? "" : "s"} re-rendered with the twilight model` });
+    }
+  }
+  const suggested = created.length - realOnes.length;
+  await logJobEvent(jobId, "add-ons", `ordered add-ons: ${suggested} suggestion${suggested === 1 ? "" : "s"} for a person${rerenders ? `, ${rerenders} real twilight photo${rerenders === 1 ? "" : "s"} re-rendered with the twilight model automatically` : ""}`, { suggested, rerenders, want });
+  return { suggested, twilightRerenders: rerenders };
 }

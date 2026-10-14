@@ -200,6 +200,9 @@ export function groupFindings(findings: FindingLike[], opts: GroupOptions = {}):
   const live = findings.filter((f) => {
     if (f.status === "SUPERSEDED") return false;
     if (off.has(f.ruleId)) return false;
+    // Oct 14 2026: an ordered add-on suggestion (virtual twilight, staging,
+    // declutter) is a suggestion, never a defect.
+    if (f.source === "ADDON") return false;
     const ids = photoIdsOf(f);
     return !ids.length || ids.some((id) => !excluded.has(id));
   });
