@@ -532,6 +532,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
         folderLabel: stepsR.v.folderLabel,
         order: stepsR.v.order,
         message: stepsR.v.message,
+        ready: stepsR.v.ready,
       }
     : null;
 

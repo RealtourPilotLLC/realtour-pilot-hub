@@ -35,6 +35,7 @@ const MIN = 60_000;
 type DbxFile = { name: string; path: string; id: string; size: number; hash: string };
 const dbx = new Map<string, DbxFile[]>(); // raw folder (lower case) → files
 const linkCalls: string[] = [];
+const saved: { path: string; url: string }[] = []; // files/save_url into 06-Ready-for-Aryeo
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 // Aryeo listings by id.
 const listings = new Map<string, { id: string; filename: string; original_url: string; index: number }[]>();
@@ -47,6 +48,12 @@ const fence = fenceFetch(async (url, init) => {
   if (url.startsWith("https://api.dropboxapi.com/2/")) {
     const ep = url.slice("https://api.dropboxapi.com/2/".length);
     const arg = typeof init?.body === "string" ? (JSON.parse(init.body) as { path?: string }) : {};
+    if (ep === "files/save_url") { const a = arg as { path?: string; url?: string }; saved.push({ path: a.path ?? "", url: a.url ?? "" }); return json({ ".tag": "async_job_id", async_job_id: `job-${saved.length}` }); }
+    if (ep === "files/delete_v2") { const pre = (arg.path ?? "").toLowerCase(); for (let i = saved.length - 1; i >= 0; i--) if (saved[i].path.toLowerCase().startsWith(pre + "/")) saved.splice(i, 1); return json({ metadata: {} }); }
+    if (ep === "files/create_folder_v2") return json({ metadata: { name: "x", path_display: arg.path, id: "id:f" } });
+    if (ep === "files/list_folder" && /06-ready-for-aryeo$/i.test(arg.path ?? "")) {
+      return json({ entries: saved.filter((f) => f.path.toLowerCase().startsWith((arg.path ?? "").toLowerCase() + "/")).map((f) => ({ ".tag": "file", name: f.path.split("/").pop(), path_display: f.path, id: `id:${f.path}`, size: 4 })), has_more: false });
+    }
     if (ep === "files/list_folder") {
       const files = dbx.get((arg.path ?? "").toLowerCase());
       if (!files) return json({ error_summary: "path/not_found/.." }, 409);
@@ -171,6 +178,20 @@ async function main() {
     const re = await display.downloadForDisplay({});
     c.ok("never bought twice", re.photos === 0 && fake.state.balance === before3b, JSON.stringify(re));
 
+    c.head("3c · ready for Aryeo: the finished photos, numbered, in one folder");
+    const handoff = await import("@/lib/photoDelivery/handoff");
+    const st = await handoff.stageForAryeo(jobW.id);
+    c.ok("5 photos copied into 06-Ready-for-Aryeo", st.ok && st.staged === 5 && saved.length === 5 && saved.every((f) => /\/116 W Windsor St \(Nehemiah Drill\)\/06-Ready-for-Aryeo\//.test(f.path)), JSON.stringify(st));
+    c.ok("numbered in delivery order, from AutoHDR's current version (free)", saved.every((f, i) => new RegExp(`/0${i + 1}-`).test(f.path) && f.url.startsWith("https://autohdr-fake.s3.amazonaws.com/")) && fake.state.balance === before3b, saved.map((f) => f.path.split("/").pop()).join(", "));
+    c.ok("the job points at the folder", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } })).deliveryPath?.endsWith("06-Ready-for-Aryeo") === true);
+    const st2 = await handoff.stageForAryeo(jobW.id);
+    c.ok("nothing changed: not copied again", st2.staged === 0 && saved.length === 5, st2.message);
+    const rs = await handoff.readyFolderState(jobW.id, 5);
+    c.ok("the panel sees 5 of 5: ready", rs?.ready === true && rs.files === 5);
+    const D = await import("@/lib/photoDelivery/delivery");
+    const steps = await D.deliverySteps(jobW.id);
+    c.ok("the deliver steps carry the Download all link (Dropbox, internal)", steps.ready?.ready === true && /^https:\/\/www\.dropbox\.com\/home\//.test(steps.ready.folderUrl));
+
     // ======================================================================
     c.head("4 · the free photo check");
     const names = rows.map((r) => r.name);
@@ -183,6 +204,7 @@ async function main() {
       return '{"room":"kitchen","issues":[]}';
     };
     const anthropicBefore = fence.blocked.filter((u) => /anthropic/i.test(u)).length;
+    const downloadsBefore = fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/download")).length;
     const ch1 = await check.driveAutohdrChecks({ budgetMs: 60_000 });
     const ch2 = await check.driveAutohdrChecks({ budgetMs: 60_000 });
     const run = await prisma.photoQcRun.findFirstOrThrow({ where: { jobId: jobW.id, trigger: "AUTOHDR_CHECK" } });
@@ -193,7 +215,7 @@ async function main() {
     c.ok("a missing confidence reads as 0.6", findings.find((f) => f.ruleId === "EXT_GARDEN_HOSES")!.confidence === 0.6);
     const jW = await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } });
     c.ok("shadow mode: EDITED → QC_REVIEW with the verdict", jW.stage === "QC_REVIEW" && jW.qcVerdict === "NEEDS_DECISION" && jW.lastQcRunId === run.id, `${jW.stage} ${jW.qcVerdict}`);
-    c.ok("free: no credit spent, no new download, no Claude call", fake.state.balance === before3b && fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/download")).length === dls.length + 1 && fence.blocked.filter((u) => /anthropic/i.test(u)).length === anthropicBefore);
+    c.ok("free: no credit spent, no new download, no Claude call", fake.state.balance === before3b && fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/download")).length === downloadsBefore && fence.blocked.filter((u) => /anthropic/i.test(u)).length === anthropicBefore);
     c.ok("one bell for the check", (await prisma.notification.count({ where: { kind: "photo_free_check" } })) >= 1);
     c.ok("every describe call carried the checklist", fake.state.calls.filter((x) => x.path.endsWith("/describe")).every((x) => /BATH_TOILET_SEAT_OPEN: /.test(String((x.body as { prompt?: string }).prompt))));
 

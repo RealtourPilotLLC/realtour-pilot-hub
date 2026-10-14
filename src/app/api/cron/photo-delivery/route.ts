@@ -64,6 +64,12 @@ export async function GET(req: NextRequest) {
     return driveFixes({ budgetMs: 45_000, leaseBy: `pd-cron-${new Date(startedAt).toISOString()}` });
   }, { maxMs: 60_000 });
 
+  await step("ready", async () => {
+    // Oct 14 2026: finished hub shoots → numbered copies in 06-Ready-for-Aryeo for Kyle's upload.
+    const { stageReadyJobs } = await import("@/lib/photoDelivery/handoff");
+    return stageReadyJobs({ max: 2 });
+  }, { maxMs: 40_000 });
+
   await step("verify", async () => {
     const { verifyDeliveringJobs } = await import("@/lib/photoDelivery/verifySweep");
     return verifyDeliveringJobs({ max: 5 });

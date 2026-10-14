@@ -215,6 +215,7 @@ export type StepsView = {
   folderLabel: string;
   order: { photoId: string; name: string; deliveryName: string }[];
   message: string;
+  ready: { folderUrl: string; files: number; expected: number; ready: boolean; stagedAt: string | null } | null;
 };
 
 export type RunView = {

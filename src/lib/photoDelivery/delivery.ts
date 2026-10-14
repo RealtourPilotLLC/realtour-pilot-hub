@@ -95,6 +95,8 @@ export type DeliverySteps = {
   order: { photoId: string; name: string; deliveryName: string }[];
   message: string;
   revisionLink: string | null;
+  /** Oct 14 2026: the finished photos, numbered, in 06-Ready-for-Aryeo (handoff.ts). */
+  ready: { folderUrl: string; files: number; expected: number; ready: boolean; stagedAt: string | null } | null;
 };
 
 const ROOM_WORDS: Record<string, string> = {
@@ -185,13 +187,18 @@ export async function deliverySteps(jobId: string): Promise<DeliverySteps> {
     if (f.source !== "FIX" || !f.derivJson?.includes('"file"')) continue;
     replacements.push({ photoId: f.photoId, photoName: f.photo.name, versionId: f.id, downloadUrl: `/api/photo-fixes/${f.id}`, label: f.label, at: f.createdAt.toISOString() });
   }
+  const order = await deliveryOrderFor(jobId);
+  const { readyFolderState } = await import("./handoff");
+  const { dropboxWebUrl } = await import("@/lib/dropboxFolders");
+  const rs = await readyFolderState(jobId, order.length).catch(() => null);
   return {
     replacements,
+    ready: rs ? { folderUrl: dropboxWebUrl(rs.folder), files: rs.files, expected: order.length, ready: rs.ready, stagedAt: rs.stagedAt } : null,
     listingUrl: project?.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : null,
     orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
     folderPath: job.deliveryPath ?? job.finalsPath,
     folderLabel: job.deliveryPath ? "Delivery folder (files already numbered in order)" : "04-Final-Photos (drag them in the order below)",
-    order: await deliveryOrderFor(jobId),
+    order,
     message: message.replace(/\s*[–—]\s*/g, ", "),
     revisionLink: null,
   };

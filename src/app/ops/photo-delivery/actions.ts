@@ -118,6 +118,25 @@ export async function resumeCheckAction(ruleId: string): Promise<ActionResult> {
   }
 }
 
+/** Oct 14 2026: put the finished photos (numbered, current versions) into 06-Ready-for-Aryeo again. */
+export async function restageForAryeoAction(jobId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { stageForAryeo } = await import("@/lib/photoDelivery/handoff");
+    const r = await stageForAryeo(jobId, { force: true, by });
+    refresh(jobId);
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return failed("get the download ready", e);
+  }
+}
+
 // ---- photos ----------------------------------------------------------------------------------
 
 export async function setPhotoExcludedAction(input: { jobId: string; photoId: string; excluded: boolean; reason?: string | null }): Promise<ActionResult> {
