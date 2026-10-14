@@ -528,9 +528,11 @@ async function main() {
     const sessionCard = find(screenEl.props.map, "SessionBriefCard")[0];
     const sh = html(sessionCard);
     const unapprovedWithWords = [T2, T3, T4].length;
-    c.ok("scripts open by default, at reading size, with a big tap target", (sh.match(/<details open=""/g) ?? []).length === 4 && /<summary class="[^"]*min-h-11/.test(sh) && /text-base leading-relaxed">Words the client signed off\./.test(sh));
-    c.ok(`one plain line on each script the client hasn't approved (${unapprovedWithWords}): "Film it as written — the client can still ask for changes"`,
-      (text(sh).match(/Film it as written — the client can still ask for changes\./g) ?? []).length === unapprovedWithWords);
+    // Oct 14 2026 (Jordan: "make sure the text is formatted nicely and easily readable"): each script is
+    // always shown, through the shared script renderer at reading size, with a status chip per script.
+    c.ok("scripts shown in full at reading size, each with its status chip", /text-base[^"]*">Words the client signed off\./.test(sh) && ((text(sh).match(/Client approved|Not approved by the client yet/g) ?? []).length === 4), String((text(sh).match(/Client approved|Not approved by the client yet/g) ?? []).length));
+    c.ok(`one plain line on each script the client hasn't approved (${unapprovedWithWords}): "Film it as written. The client can still ask for changes."`,
+      (text(sh).match(/Film it as written\. The client can still ask for changes\./g) ?? []).length === unapprovedWithWords);
     const { acknowledgeShootBrief, saveShootNote } = await import("@/app/shoot/actions");
     await signIn(kyle);
     const kyleTree = await shootTree();
