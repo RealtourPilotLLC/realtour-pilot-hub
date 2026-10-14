@@ -5604,9 +5604,16 @@ model PhotoAsset {
   jobId              String
   job                PhotoJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
   name               String
-  dropboxPath        String
+  // WHERE THE EDITED FILE IS READ FROM (Oct 13 2026: the AutoHDR watcher
+  // has not returned finals to 04-Final-Photos for the jobs the hub tracked,
+  // so a gallery can come from the Dropbox finals folder, the Aryeo listing
+  // (AutoHDR's Aryeo integration imports edits there) or the AutoHDR API).
+  sourceKind         String    @default("DROPBOX") // DROPBOX | ARYEO | AUTOHDR
+  sourceUrl          String? // ARYEO: the image's original URL; AUTOHDR: unused (bytes via the API)
+  sourceRef          String? // ARYEO: the listing image id; AUTOHDR: image_uuid
+  dropboxPath        String?
   dropboxId          String?
-  contentHash        String? // Dropbox content_hash of the current file
+  contentHash        String? // a stable hash of the current file (Dropbox content_hash, Aryeo image id+url, AutoHDR version uuid)
   bytes              Int?
   width              Int?
   height             Int?

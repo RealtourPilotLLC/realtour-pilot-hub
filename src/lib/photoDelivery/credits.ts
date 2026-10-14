@@ -85,8 +85,12 @@ export function evaluateCreditAlerts(
     next.below100Sent = false;
   }
   let send: null | { level: "WARN" | "CRITICAL"; episodeId: string } = null;
+  // Every alert gets its own id. (The plan reused the 250 episode's id for the
+  // 100 alert; after a partial refill to 150-249 the flag resets and a second
+  // drop below 100 would have carried the SAME dedupe key, so the bell, Slack
+  // and text would all have swallowed it.)
   if (balance < t.critical && !next.below100Sent) {
-    next.episodeId = next.below250Sent && next.episodeId ? next.episodeId : newId();
+    next.episodeId = newId();
     send = { level: "CRITICAL", episodeId: next.episodeId };
     next.below100Sent = true;
     next.below250Sent = true; // one alert when the balance jumps straight past both

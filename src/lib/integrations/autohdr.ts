@@ -35,11 +35,16 @@ export const AUTOHDR_PROVIDER = "autohdr";
 const API_BASE = (process.env.AUTOHDR_API_BASE ?? "https://external.realestatephotoediting.com").replace(/\/$/, "");
 const TOKEN_URL = process.env.AUTOHDR_TOKEN_URL ?? "https://new.autohdr.com/api/auth/oauth2/token";
 const RESOURCE = process.env.AUTOHDR_RESOURCE ?? `${API_BASE}/v1`;
-const SCOPES = process.env.AUTOHDR_SCOPES ?? "photoshoots:read photoshoots:write images:edit presets:read presets:run";
+// Two tokens, least privilege (AutoHDR: "a read-only token cannot spend
+// credits"; scopes are chosen when the token is requested). Every GET (the
+// credit monitor, the shoot linker, QC reads) runs on the read-only token;
+// only a POST asks for the full set.
+const READ_SCOPES = "photoshoots:read presets:read";
+const FULL_SCOPES = process.env.AUTOHDR_SCOPES ?? "photoshoots:read photoshoots:write images:edit presets:read presets:run";
 
 /** Where Jordan creates the API client, and where credits are bought. */
-export const AUTOHDR_DEVELOPER_URL = "https://new.autohdr.com";
-export const AUTOHDR_BILLING_URL = process.env.AUTOHDR_BILLING_URL ?? "https://new.autohdr.com";
+export const AUTOHDR_DEVELOPER_URL = "https://new.autohdr.com/account-settings?accountTab=developer";
+export const AUTOHDR_BILLING_URL = process.env.AUTOHDR_BILLING_URL ?? "https://new.autohdr.com/account-settings?accountTab=billing";
 
 export class AutohdrError extends Error {
   constructor(
@@ -100,16 +105,16 @@ export async function autohdrConfigured(): Promise<boolean> {
 // ---- token --------------------------------------------------------------------
 
 type TokenCache = { clientId: string; token: string; expiresAt: number };
-let tokenCache: TokenCache | null = null;
+const tokenCache = new Map<string, TokenCache>();
 
 /** Exchange the client credentials for a bearer token (free). The `resource`
  *  field is required: without it every API call answers 401. */
-export async function fetchToken(creds: { clientId: string; clientSecret: string }): Promise<{ token: string; expiresIn: number; scope: string | null }> {
+export async function fetchToken(creds: { clientId: string; clientSecret: string }, scope: string = FULL_SCOPES): Promise<{ token: string; expiresIn: number; scope: string | null }> {
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: creds.clientId,
     client_secret: creds.clientSecret,
-    scope: SCOPES,
+    scope,
     resource: RESOURCE,
   });
   let res: Response;
@@ -141,11 +146,12 @@ export async function fetchToken(creds: { clientId: string; clientSecret: string
   return { token: json.access_token, expiresIn, scope: typeof json.scope === "string" ? json.scope : null };
 }
 
-async function bearer(creds: AutohdrCredentials, force = false): Promise<string> {
+async function bearer(creds: AutohdrCredentials, scope: string, force = false): Promise<string> {
   const now = Date.now();
-  if (!force && tokenCache && tokenCache.clientId === creds.clientId && tokenCache.expiresAt - 300_000 > now) return tokenCache.token;
-  const t = await fetchToken(creds);
-  tokenCache = { clientId: creds.clientId, token: t.token, expiresAt: now + t.expiresIn * 1000 };
+  const hit = tokenCache.get(scope);
+  if (!force && hit && hit.clientId === creds.clientId && hit.expiresAt - 300_000 > now) return hit.token;
+  const t = await fetchToken(creds, scope);
+  tokenCache.set(scope, { clientId: creds.clientId, token: t.token, expiresAt: now + t.expiresIn * 1000 });
   return t.token;
 }
 
@@ -180,8 +186,9 @@ export async function autohdrCall<T>(path: string, opts: CallOpts = {}): Promise
   const maxAttempts = isRead ? 4 : 1;
   let refreshed = false;
   let last: AutohdrError | null = null;
+  const scope = isRead ? READ_SCOPES : FULL_SCOPES;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const token = await bearer(creds);
+    const token = await bearer(creds, scope);
     let res: Response;
     try {
       res = await fetch(url, {
@@ -223,9 +230,9 @@ export async function autohdrCall<T>(path: string, opts: CallOpts = {}): Promise
     let code: string | null = null;
     let desc = "";
     try {
-      const j = JSON.parse(text) as { error?: string; error_description?: string; message?: string };
-      code = j.error ?? null;
-      desc = j.error_description ?? j.message ?? "";
+      const j = JSON.parse(text) as { error?: string; error_description?: string; message?: string; detail?: { loc?: unknown[]; msg?: string }[] };
+      code = j.error ?? (Array.isArray(j.detail) ? "validation_error" : null);
+      desc = j.error_description ?? j.message ?? (Array.isArray(j.detail) ? j.detail.map((d) => `${(d.loc ?? []).join(".")}: ${d.msg ?? ""}`).join("; ") : "");
     } catch {
       desc = text;
     }
@@ -233,7 +240,7 @@ export async function autohdrCall<T>(path: string, opts: CallOpts = {}): Promise
     // rejected the call at the door, nothing was processed or charged.
     if (res.status === 401 && !refreshed) {
       refreshed = true;
-      await bearer(creds, true);
+      await bearer(creds, scope, true);
       attempt--;
       continue;
     }
@@ -261,13 +268,16 @@ export type AutohdrCapability = {
   [k: string]: unknown;
 };
 export type AutohdrModel = { id: number; name: string; type?: string; style_credit_cost?: number | null; [k: string]: unknown };
-export type AutohdrPhotoshoot = { id: number; address?: string | null; name?: string | null; status?: string; created_at?: string; image_count?: number; [k: string]: unknown };
-export type AutohdrPhoto = { image_uuid: string; image_version_uuid: string; name?: string; filename?: string; downloaded?: boolean; [k: string]: unknown };
+// Shapes verified against AutoHDR's published OpenAPI spec (v0.1.0, read Oct 13 2026).
+export type AutohdrPhotoshoot = { photoshoot_id: number; address?: string | null; status?: string; created_at?: string; updated_at?: string; image_count?: number; [k: string]: unknown };
+export type AutohdrPhoto = { image_uuid: string; image_version_uuid: string; name?: string; downloaded?: boolean; [k: string]: unknown };
 export type AutohdrHistoryStep = { image_version_uuid: string; parent_image_version_uuid: string | null; is_head?: boolean; label?: string; description?: string; created_at?: string };
 export type AutohdrTransformJob = {
   job_id: string;
-  state?: "queued" | "running" | "succeeded" | "failed" | string;
-  status?: string;
+  status?: "queued" | "running" | "succeeded" | "failed" | string;
+  status_url?: string;
+  updated_at?: string;
+  failure_message?: string | null;
   transform_name?: string;
   image_uuid?: string;
   output_image_version_uuid?: string | null;
@@ -298,37 +308,47 @@ export const autohdr = {
     return (await autohdrCall<AutohdrCredits>("/v1/credits", { creds })).data;
   },
   async capabilities() {
-    return listOf<AutohdrCapability>((await autohdrCall<unknown>("/v1/capabilities")).data, "capabilities", "transforms");
+    return listOf<AutohdrCapability>((await autohdrCall<unknown>("/v1/capabilities")).data, "transforms");
   },
   async models(type: "all" | "predefined" | "custom" = "all") {
     return listOf<AutohdrModel>((await autohdrCall<unknown>("/v1/models", { query: { type } })).data, "models");
   },
-  async listPhotoshoots(query: Record<string, string | number | undefined> = {}) {
-    return listOf<AutohdrPhotoshoot>((await autohdrCall<unknown>("/v1/photoshoots", { query })).data, "photoshoots");
+  /** Every shoot of the last 7 days (AutoHDR keeps no older ones), all pages. */
+  async listPhotoshoots() {
+    const out: AutohdrPhotoshoot[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const raw = (await autohdrCall<unknown>("/v1/photoshoots", { query: { page, page_size: 100 } })).data;
+      out.push(...listOf<AutohdrPhotoshoot>(raw, "photoshoots"));
+      const pageCount = raw && typeof raw === "object" ? Number((raw as Record<string, unknown>).page_count) : NaN;
+      if (!Number.isFinite(pageCount) || page >= pageCount) break;
+    }
+    return out;
   },
   async photoshootStatus(id: number) {
     return (await autohdrCall<{ status: string; pipeline?: string; image_count?: number; awaiting_files?: boolean }>(`/v1/photoshoots/${id}/status`)).data;
   },
+  /** The shoot's photos in gallery order, with `downloaded` (true = already paid for). */
   async listPhotos(id: number) {
     const out: AutohdrPhoto[] = [];
-    let cursor: string | null = null;
-    for (let page = 0; page < 20; page++) {
-      const raw: unknown = (await autohdrCall<unknown>(`/v1/photoshoots/${id}/photos`, { query: { limit: 100, cursor: cursor ?? undefined } })).data;
+    for (let page = 1; page <= 20; page++) {
+      const raw = (await autohdrCall<unknown>(`/v1/photoshoots/${id}/photos`, { query: { page, page_size: 100 } })).data;
       out.push(...listOf<AutohdrPhoto>(raw, "photos"));
-      const next = raw && typeof raw === "object" ? ((raw as Record<string, unknown>).next_cursor as string | null | undefined) : null;
-      if (!next) break;
-      cursor = next;
+      const pageCount = raw && typeof raw === "object" ? Number((raw as Record<string, unknown>).page_count) : NaN;
+      if (!Number.isFinite(pageCount) || page >= pageCount) break;
     }
     return out;
   },
   async history(id: number, imageUuid: string) {
-    return listOf<AutohdrHistoryStep>((await autohdrCall<unknown>(`/v1/photoshoots/${id}/photos/${imageUuid}/history`)).data, "history", "versions");
+    return listOf<AutohdrHistoryStep>((await autohdrCall<unknown>(`/v1/photoshoots/${id}/photos/${imageUuid}/history`)).data, "steps", "history");
   },
   /** Free text description of a photo (or one of its versions). */
   async describe(id: number, imageUuid: string, opts: { image_version_uuid?: string; prompt?: string } = {}) {
     // describe is free and has no side effects, but it is a POST: one attempt.
-    const r = await autohdrCall<{ description?: string; text?: string }>(`/v1/photoshoots/${id}/photos/${imageUuid}/describe`, { method: "POST", body: opts, spends: false });
-    return r.data.description ?? r.data.text ?? "";
+    const body: Record<string, string> = {};
+    if (opts.image_version_uuid) body.image_version_uuid = opts.image_version_uuid;
+    if (opts.prompt) body.prompt = opts.prompt;
+    const r = await autohdrCall<{ description?: string }>(`/v1/photoshoots/${id}/photos/${imageUuid}/describe`, { method: "POST", body, spends: false });
+    return r.data.description ?? "";
   },
   /** CREDITS: the first download of each photo costs 1 credit. Never retried. */
   async download(id: number, images: { image_uuid: string; filename?: string }[]) {
@@ -345,8 +365,10 @@ export const autohdr = {
   async setVersion(id: number, imageUuid: string, versionUuid: string) {
     return (await autohdrCall<unknown>(`/v1/photoshoots/${id}/photos/${imageUuid}/version`, { method: "POST", body: { image_version_uuid: versionUuid } })).data;
   },
-  async createAssetUploads(id: number, kind: "mask" | "reference", files: { filename: string; content_type: "image/png" | "image/jpeg" }[]) {
-    return listOf<{ filename: string; url: string; s3_url: string }>((await autohdrCall<unknown>(`/v1/photoshoots/${id}/asset-uploads`, { method: "POST", body: { kind, files } })).data, "uploads", "assets");
+  /** Free. `kind` MUST be sent: it defaults to "reference", and a reference
+   *  used as a mask fails the transform with 400 invalid_mask_url. */
+  async createAssetUploads(id: number, kind: "mask" | "reference", files: { filename: string; content_type: "image/png" | "image/jpeg"; md5?: string }[]) {
+    return listOf<{ filename: string; url: string; s3_url: string }>((await autohdrCall<unknown>(`/v1/photoshoots/${id}/asset-uploads`, { method: "POST", body: { kind, files } })).data, "uploads");
   },
   /** CREDITS: charged on submit (refunded by AutoHDR when the job fails or is a no-op). Never retried. */
   async submitTransform(input: {
@@ -367,7 +389,8 @@ export const autohdr = {
     return (await autohdrCall<AutohdrTransformJob>(`/v1/transforms/${encodeURIComponent(jobId)}`)).data;
   },
   async listTransforms(photoshootId: number, state: "active" | "history" | "all" = "all") {
-    return listOf<AutohdrTransformJob>((await autohdrCall<unknown>("/v1/transforms", { query: { photoshoot_id: photoshootId, state } })).data, "transforms", "jobs");
+    // state defaults to "active" at AutoHDR, which hides finished jobs.
+    return listOf<AutohdrTransformJob>((await autohdrCall<unknown>("/v1/transforms", { query: { photoshoot_id: photoshootId, state } })).data, "jobs");
   },
 };
 
@@ -375,7 +398,7 @@ export const autohdr = {
 export async function testAutohdrCredentials(creds: { clientId: string; clientSecret: string }): Promise<{ ok: true; label: string; balance: number | null; email: string | null } | { ok: false; error: string }> {
   try {
     const full: AutohdrCredentials = { ...creds, source: "connection" };
-    tokenCache = null;
+    tokenCache.clear();
     const me = await autohdr.me(full).catch(() => null);
     const credits = await autohdr.credits(full);
     const balance = typeof credits.credit_balance === "number" ? credits.credit_balance : typeof me?.credit_balance === "number" ? me.credit_balance : null;

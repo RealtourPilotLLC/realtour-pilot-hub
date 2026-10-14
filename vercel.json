@@ -9,6 +9,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/photo-delivery",
+      "schedule": "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
+    },
+    {
       "path": "/api/cron/sync",
       "schedule": "0 * * * *"
     },
@@ -55,6 +59,10 @@
   ],
   "functions": {
     "src/app/api/cron/topaz/route.ts": {
+      "memory": 3009,
+      "maxDuration": 300
+    },
+    "src/app/api/cron/photo-delivery/route.ts": {
       "memory": 3009,
       "maxDuration": 300
     }

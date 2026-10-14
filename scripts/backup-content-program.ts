@@ -112,6 +112,10 @@ export const OPERATIONAL_CORE = [
   // for a brand change, the photographer's brief reads, and the editor's
   // per-video brief acceptance. Left unlisted, this backup refused to run.
   "FinalRenditionCheck", "DeliveryFollowUpHealth", "ClientBrandReceipt", "ShootBriefRead", "EditorBriefReceipt",
+  // Oct 13 2026: Photo Delivery (docs/photo-delivery). Listing-photo QC,
+  // fixes and the AutoHDR credit ledger: operational, not program content.
+  "PhotoJob", "PhotoAsset", "PhotoVersion", "PhotoQcRun", "PhotoQcFinding", "PhotoFixBatch", "PhotoFixOperation",
+  "AutohdrCreditEntry", "ClientQcProfile", "PhotoJobEvent",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */
