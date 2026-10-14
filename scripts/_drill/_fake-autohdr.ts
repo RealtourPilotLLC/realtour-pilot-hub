@@ -323,6 +323,11 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
       if (scripted === "lose-response") throw new Error("socket hang up (scripted: processed, response lost)");
       return json(202, jobView(j));
     }
+    // Live AutoHDR (Oct 14 2026): reading edit jobs needs images:edit.
+    if (method === "GET" && path.startsWith("/v1/transforms")) {
+      const deny = needs("images:edit");
+      if (deny) return deny;
+    }
     if (method === "GET" && path === "/v1/transforms") {
       const sid = Number(u.searchParams.get("photoshoot_id"));
       const st = u.searchParams.get("state") ?? "active";

@@ -186,7 +186,10 @@ export async function autohdrCall<T>(path: string, opts: CallOpts = {}): Promise
   const maxAttempts = isRead ? 4 : 1;
   let refreshed = false;
   let last: AutohdrError | null = null;
-  const scope = isRead ? READ_SCOPES : FULL_SCOPES;
+  // Reading an edit job needs images:edit (AutoHDR answered 403
+  // insufficient_scope on GET /v1/transforms/{id} with the read-only token, Oct
+  // 14 2026, first live fixes). A GET never spends, so the full token is safe.
+  const scope = isRead && !path.startsWith("/v1/transforms") ? READ_SCOPES : FULL_SCOPES;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const token = await bearer(creds, scope);
     let res: Response;
