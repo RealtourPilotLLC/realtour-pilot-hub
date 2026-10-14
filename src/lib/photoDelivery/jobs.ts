@@ -380,6 +380,15 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     }
   }
 
+  // Cut-off uploads (Oct 14 2026: two half-gray photos on a delivered
+  // listing): once the gallery has stopped changing, check every listing
+  // photo ends like a complete JPEG. Once per gallery version; alerts Kyle
+  // and Jordan. Not while files are still arriving (a pass that changed it).
+  if (source === "aryeo" && entries.length > 0 && !changed) {
+    const { checkGalleryIntegrity } = await import("./integrity");
+    await checkGalleryIntegrity(jobId, fp, { delivered: stage === "DELIVERED" || stage === "DELIVERING" });
+  }
+
   const next = stage === "EDITING" ? 5 * MIN : stage === "DELIVERED" ? 6 * 60 * MIN : 15 * MIN;
   await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: new Date(now.getTime() + next) } });
   return { changed, count: entries.length, stage, source };
@@ -398,6 +407,15 @@ export async function syncPhotoJobs(opts: { budgetMs: number; now?: Date }): Pro
     select: { id: true },
     take: 60,
   });
+  // Delivered in the last 7 days: a slow check (every 6 hours), so a photo
+  // replaced in Aryeo (a revision) and a cut-off upload are still seen.
+  const delivered = await prisma.photoJob.findMany({
+    where: { stage: "DELIVERED", stageChangedAt: { gte: new Date(now.getTime() - 7 * 86_400_000) }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] },
+    orderBy: [{ nextCheckAt: "asc" }],
+    select: { id: true },
+    take: 10,
+  });
+  due.push(...delivered);
   let synced = 0, changed = 0, errors = 0;
   let stoppedEarly = false;
   for (const j of due) {
