@@ -866,6 +866,18 @@ export async function finalizeUpload(
       ]);
       const missing: string[] = [];
       if (wantsPhotos && rawPhotos === 0) missing.push("the RAW-Photos folder is empty");
+      // Drone on the order but no drone frames in the raws (Oct 14 2026: the
+      // comms audit counted 35 "missing deliverable" problems, drone the most
+      // common). DJI files are recognised the same way the batch register
+      // counts them. Only when the raws are there and readable: an empty or
+      // unreadable folder is already handled above / never blocks.
+      const wantsDrone = scope !== "video" && liveDeliverables.some((d) => d.type === "DRONE");
+      if (wantsDrone && rawPhotos && rawPhotos > 0) {
+        const { dropboxListFolder } = await import("@/lib/integrations/dropbox");
+        const names = await dropboxListFolder(paths.rawPhotos, { recursive: true }).then((es) => es.filter((e) => e.tag === "file").map((e) => e.name)).catch(() => null);
+        const DRONE_FILE = /^dji|dji[_-]|drone|mavic|air ?2|^m3[_-]/i;
+        if (names && names.length > 0 && !names.some((n) => DRONE_FILE.test(n))) missing.push("drone is on this order but no drone photos (DJI files) are in RAW-Photos");
+      }
       if (wantsVideo && video && video.count === 0) missing.push("no video files anywhere in this job's Dropbox folder (a video is ordered!)");
       // Footage that landed somewhere unexpected is NOT a blocker — say where
       // it is, let the submit through, and leave a note so the editor is not
