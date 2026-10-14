@@ -315,12 +315,13 @@ export const autohdr = {
   },
   /** Every shoot of the last 7 days (AutoHDR keeps no older ones), all pages. */
   async listPhotoshoots() {
+    // `page` is ZERO-based in AutoHDR's spec (page_count pages: 0..page_count-1).
     const out: AutohdrPhotoshoot[] = [];
-    for (let page = 1; page <= 20; page++) {
+    for (let page = 0; page < 20; page++) {
       const raw = (await autohdrCall<unknown>("/v1/photoshoots", { query: { page, page_size: 100 } })).data;
       out.push(...listOf<AutohdrPhotoshoot>(raw, "photoshoots"));
       const pageCount = raw && typeof raw === "object" ? Number((raw as Record<string, unknown>).page_count) : NaN;
-      if (!Number.isFinite(pageCount) || page >= pageCount) break;
+      if (!Number.isFinite(pageCount) || page + 1 >= pageCount) break;
     }
     return out;
   },
@@ -330,11 +331,11 @@ export const autohdr = {
   /** The shoot's photos in gallery order, with `downloaded` (true = already paid for). */
   async listPhotos(id: number) {
     const out: AutohdrPhoto[] = [];
-    for (let page = 1; page <= 20; page++) {
+    for (let page = 0; page < 20; page++) {
       const raw = (await autohdrCall<unknown>(`/v1/photoshoots/${id}/photos`, { query: { page, page_size: 100 } })).data;
       out.push(...listOf<AutohdrPhoto>(raw, "photos"));
       const pageCount = raw && typeof raw === "object" ? Number((raw as Record<string, unknown>).page_count) : NaN;
-      if (!Number.isFinite(pageCount) || page >= pageCount) break;
+      if (!Number.isFinite(pageCount) || page + 1 >= pageCount) break;
     }
     return out;
   },
@@ -390,7 +391,14 @@ export const autohdr = {
   },
   async listTransforms(photoshootId: number, state: "active" | "history" | "all" = "all") {
     // state defaults to "active" at AutoHDR, which hides finished jobs.
-    return listOf<AutohdrTransformJob>((await autohdrCall<unknown>("/v1/transforms", { query: { photoshoot_id: photoshootId, state } })).data, "jobs");
+    const out: AutohdrTransformJob[] = [];
+    for (let page = 0; page < 20; page++) {
+      const raw = (await autohdrCall<unknown>("/v1/transforms", { query: { photoshoot_id: photoshootId, state, page, page_size: 100 } })).data;
+      out.push(...listOf<AutohdrTransformJob>(raw, "jobs"));
+      const pageCount = raw && typeof raw === "object" ? Number((raw as Record<string, unknown>).page_count) : NaN;
+      if (!Number.isFinite(pageCount) || page + 1 >= pageCount) break;
+    }
+    return out;
   },
 };
 
