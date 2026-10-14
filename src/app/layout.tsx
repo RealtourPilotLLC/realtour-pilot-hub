@@ -33,8 +33,9 @@ export default async function RootLayout({
 }>) {
   const cu = await getCurrentUser();
   // Serializable subset for the client Shell/Sidebar.
+  const payHidden = cu ? await import("@/lib/settings").then((m) => m.payHiddenFor(cu)).catch(() => false) : false;
   const user = cu
-    ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName }
+    ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName, payHidden }
     : null;
   return (
     <html

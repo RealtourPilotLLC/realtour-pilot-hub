@@ -47,6 +47,8 @@ export type ShellUser = {
   permissions?: string | null;
   impersonating?: boolean;
   realName?: string | null;
+  /** Oct 14 2026: pay is hidden for this login, so "My Pay" is their performance and bonus page. */
+  payHidden?: boolean;
 };
 
 type NavItem = {
@@ -236,6 +238,8 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // the override (Aug 24).
     const mypayGranted = "mypay" in perms && perms.mypay;
     if (user && user.role !== "PHOTOGRAPHER" && !mypayGranted) items = items.filter((i) => i.key !== "mypay");
+    // Oct 14 2026: with pay hidden, the same page is their performance and bonus tracker.
+    if (user?.payHidden) items = items.map((i) => (i.key === "mypay" ? { ...i, label: "My Performance" } : i));
     if (showScripting && s.title === "Creative") {
       items = [...items, { label: "Script Writing", href: scriptingUrl!, icon: PenLine, external: true }];
     }

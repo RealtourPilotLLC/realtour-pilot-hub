@@ -272,7 +272,13 @@ export async function payVisibilityRules(): Promise<PayVisibilityRules> {
  *  surface cannot forget the rule and leak the numbers around the pause. */
 export async function payHiddenFor(user: { realRole?: string; role?: string } | null): Promise<boolean> {
   const role = (user?.realRole ?? user?.role ?? "").toUpperCase();
-  if (role !== "PHOTOGRAPHER") return false;
+  // Oct 14 2026 (Jordan: "shut down the my pay for both Harrison and James ...
+  // It should just be their performance tracking page. And tracking their
+  // bonus"). The pause now covers EVERY login but the owner: James is an ADMIN
+  // with his own pay view (mypay override), and the old PHOTOGRAPHER-only test
+  // let his pay straight through. The owner (and an owner previewing with
+  // view-as, whose realRole stays OWNER) still sees every number.
+  if (!role || role === "OWNER") return false;
   return (await payVisibilityRules().catch(() => DEFAULT_PAY_VISIBILITY)).photographerPayPaused;
 }
 

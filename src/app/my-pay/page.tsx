@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp, Upload } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
-import { PayPaused } from "@/components/mypay/PayPaused";
 import { QuarterScoreCard } from "@/components/mypay/QuarterScoreCard";
 import { prisma } from "@/lib/prisma";
 import { quarterFor, scoreQuarter } from "@/lib/kpi";
@@ -76,7 +75,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   // then shows a failure is a worse lie than the one intended, and an owner
   // previewing with ?as= must still see the real thing.
   const { payHiddenFor } = await import("@/lib/settings");
-  if (await payHiddenFor(me)) return <PayPaused />;
+  if (await payHiddenFor(me)) return <MyPerformance memberId={me?.teamMemberId ?? null} />;
 
   let memberId: string | null = null;
   let showTeamLink = false;
@@ -427,6 +426,52 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
           Pay periods run two weeks and pay out the Friday after they close. Every past period is listed above — open any one to see the
           shoots behind it. <ChevronRight className="inline size-3" /> Something still not right? Flag it and Jordan gets it.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// MY PERFORMANCE (Oct 14 2026). Jordan: "shut down the my pay for both
+// Harrison and James. They should not be seeing their pay anymore on the
+// shoot page or on the my pay page. It should just be their performance
+// tracking page. And tracking their bonus." While pay is hidden this page is
+// the quarterly scorecard (the KPI areas and the bonus it is tracking toward),
+// this quarter and last, and nothing about shoot pay or mileage. Payroll
+// still runs behind it and the owner still sees every number.
+// ---------------------------------------------------------------------------
+async function MyPerformance({ memberId }: { memberId: string | null }) {
+  if (!memberId) {
+    return (
+      <div>
+        <PageHeader title="My Performance" subtitle="Your quarterly scorecard and bonus" />
+        <div className="p-6">
+          <p className="rounded-2xl border border-dashed border-border bg-surface px-4 py-8 text-center text-sm text-muted">
+            Your login isn&apos;t linked to a team member yet. Ask Jordan to connect it and your scorecard will show up here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const thisQuarter = quarterFor();
+  const lastQuarter = quarterFor(undefined, 1);
+  const [member, kpi, kpiPrev] = await Promise.all([
+    prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } }),
+    scoreQuarter({ memberId, quarter: thisQuarter }).catch(() => null),
+    scoreQuarter({ memberId, quarter: lastQuarter }).catch(() => null),
+  ]);
+  const first = member?.name?.split(" ")[0];
+  return (
+    <div>
+      <PageHeader eyebrow="Eastern time" title="My Performance" subtitle={`${first ? `${first}'s` : "Your"} quarterly scorecard and the bonus it is tracking toward`} />
+      <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
+        {kpi ? (
+          <QuarterScoreCard card={kpi} previous={kpiPrev} />
+        ) : (
+          <p className="rounded-2xl border border-dashed border-border bg-surface px-4 py-8 text-center text-sm text-muted">
+            Your scorecard couldn&apos;t be loaded just now. Try again in a minute.
+          </p>
+        )}
       </div>
     </div>
   );
