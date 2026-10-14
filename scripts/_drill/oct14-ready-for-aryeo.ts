@@ -43,7 +43,7 @@ const files = new Map<string, DFile>(); // lower path → file
 const folders = new Set<string>(); // lower paths
 const uploads: string[] = [];
 /** name → what its NEXT uploads do ("fail": an error, "short": stored a byte short). */
-const script = new Map<string, ("fail" | "short")[]>();
+const script = new Map<string, ("fail" | "short" | "busy")[]>();
 const lower = (p: string) => p.toLowerCase();
 const parentOf = (p: string) => p.slice(0, p.lastIndexOf("/"));
 function put(path: string, size: number) {
@@ -55,7 +55,8 @@ const upload = (argHeader: string, body: unknown): Response => {
   uploads.push(a.path);
   const name = a.path.split("/").pop()!;
   const next = script.get(name)?.shift();
-  if (next === "fail") return json({ error_summary: "too_many_write_operations/" }, 429 + 71); // a 500
+  if (next === "fail") return json({ error_summary: "internal_error/" }, 500);
+  if (next === "busy") return json({ error: { reason: { ".tag": "too_many_write_operations" }, retry_after: 1 }, error_summary: "" }, 429);
   if (a.mode === "add" && files.has(lower(a.path))) return json({ error_summary: "path/conflict/file/" }, 409);
   const len = (body as Uint8Array).byteLength;
   const size = next === "short" ? len - 1 : len;
@@ -137,6 +138,7 @@ async function main() {
     c.head("1 · a run: its own folder, every upload confirmed, retried, checked, swapped in");
     script.set("03-Living.jpg", ["fail"]);
     script.set("05-Bedroom.jpg", ["short"]);
+    script.set("04-Kitchen.jpg", ["busy", "busy", "busy", "busy"]); // Dropbox asks to slow down, more times than there are tries
     const balance0 = fake.state.balance;
     const req = await handoff.requestReady(job.id, { by: "Kyle" });
     c.ok("it starts at once, nothing copied yet", req.ok && req.started && req.total === 6 && uploads.length === 0, JSON.stringify(req));
@@ -149,6 +151,7 @@ async function main() {
     c.ok("the final folder holds exactly the 6 names, in order", JSON.stringify(names()) === JSON.stringify(["01-Front-Exterior.jpg", "02-Front-Exterior.jpg", "03-Living.jpg", "04-Kitchen.jpg", "05-Bedroom.jpg", "06-Bathroom.jpg"]), names().join(", "));
     c.ok("the failed upload was done again", uploads.filter((p) => p.endsWith("/03-Living.jpg")).length === 2);
     c.ok("the short one was caught (Dropbox's stored size against the bytes fetched) and done again", uploads.filter((p) => p.endsWith("/05-Bedroom.jpg")).length === 2 && [...files.values()].filter((f) => lower(parentOf(f.path)) === lower(folder)).every((f) => f.size === 2048));
+    c.ok("'too many writes' is waited out, not counted as a failure", uploads.filter((p) => p.endsWith("/04-Kitchen.jpg")).length === 5 && names().includes("04-Kitchen.jpg"));
     c.ok("uploads overwrite into the run's own folder: never a '(1)' copy", uploads.every((p) => /preparing [0-9a-f]+\//.test(p)) && !names().some((n) => /\(\d+\)/.test(n)));
     c.ok("no 'preparing' folder left behind", siblings().length === 0, siblings().join(", "));
     c.ok("links from ONE AutoHDR call for the shoot, nothing charged (re-downloads)", fake.state.balance === balance0);

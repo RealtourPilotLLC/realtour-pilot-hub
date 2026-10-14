@@ -33,7 +33,7 @@ import { photoDeliverySettings } from "./settings";
 // though the links last six hours, and AutoHDR's byte_size is not the file's
 // size (1.16 MB said, 3.08 MB served). So the hub carries the bytes itself:
 //   · each photo is fetched from AutoHDR (or Aryeo) and UPLOADED to Dropbox,
-//     three at a time; Dropbox's answer gives the stored size, which must
+//     two at a time ("too many writes" is waited out, not counted as a try); Dropbox's answer gives the stored size, which must
 //     equal what was fetched, or it is done again (three tries);
 //   · a run is built in a folder of its own ("06-Ready-for-Aryeo - preparing
 //     <id>"), so nothing from an earlier press can mix into it, and an upload
@@ -66,6 +66,8 @@ export type ReadyItem = {
   bytes: number | null;
   since: string | null;
   error: string | null;
+  /** Times Dropbox asked to slow down (not counted as tries). */
+  waits?: number;
 };
 export type ReadyRun = {
   id: string;
@@ -170,8 +172,15 @@ async function linksFor(items: ReadyItem[]): Promise<Map<string, { url?: string;
 }
 
 
-/** One try failed: copy it again, or give up after three. */
+/** One try failed: copy it again, or give up after three. Dropbox's "too many writes" (several
+ *  uploads into one folder at once) is a wait, not a failure: it does not use up a try. */
 function retry(it: ReadyItem, error: string) {
+  if (/too_many_write_operations|too_many_requests|\b429\b|retry_after/i.test(error) && (it.waits ?? 0) < 12) {
+    it.waits = (it.waits ?? 0) + 1;
+    it.error = "Dropbox asked to slow down; trying again";
+    it.state = "PENDING";
+    return;
+  }
   it.tries++;
   it.error = error.slice(0, 160);
   it.job = null;
@@ -208,7 +217,9 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
     const batch = r.items.filter((i) => i.state === "PENDING" || i.state === "COPYING").slice(0, 6);
     if (!batch.length) { r.state = "FINISHING"; return r; }
     const links = await linksFor(batch);
-    await pool(batch, 3, async (it) => {
+    // Two at a time: Dropbox locks a folder per write, more just queues "too many writes".
+    if (batch.some((i) => (i.waits ?? 0) > 0)) await sleep(1_200);
+    await pool(batch, 2, async (it) => {
       const l = links.get(it.photoId);
       const path = `${r.staging}/${it.name}`;
       if (!l || l.error) { retry(it, l?.error ?? "no link"); return; }
