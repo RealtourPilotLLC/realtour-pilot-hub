@@ -3,7 +3,7 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { actualFolderPaths } from "@/lib/dropboxFolders";
-import { dbx, dropboxCreateFolder, dropboxDelete, dropboxListFolder, dropboxMoveFolder } from "@/lib/integrations/dropbox";
+import { dbx, dropboxCreateFolder, dropboxDelete, dropboxListFolder, dropboxMoveFolder, dropboxUpload } from "@/lib/integrations/dropbox";
 import { deliveryOrderFor } from "./delivery";
 import { logJobEvent } from "./jobState";
 import { photoDeliverySettings } from "./settings";
@@ -16,8 +16,8 @@ import { photoDeliverySettings } from "./settings";
 // the listing on Aryeo so Kyle can just download them, click the Aryeo button,
 // upload them to Aryeo and send them."
 //
-// A full-size gallery (~250 MB) is too big to stream out of a hub function, so
-// Dropbox fetches the files itself (files/save_url): every photo in the
+// The hub copies the finished photos into Dropbox one by one (a zip of the
+// whole gallery is too big to stream from a hub function): every photo in the
 // delivery order, its CURRENT version (the AI fixes included), named
 // "01-Front-Exterior.jpg", "02-Living.jpg", … The deliver panel's first step
 // opens the folder (Dropbox's own Download button gives one zip); the second
@@ -26,19 +26,24 @@ import { photoDeliverySettings } from "./settings";
 // COPIED FOR CERTAIN, NO DUPLICATES (Oct 14 2026, Jordan: "the copying to
 // dropbox is taking too long can we make sure its actually being copied and
 // also that there are not duplicates in the final folder when getting them
-// ready again"). 116 W Windsor sat at 24 of 30 for hours: save_url is a
-// background job at Dropbox, the first version never asked how each one ended,
-// and six had failed. Now every copy is a RUN:
-//   · it is built in a folder of its own ("06-Ready-for-Aryeo - preparing
-//     <id>"), so a copy still landing from an earlier press can never mix
-//     into it;
-//   · every Dropbox job is asked until it says complete; a failed or stuck
-//     one is copied again with a fresh link (three tries);
-//   · at the end the folder is listed: each photo must be there at the size
-//     AutoHDR gave, anything else is removed, and only then is it swapped in
-//     as 06-Ready-for-Aryeo (old folder out, new one renamed in);
+// ready again"). 116 W Windsor sat at 24 of 30 for hours: Dropbox's own
+// fetch (files/save_url) is a background job, the first version never asked
+// how each one ended, and six had failed. Measured live the same afternoon:
+// Dropbox's fetch of AutoHDR's links fails often ("download_failed") even
+// though the links last six hours, and AutoHDR's byte_size is not the file's
+// size (1.16 MB said, 3.08 MB served). So the hub carries the bytes itself:
+//   · each photo is fetched from AutoHDR (or Aryeo) and UPLOADED to Dropbox,
+//     three at a time; Dropbox's answer gives the stored size, which must
+//     equal what was fetched, or it is done again (three tries);
+//   · a run is built in a folder of its own ("06-Ready-for-Aryeo - preparing
+//     <id>"), so nothing from an earlier press can mix into it, and an upload
+//     overwrites, never "(1)" renames;
+//   · at the end the folder is listed: every photo there at its size,
+//     anything else removed, and ONLY when every photo made it is it swapped
+//     in as 06-Ready-for-Aryeo. A run that could not copy them all leaves the
+//     folder Kyle has untouched and says which failed;
 //   · links come from ONE AutoHDR call per shoot (free: the photos were
-//     downloaded once already), and Dropbox gets several copies at a time.
+//     downloaded once already).
 // The run lives in AppSetting "photo_ready_run:<jobId>" (compare-and-swap
 // writes, a short lease so the button, the progress bar and the cron never
 // drive one run twice). Anyone can move it on: the press itself (after the
@@ -49,7 +54,6 @@ export const READY_FOLDER = "06-Ready-for-Aryeo";
 const PREPARING = ` - preparing `;
 const RUN_KEY = (jobId: string) => `photo_ready_run:${jobId}`;
 const MAX_TRIES = 3;
-const STUCK_MS = 8 * 60_000;
 const LEASE_MS = 40_000;
 
 export type ReadyItem = {
@@ -165,7 +169,6 @@ async function linksFor(items: ReadyItem[]): Promise<Map<string, { url?: string;
   return out;
 }
 
-const tagOf = (r: unknown): string => String((r as { [".tag"]?: string })?.[".tag"] ?? "");
 
 /** One try failed: copy it again, or give up after three. */
 function retry(it: ReadyItem, error: string) {
@@ -201,47 +204,34 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
     return r;
   }
   if (r.state === "COPYING") {
-    let changed = false;
-    // 1. Start the copies that are waiting (several at a time).
-    const pending = r.items.filter((i) => i.state === "PENDING").slice(0, 12);
-    if (pending.length) {
-      changed = true;
-      const links = await linksFor(pending);
-      await pool(pending, 4, async (it) => {
-        const l = links.get(it.photoId);
-        const path = `${r.staging}/${it.name}`;
-        if (!l || l.error) { retry(it, l?.error ?? "no link"); return; }
-        try {
-          if (l.dropboxPath) {
-            await dbx("files/copy_v2", { from_path: l.dropboxPath, to_path: path, autorename: false });
-            it.state = "DONE"; it.error = null; it.job = null;
-            return;
-          }
-          if (it.tries > 0) await dropboxDelete(path).catch(() => {}); // a half-landed earlier try
-          const res = await dbx<{ [".tag"]: string; async_job_id?: string }>("files/save_url", { path, url: l.url });
-          it.bytes = l.bytes ?? it.bytes;
-          if (tagOf(res) === "complete") { it.state = "DONE"; it.error = null; it.job = null; }
-          else { it.state = "COPYING"; it.job = res.async_job_id ?? null; it.since = new Date().toISOString(); it.error = null; }
-        } catch (e) {
-          retry(it, (e as Error).message);
-        }
-      });
-    }
-    // 2. Ask Dropbox how the running ones are doing.
-    const running = r.items.filter((i) => i.state === "COPYING" && i.job && !pending.includes(i)).slice(0, 24);
-    await pool(running, 6, async (it) => {
+    // The hub fetches each photo and uploads it: confirmed on the spot, at its size.
+    const batch = r.items.filter((i) => i.state === "PENDING" || i.state === "COPYING").slice(0, 6);
+    if (!batch.length) { r.state = "FINISHING"; return r; }
+    const links = await linksFor(batch);
+    await pool(batch, 3, async (it) => {
+      const l = links.get(it.photoId);
+      const path = `${r.staging}/${it.name}`;
+      if (!l || l.error) { retry(it, l?.error ?? "no link"); return; }
       try {
-        const s = await dbx<{ [".tag"]: string; size?: number; failed?: unknown }>("files/save_url/check_job_status", { async_job_id: it.job });
-        const tag = tagOf(s);
-        if (tag === "complete") { it.state = "DONE"; it.job = null; it.error = null; changed = true; }
-        else if (tag === "failed") { retry(it, `Dropbox could not copy it (${JSON.stringify(s.failed ?? "").slice(0, 80)})`); changed = true; }
-        else if (it.since && Date.now() - Date.parse(it.since) > STUCK_MS) { retry(it, "Dropbox took too long"); changed = true; }
+        if (l.dropboxPath) {
+          await dbx("files/copy_v2", { from_path: l.dropboxPath, to_path: path, autorename: false });
+          it.state = "DONE"; it.error = null;
+          return;
+        }
+        const res = await fetch(l.url!, { cache: "no-store", signal: AbortSignal.timeout(60_000) });
+        if (!res.ok) throw new Error(`the photo link answered ${res.status}`);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (bytes.length < 1024) throw new Error(`the photo came back ${bytes.length} bytes`);
+        const up = await dropboxUpload(path, bytes, { overwrite: true, autorename: false });
+        if (up.size != null && up.size !== bytes.length) throw new Error(`Dropbox stored ${up.size} bytes of ${bytes.length}`);
+        it.bytes = bytes.length;
+        it.state = "DONE"; it.error = null; it.job = null;
       } catch (e) {
-        if (it.since && Date.now() - Date.parse(it.since) > STUCK_MS) { retry(it, (e as Error).message); changed = true; }
+        retry(it, (e as Error).message);
       }
     });
-    if (!r.items.some((i) => i.state === "PENDING" || i.state === "COPYING")) { r.state = "FINISHING"; changed = true; }
-    return changed ? r : null;
+    if (!r.items.some((i) => i.state === "PENDING" || i.state === "COPYING")) r.state = "FINISHING";
+    return r;
   }
   if (r.state === "FINISHING") {
     // 3. Check the folder itself: every photo there, at its size; nothing else.
@@ -263,6 +253,16 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
       }
     }
     if (reset) { r.state = "COPYING"; return r; }
+    const failedNow = r.items.filter((i) => i.state === "FAILED");
+    if (failedNow.length) {
+      // Never swap in a short folder: what Kyle has stays as it is.
+      await dropboxDelete(r.staging).catch(() => {});
+      await logJobEvent(jobId, "ready-for-aryeo", `Could not get all ${r.items.length} photos ready: ${failedNow.length} failed (${failedNow.slice(0, 5).map((i) => `${i.name}: ${i.error ?? "?"}`).join("; ")}). The folder was left as it was.`, { fingerprint: r.fingerprint, failed: failedNow.map((i) => i.name), run: r.id, swapped: false });
+      r.state = "DONE";
+      r.finishedAt = new Date().toISOString();
+      r.note = `${failedNow.length} of ${r.items.length} could not be copied (${failedNow.slice(0, 3).map((i) => i.name).join(", ")}), so the folder was not replaced. Press Get them ready again.`;
+      return r;
+    }
     // 4. Swap it in: the old folder out, this one renamed in.
     await dropboxDelete(r.folder).catch(() => {});
     let moved = await dropboxMoveFolder(r.staging, r.folder).catch(() => false);
@@ -273,7 +273,7 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
     if (!moved) { r.note = "Dropbox would not swap the folder in yet; trying again."; return r; }
     await sweepPreparing(r.folder, null);
     const done = r.items.filter((i) => i.state === "DONE").length;
-    const failed = r.items.filter((i) => i.state === "FAILED");
+    const failed: ReadyItem[] = [];
     await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryPath: r.folder, deliveryStagedAt: new Date() } });
     await logJobEvent(jobId, "ready-for-aryeo", `${done} of ${r.items.length} photo${r.items.length === 1 ? "" : "s"} in ${READY_FOLDER}, numbered in delivery order, each one checked in the folder${failed.length ? ` (${failed.length} could not be copied: ${failed.slice(0, 5).map((i) => i.name).join(", ")})` : ""}${r.by ? ` (asked by ${r.by})` : ""}`, { fingerprint: r.fingerprint, staged: done, failed: failed.map((i) => i.name), run: r.id });
     r.state = "DONE";
@@ -294,9 +294,11 @@ export async function requestReady(jobId: string, opts: { force?: boolean; by?: 
   if (!cur.folder) return { ok: false, started: false, message: "This job has no Dropbox folder.", total: 0 };
   if (!cur.order.length) return { ok: false, started: false, message: "No photos in the delivery yet.", total: 0 };
   const { run, raw } = await load(jobId);
+  // Same photos and versions: leave it. A run that could not copy them all is
+  // retried by a person's press, never by the cron every five minutes.
   if (run && !opts.force && run.fingerprint === cur.fingerprint) {
     if (run.state !== "DONE") return { ok: true, started: false, message: "Already getting them ready.", total: run.items.length };
-    if (!run.items.some((i) => i.state === "FAILED")) return { ok: true, started: false, message: "Already up to date.", total: run.items.length };
+    return { ok: true, started: false, message: run.items.some((i) => i.state === "FAILED") ? "The last try could not copy them all. Press Get them ready again." : "Already up to date.", total: run.items.length };
   }
   const id = randomBytes(4).toString("hex");
   const now = new Date().toISOString();
@@ -427,7 +429,8 @@ export async function stageReadyJobs(opts: { max?: number; budgetMs?: number } =
     const left = budget - (Date.now() - t0);
     if (left < 5_000) break;
     const jobId = row.key.slice("photo_ready_run:".length);
-    await advanceReady(jobId, { budgetMs: Math.min(left, 60_000) }).catch(() => null);
+    // A share of the time each, so every shoot moves on in one pass.
+    await advanceReady(jobId, { budgetMs: Math.min(left, Math.max(8_000, Math.floor(budget / Math.max(1, live.length)))) }).catch(() => null);
     moved.push(jobId);
   }
   return { started, moved };

@@ -10,14 +10,16 @@
 // bar at the bottom of the page and confirmation that it's getting ready."
 // And: "I want a button that can skip all QC findings for a shoot."
 //
-// A Dropbox fake that behaves like the real one: save_url is a background job
-// that lands only after a few status checks, one copy fails, one lands at the
-// wrong size, and a copy from an EARLIER press lands late.
-//   1. A run copies into its own folder, asks every job until it is done,
-//      copies the failed one again, catches the wrong size, then swaps the
-//      folder in: exactly the expected names, nothing else.
-//   2. Pressed again mid-copy: the late copy from the first press never reaches
-//      the final folder; no duplicates.
+// The hub fetches each photo and uploads it (Dropbox's own fetch, save_url,
+// failed live and AutoHDR's byte_size is not the file's size). A Dropbox fake
+// where one upload fails, one is stored short, and a write from an EARLIER
+// press lands late in its own folder.
+//   1. A run uploads into its own folder, confirms each size, uploads the
+//      failed and the short one again, then swaps the folder in: exactly the
+//      expected names, nothing else.
+//   2. Pressed again mid-copy: the earlier press's late write never reaches
+//      the final folder; no duplicates. A photo that cannot be copied at all
+//      leaves the folder Kyle has untouched.
 //   3. Links: one free AutoHDR call per shoot, nothing charged.
 //   4. The button answers at once (the copy runs after); the bar's poll moves
 //      it on; the panel says preparing, then ready.
@@ -32,45 +34,36 @@ import { createFakeAutohdr } from "./_fake-autohdr";
 
 installNextStubs();
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const fake = createFakeAutohdr({ transforms: [{ name: "reedit", credit_cost: 1 }], balance: 100, clientId: "cid", clientSecret: "drill-secret-1234567890" });
+// A photo is a couple of kilobytes here (the hub refuses anything under 1 KB as not a photo).
+const fake = createFakeAutohdr({ transforms: [{ name: "reedit", credit_cost: 1 }], balance: 100, clientId: "cid", clientSecret: "drill-secret-1234567890", imageBytes: () => { const b = new Uint8Array(2048); b[0] = 0xff; b[1] = 0xd8; return b; } });
 
-// ---- a Dropbox that copies in the background --------------------------------------------------
+// ---- a Dropbox that stores what the hub uploads --------------------------------------------------
 type DFile = { path: string; size: number };
 const files = new Map<string, DFile>(); // lower path → file
 const folders = new Set<string>(); // lower paths
-type Job = { id: string; path: string; url: string; checksLeft: number; outcome: "ok" | "fail" | "short" };
-const jobs = new Map<string, Job>();
-let jobSeq = 0;
-const saveUrlCalls: string[] = [];
-/** name → what its NEXT copy does ("fail" once, "short" once). */
+const uploads: string[] = [];
+/** name → what its NEXT uploads do ("fail": an error, "short": stored a byte short). */
 const script = new Map<string, ("fail" | "short")[]>();
 const lower = (p: string) => p.toLowerCase();
 const parentOf = (p: string) => p.slice(0, p.lastIndexOf("/"));
-function land(j: Job): { ok: boolean; why?: string } {
-  if (j.outcome === "fail") return { ok: false, why: "download_failed" };
-  if (files.has(lower(j.path))) return { ok: false, why: "path/conflict/file" };
-  folders.add(lower(parentOf(j.path))); // save_url makes the parent folder
-  files.set(lower(j.path), { path: j.path, size: j.outcome === "short" ? 3 : 4 });
-  return { ok: true };
+function put(path: string, size: number) {
+  folders.add(lower(parentOf(path))); // an upload makes the parent folder
+  files.set(lower(path), { path, size });
 }
+const upload = (argHeader: string, body: unknown): Response => {
+  const a = JSON.parse(argHeader) as { path: string; mode: string; autorename: boolean };
+  uploads.push(a.path);
+  const name = a.path.split("/").pop()!;
+  const next = script.get(name)?.shift();
+  if (next === "fail") return json({ error_summary: "too_many_write_operations/" }, 429 + 71); // a 500
+  if (a.mode === "add" && files.has(lower(a.path))) return json({ error_summary: "path/conflict/file/" }, 409);
+  const len = (body as Uint8Array).byteLength;
+  const size = next === "short" ? len - 1 : len;
+  put(a.path, size);
+  return json({ name, path_display: a.path, size });
+};
 const dropbox = (ep: string, a: Record<string, unknown>): Response => {
   const path = String(a.path ?? "");
-  if (ep === "files/save_url") {
-    saveUrlCalls.push(path);
-    const name = path.split("/").pop()!;
-    const next = script.get(name)?.shift();
-    const j: Job = { id: `job-${++jobSeq}`, path, url: String(a.url), checksLeft: 2, outcome: next ?? "ok" };
-    jobs.set(j.id, j);
-    return json({ ".tag": "async_job_id", async_job_id: j.id });
-  }
-  if (ep === "files/save_url/check_job_status") {
-    const j = jobs.get(String(a.async_job_id));
-    if (!j) return json({ error_summary: "invalid_async_job_id/" }, 409);
-    if (j.checksLeft-- > 0) return json({ ".tag": "in_progress" });
-    jobs.delete(j.id);
-    const r = land(j);
-    return r.ok ? json({ ".tag": "complete", name: j.path.split("/").pop(), size: j.outcome === "short" ? 3 : 4 }) : json({ ".tag": "failed", failed: { ".tag": r.why } });
-  }
   if (ep === "files/create_folder_v2") { folders.add(lower(path)); return json({ metadata: { name: path.split("/").pop(), path_display: path, id: "id:f" } }); }
   if (ep === "files/delete_v2") {
     const pre = lower(path);
@@ -99,15 +92,12 @@ const dropbox = (ep: string, a: Record<string, unknown>): Response => {
   }
   return json({ error_summary: `unstubbed ${ep}` }, 400);
 };
-/** Dropbox finishes every background copy (including any from an earlier press). */
-function landEverything() {
-  for (const j of [...jobs.values()]) { jobs.delete(j.id); land(j); }
-}
 
 const fence = fenceFetch(async (url, init) => {
   const viaFake = await fake.handle(url, init);
   if (viaFake) return viaFake;
   if (url === "https://api.dropbox.com/oauth2/token") return json({ access_token: "drill-dbx", expires_in: 14_400 });
+  if (url === "https://content.dropboxapi.com/2/files/upload") return upload(new Headers(init?.headers).get("Dropbox-API-Arg") ?? "{}", init?.body);
   if (url.startsWith("https://api.dropboxapi.com/2/")) return dropbox(url.slice("https://api.dropboxapi.com/2/".length), typeof init?.body === "string" ? JSON.parse(init.body) : {});
   if (url.startsWith("https://slack.com/api/")) return json({ ok: true, channel: "D1", ts: "1" });
   return null;
@@ -144,19 +134,22 @@ async function main() {
     const siblings = () => [...folders].filter((k) => parentOf(k) === lower(parentOf(folder)) && k.includes("preparing"));
 
     // ======================================================================
-    c.head("1 · a run: its own folder, every copy confirmed, retried, checked, swapped in");
+    c.head("1 · a run: its own folder, every upload confirmed, retried, checked, swapped in");
     script.set("03-Living.jpg", ["fail"]);
     script.set("05-Bedroom.jpg", ["short"]);
     const balance0 = fake.state.balance;
     const req = await handoff.requestReady(job.id, { by: "Kyle" });
-    c.ok("it starts at once, nothing copied yet", req.ok && req.started && req.total === 6 && saveUrlCalls.length === 0, JSON.stringify(req));
+    c.ok("it starts at once, nothing copied yet", req.ok && req.started && req.total === 6 && uploads.length === 0, JSON.stringify(req));
     const p1 = await handoff.advanceReady(job.id, { budgetMs: 1 });
     c.ok("first step: a fresh folder of its own, nothing in the final folder yet", p1?.active === true && siblings().length === 1 && names().length === 0, JSON.stringify(p1));
+    const midState = await handoff.readyFolderState(job.id, 6);
+    c.ok("while copying, the panel's state says preparing, not ready", midState?.preparing === true && midState.ready === false && midState.total === 6, JSON.stringify(midState));
     const p2 = await handoff.advanceReady(job.id, { budgetMs: 30_000 });
     c.ok("it finishes: 6 of 6, none failed", p2?.active === false && p2.done === 6 && p2.failed === 0, JSON.stringify(p2));
     c.ok("the final folder holds exactly the 6 names, in order", JSON.stringify(names()) === JSON.stringify(["01-Front-Exterior.jpg", "02-Front-Exterior.jpg", "03-Living.jpg", "04-Kitchen.jpg", "05-Bedroom.jpg", "06-Bathroom.jpg"]), names().join(", "));
-    c.ok("the failed copy was copied again", saveUrlCalls.filter((p) => p.endsWith("/03-Living.jpg")).length === 2);
-    c.ok("the wrong-size copy was caught and copied again: every file is the size AutoHDR gave", saveUrlCalls.filter((p) => p.endsWith("/05-Bedroom.jpg")).length === 2 && [...files.values()].filter((f) => lower(parentOf(f.path)) === lower(folder)).every((f) => f.size === 4));
+    c.ok("the failed upload was done again", uploads.filter((p) => p.endsWith("/03-Living.jpg")).length === 2);
+    c.ok("the short one was caught (Dropbox's stored size against the bytes fetched) and done again", uploads.filter((p) => p.endsWith("/05-Bedroom.jpg")).length === 2 && [...files.values()].filter((f) => lower(parentOf(f.path)) === lower(folder)).every((f) => f.size === 2048));
+    c.ok("uploads overwrite into the run's own folder: never a '(1)' copy", uploads.every((p) => /preparing [0-9a-f]+\//.test(p)) && !names().some((n) => /\(\d+\)/.test(n)));
     c.ok("no 'preparing' folder left behind", siblings().length === 0, siblings().join(", "));
     c.ok("links from ONE AutoHDR call for the shoot, nothing charged (re-downloads)", fake.state.balance === balance0);
     const ev = await prisma.photoJobEvent.findFirst({ where: { jobId: job.id, actor: "ready-for-aryeo" }, orderBy: { at: "desc" } });
@@ -165,19 +158,28 @@ async function main() {
     c.ok("nothing changed: not copied again", again.ok && !again.started && /up to date/.test(again.message));
 
     // ======================================================================
-    c.head("2 · pressed again while copying: no duplicates, no leftovers");
+    c.head("2 · pressed again while copying: no duplicates, no leftovers; a short run never replaces the folder");
     await prisma.photoAsset.update({ where: { id: photos[2].id }, data: { status: "EXCLUDED" } as never }).catch(async () => prisma.photoAsset.update({ where: { id: photos[2].id }, data: { status: "GONE" } as never }));
     const r1 = await handoff.requestReady(job.id, { force: true, by: "Kyle" });
-    await handoff.advanceReady(job.id, { budgetMs: 1 }); // folder made
-    await handoff.advanceReady(job.id, { budgetMs: 1 }); // copies started, still at Dropbox
-    const inFlight = jobs.size;
+    await handoff.advanceReady(job.id, { budgetMs: 1 }); // the first press makes its folder
+    const firstStaging = siblings()[0];
     const r2 = await handoff.requestReady(job.id, { force: true, by: "Kyle" }); // pressed again
-    landEverything(); // the first press's copies land late, in its own folder
+    put(`${firstStaging}/03-Kitchen-STALE.jpg`, 2048); // the first press's last write lands late, in its own folder
     const p3 = await handoff.advanceReady(job.id, { budgetMs: 30_000 });
-    c.ok("both presses accepted; the first was still copying", r1.started && r2.started && inFlight > 0, `${inFlight} in flight`);
+    c.ok("both presses accepted", r1.started && r2.started && !!firstStaging, String(firstStaging));
     c.ok("the second run finishes: 5 of 5", p3?.active === false && p3.done === 5 && p3.total === 5, JSON.stringify(p3));
     c.ok("the final folder holds exactly the 5 current names: no duplicates, no stale ones", JSON.stringify(names()) === JSON.stringify(["01-Front-Exterior.jpg", "02-Front-Exterior.jpg", "03-Kitchen.jpg", "04-Bedroom.jpg", "05-Bathroom.jpg"]), names().join(", "));
-    c.ok("the first press's late copies were swept away with its folder", siblings().length === 0, siblings().join(", "));
+    c.ok("the first press's folder (and its late write) was swept away", siblings().length === 0, siblings().join(", "));
+    const before = names().join(",");
+    script.set("02-Front-Exterior.jpg", ["fail", "fail", "fail"]);
+    const r3 = await handoff.requestReady(job.id, { force: true, by: "Kyle" });
+    const p4 = await handoff.advanceReady(job.id, { budgetMs: 30_000 });
+    c.ok("a photo that cannot be copied after three tries: the run stops and says which", r3.started && p4?.active === false && p4.failed === 1 && /02-Front-Exterior\.jpg/.test(p4.note ?? "") && /not replaced/.test(p4.note ?? ""), JSON.stringify(p4));
+    c.ok("…and the folder Kyle has is untouched", names().join(",") === before && siblings().length === 0, names().join(","));
+    const rs = await handoff.readyFolderState(job.id, 5);
+    c.ok("the panel says it is not ready and why", rs?.ready === false && rs.failed === 1 && /not replaced/.test(rs.note ?? ""), JSON.stringify(rs));
+    const cronAgain = await handoff.requestReady(job.id);
+    c.ok("the cron does not retry it every five minutes: a person presses again", !cronAgain.started && /Press Get them ready again/.test(cronAgain.message), cronAgain.message);
 
     // ======================================================================
     c.head("3 · the button answers at once; the bar follows the copy");
@@ -188,7 +190,7 @@ async function main() {
     c.ok("the press answers at once, with the confirmation", press.ok && /Getting the 5 photos ready/.test(press.message) && /bar at the bottom/.test(press.message) && Date.now() - t0 < 5_000, `${press.message} (${Date.now() - t0} ms)`);
     const D = await import("@/lib/photoDelivery/delivery");
     const mid = await D.deliverySteps(job.id);
-    c.ok("while copying, the panel says preparing", mid.ready?.preparing === true && mid.ready.ready === false, JSON.stringify(mid.ready));
+    c.ok("right after the press the panel shows the new run (preparing, or already done: uploads are quick)", mid.ready?.preparing === true || (mid.ready?.ready === true && mid.ready.files === 5), JSON.stringify(mid.ready));
     let last = null as Awaited<ReturnType<typeof actions.readyProgressAction>> | null;
     for (let i = 0; i < 60; i++) {
       last = await actions.readyProgressAction(job.id);

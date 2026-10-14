@@ -354,7 +354,7 @@ export async function dropboxUpload(
   path: string,
   bytes: Buffer | Uint8Array,
   opts: { overwrite?: boolean; autorename?: boolean } = {},
-): Promise<{ pathDisplay: string }> {
+): Promise<{ pathDisplay: string; size: number | null }> {
   const token = await dropboxAccessToken();
   const mode = opts.overwrite ? "overwrite" : "add";
   const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
@@ -372,8 +372,9 @@ export async function dropboxUpload(
     const t = await res.text();
     throw new DropboxError(`Dropbox upload failed: ${t.slice(0, 160)}`, res.status);
   }
-  const j = (await res.json().catch(() => ({}))) as { path_display?: string };
-  return { pathDisplay: j.path_display ?? path };
+  const j = (await res.json().catch(() => ({}))) as { path_display?: string; size?: number };
+  // size: what Dropbox stored (Oct 14 2026: the Aryeo folder checks every copy against it).
+  return { pathDisplay: j.path_display ?? path, size: typeof j.size === "number" ? j.size : null };
 }
 
 // Download a file's raw bytes (content API). Throws DropboxError (status 409 with

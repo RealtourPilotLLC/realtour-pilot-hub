@@ -40,11 +40,18 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 // Aryeo listings by id.
 const listings = new Map<string, { id: string; filename: string; original_url: string; index: number }[]>();
 
-const fake = createFakeAutohdr({ transforms: [], models: [{ id: 1, name: "Classic", type: "predefined", variant: "indoor", style_credit_cost: 1 }], balance: 300, clientId: "cid", clientSecret: "drill-secret-1234567890" });
+const fake = createFakeAutohdr({ transforms: [], models: [{ id: 1, name: "Classic", type: "predefined", variant: "indoor", style_credit_cost: 1 }], balance: 300, clientId: "cid", clientSecret: "drill-secret-1234567890", imageBytes: () => { const b = new Uint8Array(2048); b[0] = 0xff; b[1] = 0xd8; return b; } });
 const fence = fenceFetch(async (url, init) => {
   const viaFake = await fake.handle(url, init);
   if (viaFake) return viaFake;
   if (url === "https://api.dropbox.com/oauth2/token") return json({ access_token: "drill-dbx", expires_in: 14_400 });
+  // Oct 14 2026: the Aryeo folder is filled by uploads the hub makes itself.
+  if (url === "https://content.dropboxapi.com/2/files/upload") {
+    const a = JSON.parse(new Headers(init?.headers).get("Dropbox-API-Arg") ?? "{}") as { path: string };
+    const size = (init?.body as Uint8Array)?.byteLength ?? 0;
+    saved.push({ path: a.path, url: `upload:${size}` });
+    return json({ path_display: a.path, size });
+  }
   if (url.startsWith("https://api.dropboxapi.com/2/")) {
     const ep = url.slice("https://api.dropboxapi.com/2/".length);
     const arg = typeof init?.body === "string" ? (JSON.parse(init.body) as { path?: string }) : {};
@@ -60,7 +67,7 @@ const fence = fenceFetch(async (url, init) => {
     if (ep === "files/delete_v2") { const pre = (arg.path ?? "").toLowerCase(); for (let i = saved.length - 1; i >= 0; i--) if (saved[i].path.toLowerCase().startsWith(pre + "/")) saved.splice(i, 1); return json({ metadata: {} }); }
     if (ep === "files/create_folder_v2") return json({ metadata: { name: "x", path_display: arg.path, id: "id:f" } });
     if (ep === "files/list_folder" && /06-ready-for-aryeo( - preparing [0-9a-f]+)?$/i.test(arg.path ?? "")) {
-      return json({ entries: saved.filter((f) => f.path.toLowerCase().startsWith((arg.path ?? "").toLowerCase() + "/")).map((f) => ({ ".tag": "file", name: f.path.split("/").pop(), path_display: f.path, id: `id:${f.path}`, size: 4 })), has_more: false });
+      return json({ entries: saved.filter((f) => f.path.toLowerCase().startsWith((arg.path ?? "").toLowerCase() + "/")).map((f) => ({ ".tag": "file", name: f.path.split("/").pop(), path_display: f.path, id: `id:${f.path}`, size: Number(f.url.split(":")[1]) || 4 })), has_more: false });
     }
     if (ep === "files/list_folder") {
       const files = dbx.get((arg.path ?? "").toLowerCase());
@@ -191,7 +198,7 @@ async function main() {
     const st = await handoff.stageForAryeo(jobW.id);
     c.ok("5 photos copied into 06-Ready-for-Aryeo", st.ok && st.staged === 5 && saved.length === 5 && saved.every((f) => /\/116 W Windsor St \(Nehemiah Drill\)\/06-Ready-for-Aryeo\//.test(f.path)), JSON.stringify(st));
     const inOrder = [...saved].sort((a, b) => a.path.localeCompare(b.path));
-    c.ok("numbered in delivery order, from AutoHDR's current version (free)", inOrder.every((f, i) => new RegExp(`/0${i + 1}-`).test(f.path) && f.url.startsWith("https://autohdr-fake.s3.amazonaws.com/")) && fake.state.balance === before3b, inOrder.map((f) => f.path.split("/").pop()).join(", "));
+    c.ok("numbered in delivery order, the photo's bytes uploaded (re-download free)", inOrder.every((f, i) => new RegExp(`/0${i + 1}-`).test(f.path) && f.url === "upload:2048") && fake.state.balance === before3b, inOrder.map((f) => `${f.path.split("/").pop()} ${f.url}`).join(", "));
     c.ok("the job points at the folder", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } })).deliveryPath?.endsWith("06-Ready-for-Aryeo") === true);
     const st2 = await handoff.stageForAryeo(jobW.id);
     c.ok("nothing changed: not copied again", st2.staged === 0 && saved.length === 5, st2.message);
