@@ -177,6 +177,9 @@ export async function analyzeRevisionText(opts: {
    *  deliverable LABELS — one line for four videos — so it could not have said
    *  which video an ask was about even when the client did (WF-03). */
   cuts?: BriefCut[];
+  /** Oct 14 2026: the conversation around the ask (both sides, timed), for
+   *  context only: what "that frame" means, and what was already settled. */
+  conversation?: string | null;
 }): Promise<RevisionAnalysis> {
   const cuts = opts.cuts ?? [];
   const refOf = (i: number) => `V${i + 1}`;
@@ -199,7 +202,7 @@ export async function analyzeRevisionText(opts: {
 
   const raw = await aiJson<RevisionAnalysis>({
     system: SYSTEM,
-    prompt: `${context}\n\n--- WHAT THE CLIENT SAID ---\n${opts.text.slice(0, MAX_INPUT)}`,
+    prompt: `${context}\n\n--- WHAT THE CLIENT SAID ---\n${opts.text.slice(0, MAX_INPUT)}${opts.conversation ? `\n\n--- THE CONVERSATION AROUND IT (context only, oldest first) ---\n${opts.conversation.slice(0, 6000)}\n\nUse the conversation to understand the ask (what "this", "that frame" or "the other version" refers to, who said what). Take items ONLY from what the client said above. Leave out any ask that our team or the client already said is not needed in the conversation, unless the client asks for it again after that.` : ""}`,
     schema: SCHEMA as unknown as Record<string, unknown>,
     maxTokens: 4000,
   });
@@ -482,7 +485,14 @@ export async function createRevisionBrief(opts: {
   if (!text.trim()) return null;
   // Don't spend a model call on "can you brighten the kitchen photo" — a short
   // ask is already a work order. The card renders it as one item.
-  const worthAnalyzing = text.length >= 240 && !opts.skipAnalysis && !opts.pin;
+  const pinEarly = opts.pin;
+  // Oct 14 2026 (Jordan: texts are analyzed with the conversation "any time a
+  // decision is being made"): an ask that came out of a conversation (a text,
+  // an email, a call, a portal or team message) is always read, pinned or
+  // not, so "that frame" and "the other version" mean what the conversation
+  // says. A portal Submit (its own notes) and a staff receipt stay as written.
+  const conversational = !opts.skipAnalysis && !pinEarly?.decisionId && opts.source !== "review_room_staff" && opts.source !== "portal";
+  const worthAnalyzing = !opts.skipAnalysis && (conversational || (text.length >= 240 && !opts.pin));
   const pin = opts.pin;
   const items = pin?.cutKey ? pinnedItems(text, pin.cutKey) : null;
   // THE ROUND'S CLOCK (A52, §3): written once, here, and never by a re-read.
@@ -608,6 +618,7 @@ export async function analyzeBrief(
       source: true,
       originalText: true,
       twoSided: true,
+      createdAt: true,
       // A pinned brief (CP-03) keeps its cut through a re-analysis too.
       submissionId: true,
       outputId: true,
@@ -615,6 +626,7 @@ export async function analyzeBrief(
       project: {
         select: {
           title: true,
+          clientId: true,
           client: { select: { name: true } },
           deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
         },
@@ -639,7 +651,12 @@ export async function analyzeBrief(
     // The cut list is what lets an item say WHICH video (WF-03). A job with no
     // video slots simply gets none, and every item stays unplaced.
     const cuts = await briefCutsFor(brief.projectId).catch(() => [] as BriefCut[]);
+    // The conversation around a text or email ask (a call transcript already carries both sides).
+    const conversation = !brief.twoSided && brief.project?.clientId
+      ? await import("@/lib/conversationContext").then(async (m) => m.convoBlock(await m.recentConversation(brief.project!.clientId, { before: new Date(brief.createdAt.getTime() + 60_000), since: new Date(brief.createdAt.getTime() - 3 * 86_400_000), limit: 14, teamChatProjectIds: [brief.projectId], clientName: brief.project?.client?.name ?? null }))).catch(() => null)
+      : null;
     const analysis = await analyzeRevisionText({
+      conversation,
       text: brief.originalText,
       twoSided: brief.twoSided,
       clientName: ctx?.clientName ?? brief.project?.client?.name ?? null,

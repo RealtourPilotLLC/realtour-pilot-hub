@@ -301,6 +301,8 @@ export async function polishOutbound(ctx: {
   clientName?: string | null;
   propertyAddress?: string | null;
   photographerName?: string | null;
+  /** Oct 14 2026: the recent conversation with this client (timed, both sides), so the text fits it. */
+  conversation?: string | null;
 }): Promise<string> {
   const me = (ctx.photographerName || "").trim().split(/\s+/)[0];
   const user = `A photographer on a real estate shoot wants to text the client. Rewrite their rough note as a short, polished, professional text.
@@ -308,7 +310,7 @@ ${ctx.clientName ? `Client: ${ctx.clientName}` : ""}
 ${ctx.propertyAddress ? `Property: ${ctx.propertyAddress}` : ""}
 ${me ? `Sender (the photographer): ${me}, with Realtour Pilot` : "Sender: Realtour Pilot"}
 
-Their rough note:
+${ctx.conversation ? `Recent conversation with this client (oldest first, for context: do not repeat what was already said or contradict it):\n${ctx.conversation.slice(0, 3000)}\n\n` : ""}Their rough note:
 """
 ${ctx.rough.slice(0, 800)}
 """
@@ -523,7 +525,7 @@ Rules:
 - projectId: choose the order this message is about, using the addresses and the conversation. Use null only if no order clearly applies. NEVER invent an id; it must be one listed above.
 - priority: URGENT if the client is upset, it is time-sensitive, a delivery is overdue, or they explicitly need it now; HIGH for a normal question or request; MEDIUM for minor or non-urgent; LOW for FYI.
 - mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null. NEVER merge a NEW topic into a revision to-do: merging overwrites that to-do's title and summary, and a revision task must keep describing the revision. If the message is a different subject than the open to-do (a new email thread, new ideas, a different deliverable), return null and let it be its own task.
-- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. It is also FALSE when the client is sharing IDEAS, reference videos, style examples, scripts, or creative direction for their NEXT or future content (common for monthly social-content clients: "check out this video", "I like this style", "ideas for the next one") — that is a normal reply/instruction, not a revision. When in doubt, false.
+- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. It is also FALSE when the client is sharing IDEAS, reference videos, style examples, scripts, or creative direction for their NEXT or future content (common for monthly social-content clients: "check out this video", "I like this style", "ideas for the next one") — that is a normal reply/instruction, not a revision. When in doubt, false. Read the conversation (with its times) before deciding: if our team or the client has ALREADY said this change is not needed (for example we explained it is not an issue and the client agreed or did not ask again), and the client is not asking for it again AFTER that, it is FALSE. A client repeating the same ask after our answer is still asking: TRUE.
 - flags: 0 to 4 short notes worth surfacing (e.g. "delivery 2 days overdue", "we already promised Tuesday", "asking a second time", "client sounds frustrated"). Only include real, grounded notes.
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
 

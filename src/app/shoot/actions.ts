@@ -237,15 +237,18 @@ export async function draftClientMessage(
 
   const p = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { title: true, client: { select: { name: true } }, photographer: { select: { name: true } } },
+    select: { title: true, clientId: true, client: { select: { name: true } }, photographer: { select: { name: true } } },
   });
   try {
     const { polishOutbound } = await import("@/lib/integrations/ai");
+    const { recentConversation, convoBlock } = await import("@/lib/conversationContext");
+    const convo = await recentConversation(p?.clientId, { limit: 10, since: new Date(Date.now() - 7 * 86_400_000), clientName: p?.client.name ?? null }).catch(() => []);
     const text = await polishOutbound({
       rough: note,
       clientName: p?.client.name,
       propertyAddress: p?.title,
       photographerName: p?.photographer?.name,
+      conversation: convo.length ? convoBlock(convo) : null,
     });
     return { ok: true, text };
   } catch (e) {

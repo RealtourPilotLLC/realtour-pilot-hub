@@ -187,6 +187,14 @@ export async function postProjectMessage(
     },
   });
   await reopenThread(projectId);
+  // Oct 14 2026: a team note can be the "it's not needed" for a client's open ask (lib/revisionNotNeeded).
+  {
+    const owner = await prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true } }).catch(() => null);
+    if (owner?.clientId) {
+      const { reviewAsksAgainstConversation } = await import("@/lib/revisionNotNeeded");
+      await reviewAsksAgainstConversation(owner.clientId);
+    }
+  }
 
   // Every link below lands ON the message (Sep 16): the board gives each
   // message id="msg-<id>", so a Slack DM, a text or a bell row opens the

@@ -114,7 +114,16 @@ export async function draftClientReply(
       socialPlan: client?.socialClient ? (client?.socialPlan ?? "yes") : null,
       propertyAddress: client?.projects[0]?.title ?? null,
       projects: client?.projects ?? [],
-      transcript: [{ role: "client", text: lastMessage || "(no recent message — write a friendly check-in)" }],
+      // Oct 14 2026 (Jordan: context "any time a response is being drafted"):
+      // the recent conversation both ways, not only the last message.
+      transcript: await (async () => {
+        const { recentConversation } = await import("@/lib/conversationContext");
+        const lines = await recentConversation(clientId, { limit: 12, clientName: client?.name ?? null });
+        const turns = lines.map((l) => ({ role: l.role, text: l.text, at: l.at.toISOString(), sender: l.role === "us" ? l.who : null }));
+        const last = (lastMessage ?? "").trim();
+        if (last && !turns.some((t) => t.role === "client" && t.text === last.replace(/\s+/g, " ").slice(0, 600))) turns.push({ role: "client", text: last, at: new Date().toISOString(), sender: null });
+        return turns.length ? turns : [{ role: "client" as const, text: "(no recent message — write a friendly check-in)", at: null, sender: null }];
+      })(),
       policies: await relevantPolicies(lastMessage),
     });
     if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "Looks handled — no reply needed here." };

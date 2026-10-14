@@ -1069,7 +1069,15 @@ export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
   // that video goes back to the editor: the cut reopens (lib/cutReopen) and
   // the brief is pinned to it. Several videos, or a photo ask: as before.
   try {
-    const medium = askMedium(opts.note);
+    // The text first; when it alone is unclear ("can we swap that frame?"),
+    // the client's recent messages say what it is about (Oct 14 2026).
+    let medium = askMedium(opts.note);
+    if (medium === "unclear" && opts.clientId) {
+      const { recentConversation } = await import("@/lib/conversationContext");
+      const lines = await recentConversation(opts.clientId, { since: new Date(Date.now() - 3 * 86_400_000), limit: 8 }).catch(() => []);
+      const around = lines.filter((l) => l.role === "client").map((l) => l.text).join(" ");
+      if (around) medium = askMedium(`${opts.note} ${around}`);
+    }
     const project = await prisma.project.findUnique({ where: { id: opts.projectId }, select: { deliverables: { where: { removedFromOrderAt: null }, select: { type: true } } } });
     const videoOnly = !!project?.deliverables.length && project.deliverables.every((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (medium === "video" || (medium === "unclear" && videoOnly)) {

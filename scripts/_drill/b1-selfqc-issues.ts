@@ -516,9 +516,12 @@ async function main() {
     // Briefs: short text, portal pins + addendum, analysis and the re-read lock.
     const P = await mkJob("113 Brief Blvd", { videos: 2 });
     const task = await prisma.smartTask.create({ data: { projectId: P.projectId, taskType: "revision", title: "Video revision — 113 Brief Blvd", status: "OPEN", assignedKey: "kim" }, select: { id: true } });
+    // Oct 14 2026 (Jordan): a text is read by the model with its conversation, short or not.
+    aiItems = [{ area: "Pacing & movement", ask: "Make the intro shorter", detail: "", quote: "make the intro shorter", scope: "unknown", videos: [] }];
+    const callsBefore = aiCalls;
     const b1 = await rb.createRevisionBrief({ projectId: P.projectId, taskId: task.id, source: "text", text: "Can you make the intro shorter?" });
     const whole = await prisma.revisionIssue.findMany({ where: { sourceId: { startsWith: `${b1}:` } } });
-    c.ok("a short client ask is one job-level issue for its whole text (no model call)", whole.length === 1 && whole[0].slot == null && aiCalls === 0);
+    c.ok("a short client text is read by the model (with its conversation): one job-level issue", whole.length === 1 && whole[0].slot == null && aiCalls === callsBefore + 1);
     await ri.ingestBriefItems(b1!);
     c.ok("re-ingesting the brief makes nothing new", (await prisma.revisionIssue.count({ where: { sourceId: { startsWith: `${b1}:` } } })) === 1);
     const slotKey2 = `${P.deliverableId}:2`;

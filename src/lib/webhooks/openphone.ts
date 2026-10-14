@@ -566,6 +566,14 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       });
     }
 
+    // "UNLESS SOMEONE SAYS IT'S NOT NEEDED" (Oct 14 2026): any text, either
+    // way, re-reads this client's open asks against the conversation since
+    // (lib/revisionNotNeeded). Only clients with an ask from the last 3 days.
+    if (!isCall && text.trim()) {
+      const { reviewAsksAgainstConversation } = await import("@/lib/revisionNotNeeded");
+      await reviewAsksAgainstConversation(clientId);
+    }
+
     // An inbound call we DIDN'T answer → a "call back" task. Texts already make a
     // reply task; calls didn't, so a missed call was invisible to the daily queue.
     // Deduped (client_reply key) with any voicemail transcript task that follows.

@@ -655,7 +655,9 @@ async function main() {
   // =========================================================================
   c.head("§16 · fences");
   // =========================================================================
-  c.ok("the model was never called (short asks; an office reopen writes no analysis)", aiCalls === 0, `${aiCalls} calls`);
+  // Oct 14 2026 (Jordan): client texts are read by the model with their conversation, short or not.
+  // Here the model is unavailable, and every client ask still became work (the checks above).
+  c.ok("the model was asked about the client's texts (and every ask still became work without it)", aiCalls > 0, `${aiCalls} calls`);
   const leaked = fence.blocked.filter((u) => !/slack\.com|hooks\.slack/.test(u));
   c.ok("nothing left the building except blocked team pings", leaked.length === 0, fence.blocked.slice(0, 4).join(", ") || "no outbound attempts");
   c.ok("no client-facing message rows were written", (await prisma.commLog.count({ where: { direction: "out" } }).catch(() => 0)) === 0);

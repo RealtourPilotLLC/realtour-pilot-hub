@@ -1,4 +1,5 @@
 import "server-only";
+import { etStamp } from "@/lib/conversationContext";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
 import { decideCommTask, decideSlackTask, type BrainContext, type BrainDecision, type SlackDecision, type SlackCandidate } from "@/lib/integrations/ai";
@@ -103,7 +104,7 @@ export async function routeCommTask(input: {
       prisma.commLog.findMany({
         where: { clientId: input.clientId },
         orderBy: { occurredAt: "desc" },
-        take: 12,
+        take: 14,
         select: { direction: true, body: true, occurredAt: true, contactName: true },
       }),
     ]);
@@ -135,7 +136,8 @@ export async function routeCommTask(input: {
         .reverse()
         .map((c) => ({
           who: c.direction === "out" ? "Us" : c.contactName || input.clientName || "Client",
-          when: etDate(c.occurredAt),
+          // To the minute (Oct 14 2026): "we answered at 3:35, she asked again at 3:41" decides things.
+          when: etStamp(c.occurredAt),
           text: (c.body ?? "").replace(/\s+/g, " ").slice(0, 300),
         })),
     };
