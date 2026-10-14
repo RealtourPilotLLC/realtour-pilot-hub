@@ -96,3 +96,33 @@ export async function freshAutohdrUrl(photo: { id: string; sourceRef: string | n
   await prisma.photoAsset.update({ where: { id: photo.id }, data: { sourceUrl: url } }).catch(() => {});
   return url;
 }
+
+/**
+ * Fresh links for many photos of one shoot in ONE call (Oct 14 2026, the
+ * Aryeo folder). Only photos this file already downloaded are asked for, so
+ * the call is a free re-download; any other comes back with an error and
+ * nothing is bought.
+ */
+export async function freshAutohdrUrls(shootId: number, uuids: string[]): Promise<Map<string, { url: string; bytes: number | null } | { error: string }>> {
+  const out = new Map<string, { url: string; bytes: number | null } | { error: string }>();
+  const batch = await prisma.photoIntakeBatch.findFirst({ where: { photoshootId: shootId }, select: { photosJson: true } });
+  const bought = new Set(parse(batch?.photosJson ?? null).filter((e) => e.downloaded).map((e) => e.image_uuid));
+  const ok = uuids.filter((u) => bought.has(u));
+  for (const u of uuids) if (!bought.has(u)) out.set(u, { error: "AutoHDR has not handed this photo over yet" });
+  for (let i = 0; i < ok.length; i += 50) {
+    const chunk = ok.slice(i, i + 50);
+    try {
+      const r = await autohdr.download(shootId, chunk.map((image_uuid) => ({ image_uuid })));
+      const charged = r.data.credits_charged ?? 0;
+      if (charged > 0) await recordLedgerEntry({ kind: "DOWNLOAD", credits: -charged, jobId: null, ref: `${shootId}:ready`, note: "unexpected charge on a re-download for the Aryeo folder" });
+      const by = new Map((r.data.downloads ?? []).map((d) => [d.image_uuid, d]));
+      for (const u of chunk) {
+        const d = by.get(u);
+        out.set(u, d?.url ? { url: d.url, bytes: d.byte_size ?? null } : { error: "AutoHDR gave no link" });
+      }
+    } catch (e) {
+      for (const u of chunk) out.set(u, { error: `AutoHDR: ${(e as Error).message.slice(0, 120)}` });
+    }
+  }
+  return out;
+}

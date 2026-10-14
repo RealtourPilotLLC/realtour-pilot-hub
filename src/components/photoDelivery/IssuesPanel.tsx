@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { CheckCircle2, ChevronDown, Lock, ShieldAlert } from "lucide-react";
+import { CheckCircle2, ChevronDown, Lock, ShieldAlert, SkipForward } from "lucide-react";
+import { skipAllFindingsAction } from "@/app/ops/photo-delivery/actions";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { PhotoImg } from "./PhotoImg";
@@ -131,7 +132,7 @@ function FindingRow({ f }: { f: FindingView }) {
 }
 
 export function IssuesPanel() {
-  const { data, shown } = useJob();
+  const { data, shown, jobId, run, confirm, pending } = useJob();
   const visible = useMemo(() => data.findings.filter((f) => f.pass !== "P4_ORDER"), [data.findings]);
   const main = useMemo(() => groupFindings(visible.filter((f) => shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
   const low = useMemo(() => groupFindings(visible.filter((f) => !shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
@@ -139,6 +140,16 @@ export function IssuesPanel() {
   const decided = main.filter((g) => !g.findings.some((f) => LIVE.has(f.status)));
   const openCount = visible.filter((f) => f.status === "OPEN" && shown(f)).length;
   const ranQc = data.runs.length > 0;
+  // Oct 14 2026 (Jordan): "a button that can skip all QC findings for a shoot".
+  const skippable = visible.filter((f) => f.status === "OPEN" || f.status === "APPROVED_FIX").length;
+  const skipAll = async () => {
+    const yes = await confirm({
+      title: `Skip all ${plural(skippable, "finding")} on this shoot?`,
+      body: "Every open finding is set aside, and fixes that have not been sent to AutoHDR yet are called off (nothing is charged for those). Ordered add-ons stay. You can reopen any finding afterwards.",
+      confirmLabel: "Skip all findings",
+    });
+    if (yes) await run(() => skipAllFindingsAction(jobId));
+  };
 
   if (!ranQc && visible.length === 0) {
     return (
@@ -155,9 +166,16 @@ export function IssuesPanel() {
         </p>
       ) : (
         <>
-          <p className="text-[13px] text-muted">
-            {plural(openCount, "open issue")} in {plural(live.length, "group")}. A decision on a group applies to every photo in it.
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="min-w-0 flex-1 text-[13px] text-muted">
+              {plural(openCount, "open issue")} in {plural(live.length, "group")}. A decision on a group applies to every photo in it.
+            </p>
+            {skippable > 0 && (
+              <button type="button" onClick={() => void skipAll()} disabled={pending} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50">
+                <SkipForward aria-hidden className="size-4" /> Skip all findings
+              </button>
+            )}
+          </div>
           <ul className="space-y-2">
             {live.map((g) => (
               <GroupCard key={g.key} g={g} />

@@ -72,7 +72,7 @@ async function main() {
       await find(A.job.id, A.qcRun.id, A.photos[2].id, "REFL_PHOTOGRAPHER_IN_MIRROR", "bathroom mirror"),
       await find(A.job.id, A.qcRun.id, A.photos[3].id, "BATH_TOILET_SEAT_OPEN", "toilet on the right"),
       await find(A.job.id, A.qcRun.id, A.photos[4].id, "PREP_PERSONAL_DOCUMENTS", "paper on the door", 0.9, { privacySensitive: true }),
-      await find(A.job.id, A.qcRun.id, A.photos[5].id, "PERSP_CROOKED_VERTICALS", "whole facade"),
+      await find(A.job.id, A.qcRun.id, A.photos[5].id, "REFL_SENSOR_DUST", "in the sky"),
     ];
     const asked: string[] = [];
     let unreadable = true;
@@ -242,6 +242,29 @@ async function main() {
     await prisma.photoFixOperation.create({ data: { batchId: gb.id, jobId: G.job.id, photoId: G.photos[0].id, findingIdsJson: "[]", seq: 9, strategy: "REEDIT_PROMPT", transformName: "reedit", estimatedCredits: 17, chargedCredits: 17, status: "VERIFIED" } });
     const pG = await policy.planAutoFix(G.job.id);
     c.ok("the automatic plan only uses what is left (17 by hand → 3 more)", pG.planned && pG.credits === 3, JSON.stringify(pG));
+
+    // ======================================================================
+    c.head("8 · verticals and a cut-off roof: free in AutoHDR, never a paid re-edit");
+    // Jordan, Oct 14 2026: "Straightened vertical lines should be fixed via AutoHDR Auto
+    // Perspective corrections, and it should be turned off if the correction cuts off the top of the house."
+    const H = await mkJob("80 Level Ln", 3);
+    const vert = await find(H.job.id, H.qcRun.id, H.photos[0].id, "PERSP_CROOKED_VERTICALS", "whole facade", 0.9, { arbitration: "CONFIRMED", severity: "MAJOR" });
+    const roof = await find(H.job.id, H.qcRun.id, H.photos[1].id, "PERSP_AUTOHDR_ROOF_PEAKS_CROPPED", "top edge", 0.9, { arbitration: "CONFIRMED", severity: "CRITICAL", reeditPrompt: null });
+    c.ok("the policy classes them as free AutoHDR fixes", policy.fixClass("PERSP_CROOKED_VERTICALS") === "autohdr" && policy.fixClass("PERSP_EXTERIOR_WALLS_LEANING") === "autohdr" && policy.fixClass("PERSP_AUTOHDR_ROOF_PEAKS_CROPPED") === "autohdr" && !policy.ALWAYS_FIX.has("PERSP_CROOKED_VERTICALS"));
+    const pH = await policy.planAutoFix(H.job.id);
+    c.ok("the automatic plan spends nothing on them", (await prisma.photoFixOperation.count({ where: { jobId: H.job.id } })) === 0 && !(pH.planned && pH.credits > 0), JSON.stringify(pH));
+    await prisma.photoJob.update({ where: { id: H.job.id }, data: { stage: "QC_REVIEW" } });
+    const cartH = await fixes.buildFixCart(H.job.id);
+    const lv = cartH.lines.find((l) => l.findingIds.includes(vert.id));
+    const lr = cartH.lines.find((l) => l.findingIds.includes(roof.id));
+    c.ok("in the cart: no credits, what to press in AutoHDR (an old paid instruction is ignored)", lv?.humanCall === "autohdr-editor" && lv.credits === 0 && !lv.transform && /Crop & Tilt/.test(lv.howTo ?? ""), JSON.stringify(lv));
+    c.ok("a cut-off roof: turn Perspective Off on that photo, free", lr?.humanCall === "autohdr-editor" && /Perspective Off/.test(lr.howTo ?? "") && /top of the house/.test(lr.howTo ?? ""), JSON.stringify(lr));
+    const tryH = await fixes.approveFixBatch({ jobId: H.job.id, findingIds: [vert.id, roof.id], mode: "SELECTED", by: "Kyle", role: "ADMIN" });
+    c.ok("they cannot be sent as a paid fix", !tryH.ok && /Nothing selected can be fixed automatically/.test(tryH.message), tryH.ok ? "" : tryH.message);
+    const fs = await import("node:fs");
+    const checkSrc = fs.readFileSync("src/lib/photoDelivery/autohdrCheck.ts", "utf8");
+    c.ok("the free check writes no paid instruction for them", /reeditPrompt: fixClass\(rule\.id\) === "autohdr" \? null : instructionFor/.test(checkSrc) && /"PERSP_AUTOHDR_ROOF_PEAKS_CROPPED"/.test(checkSrc));
+    c.ok("the Fix Cart shows them in their own 'Free in AutoHDR' list", /Free in AutoHDR \(\{inAutohdr\.length\}\)/.test(fs.readFileSync("src/components/photoDelivery/FixCartPanel.tsx", "utf8")));
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

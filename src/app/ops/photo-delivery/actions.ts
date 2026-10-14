@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { requireAdmin, requireOwner, authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import {
@@ -118,7 +119,12 @@ export async function resumeCheckAction(ruleId: string): Promise<ActionResult> {
   }
 }
 
-/** Oct 14 2026: put the finished photos (numbered, current versions) into 06-Ready-for-Aryeo again. */
+/**
+ * Oct 14 2026: put the finished photos (numbered, current versions) into
+ * 06-Ready-for-Aryeo again. Answers at once (Jordan: "need instant response
+ * instead of a loading button"); the copying runs on after the answer and the
+ * page's progress bar follows it (readyProgressAction).
+ */
 export async function restageForAryeoAction(jobId: string): Promise<ActionResult> {
   try {
     await requireAdmin();
@@ -128,12 +134,57 @@ export async function restageForAryeoAction(jobId: string): Promise<ActionResult
   if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
   try {
     const { by } = await actor();
-    const { stageForAryeo } = await import("@/lib/photoDelivery/handoff");
-    const r = await stageForAryeo(jobId, { force: true, by });
-    refresh(jobId);
-    return { ok: r.ok, message: r.message };
+    const { requestReady, advanceReady } = await import("@/lib/photoDelivery/handoff");
+    const r = await requestReady(jobId, { force: true, by });
+    if (r.ok) {
+      const go = () => advanceReady(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
+      // After the answer; the progress poll and the cron carry it on if this is cut short.
+      try { after(go); } catch { void go(); }
+    }
+    return { ok: r.ok, message: r.ok ? `${r.message} The bar at the bottom shows the progress.` : r.message };
   } catch (e) {
     return failed("get the download ready", e);
+  }
+}
+
+/** The progress bar's poll: where the copy stands, moving it on a step when nobody else is. */
+export async function readyProgressAction(jobId: string): Promise<{ ok: boolean; progress: import("@/lib/photoDelivery/handoff").ReadyProgress | null }> {
+  try {
+    await requireAdmin();
+  } catch {
+    return { ok: false, progress: null };
+  }
+  if (!ID.test(String(jobId))) return { ok: false, progress: null };
+  try {
+    const { readyProgress, advanceReady } = await import("@/lib/photoDelivery/handoff");
+    const p = await readyProgress(jobId);
+    if (!p?.active) return { ok: true, progress: p };
+    return { ok: true, progress: (await advanceReady(jobId, { budgetMs: 4_000 })) ?? p };
+  } catch {
+    return { ok: false, progress: null };
+  }
+}
+
+/**
+ * Oct 14 2026 (Jordan: "I want a button that can skip all QC findings for a
+ * shoot"): every open finding set aside in one press, and the fixes not yet
+ * sent to AutoHDR (nothing charged) called off. Ordered add-ons stay.
+ */
+export async function skipAllFindingsAction(jobId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { skipAllFindings } = await import("@/lib/photoDelivery/decisions");
+    const r = await skipAllFindings(jobId, by);
+    if (r.ok) refresh(jobId);
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return failed("skip the findings", e);
   }
 }
 

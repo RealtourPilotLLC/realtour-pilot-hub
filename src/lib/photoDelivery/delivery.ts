@@ -96,7 +96,7 @@ export type DeliverySteps = {
   message: string;
   revisionLink: string | null;
   /** Oct 14 2026: the finished photos, numbered, in 06-Ready-for-Aryeo (handoff.ts). */
-  ready: { folderUrl: string; files: number; expected: number; ready: boolean; stagedAt: string | null } | null;
+  ready: { folderUrl: string; files: number; expected: number; ready: boolean; stagedAt: string | null; preparing?: boolean; failed?: number; note?: string | null } | null;
 };
 
 const ROOM_WORDS: Record<string, string> = {
@@ -193,7 +193,7 @@ export async function deliverySteps(jobId: string): Promise<DeliverySteps> {
   const rs = await readyFolderState(jobId, order.length).catch(() => null);
   return {
     replacements,
-    ready: rs ? { folderUrl: dropboxWebUrl(rs.folder), files: rs.files, expected: order.length, ready: rs.ready, stagedAt: rs.stagedAt } : null,
+    ready: rs ? { folderUrl: dropboxWebUrl(rs.folder), files: rs.files, expected: rs.preparing ? rs.total : order.length, ready: rs.ready, stagedAt: rs.stagedAt, preparing: rs.preparing, failed: rs.failed, note: rs.note } : null,
     listingUrl: project?.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : null,
     orderUrl: project?.aryeoOrderId ? aryeoOrderUrl(project.aryeoOrderId) : null,
     folderPath: job.deliveryPath ?? job.finalsPath,

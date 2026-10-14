@@ -51,7 +51,9 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
     return <p role="alert" className="rounded-xl border border-warning/30 bg-warning-soft/40 p-3 text-sm text-warning">The Fix Cart could not be built{data.cartError ? `: ${data.cartError}` : ""}. Reload to try again.</p>;
   }
   const runnable = cart.lines.filter((l) => !l.humanCall);
-  const human = cart.lines.filter((l) => l.humanCall);
+  const human = cart.lines.filter((l) => l.humanCall && l.humanCall !== "autohdr-editor");
+  // Oct 14 2026: verticals, a tilted horizon, a roof the straightening cut off: free clicks in AutoHDR.
+  const inAutohdr = cart.lines.filter((l) => l.humanCall === "autohdr-editor");
   const chosen = runnable.filter((l) => l.findingIds.some((id) => selected.has(id)));
   const est = estimateOf(chosen);
   const photoCount = new Set(chosen.map((l) => l.photoId ?? "gallery")).size;
@@ -134,7 +136,11 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
             <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[l.severity])}>{SEVERITY_LABEL[l.severity]}</span>
           </span>
           <span className="mt-0.5 block break-words text-[13px]">{l.specificIssue || l.label}</span>
-          {l.humanCall ? (
+          {l.humanCall === "autohdr-editor" ? (
+            <span className="mt-0.5 block text-[13px] text-foreground/90">
+              <strong className="font-semibold text-success">Free in AutoHDR:</strong> {l.howTo ?? HUMAN_CALL_LABEL[l.humanCall]}
+            </span>
+          ) : l.humanCall ? (
             <span className="mt-0.5 block text-[13px] text-warning">
               <strong className="font-semibold">Needs your call:</strong> {HUMAN_CALL_LABEL[l.humanCall] ?? "a person decides this one."}
             </span>
@@ -243,6 +249,14 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
                 <button type="button" className="min-h-10 px-1 text-muted hover:text-foreground" onClick={() => setSelected(() => new Set())}>Clear</button>
               </div>
               <ul className={cn("space-y-1.5", inDrawer && "max-h-[50dvh] overflow-y-auto pr-1")}>{runnable.map(lineRow)}</ul>
+            </section>
+          )}
+          {inAutohdr.length > 0 && (
+            <section aria-label="Free in AutoHDR">
+              <p className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium">
+                <Hand aria-hidden className="size-4 text-success" /> Free in AutoHDR ({inAutohdr.length})
+              </p>
+              <ul className="space-y-1.5">{inAutohdr.map(lineRow)}</ul>
             </section>
           )}
           {human.length > 0 && (

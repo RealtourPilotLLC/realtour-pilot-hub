@@ -49,9 +49,17 @@ const fence = fenceFetch(async (url, init) => {
     const ep = url.slice("https://api.dropboxapi.com/2/".length);
     const arg = typeof init?.body === "string" ? (JSON.parse(init.body) as { path?: string }) : {};
     if (ep === "files/save_url") { const a = arg as { path?: string; url?: string }; saved.push({ path: a.path ?? "", url: a.url ?? "" }); return json({ ".tag": "async_job_id", async_job_id: `job-${saved.length}` }); }
+    // Oct 14 2026: the copies are confirmed (check_job_status) and the folder is built aside, then moved in.
+    if (ep === "files/save_url/check_job_status") return json({ ".tag": "complete" });
+    if (ep === "files/move_v2") {
+      const a = arg as { from_path?: string; to_path?: string };
+      const from = (a.from_path ?? "").toLowerCase();
+      for (const f of saved) if (f.path.toLowerCase().startsWith(from + "/")) f.path = (a.to_path ?? "") + f.path.slice(from.length);
+      return json({ metadata: { path_display: a.to_path } });
+    }
     if (ep === "files/delete_v2") { const pre = (arg.path ?? "").toLowerCase(); for (let i = saved.length - 1; i >= 0; i--) if (saved[i].path.toLowerCase().startsWith(pre + "/")) saved.splice(i, 1); return json({ metadata: {} }); }
     if (ep === "files/create_folder_v2") return json({ metadata: { name: "x", path_display: arg.path, id: "id:f" } });
-    if (ep === "files/list_folder" && /06-ready-for-aryeo$/i.test(arg.path ?? "")) {
+    if (ep === "files/list_folder" && /06-ready-for-aryeo( - preparing [0-9a-f]+)?$/i.test(arg.path ?? "")) {
       return json({ entries: saved.filter((f) => f.path.toLowerCase().startsWith((arg.path ?? "").toLowerCase() + "/")).map((f) => ({ ".tag": "file", name: f.path.split("/").pop(), path_display: f.path, id: `id:${f.path}`, size: 4 })), has_more: false });
     }
     if (ep === "files/list_folder") {
@@ -182,7 +190,8 @@ async function main() {
     const handoff = await import("@/lib/photoDelivery/handoff");
     const st = await handoff.stageForAryeo(jobW.id);
     c.ok("5 photos copied into 06-Ready-for-Aryeo", st.ok && st.staged === 5 && saved.length === 5 && saved.every((f) => /\/116 W Windsor St \(Nehemiah Drill\)\/06-Ready-for-Aryeo\//.test(f.path)), JSON.stringify(st));
-    c.ok("numbered in delivery order, from AutoHDR's current version (free)", saved.every((f, i) => new RegExp(`/0${i + 1}-`).test(f.path) && f.url.startsWith("https://autohdr-fake.s3.amazonaws.com/")) && fake.state.balance === before3b, saved.map((f) => f.path.split("/").pop()).join(", "));
+    const inOrder = [...saved].sort((a, b) => a.path.localeCompare(b.path));
+    c.ok("numbered in delivery order, from AutoHDR's current version (free)", inOrder.every((f, i) => new RegExp(`/0${i + 1}-`).test(f.path) && f.url.startsWith("https://autohdr-fake.s3.amazonaws.com/")) && fake.state.balance === before3b, inOrder.map((f) => f.path.split("/").pop()).join(", "));
     c.ok("the job points at the folder", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } })).deliveryPath?.endsWith("06-Ready-for-Aryeo") === true);
     const st2 = await handoff.stageForAryeo(jobW.id);
     c.ok("nothing changed: not copied again", st2.staged === 0 && saved.length === 5, st2.message);

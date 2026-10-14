@@ -185,6 +185,8 @@ export type CartLineView = {
   credits: number | null;
   humanCall: string | null;
   selectedByDefault: boolean;
+  /** A free fix in AutoHDR's own editor: what to press. */
+  howTo?: string | null;
   /** An ordered add-on (virtual twilight, staging, declutter): not part of the fix budget. */
   addOn?: boolean;
   params?: Record<string, unknown> | null;
@@ -220,7 +222,8 @@ export type StepsView = {
   folderLabel: string;
   order: { photoId: string; name: string; deliveryName: string }[];
   message: string;
-  ready: { folderUrl: string; files: number; expected: number; ready: boolean; stagedAt: string | null } | null;
+  /** Oct 14 2026: `preparing` while a copy run is going (the progress bar follows it); `failed` copies that gave up. */
+  ready: { folderUrl: string; files: number; expected: number; ready: boolean; stagedAt: string | null; preparing?: boolean; failed?: number; note?: string | null } | null;
 };
 
 export type RunView = {

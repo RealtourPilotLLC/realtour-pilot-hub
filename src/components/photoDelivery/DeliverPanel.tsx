@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, FlaskConical, Loader2, RefreshCw, ShieldCheck, Truck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { overrideDeliverAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction } from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
+import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
 
 // ---------------------------------------------------------------------------
@@ -37,9 +38,25 @@ const STAGE_WHY: Record<string, string> = {
 const btn = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-3.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50";
 
 export function DeliverPanel() {
-  const { data, viewer, jobId, run, ask, pending, photoById } = useJob();
+  const { data, viewer, jobId, run, ask, pending, photoById, notify } = useJob();
   const [open, setOpen] = useState(false);
   const { gate, steps, header } = data;
+  // Oct 14 2026: "Get them ready again" answers at once; the bar follows the copy.
+  const [bar, setBarState] = useState<ReadyBarState | null>(() =>
+    steps?.ready?.preparing ? { active: true, done: steps.ready.files, total: steps.ready.expected, failed: steps.ready.failed ?? 0, note: steps.ready.note ?? null } : null,
+  );
+  const setBar = useCallback((s: ReadyBarState | null) => setBarState(s), []);
+  const [barKey, setBarKey] = useState(0);
+  const getReady = () => {
+    const total = steps?.ready?.expected ?? 0;
+    setBarKey((k) => k + 1);
+    setBarState({ active: true, done: 0, total, failed: 0, note: null });
+    notify("ok", `Getting the ${total} photos ready. The bar at the bottom shows the progress.`);
+    void restageForAryeoAction(jobId)
+      .then((r) => { if (!r.ok) { setBarState(null); notify("err", r.message); } })
+      .catch(() => { setBarState(null); notify("err", "The hub didn't answer. Try again in a moment."); });
+  };
+  const preparing = !!bar?.active;
   const stage = header.stage;
   const passing = gate?.checks.filter((c) => c.ok).length ?? 0;
   const total = gate?.checks.length ?? 0;
@@ -65,6 +82,7 @@ export function DeliverPanel() {
 
   return (
     <section aria-label="Deliver" className="sticky bottom-0 z-20 mt-4 rounded-t-2xl border border-b-0 border-border bg-surface/95 shadow-[0_-12px_32px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl">
+      <ReadyProgressBar key={barKey} jobId={jobId} state={bar} setState={setBar} folderUrl={steps?.ready?.folderUrl ?? null} />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 sm:px-4">
         <button
           type="button"
@@ -173,15 +191,25 @@ export function DeliverPanel() {
                   <li>
                     <p className="font-semibold">1. Download the finished photos</p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <a href={steps.ready.folderUrl} target="_blank" rel="noreferrer" className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 font-semibold", steps.ready.ready ? "bg-brand-action text-white hover:opacity-90" : "border border-border-strong hover:bg-surface-2")}>
-                        <Download aria-hidden className="size-4" /> Download all ({steps.ready.files} of {steps.ready.expected})
-                      </a>
-                      <button type="button" disabled={pending} onClick={() => void run(() => restageForAryeoAction(jobId))} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50" title="Copy the current photos into the folder again">
-                        {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <RefreshCw aria-hidden className="size-4" />} Get them ready again
+                      {preparing ? (
+                        <span aria-disabled="true" className="inline-flex min-h-11 cursor-not-allowed items-center gap-1.5 rounded-lg border border-border-strong px-3 font-semibold text-muted">
+                          <Loader2 aria-hidden className="size-4 animate-spin" /> Getting them ready ({bar?.done ?? 0} of {bar?.total ?? steps.ready.expected})
+                        </span>
+                      ) : (
+                        <a href={steps.ready.folderUrl} target="_blank" rel="noreferrer" className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 font-semibold", steps.ready.ready ? "bg-brand-action text-white hover:opacity-90" : "border border-border-strong hover:bg-surface-2")}>
+                          <Download aria-hidden className="size-4" /> Download all ({steps.ready.files} of {steps.ready.expected})
+                        </a>
+                      )}
+                      <button type="button" disabled={preparing} onClick={getReady} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50" title="Copy the current photos into the folder again">
+                        <RefreshCw aria-hidden className="size-4" /> Get them ready again
                       </button>
                     </div>
                     <p className="mt-0.5 text-[12px] text-muted">
-                      {steps.ready.ready ? "Opens the 06-Ready-for-Aryeo folder in Dropbox: press Download there for one zip. The photos are numbered in delivery order and include every fix." : `Dropbox is still copying them (${steps.ready.files} of ${steps.ready.expected}). Refresh in a minute.`}
+                      {preparing
+                        ? "Copying into a fresh folder: every photo is checked in Dropbox before it replaces 06-Ready-for-Aryeo, so there are never duplicates. The bar at the bottom shows the progress."
+                        : steps.ready.ready
+                          ? "Opens the 06-Ready-for-Aryeo folder in Dropbox: press Download there for one zip. The photos are numbered in delivery order and include every fix."
+                          : steps.ready.note ?? `Only ${steps.ready.files} of ${steps.ready.expected} are in the folder. Press Get them ready again.`}
                     </p>
                   </li>
                 )}

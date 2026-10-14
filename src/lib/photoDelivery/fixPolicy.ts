@@ -31,7 +31,16 @@ import { transformPrice } from "./fixes";
 //
 // THE PLAN:
 //   · ALWAYS fixed: camera and photographer mistakes (reflections, shadows,
-//     dust spots), perspective and lens distortion, cars, trash cans.
+//     dust spots), lens distortion, cars, trash cans.
+//   · NEVER a paid re-edit: crooked verticals and a tilted horizon. Jordan,
+//     Oct 14 2026: "Straightened vertical lines should be fixed via AutoHDR
+//     Auto Perspective corrections, and it should be turned off if the
+//     correction cuts off the top of the house." AutoHDR's Perspective
+//     Correction (an account Style Setting, on by default) straightens every
+//     upload; the first live run proved an AI re-edit does not. What is left
+//     is free in AutoHDR's own editor: Crop & Tilt for a photo that still
+//     leans, Perspective Off for one whose roof the straightening cut off. The
+//     public API has neither, so those are Kyle's two clicks (AUTOHDR_FREE_FIX).
 //   · CLUTTER (prep) fixed only in a home that was prepared, and only inside
 //     the target. An as-is home (a client on the as-is list, or one where a
 //     third or more of the photos show clutter) gets no clutter fixes at all.
@@ -45,17 +54,28 @@ import { transformPrice } from "./fixes";
 // ---------------------------------------------------------------------------
 
 const CAMERA = ["REFL_PHOTOGRAPHER_IN_MIRROR", "REFL_CAMERA_TRIPOD_IN_MIRROR", "REFL_PHOTOGRAPHER_IN_GLASS", "REFL_PHOTOGRAPHER_SHADOW", "REFL_TRIPOD_EQUIPMENT_SHADOW", "REFL_SENSOR_DUST", "EXT_PHOTOGRAPHER_VEHICLE"];
-const PERSPECTIVE = ["PERSP_CROOKED_VERTICALS", "PERSP_LEANING_DOOR_FRAMES", "PERSP_EXTERIOR_WALLS_LEANING", "PERSP_CROOKED_HORIZON", "PERSP_HORIZONTAL_DISTORTION", "PERSP_BOWED_WALLS", "BED_WIDE_ANGLE_DISTORTION"];
+const DISTORTION = ["PERSP_HORIZONTAL_DISTORTION", "PERSP_BOWED_WALLS", "BED_WIDE_ANGLE_DISTORTION"];
+/** Fixed for free in AutoHDR itself, never with a paid re-edit: what to press, in Kyle's words. */
+const VERTICALS_HOW = "AutoHDR straightens vertical lines on every upload (Perspective Correction). If this photo still leans, open it in AutoHDR and straighten it with Crop & Tilt. Free.";
+export const AUTOHDR_FREE_FIX: Record<string, string> = {
+  PERSP_CROOKED_VERTICALS: VERTICALS_HOW,
+  PERSP_LEANING_DOOR_FRAMES: VERTICALS_HOW,
+  PERSP_EXTERIOR_WALLS_LEANING: VERTICALS_HOW,
+  PERSP_CROOKED_HORIZON: "Level it in AutoHDR with Crop & Tilt. Free.",
+  PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "AutoHDR's straightening cut off the top of the house. Open this photo in AutoHDR and turn Perspective Off (free), then press Get them ready again here. If the original photo has no room above the roof either, only a reshoot fixes it.",
+};
 const VEHICLES = ["EXT_PARKED_CARS_DRIVEWAY", "EXT_VEHICLES_BLOCKING_HOME", "EXT_VEHICLES_THROUGH_WINDOWS"];
 const TRASH = ["PREP_TRASH_CANS", "EXT_TRASH_CANS_PRIMARY", "BATH_TRASH_CANS", "UTIL_GARAGE_TRASH_CANS", "LIV_OFFICE_TRASH_CANS", "PREP_GARBAGE_BAGS_LOOSE_TRASH"];
-export const ALWAYS_FIX = new Set([...CAMERA, ...PERSPECTIVE, ...VEHICLES, ...TRASH]);
+export const ALWAYS_FIX = new Set([...CAMERA, ...DISTORTION, ...VEHICLES, ...TRASH]);
 /** A person decides these, every time. */
 const NEVER_AUTO = new Set(["PREP_PERSONAL_DOCUMENTS", "PREP_PERSONAL_PHOTOS", "BED_PERSONAL_PHOTOS_SENSITIVE", "PREP_VISIBLE_PEOPLE_PETS", "OTHER_DEFECT"]);
 const PREP_PREFIX = /^(PREP|KIT|BATH|BED|LIV|UTIL|EXT)_/;
 
-export type FixClass = "always" | "prep" | "never";
+/** "autohdr": fixed for free in AutoHDR's own editor, never a paid re-edit (AUTOHDR_FREE_FIX). */
+export type FixClass = "always" | "prep" | "never" | "autohdr";
 
 export function fixClass(ruleId: string): FixClass {
+  if (AUTOHDR_FREE_FIX[ruleId]) return "autohdr";
   if (ALWAYS_FIX.has(ruleId)) return "always";
   if (NEVER_AUTO.has(ruleId)) return "never";
   const rule = ruleById(ruleId);
@@ -74,10 +94,6 @@ const INSTRUCTION: Record<string, string> = {
   EXT_PARKED_CARS_DRIVEWAY: "Remove the parked cars and fill in the driveway or street naturally",
   EXT_VEHICLES_BLOCKING_HOME: "Remove the vehicles and fill in the street, driveway and house behind them naturally",
   EXT_VEHICLES_THROUGH_WINDOWS: "Remove the vehicle seen through the window",
-  PERSP_CROOKED_VERTICALS: "Straighten the vertical lines so the walls, door frames and building edges are perfectly vertical",
-  PERSP_LEANING_DOOR_FRAMES: "Straighten the door frames so they are perfectly vertical",
-  PERSP_EXTERIOR_WALLS_LEANING: "Straighten the building so its walls are perfectly vertical",
-  PERSP_CROOKED_HORIZON: "Level the photo so the horizon and horizontal lines are straight",
   PERSP_HORIZONTAL_DISTORTION: "Correct the perspective so horizontal lines run level",
   PERSP_BOWED_WALLS: "Correct the lens distortion so the walls are straight, not bowed",
   BED_WIDE_ANGLE_DISTORTION: "Correct the wide-angle distortion so the furniture and walls look natural",

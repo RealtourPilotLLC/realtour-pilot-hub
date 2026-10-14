@@ -156,6 +156,67 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
   };
 }
 
+/**
+ * SKIP EVERY FINDING ON A SHOOT (Oct 14 2026, Jordan: "I want a button that
+ * can skip all QC findings for a shoot"). One press:
+ *   · fixes approved but not yet sent to AutoHDR are called off (CANCELLED,
+ *     nothing was charged); one already at AutoHDR finishes, it is paid for;
+ *   · every open finding (and every finding of a called-off fix) is set aside
+ *     as IGNORED with the reason "Skipped all findings on this shoot", undoable
+ *     one by one like any decision;
+ *   · ordered add-ons (virtual twilight, staging, declutter) are not QC
+ *     findings and stay where they are, and so does a twilight look already
+ *     queued for a real twilight.
+ */
+const fixes = (n: number) => `${n} fix${n === 1 ? "" : "es"}`;
+export async function skipAllFindings(jobId: string, by: string): Promise<WriteResult & { cancelled?: number }> {
+  const who = clean(by, 120) || "staff";
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true } });
+  if (!job) return { ok: false, message: "That job no longer exists. Reload the page." };
+  const now = new Date();
+  // 1. Fixes still waiting their turn: called off, their findings back in hand.
+  const queued = await prisma.photoFixOperation.findMany({ where: { jobId, status: "QUEUED", batch: { approvedBy: { not: "auto-twilight" } } }, select: { id: true, batchId: true, findingIdsJson: true } });
+  const addOnIds = new Set((await prisma.photoQcFinding.findMany({ where: { jobId, source: "ADDON" }, select: { id: true } })).map((f) => f.id));
+  const callOff = queued.filter((o) => {
+    let ids: string[] = [];
+    try { ids = JSON.parse(o.findingIdsJson) as string[]; } catch { ids = []; }
+    return !ids.some((id) => addOnIds.has(id));
+  });
+  let cancelled = 0;
+  const freed: string[] = [];
+  if (callOff.length) {
+    const r = await prisma.photoFixOperation.updateMany({ where: { id: { in: callOff.map((o) => o.id) }, status: "QUEUED" }, data: { status: "CANCELLED", error: `Called off: ${who} skipped all findings on this shoot` } });
+    cancelled = r.count;
+    for (const o of callOff) { try { freed.push(...(JSON.parse(o.findingIdsJson) as string[])); } catch { /* none */ } }
+    // A batch with nothing left to run is closed quietly (no "fixes done" alert).
+    for (const batchId of new Set(callOff.map((o) => o.batchId))) {
+      const left = await prisma.photoFixOperation.count({ where: { batchId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
+      if (left) continue;
+      const okOps = await prisma.photoFixOperation.count({ where: { batchId, status: { in: ["SUCCEEDED", "VERIFIED"] } } });
+      await prisma.photoFixBatch.updateMany({ where: { id: batchId, status: { in: ["PENDING", "RUNNING"] } }, data: { status: okOps ? "PARTIAL" : "FAILED" } });
+    }
+  }
+  // 2. Every open finding (and the called-off ones) set aside.
+  const reason = "Skipped all findings on this shoot";
+  const res = await prisma.photoQcFinding.updateMany({
+    where: { jobId, source: { not: "ADDON" }, OR: [{ status: "OPEN" }, { id: { in: freed }, status: { in: ["APPROVED_FIX", "FIXING"] } }] },
+    data: { status: "IGNORED", statusReason: reason, decidedBy: who, decidedAt: now },
+  });
+  if (!res.count && !cancelled) return { ok: false, message: "Nothing to skip: there are no open findings on this shoot." };
+  await logJobEvent(jobId, who, `Skipped all findings: ${plural(res.count, "issue")} set aside${cancelled ? `, ${fixes(cancelled)} not yet sent to AutoHDR called off (nothing charged)` : ""}`, { skippedAll: true, findings: res.count, cancelled });
+  // 3. The stage follows: out of FIXING when nothing is running, then Ready.
+  const running = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
+  if (job.stage === "FIXING" && !running) await setStage(jobId, ["FIXING"], "QC_REVIEW", who, { why: "every finding was skipped" });
+  const stage = await reconcileReviewStage(jobId, who, false);
+  return {
+    ok: true,
+    changed: res.count,
+    cancelled,
+    stage,
+    message: `${plural(res.count, "finding")} skipped${cancelled ? ` and ${fixes(cancelled)} that had not started called off (nothing charged)` : ""}.${running ? ` ${fixes(running)} already at AutoHDR will finish.` : ""}${stage === "READY" ? " The job is Ready." : ""}`,
+  };
+}
+
 // ---- photos ---------------------------------------------------------------------------------
 
 /**

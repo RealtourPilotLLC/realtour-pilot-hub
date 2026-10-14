@@ -101,6 +101,7 @@ export const HUMAN_CALL_LABEL: Record<string, string> = {
   editor: "This needs an editor by hand.",
   review: "A person has to look at this one.",
   "no-autohdr": "This job's AutoHDR shoot is not linked yet, so AutoHDR cannot fix it.",
+  "autohdr-editor": "Fix it free in AutoHDR's own editor (no credits).",
 };
 
 export const HOLD_REASON_LABEL: Record<string, string> = {

@@ -9,7 +9,7 @@ import { logJobEvent, setStage } from "./jobState";
 import { ruleById, RULES_REGISTRY_VERSION, type RoomType } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
 import { disabledIn, houseOverrides } from "./houseRules";
-import { instructionFor } from "./fixPolicy";
+import { fixClass, instructionFor } from "./fixPolicy";
 
 // ---------------------------------------------------------------------------
 // THE FREE PHOTO CHECK (Oct 14 2026).
@@ -269,7 +269,8 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
             fixStrategy: rule.fixStrategies[0] ?? "HUMAN_REVIEW", contentHash: a.p.contentHash, model: "autohdr-describe", rulesVersion: RULES_REGISTRY_VERSION,
             promptId: "autohdr-check", promptVersion: CHECK_PROMPT_VERSION, rawJson: (a.text ?? "").slice(0, 4000),
             // Oct 14 2026: the written re-edit instruction, so it can be fixed with one AI re-edit.
-            reeditPrompt: instructionFor(rule.id, iss.where),
+            // Verticals and a cropped roof are fixed free in AutoHDR instead: no paid instruction.
+            reeditPrompt: fixClass(rule.id) === "autohdr" ? null : instructionFor(rule.id, iss.where),
           });
         }
       }

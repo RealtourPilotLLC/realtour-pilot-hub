@@ -67,8 +67,9 @@ export async function GET(req: NextRequest) {
   await step("ready", async () => {
     // Oct 14 2026: finished hub shoots → numbered copies in 06-Ready-for-Aryeo for Kyle's upload.
     const { stageReadyJobs } = await import("@/lib/photoDelivery/handoff");
-    return stageReadyJobs({ max: 2 });
-  }, { maxMs: 40_000 });
+    // Each copy is checked until Dropbox says it is done, then the folder is swapped in.
+    return stageReadyJobs({ max: 2, budgetMs: Math.min(50_000, Math.max(10_000, remaining() - 60_000)) });
+  }, { maxMs: 60_000 });
 
   await step("verify", async () => {
     const { verifyDeliveringJobs } = await import("@/lib/photoDelivery/verifySweep");

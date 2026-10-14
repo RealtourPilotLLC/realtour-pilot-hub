@@ -36,8 +36,10 @@ export type CartLine = {
   /** null = the live price could not be read */
   credits: number | null;
   /** Why this line cannot run automatically, when it cannot. */
-  humanCall: null | "permanent-feature" | "privacy" | "color-truth" | "reshoot" | "editor" | "review" | "no-autohdr";
+  humanCall: null | "permanent-feature" | "privacy" | "color-truth" | "reshoot" | "editor" | "review" | "no-autohdr" | "autohdr-editor";
   selectedByDefault: boolean;
+  /** Oct 14 2026: a free fix in AutoHDR's own editor (Crop & Tilt, Perspective Off), what to press. */
+  howTo?: string | null;
   /** Oct 14 2026: an ordered add-on (virtual twilight, staging, declutter, twilight look): its transform settings. */
   params?: Record<string, unknown> | null;
   addOn?: boolean;
@@ -119,7 +121,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true, sourceKind: true } });
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
   const hubPhoto = new Set(photos.filter((p) => p.sourceKind === "AUTOHDR").map((p) => p.id));
-  const { fixClass, instructionFor, fixBudgetFor } = await import("./fixPolicy");
+  const { fixClass, instructionFor, fixBudgetFor, AUTOHDR_FREE_FIX } = await import("./fixPolicy");
   const { capabilityCatalog } = await import("./catalog");
   const catalog = await capabilityCatalog().catch(() => null);
   const offered = catalog ? new Set(catalog.map((c) => c.name)) : null;
@@ -140,6 +142,12 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
       }
       const humanCall: CartLine["humanCall"] = !transform || (offered && !offered.has(transform)) ? "review" : !job.autohdrPhotoshootId ? "no-autohdr" : null;
       lines.push({ findingIds: [f.id], photoId: f.photoId, photoName: f.photoId ? nameOf.get(f.photoId) ?? null : null, ruleId: f.ruleId, label: rule?.shortLabel ?? f.ruleId, specificIssue: f.specificIssue, severity: f.severity as Severity, confidence: f.confidence, strategy, transform, credits: humanCall ? 0 : credits, humanCall, selectedByDefault: false, params, addOn: true });
+      continue;
+    }
+    // Verticals, a tilted horizon and a roof the straightening cut off: free in
+    // AutoHDR's editor, never a paid re-edit (Jordan, Oct 14 2026).
+    if (fixClass(f.ruleId) === "autohdr") {
+      lines.push({ findingIds: [f.id], photoId: f.photoId, photoName: f.photoId ? nameOf.get(f.photoId) ?? null : null, ruleId: f.ruleId, label: rule?.shortLabel ?? f.ruleId, specificIssue: f.specificIssue, severity: f.severity as Severity, confidence: f.confidence, strategy: "EDITOR_MANUAL", transform: null, credits: 0, humanCall: "autohdr-editor", selectedByDefault: false, howTo: AUTOHDR_FREE_FIX[f.ruleId] ?? null });
       continue;
     }
     // A removal or camera issue can always be written as an instruction; the
