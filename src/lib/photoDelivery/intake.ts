@@ -399,6 +399,9 @@ async function pollProcessing(batchId: string, now: Date): Promise<"waiting" | "
     if (jobId) await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: now } });
     await note(b.projectId, `AutoHDR finished "${b.address}": ${photos.length} edited photos`, { photoshootId: b.photoshootId, pipeline: st.pipeline ?? null });
     await checkCreatorBilling(b, photos.length);
+    // Bring the photos over so the hub can show them (the delivery credit).
+    const { downloadForDisplay } = await import("./display");
+    await downloadForDisplay({ batchId: batchId, max: 1 }).catch((e) => console.warn("display download failed", batchId, (e as Error).message));
     return "done";
   }
   if (st.status === "failure") {
@@ -483,13 +486,13 @@ async function failBatch(batchId: string, projectId: string, address: string | n
 }
 
 /** The hub-sent AutoHDR gallery for a job, as the job sync reads it (DONE batches, in order). */
-export async function intakeGallery(projectId: string): Promise<{ shootId: number; image_uuid: string; image_version_uuid: string; name: string }[]> {
+export async function intakeGallery(projectId: string): Promise<{ shootId: number; image_uuid: string; image_version_uuid: string; name: string; url: string | null }[]> {
   const done = await prisma.photoIntakeBatch.findMany({ where: { projectId, state: "DONE", photosJson: { not: null } }, orderBy: { batchNo: "asc" }, select: { photoshootId: true, photosJson: true } });
-  const out: { shootId: number; image_uuid: string; image_version_uuid: string; name: string }[] = [];
+  const out: { shootId: number; image_uuid: string; image_version_uuid: string; name: string; url: string | null }[] = [];
   for (const b of done) {
     try {
-      const photos = JSON.parse(b.photosJson ?? "[]") as { image_uuid: string; image_version_uuid: string; name: string | null }[];
-      for (const p of photos) out.push({ shootId: b.photoshootId!, image_uuid: p.image_uuid, image_version_uuid: p.image_version_uuid, name: p.name || `${p.image_uuid}.jpg` });
+      const photos = JSON.parse(b.photosJson ?? "[]") as { image_uuid: string; image_version_uuid: string; name: string | null; url?: string | null }[];
+      for (const p of photos) out.push({ shootId: b.photoshootId!, image_uuid: p.image_uuid, image_version_uuid: p.image_version_uuid, name: p.name || `${p.image_uuid}.jpg`, url: p.url ?? null });
     } catch {
       /* a row we cannot read adds nothing */
     }

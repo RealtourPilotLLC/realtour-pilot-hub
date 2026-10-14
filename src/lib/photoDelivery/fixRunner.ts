@@ -493,7 +493,8 @@ async function pollStep(op: Op): Promise<"done" | "waiting"> {
     prisma.photoVersion.create({
       data: { photoId: op.photoId, label: `AutoHDR ${op.transformName}`, source: "FIX", autohdrVersionUuid: output, parentVersionUuid: j.image_version_uuid, derivJson: stored ? JSON.stringify({ file: stored }) : null, createdBy: "fix-runner" },
     }),
-    prisma.photoAsset.update({ where: { id: op.photoId }, data: { autohdrVersionUuid: output } }),
+    // A hub photo's stored link points at the old version: the next view fetches the fixed one (free).
+    prisma.photoAsset.update({ where: { id: op.photoId }, data: { autohdrVersionUuid: output, ...(hubShoot != null ? { sourceUrl: null } : {}) } }),
     prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: check.verdict === "fixed" ? "VERIFIED" : "SUCCEEDED", outputVersionUuid: output, finishedAt: new Date(), error: hubShoot != null || stored ? null : "fixed in AutoHDR; file not stored in the hub yet", verificationJson: JSON.stringify(check) } }),
     prisma.photoQcFinding.updateMany({ where: { id: { in: fixedIds } }, data: { status: "FIXED", statusReason: `${check.verdict === "fixed" ? "Fixed and checked." : "Fixed (the check afterwards could not run)."} ${where}` } }),
     prisma.photoQcFinding.updateMany({ where: { id: { in: check.verdict === "not-fixed" ? ids : [] } }, data: { status: "OPEN", statusReason: `Still there after the AI fix${check.note ? `: ${check.note}` : ""}. A person should look.`.slice(0, 500) } }),

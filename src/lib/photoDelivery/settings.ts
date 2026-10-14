@@ -70,6 +70,8 @@ export type PhotoDeliverySettings = {
   /** All automatic fixes in one ET day, in credits (a runaway guard). */
   autoFixDailyMaxCredits: number;
   asIsClientIds: string[];
+  /** Show the hub's own AutoHDR photos (display.ts buys each once: the delivery credit). */
+  showAutohdrPhotos: boolean;
   /** AutoHDR model for REAL twilight photos (a predefined twilight model; read from GET /v1/models, Oct 14: 6 = Twilight Golden). */
   realTwilightModelId: number;
 };
@@ -101,6 +103,7 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   autoFixDailyMaxCredits: 100,
   asIsClientIds: [],
   realTwilightModelId: 6,
+  showAutohdrPhotos: false,
 };
 
 const KEY = "photo_delivery:settings";
@@ -137,6 +140,7 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     fixMaxUsd: num(raw.fixMaxUsd, d.fixMaxUsd, 0, 1_000),
     autoFixDailyMaxCredits: num(raw.autoFixDailyMaxCredits, d.autoFixDailyMaxCredits, 0, 10_000),
     realTwilightModelId: num(raw.realTwilightModelId, d.realTwilightModelId, 1, 100_000),
+    showAutohdrPhotos: bool(raw.showAutohdrPhotos, d.showAutohdrPhotos),
     asIsClientIds: Array.isArray(raw.asIsClientIds) ? raw.asIsClientIds.filter((x): x is string => typeof x === "string").slice(0, 500) : d.asIsClientIds,
   };
 }

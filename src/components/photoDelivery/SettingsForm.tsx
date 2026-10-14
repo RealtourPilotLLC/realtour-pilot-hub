@@ -33,6 +33,7 @@ export type SettingsValues = {
   freeCheck: boolean;
   paidQcAuto: boolean;
   autoFix: boolean;
+  showAutohdrPhotos: boolean;
   fixTargetUsd: number;
   fixMaxUsd: number;
 };
@@ -40,6 +41,7 @@ export type SettingsValues = {
 const SWITCHES: { key: keyof SettingsValues; label: string; help: string }[] = [
   { key: "enabled", label: "Track photo jobs", help: "Opens a job for every photo shoot and follows its gallery until delivery. Reads Aryeo and Dropbox only; writes nothing outside the hub." },
   { key: "autoSubmit", label: "Send uploads to AutoHDR", help: "When a photographer's upload is finished (and when files are added later), the hub sends the raws to AutoHDR with your account's default look. Editing is free; a credit per photo comes off at the first download, as always. Kyle is told, so nobody adds the folder by hand too." },
+  { key: "showAutohdrPhotos", label: "Show AutoHDR photos in the hub", help: "When AutoHDR finishes a shoot the hub sent, the hub downloads its photos once so they show on the job page. That is the same 1 credit per photo the push to Aryeo charges; the push does not charge them again." },
   { key: "freeCheck", label: "Free photo check", help: "Asks AutoHDR's free describe tool to check every edited photo against the checklist (bins, hoses, toilet seats, reflections, crooked lines and more). No credits, no Claude cost." },
   { key: "qcEnabled", label: "Paid QC available", help: "The Claude QC (measured checks plus Claude vision, about $3 to $4 a shoot, never AutoHDR credits). Whether it starts by itself is the switch below." },
   { key: "paidQcAuto", label: "Run the paid QC by itself", help: "Off: the Claude QC only runs when someone presses Run QC on a job. On: it inspects every gallery as it lands, about $3 to $4 a shoot." },
@@ -83,6 +85,7 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           freeCheck: v.freeCheck,
           paidQcAuto: v.paidQcAuto,
           autoFix: v.autoFix,
+          showAutohdrPhotos: v.showAutohdrPhotos,
           fixTargetUsd: v.fixTargetUsd,
           fixMaxUsd: v.fixMaxUsd,
           maxBuildPhase: v.maxBuildPhase,

@@ -576,7 +576,8 @@ async function main() {
     const tryLoad = async (row: Partial<Parameters<typeof S.loadPhotoBytes>[0]>) => { try { await S.loadPhotoBytes({ id: "x", name: "a.jpg", sourceKind: "DROPBOX", sourceUrl: null, sourceRef: null, dropboxPath: null, ...row }); return null; } catch (e) { return e as InstanceType<typeof S.PhotoSourceError>; } };
     const eAuto = await tryLoad({ sourceKind: "AUTOHDR", sourceRef: "uuid" });
     const eHost = await tryLoad({ sourceKind: "ARYEO", sourceUrl: "https://evil.example.com/a.jpg" });
-    c.ok("AUTOHDR is 'not supported yet' (a skipped check), never a crash", eAuto instanceof S.PhotoSourceError && eAuto.kind === "unsupported");
+    // Oct 14 2026: the hub's own AutoHDR photos are read now (display.ts); one the hub has not brought over is a clean refusal.
+    c.ok("an AUTOHDR photo the hub has not brought over is a PhotoSourceError, never a crash", eAuto instanceof S.PhotoSourceError && (eAuto.kind === "refused" || eAuto.kind === "transient"));
     c.ok("a non-Aryeo host is refused before any request, with a reason for the FILE_OPENS finding", eHost instanceof S.PhotoSourceError && eHost.kind === "refused" && /not an Aryeo, S3 or CloudFront host/.test(eHost.publicReason));
     c.ok("…and nothing left the building", fence.blocked.length === 0, fence.blocked.join(", "));
 

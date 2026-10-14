@@ -287,7 +287,7 @@ async function autohdrGallery(projectId: string): Promise<GalleryEntry[]> {
     return {
       name,
       sourceKind: "AUTOHDR" as const,
-      sourceUrl: null,
+      sourceUrl: p.url,
       sourceRef: `${p.shootId}/${p.image_uuid}`,
       dropboxPath: null,
       dropboxId: null,

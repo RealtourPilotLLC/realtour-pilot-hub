@@ -196,7 +196,23 @@ export async function loadPhotoBytes(p: PhotoSourceRow): Promise<Buffer> {
     return fetchAryeo(p.sourceUrl);
   }
   if (kind === "AUTOHDR") {
-    throw new PhotoSourceError("AutoHDR-hosted photos are not supported yet", "unsupported", "photos read straight from AutoHDR are not supported yet");
+    // Oct 14 2026: the hub's own AutoHDR shoot (display.ts bought each photo
+    // once). The stored link lasts 6 hours; an expired one is refreshed free.
+    if (p.sourceUrl) {
+      try {
+        return await fetchAryeo(p.sourceUrl);
+      } catch (e) {
+        if (!(e instanceof PhotoSourceError) || e.kind === "transient") throw e;
+      }
+    }
+    try {
+      const { freshAutohdrUrl } = await import("../display");
+      return await fetchAryeo(await freshAutohdrUrl(p));
+    } catch (e) {
+      if (e instanceof PhotoSourceError) throw e;
+      const msg = (e as Error).message;
+      throw new PhotoSourceError(`autohdr photo: ${msg}`, /not downloaded/.test(msg) ? "transient" : "refused", /not downloaded/.test(msg) ? "the photo is still being brought over from AutoHDR" : "AutoHDR could not give the photo just now");
+    }
   }
   throw new PhotoSourceError(`unknown photo source ${kind}`, "unsupported", `the photo source "${kind}" is not supported`);
 }

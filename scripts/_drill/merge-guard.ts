@@ -178,7 +178,10 @@ async function main() {
     c.ok("AutoHDR is reached only through its one client (src/lib/integrations/autohdr.ts)", autohdrUrls.length === 1 && rel(autohdrUrls[0]) === path.join("src", "lib", "integrations", "autohdr.ts"), autohdrUrls.map(rel).join(", "));
     const spenders = files.filter((f) => /\bautohdr\.(submitTransform|download)\(/.test(text.get(f)!));
     const runner = text.get(path.join(SRC, "lib/photoDelivery/fixRunner.ts")) ?? "";
-    c.ok("credit-spending AutoHDR calls live only in the fix runner, behind the owner's fixRunnerEnabled switch", spenders.length === 1 && rel(spenders[0]).endsWith(path.join("photoDelivery", "fixRunner.ts")) && /settings\.fixRunnerEnabled/.test(runner), spenders.map(rel).join(", "));
+    // Oct 14 2026: plus display.ts, which buys a finished hub shoot's photos once
+    // (the delivery credit) so the hub can show them, behind showAutohdrPhotos.
+    const display = spenders.find((f) => rel(f).endsWith(path.join("photoDelivery", "display.ts")));
+    c.ok("credit-spending AutoHDR calls live only in the fix runner (fixRunnerEnabled) and the display download (showAutohdrPhotos)", spenders.length === (display ? 2 : 1) && spenders.some((f) => rel(f).endsWith(path.join("photoDelivery", "fixRunner.ts"))) && /settings\.fixRunnerEnabled/.test(runner) && (!display || /settings\.showAutohdrPhotos/.test(text.get(display)!)), spenders.map(rel).join(", "));
     // A function whose name STARTS with the act (topUpX, buyCredits, purchase…,
     // replenish…). Readers named for what they read (lastAutohdrTopUp) pass.
     const buyers = files.filter((f) => /function\s+(top_?up|buy|purchase|replenish)\w*\s*\(/i.test(text.get(f)!));

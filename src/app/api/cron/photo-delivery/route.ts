@@ -41,6 +41,12 @@ export async function GET(req: NextRequest) {
     return driveIntake({ budgetMs: 110_000 });
   }, { maxMs: 130_000 });
 
+  await step("display", async () => {
+    // Oct 14 2026: bring finished hub shoots' photos over so the hub can show them.
+    const { downloadForDisplay } = await import("@/lib/photoDelivery/display");
+    return downloadForDisplay({ max: 2 });
+  }, { maxMs: 40_000 });
+
   await step("sync", async () => {
     const { syncPhotoJobs } = await import("@/lib/photoDelivery/jobs");
     return syncPhotoJobs({ budgetMs: Math.min(90_000, Math.max(20_000, remaining() - 150_000)) });

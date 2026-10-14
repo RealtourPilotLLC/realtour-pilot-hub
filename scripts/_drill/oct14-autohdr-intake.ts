@@ -112,7 +112,7 @@ async function main() {
     c.head("1 · switched off: nothing happens");
     const off = await intake.driveIntake({ budgetMs: 60_000, now: NOW });
     c.ok("autoSubmit off by default: skipped, nothing read", !!off.skipped && (await prisma.photoIntakeBatch.count()) === 0, off.skipped);
-    await savePhotoDeliverySettings({ autoSubmit: true, freeCheck: true, paidQcAuto: false, qcEnabled: true, qcShadow: true, autoSubmitFrom: "2026-10-13T04:00:00.000Z" }, "drill");
+    await savePhotoDeliverySettings({ autoSubmit: true, freeCheck: true, paidQcAuto: false, qcEnabled: true, qcShadow: true, showAutohdrPhotos: true, autoSubmitFrom: "2026-10-13T04:00:00.000Z" }, "drill");
 
     // ======================================================================
     c.head("2 · a finished upload settles, then goes to AutoHDR once");
@@ -154,6 +154,23 @@ async function main() {
     await jobs.syncJobFinals(jobW.id, new Date(syncAt.getTime() + 7 * MIN));
     c.ok("EDITING → EDITED once settled", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } })).stage === "EDITED");
 
+    c.head("3b · the photos show in the hub (bought once: the delivery credit)");
+    const dls = fake.posts("/v1/photoshoots/").filter((x) => x.path.endsWith("/photos/download"));
+    c.ok("one download of the 5 finished photos, right when AutoHDR finished", dls.length === 1 && ((dls[0].body as { images: unknown[] }).images.length === 5));
+    c.ok("5 credits (the photos' first download), in the ledger with why", fake.state.balance === 295 && !!(await prisma.autohdrCreditEntry.findFirst({ where: { kind: "DOWNLOAD", credits: -5, note: { contains: "to show in the hub" } } })));
+    const shown = await prisma.photoAsset.findMany({ where: { jobId: jobW.id } });
+    c.ok("every gallery row has its link", shown.every((r) => r.sourceUrl?.startsWith("https://autohdr-fake.s3.amazonaws.com/")));
+    const S = await import("@/lib/photoDelivery/qc/source");
+    const bytes = await S.loadPhotoBytes(shown[0]);
+    c.ok("the image loader reads it", bytes.length > 0 && bytes[0] === 0xff);
+    await prisma.photoAsset.update({ where: { id: shown[0].id }, data: { sourceUrl: null } });
+    const before3b = fake.state.balance;
+    const again3b = await S.loadPhotoBytes((await prisma.photoAsset.findUniqueOrThrow({ where: { id: shown[0].id } })));
+    c.ok("a missing or expired link is refreshed free (already bought)", again3b.length > 0 && fake.state.balance === before3b && !!(await prisma.photoAsset.findUniqueOrThrow({ where: { id: shown[0].id } })).sourceUrl);
+    const display = await import("@/lib/photoDelivery/display");
+    const re = await display.downloadForDisplay({});
+    c.ok("never bought twice", re.photos === 0 && fake.state.balance === before3b, JSON.stringify(re));
+
     // ======================================================================
     c.head("4 · the free photo check");
     const names = rows.map((r) => r.name);
@@ -176,7 +193,7 @@ async function main() {
     c.ok("a missing confidence reads as 0.6", findings.find((f) => f.ruleId === "EXT_GARDEN_HOSES")!.confidence === 0.6);
     const jW = await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } });
     c.ok("shadow mode: EDITED → QC_REVIEW with the verdict", jW.stage === "QC_REVIEW" && jW.qcVerdict === "NEEDS_DECISION" && jW.lastQcRunId === run.id, `${jW.stage} ${jW.qcVerdict}`);
-    c.ok("free: no credit spent, no download, no Claude call", fake.state.balance === 300 && fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/download")).length === 0 && fence.blocked.filter((u) => /anthropic/i.test(u)).length === anthropicBefore);
+    c.ok("free: no credit spent, no new download, no Claude call", fake.state.balance === before3b && fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/download")).length === dls.length + 1 && fence.blocked.filter((u) => /anthropic/i.test(u)).length === anthropicBefore);
     c.ok("one bell for the check", (await prisma.notification.count({ where: { kind: "photo_free_check" } })) >= 1);
     c.ok("every describe call carried the checklist", fake.state.calls.filter((x) => x.path.endsWith("/describe")).every((x) => /BATH_TOILET_SEAT_OPEN: /.test(String((x.body as { prompt?: string }).prompt))));
 

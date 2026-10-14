@@ -154,8 +154,8 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
       return new Response(null, { status: 200 });
     }
     // Presigned download URLs: the bytes of a tiny JPEG stand-in.
-    if (url.startsWith("https://fake-s3.example/download/")) {
-      const ver = url.slice("https://fake-s3.example/download/".length);
+    if (url.startsWith("https://fake-s3.example/download/") || url.startsWith("https://autohdr-fake.s3.amazonaws.com/download/")) {
+      const ver = url.slice(url.indexOf("/download/") + "/download/".length);
       const bytes = opts.imageBytes?.(ver) ?? new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
       return new Response(bytes as unknown as BodyInit, { status: 200, headers: { "content-type": "image/jpeg" } });
     }
@@ -254,7 +254,7 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
         if (cost > state.balance) return err(402, "insufficient_credits");
         state.balance -= cost;
         photos.forEach((p) => (p!.downloaded = true));
-        return json(200, { photoshoot_id: shoot.photoshoot_id, credits_charged: cost, downloads: photos.map((p) => ({ image_uuid: p!.image_uuid, filename: p!.name.replace(/\.[a-z0-9]+$/i, ".jpg"), url: `https://fake-s3.example/download/${p!.head}`, byte_size: 4 })) });
+        return json(200, { photoshoot_id: shoot.photoshoot_id, credits_charged: cost, downloads: photos.map((p) => ({ image_uuid: p!.image_uuid, filename: p!.name.replace(/\.[a-z0-9]+$/i, ".jpg"), url: `https://autohdr-fake.s3.amazonaws.com/download/${p!.head}`, byte_size: 4 })) });
       }
       const pm = /^\/photos\/([^/]+)\/(history|version|describe)$/.exec(rest);
       if (pm) {

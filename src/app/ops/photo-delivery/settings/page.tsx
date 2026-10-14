@@ -73,6 +73,7 @@ export default async function PhotoDeliverySettingsPage() {
               freeCheck: settings.freeCheck,
               paidQcAuto: settings.paidQcAuto,
               autoFix: settings.autoFix,
+              showAutohdrPhotos: settings.showAutohdrPhotos,
               fixTargetUsd: settings.fixTargetUsd,
               fixMaxUsd: settings.fixMaxUsd,
             }}

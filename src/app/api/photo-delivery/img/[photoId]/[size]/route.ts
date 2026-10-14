@@ -70,11 +70,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
 
   const photo = await prisma.photoAsset.findUnique({
     where: { id: photoId },
-    select: { id: true, name: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true, derivJson: true, derivHash: true },
+    select: { id: true, name: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true, derivJson: true, derivHash: true, autohdrVersionUuid: true },
   });
   if (!photo) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const hash = photo.contentHash || `asset:${photo.id}`;
+  // The hub's own AutoHDR photo shows AutoHDR's CURRENT version (a fix changes it), so its version is part of the key.
+  const autohdrPhoto = photo.sourceKind === "AUTOHDR";
+  const hash = autohdrPhoto && photo.autohdrVersionUuid ? `ahdr-${photo.autohdrVersionUuid}` : photo.contentHash || `asset:${photo.id}`;
   const etag = `"${hash.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40)}-${size}"`;
   if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: headers(etag, 86400) });
 
@@ -110,7 +112,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
       }),
     ]);
     D.derivCache.set(key, out.data);
-    return new Response(new Uint8Array(out.data), { status: 200, headers: headers(etag, 86400) });
+    return new Response(new Uint8Array(out.data), { status: 200, headers: headers(etag, autohdrPhoto ? 600 : 86400) });
   } catch (e) {
     if (e instanceof PhotoSourceError) {
       const status = e.kind === "gone" ? 404 : e.kind === "transient" ? 503 : 422;
