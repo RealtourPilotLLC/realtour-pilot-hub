@@ -628,7 +628,18 @@ export async function releaseStrategyToPortal(strategyVersionId: string, by: str
   const v = await prisma.contentStrategyVersion.findUnique({ where: { id: strategyVersionId }, select: { enrollmentId: true, status: true, releasedAt: true } });
   if (!v) throw new Error("Strategy version not found.");
   if (v.status !== "APPROVED") throw new Error("Approve the version before releasing it.");
+  // Oct 14 2026 (Jordan): "Everyone on the platform already has a strategy;
+  // they don't need to be notified about that." The "strategy ready" email is
+  // for a client's FIRST strategy only: an updated version (a call's changes,
+  // a repair) goes to the portal silently.
+  const earlier = await prisma.contentStrategyVersion.count({ where: { enrollmentId: v.enrollmentId, id: { not: strategyVersionId }, releasedAt: { not: null } } });
   if (!v.releasedAt) await releaseStrategyVersion(strategyVersionId, by);
+  if (earlier > 0) {
+    if (await prisma.programOnboarding.findUnique({ where: { enrollmentId: v.enrollmentId }, select: { id: true } })) {
+      await advanceOnboarding(v.enrollmentId, { enqueue: false, requestedBy: by }).catch(() => {});
+    }
+    return { released: true, email: "suppressed", message: "Released to the portal. No email: they already had a strategy, so an update goes in quietly." };
+  }
   const notice = await queueStrategyReadyNotice({ enrollmentId: v.enrollmentId, strategyVersionId, by });
   // A08: this is now the Release button for EVERY client, so it records the
   // release on an onboarding that exists and never mints one for a client who
