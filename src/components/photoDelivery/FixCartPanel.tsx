@@ -27,7 +27,20 @@ import type { CartLineView } from "./types";
 // Dollars appear for the owner only (the rate is null for everyone else).
 // ---------------------------------------------------------------------------
 
-const estimateOf = (lines: CartLineView[]): number | null => (lines.some((l) => l.credits == null) ? null : lines.reduce((s, l) => s + (l.credits ?? 0), 0));
+// Several fixes on one photo run as one edit (one price), as the server batches them.
+const MERGEABLE = new Set(["AUTOREMOVE_MASK", "CAMERA_REMOVAL", "DECLUTTER", "REEDIT_PROMPT"]);
+const estimateOf = (lines: CartLineView[]): number | null => {
+  if (lines.some((l) => l.credits == null)) return null;
+  const seen = new Set<string>();
+  let total = 0;
+  lines.forEach((l, i) => {
+    const key = MERGEABLE.has(l.strategy) ? `${l.photoId ?? "_"}:${l.strategy}` : `line:${i}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    total += l.credits ?? 0;
+  });
+  return total;
+};
 const cr = (n: number | null) => (n == null ? "price unknown" : `${n.toLocaleString("en-US")} cr`);
 
 export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
@@ -52,6 +65,10 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
     const e = estimateOf(lines);
     if (e == null) return { ok: false, why: "AutoHDR's price for one of these could not be read, so nothing can start." };
     if (!viewer.isOwner && e > cart!.adminCap) return { ok: false, why: `This batch is ${e} credits, above your ${cart!.adminCap}-credit approval limit. Jordan needs to approve it.` };
+    const b = cart!.budget;
+    if (b && !viewer.isOwner && !lines.every((l) => l.addOn) && b.spent + b.pending + e > b.maxCredits) {
+      return { ok: false, why: `This would pass the shoot's fix budget (${b.spent + b.pending} of ${b.maxCredits} credits used, ${Math.max(0, b.maxCredits - b.spent - b.pending)} left). Pick fewer fixes, or ask Jordan.` };
+    }
     if (cart!.balance != null && cart!.balance < e) return { ok: false, why: `The AutoHDR balance (${cart!.balance}) is below this estimate (${e}). Top up in AutoHDR first.` };
     const crosses = cart!.balance != null && cart!.balance >= cart!.criticalThreshold && cart!.balance - e < cart!.criticalThreshold;
     return { ok: true, est: e, crosses };
@@ -150,6 +167,22 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
             ))}
           </ul>
           <p className="mt-1 text-[13px] text-muted">You can still ignore, send to the editor, or decide each issue.</p>
+        </div>
+      )}
+
+      {cart.budget && (
+        // Oct 14 2026: the shoot's QC fix budget, so whoever submits knows what is left.
+        <div className="rounded-xl border border-border bg-surface p-3">
+          <p className="text-sm font-semibold">
+            Fix budget for this shoot: {cart.budget.maxCredits} credits max ({cart.budget.targetCredits} normally){rate != null ? ` · ${usd(cart.budget.maxCredits * rate)} max` : ""}
+          </p>
+          <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-2" aria-hidden>
+            <div className={cn("h-full rounded-full", cart.budget.spent + cart.budget.pending > cart.budget.targetCredits ? "bg-warning" : "bg-success")} style={{ width: `${Math.min(100, ((cart.budget.spent + cart.budget.pending) / Math.max(1, cart.budget.maxCredits)) * 100)}%` }} />
+          </div>
+          <p className="mt-1 text-[13px] text-muted">
+            Used so far: {cart.budget.spent + cart.budget.pending} credit{cart.budget.spent + cart.budget.pending === 1 ? "" : "s"} ({cart.budget.automatic} automatic, {cart.budget.byHand} by hand{cart.budget.pending ? `; ${cart.budget.pending} still running` : ""}) · Left: {Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending)}{rate != null ? ` (${usd(Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending) * rate)})` : ""}.
+            {" "}One credit per photo: several fixes on the same photo are one edit. Ordered add-ons (virtual twilight, staging) are not part of this budget.
+          </p>
         </div>
       )}
 

@@ -217,6 +217,9 @@ async function main() {
     c.ok("shadow mode: EDITED → QC_REVIEW with the verdict", jW.stage === "QC_REVIEW" && jW.qcVerdict === "NEEDS_DECISION" && jW.lastQcRunId === run.id, `${jW.stage} ${jW.qcVerdict}`);
     c.ok("free: no credit spent, no new download, no Claude call", fake.state.balance === before3b && fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/download")).length === downloadsBefore && fence.blocked.filter((u) => /anthropic/i.test(u)).length === anthropicBefore);
     c.ok("one bell for the check", (await prisma.notification.count({ where: { kind: "photo_free_check" } })) >= 1);
+    const labeled = await prisma.photoAsset.findMany({ where: { jobId: jobW.id }, orderBy: { sequence: "asc" }, select: { name: true, roomType: true, sequenceGroup: true } });
+    c.ok("the photos get room labels from the free check (no more 'Unlabeled')", labeled[0].roomType === "EXTERIOR_FRONT" && labeled[0].sequenceGroup === "FRONT_EXTERIOR" && labeled[1].roomType === "BATHROOM" && labeled.slice(2).every((r) => r.roomType === "KITCHEN"), JSON.stringify(labeled.map((r) => r.roomType)));
+    c.ok("room words map sensibly", check.roomTypeFrom("primary bathroom") === "PRIMARY_BATHROOM" && check.roomTypeFrom("back yard") === "EXTERIOR_REAR" && check.roomTypeFrom("front exterior", "twilight") === "TWILIGHT_EXTERIOR" && check.roomTypeFrom("living room") === "LIVING" && check.roomTypeFrom("") === null);
     c.ok("every describe call carried the checklist", fake.state.calls.filter((x) => x.path.endsWith("/describe")).every((x) => /BATH_TOILET_SEAT_OPEN: /.test(String((x.body as { prompt?: string }).prompt))));
 
     // ======================================================================

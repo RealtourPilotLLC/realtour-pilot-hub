@@ -217,10 +217,10 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
   // "$5-$10 MAX on QC fixes per shoot"), counted from what was really charged.
   const batchRow = await prisma.photoFixBatch.findUnique({ where: { id: op.batchId }, select: { approvedBy: true } });
   if (batchRow?.approvedBy === "auto-fix") {
-    const { creditThresholds } = await import("./credits");
-    const maxCredits = Math.floor(settings.fixMaxUsd / (await creditThresholds()).usdPerCredit + 1e-9);
-    const charged = await prisma.photoFixOperation.aggregate({ where: { jobId: job.id, batch: { approvedBy: "auto-fix" }, chargedCredits: { not: null }, OR: [{ refunded: null }, { refunded: false }] }, _sum: { chargedCredits: true } });
-    if ((charged._sum.chargedCredits ?? 0) + price > maxCredits) {
+    // Everything charged on the shoot so far (automatic and by hand), not this op's own estimate.
+    const { fixBudgetFor } = await import("./fixPolicy");
+    const b = await fixBudgetFor(job.id);
+    if (b.spent + price > b.maxCredits) {
       await escalate(op, `this shoot has reached its automatic fix maximum ($${settings.fixMaxUsd})`);
       return "escalated";
     }

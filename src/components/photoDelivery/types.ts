@@ -185,10 +185,15 @@ export type CartLineView = {
   credits: number | null;
   humanCall: string | null;
   selectedByDefault: boolean;
+  /** An ordered add-on (virtual twilight, staging, declutter): not part of the fix budget. */
+  addOn?: boolean;
+  params?: Record<string, unknown> | null;
 };
 
 export type CartView = {
   lines: CartLineView[];
+  /** Oct 14 2026: the shoot's QC fix budget (credits) and what is already used. */
+  budget: { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number } | null;
   /** The fix planner's estimate for its default picks (null = a price could not be read). */
   estimatedCredits: number | null;
   balance: number | null;

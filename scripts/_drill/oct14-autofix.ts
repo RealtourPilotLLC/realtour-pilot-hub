@@ -214,6 +214,35 @@ async function main() {
     const sentStage = fake.posts("/v1/transforms").find((x) => (x.body as { transform_name: string }).transform_name === "single_angle_staging")?.body as { params?: { room_type?: string } } | undefined;
     c.ok("sent: style with the twilight model, staging with the room", sentStyle?.model_id === 6 && sentStage?.params?.room_type === "living_room", JSON.stringify([sentStyle, sentStage]));
 
+    // ======================================================================
+    c.head("7 · Kyle submits fixes inside the shoot's budget");
+    const F = await mkJob("60 Budget Blvd", 25);
+    const fF: { id: string }[] = [];
+    for (let i = 0; i < 22; i++) fF.push(await find(F.job.id, F.qcRun.id, F.photos[i].id, "PREP_TRASH_CANS", "corner", 0.9, { arbitration: "CONFIRMED", reeditPrompt: null }));
+    const twoOnOne = await find(F.job.id, F.qcRun.id, F.photos[0].id, "EXT_GARDEN_HOSES", "porch", 0.9, { arbitration: "CONFIRMED" });
+    await prisma.photoJob.update({ where: { id: F.job.id }, data: { stage: "QC_REVIEW" } });
+    const cartF = await fixes.buildFixCart(F.job.id);
+    const l0 = cartF.lines.filter((l) => l.photoId === F.photos[0].id);
+    c.ok("a free-check finding on a hub photo is a 1-credit re-edit (no marked area needed)", l0.length === 2 && l0.every((l) => l.strategy === "REEDIT_PROMPT" && l.credits === 1 && !l.humanCall), JSON.stringify(l0.map((l) => [l.strategy, l.credits, l.humanCall])));
+    c.ok("the budget box: 20 max, 10 normally, nothing used yet", cartF.budget?.maxCredits === 20 && cartF.budget.targetCredits === 10 && cartF.budget.spent === 0);
+    const kyleOk = await fixes.approveFixBatch({ jobId: F.job.id, findingIds: [fF[0].id, twoOnOne.id, ...fF.slice(1, 12).map((f) => f.id)], mode: "SELECTED", by: "Kyle", role: "ADMIN" });
+    const opsF = await prisma.photoFixOperation.findMany({ where: { jobId: F.job.id } });
+    c.ok("Kyle's 13 fixes on 12 photos: 12 credits, one edit for the photo with two", kyleOk.ok && kyleOk.estimatedCredits === 12 && opsF.length === 12 && opsF.some((o) => (JSON.parse(o.findingIdsJson) as string[]).length === 2), kyleOk.ok ? "" : kyleOk.message);
+    c.ok("…the findings got their written instruction", !!(await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: fF[0].id } })).reeditPrompt);
+    await prisma.photoJob.update({ where: { id: F.job.id }, data: { stage: "QC_REVIEW" } });
+    const overBudget = await fixes.approveFixBatch({ jobId: F.job.id, findingIds: fF.slice(12, 22).map((f) => f.id), mode: "SELECTED", by: "Kyle", role: "ADMIN" });
+    c.ok("past the $10 maximum: Kyle is told what is used and left", !overBudget.ok && /12 of 20 credits already used, 8 left, and this batch is 10/.test(overBudget.message), overBudget.ok ? "" : overBudget.message);
+    const cartF2 = await fixes.buildFixCart(F.job.id);
+    c.ok("the box shows 12 used by hand (waiting to run)", cartF2.budget?.byHand === 12 && cartF2.budget.pending === 12 && cartF2.budget.automatic === 0, JSON.stringify(cartF2.budget));
+    const jordanOver = await fixes.approveFixBatch({ jobId: F.job.id, findingIds: fF.slice(12, 22).map((f) => f.id), mode: "SELECTED", by: "Jordan", role: "OWNER" });
+    c.ok("Jordan may go past it", jordanOver.ok, jordanOver.ok ? "" : jordanOver.message);
+    const G = await mkJob("70 Left Ln", 6);
+    for (let i = 0; i < 6; i++) await find(G.job.id, G.qcRun.id, G.photos[i].id, "EXT_VEHICLES_BLOCKING_HOME", "street", 0.9, { arbitration: "CONFIRMED" });
+    const gb = await prisma.photoFixBatch.create({ data: { jobId: G.job.id, mode: "SELECTED", approvedBy: "Kyle", estimatedCredits: 17 } });
+    await prisma.photoFixOperation.create({ data: { batchId: gb.id, jobId: G.job.id, photoId: G.photos[0].id, findingIdsJson: "[]", seq: 9, strategy: "REEDIT_PROMPT", transformName: "reedit", estimatedCredits: 17, chargedCredits: 17, status: "VERIFIED" } });
+    const pG = await policy.planAutoFix(G.job.id);
+    c.ok("the automatic plan only uses what is left (17 by hand → 3 more)", pG.planned && pG.credits === 3, JSON.stringify(pG));
+
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));
     c.summary();

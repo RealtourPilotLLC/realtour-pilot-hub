@@ -46,6 +46,8 @@ export type CartLine = {
 export type FixCart = {
   jobId: string;
   lines: CartLine[];
+  /** Oct 14 2026: the shoot's QC fix budget and what is already used (fixPolicy.fixBudgetFor). */
+  budget: { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number } | null;
   estimatedCredits: number | null;
   usdPerCredit: number;
   balance: number | null;
@@ -96,6 +98,9 @@ export function resolveStrategy(preferred: FixStrategy, ruleStrategies: FixStrat
   };
   if (usable(preferred)) return preferred;
   for (const s of ruleStrategies) if (s !== preferred && STRATEGY_TRANSFORM[s] && usable(s)) return s;
+  // Oct 14 2026: a finding with a written instruction can always be a 1-credit
+  // AI re-edit (the free check gives no marked area, only words).
+  if (hasPrompt && usable("REEDIT_PROMPT")) return "REEDIT_PROMPT";
   return STRATEGY_TRANSFORM[preferred] ? "HUMAN_REVIEW" : preferred;
 }
 
@@ -111,8 +116,10 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
     where: { jobId, status: "OPEN", severity: { in: ["CRITICAL", "MAJOR", "MINOR"] } },
     select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true, bboxJson: true, reeditPrompt: true, source: true, coercedJson: true },
   });
-  const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true } });
+  const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true, sourceKind: true } });
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
+  const hubPhoto = new Set(photos.filter((p) => p.sourceKind === "AUTOHDR").map((p) => p.id));
+  const { fixClass, instructionFor, fixBudgetFor } = await import("./fixPolicy");
   const { capabilityCatalog } = await import("./catalog");
   const catalog = await capabilityCatalog().catch(() => null);
   const offered = catalog ? new Set(catalog.map((c) => c.name)) : null;
@@ -135,7 +142,13 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
       lines.push({ findingIds: [f.id], photoId: f.photoId, photoName: f.photoId ? nameOf.get(f.photoId) ?? null : null, ruleId: f.ruleId, label: rule?.shortLabel ?? f.ruleId, specificIssue: f.specificIssue, severity: f.severity as Severity, confidence: f.confidence, strategy, transform, credits: humanCall ? 0 : credits, humanCall, selectedByDefault: false, params, addOn: true });
       continue;
     }
-    const strategy = resolveStrategy(f.fixStrategy as FixStrategy, (rule?.fixStrategies ?? []) as FixStrategy[], offered, !!f.bboxJson, !!f.reeditPrompt);
+    // A removal or camera issue can always be written as an instruction; the
+    // hub's own AutoHDR photos are only ever fixed with written re-edits.
+    const canWrite = !!f.reeditPrompt || fixClass(f.ruleId) !== "never";
+    const hub = !!f.photoId && hubPhoto.has(f.photoId);
+    let strategy = resolveStrategy(f.fixStrategy as FixStrategy, (rule?.fixStrategies ?? []) as FixStrategy[], offered, !!f.bboxJson && !hub, canWrite);
+    if (hub && strategy === "AUTOREMOVE_MASK") strategy = canWrite ? "REEDIT_PROMPT" : "HUMAN_REVIEW";
+    void instructionFor;
     const transform = STRATEGY_TRANSFORM[strategy] ?? null;
     let humanCall: CartLine["humanCall"] = HUMAN[strategy] ?? null;
     if (f.isPermanentFeature || rule?.permanentFeatureRisk) humanCall = "permanent-feature";
@@ -161,7 +174,8 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   }
   const runnable = lines.filter((l) => !l.humanCall);
   const unknown = runnable.some((l) => l.credits == null);
-  const estimatedCredits = unknown ? null : runnable.filter((l) => l.selectedByDefault).reduce((s, l) => s + (l.credits ?? 0), 0);
+  const estimatedCredits = unknown ? null : mergedCredits(runnable.filter((l) => l.selectedByDefault));
+  const budget = await fixBudgetFor(jobId).catch(() => null);
   const blockers: string[] = [];
   if (!settings.fixRunnerEnabled) blockers.push("AutoHDR fixes are switched off until Jordan approves the first live test (Photo Delivery settings).");
   if (!credits?.connected) blockers.push("The AutoHDR API is not connected (Connections → AutoHDR).");
@@ -170,6 +184,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   return {
     jobId,
     lines,
+    budget: budget ? { targetCredits: budget.targetCredits, maxCredits: budget.maxCredits, spent: budget.spent, pending: budget.pending, automatic: budget.automatic, byHand: budget.byHand } : null,
     estimatedCredits,
     usdPerCredit: thresholds.usdPerCredit,
     balance: credits?.balance ?? null,
@@ -178,6 +193,20 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
     adminCap: settings.adminCreditCap,
     blockers,
   };
+}
+
+/** Several removals (or re-edits) on one photo run as ONE edit: one price per photo per kind. */
+const MERGEABLE = new Set(["AUTOREMOVE_MASK", "CAMERA_REMOVAL", "DECLUTTER", "REEDIT_PROMPT"]);
+export function mergedCredits(lines: { photoId: string | null; strategy: string; credits: number | null }[]): number {
+  const seen = new Set<string>();
+  let total = 0;
+  for (const [i, l] of lines.entries()) {
+    const key = MERGEABLE.has(l.strategy) ? `${l.photoId ?? "_"}:${l.strategy}` : `line:${i}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    total += l.credits ?? 0;
+  }
+  return total;
 }
 
 export type ApproveResult = { ok: true; batchId: string; operations: number; estimatedCredits: number } | { ok: false; message: string };
@@ -194,8 +223,14 @@ export async function approveFixBatch(input: { jobId: string; findingIds: string
   const lines = cart.lines.filter((l) => !l.humanCall && l.findingIds.some((id) => chosen.has(id)) && (input.mode !== "CRITICAL_MAJOR_ONLY" || l.severity !== "MINOR"));
   if (!lines.length) return { ok: false, message: "Nothing selected can be fixed automatically." };
   if (lines.some((l) => l.credits == null)) return { ok: false, message: "A price could not be read from AutoHDR, so nothing was started." };
-  const estimate = lines.reduce((s, l) => s + (l.credits ?? 0), 0);
+  const estimate = mergedCredits(lines);
   if (input.role !== "OWNER" && estimate > cart.adminCap) return { ok: false, message: `This batch is ${estimate} credits, above the ${cart.adminCap}-credit approval limit. Jordan needs to approve it.` };
+  // The shoot's fix budget (ordered add-ons are not part of it). Jordan may go over; Kyle may not.
+  const addOnOnly = lines.every((l) => l.addOn);
+  if (!addOnOnly && cart.budget && input.role !== "OWNER" && cart.budget.spent + cart.budget.pending + estimate > cart.budget.maxCredits) {
+    const left = Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending);
+    return { ok: false, message: `This would pass the shoot's fix budget: ${cart.budget.spent + cart.budget.pending} of ${cart.budget.maxCredits} credits already used, ${left} left, and this batch is ${estimate}. Pick fewer fixes, or Jordan can approve it.` };
+  }
   if (cart.balance != null && cart.balance < estimate) return { ok: false, message: `The AutoHDR balance (${cart.balance}) is below this batch's estimate (${estimate}). Top up first.` };
   const batch = await prisma.$transaction(async (tx) => {
     const b = await tx.photoFixBatch.create({
@@ -225,7 +260,7 @@ export async function approveFixBatch(input: { jobId: string; findingIds: string
       // mask (plan §8.2: the cheapest safe sequence).
       const merged: CartLine[] = [];
       for (const l of ls) {
-        const prev = merged.find((m) => m.strategy === l.strategy && (l.strategy === "AUTOREMOVE_MASK" || l.strategy === "CAMERA_REMOVAL" || l.strategy === "DECLUTTER"));
+        const prev = merged.find((m) => m.strategy === l.strategy && MERGEABLE.has(l.strategy));
         if (prev) prev.findingIds = [...prev.findingIds, ...l.findingIds];
         else merged.push({ ...l, findingIds: [...l.findingIds] });
       }
@@ -246,6 +281,14 @@ export async function approveFixBatch(input: { jobId: string; findingIds: string
           },
         });
         count++;
+      }
+    }
+    // A re-edit needs its words: findings without an instruction get one now.
+    const { instructionFor } = await import("./fixPolicy");
+    for (const l of lines.filter((x) => x.strategy === "REEDIT_PROMPT")) {
+      for (const fid of l.findingIds) {
+        const f = await tx.photoQcFinding.findUnique({ where: { id: fid }, select: { reeditPrompt: true, ruleId: true, locationText: true } });
+        if (f && !f.reeditPrompt) await tx.photoQcFinding.update({ where: { id: fid }, data: { reeditPrompt: instructionFor(f.ruleId, f.locationText) } });
       }
     }
     await tx.photoQcFinding.updateMany({ where: { id: { in: lines.flatMap((l) => l.findingIds) } }, data: { status: "APPROVED_FIX", decidedBy: input.by, decidedAt: new Date() } });

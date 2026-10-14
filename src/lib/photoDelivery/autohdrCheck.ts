@@ -6,7 +6,7 @@ import { appBase } from "@/lib/appUrl";
 import { autohdr, autohdrConfigured, AutohdrError } from "@/lib/integrations/autohdr";
 import { photoDeliverySettings } from "./settings";
 import { logJobEvent, setStage } from "./jobState";
-import { ruleById, RULES_REGISTRY_VERSION } from "./registry";
+import { ruleById, RULES_REGISTRY_VERSION, type RoomType } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
 import { disabledIn, houseOverrides } from "./houseRules";
 import { instructionFor } from "./fixPolicy";
@@ -70,6 +70,46 @@ export function checkPrompt(off: Set<string> = new Set()): string {
 
 export type CheckIssue = { ruleId: string; where: string; confidence: number };
 
+/**
+ * The free check's room words ("front exterior", "primary bathroom") as the
+ * hub's room type (Oct 14 2026: free-checked photos showed "Unlabeled"; the
+ * paid QC's classifier no longer runs by itself). Pure.
+ */
+export function roomTypeFrom(text: string | null | undefined, light?: string | null): RoomType | null {
+  const t = (text ?? "").toLowerCase();
+  if (!t.trim()) return null;
+  const outside = /exterior|outside|outdoor|facade|façade|front of|house|home|porch|street/.test(t);
+  if (/aerial|drone|overhead|bird/.test(t)) return "AERIAL";
+  if ((light === "twilight" || light === "night") && outside) return "TWILIGHT_EXTERIOR";
+  if (/pool|spa|hot tub/.test(t)) return "POOL_SPA";
+  if (/patio|deck|balcony/.test(t)) return "PATIO_DECK";
+  if (/(back|rear)/.test(t) && (outside || /yard/.test(t))) return "EXTERIOR_REAR";
+  if (/side/.test(t) && outside) return "EXTERIOR_SIDE";
+  if (/yard|garden|lawn/.test(t)) return "YARD";
+  if (outside && !/room|kitchen|bath|bed/.test(t)) return "EXTERIOR_FRONT";
+  if (/(primary|master)/.test(t) && /bath/.test(t)) return "PRIMARY_BATHROOM";
+  if (/powder|half bath/.test(t)) return "POWDER_ROOM";
+  if (/bath|shower|toilet/.test(t)) return "BATHROOM";
+  if (/(primary|master)/.test(t) && /bed/.test(t)) return "PRIMARY_BEDROOM";
+  if (/bed|nursery/.test(t)) return "BEDROOM";
+  if (/kitchen/.test(t)) return "KITCHEN";
+  if (/dining/.test(t)) return "DINING";
+  if (/family|den|great room|rec room|game room/.test(t)) return "FAMILY";
+  if (/living|lounge|sitting/.test(t)) return "LIVING";
+  if (/office|study/.test(t)) return "OFFICE";
+  if (/laundry|utility/.test(t)) return "LAUNDRY";
+  if (/garage/.test(t)) return "GARAGE";
+  if (/basement|cellar/.test(t)) return /unfinished/.test(t) ? "BASEMENT_UNFINISHED" : "BASEMENT_FINISHED";
+  if (/entry|foyer|mudroom|vestibule/.test(t)) return "ENTRY_FOYER";
+  if (/hall|corridor/.test(t)) return "HALLWAY";
+  if (/stair/.test(t)) return "STAIRCASE";
+  if (/closet/.test(t)) return "CLOSET";
+  if (/storage|attic|shed/.test(t)) return "STORAGE";
+  if (/community|amenity|clubhouse|gym|fitness/.test(t)) return "COMMUNITY_AMENITY";
+  if (/detail|close-up|closeup/.test(t)) return "DETAIL";
+  return "OTHER";
+}
+
 /** Read describe's answer. Pure. Unknown ids, duplicates and junk are dropped. */
 export function parseCheckAnswer(text: string, off: Set<string> = new Set()): { room: string | null; light: string | null; furnished: string | null; issues: CheckIssue[] } | null {
   const body = text.replace(/```(?:json)?/gi, "").trim();
@@ -126,6 +166,18 @@ export function __setDescribeForTests(fn: typeof describeImpl) {
   describeImpl = fn;
 }
 const describe = (shootId: number, imageUuid: string, prompt: string) => (describeImpl ? describeImpl(shootId, imageUuid, prompt) : autohdr.describe(shootId, imageUuid, { prompt }));
+
+/** Give a photo the room label the free check saw, unless the paid QC's classifier already labeled it. */
+export async function labelRoom(photoId: string, room: string, light?: string | null): Promise<void> {
+  const type = roomTypeFrom(room, light);
+  if (!type) return;
+  const { groupOf } = await import("./qc/verdict");
+  const sequenceGroup = groupOf({ id: photoId, name: "", sequence: 0, status: "ACTIVE", roomType: type, sequenceGroup: null } as Parameters<typeof groupOf>[0]);
+  await prisma.photoAsset.updateMany({
+    where: { id: photoId, classifiedHash: null },
+    data: { roomType: type, roomConfidence: 0.7, sequenceGroup, isTwilight: type === "TWILIGHT_EXTERIOR", isAerial: type === "AERIAL" },
+  });
+}
 
 export type CheckSummary = { skipped?: string; jobs: { jobId: string; checked: number; findings: number; finished: boolean; verdict?: string }[] };
 
@@ -198,7 +250,10 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
         const parsed = a.text ? parseCheckAnswer(a.text, off) : null;
         if (!parsed) { progress.errors[a.p.id] = (progress.errors[a.p.id] ?? 0) + 1; continue; }
         progress.done[a.p.id] = parsed.issues.length;
-        if (parsed.room) progress.rooms[a.p.id] = parsed.room;
+        if (parsed.room) {
+          progress.rooms[a.p.id] = parsed.room;
+          await labelRoom(a.p.id, parsed.room, parsed.light);
+        }
         if (parsed.light) (progress.light ??= {})[a.p.id] = parsed.light;
         if (parsed.furnished) (progress.furnished ??= {})[a.p.id] = parsed.furnished;
         checked++;

@@ -243,8 +243,10 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   const price = await transformPrice("reedit");
   if (price == null) return none("AutoHDR's price for a re-edit could not be read");
   const { usdPerCredit } = await creditThresholds();
-  const target = Math.floor(settings.fixTargetUsd / usdPerCredit + 1e-9);
-  const max = Math.floor(settings.fixMaxUsd / usdPerCredit + 1e-9);
+  // What the shoot already used (fixes by hand count too) comes off both.
+  const used = await fixBudgetFor(jobId);
+  const target = Math.max(0, Math.floor(settings.fixTargetUsd / usdPerCredit + 1e-9) - used.spent - used.pending);
+  const max = Math.max(0, Math.floor(settings.fixMaxUsd / usdPerCredit + 1e-9) - used.spent - used.pending);
   // The daily guard: every automatic batch planned today (ET).
   const today = etDay(new Date());
   const recent = await prisma.photoFixBatch.findMany({ where: { approvedBy: "auto-fix", approvedAt: { gte: new Date(Date.now() - 36 * 3_600_000) } }, select: { estimatedCredits: true, approvedAt: true } });
@@ -431,4 +433,38 @@ export async function suggestAddOns(jobId: string): Promise<{ suggested: number;
   const suggested = created.length - realOnes.length;
   await logJobEvent(jobId, "add-ons", `ordered add-ons: ${suggested} suggestion${suggested === 1 ? "" : "s"} for a person${rerenders ? `, ${rerenders} real twilight photo${rerenders === 1 ? "" : "s"} re-rendered with the twilight model automatically` : ""}`, { suggested, rerenders, want });
   return { suggested, twilightRerenders: rerenders };
+}
+
+// ---------------------------------------------------------------------------
+// THE SHOOT'S FIX BUDGET (Oct 14 2026). Jordan: "allow kyle to submit fixes -
+// but let him know the budget and whats been spent already." One count for the
+// automatic plan, the runner's last check before a paid call, and the Fix Cart:
+// every QC fix on the shoot (automatic and by hand), charged or waiting to run.
+// Ordered add-ons (virtual twilight, staging, declutter, the real-twilight
+// look) are the client's order, not the fix budget.
+// ---------------------------------------------------------------------------
+export type FixBudget = { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number; usdPerCredit: number };
+
+export async function fixBudgetFor(jobId: string): Promise<FixBudget> {
+  const settings = await photoDeliverySettings();
+  const { usdPerCredit } = await creditThresholds();
+  const ops = await prisma.photoFixOperation.findMany({
+    where: { jobId, status: { notIn: ["CANCELLED"] }, batch: { approvedBy: { not: "auto-twilight" } } },
+    select: { status: true, chargedCredits: true, estimatedCredits: true, refunded: true, strategy: true, findingIdsJson: true, batch: { select: { approvedBy: true } } },
+  });
+  const addOnFindings = new Set((await prisma.photoQcFinding.findMany({ where: { jobId, source: "ADDON" }, select: { id: true } })).map((f) => f.id));
+  let spent = 0, pending = 0, automatic = 0, byHand = 0;
+  for (const o of ops) {
+    if (o.strategy === "VIRTUAL_TWILIGHT" || o.strategy === "VIRTUAL_STAGING") continue;
+    let ids: string[] = [];
+    try { ids = JSON.parse(o.findingIdsJson) as string[]; } catch { ids = []; }
+    if (ids.length && ids.every((id) => addOnFindings.has(id))) continue;
+    const charged = o.refunded ? 0 : o.chargedCredits ?? 0;
+    const waiting = ["QUEUED", "SUBMITTING"].includes(o.status) && o.chargedCredits == null ? o.estimatedCredits ?? 0 : 0;
+    spent += charged;
+    pending += waiting;
+    if (o.batch.approvedBy === "auto-fix") automatic += charged + waiting;
+    else byHand += charged + waiting;
+  }
+  return { targetCredits: Math.floor(settings.fixTargetUsd / usdPerCredit + 1e-9), maxCredits: Math.floor(settings.fixMaxUsd / usdPerCredit + 1e-9), spent, pending, automatic, byHand, usdPerCredit };
 }

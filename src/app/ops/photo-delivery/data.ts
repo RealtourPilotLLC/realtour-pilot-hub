@@ -512,6 +512,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   const cart: CartView | null = cartR.v
     ? {
         lines: cartR.v.lines.map((l) => ({ ...l, findingIds: [...l.findingIds] })),
+        budget: cartR.v.budget,
         estimatedCredits: cartR.v.estimatedCredits,
         balance: cartR.v.balance,
         autohdrConnected: cartR.v.autohdrConnected,
