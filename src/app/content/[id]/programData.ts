@@ -186,7 +186,7 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
         id: v.id, versionNo: v.versionNo, status: v.status, source: v.source, body: v.body, createdBy: v.createdBy, createdAt: v.createdAt.toISOString(), changeSummary: v.changeSummary, approvedBy: v.approvedBy, approvedAt: iso(v.approvedAt), sharedAt: iso(v.sharedAt),
         estimatedSeconds: v.estimatedSeconds, spokenWordCount: v.spokenWordCount, pointCount: points, findings, gaps, strategyVersionNo: strategyVs.find((x) => x.id === v.strategyVersionId)?.versionNo ?? null, policyVersionNo: policies.find((x) => x.id === v.policyVersionId)?.versionNo ?? null,
         answerCount: answers, path: v.interviewId ? "written answers" : v.callRecordId ? "call" : v.source.toLowerCase().replace("_", " "), basedOnVersionNo: basedOn, regeneratedSections: regenerated,
-        skit: !!v.speakerLabelsJson,
+        skit: !!v.speakerLabelsJson, filmingNotes: v.filmingNotes,
         // Oct 14 2026: the writer's angle and the automatic check's line (staff only).
         angle: readAngle(v.validationJson), check: judgeLine(readJudge(v.validationJson)), flagged: judgeFlagged(readJudge(v.validationJson)),
       };

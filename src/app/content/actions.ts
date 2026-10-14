@@ -499,7 +499,7 @@ async function tightenPlan(scriptId: string): Promise<{ ok: false; message: stri
   return { ok: true, instruction, seconds, words, versionNo: v.versionNo, lo, hi };
 }
 
-export async function saveScriptText(scriptId: string, body: string): Promise<Result> {
+export async function saveScriptText(scriptId: string, body: string, opts: { baseVersionId?: string | null; filmingNotes?: string | null } = {}): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const text = body.trim().slice(0, 20_000);
   if (!text) return { ok: false, message: "The script can't be empty." };
@@ -508,9 +508,21 @@ export async function saveScriptText(scriptId: string, body: string): Promise<Re
   try {
     const { editScriptFromBody } = await import("@/lib/contentScripts");
     const me = await actor();
-    const r = await editScriptFromBody(scriptId, text, me.email);
+    const r = await editScriptFromBody(scriptId, text, me.email, opts);
     revalidatePath("/content");
     return { ok: true, message: `Saved as version ${r.versionNo}.` };
+  } catch (e) { return fail(e); }
+}
+
+/** Oct 14 2026: copy an earlier version back on top as a new version (nothing deleted). */
+export async function restoreScriptVersionAction(scriptId: string, versionId: string, baseVersionId?: string | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { restoreScriptVersion } = await import("@/lib/contentScripts");
+    const me = await actor();
+    const r = await restoreScriptVersion(scriptId, versionId, me.email, { baseVersionId });
+    revalidatePath("/content");
+    return { ok: true, message: `v${r.fromNo} restored as version ${r.versionNo}. The versions in between are kept.` };
   } catch (e) { return fail(e); }
 }
 

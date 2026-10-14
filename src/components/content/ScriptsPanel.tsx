@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { AlertTriangle, Check, CircleDashed, FileText, History, Loader2, PenLine, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
+import { AlertTriangle, Check, CircleDashed, Eye, FileText, History, Loader2, PenLine, RotateCcw, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
 import type { QueueItemUi } from "@/lib/aiQueue";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
@@ -15,7 +15,7 @@ import { ScriptView } from "@/components/script/ScriptView";
 // (Oct 6 2026: prompts.ts's prior-scripts line, once a "20–30 s" literal, now
 // reads the policy too.)
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
-import { approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
+import { approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
@@ -38,7 +38,9 @@ export type VersionUi = { id: string; versionNo: number; status: string; source:
   /** Oct 14 2026: the automatic check's line ("Checked: passed", "Auto-fixed 1 time", "Still flagged: …", "Not checked"). */
   check?: { tone: "ok" | "warn" | "muted"; text: string } | null;
   /** Still flagged by the automatic check: sorts first in the review queue. */
-  flagged?: boolean };
+  flagged?: boolean;
+  /** Oct 14 2026: the shoot plan (staff only). Not part of `body`, so the editor carries it in its own box. */
+  filmingNotes?: string | null };
 /** One topic the month owes a script, with the reason it is or is not ready. Mirrors ScriptWorkItem in src/lib/contentDrafting.ts. */
 export type OwedUi = { topicId: string; title: string; monthId: string; readiness: string; why: string; interviewId: string | null; excerpts: number };
 
@@ -70,6 +72,12 @@ function band(seconds: number | null): "under" | "on" | "over" | null {
 }
 
 type QueueResult = { ok: boolean; message: string; runId?: string };
+type Run = (fn: () => Promise<{ ok: boolean; message: string }>, after?: (r: { ok: boolean; message: string }) => void) => void;
+
+/** Filming notes as staff read them: a pasted link opens. */
+function NotesText({ text }: { text: string }) {
+  return <>{text.split(/(https?:\/\/\S+)/g).map((part, i) => (i % 2 ? <a key={i} href={part} target="_blank" rel="noreferrer" className="text-brand underline break-all">{part}</a> : part))}</>;
+}
 /** A script's revision as the row shows it: the queued run, or a click whose answer has not been rendered yet. */
 type RevCtl = { server: QueueItemUi | null; sending: boolean; onRevise: (mode: "revise" | "tighten", instructions?: string, lockSections?: string[]) => void; onRetry: () => void };
 
@@ -88,7 +96,7 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
-  const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
+  const run: Run = (fn, after) => start(async () => { const r = await fn(); setNote(r.message); after?.(r); });
   const { toast, show } = useToast();
   useAiQueueWatch(enrollmentId, queueActive);
   // Per-script "sending": a revision click never takes the panel's shared busy.
@@ -140,11 +148,23 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   );
 }
 
-function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; open?: boolean; rev?: RevCtl }) {
+function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; run: Run; open?: boolean; rev?: RevCtl }) {
   const [showVersions, setShowVersions] = useState(false);
+  const [viewing, setViewing] = useState<string | null>(null);
   const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
   const cur = s.versions[0] ?? null;
-  const [body, setBody] = useState(cur?.body ?? "");
+  // THE EDIT BOX LOADS ON CLICK (Oct 14 2026). It used to be seeded once, when
+  // the page first drew: an AI revision that landed afterwards (Janice's v4)
+  // was on screen, but Edit opened the version before it and saved that back
+  // on top. The box now takes the current version when Edit is pressed, and
+  // remembers which one, so the server can refuse a save that started from a
+  // version that is no longer the newest.
+  const [body, setBody] = useState("");
+  const [notes, setNotes] = useState("");
+  const [baseId, setBaseId] = useState<string | null>(null);
+  const startEdit = () => { setBody(cur?.body ?? ""); setNotes(cur?.filmingNotes ?? ""); setBaseId(cur?.id ?? null); setMode("edit"); };
+  const base = baseId ? s.versions.find((v) => v.id === baseId) ?? null : null;
+  const moved = mode === "edit" && !!cur && !!baseId && cur.id !== baseId;
   const [instr, setInstr] = useState("");
   const [locks, setLocks] = useState<string[]>([]);
   // A HISTORICAL import is never paced against the policy. 129 of the 174
@@ -269,13 +289,27 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         )}
         {mode === "edit" ? (
           <div className="mt-2">
+            <p className="mb-1 text-[11px] text-muted">Editing v{base?.versionNo ?? cur?.versionNo}. Saving adds a new version; v{base?.versionNo ?? cur?.versionNo} is kept.</p>
+            {moved && (
+              <p className="mb-1.5 flex flex-wrap items-center gap-1.5 rounded-lg border border-warning/40 bg-warning-soft px-2.5 py-1.5 text-[12px] text-warning">
+                <AlertTriangle className="size-3.5" />v{cur?.versionNo} was added while you were editing v{base?.versionNo}. Saving now would put v{base?.versionNo}&rsquo;s words back on top, so it is refused. Copy what you changed, then:
+                <button onClick={startEdit} className="rounded-md border border-warning/40 px-2 py-0.5 text-[11px] font-semibold hover:bg-warning/10">Start over from v{cur?.versionNo}</button>
+              </p>
+            )}
             <AutoTextarea value={body} onChange={(e) => setBody(e.target.value)} minRows={8} className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs leading-relaxed" />
+            <label className="mt-1.5 block text-[11px] font-medium text-muted">Filming notes <span className="font-normal text-muted-2">(staff and the shoot only, never the client; reference links go here)</span></label>
+            <AutoTextarea value={notes} onChange={(e) => setNotes(e.target.value)} minRows={2} className="mt-0.5 w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs leading-relaxed" />
             <div className="mt-1.5 flex gap-1.5">
-              <button disabled={busy} onClick={() => { run(() => saveScriptText(s.id, body)); setMode("read"); }} className={`${btn} bg-brand text-white`}>Save as a new version</button>
-              <button onClick={() => { setBody(cur?.body ?? ""); setMode("read"); }} className={quiet}>Cancel</button>
+              <button disabled={busy} onClick={() => run(() => saveScriptText(s.id, body, { baseVersionId: baseId, filmingNotes: notes }), (r) => { if (r.ok) setMode("read"); })} className={`${btn} bg-brand text-white`}>Save as a new version</button>
+              <button onClick={() => setMode("read")} className={quiet}>Cancel</button>
             </div>
           </div>
-        ) : cur ? <ScriptView body={cur.body} size="sm" audience="staff" pillarName={s.pillarName} fileTitle={s.title} /> : null}
+        ) : cur ? (
+          <>
+            <ScriptView body={cur.body} size="sm" audience="staff" pillarName={s.pillarName} fileTitle={s.title} />
+            {cur.filmingNotes && <p className="mt-1.5 whitespace-pre-wrap rounded-lg border border-border bg-surface-2/40 px-2.5 py-1.5 text-[11px] text-muted"><span className="font-semibold">Filming notes:</span> <NotesText text={cur.filmingNotes} /></p>}
+          </>
+        ) : null}
         {mode === "revise" && (
           <div className="mt-2">
             <AutoTextarea value={instr} onChange={(e) => setInstr(e.target.value)} minRows={2} placeholder="Tell the AI what to change — the current version is kept as is" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs" />
@@ -312,7 +346,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
             })} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{cur.versionNo}</button>}
             {approvedLive && s.sharedVersionId !== s.approvedVersionId && <button disabled={busy} onClick={() => run(() => releaseScriptAction(s.id))} className={`${btn} bg-brand text-white`}><Send className="mr-1 inline size-3" />Release to the portal</button>}
             <button disabled={revBusy} onClick={() => setMode("revise")} className={quiet}><Sparkles className="mr-1 inline size-3" />Ask AI to revise</button>
-            <button onClick={() => setMode("edit")} className={quiet}>Edit myself</button>
+            <button onClick={startEdit} className={quiet}>Edit myself</button>
             {(s.approvedVersionId || s.sharedVersionId) && <button disabled={busy} onClick={() => run(() => returnScriptAction(s.id, ""))} className={quiet}><Undo2 className="mr-1 inline size-3" />Back to the queue</button>}
           </div>
         )}
@@ -323,8 +357,25 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
               <ul className="mt-1 space-y-0.5 text-[11px] text-muted">
                 {s.versions.map((v) => (
                   <li key={v.id}>
-                    v{v.versionNo} · {v.status.toLowerCase()} · {v.source.toLowerCase()}{v.basedOnVersionNo ? ` (from v${v.basedOnVersionNo}${v.regeneratedSections.length ? `; changed ${v.regeneratedSections.join(", ")}` : ""})` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}{v.approvedAt ? ` · approved by ${v.approvedBy}` : ""}{v.sharedAt ? " · shared" : ""}{v.id === s.sharedVersionId ? " ← what the client sees" : ""}
+                    v{v.versionNo} · {v.status.toLowerCase()} · {v.source.toLowerCase()}{v.basedOnVersionNo ? ` (from v${v.basedOnVersionNo}${v.regeneratedSections.length ? `; changed ${v.regeneratedSections.join(", ")}` : ""})` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}{v.approvedAt ? ` · approved by ${v.approvedBy}` : ""}{v.sharedAt ? " · shared" : ""}{v.id === s.sharedVersionId ? " ← what the client sees" : ""}{v.id === cur?.id ? " · current" : ""}
                     {v.changeSummary ? ` — ${v.changeSummary}` : ""}
+                    {v.id !== cur?.id && (
+                      <span className="ml-1.5 inline-flex gap-1 align-middle">
+                        <button onClick={() => setViewing(viewing === v.id ? null : v.id)} className="inline-flex items-center gap-0.5 rounded border border-border px-1.5 py-px text-[10px] font-medium hover:bg-surface-2"><Eye className="size-2.5" />{viewing === v.id ? "Hide" : "View"}</button>
+                        {/* Oct 14 2026: restore = a copy on top, never a rewind. */}
+                        {!s.historical && !v.id.startsWith("legacy:") && (
+                          <button disabled={busy || revBusy || mode === "edit"} title={revBusy ? "Wait for the AI revision to finish" : mode === "edit" ? "Finish or cancel the edit first" : undefined}
+                            onClick={() => { if (window.confirm(`Restore v${v.versionNo}? Its script and filming notes are copied into a new version on top (v${(cur?.versionNo ?? 0) + 1}). Nothing is deleted: you can restore any other version the same way.`)) run(() => restoreScriptVersionAction(s.id, v.id, cur?.id ?? null), (r) => { if (r.ok) setViewing(null); }); }}
+                            className="inline-flex items-center gap-0.5 rounded border border-border px-1.5 py-px text-[10px] font-medium hover:bg-surface-2 disabled:opacity-50"><RotateCcw className="size-2.5" />Restore</button>
+                        )}
+                      </span>
+                    )}
+                    {viewing === v.id && (
+                      <div className="mt-1 rounded-lg border border-border bg-surface px-2.5 py-2 text-foreground">
+                        <ScriptView body={v.body} size="sm" audience="staff" pillarName={s.pillarName} fileTitle={s.title} />
+                        {v.filmingNotes && <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-muted"><span className="font-semibold">Filming notes:</span> <NotesText text={v.filmingNotes} /></p>}
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>

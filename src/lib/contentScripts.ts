@@ -272,17 +272,94 @@ function partsFromEditedBody(title: string, body: string): VersionParts {
   return { title: r.title || title, categoryLabel: r.categoryLabel, hook: r.hook, points: r.points, close: r.close, captionCta: r.caption, goal: r.goal, speakerLabels: r.speakers.length ? r.speakers : undefined };
 }
 
-/** Edit from a plain body (the workspace textarea) — parsed with the archive reader (a skit: line by line), words kept. */
-export async function editScriptFromBody(scriptId: string, body: string, by: string): Promise<{ versionId: string; versionNo: number }> {
+/** A stored version read back as parts: every field, spoken and internal, so a copy loses nothing. */
+export function partsFromVersionRow(v: { title: string; categoryLabel: string | null; pillarId: string | null; secondaryPillarId: string | null; hook: string; pointsJson: string; close: string; captionCta: string | null; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null; goal: string | null; alternateHooksJson: string | null; speakerLabelsJson: string | null; sourceExcerptsJson: string | null; dimensionsCheckJson: string | null }): VersionParts {
+  const arr = (json: string | null): string[] | undefined => { try { const a = json ? (JSON.parse(json) as unknown) : null; return Array.isArray(a) && a.length ? a.map(String) : undefined; } catch { return undefined; } };
+  let dims: Record<string, string> | null = null;
+  try { dims = v.dimensionsCheckJson ? (JSON.parse(v.dimensionsCheckJson) as Record<string, string>) : null; } catch { /* none */ }
+  return {
+    title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, secondaryPillarId: v.secondaryPillarId,
+    hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta,
+    filmingNotes: v.filmingNotes, creativeDirection: v.creativeDirection, productionNotes: v.productionNotes ? v.productionNotes.split("\n").filter((l) => l.trim()) : [], goal: v.goal,
+    alternateHooks: arr(v.alternateHooksJson), speakerLabels: arr(v.speakerLabelsJson), sourceExcerpts: arr(v.sourceExcerptsJson), dimensionsCheck: dims,
+  };
+}
+
+/**
+ * THE EDIT STARTS FROM WHAT IS CURRENT (Oct 14 2026). Janice's "Hakuna Matata":
+ * an AI revision (v4) landed in the background while the workspace was open,
+ * the Edit box still held v3's words from when the page first drew, and the
+ * save quietly put v3 back on top as v5. The box now loads on click, and the
+ * save names the version it started from: if another version landed in
+ * between, the save is refused with the text still in the box.
+ */
+async function assertStillCurrent(scriptId: string, baseVersionId: string | null | undefined, what: "edit" | "restore" = "edit"): Promise<void> {
+  if (!baseVersionId || baseVersionId.startsWith("legacy:")) return;
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true } });
+  if (!s?.currentVersionId || s.currentVersionId === baseVersionId) return;
+  const [base, now] = await Promise.all([
+    prisma.contentScriptVersion.findUnique({ where: { id: baseVersionId }, select: { versionNo: true } }),
+    prisma.contentScriptVersion.findUnique({ where: { id: s.currentVersionId }, select: { versionNo: true } }),
+  ]);
+  if (what === "restore") throw new Error(`Version ${now?.versionNo ?? "?"} was added after this page loaded (it showed v${base?.versionNo ?? "?"} as current), so nothing was restored. Reload the page and choose again.`);
+  throw new Error(`Version ${now?.versionNo ?? "?"} was added after you started from v${base?.versionNo ?? "?"}, so this was not saved. Your text is still in the box: copy what you changed, then press Edit again to start from v${now?.versionNo ?? "the newest"}.`);
+}
+
+/**
+ * Edit from a plain body (the workspace textarea) — parsed with the archive
+ * reader (a skit: line by line), words kept.
+ *
+ * THE NOTES SURVIVE A HAND EDIT (Oct 14 2026). The textarea holds the spoken
+ * script only, so every hand edit used to save a version with no filming
+ * notes, creative direction, goal or alternate hooks: Janice's v5 lost the
+ * whole Steel Stacks shoot plan. What the body does not carry is copied from
+ * the version the edit started from; the filming notes have their own box.
+ */
+export async function editScriptFromBody(scriptId: string, body: string, by: string, opts: { baseVersionId?: string | null; filmingNotes?: string | null } = {}): Promise<{ versionId: string; versionNo: number }> {
   const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { title: true, historical: true } });
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("This is an imported historical script — it is not edited; draft a new script instead.");
+  await assertStillCurrent(scriptId, opts.baseVersionId);
   const parts = partsFromEditedBody(s.title, body);
   if (!parts.hook && !parts.points.length && !parts.close) {
     // No labels at all: keep the text whole as the hook so nothing is lost.
     parts.hook = body.trim();
   }
+  const baseId = await ensureScriptVersioned(scriptId);
+  const base = await prisma.contentScriptVersion.findUnique({ where: { id: baseId } });
+  if (base) {
+    const kept = partsFromVersionRow(base);
+    if (!parts.categoryLabel && kept.categoryLabel) { parts.categoryLabel = kept.categoryLabel; parts.pillarId = parts.pillarId ?? kept.pillarId; }
+    parts.secondaryPillarId = parts.secondaryPillarId ?? kept.secondaryPillarId;
+    parts.filmingNotes = parts.filmingNotes || kept.filmingNotes;
+    parts.creativeDirection = parts.creativeDirection || kept.creativeDirection;
+    if (!parts.productionNotes?.length) parts.productionNotes = kept.productionNotes;
+    parts.goal = parts.goal || kept.goal;
+    if (!parts.alternateHooks?.length) parts.alternateHooks = kept.alternateHooks;
+    if (!parts.sourceExcerpts?.length) parts.sourceExcerpts = kept.sourceExcerpts;
+    parts.dimensionsCheck = parts.dimensionsCheck ?? kept.dimensionsCheck;
+  }
+  if (opts.filmingNotes !== undefined) parts.filmingNotes = opts.filmingNotes?.trim().slice(0, 4000) || null;
   return editScriptVersion(scriptId, parts, by);
+}
+
+/**
+ * RESTORE AN EARLIER VERSION (Oct 14 2026, Jordan: "I need a way to manually
+ * revert back to a different version"). Nothing is rewound or deleted: the
+ * chosen version's script and notes are copied into a NEW version on top, so
+ * the trail keeps every step, and restoring the one before is the undo. The
+ * copy is a draft like any hand edit (re-checked, no dashes, back in review).
+ */
+export async function restoreScriptVersion(scriptId: string, versionId: string, by: string, opts: { baseVersionId?: string | null } = {}): Promise<{ versionId: string; versionNo: number; fromNo: number }> {
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true, currentVersionId: true } });
+  if (!s) throw new Error("Script not found.");
+  if (s.historical) throw new Error("This is an imported historical script — it is not edited; draft a new script instead.");
+  const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId } });
+  if (!v || v.scriptId !== scriptId) throw new Error("That version is not part of this script.");
+  if (v.id === s.currentVersionId) throw new Error(`v${v.versionNo} is already the current version.`);
+  await assertStillCurrent(scriptId, opts.baseVersionId, "restore");
+  const r = await editScriptVersion(scriptId, partsFromVersionRow(v), by, `Restored from v${v.versionNo}`);
+  return { ...r, fromNo: v.versionNo };
 }
 
 /**
