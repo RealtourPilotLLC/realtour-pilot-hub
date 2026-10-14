@@ -42,7 +42,9 @@
     "react-dom": "19.2.4",
     "react-plaid-link": "^4.1.1",
     "server-only": "^0.0.1",
-    "tailwind-merge": "^3.6.0"
+    "sharp": "^0.34.5",
+    "tailwind-merge": "^3.6.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

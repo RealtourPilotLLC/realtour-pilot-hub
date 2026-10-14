@@ -81,7 +81,22 @@ export async function saveVendorBalanceSettings(next: Partial<VendorBalanceSetti
  * "not connected", never as zero credits.
  */
 export async function readAutohdrBalance(): Promise<{ credits: number | null; dollars: number | null; observedAt: Date } | null> {
-  return null;
+  // Oct 13 2026: the AutoHDR API is wired (src/lib/integrations/autohdr.ts).
+  // Once Jordan pastes the API client on Connections, the credit monitor
+  // writes a balance snapshot every 15 minutes; the newest one is the reading.
+  // Not connected (or no snapshot yet) is still null, never zero.
+  try {
+    const { autohdrConfigured } = await import("@/lib/integrations/autohdr");
+    if (!(await autohdrConfigured())) return null;
+    const row = await prisma.autohdrCreditEntry.findFirst({
+      where: { kind: "BALANCE_SNAPSHOT", balanceAfter: { not: null } },
+      orderBy: { at: "desc" },
+      select: { at: true, balanceAfter: true },
+    });
+    return row ? { credits: row.balanceAfter, dollars: null, observedAt: row.at } : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---- readings ---------------------------------------------------------------
@@ -171,7 +186,7 @@ export async function lastAutohdrTopUp(): Promise<TopUpSeen | null> {
 }
 
 export type AutohdrBalanceView = {
-  api: { connected: false; note: string };
+  api: { connected: boolean; note: string };
   lastReading: { observedAt: Date; credits: number | null; dollars: number | null; source: string; recordedBy: string; note: string | null } | null;
   /** Photos AutoHDR should have processed since the reading. An ESTIMATE:
    *  (brackets ÷ 5) + drone singles off each job's counted raws. */
@@ -240,7 +255,9 @@ export async function autohdrBalanceView(now = new Date(), opts: { money?: boole
       (threshold.dollars != null && last.dollars != null && last.dollars < threshold.dollars);
   }
   return {
-    api: { connected: false, note: "Not connected — AutoHDR's balance can't be read by the hub (no verified balance endpoint)." },
+    api: api
+      ? { connected: true, note: "Connected: the balance is read from AutoHDR's API every 15 minutes." }
+      : { connected: false, note: "Not connected: paste the AutoHDR API client on Connections to read the balance automatically." },
     lastReading: last,
     since,
     estimatedCreditsUsed,

@@ -5528,3 +5528,320 @@ model ErrorEvent {
   @@index([lastSeenAt])
   @@index([lastAlertedAt])
 }
+
+// ===========================================================================
+// PHOTO DELIVERY (Oct 13 2026, docs/photo-delivery/). Jordan: "When a
+// photographer finishes uploading, the photos should flow with no human touch
+// until a decision is genuinely needed."
+//
+// Editing stays on AutoHDR's Dropbox watcher (job folders already live under
+// /AutoHDR, so the watcher edits every upload; a second, API-created shoot
+// would charge twice). These rows are what the hub does AFTER the finals land:
+// QC (deterministic checks + Claude vision), fixes through the AutoHDR API
+// (never without a click), the delivery gate, and delivery verification.
+//
+// PhotoJob.projectId is a PLAIN ref (no FK), like contentMonthId: a photo job
+// can never cascade into a live project. Everything below a PhotoJob cascades
+// from it. The AutoHDR credit ledger and the client QC profile stand alone.
+// ===========================================================================
+model PhotoJob {
+  id                  String    @id @default(cuid())
+  projectId           String    @unique
+  // EDITING | EDIT_FAILED | EDITED | QC_RUNNING | QC_REVIEW | FIXING | ON_HOLD
+  // | READY | DELIVERING | DELIVERY_MISMATCH | DELIVERED | REVISION_REQUESTED
+  stage               String    @default("EDITING")
+  stageVersion        Int       @default(0)
+  stageChangedAt      DateTime  @default(now())
+  holdReason          String? // CRITICAL | CREDITS | RESHOOT | MANUAL
+  holdResumeStage     String?
+  holdNote            String?
+  // The edited finals in Dropbox (AutoHDR's output folder for this job).
+  finalsPath          String?
+  finalsFingerprint   String? // hash of every final's name + content_hash
+  finalsCount         Int       @default(0)
+  finalsChangedAt     DateTime?
+  finalsStableAt      DateTime? // first sweep that saw the current fingerprint
+  slaDueAt            DateTime?
+  expectedJson        String? // ExpectedDeliverables (what was ordered)
+  // The AutoHDR shoot the watcher created for this job (found by folder name).
+  autohdrPhotoshootId Int?
+  autohdrShootName    String?
+  autohdrLinkedAt     DateTime?
+  autohdrCreatedAt    DateTime? // shoots expire 7 days after creation
+  qcVerdict           String? // PASS | PASS_WITH_MINOR | NEEDS_DECISION | HOLD
+  qcShadow            Boolean   @default(true)
+  lastQcRunId         String?
+  qcRequestedAt       DateTime?
+  heroPhotoId         String?
+  orderJson           String? // a person's delivery order (photo ids); null = suggested
+  creditsSpent        Int       @default(0)
+  deliveryPath        String? // the sequenced copies, staged for the Aryeo import
+  deliveryStagedAt    DateTime?
+  deliveryStartedAt   DateTime?
+  deliveredAt         DateTime?
+  deliveredBy         String?
+  deliveryDiffJson    String?
+  leaseUntil          DateTime?
+  leaseOwner          String?
+  nextCheckAt         DateTime?
+  lastError           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  photos     PhotoAsset[]
+  qcRuns     PhotoQcRun[]
+  findings   PhotoQcFinding[]
+  fixBatches PhotoFixBatch[]
+  events     PhotoJobEvent[]
+
+  @@index([stage])
+  @@index([nextCheckAt])
+}
+
+// One edited photo (a file in the finals folder).
+model PhotoAsset {
+  id                 String    @id @default(cuid())
+  jobId              String
+  job                PhotoJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  name               String
+  dropboxPath        String
+  dropboxId          String?
+  contentHash        String? // Dropbox content_hash of the current file
+  bytes              Int?
+  width              Int?
+  height             Int?
+  format             String?
+  sequence           Int       @default(0) // AutoHDR / filename order
+  status             String    @default("ACTIVE") // ACTIVE | EXCLUDED | GONE
+  excludeReason      String?
+  // P0 (classification), each tied to the content hash it describes.
+  roomType           String?
+  roomConfidence     Float?
+  alternateRoomType  String?
+  sequenceGroup      String?
+  description        String?
+  featuresJson       String?
+  heroScore          Int?
+  isAerial           Boolean   @default(false)
+  isTwilight         Boolean   @default(false)
+  isVirtuallyStaged  Boolean   @default(false)
+  isPrimaryCandidate Boolean   @default(false)
+  classifiedHash     String?
+  cvJson             String?
+  cvHash             String?
+  derivJson          String? // { thumb256, thumb768, qc1024, qc2048 }: blob pathname + sent size
+  derivHash          String?
+  autohdrImageUuid   String?
+  autohdrVersionUuid String?
+  verdict            String? // PASS | PASS_WITH_MINOR | NEEDS_FIX | HOLD
+  inspectedHash      String? // the content hash the last P1 inspected
+  lastQcAt           DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  versions PhotoVersion[]
+
+  @@unique([jobId, name])
+  @@index([jobId, status])
+}
+
+// Every version of a photo the hub has seen: the first edit, each fix, an
+// editor's replacement. Nothing is ever overwritten without a row here.
+model PhotoVersion {
+  id                 String     @id @default(cuid())
+  photoId            String
+  photo              PhotoAsset @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  label              String
+  source             String // AUTOHDR_INITIAL | FIX | REVISION | ORIGINAL_FETCH | EDITOR
+  autohdrVersionUuid String?
+  parentVersionUuid  String?
+  dropboxPath        String?
+  contentHash        String?
+  derivJson          String?
+  width              Int?
+  height             Int?
+  bytes              Int?
+  createdBy          String?
+  createdAt          DateTime   @default(now())
+
+  @@index([photoId])
+}
+
+model PhotoQcRun {
+  id                 String    @id @default(cuid())
+  jobId              String
+  job                PhotoJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  trigger            String // INITIAL | POST_FIX | REVISION | MANUAL
+  status             String    @default("RUNNING") // RUNNING | DONE | PARTIAL | FAILED
+  shadow             Boolean   @default(true)
+  passesJson         String?
+  rulesVersion       String
+  promptVersionsJson String?
+  modelsJson         String?
+  checksJson         String? // per photo: checks performed and skipped (with reasons)
+  photoCount         Int       @default(0)
+  tokensIn           Int       @default(0)
+  tokensOut          Int       @default(0)
+  cacheRead          Int       @default(0)
+  cacheWrite         Int       @default(0)
+  costUsd            Float     @default(0)
+  verdict            String?
+  summaryJson        String?
+  error              String?
+  startedAt          DateTime  @default(now())
+  finishedAt         DateTime?
+
+  @@index([jobId, startedAt])
+}
+
+model PhotoQcFinding {
+  id                 String    @id @default(cuid())
+  qcRunId            String
+  jobId              String
+  job                PhotoJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  photoId            String? // null for order-level findings
+  photoIdsJson       String? // several photos (gallery findings)
+  ruleId             String
+  groupKey           String
+  pass               String // P1_PHOTO | P2_GALLERY | P3_COMPARE | P4_ORDER
+  source             String // CV | P1 | P1B | P2 | P3 | P4 | FILE
+  specificIssue      String
+  explanation        String
+  locationText       String?
+  bboxJson           String? // full-resolution [x1, y1, x2, y2]
+  severity           String
+  confidence         Float
+  responsibility     String
+  postFixable        Boolean   @default(false)
+  reshootMayBeNeeded Boolean   @default(false)
+  isPermanentFeature Boolean   @default(false)
+  privacySensitive   Boolean   @default(false)
+  recommendedAction  String?
+  fixStrategy        String
+  reeditPrompt       String?
+  arbitration        String    @default("NOT_REQUIRED") // NOT_REQUIRED | PENDING | CONFIRMED | OVERTURNED
+  // OPEN | APPROVED_FIX | FIXING | FIXED | IGNORED | OVERRIDDEN | SENT_TO_EDITOR
+  // | RESHOOT_REQUESTED | FALSE_POSITIVE | SUPERSEDED
+  status             String    @default("OPEN")
+  statusReason       String?
+  decidedBy          String?
+  decidedAt          DateTime?
+  contentHash        String? // the photo version this finding is about
+  promptId           String?
+  promptVersion      Int?
+  model              String?
+  rulesVersion       String?
+  coercedJson        String?
+  rawJson            String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([jobId, status])
+  @@index([qcRunId])
+  @@index([photoId])
+}
+
+model PhotoFixBatch {
+  id                String    @id @default(cuid())
+  jobId             String
+  job               PhotoJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  mode              String // ALL | SELECTED | CRITICAL_MAJOR_ONLY
+  estimatedCredits  Int       @default(0)
+  estimatedUsdCents Int       @default(0)
+  balanceBefore     Int?
+  approvedBy        String
+  approvedAt        DateTime  @default(now())
+  status            String    @default("PENDING") // PENDING | RUNNING | DONE | PARTIAL | FAILED
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  operations PhotoFixOperation[]
+
+  @@index([jobId])
+  @@index([status])
+}
+
+// One AutoHDR transform (or a manual step) on one photo. autohdrJobId is
+// written the moment AutoHDR answers, BEFORE anything else happens: a
+// SUBMITTING row found later is looked up, never resubmitted blindly.
+model PhotoFixOperation {
+  id                String        @id @default(cuid())
+  batchId           String
+  batch             PhotoFixBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  jobId             String
+  photoId           String
+  findingIdsJson    String
+  seq               Int           @default(0)
+  strategy          String
+  transformName     String?
+  transformVersion  Int?
+  prompt            String?
+  maskUrl           String?
+  paramsJson        String?
+  inputVersionUuid  String?
+  outputVersionUuid String?
+  autohdrJobId      String?       @unique
+  estimatedCredits  Int           @default(0)
+  chargedCredits    Int?
+  refunded          Boolean?
+  // QUEUED | SUBMITTING | SUBMITTED | SUCCEEDED | NOOP | FAILED | VERIFIED
+  // | REVERTED | ESCALATED | CANCELLED
+  status            String        @default("QUEUED")
+  submittedAt       DateTime?
+  finishedAt        DateTime?
+  verificationJson  String?
+  attempt           Int           @default(1)
+  error             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([status])
+  @@index([jobId])
+}
+
+// The AutoHDR credit ledger: what the API reported (balance snapshots), what
+// the pipeline spent (downloads, transforms), and the reconciled differences
+// (ADJUSTMENT: use outside the pipeline, or a refill).
+model AutohdrCreditEntry {
+  id           String   @id @default(cuid())
+  at           DateTime @default(now())
+  kind         String // BALANCE_SNAPSHOT | DOWNLOAD | TRANSFORM | STYLE | PRESET | REFUND | ADJUSTMENT
+  credits      Int // negative = spent; 0 on a snapshot
+  balanceAfter Int?
+  jobId        String?
+  ref          String?
+  note         String?
+
+  @@index([at])
+  @@index([kind, at])
+}
+
+// Per-client QC preferences (keyed by the hub client): SLA, rule overrides
+// (disable or re-grade a rule, with a reason), the delivery order template,
+// AutoHDR defaults and the delivery message.
+model ClientQcProfile {
+  id                String   @id @default(cuid())
+  clientId          String   @unique
+  slaHours          Int?
+  ruleOverridesJson String?
+  sequenceJson      String?
+  autohdrJson       String?
+  deliveryMessage   String?
+  notes             String?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// The job's activity log: every automated decision and every human action.
+model PhotoJobEvent {
+  id       String   @id @default(cuid())
+  jobId    String
+  job      PhotoJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  at       DateTime @default(now())
+  actor    String
+  action   String
+  dataJson String?
+
+  @@index([jobId, at])
+}
