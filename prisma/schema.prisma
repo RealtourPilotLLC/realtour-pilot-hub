@@ -5841,6 +5841,46 @@ model ClientQcProfile {
 }
 
 // The job's activity log: every automated decision and every human action.
+// THE HUB SENDS THE RAWS (Oct 14 2026). AutoHDR's Dropbox watcher stopped
+// and nobody reconnected it, so the hub hands a finished upload to AutoHDR
+// itself: POST /v1/photoshoots/from-urls with Dropbox temporary links, account
+// default look (house models: upload and processing are free, a credit per
+// photo on the first download). One row per batch: the photographer's upload
+// is batch 1, files added to 01-RAW-Photos later are 2, 3, ...
+model PhotoIntakeBatch {
+  id             String    @id @default(cuid())
+  projectId      String
+  batchNo        Int
+  // WAITING (files seen, settling) | SENDING | LANDING (created, committing)
+  // | PROCESSING | DONE | LINKED (already in AutoHDR, not sent) | UNCERTAIN
+  // (the create reply was lost) | FAILED
+  state          String    @default("WAITING")
+  rawPath        String
+  filesJson      String // [{id, name, path, size, hash}]
+  fileCount      Int
+  fingerprint    String
+  expectedPhotos Int?
+  seenAt         DateTime  @default(now()) // when this exact file set was first seen
+  address        String? // the AutoHDR shoot name
+  photoshootId   Int?
+  ingestJobId    String?
+  photosJson     String? // AutoHDR's processed photos once DONE: [{image_uuid, image_version_uuid, name}]
+  sentAt         DateTime?
+  committedAt    DateTime?
+  doneAt         DateTime?
+  imageCount     Int?
+  commitAttempts Int       @default(0)
+  failedPolls    Int       @default(0)
+  balanceAtSend  Int?
+  nextCheckAt    DateTime?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([projectId, batchNo])
+  @@index([state])
+}
+
 model PhotoJobEvent {
   id       String   @id @default(cuid())
   jobId    String

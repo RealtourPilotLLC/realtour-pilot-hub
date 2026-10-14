@@ -275,8 +275,8 @@ export async function dropboxMoveFolder(fromPath: string, toPath: string): Promi
 export async function dropboxListFolder(
   path: string,
   opts: { recursive?: boolean } = {},
-): Promise<{ name: string; tag: string; path: string; id: string | null }[]> {
-  type Page = { entries: { name: string; [".tag"]: string; path_display?: string; id?: string }[]; has_more?: boolean; cursor?: string };
+): Promise<{ name: string; tag: string; path: string; id: string | null; size?: number | null; serverModified?: string | null; contentHash?: string | null }[]> {
+  type Page = { entries: { name: string; [".tag"]: string; path_display?: string; id?: string; size?: number; server_modified?: string; content_hash?: string }[]; has_more?: boolean; cursor?: string };
   // PAGINATED: a 400-raw shoot folder exceeds one page and used to be silently
   // truncated, which under-counted photos (and photo-editing cost).
   // RECURSIVE (opt-in): camera dumps land as nested folders (Sony/Canon card
@@ -295,7 +295,16 @@ export async function dropboxListFolder(
   }
   // `id` is Dropbox's permanent id ("id:…"), the one handle that survives a
   // rename — CP-09's topic folders match on it.
-  return all.map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "", id: e.id ?? null }));
+  // size / server_modified / content_hash ride along for files (Oct 14 2026:
+  // the AutoHDR intake waits for a folder to stop changing before sending it).
+  return all.map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "", id: e.id ?? null, size: e.size ?? null, serverModified: e.server_modified ?? null, contentHash: e.content_hash ?? null }));
+}
+
+/** A 4-hour direct download link to one file (files/get_temporary_link). */
+export async function dropboxTemporaryLink(path: string): Promise<string> {
+  const r = await dbx<{ link?: string }>("files/get_temporary_link", { path });
+  if (!r.link) throw new DropboxError("Dropbox returned no temporary link", 0);
+  return r.link;
 }
 
 // Turn a Dropbox share URL into a direct/raw URL that OpenPhone can fetch.

@@ -115,7 +115,7 @@ export const OPERATIONAL_CORE = [
   // Oct 13 2026: Photo Delivery (docs/photo-delivery). Listing-photo QC,
   // fixes and the AutoHDR credit ledger: operational, not program content.
   "PhotoJob", "PhotoAsset", "PhotoVersion", "PhotoQcRun", "PhotoQcFinding", "PhotoFixBatch", "PhotoFixOperation",
-  "AutohdrCreditEntry", "ClientQcProfile", "PhotoJobEvent",
+  "AutohdrCreditEntry", "ClientQcProfile", "PhotoJobEvent", "PhotoIntakeBatch",
 ] as const;
 
 /** Schema models in neither list, and listed names the schema does not have. */

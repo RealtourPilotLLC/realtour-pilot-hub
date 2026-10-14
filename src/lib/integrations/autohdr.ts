@@ -328,6 +328,20 @@ export const autohdr = {
     }
     return out;
   },
+  /**
+   * Oct 14 2026: the hub sends a finished upload. AutoHDR fetches each
+   * Dropbox link itself; omitted model ids and enhancements = the account's
+   * defaults ("our current settings"). Free for house models (credits come
+   * off at download). Not idempotent: never repeated here; a lost reply is
+   * resolved by listing shoots (intake.ts).
+   */
+  async createFromUrls(body: { address: string; files: { download_url: string; filename: string; kind?: "raw" | "display" }[] }) {
+    return (await autohdrCall<{ job_id: string; photoshoot_id: number }>("/v1/photoshoots/from-urls", { method: "POST", body, timeoutMs: 120_000 })).data;
+  },
+  /** Starts processing; does not debit. 409 files_not_landed = try again later; 409 conflict = already committed. */
+  async commit(id: number, jobId: string) {
+    return (await autohdrCall<unknown>(`/v1/photoshoots/${id}/commit`, { method: "POST", body: { job_id: jobId } })).data;
+  },
   async photoshootStatus(id: number) {
     return (await autohdrCall<{ status: string; pipeline?: string; image_count?: number; awaiting_files?: boolean }>(`/v1/photoshoots/${id}/status`)).data;
   },

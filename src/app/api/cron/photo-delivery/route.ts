@@ -13,6 +13,8 @@ export const maxDuration = 300;
 // mid-way loses nothing and the next tick carries on.
 //
 //   credits   read AutoHDR's balance (free) every 15 minutes, run the alerts
+//   intake    (Oct 14 2026) send finished uploads, and files added later, to
+//             AutoHDR; commit and poll them (switch: autoSubmit)
 //   sync      open photo jobs, read the edited gallery (the Aryeo listing,
 //             or the Dropbox finals folder), move EDITING → EDITED
 //   link      find each job's AutoHDR shoot (free reads)
@@ -33,6 +35,11 @@ export async function GET(req: NextRequest) {
     if (last && Date.now() - last.at.getTime() < 14 * 60_000) return { skipped: "read in the last 15 minutes" };
     return recordCreditSnapshot({ trigger: "cron" });
   }, { maxMs: 30_000 });
+
+  await step("intake", async () => {
+    const { driveIntake } = await import("@/lib/photoDelivery/intake");
+    return driveIntake({ budgetMs: 110_000 });
+  }, { maxMs: 130_000 });
 
   await step("sync", async () => {
     const { syncPhotoJobs } = await import("@/lib/photoDelivery/jobs");

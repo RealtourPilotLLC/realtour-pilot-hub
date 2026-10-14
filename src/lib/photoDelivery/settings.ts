@@ -23,6 +23,15 @@ import { getSetting, putSetting } from "@/lib/settings";
 //   aryeoTags      mirror pipeline status into Aryeo order tags/notes. OFF:
 //                  Aryeo writes wait for Jordan's go-ahead.
 //   p3AllPhotos    run the original-vs-edited pass on every photo.
+//   autoSubmit     (Oct 14 2026) the hub sends each finished upload, and files
+//                  added later, to AutoHDR with the account's default look.
+//                  Free until download (house models). Only shoots on or after
+//                  autoSubmitFrom, so nothing already edited is sent again.
+//   freeCheck      (Oct 14 2026) AutoHDR's free "describe" call checks every
+//                  edited photo against a checklist: no credits, no Claude.
+//   paidQcAuto     the Claude QC starts by itself on a landed gallery (and the
+//                  after-delivery audits). OFF = it runs only when asked
+//                  ("Run QC" on the job page). Jordan, Oct 14: QC should be free.
 // ---------------------------------------------------------------------------
 
 export type PhotoDeliverySettings = {
@@ -44,6 +53,11 @@ export type PhotoDeliverySettings = {
   qcFrom: string | null;
   /** Anthropic spend guardrail: QC pauses (and alerts) above this many USD in a calendar month. */
   monthlyQcBudgetUsd: number;
+  autoSubmit: boolean;
+  /** Shoots before this (ISO) are never sent by the hub. */
+  autoSubmitFrom: string;
+  freeCheck: boolean;
+  paidQcAuto: boolean;
 };
 
 export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
@@ -63,6 +77,10 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   minLongEdgePx: 2000,
   qcFrom: null,
   monthlyQcBudgetUsd: 300,
+  autoSubmit: false,
+  autoSubmitFrom: "2026-10-13T04:00:00.000Z",
+  freeCheck: false,
+  paidQcAuto: true,
 };
 
 const KEY = "photo_delivery:settings";
@@ -90,6 +108,10 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     minLongEdgePx: num(raw.minLongEdgePx, d.minLongEdgePx, 300, 20_000),
     qcFrom: typeof raw.qcFrom === "string" && !Number.isNaN(Date.parse(raw.qcFrom)) ? raw.qcFrom : d.qcFrom,
     monthlyQcBudgetUsd: num(raw.monthlyQcBudgetUsd, d.monthlyQcBudgetUsd, 0, 100_000),
+    autoSubmit: bool(raw.autoSubmit, d.autoSubmit),
+    autoSubmitFrom: typeof raw.autoSubmitFrom === "string" && !Number.isNaN(Date.parse(raw.autoSubmitFrom)) ? raw.autoSubmitFrom : d.autoSubmitFrom,
+    freeCheck: bool(raw.freeCheck, d.freeCheck),
+    paidQcAuto: bool(raw.paidQcAuto, d.paidQcAuto),
   };
 }
 

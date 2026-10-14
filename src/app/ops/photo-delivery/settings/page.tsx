@@ -65,6 +65,9 @@ export default async function PhotoDeliverySettingsPage() {
               minLongEdgePx: settings.minLongEdgePx,
               qcFromDay: qcFrom && !Number.isNaN(qcFrom.getTime()) ? etDayKey(qcFrom) : "",
               monthlyQcBudgetUsd: settings.monthlyQcBudgetUsd,
+              autoSubmit: settings.autoSubmit,
+              freeCheck: settings.freeCheck,
+              paidQcAuto: settings.paidQcAuto,
             }}
           />
           <p className="mt-4 border-t border-border pt-3 text-[13px] text-muted">The credit alert levels live on the Credits page.</p>

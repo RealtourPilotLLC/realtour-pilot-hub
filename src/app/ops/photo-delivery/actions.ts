@@ -314,7 +314,7 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
 
 type SettingsInput = Partial<Omit<PhotoDeliverySettings, "qcFrom">> & { qcFrom?: string | null };
 
-const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoFixZeroCredit", "aryeoTags", "p3AllPhotos"] as const;
+const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoFixZeroCredit", "aryeoTags", "p3AllPhotos", "autoSubmit", "freeCheck", "paidQcAuto"] as const;
 const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label: string }> = {
   adminCreditCap: { min: 0, max: 10_000, int: true, label: "Kyle's approval limit" },
   dailyAutoCreditCap: { min: 0, max: 10_000, int: true, label: "Daily automatic credit limit" },

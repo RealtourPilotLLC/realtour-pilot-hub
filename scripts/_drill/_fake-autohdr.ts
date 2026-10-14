@@ -34,7 +34,8 @@ export type FakeTransform = { name: string; version?: number; display_name?: str
 export type FakeModel = { id: number; name: string; type: "predefined" | "custom"; variant: "indoor" | "outdoor" | "indoor/outdoor"; style_credit_cost: number };
 type Version = { uuid: string; parent: string | null; label: string; description: string | null };
 type FakePhoto = { image_uuid: string; name: string; downloaded: boolean; head: string; versions: Version[] };
-type FakeShoot = { photoshoot_id: number; address: string; status: "in_progress" | "success" | "failure"; created_at: string; photos: FakePhoto[]; assets: Map<string, "mask" | "reference"> };
+type FakeIngest = { jobId: string; files: { download_url: string; filename: string; kind: string }[]; committed: boolean; landAfter: number; polls: number };
+type FakeShoot = { photoshoot_id: number; address: string; status: "in_progress" | "success" | "failure"; created_at: string; photos: FakePhoto[]; assets: Map<string, "mask" | "reference">; ingest?: FakeIngest };
 type FakeJob = {
   job_id: string; photoshoot_id: number; image_uuid: string; image_version_uuid: string; transform_name: string; transform_version: number;
   status: "queued" | "running" | "succeeded" | "failed"; submitted_at: string; updated_at: string; output_image_version_uuid: string | null;
@@ -57,6 +58,10 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
     scripts: new Map<string, Scripted[]>(),
     nextOutcome: null as null | "succeeded" | "failed" | "noop",
     pollsToFinish: 2,
+    /** Oct 14 2026 intake: commits answered 409 files_not_landed before 202; status polls before success; the outcome. */
+    intake: { landAfter: 1, processPolls: 2, outcome: "success" as "success" | "failure", recoverAfterFailure: false },
+    /** describe's answer by photo name (free check drills); null = "A room." */
+    describe: null as null | ((photoName: string, prompt: string) => string),
   };
   let seq = 0;
   const id = (p: string) => `${p}-${(++seq).toString(16).padStart(6, "0")}`;
@@ -181,12 +186,62 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
       const recent = state.shoots.filter((s) => !expired(s)).sort((a, b) => b.created_at.localeCompare(a.created_at));
       return json(200, page(recent.map((s) => ({ photoshoot_id: s.photoshoot_id, address: s.address, status: s.status, image_count: s.photos.length, created_at: s.created_at, updated_at: s.created_at })), u.searchParams, "photoshoots"));
     }
+    // Oct 14 2026: the hub sends raws by URL (createPhotoshootFromUrls).
+    if (method === "POST" && path === "/v1/photoshoots/from-urls") {
+      const deny = needs("photoshoots:write");
+      if (deny) return deny;
+      const files = (body.files as { download_url?: string; filename?: string; kind?: string }[]) ?? [];
+      if (typeof body.address !== "string" || !files.length) return json(422, { detail: [{ loc: ["body", "files"], msg: "at least 1 item", type: "too_short" }] });
+      for (const f of files) {
+        if (!f.download_url || !f.filename) return json(422, { detail: [{ loc: ["body", "files"], msg: "download_url and filename required", type: "missing" }] });
+        const host = new URL(f.download_url).hostname;
+        if (!/(^|\.)dropbox(usercontent)?\.com$|(^|\.)amazonaws\.com$/.test(host)) return err(400, "invalid_download_url", `host ${host} is not fetched`);
+      }
+      if (new Set(files.map((f) => f.filename!.toLowerCase())).size !== files.length) return err(400, "duplicate_filename", "filenames must be unique in a shoot");
+      const shoot = seedShoot({ address: body.address, photos: [], status: "in_progress" });
+      shoot.ingest = { jobId: id("ingest"), files: files.map((f) => ({ download_url: f.download_url!, filename: f.filename!, kind: f.kind ?? "raw" })), committed: false, landAfter: state.intake.landAfter, polls: 0 };
+      if (scripted === "lose-response") throw new Error("socket hang up (scripted: created, response lost)");
+      return json(200, { job_id: shoot.ingest.jobId, photoshoot_id: shoot.photoshoot_id });
+    }
     const m = /^\/v1\/photoshoots\/(\d+)(\/.*)?$/.exec(path);
     if (m) {
       const shoot = shootOf(m[1]);
       if (!shoot) return err(404, "not_found");
       if (expired(shoot)) return err(410, "photoshoot_expired");
       const rest = m[2] ?? "";
+      if (method === "POST" && rest === "/commit") {
+        const deny = needs("photoshoots:write");
+        if (deny) return deny;
+        const ing = shoot.ingest;
+        if (!ing || body.job_id !== ing.jobId) return err(400, "invalid_job_id", "job_id does not belong to this photoshoot");
+        if (ing.committed) return err(409, "conflict", "already committed");
+        if (ing.landAfter > 0) { ing.landAfter--; return err(409, "files_not_landed", "the fetch is still landing"); }
+        ing.committed = true;
+        return json(202, { photoshoot_id: shoot.photoshoot_id, status: "in_progress" });
+      }
+      if (method === "GET" && rest === "/status" && shoot.ingest) {
+        const ing = shoot.ingest;
+        if (!ing.committed) return json(200, { photoshoot_id: shoot.photoshoot_id, status: "in_progress", pipeline: "hdr", image_count: 0, awaiting_files: true });
+        if (shoot.status === "in_progress" && ++ing.polls >= state.intake.processPolls) {
+          if (state.intake.outcome === "failure" && !(state.intake.recoverAfterFailure && ing.polls > state.intake.processPolls)) shoot.status = "failure";
+          else {
+            // One edited photo per 5-bracket set; a drone frame is its own photo.
+            const drone = ing.files.filter((f) => /^dji/i.test(f.filename));
+            const brackets = ing.files.filter((f) => !/^dji/i.test(f.filename));
+            const names = [...Array.from({ length: Math.round(brackets.length / 5) }, (_, i) => brackets[i * 5].filename.replace(/\.[a-z0-9]+$/i, ".jpg")), ...drone.map((f) => f.filename.replace(/\.[a-z0-9]+$/i, ".jpg"))];
+            shoot.photos = names.map((n) => {
+              const original: Version = { uuid: id("ver"), parent: null, label: "Original", description: null };
+              const enhanced: Version = { uuid: id("ver"), parent: original.uuid, label: "Enhanced", description: "HDR enhancement" };
+              return { image_uuid: id("img"), name: n, downloaded: false, head: enhanced.uuid, versions: [original, enhanced] };
+            });
+            shoot.status = "success";
+          }
+        } else if (shoot.status === "failure" && state.intake.recoverAfterFailure) {
+          state.intake.outcome = "success";
+          shoot.status = "in_progress";
+        }
+        return json(200, { photoshoot_id: shoot.photoshoot_id, status: shoot.status, pipeline: "hdr", image_count: shoot.photos.length, awaiting_files: false });
+      }
       if (method === "GET" && rest === "/status") return json(200, { photoshoot_id: shoot.photoshoot_id, status: shoot.status, pipeline: "hdr", image_count: shoot.photos.length, awaiting_files: false });
       if (method === "GET" && rest === "/photos") return json(200, { photoshoot_id: shoot.photoshoot_id, ...page(shoot.photos.map((p) => ({ image_uuid: p.image_uuid, image_version_uuid: p.head, name: p.name, downloaded: p.downloaded })), u.searchParams, "photos") });
       if (method === "POST" && rest === "/photos/download") {
@@ -213,7 +268,7 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
           photo.head = String(body.image_version_uuid);
           return json(200, { photoshoot_id: shoot.photoshoot_id, image_uuid: photo.image_uuid, image_version_uuid: photo.head });
         }
-        if (pm[2] === "describe" && method === "POST") return json(200, { photoshoot_id: shoot.photoshoot_id, image_uuid: photo.image_uuid, image_version_uuid: photo.head, description: "A room." });
+        if (pm[2] === "describe" && method === "POST") return json(200, { photoshoot_id: shoot.photoshoot_id, image_uuid: photo.image_uuid, image_version_uuid: photo.head, description: state.describe ? state.describe(photo.name, String(body.prompt ?? "")) : "A room." });
       }
       if (method === "POST" && rest === "/asset-uploads") {
         const deny = needs("images:edit");

@@ -1442,7 +1442,7 @@ async function deliverySummary(ctx: Ctx, verdict: VerdictResult, allFindings: { 
 /** Bell rows only (no Slack, no text): the shadow-mode notice for Kyle and
  *  READY_TO_DELIVER for both. Same row shape and dedupe slots as
  *  alertOwnerAndKyle (owner slot 0, Kyle slot 1), so the two never collide. */
-async function bellOnly(a: { kind: string; title: string; body?: string; href: string; dedupeKey: string; to: "kyle" | "both" }): Promise<number> {
+export async function bellOnly(a: { kind: string; title: string; body?: string; href: string; dedupeKey: string; to: "kyle" | "both" }): Promise<number> {
   const { ownerId, kyleId } = await opsRecipients();
   const people: { id: string; role: "OWNER" | "ADMIN"; slot: number }[] = [];
   if (ownerId && a.to === "both") people.push({ id: ownerId, role: "OWNER", slot: 0 });
@@ -1885,7 +1885,10 @@ export async function requestQc(jobId: string, trigger: "INITIAL" | "MANUAL" | "
 async function jobsToDrive(settings: PhotoDeliverySettings, take: number): Promise<string[]> {
   const resume = await prisma.photoJob.findMany({ where: { stage: "QC_RUNNING" }, orderBy: { stageChangedAt: "asc" }, select: { id: true }, take });
   const since = settings.qcFrom ? new Date(settings.qcFrom) : null;
-  const landed = await prisma.photoJob.findMany({
+  // Oct 14 2026 (Jordan: QC should be free): with paidQcAuto off, a landed
+  // gallery and the after-delivery audits wait for the free photo check
+  // (autohdrCheck.ts); this engine runs only on request ("Run QC").
+  const landed = !settings.paidQcAuto ? [] : await prisma.photoJob.findMany({
     where: { stage: "EDITED", photos: { some: { status: "ACTIVE" } }, ...(since ? { OR: [{ finalsChangedAt: { gte: since } }, { finalsChangedAt: null, stageChangedAt: { gte: since } }] } : {}) },
     orderBy: { stageChangedAt: "asc" },
     select: { id: true },
@@ -1903,13 +1906,15 @@ async function jobsToDrive(settings: PhotoDeliverySettings, take: number): Promi
     .map((j) => j.id);
   // Shadow audits last: galleries delivered in the last 3 days with no QC run
   // yet, and audits already under way (see runForJob).
+  // With paidQcAuto off, an audit already under way still finishes (its
+  // money is spent); no new one starts.
   const audits = settings.qcShadow
     ? await prisma.photoJob.findMany({
         where: {
           stage: { in: ["DELIVERED", "DELIVERING"] },
           stageChangedAt: { gte: new Date(now() - 3 * 86_400_000) },
           photos: { some: { status: "ACTIVE" } },
-          OR: [{ qcRuns: { none: {} } }, { qcRuns: { some: { status: "RUNNING" } } }],
+          OR: settings.paidQcAuto ? [{ qcRuns: { none: {} } }, { qcRuns: { some: { status: "RUNNING" } } }] : [{ qcRuns: { some: { status: "RUNNING", trigger: { not: "AUTOHDR_CHECK" } } } }],
           ...(since ? { stageChangedAt: { gte: since > new Date(now() - 3 * 86_400_000) ? since : new Date(now() - 3 * 86_400_000) } } : {}),
         },
         orderBy: { stageChangedAt: "asc" },

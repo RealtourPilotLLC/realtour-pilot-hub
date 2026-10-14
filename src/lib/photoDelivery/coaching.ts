@@ -241,7 +241,9 @@ export async function discardCoachingNote(jobId: string, by: string): Promise<{ 
 export async function draftPendingCoaching(max = 3): Promise<{ drafted: number; checked: number }> {
   const settings = await photoDeliverySettings();
   if (!settings.qcEnabled) return { drafted: 0, checked: 0 };
-  const recentRuns = await prisma.photoQcRun.findMany({ where: { status: "DONE", finishedAt: { gte: new Date(Date.now() - 2 * 86_400_000) } }, orderBy: { finishedAt: "desc" }, select: { id: true, jobId: true }, take: 20 });
+  // Oct 14 2026: not after the free photo check (it is free; a coaching draft
+  // is a Claude call). The paid QC's runs only.
+  const recentRuns = await prisma.photoQcRun.findMany({ where: { status: "DONE", trigger: { not: "AUTOHDR_CHECK" }, finishedAt: { gte: new Date(Date.now() - 2 * 86_400_000) } }, orderBy: { finishedAt: "desc" }, select: { id: true, jobId: true }, take: 20 });
   let drafted = 0, checked = 0;
   for (const r of recentRuns) {
     if (drafted >= max) break;

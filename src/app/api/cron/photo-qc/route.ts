@@ -16,6 +16,8 @@ export const maxDuration = 300;
 // qcEnabled switch is on; shadow mode makes every result advisory.
 // Then: coaching notes for galleries whose QC just finished (drafts only; the
 // owner approves each one).
+// Oct 14 2026, first: the FREE photo check (autohdrCheck.ts): AutoHDR's free
+// describe call asks each edited photo the checklist. No credits, no Claude.
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
   const denied = authorizeCron(req);
@@ -23,10 +25,15 @@ export async function GET(req: NextRequest) {
   const startedAt = Date.now();
   const { step, out, finish } = cronBudget(285_000, startedAt, "photo-qc");
 
+  await step("check", async () => {
+    const { driveAutohdrChecks } = await import("@/lib/photoDelivery/autohdrCheck");
+    return driveAutohdrChecks({ budgetMs: 90_000 });
+  }, { maxMs: 110_000 });
+
   await step("qc", async () => {
     const { driveQc } = await import("@/lib/photoDelivery/qc");
     // Unique per tick: two overlapping ticks must never share a lease.
-    return driveQc({ budgetMs: 150_000, leaseBy: `qc-cron:${startedAt}:${Math.random().toString(36).slice(2, 8)}`, maxJobs: 2 });
+    return driveQc({ budgetMs: 120_000, leaseBy: `qc-cron:${startedAt}:${Math.random().toString(36).slice(2, 8)}`, maxJobs: 2 });
   }, { maxMs: 240_000 });
 
   await step("coaching", async () => {
