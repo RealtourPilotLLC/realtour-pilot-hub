@@ -44,3 +44,20 @@ Reuse, do not rebuild: auth (`guards.ts` roles; the client portal session for an
 5. **Paid test, only with Jordan's explicit OK.** One transform on one photo of a non-client test shoot, with the exact live credit cost shown first.
 6. **Tenant boundaries.** Every AutoHDR id lives on a hub row tied to one job and client. Nothing accepts a photoshoot or image id from a browser; actions take hub ids, resolve them server-side, and check the caller may act on that job (staff) or owns that listing (client portal).
 7. **Client-facing ordering (only if that is what the mockup is).** Needs the mockup and Jordan's retail prices: the client picks an edit on their own listing photo, pays through the existing Stripe checkout, the paid order becomes a fix operation queued for staff approval, and the result is delivered through the portal.
+
+## 4. Additions from the full reference guides (`/reference`, read Oct 14 2026)
+
+- Documented transform names (examples in the guides; the live `/v1/capabilities` still decides): `reedit` (prompt required; optional mask or references), `autoremove` and `autofill` (mask required; `autofill` also needs a prompt or a reference), `twilight` (`params.look` from the catalog's `looks`), `grass`, `declutter`, `repaint` (`params.color`), `single_angle_staging`, `style` (needs `model_id`; result must be made head with `setPhotoVersion`), and `camera_removal` (named in the job docs as a common no-op).
+- More error codes: `invalid_reference_url` 400, `model_not_available` 403, `plan_required` 403, `content_policy` (async failure).
+- AutoHDR's retry table: GETs, 402, 429, `files_not_landed` and transient 5xx are "safe to retry (nothing committed)"; `POST /v1/transforms` and the paid endpoints are not idempotent. The hub still looks a job up (`GET /v1/transforms?state=all`) before resubmitting after any uncertain outcome.
+- `listTransforms` needs `photoshoot_id`; finished jobs only appear with `state=history|all`; a job never disappears by id.
+
+## 5. The mockup (AutoHDR's "What's possible with AutoHDR API" showcase)
+
+Three use cases for a media company's own software. Prices shown there are illustrative retail prices, not AutoHDR costs.
+
+| Use case | What it needs from the API | Status in the hub |
+|---|---|---|
+| **Client Order**: the client picks an editing style (e.g. Classic included, Architectural +$35) and per-shoot add-ons (Fire, Grass, TV screens, Declutter) when ordering | Create-time `indoor_model_id` / `outdoor_model_id` and `enhancements` exist only when the HUB creates the shoot through the API. Today edits come from AutoHDR's own integrations, which use the account defaults. | Decision for Jordan: switching to API-created shoots means taking raws out of whatever AutoHDR currently watches, or every shoot is edited (and charged) twice. Not built until he decides. |
+| **Client Revisions**: the client asks for a change on a delivered photo | `reedit` / `autoremove` / `autofill` / fixed transforms on the existing shoot within 7 days; after that a new `display` shoot from the delivered JPEG. | Built as the staff Fix Cart first (staff approve every paid edit); a client request page comes after, feeding the same cart. |
+| **Client Upsells**: offer a virtual twilight, staging or a different look on a listing photo | `twilight` (looks), `single_angle_staging`, `style`, priced from the live catalog; retail price set by Jordan. | Needs Jordan's retail prices. Checkout reuses the existing Stripe checkout; a paid order becomes a queued fix that staff release. |
