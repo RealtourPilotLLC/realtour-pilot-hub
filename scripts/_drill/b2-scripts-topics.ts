@@ -413,7 +413,8 @@ async function main() {
     // ======================================================================
     c.head("6.3 · recommendations fit the open slots and reach the client");
     // ======================================================================
-    const C = await buildContentMonth(db, { name: "Rec Drill TEST", package: "Accelerator", monthKey: NEXT, owner: { email: "info+recdrill@realtourpilot.com" }, topics: [] });
+    // Oct 14 2026: the portal shows next month only from the 24th, so the page check runs on this month.
+    const C = await buildContentMonth(db, { name: "Rec Drill TEST", package: "Accelerator", monthKey: CUR, owner: { email: "info+recdrill@realtourpilot.com" }, topics: [] });
     const cS = await approvedStrategyFor(C.enrollmentId, "Rec Drill TEST");
     const [cMkt, cEdu] = cS.pillars;
     const bankTitles = ["Building trust with sellers before they list", "Local pricing expertise in one chart", "What days on market tell a buyer", "The three rooms buyers decide on", "What staging costs here", "The paperwork to have ready", "How to read your first offer", "When to say yes to an early offer"];

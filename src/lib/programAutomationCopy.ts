@@ -371,6 +371,14 @@ export const AUTOMATION_EFFECTS: Record<AutomationKey, AutomationEffect> = {
     cadence: "hourly",
     launchGate: "programScope",
   },
+  topic_auto_accept: {
+    title: "Accept new topic ideas automatically",
+    onEffect: "When the topic bank is built or topped up, its new ideas go straight into the client's bank where they can pick them, instead of waiting for you to accept each one. Ideas that repeat an existing or archived topic, or use a stock title, are still dropped first. You can archive any idea afterwards.",
+    reaches: "internal",
+    requires: {},
+    recipients: "No one is messaged: the ideas appear on the client's Video Topics page",
+    cadence: "on-action",
+  },
   auto_onboarding: {
     title: "Onboard new clients automatically",
     onEffect: "When a client's program becomes active (they sign up on the website, a paused program is turned back on, or Aryeo flags a new plan), the hub does the whole Client onboarding page for them: releases their approved strategy, allows every feature except \"Share scripts without my approval\" (you still approve every script), creates their portal account with the email on file, sends their welcome email ONCE, and marks them onboarded. The welcome is never sent twice: not if one already went out from their payment, from Client onboarding, or from an earlier run. TEST clients and paused or ended programs are skipped.",

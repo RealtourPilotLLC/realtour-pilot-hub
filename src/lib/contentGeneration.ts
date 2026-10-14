@@ -642,6 +642,18 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     }
   }
   if (rows.length) await prisma.contentTopicSuggestion.createMany({ data: rows });
+  // HANDS OFF (Jordan, Oct 14 2026: "as hands off as possible"). A bank's
+  // ideas used to wait for staff to accept each one before the client could
+  // see it, so a client with an empty bank had nothing to pick. Ideas that
+  // passed the checks above (no duplicate, no archived concept, no formulaic
+  // title) are accepted straight into the bank. Staff can still archive one.
+  if (rows.length && (await import("@/lib/programAutomation").then((m) => m.isAutomationEnabled("topic_auto_accept")).catch(() => false))) {
+    try {
+      const { acceptSuggestions } = await import("@/lib/contentTopics");
+      const fresh = await prisma.contentTopicSuggestion.findMany({ where: { refreshRunId: runId, disposition: "PENDING" }, select: { id: true } });
+      if (fresh.length) await acceptSuggestions(fresh.map((s) => s.id), "auto:topic-bank");
+    } catch (e) { console.warn(`[topic bank] run ${runId}: auto-accept failed, ideas stay pending`, e); }
+  }
   if (formulaic.length) console.warn(`[topic bank] run ${runId}: dropped ${formulaic.length} formulaic title(s): ${formulaic.join(" | ").slice(0, 600)}`);
   await setRunOutputRef(runRes.runId, `ContentTopicRefreshRun:${runId}`);
   const unknownPillars = validation.findings.filter((f) => f.code === "pillar.unknown").map((f) => f.message);

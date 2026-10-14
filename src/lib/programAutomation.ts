@@ -83,6 +83,10 @@ export const AUTOMATION_KEYS = [
   // released, features allowed (never "share scripts without my approval"),
   // portal account, ONE welcome email, marked onboarded.
   "auto_onboarding", // Client onboarding done automatically when a program becomes active
+  // Oct 14 2026 (Jordan: "as hands off as possible"): a topic bank's new ideas
+  // go straight into the client's bank (visible, pickable) instead of waiting
+  // for staff to accept each one. Off = the review queue as before.
+  "topic_auto_accept", // New topic-bank ideas accepted automatically (no staff review)
   // "portal_layout_v2" (UI-01, Sep 24 2026) RETIRED Oct 6 2026: the new
   // portal layout is the only layout (Jordan: "I want to just be fully
   // transitioned to the new layout"), so there is nothing left to switch. A

@@ -1456,7 +1456,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     g.pillarName = g.topics.length > 0 && g.topics.every((t) => t.mine) ? "Your ideas" : "More ideas";
     for (const t of g.topics) t.pillarName = g.pillarName;
   }
-  const open = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey).slice(0, 3);
+  const open = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey && m.monthKey <= lastKey).slice(0, 3);
   const months: PortalTopicMonth[] = open.map((m) => {
     // R01: chosen / extras from the planning reader, which counts exactly what
     // the staff month reader and the filming gate count.
