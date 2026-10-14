@@ -94,7 +94,7 @@ export function EmailSlaForm({ initial, initialSince }: { initial: EmailSlaRules
           <p className="text-[13px] text-muted">
             Unanswered client email is always listed on Tasks → Comms → Email. When this is on, it also rings Kyle&rsquo;s
             bell after {r.kyleCoveredHours} covered hours and yours after {r.ownerCoveredHours} ({r.unhappyCoveredHours} when the client
-            sounds unhappy). Bell only — never a text or a Slack message — and it never rings outside covered hours.
+            sounds unhappy). These bells are bell only — never a text or a Slack message — and never ring outside covered hours.
           </p>
         </div>
         <button
@@ -114,6 +114,32 @@ export function EmailSlaForm({ initial, initialSince }: { initial: EmailSlaRules
         <Hours label="Jordan's bell after" value={r.ownerCoveredHours} onChange={(n) => set({ ownerCoveredHours: n })} />
         <span className="text-[13px] text-muted">· unhappy client after</span>
         <Hours label="Unhappy client after" value={r.unhappyCoveredHours} onChange={(n) => set({ unhappyCoveredHours: n })} />
+      </div>
+      {/* Kyle's follow-up (Oct 14 2026): "If Kyle responds on his end, close it
+          out on my end. If he forgets to follow up, remind him." */}
+      <div className="mt-2 flex items-start justify-between gap-3 border-t border-border pt-2">
+        <div>
+          <p className="text-[13px] font-semibold">Kyle&rsquo;s follow-up</p>
+          <p className="text-[13px] text-muted">
+            An email that landed in Kyle&rsquo;s inbox (hello@) and still has no reply after {r.kyleCoveredHours} covered hours goes on
+            his list as one follow-up task, with his bell. It closes itself when anyone replies. Still unanswered after{" "}
+            {r.kyleEscalateCoveredHours} covered hours, Kyle gets one Slack message. Those emails show as &ldquo;Kyle has it&rdquo; on
+            your Home card and don&rsquo;t ring your bell (an unhappy client still does).
+          </p>
+        </div>
+        <button
+          type="button" role="switch" aria-checked={r.kyleFollowUp} aria-label="Kyle's email follow-up"
+          onClick={() => set({ kyleFollowUp: !r.kyleFollowUp })}
+          className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand"
+        >
+          <span aria-hidden className={cn("relative h-6 w-11 rounded-full transition-colors", r.kyleFollowUp ? "bg-success" : "bg-surface-2 ring-1 ring-border")}>
+            <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", r.kyleFollowUp ? "left-[22px]" : "left-0.5")} />
+          </span>
+        </button>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <span className="text-[13px] text-muted">Slack Kyle after</span>
+        <Hours label="Slack Kyle after" value={r.kyleEscalateCoveredHours} onChange={(n) => set({ kyleEscalateCoveredHours: n })} />
       </div>
       {r.ownerCoveredHours < r.kyleCoveredHours && (
         <p className="mt-2 text-[13px] text-warning">Jordan&rsquo;s bell comes after Kyle&rsquo;s — a lower number is saved as the default instead.</p>

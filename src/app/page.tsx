@@ -34,7 +34,7 @@ import { QuickAdd } from "@/components/day/QuickAdd";
 import { TodoRow } from "@/components/day/TodoRow";
 import { FinishedList } from "@/components/day/FinishedList";
 import {
-  buildOpsDay, loopsZeroState, tallyLoops, handledByPeopleToday, scrubOpsDayMoney,
+  buildOpsDay, loopsZeroState, tallyLoops, handledByPeopleToday, scrubOpsDayMoney, ownerUnansweredView,
   type OpsDay, type OpsLoop, type OpsQcRow, type OpsShoot,
 } from "@/lib/opsDay";
 import { deliveryBoard, type DeliveryBoard } from "@/lib/deliveryBoard";
@@ -659,7 +659,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   // renders that a person typed — Slack instructions, revision asks, wrap-up
   // notes, message previews — passes through the figure scrub for a non-owner
   // (audit5 kyle-home §5, Sep 8: "$750 credit" on Kyle's loop list).
-  const d = isOwner ? dRaw : scrubOpsDayMoney(dRaw);
+  // …and on the owner's Home, the emails Kyle has (his inbox, his follow-up
+  // reminder) leave Jordan's "waiting" for a "Kyle has it" line (Oct 14 2026).
+  const d = isOwner ? ownerUnansweredView(dRaw) : scrubOpsDayMoney(dRaw);
   const flagged = (isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }))).map((f) => ({ ...f, href: scopeHref(f.href) }));
   // The Pipeline block prints each job's notes in full (DeliveryBoardView's
   // JobNote) — and a job's notes can be the whole editor brief, which is where
@@ -1319,7 +1321,9 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
       return (
         <div className="space-y-2">
           {d.unanswered.count === 0 ? (
-            <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> Every client message has an answer.</p>
+            <p className="flex items-center gap-1.5 text-sm text-success">
+              <CheckCircle2 className="size-4" /> {d.unanswered.withTeammate?.length ? "Nothing waiting on you." : "Every client message has an answer."}
+            </p>
           ) : (
             <>
               {d.unanswered.preview.map((u, i) => (
@@ -1354,6 +1358,33 @@ function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false
                 Clear the queue — {d.unanswered.count} waiting <ArrowRight className="size-4" />
               </Link>
             </>
+          )}
+          {/* KYLE HAS IT (Oct 14 2026) — the owner's card only. Emails that
+              landed in Kyle's inbox: he is reminded (task, bell, one Slack
+              message), Jordan is not. Labelled, not hidden; any reply from
+              anyone takes the row away. */}
+          {d.unanswered.withTeammate && d.unanswered.withTeammate.length > 0 && (
+            <div className="rounded-xl border border-dashed border-border px-3.5 py-2 text-[13px] text-muted">
+              {Object.entries(
+                d.unanswered.withTeammate.reduce<Record<string, typeof d.unanswered.withTeammate>>((acc, u) => {
+                  const who = u.heldBy.split(" ")[0] || u.heldBy;
+                  (acc[who] ??= []).push(u);
+                  return acc;
+                }, {}),
+              ).map(([who, rows]) => (
+                <p key={who}>
+                  <span className="font-semibold text-foreground">{who} has it</span>
+                  <span className="text-muted-2"> — </span>
+                  {rows.map((u, i) => (
+                    <span key={u.clientId + i}>
+                      {i > 0 && ", "}
+                      {u.name} <span className="text-muted-2">({u.hours}h)</span>
+                    </span>
+                  ))}
+                  <span className="block text-[11px] text-muted-2">Emailed to {who}&rsquo;s inbox too. {who} is reminded if they go unanswered; they leave here when anyone replies.</span>
+                </p>
+              ))}
+            </div>
           )}
           {/* Two neighbouring lists, each next to its OWN name and its OWN
               count. The reply queue counts TEXT threads (including numbers we
