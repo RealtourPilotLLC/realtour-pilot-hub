@@ -410,7 +410,8 @@ export async function checkFix(input: { shootId: number; imageUuid: string; outp
     `This real estate photo was just edited with this instruction: "${instruction}"`,
     "Check whether it was fixed properly. Answer ONLY with JSON:",
     '{"fixed": true or false, "left": "what is still there, or empty", "damaged": true or false, "damage": "what is clearly broken, or empty"}',
-    "fixed = every part of the instruction was carried out. damaged = the edit clearly broke the photo (warped or smeared walls, melted or half-erased objects, missing windows or furniture, strange artifacts). Small imperfections are not damage.",
+    "fixed = the thing the instruction names is gone or corrected. Judge ONLY what the instruction names: other objects in the photo that it does not mention do not count, and neither do reflections or shadows of something that was removed.",
+    "damaged = the edit clearly broke the photo (warped or smeared walls, melted or half-erased objects, missing windows or furniture, strange artifacts). Small imperfections are not damage.",
   ].join("\n");
   try {
     const j = jsonFrom<{ fixed?: boolean; left?: string; damaged?: boolean; damage?: string }>(await describePhoto(input.shootId, input.imageUuid, prompt, input.output));
