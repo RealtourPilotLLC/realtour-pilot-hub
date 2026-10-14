@@ -26,7 +26,7 @@ import { useJob } from "./JobContext";
 
 const START_FROM = new Set(["READY", "QC_REVIEW", "EDITED", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
 const STAGE_WHY: Record<string, string> = {
-  EDITING: "The edited gallery has not landed yet.",
+  EDITING: "AutoHDR's edits are not in yet.",
   EDIT_FAILED: "The edit failed. Sort that out first.",
   QC_RUNNING: "QC is running on this gallery right now.",
   FIXING: "Approved fixes are still running.",

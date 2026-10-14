@@ -5,7 +5,8 @@
 // a person reads. Use commas, colons or periods.
 // ---------------------------------------------------------------------------
 
-import type { FindingView, GroupMeta, Severity } from "./types";
+import type { FindingView, GroupMeta, IntakeView, Severity } from "./types";
+import { etTime } from "@/lib/datetime";
 
 export const SEVERITY_ORDER: Record<Severity, number> = { CRITICAL: 3, MAJOR: 2, MINOR: 1 };
 
@@ -268,4 +269,28 @@ export function queueHref(p: QueueParams): string {
   if (p.view === "table") q.set("view", "table");
   const s = q.toString();
   return `/ops/photo-delivery${s ? `?${s}` : ""}`;
+}
+
+/**
+ * Where the edits are, in plain words (Oct 14 2026): the hub sends the raws to
+ * AutoHDR itself, so "waiting for the Aryeo listing" is no longer the story.
+ * The first batch that is not finished speaks; null when every batch is in.
+ */
+export function intakeLine(intake: IntakeView[], hasPhotos: boolean): string | null {
+  const live = intake.find((b) => !["DONE", "LINKED"].includes(b.state)) ?? null;
+  const more = (b: IntakeView) => (b.batchNo > 1 ? "Photos added later: " : "");
+  const about = (b: IntakeView) => `${b.fileCount} raw file${b.fileCount === 1 ? "" : "s"}${b.expectedPhotos ? `, about ${b.expectedPhotos} photo${b.expectedPhotos === 1 ? "" : "s"}` : ""}`;
+  if (!live) {
+    if (hasPhotos) return null;
+    const done = intake.find((b) => b.state === "DONE");
+    if (done) return `AutoHDR finished${done.doneAt ? ` at ${etTime(done.doneAt)}` : ""} (${done.imageCount ?? 0} photos). They appear here within a few minutes.`;
+    if (intake.some((b) => b.state === "LINKED")) return "This shoot was already in AutoHDR (added by hand), so the hub did not send it again. The photos appear here once they are on the Aryeo listing.";
+    return "No photos yet. When the photographer's upload is finished, the hub sends the raws to AutoHDR; the edited photos appear here as soon as AutoHDR is done.";
+  }
+  if (live.state === "WAITING") return `${more(live)}The raws are in Dropbox (${about(live)}). The hub sends them to AutoHDR once the upload has been still for 10 minutes.`;
+  if (live.state === "SENDING" || live.state === "LANDING") return `${more(live)}Sending to AutoHDR now (${about(live)}).`;
+  if (live.state === "PROCESSING") return `${more(live)}Sent to AutoHDR${live.sentAt ? ` at ${etTime(live.sentAt)}` : ""} (${about(live)}). AutoHDR is editing them, usually 30 to 60 minutes; the photos appear here when it is done.`;
+  if (live.state === "UNCERTAIN") return `${more(live)}Checking whether AutoHDR received the upload (the reply was lost).`;
+  if (live.state === "FAILED") return `${more(live)}Sending to AutoHDR did not work: ${live.lastError ?? "unknown error"}`;
+  return null;
 }

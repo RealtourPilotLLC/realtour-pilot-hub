@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { saveDeliveryOrderAction } from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
 import { photoTitle, useJob } from "./JobContext";
-import { SEVERITY_CLASS, SEVERITY_LABEL, worstOf } from "./format";
+import { SEVERITY_CLASS, SEVERITY_LABEL, intakeLine, worstOf } from "./format";
 import type { PhotoView, Severity } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -218,9 +218,10 @@ export function Gallery() {
         </div>
       </div>
       <p className="mb-2 text-[12px] text-muted">Drag a photo to reorder (or use Reorder). The hero always goes first. Order and hero save as you go.</p>
+      {active.length + excluded.length > 0 && intakeLine(data.intake, true) && <p className="mb-2 rounded-lg border border-border bg-surface-2/40 px-3 py-2 text-[13px] text-muted">{intakeLine(data.intake, true)}</p>}
       {active.length === 0 && excluded.length === 0 ? (
         <p className="rounded-xl border border-border bg-surface p-6 text-center text-sm text-muted">
-          No photos yet. The gallery fills in once the edited photos land on the Aryeo listing (or the finals folder).
+          {intakeLine(data.intake, false)}
         </p>
       ) : (
         <ol className="grid grid-cols-2 gap-2 sm:grid-cols-3 2xl:grid-cols-4">

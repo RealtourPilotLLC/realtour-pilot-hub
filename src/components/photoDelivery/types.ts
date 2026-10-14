@@ -308,8 +308,15 @@ export type JobDetail = {
   coverageCounts: CoverageCounts;
   coverageMet: { label: string; evidence: string | null }[];
   qcEnabled: boolean;
+  /** Oct 14 2026: the free photo check runs by itself; the paid QC starts by itself. */
+  freeCheck: boolean;
+  paidQcAuto: boolean;
+  /** Oct 14 2026: the hub's own sends to AutoHDR for this job (intake.ts), oldest first. */
+  intake: IntakeView[];
   nowIso: string;
 };
+
+export type IntakeView = { batchNo: number; state: string; fileCount: number; expectedPhotos: number | null; sentAt: string | null; doneAt: string | null; imageCount: number | null; lastError: string | null };
 
 // ---- credits page (plan 10.4) ----------------------------------------------------------
 

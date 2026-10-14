@@ -10,7 +10,7 @@ import { FindingActions } from "./FindingActions";
 import { FixCartPanel } from "./FixCartPanel";
 import { JobProvider, photoTitle, useJob } from "./JobContext";
 import { PhotoFacts, sortFindings } from "./Lightbox";
-import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL } from "./format";
+import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, intakeLine } from "./format";
 import type { JobDetail, Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
       <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-background p-6">
         <div className="max-w-md text-center">
           <p className="font-semibold">No photos to review yet.</p>
-          <p className="mt-1 text-sm text-muted">The gallery fills in once the edited photos land on the Aryeo listing.</p>
+          <p className="mt-1 text-sm text-muted">{intakeLine(data.intake, false)}</p>
           <Link href={`/ops/photo-delivery/${jobId}`} className="mt-4 inline-flex min-h-11 items-center rounded-lg border border-border-strong px-4 text-sm font-medium">Back to the job</Link>
         </div>
       </div>

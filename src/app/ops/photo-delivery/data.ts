@@ -117,7 +117,7 @@ export async function loadStrip(viewer: Viewer): Promise<StripData> {
  * revision waits for a decision like QC findings do (plan 3.3 loop).
  */
 export const QUEUE_COLUMNS: { key: QueueColumnKey; label: string; hint: string; stages: JobStage[] }[] = [
-  { key: "editing", label: "Editing", hint: "Shot. Waiting for the edited gallery to land on the Aryeo listing.", stages: ["EDITING", "EDIT_FAILED"] },
+  { key: "editing", label: "Editing", hint: "Shot. The raws go to AutoHDR when the upload is finished; waiting for the edits.", stages: ["EDITING", "EDIT_FAILED"] },
   { key: "qc", label: "QC running", hint: "The edited gallery landed. QC is checking it, or waiting to.", stages: ["EDITED", "QC_RUNNING"] },
   { key: "decision", label: "Needs decision", hint: "QC found issues, or a client asked for a revision.", stages: ["QC_REVIEW", "REVISION_REQUESTED"] },
   { key: "fixing", label: "Fixing", hint: "Approved fixes are running in AutoHDR.", stages: ["FIXING"] },
@@ -642,6 +642,9 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     coverageCounts,
     coverageMet,
     qcEnabled: settings.qcEnabled,
+    freeCheck: settings.freeCheck,
+    paidQcAuto: settings.paidQcAuto,
+    intake: (await prisma.photoIntakeBatch.findMany({ where: { projectId: job.projectId }, orderBy: { batchNo: "asc" }, select: { batchNo: true, state: true, fileCount: true, expectedPhotos: true, sentAt: true, doneAt: true, imageCount: true, lastError: true } }).catch(() => [])).map((b) => ({ ...b, sentAt: b.sentAt?.toISOString() ?? null, doneAt: b.doneAt?.toISOString() ?? null })),
     nowIso: now.toISOString(),
   };
 }
