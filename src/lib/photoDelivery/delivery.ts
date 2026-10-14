@@ -152,7 +152,10 @@ export async function deliveryOrderFor(jobId: string): Promise<{ photoId: string
   return ordered.map((p, i) => {
     const ext = (/\.[a-z0-9]+$/i.exec(p.name)?.[0] ?? ".jpg").toLowerCase();
     const word = (p.sequenceGroup && ROOM_WORDS[p.sequenceGroup]) || "Photo";
-    return { photoId: p.id, name: p.name, deliveryName: `${String(i + 1).padStart(width, "0")}-${word}${ext}` };
+    // AutoHDR's QC checklist: twilight frames carry a twilight suffix and go
+    // out with the main set.
+    const suffix = p.isTwilight || p.roomType === "TWILIGHT_EXTERIOR" ? "-Twilight" : "";
+    return { photoId: p.id, name: p.name, deliveryName: `${String(i + 1).padStart(width, "0")}-${word}${suffix}${ext}` };
   });
 }
 

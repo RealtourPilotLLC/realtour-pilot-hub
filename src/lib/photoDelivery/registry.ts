@@ -13,8 +13,13 @@
 // ---------------------------------------------------------------------------
 
 import seed from "./qc-rules.seed.json";
+// Oct 14 2026: three rules from AutoHDR's own QC checklist (Jordan sent it the
+// night of the build) that the 425-rule seed did not cover: HDR ghosting,
+// misfires/test shots, a drone in a reflection. Kept in their own file so the
+// seed stays exactly as Jordan's spec generated it.
+import addendum from "./qc-rules.autohdr-addendum.json";
 
-export const RULES_REGISTRY_VERSION = "v1-2026-10-13";
+export const RULES_REGISTRY_VERSION = "v1.1-2026-10-14";
 
 export const SEVERITIES = ["CRITICAL", "MAJOR", "MINOR"] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -82,7 +87,7 @@ export type QcRule = {
   cvHint?: string;
 };
 
-export const RULES: readonly QcRule[] = seed as unknown as QcRule[];
+export const RULES: readonly QcRule[] = [...(seed as unknown as QcRule[]), ...(addendum as unknown as QcRule[])];
 const BY_ID = new Map(RULES.map((r) => [r.id, r]));
 
 export function ruleById(id: string): QcRule | undefined {

@@ -19,6 +19,7 @@ export const maxDuration = 300;
 //   fixes     run the fixes a person approved (never without that click, and
 //             only while the owner's fixRunnerEnabled switch is on)
 //   verify    compare delivered Aryeo listings with the approved set
+//   digest    Monday 8 AM ET: the weekly photo delivery numbers
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
   const denied = authorizeCron(req);
@@ -53,6 +54,12 @@ export async function GET(req: NextRequest) {
   await step("verify", async () => {
     const { verifyDeliveringJobs } = await import("@/lib/photoDelivery/verifySweep");
     return verifyDeliveringJobs({ max: 5 });
+  }, { maxMs: 30_000 });
+
+  await step("digest", async () => {
+    // Monday 8 AM ET: last week's photo delivery numbers to Jordan and Kyle.
+    const { maybeSendPhotoDigest } = await import("@/lib/photoDelivery/digest");
+    return maybeSendPhotoDigest();
   }, { maxMs: 30_000 });
 
   await finish();
