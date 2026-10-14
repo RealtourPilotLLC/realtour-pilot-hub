@@ -766,6 +766,31 @@ async function main() {
     const spend = await RUN.monthQcSpendUsd(new Date(clockMs));
     c.ok("this month's spend is summed from the runs", spend.usd > 0);
 
+    // Shadow audit after delivery (Oct 14 2026: a gallery went out 15 minutes
+    // after it reached Aryeo, before QC could look). Shadow mode inspects it
+    // anyway and never touches the stage; live mode and old deliveries do not.
+    await settings({ qcShadow: true, monthlyQcBudgetUsd: 300 });
+    const project3 = await prisma.project.create({ data: { title: "5 Gone Lane, Bethlehem, PA", addressLine: "5 Gone Lane", clientId: client.id } });
+    const job3 = await prisma.photoJob.create({ data: { projectId: project3.id, stage: "DELIVERED", stageChangedAt: new Date(clockMs - 3_600_000), deliveredAt: new Date(clockMs - 3_600_000), finalsCount: 1, finalsChangedAt: new Date(clockMs - 4_000_000), expectedJson: JSON.stringify({ address: "5 Gone Lane", requestedFeatures: [], source: {} }) } });
+    bytes["gone-living.jpg"] = await textured(3000, 2000, 91, false);
+    await prisma.photoAsset.create({ data: { jobId: job3.id, name: "gone-living.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/gone-living.jpg", contentHash: "aryeo-g-v1", sequence: 0, status: "ACTIVE" } });
+    const project4 = await prisma.project.create({ data: { title: "7 Old Road, Bethlehem, PA", addressLine: "7 Old Road", clientId: client.id } });
+    const job4 = await prisma.photoJob.create({ data: { projectId: project4.id, stage: "DELIVERED", stageChangedAt: new Date(clockMs - 5 * 86_400_000), finalsCount: 1 } });
+    await prisma.photoAsset.create({ data: { jobId: job4.id, name: "old.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/old.jpg", contentHash: "aryeo-o-v1", sequence: 0, status: "ACTIVE" } });
+    const tick7 = await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-7" });
+    const audited = await prisma.photoJob.findUnique({ where: { id: job3.id } });
+    const auditRun = await prisma.photoQcRun.findFirst({ where: { jobId: job3.id } });
+    c.ok("shadow: a gallery delivered before QC could run is audited after delivery", tick7.jobs.some((j) => j.jobId === job3.id) && auditRun?.status === "DONE", JSON.stringify(tick7.jobs));
+    c.ok("…and its stage stays DELIVERED (lastQcRunId and the verdict recorded)", audited?.stage === "DELIVERED" && audited.lastQcRunId === auditRun?.id && !!audited.qcVerdict);
+    c.ok("…the activity log says it was an after-delivery audit", (await prisma.photoJobEvent.count({ where: { jobId: job3.id, action: { contains: "after delivery" } } })) === 1);
+    c.ok("a delivery older than 3 days is not audited", (await prisma.photoQcRun.count({ where: { jobId: job4.id } })) === 0);
+    await settings({ qcShadow: false });
+    const project5 = await prisma.project.create({ data: { title: "8 Live Lane, Bethlehem, PA", addressLine: "8 Live Lane", clientId: client.id } });
+    const job5 = await prisma.photoJob.create({ data: { projectId: project5.id, stage: "DELIVERED", stageChangedAt: new Date(clockMs - 3_600_000), finalsCount: 1 } });
+    await prisma.photoAsset.create({ data: { jobId: job5.id, name: "live.jpg", sourceKind: "ARYEO", sourceUrl: "https://cdn.aryeo.com/listings/drill/live.jpg", contentHash: "aryeo-l-v1", sequence: 0, status: "ACTIVE" } });
+    await QC.driveQc({ budgetMs: 900_000, leaseBy: "drill-8" });
+    c.ok("live (non-shadow) mode never audits a delivered gallery", (await prisma.photoQcRun.count({ where: { jobId: job5.id } })) === 0);
+
     // ---- 10. the fence ----------------------------------------------------------------------
     c.head("10 · isolation");
     c.ok("provider fence stayed closed (no Anthropic, Aryeo, Dropbox, Blob, Slack or OpenPhone call)", fence.blocked.length === 0, fence.blocked.join(", "));

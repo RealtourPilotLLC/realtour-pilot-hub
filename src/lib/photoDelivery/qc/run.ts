@@ -1591,7 +1591,13 @@ async function triggerFor(job: PhotoJob, lastRunAt: Date | null): Promise<Trigge
  *  moves the job into QC_RUNNING). null = the job cannot start QC now. */
 async function runForJob(job: PhotoJob, settings: PhotoDeliverySettings): Promise<{ run: PhotoQcRun; created: boolean } | null> {
   const running = await prisma.photoQcRun.findFirst({ where: { jobId: job.id, status: "RUNNING" }, orderBy: { startedAt: "desc" } });
-  if (running && job.stage === "QC_RUNNING") return { run: running, created: false };
+  // SHADOW AUDIT AFTER DELIVERY (Oct 14 2026, first live night: Ridley Creek's
+  // 76 photos reached Aryeo and were delivered 15 minutes later, before QC
+  // could look). In shadow mode a delivered gallery is still inspected, so
+  // the calibration data exists and a real issue can become a revision; its
+  // stage is never touched (finalize leaves a moved job's stage alone).
+  const postDelivery = settings.qcShadow && (job.stage === "DELIVERED" || job.stage === "DELIVERING");
+  if (running && (job.stage === "QC_RUNNING" || postDelivery)) return { run: running, created: false };
   if (running) {
     // The job left QC_RUNNING by hand mid-run: that run is closed as partial.
     await prisma.photoQcRun.update({ where: { id: running.id }, data: { status: "PARTIAL", finishedAt: new Date(now()), error: `job moved to ${job.stage} before the run finished` } });
@@ -1616,6 +1622,11 @@ async function runForJob(job: PhotoJob, settings: PhotoDeliverySettings): Promis
       checksJson: JSON.stringify({ photos: {}, gallery: { performed: [], skipped: [] } }),
     },
   });
+  if (postDelivery) {
+    await prisma.photoJob.update({ where: { id: job.id }, data: { lastQcRunId: run.id } });
+    await logJobEvent(job.id, "qc", `AI QC run opened after delivery (shadow audit, ${trigger}); the stage stays ${job.stage}`, { runId: run.id });
+    return { run, created: true };
+  }
   if (job.stage !== "QC_RUNNING") {
     const from: JobStage[] = trigger === "POST_FIX" ? QC_STAGES_FROM : QC_STAGES_FROM.filter((s) => s !== "FIXING");
     const moved = await setStage(job.id, from, "QC_RUNNING", "qc", { why: `AI QC started (${trigger}${settings.qcShadow ? ", shadow" : ""})`, data: { runId: run.id }, extra: { lastQcRunId: run.id } });
@@ -1890,7 +1901,23 @@ async function jobsToDrive(settings: PhotoDeliverySettings, take: number): Promi
     .filter((j) => j.stage !== "ON_HOLD" || j.holdReason === "CRITICAL")
     .filter((j) => !j.qcRuns[0] || (j.qcRequestedAt && j.qcRequestedAt > j.qcRuns[0].startedAt))
     .map((j) => j.id);
-  return [...new Set([...resume.map((j) => j.id), ...landed.map((j) => j.id), ...wanted])].slice(0, take);
+  // Shadow audits last: galleries delivered in the last 3 days with no QC run
+  // yet, and audits already under way (see runForJob).
+  const audits = settings.qcShadow
+    ? await prisma.photoJob.findMany({
+        where: {
+          stage: { in: ["DELIVERED", "DELIVERING"] },
+          stageChangedAt: { gte: new Date(now() - 3 * 86_400_000) },
+          photos: { some: { status: "ACTIVE" } },
+          OR: [{ qcRuns: { none: {} } }, { qcRuns: { some: { status: "RUNNING" } } }],
+          ...(since ? { stageChangedAt: { gte: since > new Date(now() - 3 * 86_400_000) ? since : new Date(now() - 3 * 86_400_000) } } : {}),
+        },
+        orderBy: { stageChangedAt: "asc" },
+        select: { id: true },
+        take,
+      })
+    : [];
+  return [...new Set([...resume.map((j) => j.id), ...landed.map((j) => j.id), ...wanted, ...audits.map((j) => j.id)])].slice(0, take);
 }
 
 /**

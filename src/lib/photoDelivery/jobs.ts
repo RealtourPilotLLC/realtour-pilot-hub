@@ -35,7 +35,10 @@ import { logJobEvent, setStage, type JobStage } from "./jobState";
 // ---------------------------------------------------------------------------
 
 const MIN = 60_000;
-const FINALS_SETTLE_MS = 20 * MIN;
+// Oct 14 2026: 20 minutes proved too slow (a gallery was delivered 15 minutes
+// after it reached Aryeo). QC is resumable per photo and re-runs on a gallery
+// change, so starting on a still-growing gallery costs little.
+const FINALS_SETTLE_MS = 6 * MIN;
 const IMAGE_RE = /\.(jpe?g|png|tiff?|heic|webp)$/i;
 /** Jobs shot before this are history, not queue. */
 export const PHOTO_DELIVERY_EPOCH = new Date("2026-10-13T04:00:00Z");
@@ -377,7 +380,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     }
   }
 
-  const next = stage === "EDITING" ? 10 * MIN : stage === "DELIVERED" ? 6 * 60 * MIN : 15 * MIN;
+  const next = stage === "EDITING" ? 5 * MIN : stage === "DELIVERED" ? 6 * 60 * MIN : 15 * MIN;
   await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: new Date(now.getTime() + next) } });
   return { changed, count: entries.length, stage, source };
 }
