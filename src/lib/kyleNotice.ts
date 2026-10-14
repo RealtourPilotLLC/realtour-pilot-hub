@@ -58,6 +58,24 @@ export async function kyleTeamMemberId(): Promise<string | null> {
   return (await deliveryOwner()).id;
 }
 
+/** "Kyle" as a task row stores him (Oct 14 2026): the delivery owner's roster
+ *  id, and the assignedKey slug of THAT row's name (the slug every engine
+ *  writes, derived from the id-resolved row, never a name search). Null when
+ *  the delivery owner does not resolve: the caller leaves its row unassigned. */
+export async function kyleDesk(): Promise<{ id: string; key: string; name: string } | null> {
+  try {
+    const owner = await deliveryOwner();
+    if (!owner.id) return null;
+    const tm = await prisma.teamMember.findUnique({ where: { id: owner.id }, select: { id: true, name: true } });
+    if (!tm) return null;
+    const { slugForName } = await import("@/lib/assignees");
+    const key = slugForName(tm.name);
+    return key ? { id: tm.id, key, name: tm.name } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function noticeForKyle(n: KyleNotice): Promise<{ bell: boolean; slack: string | null; error?: string }> {
   try {
     const { notifyInApp, notifyStaffSms, logDelivery } = await import("@/lib/notify");

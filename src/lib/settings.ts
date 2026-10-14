@@ -524,6 +524,17 @@ export type InternalAlertRules = {
   };
   rawVideoMissing: { enabled: boolean };
   kyleDigests: { enabled: boolean };
+  // KYLE'S REMINDERS, AUTOMATED (Oct 14 2026 comms audit: Jordan reminds Kyle
+  // about 31 times a week). Every one is a STAFF message, so each defaults ON
+  // and nothing here ever reaches a client.
+  /** Slack Kyle when a new lead is still untouched at 15 and 60 covered minutes. */
+  leadPing: { enabled: boolean };
+  /** Jordan's 6 PM wrap (Mon to Sat), with a copy to Kyle. */
+  eveningPush: { enabled: boolean };
+  /** The night-before brief to each photographer for tomorrow's shoots. */
+  photographerBrief: { enabled: boolean };
+  /** Kyle's Slack 3 covered hours before a job's promise, with a drafted client update. */
+  promiseWatch: { enabled: boolean };
   /**
    * WHEN SOMEBODY IS ACTUALLY THERE (audit WF-06, Sep 18 2026).
    *
@@ -559,6 +570,10 @@ export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
   photosUndelivered: { enabled: true, fromHour: 16, toHour: 19, lateAfterHours: 26 },
   rawVideoMissing: { enabled: true },
   kyleDigests: { enabled: true },
+  leadPing: { enabled: true },
+  eveningPush: { enabled: true },
+  photographerBrief: { enabled: true },
+  promiseWatch: { enabled: true },
   coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null },
 };
 
@@ -595,6 +610,11 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
     },
     rawVideoMissing: { enabled: r.rawVideoMissing?.enabled !== false },
     kyleDigests: { enabled: r.kyleDigests?.enabled !== false },
+    // A row saved before Oct 14 2026 has none of these: missing reads as ON.
+    leadPing: { enabled: r.leadPing?.enabled !== false },
+    eveningPush: { enabled: r.eveningPush?.enabled !== false },
+    photographerBrief: { enabled: r.photographerBrief?.enabled !== false },
+    promiseWatch: { enabled: r.promiseWatch?.enabled !== false },
     coverage,
   };
 }

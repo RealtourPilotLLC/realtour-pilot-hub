@@ -229,6 +229,25 @@ export async function GET(req: NextRequest) {
     const { sweepRevisionReminders } = await import("@/lib/revisionReminders");
     return sweepRevisionReminders();
   }, { maxMs: 30_000 });
+  // SLACK ASKS CLOSE THEMSELVES ON EVIDENCE (Oct 14 2026, lib/slackAskEvidence).
+  // An open Slack ask whose work is on record AFTER it was asked (the job
+  // delivered or a cut marked sent, a message to that client, a new cut, a
+  // recorded delivery) is completed with the evidence named on the row.
+  // Ambiguous asks stay open. Runs after `statuses` and `tasks`, so the
+  // delivery it reads is this tick's. Desk truth: no switch, nothing sent.
+  await step("slackAskEvidence", async () => {
+    const { closeSlackAsksOnEvidence } = await import("@/lib/slackAskEvidence");
+    const r = await closeSlackAsksOnEvidence();
+    return { checked: r.checked, closed: r.closed.length, leftOpen: r.leftOpen };
+  }, { maxMs: 20_000 });
+  // Lead and vendor-mail hygiene (Oct 14 2026): an open lead from a number
+  // muted as spam, untouched 7 days, is cancelled (never deleted); stale
+  // AutoHDR credit-mail and retired balance-check tasks are closed with a note.
+  await step("deskHygiene", async () => {
+    const { cancelSpamLeads } = await import("@/lib/leadDesk");
+    const { closeStaleAutohdrBalanceTasks } = await import("@/lib/vendorBalance");
+    return { spamLeads: await cancelSpamLeads(), autohdr: await closeStaleAutohdrBalanceTasks() };
+  }, { maxMs: 10_000 });
   // DELIVERED-JOB NOTES CLOSE THEMSELVES (Jordan, Sep 28 2026). Editor-cut and
   // delivery-fix notes (lanes EDITOR, EDIT — never a photographer's coaching)
   // still open or awaiting a re-look on a job delivered AFTER they were

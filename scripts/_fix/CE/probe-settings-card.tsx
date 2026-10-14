@@ -26,6 +26,10 @@ const rules = (coverage: Partial<InternalAlertRules["coverage"]>, photos: Partia
   photosUndelivered: { enabled: true, fromHour: 16, toHour: 19, lateAfterHours: 26, ...photos },
   rawVideoMissing: { enabled: true },
   kyleDigests: { enabled: true },
+  leadPing: { enabled: true },
+  eveningPush: { enabled: true },
+  photographerBrief: { enabled: true },
+  promiseWatch: { enabled: true },
   coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null, ...coverage },
 });
 

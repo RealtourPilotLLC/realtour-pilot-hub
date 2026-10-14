@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { AT_RISK_HOURS, owedNow, owedPhrase, parseEvidence } from "@/lib/statusEvidence";
+import { AT_RISK_HOURS, owedNow, owedPhrase, owedVerb, parseEvidence } from "@/lib/statusEvidence";
 import { pinnedPromise } from "@/lib/turnaround";
 import { etDateTime } from "@/lib/datetime";
 
@@ -328,4 +328,108 @@ export async function atRiskExceptionRows(opts: { now?: Date; cap: number; exclu
     ageDays: r.overdue ? Math.floor(-r.hoursLeft / 24) : 0,
   }));
   return { rows, total: { all: undrafted.length, high: undrafted.filter((r) => r.overdue).length } };
+}
+
+// ---------------------------------------------------------------------------
+// THE DELIVERY WATCH'S OWN DRAFT (Oct 14 2026, lib/promiseWatch.ts).
+//
+// Three covered hours before a job's promise, the watch Slacks Kyle the job's
+// stage and leaves this draft on his list so the update is ready before the
+// client asks "when will it be ready?" (5.6 a week in the comms audit). It
+// keeps every rule above:
+//   1. the ONLY date in it is the recorded promise. It names no new time and
+//      no "confirm by" time, because nobody has typed one: it says the office
+//      will confirm the exact time (the house rule's own wording for "we do
+//      not know yet"). foreignDates() is asked anyway, and a draft that names
+//      anything else is refused rather than filed;
+//   2. NOTHING IS SENT. It is a task on Kyle's list, the same task (same
+//      dedupe key) a click on Draft update would write; if a person already
+//      drafted one for this promise, theirs stands untouched;
+//   3. no model call: the words are fixed, so a cron can write them.
+// ---------------------------------------------------------------------------
+
+/** The watch's words. Pure; only the promise is a date. */
+export function atRiskTemplate(r: { firstName: string | null; street: string; owed: string; verb: string; promisedAt: Date }): string {
+  const hi = r.firstName ? `Hi ${r.firstName}, ` : "Hi, ";
+  return `${hi}a quick update on ${r.street}: ${r.owed} ${r.verb} running behind the time we promised (${promiseWords(r.promisedAt)}). We'll confirm the exact delivery time with you. Sorry for the wait.`;
+}
+
+/** Marks a task this file wrote for the watch (the close-on-delivery sweep reads it). */
+export const WATCH_DRAFT_REASON = "Delivery watch: 3 covered hours before the promise";
+
+export async function autoDraftAtRiskUpdate(input: { projectId: string; promisedAt: Date; stage?: string | null; now?: Date }): Promise<
+  { ok: true; taskId: string; created: boolean; draft: string } | { ok: false; message: string }
+> {
+  const now = input.now ?? new Date();
+  const p = await prisma.project.findUnique({
+    where: { id: input.projectId },
+    select: { id: true, title: true, clientId: true, statusEvidence: true, client: { select: { name: true } } },
+  });
+  if (!p) return { ok: false, message: "No such job." };
+  const owed = owedNow(parseEvidence(p.statusEvidence));
+  const phrase = owedPhrase(owed);
+  const draft = atRiskTemplate({
+    firstName: (p.client.name ?? "").trim().split(/\s+/)[0] || null,
+    street: streetOf(p.title),
+    owed: phrase || "your order",
+    verb: phrase ? owedVerb(owed) : "is",
+    promisedAt: input.promisedAt,
+  });
+  const foreign = foreignDates(draft, [input.promisedAt]);
+  if (foreign) return { ok: false, message: `The template named ${foreign}; nothing filed.` };
+  const dedupeKey = atRiskTaskKey({ outputId: null, projectId: p.id, promisedAt: input.promisedAt });
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });
+  if (existing) return { ok: true, taskId: existing.id, created: false, draft };
+  const { kyleDesk } = await import("@/lib/kyleNotice");
+  const kyle = await kyleDesk();
+  try {
+    const t = await prisma.smartTask.create({
+      data: {
+        taskType: "at_risk_update",
+        title: `Send ${p.client.name} an update: ${streetOf(p.title)}`.slice(0, 120),
+        summary: `${phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : "The order"} promised by ${promiseWords(input.promisedAt)}.${input.stage ? ` Now: ${input.stage}.` : ""} The update below is drafted and NOT sent. If the job will not make it, send it from the client's conversation; if it will, close this task.`.slice(0, 500),
+        description: draft,
+        reasonCreated: WATCH_DRAFT_REASON,
+        source: "system",
+        sourceDetail: "/tasks?tab=comms",
+        priority: "HIGH",
+        ownerId: kyle?.id ?? null,
+        assignedKey: kyle?.key ?? null,
+        clientId: p.clientId,
+        projectId: p.id,
+        propertyAddress: streetOf(p.title),
+        dueAt: new Date(Math.max(now.getTime() + 30 * 60_000, input.promisedAt.getTime() - 2 * HOUR)),
+        status: "OPEN",
+        dedupeKey,
+      },
+      select: { id: true },
+    });
+    return { ok: true, taskId: t.id, created: true, draft };
+  } catch {
+    // Two sweeps at once: the other one made the row.
+    const again = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });
+    return again ? { ok: true, taskId: again.id, created: false, draft } : { ok: false, message: "The draft task could not be saved." };
+  }
+}
+
+/** A watch draft whose job went out after all is noise on Kyle's list: closed, with the reason. */
+export async function closeDeliveredWatchDrafts(): Promise<{ closed: number }> {
+  const open = await prisma.smartTask.findMany({
+    where: { taskType: "at_risk_update", reasonCreated: WATCH_DRAFT_REASON, status: { notIn: ["COMPLETED", "CANCELLED"] }, projectId: { not: null } },
+    select: { id: true, projectId: true },
+    take: 100,
+  });
+  if (open.length === 0) return { closed: 0 };
+  const delivered = await prisma.project.findMany({
+    where: { id: { in: open.map((t) => t.projectId as string) }, OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
+    select: { id: true },
+  });
+  const done = new Set(delivered.map((d) => d.id));
+  const ids = open.filter((t) => done.has(t.projectId as string)).map((t) => t.id);
+  if (ids.length === 0) return { closed: 0 };
+  const r = await prisma.smartTask.updateMany({
+    where: { id: { in: ids }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "CANCELLED", summary: "Closed by the delivery watch: the job was delivered, so no update was needed. Nothing was sent." },
+  });
+  return { closed: r.count };
 }

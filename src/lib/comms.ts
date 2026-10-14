@@ -301,6 +301,11 @@ export async function recordClientCommunication(opts: {
   const taskTitle = (title: string | null) => checked.issue ? `Confirm property — ${title || "review the client message"}` : title;
   const taskDetail = (detail: string | null) => checked.issue ? `${checked.issue}${detail ? ` ${detail}` : ""}` : detail;
 
+  // Which row this message landed on (Oct 14 2026): the brain's merge target,
+  // or a row createCommTask made or reopened for it. The shoot-note and the
+  // "when will it be ready" steps below need to know.
+  let mergedInto: string | null = null;
+  let freshTask = false;
   if (decision) {
     if (decision.actionable) {
       if (decision.mergeIntoTaskId && !checked.issue) {
@@ -309,11 +314,12 @@ export async function recordClientCommunication(opts: {
           projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text,
           clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null,
         });
+        if (replyTask) mergedInto = decision.mergeIntoTaskId;
       }
       // No merge target (or the merge was refused, e.g. it pointed at a production
       // task) → create a fresh reply task so the message is still tracked.
       if (!replyTask) {
-        replyTask = await createCommTask({
+        replyTask = freshTask = await createCommTask({
           clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null,
           projectId: effProjectId, propertyAddress: effPropertyAddress,
           kind: opts.kind === "email" ? "text" : opts.kind,
@@ -371,6 +377,35 @@ export async function recordClientCommunication(opts: {
           aiDetail: taskDetail(aiDetail),
           threadRef: opts.threadRef ?? null,
         });
+  }
+
+  // A CLIENT'S ACCESS OR SHOOT NOTE GOES ON THE SHOOT BRIEF (Oct 14 2026,
+  // lib/shootNotes.ts): when the brain filed this message as an access or shoot
+  // instruction on a job whose shoot is still ahead, the words become the job's
+  // SPECIAL_REQUEST line (what /shoot, Ops Day and the editor packet read), the
+  // to-do it just opened is closed with a note, and a photographer shooting it
+  // within 24 hours hears it once. Keyed per message; best-effort.
+  let shootNoteFiled = false;
+  if (decision?.actionable && effProjectId && !checked.issue && opts.clientId) {
+    const { fileClientShootNote } = await import("@/lib/shootNotes");
+    const r = await fileClientShootNote({
+      clientId: opts.clientId, projectId: effProjectId, text: opts.text, source: opts.source ?? "comms",
+      title: decision.title, detail: decision.detail, taskType: decision.taskType,
+      freshTodo: freshTask && !mergedInto, commLogId: opts.commLogId ?? null,
+    });
+    shootNoteFiled = r.filed;
+  }
+  // "WHEN WILL IT BE READY?" (Oct 14 2026, lib/promiseWatch.ts): the reply task
+  // this question sits on carries the job's promise and where it stands, so
+  // Kyle answers with a time instead of looking it up. Internal words only.
+  if (effProjectId && opts.clientId && !checked.issue) {
+    const { isReadyQuestion, attachPromiseToReplyTask } = await import("@/lib/promiseWatch");
+    if (isReadyQuestion(opts.text)) {
+      const taskId = mergedInto ?? (await prisma.smartTask
+        .findFirst({ where: { dedupeKey: dedupeKey([opts.clientId, effProjectId, "client_reply"]), taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true } })
+        .catch(() => null))?.id;
+      if (taskId) await attachPromiseToReplyTask({ taskId, projectId: effProjectId });
+    }
   }
 
   // Whether this is a real revision request: trust the Smart Brain (it can tell a
@@ -468,10 +503,11 @@ export async function recordClientCommunication(opts: {
           kind: opts.kind === "email" ? "EMAIL" : opts.kind === "text" ? "TEXT" : "PHONE",
         },
       });
-    } else {
+    } else if (!(shootNoteFiled && anchorProjectId === effProjectId)) {
       // In-flight job: capture the ask as a special request, no status churn.
       // (Same job the brain chose — the re-anchor above only ever swaps in a
-      // delivered-ish job, which takes the branch above.)
+      // delivered-ish job, which takes the branch above.) Skipped when the
+      // shoot-note step above already put these words on this job's brief.
       await prisma.activity.create({
         data: {
           projectId: anchorProjectId,

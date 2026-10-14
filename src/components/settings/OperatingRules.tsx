@@ -133,6 +133,10 @@ const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; fi
   photosUndelivered: { words: "the late-photos check, 4–7 PM", files: ["src/lib/deliveryWatch.ts"] },
   rawVideoMissing: { words: "the raw-footage check when a video job's folders are read", files: ["src/lib/tasks.ts"] },
   kyleDigests: { words: "Kyle's morning list and 4 o'clock check", files: ["src/lib/notify.ts", "src/lib/commsBoard.ts"] },
+  leadPing: { words: "the new-lead check, every 5 minutes", files: ["src/lib/leadDesk.ts"] },
+  eveningPush: { words: "the 6 PM wrap, Monday to Saturday", files: ["src/lib/eveningPush.ts"] },
+  photographerBrief: { words: "the 6 PM shoot briefs for tomorrow", files: ["src/lib/eveningPush.ts"] },
+  promiseWatch: { words: "the promise check, every 5 minutes", files: ["src/lib/promiseWatch.ts"] },
   coverage: { words: "the client-reply pager, the late-photos alert and the review cover clock", files: ["src/lib/coverage.ts"] },
 };
 
@@ -317,6 +321,42 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           <ReadBy k="kyleDigests" />
         </div>
         <Toggle on={r.kyleDigests.enabled} onChange={(v) => set({ kyleDigests: { enabled: v } })} label="Kyle's Slack digests" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">New lead pings</p>
+          <p className="text-[13px] text-muted">New call, text and email leads go on Kyle&rsquo;s list. This switch is the Slack nudge to him at 15 and 60 covered minutes while a lead is still untouched.</p>
+          <ReadBy k="leadPing" />
+        </div>
+        <Toggle on={r.leadPing.enabled} onChange={(v) => set({ leadPing: { enabled: v } })} label="New lead pings" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Jordan&rsquo;s 6 PM wrap</p>
+          <p className="text-[13px] text-muted">One Slack message at 6 PM, Monday to Saturday: delivered today, due by 9 AM, late, open asks, unanswered clients and tomorrow&rsquo;s gaps. Kyle gets a copy. Your Saturday quiet time still holds it.</p>
+          <ReadBy k="eveningPush" />
+        </div>
+        <Toggle on={r.eveningPush.enabled} onChange={(v) => set({ eveningPush: { enabled: v } })} label="Jordan's 6 PM wrap" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Night-before shoot brief</p>
+          <p className="text-[13px] text-muted">Around 6 PM, each photographer gets one message per shoot tomorrow: time, address, what was ordered, access and client notes, and the photo target. Missing access opens a task for Kyle.</p>
+          <ReadBy k="photographerBrief" />
+        </div>
+        <Toggle on={r.photographerBrief.enabled} onChange={(v) => set({ photographerBrief: { enabled: v } })} label="Night-before shoot brief" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Delivery watch before the promise</p>
+          <p className="text-[13px] text-muted">Slacks Kyle 3 covered hours before a job&rsquo;s promised time with where the job stands, and drafts a client update on his list. Nothing is sent to the client.</p>
+          <ReadBy k="promiseWatch" />
+        </div>
+        <Toggle on={r.promiseWatch.enabled} onChange={(v) => set({ promiseWatch: { enabled: v } })} label="Delivery watch before the promise" />
       </div>
 
       <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save internal alerts" onSave={() => save(saveInternalAlerts)} />

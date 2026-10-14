@@ -1053,7 +1053,6 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
   // An assistant's email folds to their agent (where the orders live).
   const toAgent = (c: (typeof clients)[number]) => (c.parentClientId && clientById.get(c.parentClientId)) || c;
   const contactClientByEmail = new Map(contacts.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c.clientId!]));
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
 
   // OUR SIDE OF THE CONVERSATION, FROM EVERY INBOX (Oct 14 2026 — see
   // src/lib/staffEmail.ts). Who counts as staff, and which client an address
@@ -1216,6 +1215,8 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
               body: fullBody || snippet || text,
               fromEmail: email,
               occurredAt: msg.internalDate ? new Date(Number(msg.internalDate)) : undefined,
+              // A newsletter carries List-Unsubscribe; "" = read and absent (Oct 14 2026).
+              listUnsubscribe: header(msg, "List-Unsubscribe") ?? "",
             });
             return r.tasksCreated;
           }
@@ -1435,6 +1436,10 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           const key = `lead-${email}`;
           const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
           if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return 0;
+          // Kyle by the delivery duty (leadDesk.leadAssignee, never a name
+          // search); nobody when it does not resolve, as before (Oct 14 2026).
+          const { leadAssignee, startLeadEpisode } = await import("@/lib/leadDesk");
+          const desk = await leadAssignee();
           const data = {
             taskType: "lead",
             title: `New lead: ${name || email}`.slice(0, 120),
@@ -1446,11 +1451,14 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
             sourceDetail: threadRef,
             priority: "HIGH" as const,
             dueAt: new Date(Date.now() + 4 * 3600_000),
-            ownerId: kyle?.id ?? null,
+            ownerId: desk.ownerId,
             dedupeKey: key,
           };
-          if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
-          else await prisma.smartTask.create({ data });
+          const leadId = existing
+            ? (await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null }, select: { id: true } })).id
+            : (await prisma.smartTask.create({ data: { ...data, assignedKey: desk.assignedKey }, select: { id: true } })).id;
+          // On Kyle's list, and the 15/60-minute pings count from now.
+          await startLeadEpisode(leadId);
           // A new lead shouldn't wait for someone to open the hub — Slack ping +
           // in-app bell mirror, deduped per sender per day (best-effort).
           try {

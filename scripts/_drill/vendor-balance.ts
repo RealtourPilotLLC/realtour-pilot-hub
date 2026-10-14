@@ -294,7 +294,11 @@ async function main() {
     stubUiModules();
     const { AutohdrCard } = await import("@/components/connections/AutohdrCard");
     const text = await renderText(await AutohdrCard());
-    c.ok("card, as the owner: not connected, the last reading, the last top-up, no threshold", /Not connected/.test(text) && /Last reading:/.test(text) && /\$200\.00/.test(text) && /no threshold set/.test(text), text.slice(0, 200));
+    // Oct 14 2026: the card now offers the API connection; until one is
+    // saved it says "API not connected" and still shows the manual reading
+    // and the owner's last top-up. Thresholds moved to the credit monitor
+    // (250 / 100), which only alerts on a live API balance.
+    c.ok("card, as the owner: API not connected, the last reading, the last top-up", /API not connected/.test(text) && /Last reading:/.test(text) && /\$200\.00/.test(text), text.slice(0, 200));
     // Settings → AutoHDR balance renders the same card for Kyle (ADMIN) when he
     // records the Monday reading. The top-up is Jordan's own payment.
     await establishSession(kyle.id);

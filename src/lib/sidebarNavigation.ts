@@ -1,7 +1,7 @@
 /** Presentation groups for destinations that Sidebar has already authorized. */
 const SIDEBAR_GROUPS = [
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/tasks", "/schedule", "/communications"] },
-  { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
+  { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/ops/photo-delivery", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
   // Content Program this week, and a folded group hid both doors.
   { id: "clients", title: "Clients", frequent: true, paths: ["/content", "/content/activity", "/clients"] },

@@ -1037,7 +1037,7 @@ async function handleTranscript(data: Record<string, unknown>) {
 // lead gets the same treatment an emailed one always did. Missed call →
 // voicemail → text about the same number all collapse onto one task; a
 // voicemail upgrades an open task's summary with what the caller actually said.
-async function upsertPhoneLeadTask(opts: {
+export async function upsertPhoneLeadTask(opts: {
   phone: string; // 10-digit key
   kind: "call" | "voicemail" | "text";
   senderName: string | null;
@@ -1051,7 +1051,10 @@ async function upsertPhoneLeadTask(opts: {
   const quote = opts.snippet ? ` They said: “${opts.snippet.slice(0, 200)}”.` : "";
   const summary =
     `${who} ${kindLabel} — not a client we recognize, so treat it as a lead.${quote} Call back, qualify (listing, timeline, budget), and add them to the CRM.`.slice(0, 500);
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  // Kyle by the delivery duty (leadDesk.leadAssignee, never a name search);
+  // nobody when it does not resolve, as before (Oct 14 2026).
+  const { leadAssignee, startLeadEpisode } = await import("@/lib/leadDesk");
+  const desk = await leadAssignee();
   const data = {
     taskType: "lead",
     title: (opts.kind === "text" ? `New texter — reply to ${who}` : `New caller — call back ${who}`).slice(0, 120),
@@ -1063,10 +1066,11 @@ async function upsertPhoneLeadTask(opts: {
     sourceDetail: `phone:${pretty}`,
     priority: "HIGH" as const,
     dueAt: new Date(Date.now() + 4 * 3600_000),
-    ownerId: kyle?.id ?? null,
+    ownerId: desk.ownerId,
     dedupeKey: key,
   };
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  let taskId: string;
   if (existing) {
     if (existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
       // Already open: only a voicemail improves it (the transcript beats a bare
@@ -1077,9 +1081,13 @@ async function upsertPhoneLeadTask(opts: {
       return;
     }
     await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+    taskId = existing.id;
   } else {
-    await prisma.smartTask.create({ data });
+    taskId = (await prisma.smartTask.create({ data: { ...data, assignedKey: desk.assignedKey }, select: { id: true } })).id;
   }
+  // On Kyle's list (a reopened row too, unless a person chose its assignee),
+  // and the 15/60-minute pings count from now.
+  await startLeadEpisode(taskId);
   // The phone line is the highest-intent lead source — ping Slack the moment the
   // lead task is (re)minted instead of waiting for a hub visit, and mirror it to
   // the in-app bell (deduped per number per day). Best-effort.

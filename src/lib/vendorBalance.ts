@@ -298,10 +298,77 @@ export async function ensureWeeklyBalanceCheck(now = new Date()): Promise<{ crea
     where: { dedupeKey: { startsWith: "autohdr-balance-check-" }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
     data: { status: "CANCELLED", completedAt: now, sourceDetail: "Weekly AutoHDR check retired (Oct 13 2026)" },
   }).catch(() => null);
+  await closeStaleAutohdrBalanceTasks(now).catch(() => null);
   return { created: false, reason: "weekly check retired: AutoHDR's balance can't be read automatically; its low-credit emails alert Jordan" };
 }
 
-const BALANCE_MAIL_RE = /credit|balance|insufficient|top.?up|out of|running low|payment (?:failed|declined)|card (?:failed|declined)/i;
+/**
+ * THE STALE CREDIT TASKS CLOSE (Oct 14 2026). Most "AutoHDR emailed about
+ * credits or payment" tasks were AutoHDR marketing mail ("save on credits this
+ * week") that the old one-word match turned into a chore for Jordan, and the
+ * retired Monday checks were still open beside them. Closed, never deleted,
+ * with the reason in the summary:
+ *   · every open "autohdr-balance-check-*" (the check is retired);
+ *   · every open "autohdr-balance-mail-*" from an EARLIER ET day, and today's
+ *     too once the AutoHDR API is connected: the live credit monitor reads the
+ *     real balance every 15 minutes and alerts at 250 and 100 credits.
+ * Today's mail task stays while the API is not connected: it may be real.
+ */
+export async function closeStaleAutohdrBalanceTasks(now = new Date()): Promise<{ closed: number }> {
+  const NOTE = "Closed (Oct 14 2026): ";
+  const checks = await prisma.smartTask.updateMany({
+    where: { dedupeKey: { startsWith: "autohdr-balance-check-" }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "CANCELLED", completedAt: now, summary: `${NOTE}the weekly AutoHDR balance check is retired. Nothing was bought.` },
+  });
+  let connected = false;
+  try {
+    const { autohdrConfigured } = await import("@/lib/integrations/autohdr");
+    connected = await autohdrConfigured();
+  } catch { connected = false; }
+  const open = await prisma.smartTask.findMany({
+    where: { dedupeKey: { startsWith: "autohdr-balance-mail-" }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true, dedupeKey: true },
+  });
+  const today = etDayKey(now);
+  const stale = open.filter((t) => connected || (t.dedupeKey ?? "").slice("autohdr-balance-mail-".length) < today).map((t) => t.id);
+  const mails = stale.length
+    ? await prisma.smartTask.updateMany({
+        where: { id: { in: stale }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: {
+          status: "CANCELLED",
+          completedAt: now,
+          summary: connected
+            ? `${NOTE}the AutoHDR API is connected, so the live credit monitor reads the real balance and alerts at 250 and 100 credits. AutoHDR's emails no longer file tasks.`
+            : `${NOTE}a credit email from an earlier day, most of them AutoHDR marketing. A real warning files a new task the day it arrives.`,
+        },
+      })
+    : { count: 0 };
+  return { closed: checks.count + mails.count };
+}
+
+// A CREDIT EMAIL IS CREDIT WORDS AND A PROBLEM WORD TOGETHER (Oct 14 2026).
+// The old single match (/credit|balance|…|out of/) fired on any AutoHDR
+// newsletter that mentioned credits, and each one became a "credits or
+// payment" task for Jordan. Now it needs both, and newsletters are ignored:
+// a List-Unsubscribe header when the caller passes it (google.ts does), else
+// promotional wording in the subject. A failed card payment is never
+// marketing, so it still files even from a mailing-list sender.
+const CREDIT_WORDS_RE = /\b(credits?|balance)\b/i;
+const PROBLEM_WORDS_RE =
+  /\b(low|running low|run(?:ning)? out|ran out|out of|no credits|0 credits|zero|insufficient|not enough|exhausted|depleted|top[\s-]?up|reload|payment (?:failed|declined|unsuccessful|issue|problem)|card (?:failed|declined|expired)|declined|past due|overdue)\b/i;
+const PAYMENT_FAILED_RE = /\b(payment (?:failed|declined|unsuccessful)|card (?:was )?(?:failed|declined|expired))\b/i;
+const PROMO_SUBJECT_RE =
+  /\b(newsletter|webinar|new features?|introducing|announc\w*|tips?|what'?s new|sale|deal|promo\w*|discount|% ?off|save \d|bonus credits?|free credits?|limited time|black friday|cyber monday|launch\w*|blog|case study|join us|invite|giveaway|refer(?:ral)?)\b|%/i;
+
+/** Is this AutoHDR email a credit or payment problem worth a task? Pure. */
+export function isAutohdrBalanceMail(input: { subject: string; body: string; listUnsubscribe?: string | null }): boolean {
+  const text = `${input.subject}\n${input.body}`;
+  if (PAYMENT_FAILED_RE.test(text) && CREDIT_WORDS_RE.test(text)) return true;
+  if (!(CREDIT_WORDS_RE.test(text) && PROBLEM_WORDS_RE.test(text))) return false;
+  const newsletter = input.listUnsubscribe != null ? input.listUnsubscribe.trim().length > 0 || PROMO_SUBJECT_RE.test(input.subject) : PROMO_SUBJECT_RE.test(input.subject);
+  return !newsletter;
+}
+
 const DONE_MAIL_RE = /\b(complete[d]?|ready|finished|processed|delivered)\b/i;
 
 export function isAutohdrDomain(domain: string): boolean {
@@ -326,6 +393,8 @@ export async function handleAutohdrMail(input: {
   fromEmail: string;
   occurredAt?: Date;
   now?: Date;
+  /** The List-Unsubscribe header, when the caller read it ("" = read and absent). */
+  listUnsubscribe?: string | null;
 }): Promise<{ logged: boolean; tasksCreated: number; batchId: string | null }> {
   const now = input.now ?? new Date();
   const { logComm } = await import("@/lib/commLog");
@@ -343,7 +412,18 @@ export async function handleAutohdrMail(input: {
   const text = `${input.subject}\n${input.body}`;
   let tasksCreated = 0;
   let batchId: string | null = null;
-  if (BALANCE_MAIL_RE.test(text)) {
+  const balanceMail = isAutohdrBalanceMail({ subject: input.subject, body: input.body, listUnsubscribe: input.listUnsubscribe });
+  // With the AutoHDR API connected the live credit monitor (photo-delivery
+  // credits, every 15 minutes, alerts at 250 and 100) is the alarm; a mail
+  // task beside it would be the same warning twice. The email is still logged.
+  let apiConnected = false;
+  if (balanceMail) {
+    try {
+      const { autohdrConfigured } = await import("@/lib/integrations/autohdr");
+      apiConnected = await autohdrConfigured();
+    } catch { apiConnected = false; }
+  }
+  if (balanceMail && !apiConnected) {
     const day = etDayKey(now);
     const dedupeKey = `autohdr-balance-mail-${day}`;
     const exists = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });
@@ -370,7 +450,7 @@ export async function handleAutohdrMail(input: {
         if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002")) throw e;
       }
     }
-  } else if (DONE_MAIL_RE.test(text)) {
+  } else if (!balanceMail && DONE_MAIL_RE.test(text)) {
     const { attachVendorEmail } = await import("@/lib/photoEditBatches");
     batchId = await attachVendorEmail({ gmailId: input.gmailId, text, now }).catch(() => null);
   }

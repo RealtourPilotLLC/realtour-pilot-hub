@@ -51,8 +51,11 @@ async function main() {
     for (const [name, who] of cases) {
       const before = render(Before, who);
       const after = render(Sidebar, who);
-      // Oct 14 2026: "Client activity" (/content/activity) is the one destination added since BASE.
-      check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => h !== "/content/activity")));
+      // Oct 14 2026: "Client activity" (/content/activity) and "Photo Delivery"
+      // (/ops/photo-delivery, owner + office via the ops PageKey) are the
+      // destinations added since BASE.
+      const ADDED = new Set(["/content/activity", "/ops/photo-delivery"]);
+      check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => !ADDED.has(h))));
       check(`${name}: every destination still appears once`, hrefs(after).length === new Set(hrefs(after)).size);
     }
     const owner = render(Sidebar, user("OWNER"));

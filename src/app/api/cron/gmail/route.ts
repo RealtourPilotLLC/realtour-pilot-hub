@@ -168,6 +168,28 @@ export async function GET(req: NextRequest) {
   // wrapper keeps even a surprise failure from blocking Gmail polling.
   await step("replySla", () => sweepReplySla());
 
+  // KYLE'S REMINDERS, AUTOMATED (Oct 14 2026 comms audit). All three are staff
+  // messages only, each behind its own Settings switch (Internal alerts), each
+  // claimed per lead / job / day so the next tick (or a twin) sends nothing
+  // twice. Last in the run: the inbox and the reply pager come first.
+  //  · a new lead still untouched at 15 and 60 covered minutes → Kyle's Slack;
+  await step("leadPings", async () => {
+    const { sweepLeadPings } = await import("@/lib/leadDesk");
+    return sweepLeadPings();
+  }, { maxMs: 15_000 });
+  //  · 3 covered hours before a job's promise → Kyle's Slack with its stage,
+  //    and a client update DRAFTED on his list (never sent);
+  await step("promiseWatch", async () => {
+    const { sweepPromiseWatch } = await import("@/lib/promiseWatch");
+    return sweepPromiseWatch();
+  }, { maxMs: 20_000 });
+  //  · from 6 PM ET: tomorrow's shoot brief to each photographer, and Jordan's
+  //    6 PM wrap (Mon to Sat) with a copy to Kyle. Idle every other tick.
+  await step("evening", async () => {
+    const { runEveningAutomations } = await import("@/lib/eveningPush");
+    return runEveningAutomations();
+  }, { maxMs: 45_000 });
+
   await finish();
   return NextResponse.json({ ok: true, ...out });
 }

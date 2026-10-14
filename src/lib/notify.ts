@@ -2380,7 +2380,14 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     const exceptionLines = await import("@/lib/commsBoard")
       .then((m) => m.exceptionDigestLines(appBase()))
       .catch(() => [] as string[]);
-    if (overdue.length + openToday.length + texts.length + exceptionLines.length === 0) {
+    // "JORDAN ASKED, STILL OPEN" (Oct 14 2026): his Slack asks to Kyle no
+    // longer expire on the 7-day timer, so they are listed here with their
+    // ages every morning until they close (on evidence, or by Kyle). No money
+    // on Kyle's screen: the titles are scrubbed.
+    const jordanAsks = await import("@/lib/slackAskEvidence")
+      .then((m) => m.jordansOpenAsksToKyle())
+      .catch(() => []);
+    if (overdue.length + openToday.length + texts.length + exceptionLines.length + jordanAsks.length === 0) {
       return await send("☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
     }
     const lines: string[] = ["☀️ *Morning check* — today's list:"];
@@ -2390,6 +2397,13 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
     if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & ready in the Outbox`);
     lines.push(...exceptionLines);
+    if (jordanAsks.length > 0) {
+      const { scrubMoney, noDashes } = await import("@/lib/text");
+      const age = (d: number) => (d < 1 ? "today" : `${d}d`);
+      lines.push(`Jordan asked, still open (${jordanAsks.length}):`);
+      for (const a of jordanAsks.slice(0, 6)) lines.push(`• ${noDashes(scrubMoney(a.title))} (${age(a.ageDays)})`);
+      if (jordanAsks.length > 6) lines.push(`  and ${jordanAsks.length - 6} more`);
+    }
     // Land where the listed rows actually live: Slack asks moved to their own
     // tab on Sep 16 (the Other tab now excludes them), so a digest that lists
     // both must offer both doors rather than one that shows half the list.

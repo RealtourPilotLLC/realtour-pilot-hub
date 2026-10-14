@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Clapperboard,
+  Images,
   SlidersHorizontal,
   LayoutDashboard,
   ListTodo,
@@ -91,6 +92,10 @@ const SECTIONS: NavSection[] = [
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       // The owner's quality desk — cuts to review, photo QC, feedback loops.
       { label: "Review Room", href: "/review", icon: MonitorPlay, key: "review" },
+      // Listing photos from edit to delivered (Oct 14 2026, docs/photo-delivery):
+      // the queue, AI QC, the AutoHDR Fix Cart and the delivery check. Rides
+      // the `ops` PageKey (owner + office), like Ops Day.
+      { label: "Photo Delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
       // Feedback about the WORK: what clients said (the delivery-text form +
       // unhappy texts/emails) and how each photographer is shooting. Distinct
       // from "Feedback & requests" in System, which is feedback about the HUB.

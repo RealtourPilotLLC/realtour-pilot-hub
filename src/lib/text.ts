@@ -275,3 +275,12 @@ export function scrubMoney(s: string): string {
     .replace(NUMBER_THEN_MONEY_WORD, "[amount]")
     .replace(/(\[amount\])(?:\s*[-–—]\s*\[amount\])+/g, "$1");
 }
+
+/** Staff-message hygiene (Oct 14 2026): the house style for every automated
+ *  Slack or text the hub writes has no em or en dashes. Strings pulled into
+ *  those messages (a task title, a board label) can carry one, so the
+ *  composers pass their final text through here. */
+export function noDashes(s: string): string {
+  if (!s) return s;
+  return s.replace(/\s*\u2014\s*/g, ", ").replace(/\u2013/g, "-");
+}

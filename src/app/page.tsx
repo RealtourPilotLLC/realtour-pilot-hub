@@ -59,6 +59,7 @@ import { reviewerChain } from "@/lib/reviewerAssignment";
 import { getReviewQueue, followUpHref } from "@/lib/reviewRoom";
 import { HomeRoutine } from "@/components/dashboard/HomeRoutine";
 import { homeRecordHref } from "@/lib/homeRecordScope";
+import { openLeadsFor } from "@/lib/leadDesk";
 
 export const dynamic = "force-dynamic";
 
@@ -617,6 +618,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
       ]).then(([stats, pulse, dials, money]) => ({ stats, pulse, dials, money }))
     : null;
 
+  // NEW LEADS ON THE DESK THAT CALLS THEM BACK (Oct 14 2026): leads are filed
+  // to Kyle now (lib/leadDesk), so his Home lists his and the unassigned ones;
+  // the owner sees every open lead.
+  const leadsP = listAssignees()
+    .catch(() => [])
+    .then((roster) => openLeadsFor({ isOwner, key: me ? viewerAssigneeKey(me, roster) : null, teamMemberId: me?.teamMemberId ?? null }))
+    .catch(() => [] as { id: string; title: string; createdAt: Date }[]);
   const [dRaw, counts, stuck, shoots, handledToday, boardRaw, flaggedRaw, todos, reviewQueue, reviewChain] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
@@ -761,6 +769,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
       : undefined,
     href: "#comms-1", tone: d.unanswered.oldestHours != null && d.unanswered.oldestHours >= 24 ? "danger" : "brand",
   });
+  const leads = await leadsP;
+  add({
+    key: "leads", group: "waiting", count: leads.length,
+    label: `new lead${leads.length === 1 ? "" : "s"} waiting on a call or text back`,
+    detail: leads[0] ? `oldest: ${isOwner ? leads[0].title : scrubMoney(leads[0].title)} · ${ageText(leads[0].createdAt.toISOString(), now)}` : undefined,
+    href: "/tasks?tab=work&type=lead", tone: "warning",
+  });
   add({
     key: "texts", group: "waiting", count: counts.textsToSend,
     label: `client text${counts.textsToSend === 1 ? "" : "s"} drafted and ready to send`,
@@ -844,7 +859,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   // uploads. Anything not named follows by how urgent it is, then as built.
   const priority = homeRole === "review" ? ["review-mine", "verify", "cuts", "stuck", "loops"]
     : homeRole === "owner" ? ["mytodos", "cuts", "tosend", "stuck", "past-due", "assign"]
-      : ["tosend", "delivery-steps", "clients", "debriefs", "assign", "stuck", "tomorrow", "past-due"];
+      : ["tosend", "delivery-steps", "clients", "leads", "debriefs", "assign", "stuck", "tomorrow", "past-due"];
   const rank = (key: string) => priority.includes(key) ? priority.indexOf(key) : priority.length;
   const orderedNeeds = needs
     .filter((n) => !(reviewLead && reviewQueue && n.key === "cuts"))

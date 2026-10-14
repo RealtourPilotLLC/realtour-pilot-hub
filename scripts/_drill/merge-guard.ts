@@ -169,8 +169,16 @@ async function main() {
     const moneyish = aryeoWrites.filter((w) => /refund|credit|payment|charge|invoice|transfer|merge/i.test(w.split(" (")[0]));
     c.ok("Aryeo write paths exist and none touches refunds, credits, payments, charges or invoices", aryeoWrites.length > 0 && moneyish.length === 0, aryeoWrites.map((w) => w.split(" (")[0]).join(" · "));
 
+    // Oct 14 2026: the AutoHDR API is now wired on purpose (Jordan connected
+    // it for the photo-delivery build). The guard moves from "never called"
+    // to "reached through ONE client, and the only calls that spend credits
+    // live in the fix runner behind the owner's switch". Buying credits is
+    // still impossible (no top-up function, checked below).
     const autohdrUrls = files.filter((f) => /https?:\/\/[^\s"'`]*autohdr/i.test(text.get(f)!));
-    c.ok("nothing calls AutoHDR (no AutoHDR URL anywhere in the code)", autohdrUrls.length === 0, autohdrUrls.map(rel).join(", "));
+    c.ok("AutoHDR is reached only through its one client (src/lib/integrations/autohdr.ts)", autohdrUrls.length === 1 && rel(autohdrUrls[0]) === path.join("src", "lib", "integrations", "autohdr.ts"), autohdrUrls.map(rel).join(", "));
+    const spenders = files.filter((f) => /\bautohdr\.(submitTransform|download)\(/.test(text.get(f)!));
+    const runner = text.get(path.join(SRC, "lib/photoDelivery/fixRunner.ts")) ?? "";
+    c.ok("credit-spending AutoHDR calls live only in the fix runner, behind the owner's fixRunnerEnabled switch", spenders.length === 1 && rel(spenders[0]).endsWith(path.join("photoDelivery", "fixRunner.ts")) && /settings\.fixRunnerEnabled/.test(runner), spenders.map(rel).join(", "));
     // A function whose name STARTS with the act (topUpX, buyCredits, purchase…,
     // replenish…). Readers named for what they read (lastAutohdrTopUp) pass.
     const buyers = files.filter((f) => /function\s+(top_?up|buy|purchase|replenish)\w*\s*\(/i.test(text.get(f)!));

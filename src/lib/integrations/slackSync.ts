@@ -120,7 +120,9 @@ export async function loadSlackRoster(): Promise<SlackRosterEntry[]> {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function rosterLookup(roster: SlackRosterEntry[]) {
+/** Exported Oct 14 2026: slackAskEvidence.ts reads who SENT an ask (its
+ *  contactName) with the same alias rule the addressee reader uses. */
+export function rosterLookup(roster: SlackRosterEntry[]) {
   const byAlias = new Map<string, SlackRosterEntry>();
   for (const r of roster) for (const a of r.aliases) byAlias.set(a, r);
   const alt = [...byAlias.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join("|");

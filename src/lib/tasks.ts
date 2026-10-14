@@ -4998,6 +4998,14 @@ export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
   });
 
   const cutoff = new Date(Date.now() - 7 * 86_400_000);
+  // JORDAN'S ASKS TO KYLE DO NOT EXPIRE (Oct 14 2026). A cancelled ask of
+  // Jordan's read as "done" and he asked again by hand. They stay open: the
+  // hourly evidence sweep closes them when the work is on record
+  // (slackAskEvidence.ts), Kyle's morning digest lists them with their ages,
+  // and from day 3 they ride on Jordan's 6 PM wrap. An unreadable roster
+  // protects nothing (the timer runs as before rather than guessing).
+  const keep = await import("@/lib/slackAskEvidence").then((m) => m.protectedSlackAskIds()).catch(() => [] as string[]);
+  const notKept = keep.length ? { id: { notIn: keep } } : {};
 
   // SAY SOMETHING BEFORE IT DIES (Kyle's call, Sep 16). In 30 days, 108 Slack
   // asks were minted and 50 were cancelled — 9 of them by this sweep, with
@@ -5015,6 +5023,7 @@ export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
         status: { notIn: ["COMPLETED", "CANCELLED"] },
         assignedKey: { not: null },
         createdAt: { gte: warnFrom, lt: warnTo },
+        ...notKept,
       },
       select: { id: true, title: true, assignedKey: true, propertyAddress: true },
       take: 30,
@@ -5056,7 +5065,7 @@ export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
   } catch { /* the nudge is a courtesy — it must never stop the sweep below */ }
 
   const r = await prisma.smartTask.updateMany({
-    where: { taskType: "internal_instruction", source: "slack", status: "OPEN", createdAt: { lt: cutoff } },
+    where: { taskType: "internal_instruction", source: "slack", status: "OPEN", createdAt: { lt: cutoff }, ...notKept },
     // Say so on the row (the Done tab shows cancelled rows): a silent cancel
     // read as "someone did this" (audit, Sep 8). Summary only — sourceDetail
     // carries the Slack channel and taskSource.ts parses it. Text mirrors
