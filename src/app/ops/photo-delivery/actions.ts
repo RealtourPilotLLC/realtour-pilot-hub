@@ -355,7 +355,7 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
 
 type SettingsInput = Partial<Omit<PhotoDeliverySettings, "qcFrom">> & { qcFrom?: string | null };
 
-const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoFixZeroCredit", "aryeoTags", "p3AllPhotos", "autoSubmit", "freeCheck", "paidQcAuto"] as const;
+const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoFixZeroCredit", "aryeoTags", "p3AllPhotos", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix"] as const;
 const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label: string }> = {
   adminCreditCap: { min: 0, max: 10_000, int: true, label: "Kyle's approval limit" },
   dailyAutoCreditCap: { min: 0, max: 10_000, int: true, label: "Daily automatic credit limit" },
@@ -364,6 +364,8 @@ const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label:
   maskPaddingMinPx: { min: 0, max: 500, int: true, label: "Mask padding (pixels)" },
   minLongEdgePx: { min: 300, max: 20_000, int: true, label: "Minimum long edge" },
   monthlyQcBudgetUsd: { min: 0, max: 100_000, int: false, label: "Monthly QC budget" },
+  fixTargetUsd: { min: 0, max: 1_000, int: false, label: "Fix target per shoot" },
+  fixMaxUsd: { min: 0, max: 1_000, int: false, label: "Fix maximum per shoot" },
 };
 
 export async function saveSettingsAction(input: SettingsInput): Promise<ActionResult> {

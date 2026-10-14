@@ -32,6 +32,9 @@ export type SettingsValues = {
   autoSubmit: boolean;
   freeCheck: boolean;
   paidQcAuto: boolean;
+  autoFix: boolean;
+  fixTargetUsd: number;
+  fixMaxUsd: number;
 };
 
 const SWITCHES: { key: keyof SettingsValues; label: string; help: string }[] = [
@@ -41,6 +44,7 @@ const SWITCHES: { key: keyof SettingsValues; label: string; help: string }[] = [
   { key: "qcEnabled", label: "Paid QC available", help: "The Claude QC (measured checks plus Claude vision, about $3 to $4 a shoot, never AutoHDR credits). Whether it starts by itself is the switch below." },
   { key: "paidQcAuto", label: "Run the paid QC by itself", help: "Off: the Claude QC only runs when someone presses Run QC on a job. On: it inspects every gallery as it lands, about $3 to $4 a shoot." },
   { key: "qcShadow", label: "Shadow mode", help: "QC results are advisory: nothing is held or blocked by them, and Kyle keeps his manual check. Leave on until the checks have proven themselves." },
+  { key: "autoFix", label: "Fix automatically", help: "After the free check and a free second look, the hub picks the fixes itself: camera mistakes, crooked lines, cars and trash cans always; clutter only in a prepared home and only within the target. One AI re-edit per photo (1 credit), checked again for free after the edit. Needs the switch below on too." },
   { key: "fixRunnerEnabled", label: "Run approved AutoHDR fixes", help: "Off until you have approved the first live test. While off, the Fix Cart cannot start a batch and nothing is sent to AutoHDR." },
   { key: "autoFixZeroCredit", label: "Auto-run fixes that cost no credits", help: "Off by default. When on, a fix AutoHDR prices at zero runs without a click, only on non-critical findings at 90% confidence or more. Everything else waits for a click." },
   { key: "aryeoTags", label: "Mirror status into Aryeo", help: "Off: Aryeo order tags and internal notes stay untouched until you switch this on." },
@@ -78,6 +82,9 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           autoSubmit: v.autoSubmit,
           freeCheck: v.freeCheck,
           paidQcAuto: v.paidQcAuto,
+          autoFix: v.autoFix,
+          fixTargetUsd: v.fixTargetUsd,
+          fixMaxUsd: v.fixMaxUsd,
           maxBuildPhase: v.maxBuildPhase,
           autoFixZeroCredit: v.autoFixZeroCredit,
           adminCreditCap: v.adminCreditCap,
@@ -136,6 +143,8 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           <p id="pd-from-help" className="mt-1 text-[12px] text-muted">Only galleries that landed on or after this day (Eastern) are checked. Blank: since the feature started.</p>
         </div>
         <NumberField id="pd-budget" label="Monthly QC budget" suffix="USD" help="QC pauses, and you are alerted, once the month's Anthropic spend passes this." value={v.monthlyQcBudgetUsd} onChange={(n) => set("monthlyQcBudgetUsd", n)} min={0} max={100000} step={1} />
+        <NumberField id="pd-fix-target" label="Fix target per shoot" suffix="USD" help="Most shoots stay inside this. Clutter fixes only happen inside it." value={v.fixTargetUsd} onChange={(n) => set("fixTargetUsd", n)} min={0} max={1000} step={0.5} />
+        <NumberField id="pd-fix-max" label="Fix maximum per shoot" suffix="USD" help="Never passed. Only camera, crooked-line, car and trash fixes go above the target." value={v.fixMaxUsd} onChange={(n) => set("fixMaxUsd", n)} min={0} max={1000} step={0.5} />
       </fieldset>
 
       <fieldset className="grid gap-4 sm:grid-cols-2">

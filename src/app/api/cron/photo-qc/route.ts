@@ -30,6 +30,13 @@ export async function GET(req: NextRequest) {
     return driveAutohdrChecks({ budgetMs: 90_000 });
   }, { maxMs: 110_000 });
 
+  await step("autofix", async () => {
+    // Oct 14 2026: the free second look on each finding, then (autoFix on) the
+    // budgeted fix plan. The fix runner (photo-delivery lane) does the edits.
+    const { driveAutoFixPlanning } = await import("@/lib/photoDelivery/fixPolicy");
+    return driveAutoFixPlanning({ budgetMs: 60_000 });
+  }, { maxMs: 80_000 });
+
   await step("qc", async () => {
     const { driveQc } = await import("@/lib/photoDelivery/qc");
     // Unique per tick: two overlapping ticks must never share a lease.

@@ -9,6 +9,7 @@ import { logJobEvent, setStage } from "./jobState";
 import { ruleById, RULES_REGISTRY_VERSION } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
 import { disabledIn, houseOverrides } from "./houseRules";
+import { instructionFor } from "./fixPolicy";
 
 // ---------------------------------------------------------------------------
 // THE FREE PHOTO CHECK (Oct 14 2026).
@@ -41,8 +42,9 @@ const CHECK_RULES = [
   "LIV_TV_UNINTENDED_CONTENT", "LIV_TV_GLARE",
   "EXT_TRASH_CANS_PRIMARY", "EXT_GARDEN_HOSES", "EXT_HOSE_REELS", "EXT_PARKED_CARS_DRIVEWAY", "EXT_VEHICLES_BLOCKING_HOME", "EXT_PHOTOGRAPHER_VEHICLE",
   "EXT_CHILDRENS_OUTDOOR_TOYS", "EXT_CONSTRUCTION_MATERIALS", "EXT_OPEN_GARAGE_DOORS",
-  "REFL_PHOTOGRAPHER_IN_MIRROR", "REFL_CAMERA_TRIPOD_IN_MIRROR", "REFL_PHOTOGRAPHER_IN_GLASS", "REFL_PHOTOGRAPHER_SHADOW",
-  "PERSP_CROOKED_VERTICALS", "PERSP_CROOKED_HORIZON", "PERSP_AUTOHDR_ROOF_PEAKS_CROPPED",
+  "REFL_PHOTOGRAPHER_IN_MIRROR", "REFL_CAMERA_TRIPOD_IN_MIRROR", "REFL_PHOTOGRAPHER_IN_GLASS", "REFL_PHOTOGRAPHER_SHADOW", "REFL_TRIPOD_EQUIPMENT_SHADOW", "REFL_SENSOR_DUST",
+  "PERSP_CROOKED_VERTICALS", "PERSP_LEANING_DOOR_FRAMES", "PERSP_EXTERIOR_WALLS_LEANING", "PERSP_CROOKED_HORIZON", "PERSP_AUTOHDR_ROOF_PEAKS_CROPPED",
+  "UTIL_GARAGE_TRASH_CANS", "LIV_OFFICE_TRASH_CANS", "EXT_VEHICLES_THROUGH_WINDOWS",
   "EXPO_BLOWN_WINDOWS", "EXPO_OVERLY_DARK_INTERIORS", "EXPO_HDR_HALOS", "EXPO_BURNED_OUT_BULBS",
   "COLOR_GREEN_MAGENTA_CAST", "COLOR_SATURATED_GRASS_TREES", "SKY_OVERSATURATED", "SKY_HALOS_TREES_ROOFLINES",
   "COMP_BLURRY", "COMP_MOTION_BLUR",
@@ -207,6 +209,8 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
             locationText: iss.where || null, severity: rule.defaultSeverity, confidence: iss.confidence, responsibility: rule.responsibility,
             fixStrategy: rule.fixStrategies[0] ?? "HUMAN_REVIEW", contentHash: a.p.contentHash, model: "autohdr-describe", rulesVersion: RULES_REGISTRY_VERSION,
             promptId: "autohdr-check", promptVersion: CHECK_PROMPT_VERSION, rawJson: (a.text ?? "").slice(0, 4000),
+            // Oct 14 2026: the written re-edit instruction, so it can be fixed with one AI re-edit.
+            reeditPrompt: instructionFor(rule.id, iss.where),
           });
         }
       }

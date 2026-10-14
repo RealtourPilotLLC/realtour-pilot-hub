@@ -38,6 +38,17 @@ import { alertOwnerAndKyle } from "./notifyOps";
 //     inspected. A mismatch stops the operation.
 // Results are stored in the private Blob store (never the public one) for
 // Kyle to swap into the Aryeo listing; the hub cannot upload to Aryeo.
+//
+// Oct 14 2026, the hub's OWN shoots (intake.ts, rows sourceKind AUTOHDR): the
+// hub made the shoot and recorded each photo's id, so there is nothing to
+// prove and nothing to download first. Those photos are not paid for until
+// Kyle pushes them to Aryeo, so the hub never downloads them: the fix becomes
+// the photo's current version in AutoHDR and goes out with the push. Only
+// re-edits (no masks) run on them. Automatic batches (fixPolicy.ts) are held
+// to the per-shoot maximum here as well, right before each paid call. After
+// every fix, a free check (AutoHDR describe on the new version) confirms it was
+// fixed properly: fixed, or still there (a person looks), or clearly damaged
+// (the previous version is put back, free).
 // ---------------------------------------------------------------------------
 
 const MIN = 60_000;
@@ -132,6 +143,13 @@ export async function renderMask(w: number, h: number, boxes: [number, number, n
 }
 
 const REEDIT_SUFFIX = "Change nothing else in the photo.";
+
+/** The hub's own shoot photo (intake.ts): its AutoHDR shoot is in sourceRef "<shoot>/<image_uuid>". */
+function hubShootOf(photo: { sourceKind: string; sourceRef: string | null }): number | null {
+  if (photo.sourceKind !== "AUTOHDR" || !photo.sourceRef?.includes("/")) return null;
+  const n = Number(photo.sourceRef.split("/")[0]);
+  return Number.isFinite(n) ? n : null;
+}
 function mergePrompts(prompts: string[]): string | null {
   const parts = prompts
     .map((p) => p.replace(REEDIT_SUFFIX, "").trim())
@@ -165,7 +183,8 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     await escalate(op, "this photo is not matched to its AutoHDR shoot, so AutoHDR cannot edit it here; fix it in AutoHDR's web app or send it to the editor");
     return "escalated";
   }
-  const shootId = linked.autohdrPhotoshootId;
+  const hubShoot = hubShootOf(photo);
+  const shootId = hubShoot ?? linked.autohdrPhotoshootId;
   if (linked.autohdrCreatedAt && Date.now() - linked.autohdrCreatedAt.getTime() > 7 * 86_400_000 - 60 * MIN) {
     await escalate(op, "the AutoHDR shoot is older than 7 days and has expired there");
     return "escalated";
@@ -194,6 +213,18 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     await escalate(op, "AutoHDR did not give a price for this edit");
     return "escalated";
   }
+  // An automatic batch never goes past the per-shoot maximum (Jordan, Oct 14:
+  // "$5-$10 MAX on QC fixes per shoot"), counted from what was really charged.
+  const batchRow = await prisma.photoFixBatch.findUnique({ where: { id: op.batchId }, select: { approvedBy: true } });
+  if (batchRow?.approvedBy === "auto-fix") {
+    const { creditThresholds } = await import("./credits");
+    const maxCredits = Math.floor(settings.fixMaxUsd / (await creditThresholds()).usdPerCredit + 1e-9);
+    const charged = await prisma.photoFixOperation.aggregate({ where: { jobId: job.id, batch: { approvedBy: "auto-fix" }, chargedCredits: { not: null }, OR: [{ refunded: null }, { refunded: false }] }, _sum: { chargedCredits: true } });
+    if ((charged._sum.chargedCredits ?? 0) + price > maxCredits) {
+      await escalate(op, `this shoot has reached its automatic fix maximum ($${settings.fixMaxUsd})`);
+      return "escalated";
+    }
+  }
   // Pre-flight: the live balance must cover it.
   const credits = await autohdr.credits().catch(() => null);
   const balance = credits?.credit_balance ?? (await latestSnapshot())?.balance ?? null;
@@ -208,6 +239,23 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     await escalate(op, "AutoHDR no longer lists this photo in the shoot");
     return "escalated";
   }
+  const ids = JSON.parse(op.findingIdsJson) as string[];
+  const findings = await prisma.photoQcFinding.findMany({ where: { id: { in: ids } }, select: { id: true, bboxJson: true, reeditPrompt: true } });
+  const body: Parameters<typeof autohdr.submitTransform>[0] = {
+    photoshoot_id: shootId,
+    image_uuid: remote.image_uuid,
+    image_version_uuid: remote.image_version_uuid, // the head: edits compound on it
+    transform_name: cap.name,
+    transform_version: cap.version ?? 1,
+  };
+  if (hubShoot != null) {
+    // The hub's own shoot: the photo is the one the hub recorded; nothing to
+    // download (that would pay its first download early). Re-edits only.
+    if (cap.requires_mask) {
+      await escalate(op, "the hub's own AutoHDR shoots are fixed with written re-edits, not marked areas");
+      return "escalated";
+    }
+  } else {
   if (!remote.downloaded) {
     await escalate(op, "AutoHDR has not been paid for this photo yet, so the fix would also cost its first download (1 credit); approve that in AutoHDR or ask Jordan");
     return "escalated";
@@ -235,15 +283,6 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
   const headMeta = await sharp(headBytes).metadata();
   const srcMeta = await sharp(srcBytes).metadata();
 
-  const ids = JSON.parse(op.findingIdsJson) as string[];
-  const findings = await prisma.photoQcFinding.findMany({ where: { id: { in: ids } }, select: { id: true, bboxJson: true, reeditPrompt: true } });
-  const body: Parameters<typeof autohdr.submitTransform>[0] = {
-    photoshoot_id: shootId,
-    image_uuid: remote.image_uuid,
-    image_version_uuid: remote.image_version_uuid, // the head: edits compound on it
-    transform_name: cap.name,
-    transform_version: cap.version ?? 1,
-  };
   if (cap.requires_mask) {
     const w = headMeta.width ?? 0;
     const h = headMeta.height ?? 0;
@@ -270,6 +309,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
       return "escalated";
     }
     body.mask_url = up.s3_url;
+  }
   }
   if (cap.name === "reedit" || cap.name === "autofill") {
     const prompt = mergePrompts(findings.map((f) => f.reeditPrompt ?? "").filter(Boolean));
@@ -354,6 +394,27 @@ async function resolveSubmitting(op: Op): Promise<void> {
   }
 }
 
+// ---- the check after a fix (free) -----------------------------------------------------------
+type FixCheck = { verdict: "fixed" | "not-fixed" | "damaged" | "unchecked"; note: string };
+export async function checkFix(input: { shootId: number; imageUuid: string; output: string; prompt: string }): Promise<FixCheck> {
+  const { describePhoto, jsonFrom } = await import("./fixPolicy");
+  const instruction = input.prompt.replace(REEDIT_SUFFIX, "").trim() || "the requested fix";
+  const prompt = [
+    `This real estate photo was just edited with this instruction: "${instruction}"`,
+    "Check whether it was fixed properly. Answer ONLY with JSON:",
+    '{"fixed": true or false, "left": "what is still there, or empty", "damaged": true or false, "damage": "what is clearly broken, or empty"}',
+    "fixed = every part of the instruction was carried out. damaged = the edit clearly broke the photo (warped or smeared walls, melted or half-erased objects, missing windows or furniture, strange artifacts). Small imperfections are not damage.",
+  ].join("\n");
+  try {
+    const j = jsonFrom<{ fixed?: boolean; left?: string; damaged?: boolean; damage?: string }>(await describePhoto(input.shootId, input.imageUuid, prompt, input.output));
+    if (!j || typeof j.fixed !== "boolean") return { verdict: "unchecked", note: "" };
+    if (j.damaged === true) return { verdict: "damaged", note: String(j.damage ?? "").slice(0, 200) };
+    return j.fixed ? { verdict: "fixed", note: "" } : { verdict: "not-fixed", note: String(j.left ?? "").slice(0, 200) };
+  } catch {
+    return { verdict: "unchecked", note: "" };
+  }
+}
+
 // ---- a SUBMITTED row: poll the job ---------------------------------------------------------
 async function pollStep(op: Op): Promise<"done" | "waiting"> {
   if (!op.autohdrJobId) return "waiting";
@@ -366,8 +427,10 @@ async function pollStep(op: Op): Promise<"done" | "waiting"> {
   }
   const ids = JSON.parse(op.findingIdsJson) as string[];
   const photo = await prisma.photoAsset.findUnique({ where: { id: op.photoId } });
-  const job = await prisma.photoJob.findUnique({ where: { id: op.jobId }, select: { autohdrPhotoshootId: true } });
-  if (!photo || !job?.autohdrPhotoshootId) return "waiting";
+  const jobRow = await prisma.photoJob.findUnique({ where: { id: op.jobId }, select: { autohdrPhotoshootId: true } });
+  const hubShoot = photo ? hubShootOf(photo) : null;
+  const job = { autohdrPhotoshootId: hubShoot ?? jobRow?.autohdrPhotoshootId ?? null };
+  if (!photo || !job.autohdrPhotoshootId) return "waiting";
   if (j.status === "queued" || j.status === "running") {
     if (op.submittedAt && Date.now() - op.submittedAt.getTime() > POLL_ESCALATE_MS) {
       await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name} still ${j.status} after 45 minutes; still watching`, { operationId: op.id });
@@ -396,7 +459,7 @@ async function pollStep(op: Op): Promise<"done" | "waiting"> {
     await autohdr.setVersion(job.autohdrPhotoshootId, j.image_uuid, output);
   }
   let stored: { pathname: string; url: string } | null = null;
-  try {
+  if (hubShoot == null) try {
     const dl = await autohdr.download(job.autohdrPhotoshootId, [{ image_uuid: j.image_uuid }]);
     if ((dl.data.credits_charged ?? 0) > 0) await recordLedgerEntry({ kind: "DOWNLOAD", credits: -(dl.data.credits_charged ?? 0), jobId: op.jobId, ref: op.autohdrJobId, note: "download of the fixed version" });
     const url = dl.data.downloads?.[0]?.url;
@@ -404,15 +467,30 @@ async function pollStep(op: Op): Promise<"done" | "waiting"> {
   } catch (e) {
     await logJobEvent(op.jobId, "fix-runner", `the fixed ${photo.name} could not be saved yet (${(e as Error).message}); AutoHDR keeps it for 7 days`, { operationId: op.id });
   }
+  // The check after the fix (free): was it fixed properly?
+  const check = await checkFix({ shootId: job.autohdrPhotoshootId, imageUuid: j.image_uuid, output, prompt: op.prompt ?? "" });
+  const where = hubShoot != null ? "It is the current version in AutoHDR and goes out with the push to Aryeo." : "Replace this photo on the Aryeo listing.";
+  if (check.verdict === "damaged" && j.image_version_uuid) {
+    // Clearly broken: put the previous version back (free) and say so.
+    await autohdr.setVersion(job.autohdrPhotoshootId, j.image_uuid, j.image_version_uuid).catch(() => null);
+    await prisma.$transaction([
+      prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "REVERTED", outputVersionUuid: output, finishedAt: new Date(), verificationJson: JSON.stringify(check) } }),
+      prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { status: "OPEN", statusReason: `The AI fix damaged the photo (${check.note || "see AutoHDR"}), so the previous version was put back.`.slice(0, 500) } }),
+    ]);
+    await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name}: the check after the fix found damage; previous version put back`, { operationId: op.id, check });
+    return "done";
+  }
+  const fixedIds = check.verdict === "not-fixed" ? [] : ids;
   await prisma.$transaction([
     prisma.photoVersion.create({
       data: { photoId: op.photoId, label: `AutoHDR ${op.transformName}`, source: "FIX", autohdrVersionUuid: output, parentVersionUuid: j.image_version_uuid, derivJson: stored ? JSON.stringify({ file: stored }) : null, createdBy: "fix-runner" },
     }),
     prisma.photoAsset.update({ where: { id: op.photoId }, data: { autohdrVersionUuid: output } }),
-    prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "SUCCEEDED", outputVersionUuid: output, finishedAt: new Date(), error: stored ? null : "fixed in AutoHDR; file not stored in the hub yet", verificationJson: JSON.stringify({ pending: "a person checks the before/after; replace the photo on the Aryeo listing" }) } }),
-    prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { status: "FIXED", statusReason: "Fixed in AutoHDR. Replace this photo on the Aryeo listing." } }),
+    prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: check.verdict === "fixed" ? "VERIFIED" : "SUCCEEDED", outputVersionUuid: output, finishedAt: new Date(), error: hubShoot != null || stored ? null : "fixed in AutoHDR; file not stored in the hub yet", verificationJson: JSON.stringify(check) } }),
+    prisma.photoQcFinding.updateMany({ where: { id: { in: fixedIds } }, data: { status: "FIXED", statusReason: `${check.verdict === "fixed" ? "Fixed and checked." : "Fixed (the check afterwards could not run)."} ${where}` } }),
+    prisma.photoQcFinding.updateMany({ where: { id: { in: check.verdict === "not-fixed" ? ids : [] } }, data: { status: "OPEN", statusReason: `Still there after the AI fix${check.note ? `: ${check.note}` : ""}. A person should look.`.slice(0, 500) } }),
   ]);
-  await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name} succeeded (new version ${output.slice(0, 8)})`, { operationId: op.id });
+  await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name}: ${check.verdict === "fixed" ? "fixed and checked" : check.verdict === "not-fixed" ? "the check after the fix says it is still there" : "done (not checked)"} (new version ${output.slice(0, 8)})`, { operationId: op.id, check });
   return "done";
 }
 
@@ -422,6 +500,9 @@ async function finishBatches(jobIds: Set<string>): Promise<void> {
     for (const b of batches) {
       if (!b.operations.every((o) => TERMINAL.includes(o.status))) continue;
       const ok = b.operations.filter((o) => o.status === "SUCCEEDED" || o.status === "VERIFIED").length;
+      const charged = b.operations.reduce((s, o) => s + (o.refunded ? 0 : o.chargedCredits ?? 0), 0);
+      const auto = b.approvedBy === "auto-fix";
+      const hubPhotos = await prisma.photoAsset.count({ where: { id: { in: b.operations.map((o) => o.photoId) }, sourceKind: "AUTOHDR" } });
       const status = ok === b.operations.length ? "DONE" : ok > 0 ? "PARTIAL" : "FAILED";
       const done = await prisma.photoFixBatch.updateMany({ where: { id: b.id, status: { in: ["PENDING", "RUNNING"] } }, data: { status } });
       if (done.count !== 1) continue;
@@ -430,14 +511,15 @@ async function finishBatches(jobIds: Set<string>): Promise<void> {
       const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
       const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }) : null;
       const street = (project?.title ?? "a listing").split(",")[0];
+      const next = hubPhotos ? "They are the current versions in AutoHDR: look them over there, then push the shoot to Aryeo as usual." : "Replace the fixed photos on the Aryeo listing.";
       await alertOwnerAndKyle({
         kind: "photo_fixes_done",
-        title: `Fixes done: ${street}`.slice(0, 90),
-        body: `${ok} of ${b.operations.length} applied. Replace the fixed photos on the Aryeo listing.`,
+        title: `${auto ? "Automatic fixes" : "Fixes"} done: ${street}`.slice(0, 90),
+        body: `${ok} of ${b.operations.length} photos fixed (${charged} credit${charged === 1 ? "" : "s"}). ${next}`.slice(0, 200),
         href: `/ops/photo-delivery/${jobId}`,
         dedupeKey: `pd-fixes-${b.id}`,
-        text: `Fixes done on ${street}: ${ok} of ${b.operations.length} applied${open ? `, ${open} issue${open === 1 ? "" : "s"} still need a call` : ""}. Replace the fixed photos on the Aryeo listing: ${appBase()}/ops/photo-delivery/${jobId}`,
-        to: "kyle",
+        text: `${auto ? "Automatic fixes" : "Fixes"} done on ${street}: ${ok} of ${b.operations.length} photos fixed (${charged} credit${charged === 1 ? "" : "s"})${open ? `, ${open} issue${open === 1 ? "" : "s"} still need a call` : ""}. ${next} ${appBase()}/ops/photo-delivery/${jobId}`,
+        to: auto ? "both" : "kyle",
       });
     }
   }

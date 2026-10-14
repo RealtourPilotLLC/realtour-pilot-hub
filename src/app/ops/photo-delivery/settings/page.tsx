@@ -72,6 +72,9 @@ export default async function PhotoDeliverySettingsPage() {
               autoSubmit: settings.autoSubmit,
               freeCheck: settings.freeCheck,
               paidQcAuto: settings.paidQcAuto,
+              autoFix: settings.autoFix,
+              fixTargetUsd: settings.fixTargetUsd,
+              fixMaxUsd: settings.fixMaxUsd,
             }}
           />
           <p className="mt-4 border-t border-border pt-3 text-[13px] text-muted">The credit alert levels live on the Credits page.</p>

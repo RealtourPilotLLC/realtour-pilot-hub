@@ -32,6 +32,12 @@ import { getSetting, putSetting } from "@/lib/settings";
 //   paidQcAuto     the Claude QC starts by itself on a landed gallery (and the
 //                  after-delivery audits). OFF = it runs only when asked
 //                  ("Run QC" on the job page). Jordan, Oct 14: QC should be free.
+//   autoFix        (Oct 14 2026) after the free check and its free second look,
+//                  the hub picks the fixes itself (fixPolicy.ts) within
+//                  fixTargetUsd (most shoots) and fixMaxUsd (never above), one
+//                  AI re-edit per photo, checked again (free) after the edit.
+//                  Needs fixRunnerEnabled too. asIsClientIds: clients whose
+//                  homes are shot as they are (only camera, car and trash fixes).
 // ---------------------------------------------------------------------------
 
 export type PhotoDeliverySettings = {
@@ -58,6 +64,12 @@ export type PhotoDeliverySettings = {
   autoSubmitFrom: string;
   freeCheck: boolean;
   paidQcAuto: boolean;
+  autoFix: boolean;
+  fixTargetUsd: number;
+  fixMaxUsd: number;
+  /** All automatic fixes in one ET day, in credits (a runaway guard). */
+  autoFixDailyMaxCredits: number;
+  asIsClientIds: string[];
 };
 
 export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
@@ -81,6 +93,11 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   autoSubmitFrom: "2026-10-13T04:00:00.000Z",
   freeCheck: false,
   paidQcAuto: true,
+  autoFix: false,
+  fixTargetUsd: 5,
+  fixMaxUsd: 10,
+  autoFixDailyMaxCredits: 100,
+  asIsClientIds: [],
 };
 
 const KEY = "photo_delivery:settings";
@@ -112,6 +129,11 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     autoSubmitFrom: typeof raw.autoSubmitFrom === "string" && !Number.isNaN(Date.parse(raw.autoSubmitFrom)) ? raw.autoSubmitFrom : d.autoSubmitFrom,
     freeCheck: bool(raw.freeCheck, d.freeCheck),
     paidQcAuto: bool(raw.paidQcAuto, d.paidQcAuto),
+    autoFix: bool(raw.autoFix, d.autoFix),
+    fixTargetUsd: num(raw.fixTargetUsd, d.fixTargetUsd, 0, 1_000),
+    fixMaxUsd: num(raw.fixMaxUsd, d.fixMaxUsd, 0, 1_000),
+    autoFixDailyMaxCredits: num(raw.autoFixDailyMaxCredits, d.autoFixDailyMaxCredits, 0, 10_000),
+    asIsClientIds: Array.isArray(raw.asIsClientIds) ? raw.asIsClientIds.filter((x): x is string => typeof x === "string").slice(0, 500) : d.asIsClientIds,
   };
 }
 
