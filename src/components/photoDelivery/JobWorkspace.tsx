@@ -1,0 +1,104 @@
+"use client";
+
+import { useRef, type KeyboardEvent, type ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { JobProvider, useJob, type TabKey } from "./JobContext";
+import { Gallery } from "./Gallery";
+import { IssuesPanel } from "./IssuesPanel";
+import { FixCartPanel } from "./FixCartPanel";
+import { CoveragePanel } from "./CoveragePanel";
+import { Lightbox } from "./Lightbox";
+import { DeliverPanel } from "./DeliverPanel";
+import type { JobDetail, Viewer } from "./types";
+
+// ---------------------------------------------------------------------------
+// The job page body (plan 9.4): the gallery on the left (about 60%), the
+// tabs on the right (Issues, Fix Cart, Coverage, Activity, Files), the
+// lightbox over both, and the Deliver panel stuck to the bottom. On a phone
+// the tabs follow the gallery. Activity and Files arrive already rendered on
+// the server; they need no interaction.
+// ---------------------------------------------------------------------------
+
+export function JobWorkspace({ data, viewer, initialTab, initialPhoto, activity, files }: {
+  data: JobDetail;
+  viewer: Viewer;
+  initialTab?: TabKey;
+  initialPhoto?: string | null;
+  activity: ReactNode;
+  files: ReactNode;
+}) {
+  return (
+    <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={initialTab} initialPhoto={initialPhoto}>
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <Gallery />
+        <RightPanel activity={activity} files={files} />
+      </div>
+      <DeliverPanel />
+      <Lightbox />
+    </JobProvider>
+  );
+}
+
+function RightPanel({ activity, files }: { activity: ReactNode; files: ReactNode }) {
+  const { tab, setTab, data, selected } = useJob();
+  const refs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const openIssues = data.findings.filter((f) => f.pass !== "P4_ORDER" && f.status === "OPEN" && f.confidence >= data.displayFloor).length;
+  const openCoverage = data.findings.filter((f) => f.pass === "P4_ORDER" && f.status === "OPEN").length;
+  const inCart = (data.cart?.lines ?? []).filter((l) => !l.humanCall && l.findingIds.some((id) => selected.has(id))).length;
+  const tabs: { key: TabKey; label: string; count?: number }[] = [
+    { key: "issues", label: "Issues", count: openIssues },
+    { key: "cart", label: "Fix Cart", count: inCart },
+    { key: "coverage", label: "Coverage", count: openCoverage },
+    { key: "activity", label: "Activity" },
+    { key: "files", label: "Files" },
+  ];
+  const onKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const n = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    setTab(tabs[n].key);
+    refs.current[tabs[n].key]?.focus();
+  };
+  return (
+    <section aria-label="Job details" className="panel-shadow min-w-0 rounded-2xl border border-border bg-surface lg:sticky lg:top-20">
+      <div role="tablist" aria-label="Job details" className="flex gap-1 overflow-x-auto border-b border-border px-2 pt-2">
+        {tabs.map((t, i) => (
+          <button
+            key={t.key}
+            ref={(el) => {
+              refs.current[t.key] = el;
+            }}
+            role="tab"
+            id={`pd-tab-${t.key}`}
+            aria-selected={tab === t.key}
+            aria-controls={`pd-panel-${t.key}`}
+            tabIndex={tab === t.key ? 0 : -1}
+            onKeyDown={(e) => onKey(e, i)}
+            onClick={() => setTab(t.key)}
+            className={cn(
+              "inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t-lg border-b-2 px-3 text-sm font-medium",
+              tab === t.key ? "border-brand text-foreground" : "border-transparent text-muted hover:text-foreground",
+            )}
+          >
+            {t.label}
+            {t.count ? <span className="rounded-full bg-surface-2 px-1.5 text-[12px] tabular-nums">{t.count}</span> : null}
+          </button>
+        ))}
+      </div>
+      {tabs.map((t) => (
+        <div
+          key={t.key}
+          role="tabpanel"
+          id={`pd-panel-${t.key}`}
+          aria-labelledby={`pd-tab-${t.key}`}
+          hidden={tab !== t.key}
+          tabIndex={0}
+          className="p-3 sm:p-4 lg:max-h-[calc(100dvh-14rem)] lg:overflow-y-auto"
+        >
+          {tab === t.key &&
+            (t.key === "issues" ? <IssuesPanel /> : t.key === "cart" ? <FixCartPanel /> : t.key === "coverage" ? <CoveragePanel /> : t.key === "activity" ? activity : files)}
+        </div>
+      ))}
+    </section>
+  );
+}

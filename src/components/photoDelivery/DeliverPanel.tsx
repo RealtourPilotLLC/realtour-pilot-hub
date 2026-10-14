@@ -1,0 +1,234 @@
+"use client";
+
+import { useState } from "react";
+import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, FlaskConical, ShieldCheck, Truck } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { etMonthDayTime } from "@/lib/datetime";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { overrideDeliverAction, startDeliveryAction, verifyDeliveryAction } from "@/app/ops/photo-delivery/actions";
+import { PhotoImg } from "./PhotoImg";
+import { useJob } from "./JobContext";
+
+// ---------------------------------------------------------------------------
+// THE DELIVER PANEL (plan 9.6), sticky at the bottom of the job page.
+//   · The gate checklist, live. In shadow mode it is ADVISORY (a badge says
+//     so): it is shown, but it never stops Kyle while QC is calibrated.
+//   · "Replace these on the Aryeo listing": photos fixed through AutoHDR
+//     after they went on the listing. The hub cannot upload to Aryeo, so each
+//     has a Download of the fixed JPEG (named after the photo) to swap in.
+//   · The steps: open the listing, the folder, the order to match (thumbnail
+//     strip with the delivery names) and the pre-written message (Realtour
+//     Pilot Team voice) with Copy.
+//   · Mark as delivering; the owner-only "Override and deliver" with a typed
+//     reason (never for an open privacy or wrong-property issue); Verify now.
+// The hub confirms on its own when Aryeo says the listing was delivered.
+// ---------------------------------------------------------------------------
+
+const START_FROM = new Set(["READY", "QC_REVIEW", "EDITED", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
+const STAGE_WHY: Record<string, string> = {
+  EDITING: "The edited gallery has not landed yet.",
+  EDIT_FAILED: "The edit failed. Sort that out first.",
+  QC_RUNNING: "QC is running on this gallery right now.",
+  FIXING: "Approved fixes are still running.",
+  ON_HOLD: "On hold: release the hold first.",
+  DELIVERING: "Already marked as delivering. Waiting for Aryeo to confirm.",
+  DELIVERED: "Delivered and verified.",
+};
+const btn = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-3.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50";
+
+export function DeliverPanel() {
+  const { data, viewer, jobId, run, ask, pending, photoById } = useJob();
+  const [open, setOpen] = useState(false);
+  const { gate, steps, header } = data;
+  const stage = header.stage;
+  const passing = gate?.checks.filter((c) => c.ok).length ?? 0;
+  const total = gate?.checks.length ?? 0;
+  const canStage = START_FROM.has(stage);
+  const canStart = !!gate && canStage && gate.canDeliver;
+  const startWhy = !gate ? "The checklist could not be read." : !canStage ? STAGE_WHY[stage] ?? "Not from this stage." : !gate.canDeliver ? "The checklist has open items." : null;
+  const showOverride = viewer.isOwner && !!gate && canStage && !gate.canDeliver;
+  const showVerify = ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(stage);
+  const replacements = steps?.replacements ?? [];
+
+  const override = async () => {
+    const reason = await ask({
+      title: "Override the checklist and deliver?",
+      description: "Only for the owner. The reason is logged and sent to Kyle.",
+      required: true,
+      minLength: 5,
+      confirmLabel: "Override and deliver",
+      danger: true,
+    });
+    if (reason === null) return;
+    await run(() => overrideDeliverAction(jobId, reason));
+  };
+
+  return (
+    <section aria-label="Deliver" className="sticky bottom-0 z-20 mt-4 rounded-t-2xl border border-b-0 border-border bg-surface/95 shadow-[0_-12px_32px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 sm:px-4">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="pd-deliver-body"
+          className="inline-flex min-h-11 min-w-0 basis-full items-center gap-2 rounded-lg px-1 text-left text-sm hover:bg-surface-2/60 sm:basis-auto"
+        >
+          {gate?.passed ? <ShieldCheck aria-hidden className="size-5 shrink-0 text-success" /> : <CircleAlert aria-hidden className={cn("size-5 shrink-0", gate?.advisory ? "text-warning" : "text-danger")} />}
+          <span className="min-w-0">
+            <span className="block font-semibold">{gate ? `Delivery checklist: ${passing} of ${total} pass` : "Delivery checklist unavailable"}</span>
+            <span className="block text-[12px] text-muted">
+              {STAGE_WHY[stage] && !canStage ? STAGE_WHY[stage] : replacements.length ? `${replacements.length} fixed photo${replacements.length === 1 ? "" : "s"} to replace on Aryeo` : "Steps for Aryeo inside"}
+            </span>
+          </span>
+          {open ? <ChevronDown aria-hidden className="ml-1 size-4 shrink-0" /> : <ChevronUp aria-hidden className="ml-1 size-4 shrink-0" />}
+        </button>
+        {gate?.advisory && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[12px] font-medium text-muted ring-1 ring-inset ring-border" title="QC is in shadow mode: the checklist is advice, not a block">
+            <FlaskConical aria-hidden className="size-3" /> Advisory
+          </span>
+        )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {showVerify && (
+            <button type="button" disabled={pending} onClick={() => void run(() => verifyDeliveryAction(jobId))} className={cn(btn, "border border-border-strong hover:bg-surface-2")}>
+              <CheckCircle2 aria-hidden className="size-4" /> Verify now
+            </button>
+          )}
+          {showOverride && (
+            <button
+              type="button"
+              disabled={pending || !gate!.overrideAllowed}
+              title={gate!.blockedForOverride ?? "Deliver with the checklist open (reason required)"}
+              onClick={() => void override()}
+              className={cn(btn, "border border-danger/50 text-danger hover:bg-danger-soft")}
+            >
+              Override and deliver
+            </button>
+          )}
+          {stage !== "DELIVERED" && stage !== "DELIVERING" && (
+            <button type="button" disabled={pending || !canStart} title={startWhy ?? undefined} onClick={() => void run(() => startDeliveryAction(jobId))} className={cn(btn, "bg-brand-action text-brand-fg hover:brightness-95")}>
+              <Truck aria-hidden className="size-4" /> Mark as delivering
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div id="pd-deliver-body" hidden={!open} className="max-h-[60dvh] overflow-y-auto border-t border-border px-3 py-3 sm:px-4">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]">
+          <div>
+            <h3 className="text-sm font-semibold">Checklist{gate?.advisory ? " (advisory in shadow mode)" : ""}</h3>
+            {!gate ? (
+              <p className="mt-1 text-[13px] text-warning">{data.gateError ?? "The checklist could not be read."}</p>
+            ) : (
+              <ul className="mt-1.5 space-y-1 text-sm">
+                {gate.checks.map((c) => (
+                  <li key={c.key} className="flex items-start gap-2">
+                    {c.ok ? <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />}
+                    <span>
+                      <span className="sr-only">{c.ok ? "Passes: " : "Open: "}</span>
+                      {c.label}
+                      {c.detail && <span className="text-muted"> ({c.detail})</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {gate && !gate.canDeliver && gate.blockedForOverride && <p className="mt-2 text-[13px] text-danger">{gate.blockedForOverride}</p>}
+            {header.paymentStatus && <p className="mt-2 text-[13px] text-muted">Payment in Aryeo: {header.paymentStatus.toLowerCase().replace(/_/g, " ")} (information only).</p>}
+            <p className="mt-2 text-[13px] text-muted">The hub confirms by itself when Aryeo says the listing was delivered, then checks the photo count against what was approved.</p>
+          </div>
+
+          <div className="space-y-3">
+            {replacements.length > 0 && (
+              <div className="rounded-xl border border-warning/40 bg-warning-soft/30 p-3">
+                <h3 className="text-sm font-semibold">Replace these on the Aryeo listing</h3>
+                <p className="mt-0.5 text-[13px] text-muted">Fixed through AutoHDR after they went on the listing. The hub can&rsquo;t upload to Aryeo: download each and swap it in.</p>
+                <ul className="mt-2 space-y-1.5">
+                  {replacements.map((r) => {
+                    const p = photoById.get(r.photoId);
+                    return (
+                      <li key={r.versionId} className="flex items-center gap-2.5">
+                        <span className="relative size-12 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2">
+                          <PhotoImg photoId={r.photoId} hash={p?.contentHash ?? null} versionId={r.versionId} size="thumb256" alt="" className="size-full object-cover" />
+                        </span>
+                        <span className="min-w-0 flex-1 text-sm">
+                          <span className="block break-all font-medium">{r.photoName}</span>
+                          <span className="block text-[12px] text-muted">{r.label} · {etMonthDayTime(r.at)}</span>
+                        </span>
+                        <a href={r.downloadUrl} download className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-semibold hover:bg-surface-2" aria-label={`Download the fixed ${r.photoName}`}>
+                          <Download aria-hidden className="size-4" /> Download
+                        </a>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {!steps ? (
+              <p className="text-[13px] text-warning">{data.stepsError ?? "The delivery steps could not be read."}</p>
+            ) : (
+              <ol className="space-y-3 text-sm">
+                <li>
+                  <p className="font-semibold">1. Open the listing in Aryeo</p>
+                  {steps.listingUrl ? (
+                    <a href={steps.listingUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 font-medium hover:bg-surface-2">
+                      <ExternalLink aria-hidden className="size-4" /> Open listing
+                    </a>
+                  ) : steps.orderUrl ? (
+                    <a href={steps.orderUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 font-medium hover:bg-surface-2">
+                      <ExternalLink aria-hidden className="size-4" /> Open the order (no listing yet)
+                    </a>
+                  ) : (
+                    <p className="mt-0.5 text-[13px] text-muted">This job has no Aryeo listing or order linked.</p>
+                  )}
+                </li>
+                <li>
+                  <p className="font-semibold">2. The photos</p>
+                  {steps.folderPath ? (
+                    <div className="mt-1 flex items-center gap-1 rounded-lg border border-border bg-surface-2/50 pl-2">
+                      <code className="min-w-0 flex-1 break-all text-[12px]">{steps.folderPath}</code>
+                      <CopyButton value={steps.folderPath} label="Copy" title="Copy the folder path" />
+                    </div>
+                  ) : (
+                    <p className="mt-0.5 text-[13px] text-muted">The edited photos are already on the Aryeo listing. Check their order against the strip below.</p>
+                  )}
+                  {steps.folderPath && <p className="mt-0.5 text-[12px] text-muted">{steps.folderLabel}</p>}
+                </li>
+                <li>
+                  <p className="font-semibold">3. Check the order ({steps.order.length})</p>
+                  {steps.order.length === 0 ? (
+                    <p className="mt-0.5 text-[13px] text-muted">No photos in the delivery yet.</p>
+                  ) : (
+                    <ol className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1" aria-label="Delivery order">
+                      {steps.order.map((o) => {
+                        const p = photoById.get(o.photoId);
+                        return (
+                          <li key={o.photoId} className="w-24 shrink-0">
+                            <span className="block aspect-[3/2] overflow-hidden rounded-md border border-border bg-surface-2">
+                              <PhotoImg photoId={o.photoId} hash={p?.contentHash ?? null} fallbackUrl={p?.sourceUrl} size="thumb256" alt={o.name} className="size-full object-cover" />
+                            </span>
+                            <span className="mt-0.5 block truncate text-[11px] text-muted" title={`${o.deliveryName} (${o.name})`}>{o.deliveryName}</span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+                </li>
+                <li>
+                  <p className="font-semibold">4. Deliver in Aryeo with this message</p>
+                  <div className="mt-1 rounded-lg border border-border bg-surface-2/50 p-2">
+                    <p className="whitespace-pre-wrap text-[13px]">{steps.message}</p>
+                    <div className="mt-1 flex justify-end">
+                      <CopyButton value={steps.message} label="Copy message" title="Copy the delivery message" />
+                    </div>
+                  </div>
+                </li>
+              </ol>
+            )}
+            {header.deliveredAt && <p className="text-[13px] text-success">Delivered {etMonthDayTime(header.deliveredAt)}.</p>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
