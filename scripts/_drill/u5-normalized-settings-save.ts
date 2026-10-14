@@ -54,8 +54,8 @@ async function main() {
     const refused = finishNormalizedSettingsSave(late, newer, { ok: false, message: "Someone changed this schedule in another tab." }, noPersonal);
     c.ok("a stale-stamp refusal preserves the current windows and last acknowledged schedule", refused.value === newer && refused.saved === accepted && refused.feedback?.ok === false);
 
-    const initial: EmailSlaRules = { enabled: true, kyleCoveredHours: 4, ownerCoveredHours: 9, unhappyCoveredHours: 4 };
-    const emailSent: EmailSlaRules = { enabled: false, kyleCoveredHours: 5.3, ownerCoveredHours: 2, unhappyCoveredHours: 4.2 };
+    const initial: EmailSlaRules = { enabled: true, kyleCoveredHours: 4, ownerCoveredHours: 9, unhappyCoveredHours: 4, kyleFollowUp: true, kyleEscalateCoveredHours: 13 };
+    const emailSent: EmailSlaRules = { enabled: false, kyleCoveredHours: 5.3, ownerCoveredHours: 2, unhappyCoveredHours: 4.2, kyleFollowUp: false, kyleEscalateCoveredHours: 13 };
     const normalized = normaliseEmailSla(emailSent);
     let confirm!: (value: { ok: boolean; message: string; rules: EmailSlaRules }) => void;
     const response = new Promise<{ ok: boolean; message: string; rules: EmailSlaRules }>((resolve) => { confirm = resolve; });

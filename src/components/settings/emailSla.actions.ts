@@ -36,7 +36,7 @@ export async function saveEmailSla(input: Partial<EmailSlaRules>): Promise<{ ok:
       ok: true,
       rules,
       message: rules.enabled
-        ? `Saved. Kyle's bell at ${rules.kyleCoveredHours} covered hours, yours at ${rules.ownerCoveredHours} (${rules.unhappyCoveredHours} for an unhappy client).`
+        ? `Saved. Kyle's bell at ${rules.kyleCoveredHours} covered hours, yours at ${rules.ownerCoveredHours} (${rules.unhappyCoveredHours} for an unhappy client). Kyle's follow-up ${rules.kyleFollowUp ? `on (Slack after ${rules.kyleEscalateCoveredHours})` : "off"}.`
         : "Saved. Email is listed on Tasks → Comms → Email and rings nobody.",
     };
   } catch (e) {

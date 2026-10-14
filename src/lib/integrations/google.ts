@@ -615,7 +615,35 @@ function isLikelyHuman(fromEmail: string, listUnsubscribe: string, subject: stri
 // outbound CommLog row. Rule 4 of the walk ("our side answering closes it")
 // then clears the thread with no new mechanism at all.
 // ---------------------------------------------------------------------------
-type SentMessage = { id: string; at: Date; to: string; subject: string };
+type SentMessage = { id: string; at: Date; to: string; subject: string; from?: string };
+
+/** One read of a thread's tail: whether WE spoke last (the reply, when so) and,
+ *  when the counterparty did, when and under what subject. Null on a read
+ *  failure — never suppress on ignorance. */
+type ThreadTail = { reply: SentMessage | null; lastInbound: { at: Date; subject: string } | null };
+async function threadTail(threadId: string, token: string): Promise<ThreadTail | null> {
+  try {
+    const thread = await gmail<GmailThread>(
+      `/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
+      token,
+    );
+    const msgs = thread.messages ?? [];
+    if (msgs.length === 0) return { reply: null, lastInbound: null };
+    const last = msgs[msgs.length - 1];
+    const from = header(last, "From").toLowerCase();
+    const when = Number(last.internalDate);
+    const at0 = Number.isFinite(when) && when > 0 ? new Date(when) : new Date(header(last, "Date"));
+    const at = isNaN(at0.getTime()) ? new Date() : at0;
+    if (from.includes("@" + OUR_DOMAIN)) {
+      // A one-message thread from us is an outgoing mail, not a reply.
+      if (msgs.length < 2) return { reply: null, lastInbound: null };
+      return { reply: { id: last.id, at, to: header(last, "To"), subject: header(last, "Subject"), from: header(last, "From") }, lastInbound: null };
+    }
+    return { reply: null, lastInbound: { at, subject: header(last, "Subject") } };
+  } catch {
+    return null;
+  }
+}
 
 /** The newest message in this thread that WE sent, when it is also the LAST
  *  message — i.e. the thread is answered. Null when the counterparty spoke
@@ -642,16 +670,28 @@ async function lastFromUs(threadId: string, token: string): Promise<SentMessage 
       at: isNaN(at.getTime()) ? new Date() : at,
       to: header(last, "To"),
       subject: header(last, "Subject"),
+      from: header(last, "From"),
     };
   } catch {
     return null; // if we can't tell, don't suppress
   }
 }
 
-// True if the most recent message in the thread was sent by us — i.e. we've
-// already replied, so there's nothing for Kyle to action.
-async function threadAlreadyAnswered(threadId: string, token: string): Promise<boolean> {
-  return (await lastFromUs(threadId, token)) !== null;
+/** Gmail's internalDate as a Date — only when it is a sane past instant
+ *  (never trust a future clock); undefined lets logComm stamp now. */
+function receivedAt(internalDate: string | undefined): Date | undefined {
+  const n = Number(internalDate);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n <= Date.now() + 60_000 ? new Date(n) : undefined;
+}
+
+/** The TeamMember who sent a message, by its From address (Kyle = hello@).
+ *  Null when the roster cannot say — unknown, never "nobody". */
+async function senderMemberId(fromHeader: string | undefined): Promise<string | null> {
+  const { parseAddressList, staffAddressBook } = await import("@/lib/staffEmail");
+  const addr = parseAddressList(fromHeader)[0];
+  if (!addr) return null;
+  return (await staffAddressBook()).memberByAddress.get(addr)?.id ?? null;
 }
 
 /** Log one of OUR replies into comms memory as an outbound row, so the
@@ -700,6 +740,7 @@ async function logSentReply(opts: {
       occurredAt: opts.msg.at,
       source: GMAIL_SENT_SOURCE,
       externalId,
+      senderTeamMemberId: await senderMemberId(opts.msg.from),
     });
   } catch {
     return false; // comms memory is a courtesy here — never fail the scan
@@ -1014,6 +1055,44 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
   const contactClientByEmail = new Map(contacts.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c.clientId!]));
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
 
+  // OUR SIDE OF THE CONVERSATION, FROM EVERY INBOX (Oct 14 2026 — see
+  // src/lib/staffEmail.ts). Who counts as staff, and which client an address
+  // we wrote to belongs to: the same email → contact → agent fold the inbound
+  // path uses below.
+  const { staffAddressBook, staffReplyRow } = await import("@/lib/staffEmail");
+  const { GMAIL_SENT_SOURCE, threadSubject, outboundIsAnswer } = await import("@/lib/replyQueue");
+  const book = await staffAddressBook();
+  const connectedMailboxes = new Set(accounts.map((a) => a.email.toLowerCase()));
+  const resolveAddress = (address: string): { clientId: string; clientName: string | null } | null => {
+    let c = clientByEmail.get(address);
+    if (!c) {
+      const cid = contactClientByEmail.get(address);
+      if (cid) c = clientById.get(cid);
+    }
+    if (!c) return null;
+    const agent = toAgent(c);
+    return { clientId: agent.id, clientName: agent.name };
+  };
+  /** The project a reply belongs to: the client's latest inbound email on the
+   *  same subject, else none (a reply is filed to the client, never guessed). */
+  const projectForReply = async (clientId: string, subject: string): Promise<string | null> => {
+    const want = threadSubject(subject);
+    if (!want) return null;
+    const rows = await prisma.commLog.findMany({
+      where: { channel: "email", direction: "in", clientId, projectId: { not: null } },
+      orderBy: { occurredAt: "desc" },
+      take: 10,
+      select: { subject: true, projectId: true },
+    });
+    return rows.find((r) => threadSubject(r.subject) === want)?.projectId ?? null;
+  };
+  /** Write one staff reply (see staffReplyRow). True when a new row landed. */
+  const logStaffReply = async (row: NonNullable<ReturnType<typeof staffReplyRow>>): Promise<boolean> => {
+    const { to: _to, ...data } = row;
+    void _to;
+    return logComm({ ...data, projectId: await projectForReply(row.clientId, row.subject ?? "") });
+  };
+
   let scanned = 0;
   let tasks = 0;
   const tokens = new Map<string, string>(); // mailbox email -> access token (for the reply sweep)
@@ -1142,6 +1221,38 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           }
         }
 
+        // A TEAMMATE'S REPLY seen in this inbox (Oct 14 2026): james@ answering
+        // a client with info@ on cc. Logged as OUR outbound so the walk clears
+        // the thread. A connected mailbox's own sends are read from its Sent
+        // folder below (Kyle on hello@), so they are left to that reader and
+        // never logged twice. Anything else from a staff address — a note to
+        // the office, a forward — falls through to the old handling untouched.
+        if (!connectedMailboxes.has(email)) {
+          const staffRow = staffReplyRow(
+            {
+              mailbox: account.email,
+              messageId: id,
+              threadId,
+              from: header(msg, "From"),
+              to: header(msg, "To"),
+              cc: header(msg, "Cc"),
+              subject,
+              inReplyTo: header(msg, "In-Reply-To"),
+              references: header(msg, "References"),
+              at: msg.internalDate ? new Date(Number(msg.internalDate)) : new Date(),
+              body: clip(ownWords, 5_500),
+              fromSentFolder: false,
+            },
+            book,
+            resolveAddress,
+            GMAIL_SENT_SOURCE,
+          );
+          if (staffRow) {
+            await logStaffReply(staffRow);
+            return 0;
+          }
+        }
+
         // Resolve the sender to a client account FIRST (email → synced contact →
         // agent), so a KNOWN client who emails from a brokerage role address
         // (info@/team@/hello@) is never dropped by the human/lead filter below.
@@ -1241,6 +1352,14 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           source: "gmail",
           externalId: `gmail-${dedupe}`,
           projectGuess: !!project && !projectNamed,
+          // WHEN THEY WROTE, not when this scan got to it (Oct 14 2026). Our
+          // replies are stamped with Gmail's own send time, so an inbound row
+          // stamped up to five minutes late sorted AFTER a fast answer and
+          // the walk kept the client "waiting" over a reply Kyle had already
+          // sent. The Handled tick is protected separately: it cuts on when a
+          // message reached the hub (replyQueue `loggedAt`), so a message that
+          // arrived just before a tick but was logged after it still shows.
+          occurredAt: receivedAt(msg.internalDate),
         });
 
         if (sentReply) {
@@ -1360,6 +1479,61 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
           .catch(() => {});
       }
     }
+
+    // ---- THIS MAILBOX'S SENT FOLDER (Oct 14 2026) ----------------------------
+    // The inbox query is `-from:me`, so a reply Kyle sends from hello@ was only
+    // ever seen when the CLIENT's next message got processed — and never at all
+    // by info@ when he didn't reply-all. Read the replies this mailbox sent in
+    // the last two days and log each one to a client as our outbound; the walk
+    // then clears the thread in every inbox it landed in. One Gmail read per
+    // NEW sent message (the WebhookEvent ledger remembers the rest), capped per
+    // run, best-effort: a failure here never costs the scan above.
+    try {
+      const sent = await gmail<{ messages?: { id: string; threadId?: string }[] }>(
+        "/messages?q=" + encodeURIComponent("in:sent newer_than:2d") + "&maxResults=50",
+        token,
+      );
+      const list = sent.messages ?? [];
+      const sentKeys = list.map((m) => `${account.email}:${m.id}`);
+      const done = new Set(
+        sentKeys.length
+          ? (await prisma.webhookEvent.findMany({ where: { provider: "gmail-sent", externalId: { in: sentKeys } }, select: { externalId: true } })).map((r) => r.externalId)
+          : [],
+      );
+      let reads = 0;
+      for (const m of list) {
+        const key = `${account.email}:${m.id}`;
+        if (done.has(key)) continue;
+        if (reads++ >= 25) break; // the rest catch the next tick
+        try {
+          const full = await gmail<GmailMsg>(`/messages/${m.id}?format=full`, token);
+          const subject = header(full, "Subject");
+          const row = staffReplyRow(
+            {
+              mailbox: account.email,
+              messageId: m.id,
+              threadId: full.threadId ?? m.threadId ?? m.id,
+              from: header(full, "From"),
+              to: header(full, "To"),
+              cc: header(full, "Cc"),
+              subject,
+              inReplyTo: header(full, "In-Reply-To"),
+              references: header(full, "References"),
+              at: full.internalDate ? new Date(Number(full.internalDate)) : new Date(),
+              body: clip(stripQuotedReply(extractBody(full.payload)) || cleanText(full.snippet ?? ""), 5_500),
+              fromSentFolder: true,
+            },
+            book,
+            resolveAddress,
+            GMAIL_SENT_SOURCE,
+          );
+          if (row) await logStaffReply(row);
+          await prisma.webhookEvent.create({
+            data: { provider: "gmail-sent", eventType: "email_sent", externalId: key, payload: (subject || "").slice(0, 300), status: "PROCESSED", processedAt: new Date() },
+          });
+        } catch { /* unrecorded → retried next tick */ }
+      }
+    } catch { /* the sent read is a courtesy to the walk — never fail the scan */ }
   }
 
   // Reply sweep: close any open email-driven task whose thread we've since
@@ -1377,14 +1551,38 @@ export async function syncGmail(): Promise<{ degraded: boolean; scanned: number;
       // resolveRevision was bypassed, projects stuck in REVISION forever).
       taskType: { notIn: ["revision", "edit_video"] },
     },
-    select: { id: true, sourceDetail: true },
+    select: { id: true, sourceDetail: true, clientId: true },
   });
   for (const t of openEmailTasks) {
     const [, mailbox, threadId] = (t.sourceDetail ?? "").split(":");
     const tk = mailbox ? tokens.get(mailbox) : undefined;
     if (!tk || !threadId) continue;
-    if (await threadAlreadyAnswered(threadId, tk)) {
+    const tail = await threadTail(threadId, tk);
+    if (!tail) continue; // unreadable — never close on ignorance
+    if (tail.reply) {
       await prisma.smartTask.update({ where: { id: t.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+      closed++;
+      continue;
+    }
+    // ANSWERED FROM THE OTHER INBOX (Oct 14 2026). The task sits on info@'s
+    // copy of the thread; Kyle answered from hello@ without copying info@, so
+    // this thread's tail is still the client. Our reply is on record all the
+    // same (the sent-folder read above), on the same subject and after the
+    // client's last message — that is the same conversation answered. The
+    // close is dated to the REPLY, not to now: a completed gmail task is a
+    // cut point on the client's email lane (replyQueue handledByClient), and
+    // anything the client wrote after the reply must stay waiting.
+    if (!t.clientId || !tail.lastInbound) continue;
+    const want = threadSubject(tail.lastInbound.subject);
+    if (!want) continue;
+    const replies = await prisma.commLog.findMany({
+      where: { channel: "email", direction: "out", clientId: t.clientId, occurredAt: { gt: tail.lastInbound.at } },
+      orderBy: { occurredAt: "asc" },
+      select: { channel: true, subject: true, source: true, body: true, occurredAt: true },
+    });
+    const answer = replies.find((r) => threadSubject(r.subject) === want && outboundIsAnswer(r));
+    if (answer) {
+      await prisma.smartTask.update({ where: { id: t.id }, data: { status: "COMPLETED", completedAt: answer.occurredAt } });
       closed++;
     }
   }

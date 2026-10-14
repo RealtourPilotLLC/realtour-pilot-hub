@@ -119,7 +119,7 @@ export const GMAIL_SENT_SOURCE = "gmail-sent";
  *  is ready!" and "Your listing content is ready!" are the same conversation.
  *  Empty string = nothing to match on (a subject-less send), and the caller
  *  must not treat that as a match. */
-function threadSubject(subject: string | null | undefined): string {
+export function threadSubject(subject: string | null | undefined): string {
   let s = (subject ?? "").replace(/\s+/g, " ").trim();
   // Stripped one prefix at a time: "Re: Fwd: …" carries two, and an anchored
   // global replace only ever fires at position 0.
@@ -380,7 +380,30 @@ export type WaitingMessage = {
   /** what a human should read — cleaned for email, verbatim for a text */
   body: string;
   at: Date;
+  /** EMAIL ONLY: which of our connected inboxes this message landed in
+   *  (`info@…`, `hello@…`), read off the CommLog externalId the Gmail sync
+   *  writes (`gmail-<mailbox>:<id>`). One email sent to both inboxes is one
+   *  message here with two entries (Oct 14 2026: "sometimes both Kyle and I
+   *  get emailed"). */
+  mailboxes?: string[];
+  /** EMAIL ONLY: when the message REACHED the hub (the row's createdAt, capped
+   *  at `at` + LOG_LAG_CAP_MS). Since Oct 14 2026 an email row's `at` is when
+   *  the client sent it, which can be minutes before the Gmail scan logged it;
+   *  a Handled tick or a closed task is a decision about what a person could
+   *  SEE, so the cut points compare against this instead. */
+  loggedAt?: Date;
 };
+
+/** The longest a Gmail scan can plausibly lag the send (5-minute cron, a slow
+ *  run) — the cap keeps a back-filled or re-filed row from reading as "logged
+ *  just now" and dodging every cut. */
+const LOG_LAG_CAP_MS = 15 * 60_000;
+
+/** `gmail-<mailbox>:<messageId>` → the mailbox; anything else → null. */
+export function mailboxOfExternalId(externalId: string | null | undefined): string | null {
+  const m = /^gmail-([^:\s]+@[^:\s]+):/.exec(externalId ?? "");
+  return m ? m[1].toLowerCase() : null;
+}
 
 export type WaitingThread = {
   /** stable conversation id: `c:<clientId>` | `p:<phone>` | `n:<name>` | `e:<groupKey>` */
@@ -426,6 +449,10 @@ export type WaitingThread = {
    *  has paginated out of the inbox read. The card should say so — there is no
    *  scrollback here, just the message the obligation was raised on. */
   fromLedger?: boolean;
+  /** EMAIL ONLY: every connected inbox the still-unanswered messages landed
+   *  in — who on our side was emailed. Empty for phone threads and for ledger
+   *  rows (no message behind them). */
+  inboxes?: string[];
 };
 
 export type UnansweredOptions = {
@@ -470,6 +497,8 @@ type Row = {
   body: string;
   occurredAt: Date;
   source: string;
+  externalId?: string | null;
+  createdAt?: Date;
 };
 
 type Bucket = {
@@ -1607,6 +1636,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   const ROW_SELECT = {
     channel: true, direction: true, clientId: true, clientName: true, contactName: true,
     fromPhone: true, projectId: true, subject: true, body: true, occurredAt: true, source: true,
+    externalId: true, createdAt: true,
   } as const;
   const roleGate = opts.minRoles ? { minRole: { in: opts.minRoles } } : {};
   const excludedProjectIds = opts.excludeClientIds?.length
@@ -1930,7 +1960,16 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     // Last write wins — the most recent number this person wrote in from.
     const p = phoneOf(r);
     if (p && !teamPhones.has(p)) b.phone = p;
-    pushPending(b, { channel: r.channel as WaitingMessage["channel"], subject, body, at: r.occurredAt }, asksInSubject);
+    const mailbox = r.channel === "email" ? mailboxOfExternalId(r.externalId) : null;
+    const loggedAt =
+      r.channel === "email" && r.createdAt
+        ? new Date(Math.min(Math.max(r.createdAt.getTime(), r.occurredAt.getTime()), r.occurredAt.getTime() + LOG_LAG_CAP_MS))
+        : null;
+    pushPending(
+      b,
+      { channel: r.channel as WaitingMessage["channel"], subject, body, at: r.occurredAt, ...(mailbox ? { mailboxes: [mailbox] } : {}), ...(loggedAt ? { loggedAt } : {}) },
+      asksInSubject,
+    );
   }
 
   /** File one unanswered inbound: real ask, or courtesy closer. */
@@ -1943,6 +1982,10 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     if (dupIdx !== -1) {
       const [dup] = list.splice(dupIdx, 1);
       dup.at = m.at;
+      if (m.loggedAt && (!dup.loggedAt || m.loggedAt > dup.loggedAt)) dup.loggedAt = m.loggedAt;
+      // …and remember BOTH inboxes it landed in: that is how the hub knows
+      // Kyle was emailed too (Oct 14 2026).
+      if (m.mailboxes?.length) dup.mailboxes = [...new Set([...(dup.mailboxes ?? []), ...m.mailboxes])];
       list.push(dup);
     } else {
       list.push(m);
@@ -2196,8 +2239,9 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     if (threadAck) cut.push(threadAck);
     if (cut.length) {
       const at = new Date(Math.max(...cut.map((d) => d.getTime())));
-      b.pending = b.pending.filter((i) => i.at > at);
-      b.courtesy = b.courtesy.filter((i) => i.at > at);
+      // An email is judged by when it REACHED the hub (see `loggedAt`).
+      b.pending = b.pending.filter((i) => (i.loggedAt ?? i.at) > at);
+      b.courtesy = b.courtesy.filter((i) => (i.loggedAt ?? i.at) > at);
       b.firstAt = b.pending[0]?.at ?? null;
     }
     if (b.pending.length === 0 && b.courtesy.length === 0) continue;
@@ -2263,6 +2307,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
         at: r.occurredAt.toISOString(),
       })),
       openTaskId: task?.id ?? null,
+      inboxes: [...new Set([...b.pending, ...b.courtesy].flatMap((m) => m.mailboxes ?? []))],
     });
   }
 

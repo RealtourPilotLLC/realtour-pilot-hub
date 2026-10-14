@@ -141,6 +141,12 @@ export type UnansweredInbound = {
   unhappy: boolean;
   family: WaitingFamily;
   channel: "text" | "call" | "email";
+  /** the walk's own conversation id and the email sender group inside it */
+  threadKey: string;
+  groupKey: string;
+  /** EMAIL: the connected inboxes the unanswered messages landed in (who on
+   *  our side was emailed — Oct 14 2026). Empty for texts. */
+  inboxes: string[];
 };
 
 /**
@@ -198,6 +204,9 @@ export async function findUnansweredInbound(
         unhappy: t.pending.some((m) => hasStrongComplaint(m.body || "")),
         family: t.family,
         channel: oldest?.channel ?? "text",
+        threadKey: t.key,
+        groupKey: t.groupKey,
+        inboxes: t.inboxes ?? [],
       };
     })
     .sort((a, b) => b.ageMin - a.ageMin);
@@ -219,8 +228,8 @@ async function alreadySent(dedupeKey: string): Promise<boolean> {
 // The every-5-minutes sweep (wired into /api/cron/gmail). NEVER throws —
 // a broken escalation must not take down Gmail polling. Returns counts for
 // the cron's step log.
-export async function sweepReplySla(): Promise<{ checked: number; tier1: number; tier2: number; email: EmailSlaCounts }> {
-  const counts = { checked: 0, tier1: 0, tier2: 0, email: { ...NO_EMAIL_COUNTS } };
+export async function sweepReplySla(): Promise<{ checked: number; tier1: number; tier2: number; email: EmailSlaCounts; followUp?: import("@/lib/emailFollowUp").FollowUpCounts }> {
+  const counts: { checked: number; tier1: number; tier2: number; email: EmailSlaCounts; followUp?: import("@/lib/emailFollowUp").FollowUpCounts } = { checked: 0, tier1: 0, tier2: 0, email: { ...NO_EMAIL_COUNTS } };
   try {
     const now = new Date();
     // One read of the rota per sweep, not per client — this runs every five
@@ -311,6 +320,16 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
   } catch (e) {
     console.warn("sweepEmailSla failed", e);
   }
+  // Kyle's follow-up tasks (Oct 14 2026) — its own try, and it runs at any
+  // hour: closing a task somebody already answered is desk truth, and the
+  // team may be pinged any time (only Jordan has a quiet window, and this lane
+  // never pings Jordan).
+  try {
+    const { sweepEmailFollowUps } = await import("@/lib/emailFollowUp");
+    counts.followUp = await sweepEmailFollowUps(new Date());
+  } catch (e) {
+    console.warn("sweepEmailFollowUps failed", e);
+  }
   return counts;
 }
 
@@ -364,11 +383,21 @@ export type EmailSlaRules = {
   ownerCoveredHours: number;
   /** An unhappy client reaches Jordan at this many instead. */
   unhappyCoveredHours: number;
+  /** KYLE'S FOLLOW-UP (Oct 14 2026, Jordan: "If Kyle responds on his end, close
+   *  it out on my end. If he forgets to follow up, remind him."). On: an email
+   *  that landed in Kyle's inbox and is still unanswered at kyleCoveredHours
+   *  becomes ONE follow-up task on his list (plus his bell), closes itself the
+   *  moment anyone replies, and is no longer Jordan's to be reminded about.
+   *  Defaults to the lane's own switch — on when the email alerts are on. */
+  kyleFollowUp: boolean;
+  /** Still unanswered after this many covered hours → ONE Slack DM to Kyle.
+   *  Default 13 = the 4-hour reminder plus one full covered day. */
+  kyleEscalateCoveredHours: number;
 };
 
 /** Jordan's numbers (Sep 25–26). ON: he answered the question the switch was
  *  waiting on. */
-export const DEFAULT_EMAIL_SLA: EmailSlaRules = { enabled: true, kyleCoveredHours: 4, ownerCoveredHours: 9, unhappyCoveredHours: 4 };
+export const DEFAULT_EMAIL_SLA: EmailSlaRules = { enabled: true, kyleCoveredHours: 4, ownerCoveredHours: 9, unhappyCoveredHours: 4, kyleFollowUp: true, kyleEscalateCoveredHours: 13 };
 export const EMAIL_SLA_KEY = "email_sla";
 export const EMAIL_SLA_SINCE_KEY = "email_sla_since";
 /** A week of Mon–Fri 9–6 cover; past it an email is an audit problem, not a bell. */
@@ -380,8 +409,15 @@ export function normaliseEmailSla(raw: Partial<EmailSlaRules> | null | undefined
     typeof v === "number" && Number.isFinite(v) && v >= 1 && v <= EMAIL_SLA_MAX_HOURS ? Math.round(v * 2) / 2 : fallback;
   const kyle = hrs(raw?.kyleCoveredHours, d.kyleCoveredHours);
   const owner = hrs(raw?.ownerCoveredHours, d.ownerCoveredHours);
+  const enabled = typeof raw?.enabled === "boolean" ? raw.enabled : d.enabled;
+  const escalate = hrs(raw?.kyleEscalateCoveredHours, d.kyleEscalateCoveredHours);
   return {
-    enabled: typeof raw?.enabled === "boolean" ? raw.enabled : d.enabled,
+    enabled,
+    // Never saved = follow the lane's own switch ("on only if the other email
+    // alerts are on"); once saved, it is its own decision.
+    kyleFollowUp: typeof raw?.kyleFollowUp === "boolean" ? raw.kyleFollowUp : enabled,
+    // The DM comes after the reminder, never before it.
+    kyleEscalateCoveredHours: escalate > kyle ? escalate : Math.max(kyle + 1, d.kyleEscalateCoveredHours),
     kyleCoveredHours: kyle,
     // Jordan hears about it AFTER Kyle, never before: an inverted pair reads as
     // the default rather than as an escalation that skips the person who owns it.
@@ -455,8 +491,17 @@ export async function sweepEmailSla(now: Date = new Date()): Promise<EmailSlaCou
   if (!fresh.length) return counts;
   const owners = await replyOwners(fresh.map((w) => w.clientId), "email");
   const kyle = await kyleMember();
+  // KYLE'S THREADS ARE KYLE'S (Oct 14 2026). With the follow-up lane on, an
+  // email that landed in Kyle's inbox is reminded by that lane (one task + his
+  // bell, on this same e1 ledger key) and is not Jordan's to be reminded about.
+  // An UNHAPPY client still reaches Jordan — that is an escalation about the
+  // client, not a reminder about the reply.
+  const heldBy = rules.kyleFollowUp
+    ? await (await import("@/lib/emailFollowUp")).holdersForThreads(fresh)
+    : new Map<string, { teamMemberId: string; name: string }>();
 
   for (const w of fresh) {
+    const held = heldBy.get(w.threadKey) ?? null;
     const covered = coveredHoursBetween(w.occurredAt, now, cover);
     const iso = w.occurredAt.toISOString();
     const e1 = `sla-e1-${w.clientId}-${iso}`;
@@ -467,7 +512,7 @@ export async function sweepEmailSla(now: Date = new Date()): Promise<EmailSlaCou
     const href = `/clients/${w.clientId}`; // the client page carries the email thread and its Draft reply
     const owner = owners.get(w.clientId) ?? (kyle ? { teamMemberId: kyle.id, name: kyle.name, seesAdminBroadcasts: true } : null);
 
-    if (covered >= rules.kyleCoveredHours && !(await alreadySent(e1))) {
+    if (!held && covered >= rules.kyleCoveredHours && !(await alreadySent(e1))) {
       await notifyInApp({
         kind: "reply_sla_email",
         title,
@@ -481,7 +526,7 @@ export async function sweepEmailSla(now: Date = new Date()): Promise<EmailSlaCou
       counts.tier1++;
     }
     const ownerLine = w.unhappy ? Math.min(rules.unhappyCoveredHours, rules.ownerCoveredHours) : rules.ownerCoveredHours;
-    if (covered >= ownerLine && !(await alreadySent(e2))) {
+    if ((!held || w.unhappy) && covered >= ownerLine && !(await alreadySent(e2))) {
       await notifyInApp({
         kind: "reply_sla_email",
         title,

@@ -325,7 +325,14 @@ export type OpsDay = {
     /** family + clientId ride along so a row's Reply button can open the
      *  board that actually holds it — every email row used to land on the
      *  phone-only Replies tab (audit5 F3, Sep 8). */
-    preview: { name: string; avatarUrl: string | null; snippet: string; hours: number; family: UnansweredInbound["family"]; clientId: string }[];
+    preview: { name: string; avatarUrl: string | null; snippet: string; hours: number; family: UnansweredInbound["family"]; clientId: string; heldBy?: string | null }[];
+    /** THE OWNER'S CARD (Oct 14 2026): every waiting row, with `heldBy` naming
+     *  the teammate whose inbox an email landed in while Kyle's follow-up lane
+     *  is on (emailFollowUp.ts). The Home page files those rows under "Kyle
+     *  has it" for Jordan; every other viewer sees the card as before. */
+    all?: { name: string; avatarUrl: string | null; snippet: string; hours: number; family: UnansweredInbound["family"]; clientId: string; heldBy?: string | null }[];
+    /** Set by ownerUnansweredView only: the rows a teammate has ("Kyle has it"). */
+    withTeammate?: { name: string; snippet: string; hours: number; clientId: string; heldBy: string }[];
   };
   qc: OpsQcRow[];
   /** revision = the /tasks?tab=revisions badge's own arithmetic (revisionsBoard
@@ -860,6 +867,18 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
 
   const openLoops = loopTasks;
 
+  // Whose inbox each waiting email landed in, while Kyle's follow-up lane is on.
+  const heldBy = await (await import("@/lib/emailFollowUp")).teammateHeldThreads(unansweredList);
+  const unansweredRows = unansweredList.map((u) => ({
+    name: u.clientName || "Unknown",
+    snippet: (u.snippet ?? "").slice(0, 90),
+    hours: Math.round(u.ageMin / 60),
+    avatarUrl: u.clientAvatarUrl,
+    family: u.family,
+    clientId: u.clientId,
+    heldBy: heldBy.get(u.threadKey)?.name ?? null,
+  }));
+
   const [editing, review, revision] = pipelineCounts;
   // "Shot" = the photographer is booked to be off site (OpsShoot.endISO), not
   // merely on it — the closeout read "Today's shoots all happened" and the
@@ -875,14 +894,8 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
     unanswered: {
       count: unansweredList.length,
       oldestHours: unansweredList.length ? Math.max(...unansweredList.map((u) => Math.round(u.ageMin / 60))) : null,
-      preview: unansweredList.slice(0, 5).map((u) => ({
-        name: u.clientName || "Unknown",
-        snippet: (u.snippet ?? "").slice(0, 90),
-        hours: Math.round(u.ageMin / 60),
-        avatarUrl: u.clientAvatarUrl,
-        family: u.family,
-        clientId: u.clientId,
-      })),
+      preview: unansweredRows.slice(0, 5),
+      all: unansweredRows,
     },
     qc,
     pipeline: { rows: pipelineRows, editing, review, revision },
@@ -1205,13 +1218,49 @@ function scrubShoot(s: OpsShoot): OpsShoot {
   };
 }
 
+/**
+ * JORDAN'S CARD (Oct 14 2026: "If Kyle responds on his end, close it out on my
+ * end. If he forgets to follow up, remind him.").
+ *
+ * An email that landed in Kyle's inbox is Kyle's while his follow-up lane is
+ * on: he gets the task, the bell and the one Slack reminder; Jordan gets none
+ * of them. So on the OWNER's Home the row moves out of "waiting" — out of the
+ * count, the oldest-wait line, the closeout tick and the needs list, which all
+ * read `unanswered` — into one quiet "Kyle has it" line under the card. It is
+ * LABELLED there, not hidden: Jordan can still see who is waiting and for how
+ * long, and the email board still lists every row. Once anyone replies the row
+ * leaves both places (the walk). Every other viewer — Kyle included — sees the
+ * card exactly as before, because for Kyle those rows ARE the work.
+ */
+export function ownerUnansweredView(d: OpsDay): OpsDay {
+  const all = d.unanswered.all;
+  if (!all || !all.some((u) => u.heldBy)) return d;
+  const mine = all.filter((u) => !u.heldBy);
+  const theirs = all.filter((u): u is typeof u & { heldBy: string } => !!u.heldBy);
+  return {
+    ...d,
+    unanswered: {
+      count: mine.length,
+      oldestHours: mine.length ? Math.max(...mine.map((u) => u.hours)) : null,
+      preview: mine.slice(0, 5),
+      all: mine,
+      withTeammate: theirs.map((u) => ({ name: u.name, snippet: u.snippet, hours: u.hours, clientId: u.clientId, heldBy: u.heldBy })),
+    },
+    closeout: { ...d.closeout, unanswered: mine.length },
+  };
+}
+
 /** The same day, with every dollar figure redacted — for a non-owner viewer. */
 export function scrubOpsDayMoney(d: OpsDay): OpsDay {
   return {
     ...d,
     todayShoots: d.todayShoots.map(scrubShoot),
     tomorrowShoots: d.tomorrowShoots.map(scrubShoot),
-    unanswered: { ...d.unanswered, preview: d.unanswered.preview.map((u) => ({ ...u, snippet: scrubMoney(u.snippet) })) },
+    unanswered: {
+      ...d.unanswered,
+      preview: d.unanswered.preview.map((u) => ({ ...u, snippet: scrubMoney(u.snippet) })),
+      all: d.unanswered.all?.map((u) => ({ ...u, snippet: scrubMoney(u.snippet) })),
+    },
     qc: d.qc.map((q) => ({
       ...q,
       debrief: {

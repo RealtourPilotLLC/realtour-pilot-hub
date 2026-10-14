@@ -24,6 +24,9 @@ export async function logComm(input: {
   externalId?: string | null;
   /** projectId is a router heuristic, not a named match (see schema comment). */
   projectGuess?: boolean;
+  /** WHO on our side wrote an outbound row, when it is known (CommLog schema
+   *  note, Sep 21). Null/absent means unknown, never "nobody". */
+  senderTeamMemberId?: string | null;
 }): Promise<boolean> {
   // Returns true if a NEW row was inserted (false if it already existed / empty),
   // so callers (e.g. the Slack sync) can act only on genuinely-new messages.
@@ -55,6 +58,7 @@ export async function logComm(input: {
     source: input.source,
     externalId: input.externalId ?? null,
     projectGuess: input.projectId ? input.projectGuess === true : false,
+    ...(input.senderTeamMemberId ? { senderTeamMemberId: input.senderTeamMemberId } : {}),
   };
   if (data.externalId) {
     // Pre-check so the common dedup case is clean (no thrown constraint error).
