@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench } from "lucide-react";
+import { ChevronLeft, ChevronRight, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench, ScrollText } from "lucide-react";
 import { etDayKey, etTime, etFullDate } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
@@ -374,6 +374,7 @@ function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as:
           <span className="text-xs font-medium text-brand">{r.whenISO ? etTime(r.whenISO) : "—"}</span>
           {r.completed && <Badge color={PALETTE.green}><CheckCircle2 className="mr-0.5 inline size-3" /> Complete</Badge>}
           {!r.completed && r.uploaded && <Badge color={PALETTE.blue}><UploadIcon className="mr-0.5 inline size-3" /> Uploaded</Badge>}
+          {r.hasScripts && <Badge color={PALETTE.violet}><ScrollText className="mr-0.5 inline size-3" /> Scripts</Badge>}
         </div>
         <div className="mt-0.5 truncate font-semibold">{r.street}</div>
         <div className="mt-0.5 flex items-center gap-1.5 text-sm text-muted">

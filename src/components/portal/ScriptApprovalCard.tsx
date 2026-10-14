@@ -2,9 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCheck, Loader2, PencilLine } from "lucide-react";
+import { CheckCheck, Download, Loader2, PencilLine } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalApproveScript, portalRequestScriptChanges } from "@/app/portal/actions";
+import { portalApproveScript, portalEditApprovedScript, portalRequestScriptChanges, portalScriptPdfLink } from "@/app/portal/actions";
+import { ScriptWordsEditor, type EditableParts } from "@/components/script/ScriptWordsEditor";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalTopic } from "@/lib/portal";
 import { CTA_WORDS } from "@/lib/portalWords";
@@ -40,8 +41,10 @@ type R = { ok: boolean; message: string };
 /** `transport`: the request never reached an answer — the one failure a plain retry can fix. */
 type Outcome = R & { transport?: boolean };
 
-export function ScriptApprovalCard({ script, onResult, run, busy: parentBusy, large = false }: {
+export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: parentBusy, large = false }: {
   script: ScriptVerdict;
+  /** Oct 14 2026: the words of the version on the page, so the client can edit them once they approve. */
+  parts?: EditableParts | null;
   /** The parent's status line (TopicBank v1). Absent → the result renders here. */
   onResult?: (r: R) => void;
   /** The parent's transition, so every button on the bank disables together. */
@@ -84,16 +87,47 @@ export function ScriptApprovalCard({ script, onResult, run, busy: parentBusy, la
       done(r, sendChanges);
     });
   const btn = large ? "min-h-11 rounded-xl px-4 text-sm" : "";
+  // AFTER THEY APPROVE (Oct 14 2026, Jordan): the PDF and their own edits.
+  const [editing, setEditing] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const downloadPdf = async () => {
+    setPdfBusy(true);
+    setOwn(null);
+    const r = await portalScriptPdfLink(portalAuthFromLocation(), script.id).catch(() => ({ ok: false, message: "That didn't work. Try again.", url: undefined }));
+    setPdfBusy(false);
+    if (r.ok && r.url) window.location.assign(r.url);
+    else setOwn({ ok: false, text: r.message });
+  };
+  const saveWords = async (w: { hook: string; points: string[]; close: string; captionCta?: string | null }) => portalEditApprovedScript(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", w);
 
   return (
     <div className={cn("mt-3 border-t border-border pt-3", large && "space-y-2")}>
       {script.decision === "APPROVED" ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><CheckCheck className="size-3.5" /> You signed off on this one{script.decidedAtISO ? ` on ${new Date(script.decidedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}.</p>
+        <>
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-success"><CheckCheck className="size-3.5" /> You signed off on this one{script.decidedAtISO ? ` on ${new Date(script.decidedAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}.</p>
+          <p className="mt-1 text-[11px] text-muted">It&rsquo;s yours now: you can change the wording yourself any time before we film, and download it as a PDF to practice with.</p>
+          {!editing && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <button type="button" onClick={downloadPdf} disabled={pdfBusy || busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}>{pdfBusy ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />} Download PDF</button>
+              {parts && <button type="button" onClick={() => { setEditing(true); setOwn(null); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Edit the wording</button>}
+            </div>
+          )}
+          {editing && parts && (
+            <ScriptWordsEditor
+              parts={parts}
+              intro="Change any line to say it your way. Keep a hook, each talking point and a close. What you save is the version we film."
+              onSave={saveWords}
+              onCancel={() => setEditing(false)}
+              onSaved={(m) => { setEditing(false); setOwn({ ok: true, text: m }); router.refresh(); }}
+            />
+          )}
+        </>
       ) : script.decision === "CHANGES_REQUESTED" ? (
         <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes. We&rsquo;re reworking it and the new version lands here.</p>
       ) : (
         <>
           {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it. Have another read.</p>}
+          <p className="mb-1.5 text-[11px] text-muted">Once you approve it, you can edit the wording yourself and download it as a PDF.</p>
           <div className="flex flex-wrap items-center gap-1.5">
             <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>
             <button type="button" onClick={() => setChanging(!changing)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> {CTA_WORDS.CHANGES}</button>

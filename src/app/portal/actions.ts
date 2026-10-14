@@ -123,6 +123,35 @@ export async function portalApproveScript(auth: PortalAuth, scriptId: string, re
 }
 
 /**
+ * THE SCRIPT AS A PDF (Oct 14 2026, Jordan: "the agents are able to download
+ * their scripts in a nice PDF format ... after they approve it"). A fresh
+ * link for this viewer, minted on the click so the page never carries one;
+ * the door (api/portal/scripts/one) checks the approval again.
+ */
+export async function portalScriptPdfLink(auth: PortalAuth, scriptId: string): Promise<R & { url?: string }> {
+  const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? null });
+  if (!r.ok) return fail(r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : LINK_DEAD);
+  const script = await scriptForEnrollment(r.viewer.enrollment.id, scriptId);
+  if (!script) return fail("That script isn't on your page.");
+  const { mediaToken, mediaScopeOf } = await import("@/lib/portalMedia");
+  return { ok: true, message: "", url: `/api/portal/scripts/one/${scriptId}?m=${encodeURIComponent(mediaToken(scriptId, mediaScopeOf(r.viewer), 15 * 60_000))}` };
+}
+
+/**
+ * The agent changes the WORDS of a script they approved (Oct 14 2026: "able
+ * to edit the scripts themselves after they approve it"). The edit becomes
+ * the version we film, everywhere at once; see lib/scriptEdits.
+ */
+export async function portalEditApprovedScript(auth: PortalAuth, scriptId: string, baseVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const { adoptEditedScript } = await import("@/lib/scriptEdits");
+  const r = await adoptEditedScript(scriptId, baseVersionId, words, { kind: "CLIENT", viewer: v }).catch((e) => ({ ok: false as const, message: e instanceof Error && /format|shape/i.test(e.message) ? "That edit couldn't be saved as written. Keep a hook, the talking points and a close, and try again." : "That didn't save. Try again." }));
+  if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+  return { ok: r.ok, message: r.message };
+}
+
+/**
  * "Change this." Recorded against the version they read and routed into the
  * suggestion queue staff already work from — never an edit, never a model call
  * on the client's click.

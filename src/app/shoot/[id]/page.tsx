@@ -27,6 +27,7 @@ import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
 import type { MonthBriefView } from "@/lib/monthBriefCore";
 import { ScriptView } from "@/components/script/ScriptView";
 import { stripScriptDashes } from "@/lib/contentPolicy/scriptFormat";
+import { ScriptCardTools, ShootScriptsBar } from "@/components/shoot/ShootScriptTools";
 
 export const dynamic = "force-dynamic";
 
@@ -155,6 +156,8 @@ export default async function ShootDetailPage({
     } catch { briefUnavailable = true; }
   }
   const briefDelta = lastBriefRead ? briefChanges(parseBriefSnapshot(lastBriefRead.snapshotJson), briefLines) : [];
+  // Oct 14 2026: editing a script and texting the PDF are real acts; a preview ("view as") only reads and downloads.
+  const scriptsEditable = user ? !user.impersonating : !authEnforced();
 
   // Day's shoots + driving route — streams in (one OSRM call) so the screen
   // paints first. ShootScreen owns the page layout; this top slot carries
@@ -174,7 +177,7 @@ export default async function ShootDetailPage({
           route — the topics, the words the client was shown and the direction
           written with them, and any video with a brief of its own. The same
           readers the editor's page and printed brief use. */}
-      <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} clientBrief={monthBrief} />
+      <SessionBriefCard session={view.session} outputs={view.outputBriefs} assets={briefAssets} clientBrief={monthBrief} tools={{ projectId: id, canEdit: scriptsEditable, canText: scriptsEditable && !!view.client.phoneE164, agentFirst: view.client.firstName || "the agent" }} />
     </>
   );
   // "I read this brief" sits UNDER what it is about (Oct 5): ShootScreen
@@ -236,7 +239,8 @@ export default async function ShootDetailPage({
 }
 
 /** One topic of a filming session, read on a phone mid-shoot (Oct 14 2026, Jordan: "make sure the text is formatted nicely and easily readable"). */
-function SessionTopicCard({ t, n }: { t: NonNullable<ShootView["session"]>["topics"][number]; n: number }) {
+type ScriptTools = { projectId: string; canEdit: boolean; canText: boolean; agentFirst: string };
+function SessionTopicCard({ t, n, tools }: { t: NonNullable<ShootView["session"]>["topics"][number]; n: number; tools: ScriptTools }) {
   const title = stripScriptDashes(t.script?.title || t.title, { title: true });
   const clean = (x: string | null | undefined) => (x ? stripScriptDashes(x) : x);
   return (
@@ -257,11 +261,14 @@ function SessionTopicCard({ t, n }: { t: NonNullable<ShootView["session"]>["topi
             <p className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm leading-relaxed text-foreground/90">Film it as written. The client can still ask for changes.</p>
           )}
           {t.script.text ? (
-            <div className="mt-1 max-w-[65ch]"><ScriptView body={clean(t.script.text) ?? ""} size="lg" audience="staff" showMissingPillar={false} fileTitle={title} /></div>
+            <div className="mt-1 max-w-[65ch]"><ScriptView body={clean(t.script.text) ?? ""} size="lg" audience="staff" showMissingPillar={false} fileTitle={title} textDownload={!t.script.scriptId} /></div>
           ) : null}
         </>
       ) : (
         <p className="mt-2 text-sm text-muted">{t.noScript}</p>
+      )}
+      {t.script?.scriptId && t.script.versionId && (
+        <ScriptCardTools projectId={tools.projectId} scriptId={t.script.scriptId} versionId={t.script.versionId} parts={t.script.parts ?? null} canEdit={tools.canEdit} />
       )}
       {t.script?.direction && (t.script.direction.filmingNotes || t.script.direction.creativeDirection || t.script.direction.productionNotes) && (
         <div className="mt-3 space-y-2 rounded-lg border border-border bg-surface/60 p-3 text-sm leading-relaxed text-foreground/90">
@@ -280,7 +287,7 @@ function SessionTopicCard({ t, n }: { t: NonNullable<ShootView["session"]>["topi
 // it lives (the scripts in the content workspace, a video's brief on its edit
 // page). Everything in it arrived money-scrubbed from lib/shoot.
 // ---------------------------------------------------------------------------
-function SessionBriefCard({ session, outputs, assets, clientBrief }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"]; assets: AssetRow[]; clientBrief?: { view: MonthBriefView | null; clientPlanned: boolean } | null }) {
+function SessionBriefCard({ session, outputs, assets, clientBrief, tools }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"]; assets: AssetRow[]; clientBrief?: { view: MonthBriefView | null; clientPlanned: boolean } | null; tools: ScriptTools }) {
   if (!session && outputs.length === 0 && !clientBrief) return null;
   const clientPlanned = !!clientBrief?.clientPlanned;
   const shoot = session?.shoot ?? null;
@@ -307,7 +314,8 @@ function SessionBriefCard({ session, outputs, assets, clientBrief }: { session: 
       {shoot && toFilm.length > 0 && (
         <p className="text-sm text-muted">This month is filmed over {shoot.of} shoots. Film these {toFilm.length} today; the rest are below for {shoot.of === 2 ? "the other shoot" : "the other shoots"}.</p>
       )}
-      {toFilm.map((t, i) => <SessionTopicCard key={t.topicId} t={t} n={i + 1} />)}
+      {toFilm.some((t) => t.script) && <ShootScriptsBar projectId={tools.projectId} agentFirst={tools.agentFirst} count={toFilm.filter((t) => t.script).length} canText={tools.canText} />}
+      {toFilm.map((t, i) => <SessionTopicCard key={t.topicId} t={t} n={i + 1} tools={tools} />)}
       {otherShoot.length > 0 && (
         <details className="group/other rounded-xl border border-dashed border-border p-3">
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-medium text-foreground/90">
@@ -315,7 +323,7 @@ function SessionBriefCard({ session, outputs, assets, clientBrief }: { session: 
             <span>Planned for {day(otherShoot[0].plannedShoot?.whenISO ?? null)} ({otherShoot.length} topic{otherShoot.length === 1 ? "" : "s"})</span>
           </summary>
           <p className="mt-1 text-xs text-muted">Only film these today if the office asks you to.</p>
-          <div className="mt-3 space-y-3">{otherShoot.map((t, i) => <SessionTopicCard key={t.topicId} t={t} n={toFilm.length + i + 1} />)}</div>
+          <div className="mt-3 space-y-3">{otherShoot.map((t, i) => <SessionTopicCard key={t.topicId} t={t} n={toFilm.length + i + 1} tools={tools} />)}</div>
         </details>
       )}
       {elsewhere.length > 0 && (

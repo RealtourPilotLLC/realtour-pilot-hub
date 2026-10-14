@@ -1629,7 +1629,11 @@ export type SessionBriefTopic = {
   overflow: boolean;
   /** already filmed at another session of this month (a Pro month's first) */
   filmedElsewhere: boolean;
-  script: { title: string; versionNo: number; text: string | null; clientApproved: boolean; standing: string; direction: ScriptDirection | null } | null;
+  script: {
+    title: string; versionNo: number; text: string | null; clientApproved: boolean; standing: string; direction: ScriptDirection | null;
+    /** Oct 14 2026: which script and version this is, and its words in parts, so the shoot screen can edit it on site and print it. */
+    scriptId?: string; versionId?: string; parts?: SessionScriptParts | null;
+  } | null;
   /** why there are no words to show, when there are none */
   noScript: string | null;
   /**
@@ -1640,6 +1644,22 @@ export type SessionBriefTopic = {
    */
   plannedShoot?: { n: number; of: number; whenISO: string | null } | null;
 };
+
+export type SessionScriptParts = { hook: string; points: { role: "re-hook" | "build-up" | "payoff" | null; text: string }[]; close: string; captionCta: string | null };
+
+/** A version row's spoken parts, for the shoot screen's editor and the PDF. */
+export function sessionPartsOf(v: { hook: string; pointsJson: string; close: string; captionCta: string | null }): SessionScriptParts | null {
+  let points: SessionScriptParts["points"] = [];
+  try {
+    const a = JSON.parse(v.pointsJson) as { role?: string | null; text?: string }[];
+    if (Array.isArray(a)) points = a.map((p) => {
+      const k = String(p?.role ?? "").toLowerCase().replace(/[^a-z]/g, "");
+      return { role: k === "rehook" ? "re-hook" : k === "buildup" ? "build-up" : k === "payoff" ? "payoff" : null, text: String(p?.text ?? "") };
+    });
+  } catch { /* none */ }
+  if (!v.hook && !points.length && !v.close) return null;
+  return { hook: v.hook, points, close: v.close, captionCta: v.captionCta };
+}
 
 export type SessionBrand = {
   fontNames: string | null;
@@ -1668,9 +1688,9 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
     versionIds.length
       ? prisma.contentScriptVersion.findMany({
           where: { id: { in: versionIds }, scriptId: { in: scriptIds } },
-          select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true },
+          select: { id: true, scriptId: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, hook: true, pointsJson: true, close: true, captionCta: true },
         })
-      : Promise.resolve([] as { id: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null }[]),
+      : Promise.resolve([] as { id: string; scriptId: string; versionNo: number; title: string; body: string; filmingNotes: string | null; creativeDirection: string | null; productionNotes: string | null; hook: string; pointsJson: string; close: string; captionCta: string | null }[]),
     // links:false — the names of the files are what a shoot needs; minting a
     // Dropbox link per logo on every page load is not.
     import("@/lib/brandProfile")
@@ -1701,6 +1721,9 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
             clientApproved: t.clientApproved,
             standing: t.clientApproved ? "approved by the client" : "shared with the client, not approved by them yet",
             direction: directionOf(v),
+            scriptId: v.scriptId,
+            versionId: v.id,
+            parts: sessionPartsOf(v),
           }
         : null,
       noScript: v ? null : t.scriptId ? "The script is still with the office; nothing has been released to the client yet." : "No script for this topic yet.",

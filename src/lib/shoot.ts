@@ -442,9 +442,10 @@ export async function withOfficeApprovedScripts(
   const versions = await prisma.contentScriptVersion.findMany({
     // Current authorisation only: a version handed back to review is not approved.
     where: { id: { in: wanted.map((s) => s.approvedVersionId!) }, scriptId: { in: wanted.map((s) => s.id) }, status: { in: ["APPROVED", "SHARED"] } },
-    select: { id: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true },
+    select: { id: true, scriptId: true, versionNo: true, title: true, body: true, filmingNotes: true, creativeDirection: true, productionNotes: true, hook: true, pointsJson: true, close: true, captionCta: true },
   });
   const byId = new Map(versions.map((v) => [v.id, v]));
+  const { sessionPartsOf } = await import("@/lib/deliverableOutputs");
   const clipText = (s: string | null | undefined) => {
     const t = stripMoneySentences((s ?? "").trim()).trim();
     return t ? (t.length > OFFICE_SCRIPT_CAP ? `${t.slice(0, OFFICE_SCRIPT_CAP - 1).trimEnd()}…` : t) : null;
@@ -465,6 +466,9 @@ export async function withOfficeApprovedScripts(
           clientApproved: false,
           standing: s.sharedVersionId ? "approved by the office · newer than the version the client saw" : "approved by the office · not shared with the client yet",
           direction: directionOf(v),
+          scriptId: v.scriptId,
+          versionId: v.id,
+          parts: sessionPartsOf(v),
         },
         noScript: null,
       };
@@ -833,6 +837,8 @@ export type MyShootRow = {
   // Project.coverImageUrl fresh). null = no key configured + no photos yet.
   thumbUrl: string | null;
   thumbKind: "aryeo" | "street" | null;
+  /** Oct 14 2026: the shoot films scripts the office approved (open it to read, edit, download or text them). */
+  hasScripts?: boolean;
 };
 
 // Street View Static frame of the property — the "what am I walking into?"
@@ -882,6 +888,13 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
     take: 250,
   });
 
+  // Which months have a script the office approved (one read for the whole list).
+  const monthIds = [...new Set(rows.map((p) => p.contentMonthId).filter((x): x is string => !!x))];
+  const scripted = new Set(
+    monthIds.length
+      ? (await prisma.contentScript.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, historical: false, OR: [{ sharedVersionId: { not: null } }, { approvedVersionId: { not: null } }] } }).catch(() => [])).map((g) => g.monthId)
+      : [],
+  );
   return rows.map((p) => {
     const appt = p.appointments[0];
     const when = appt?.startAt ?? p.shootDate;
@@ -893,6 +906,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       street: streetOf(p.title) || p.title,
       thumbUrl: p.coverImageUrl ?? sv,
       thumbKind: p.coverImageUrl ? ("aryeo" as const) : sv ? ("street" as const) : null,
+      hasScripts: !!p.contentMonthId && scripted.has(p.contentMonthId),
       whenISO: when?.toISOString() ?? null,
       status: p.status,
       clientName: p.client.name,

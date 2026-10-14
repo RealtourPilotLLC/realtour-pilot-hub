@@ -137,6 +137,8 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
   const just = new Set(plan.justDecided.map((t) => t.id));
   const cards = [...plan.scripts, ...plan.justDecided.filter((t) => !plan.scripts.some((x) => x.id === t.id))];
   const earlier = plan.decidedScripts.filter((t) => !just.has(t.id));
+  const approvedEarlier = earlier.filter((t) => t.script?.decision === "APPROVED");
+  const otherEarlier = earlier.filter((t) => t.script?.decision !== "APPROVED");
   return (
     <div className="space-y-4">
       {cards.length === 0 ? (
@@ -157,7 +159,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
               </p>
               {t.scriptText && <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
               {canAct && !readOnly && t.script ? (
-                <ScriptApprovalCard script={t.script} large />
+                <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large />
               ) : (
                 <p className="mt-2 text-xs text-muted">{readOnly ? "Scripts can’t be approved while your program is paused or ended." : "The program owner approves scripts on this account."}</p>
               )}
@@ -165,11 +167,30 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
           </section>
         ))
       )}
-      {earlier.length > 0 && (
+      {/* Oct 14 2026: an approved script stays theirs to read, edit and
+          download (Jordan: "able to edit the scripts themselves after they
+          approve it"), so each one opens to its words and those two buttons. */}
+      {approvedEarlier.length > 0 && (
+        <section aria-labelledby="approved-scripts" className="space-y-2">
+          <h2 id="approved-scripts" className="text-sm font-semibold">Your approved scripts ({approvedEarlier.length})</h2>
+          <p className="text-xs text-muted">Open one to read it, change the wording yourself, or download it as a PDF.</p>
+          {approvedEarlier.map((t) => (
+            <details key={t.id} id={`script-${t.id}`} className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 p-3 text-sm">
+              <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                <span className="min-w-0 flex-1 basis-40 break-words font-medium">{t.title}<span className="ml-1 text-xs font-normal text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}{t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}</span></span>
+                <StatusChip word={SCRIPT_WORDS.APPROVED} />
+              </summary>
+              {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
+              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large />}
+            </details>
+          ))}
+        </section>
+      )}
+      {otherEarlier.length > 0 && (
         <details className="rounded-2xl border border-border bg-surface/70 p-4 text-sm">
-          <summary className="flex min-h-11 cursor-pointer items-center text-xs font-semibold text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Scripts you&rsquo;ve already answered ({earlier.length})</summary>
+          <summary className="flex min-h-11 cursor-pointer items-center text-xs font-semibold text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Scripts you asked us to change ({otherEarlier.length})</summary>
           <ul className="mt-2 space-y-1.5">
-            {earlier.map((t) => (
+            {otherEarlier.map((t) => (
               <li key={t.id} className="flex flex-wrap items-center gap-1.5">
                 <span className="min-w-0 flex-1 basis-40 break-words">{t.title}<span className="ml-1 text-xs text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}</span></span>
                 {t.script?.decision === "APPROVED" ? <StatusChip word={SCRIPT_WORDS.APPROVED} /> : <StatusChip word={SCRIPT_WORDS.CHANGES_REQUESTED} />}

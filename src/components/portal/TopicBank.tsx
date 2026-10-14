@@ -327,13 +327,13 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                               </span>
                             </summary>
                             {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history. It&rsquo;s a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
-                            <ScriptView body={t.scriptText.body} parts={t.scriptText.parts ?? null} pillarName={t.scriptText.pillarName ?? null} size="xs" fileTitle={t.title} />
+                            <ScriptView body={t.scriptText.body} parts={t.scriptText.parts ?? null} pillarName={t.scriptText.pillarName ?? null} size="xs" fileTitle={t.title} textDownload={t.scriptText.historical || !t.script?.shared} />
                             {/* THE CLIENT'S OWN VERDICT (F09). Only on a script
                                 that is genuinely shared with them — an import we
                                 hold as history is not theirs to approve, and a
                                 draft they cannot see has nothing to approve. */}
                             {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
-                              <ScriptApprovalCard script={t.script} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large />
+                              <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large />
                             )}
                           </details>
                         )}

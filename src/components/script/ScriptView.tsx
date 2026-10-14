@@ -38,6 +38,8 @@ export type ScriptViewProps = {
   showTitle?: boolean;
   /** For the downloaded file's name. */
   fileTitle?: string | null;
+  /** The plain-text Download (default on). Off where the page offers the PDF instead (Oct 14 2026). */
+  textDownload?: boolean;
 };
 
 function Lines({ lines, textCls }: { lines: ScriptLine[]; textCls: string }) {
@@ -60,7 +62,7 @@ function Lines({ lines, textCls }: { lines: ScriptLine[]; textCls: string }) {
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "script";
 
-export function ScriptView({ body, parts, pillarName, size = "sm", audience = "client", showMissingPillar = true, actions = true, showTitle = false, fileTitle }: ScriptViewProps) {
+export function ScriptView({ body, parts, pillarName, size = "sm", audience = "client", showMissingPillar = true, actions = true, showTitle = false, fileTitle, textDownload = true }: ScriptViewProps) {
   const layout = useMemo(
     () => {
       if (!parts) return scriptBlocksFromText(body);
@@ -117,14 +119,14 @@ export function ScriptView({ body, parts, pillarName, size = "sm", audience = "c
                 {copied === "ok" ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
                 {copied === "ok" ? "Copied" : copied === "failed" ? "Couldn't copy" : "Copy"}
               </button>
-              <button
+              {textDownload && <button
                 type="button"
                 onClick={download}
                 className="inline-flex min-h-8 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"
                 aria-label="Download the script as a text file"
               >
                 <Download className="size-3" /> Download
-              </button>
+              </button>}
             </span>
           )}
         </div>

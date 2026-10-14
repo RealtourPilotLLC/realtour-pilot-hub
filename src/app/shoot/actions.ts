@@ -430,3 +430,73 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
   revalidatePath("/pipeline");
   return { ok: true, message: "Shoot marked complete." };
 }
+
+// ---------------------------------------------------------------------------
+// SCRIPTS ON SITE (Oct 14 2026, Jordan: "I want them to be able to edit each
+// individual script on site and also download the PDF and also text the PDF
+// of the scripts to the agent").
+// ---------------------------------------------------------------------------
+
+/** Change the words of one of this shoot's scripts (the version the screen shows). */
+export async function editScriptOnSite(
+  projectId: string,
+  scriptId: string,
+  baseVersionId: string,
+  words: { hook: string; points: string[]; close: string; captionCta?: string | null },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  // The script has to be one this shoot films (its month, or the host month of a late one).
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true } });
+  if (!p?.contentMonthId) return { ok: false, message: "This shoot has no scripts." };
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { monthId: true } });
+  const host = await import("@/lib/monthLateSession").then((m) => m.combinedHostOfLateMonth(p.contentMonthId!)).catch(() => null);
+  if (!s || (s.monthId !== p.contentMonthId && s.monthId !== host?.id)) return { ok: false, message: "That script isn't part of this shoot." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const u = await getCurrentUser();
+  const tm = u?.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } }).catch(() => null) : null;
+  const name = tm?.name?.trim() || u?.name?.trim() || u?.email || "The photographer";
+  const { adoptEditedScript } = await import("@/lib/scriptEdits");
+  const r = await adoptEditedScript(scriptId, baseVersionId, words, { kind: "CREW", email: u?.email ?? "shoot-screen", appUserId: u?.id ?? null, name, projectId }).catch((e) => ({ ok: false as const, message: e instanceof Error ? e.message : "That didn't save." }));
+  if (r.ok) {
+    await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: `Script edited on site by ${name}` } }).catch(() => {});
+    revalidatePath(`/shoot/${projectId}`);
+  }
+  return { ok: r.ok, message: r.message };
+}
+
+/** The text that goes with the scripts link: prefilled, editable, sent by the photographer. */
+export async function scriptsTextDraft(projectId: string): Promise<{ ok: boolean; text?: string; message?: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true, client: { select: { name: true, phone: true } } } });
+  if (!p?.contentMonthId) return { ok: false, message: "This shoot has no scripts." };
+  if (!p.client.phone) return { ok: false, message: "No phone number on file for this client." };
+  const { shootScriptsLink } = await import("@/lib/scriptPdfLinks");
+  const first = p.client.name.trim().split(/\s+/)[0] || "there";
+  return { ok: true, text: `Hi ${first}, here are your scripts for today's shoot as a PDF: ${shootScriptsLink(projectId)}` };
+}
+
+/** Send the scripts link to the agent (the photographer saw and could edit the text). */
+export async function textScriptsToAgent(projectId: string, text: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const body = (text ?? "").trim();
+  // The link has to be in it, and it has to be THIS shoot's link.
+  const m = /\/api\/portal\/scripts\/shoot\/([a-z0-9]{10,40})\?k=(\d+\.[A-Za-z0-9_-]+)/i.exec(body);
+  const { verifyShootScriptsKey } = await import("@/lib/scriptPdfLinks");
+  if (!m || m[1] !== projectId || !verifyShootScriptsKey(projectId, decodeURIComponent(m[2]))) return { ok: false, message: "Keep the scripts link in the message." };
+  const draft = await scriptsTextDraft(projectId);
+  const noLink = (t: string) => t.replace(/https?:\/\/\S+/g, "");
+  const wrote: "the person" | "the hub" = draft.ok && draft.text && sameWords(noLink(body), noLink(draft.text)) ? "the hub" : "the person";
+  return sendClientText(projectId, body, "Scripts PDF", wrote);
+}

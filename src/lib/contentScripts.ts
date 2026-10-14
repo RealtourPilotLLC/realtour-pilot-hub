@@ -462,7 +462,7 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
  * text. The email is W2-F's, behind script_share_email — here it is recorded
  * as SUPPRESSED (switch off) or QUEUED (switch on, sender not yet wired).
  */
-export async function releaseScriptVersion(scriptId: string, actor: { email: string; appUserId?: string | null }, opts: { batchKey?: string | null; note?: string | null } = {}): Promise<{ versionId: string; notificationState: string }> {
+export async function releaseScriptVersion(scriptId: string, actor: { email: string; appUserId?: string | null }, opts: { batchKey?: string | null; note?: string | null; quiet?: string | null } = {}): Promise<{ versionId: string; notificationState: string }> {
   const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { approvedVersionId: true, enrollmentId: true, clientId: true, monthId: true, historical: true } });
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("Imported scripts are history — nothing to release.");
@@ -483,7 +483,10 @@ export async function releaseScriptVersion(scriptId: string, actor: { email: str
   // reminders policy's testClientsOnly lock inside it). Otherwise the release
   // still happens and the email is SUPPRESSED here, with the reason.
   let suppressedWhy: string | null = emailOn ? null : "Email suppressed: script_share_email is off.";
-  if (emailOn) {
+  // Oct 14 2026: a release with nothing to announce (the client's own edit of
+  // a script they approved, an on-site edit at the shoot) says so here.
+  if (opts.quiet) suppressedWhy = `Email suppressed: ${opts.quiet}`;
+  else if (emailOn) {
     const [{ programReachWithLock }, { reachSuppressionReason }] = await Promise.all([import("@/lib/programRollout"), import("@/lib/programRolloutCore")]);
     // A failed lock read is scope_unreadable, never "the lock is on" (review fix, Sep 28 2026).
     const d = await programReachWithLock("script_share_email", s.clientId);
@@ -492,7 +495,7 @@ export async function releaseScriptVersion(scriptId: string, actor: { email: str
   const notificationState = suppressedWhy ? "SUPPRESSED" : "QUEUED";
   await prisma.contentScriptVersion.update({ where: { id: s.approvedVersionId }, data: { status: "SHARED", sharedAt: now } });
   await prisma.contentScript.update({ where: { id: scriptId }, data: { sharedVersionId: s.approvedVersionId, sharedAt: now, releaseState: "released" } });
-  await prisma.contentScriptRelease.create({ data: { scriptId, scriptVersionId: s.approvedVersionId, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, action: "SHARE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, batchKey: opts.batchKey ?? null, releasedAt: now, notificationState, note: opts.note ?? (suppressedWhy ?? "Email queued for the share sender (W2-F).") } });
+  await prisma.contentScriptRelease.create({ data: { scriptId, scriptVersionId: s.approvedVersionId, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, action: "SHARE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, batchKey: opts.batchKey ?? null, releasedAt: now, notificationState, note: opts.quiet ? [opts.note, suppressedWhy].filter(Boolean).join(". ") : opts.note ?? (suppressedWhy ?? "Email queued for the share sender (W2-F).") } });
   await syncLegacyPointer(scriptId, s.approvedVersionId);
   return { versionId: s.approvedVersionId, notificationState };
 }
@@ -603,7 +606,7 @@ export async function markHistoricalImports(): Promise<{ stamped: number; total:
  * has to be told apart from one naming a pillar that never existed. Both block,
  * with different words and different fixes.
  */
-async function approvedPillarsFor(enrollmentId: string): Promise<ApprovedPillar[]> {
+export async function approvedPillarsFor(enrollmentId: string): Promise<ApprovedPillar[]> {
   const rows = await listPillars(enrollmentId, { includeRetired: true });
   return rows.map((p) => ({ id: p.id, name: p.name, status: p.status, aliases: p.aliases }));
 }

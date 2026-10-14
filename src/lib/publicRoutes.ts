@@ -27,6 +27,10 @@ export const PUBLIC_PREFIXES = [
   // authenticate themselves — a scoped portal token or the hub session —
   // exactly like the download door above (src/app/api/portal/brief).
   "/api/portal/brief",
+  // Scripts as a PDF (Oct 14 2026): the agent's approved script (scoped media
+  // token) and a shoot's scripts (the hub session, or the signed link texted
+  // to the agent). Each door authenticates itself (src/app/api/portal/scripts).
+  "/api/portal/scripts",
   "/api/review/cut",
   "/api/review/upload",
   "/api/auth",
