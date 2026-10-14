@@ -195,8 +195,11 @@ function buildGroups(rows: FindingLike[], opts: GroupOptions, low: boolean): Fin
 export function groupFindings(findings: FindingLike[], opts: GroupOptions = {}): { groups: FindingGroup[]; lowConfidence: FindingGroup[] } {
   const excluded = new Set(opts.excludedPhotoIds ?? []);
   const floor = opts.floor ?? DEFAULT_DISPLAY_FLOOR;
+  // A check switched off (house-wide or for the client) never counts or shows.
+  const off = new Set((opts.overrides ?? []).filter((o) => o.disabled).map((o) => o.ruleId));
   const live = findings.filter((f) => {
     if (f.status === "SUPERSEDED") return false;
+    if (off.has(f.ruleId)) return false;
     const ids = photoIdsOf(f);
     return !ids.length || ids.some((id) => !excluded.has(id));
   });

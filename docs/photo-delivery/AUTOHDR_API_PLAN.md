@@ -72,3 +72,21 @@ Three use cases for a media company's own software. Prices shown there are illus
 - History of a delivered photo: `Original` (no parent) → the model step (head).
 - `GET /v1/presets`: 2 public presets.
 These numbers are a snapshot; the hub reads them live every time.
+
+## 7. The hub sends the raws, and a free photo check (Oct 14 2026, ~01:00–01:40 ET)
+
+Jordan: the Dropbox watcher dropped and was never reconnected; "any jobs uploaded to Dropbox and completed uploading I want sent to autoHDR using our current settings and then run through QC all automatically", plus later uploads; "As long as QC is free".
+
+Verified before building:
+- **Who made the recent shoots**: not a working watcher. Ridley Creek's shoot was created two hours after its upload under a different name ("335 Ridley Creek Lane, West Chester"), so Kyle has been adding shoots by hand. Today's three Reading shoots had no AutoHDR shoot at all.
+- **Billing** (AutoHDR's AI-integrations page): "With AutoHDR's own models, uploading and processing are free — credits come off when you download (one per photo, re-downloads free) ... Creator models bill without download — charged when processing finishes." The ledger shows Ridley Creek's 78 photos cost exactly 78 credits (−74 at 03:03 UTC, −4 at 03:33 UTC), 1 per photo, so the account default is a house model (creator models cost 2–5).
+- **MCP**: `https://mcp.realestatephotoediting.com/mcp` (server "AutoHDR External API" 3.4.7), same OAuth server and scopes as the REST API; the hub's stored credentials get a token for it. `tools/list` = the same 20 operations as the REST API. **No QC tool** in either. The closest is `describePhoto` / `POST …/describe`: "Read-only and free (no credits)", answers a prompt about a photo still in AutoHDR.
+- **describe as a checklist** (4 Gregory Dr photos the paid QC had flagged): matched the cleaning bottles, tools and paint tray, neighbour's cars, bins and a hose on 3 of 4; missed one low-confidence hose. 6–9 s a photo.
+
+Built (commit 0e66308, `src/lib/photoDelivery/intake.ts`, `autohdrCheck.ts`):
+- `POST /v1/photoshoots/from-urls` with a Dropbox temporary link per raw file, no model ids or enhancements (account defaults), shoot named after the job folder; later files become "<folder> (more photos N)". Commit retried on 409 `files_not_landed`; status polled to `success`.
+- Settle rules: photographer submitted + file list unchanged 10 min; not submitted 30 min; bracket count not a multiple of 5, 45 min; later files 20 min. JPEG over its DNG twin; one copy per content hash.
+- Never twice: a hand-made shoot for the street → LINKED, nothing sent; a lost create reply → looked up by name, never repeated; each file is sent once.
+- Free photo check: one describe prompt per photo built from 54 registry rules; findings filed under the real rule ids (source `AHDR`), same verdict and stage logic as the paid QC; no credits, no download, no Claude.
+- Paid QC: `paidQcAuto` off, so it runs only on request ("Run QC"); an audit already under way finishes.
+- Switches (Photo Delivery settings): "Send uploads to AutoHDR", "Free photo check", "Run the paid QC by itself".

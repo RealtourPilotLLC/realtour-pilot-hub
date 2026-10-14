@@ -8,6 +8,7 @@ import { photoDeliverySettings } from "./settings";
 import { logJobEvent, setStage } from "./jobState";
 import { ruleById, RULES_REGISTRY_VERSION } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
+import { disabledIn, houseOverrides } from "./houseRules";
 
 // ---------------------------------------------------------------------------
 // THE FREE PHOTO CHECK (Oct 14 2026).
@@ -52,9 +53,9 @@ export const CHECK_PROMPT_VERSION = 1;
 const PER_PHOTO_TRIES = 3;
 const CONCURRENCY = 4;
 
-/** The one question every photo is asked. Built from the registry's own labels. */
-export function checkPrompt(): string {
-  const lines = CHECK_RULES.map((id) => `${id}: ${ruleById(id)?.shortLabel ?? id.toLowerCase().replace(/_/g, " ")}`);
+/** The one question every photo is asked. Built from the registry's own labels; a switched-off check is left out. */
+export function checkPrompt(off: Set<string> = new Set()): string {
+  const lines = CHECK_RULES.filter((id) => !off.has(id)).map((id) => `${id}: ${ruleById(id)?.shortLabel ?? id.toLowerCase().replace(/_/g, " ")}`);
   return [
     "You are checking a real estate listing photo before it goes to the client.",
     'Answer ONLY with JSON: {"room":"<room type>","issues":[{"id":"<one id from the list>","where":"<short location in the frame>","confidence":<0 to 1>}]}.',
@@ -67,7 +68,7 @@ export function checkPrompt(): string {
 export type CheckIssue = { ruleId: string; where: string; confidence: number };
 
 /** Read describe's answer. Pure. Unknown ids, duplicates and junk are dropped. */
-export function parseCheckAnswer(text: string): { room: string | null; issues: CheckIssue[] } | null {
+export function parseCheckAnswer(text: string, off: Set<string> = new Set()): { room: string | null; issues: CheckIssue[] } | null {
   const body = text.replace(/```(?:json)?/gi, "").trim();
   const start = body.indexOf("{");
   const end = body.lastIndexOf("}");
@@ -83,7 +84,7 @@ export function parseCheckAnswer(text: string): { room: string | null; issues: C
   for (const raw of Array.isArray(j.issues) ? j.issues : []) {
     const r = raw as { id?: unknown; where?: unknown; confidence?: unknown };
     const id = typeof r.id === "string" ? r.id.trim().toUpperCase() : "";
-    if (!ALLOWED.has(id)) continue;
+    if (!ALLOWED.has(id) || off.has(id)) continue;
     const where = typeof r.where === "string" ? r.where.trim().slice(0, 200) : "";
     const key = `${id}:${where.toLowerCase()}`;
     if (seen.has(key)) continue;
@@ -167,7 +168,9 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
     }
     const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, contentHash: true } });
     const progress = readProgress(run.checksJson);
-    const prompt = checkPrompt();
+    const house = await houseOverrides();
+    const off = disabledIn(house);
+    const prompt = checkPrompt(off);
     const todo = photos.filter((p) => !(p.id in progress.done) && (progress.errors[p.id] ?? 0) < PER_PHOTO_TRIES && !progress.skipped.includes(p.id));
     for (const p of todo) if (!p.autohdrImageUuid || !shootOf(p, job.autohdrPhotoshootId)) progress.skipped.push(p.id);
     const work = todo.filter((p) => !progress.skipped.includes(p.id));
@@ -188,7 +191,7 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
       const rows: Prisma.PhotoQcFindingCreateManyInput[] = [];
       for (const a of answers) {
         if (a.error === "gone") { progress.skipped.push(a.p.id); continue; }
-        const parsed = a.text ? parseCheckAnswer(a.text) : null;
+        const parsed = a.text ? parseCheckAnswer(a.text, off) : null;
         if (!parsed) { progress.errors[a.p.id] = (progress.errors[a.p.id] ?? 0) + 1; continue; }
         progress.done[a.p.id] = parsed.issues.length;
         if (parsed.room) progress.rooms[a.p.id] = parsed.room;
@@ -232,7 +235,7 @@ async function finishCheck(jobId: string, runId: string, photos: Photo[], progre
     where: { jobId, status: { not: "SUPERSEDED" } },
     select: { id: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true, specificIssue: true, source: true },
   });
-  const opts = { floor: settings.displayConfidenceFloor };
+  const opts = { floor: settings.displayConfidenceFloor, overrides: await houseOverrides() };
   const verdict = jobVerdict(findings, opts);
   const per = photoVerdicts(findings, photos.map((p) => p.id), opts);
   const shadow = settings.qcShadow;

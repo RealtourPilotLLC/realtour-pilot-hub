@@ -77,6 +77,47 @@ export async function decideFindingsAction(input: { jobId: string; findingIds: s
   }
 }
 
+/** Oct 14 2026 (owner): stop flagging a check on every shoot; its open findings are set aside. */
+export async function stopFlaggingAction(input: { jobId?: string | null; ruleId: string; reason: string }): Promise<ActionResult> {
+  try {
+    await requireOwner();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!input || typeof input.ruleId !== "string" || !/^[A-Z0-9_]{3,80}$/.test(input.ruleId)) return { ok: false, message: "That check is not valid." };
+  try {
+    const { by } = await actor();
+    const { stopRule } = await import("@/lib/photoDelivery/houseRules");
+    const r = await stopRule(input.ruleId, typeof input.reason === "string" ? input.reason : "", by);
+    if (r.ok) {
+      refresh(typeof input.jobId === "string" && ID.test(input.jobId) ? input.jobId : undefined);
+      revalidatePath(`${BASE}/settings`);
+    }
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return failed("stop flagging", e);
+  }
+}
+
+/** Owner: check a switched-off rule again from the next QC on. */
+export async function resumeCheckAction(ruleId: string): Promise<ActionResult> {
+  try {
+    await requireOwner();
+  } catch (e) {
+    return denied(e);
+  }
+  if (typeof ruleId !== "string" || !/^[A-Z0-9_]{3,80}$/.test(ruleId)) return { ok: false, message: "That check is not valid." };
+  try {
+    const { by } = await actor();
+    const { resumeRule } = await import("@/lib/photoDelivery/houseRules");
+    const r = await resumeRule(ruleId, by);
+    if (r.ok) revalidatePath(`${BASE}/settings`);
+    return r;
+  } catch (e) {
+    return failed("turn the check back on", e);
+  }
+}
+
 // ---- photos ----------------------------------------------------------------------------------
 
 export async function setPhotoExcludedAction(input: { jobId: string; photoId: string; excluded: boolean; reason?: string | null }): Promise<ActionResult> {

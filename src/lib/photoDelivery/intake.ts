@@ -230,8 +230,15 @@ type WatchResult = "nothing" | "waiting" | "sent" | "linked" | "error";
 
 async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; listShoots: () => Promise<AutohdrPhotoshoot[]> }): Promise<WatchResult> {
   const batches = await prisma.photoIntakeBatch.findMany({ where: { projectId: p.id }, orderBy: { batchNo: "asc" } });
-  // A delivered job's first upload was edited some other way: never sent.
-  if (!batches.length && p.deliveredAt) return "nothing";
+  // A delivered job's first upload was edited some other way: never sent (a
+  // job can be delivered in Aryeo before the project row says so).
+  if (!batches.some((b) => b.state !== "WAITING")) {
+    const job = await prisma.photoJob.findUnique({ where: { projectId: p.id }, select: { stage: true } });
+    if (p.deliveredAt || (job && ["DELIVERED", "DELIVERING"].includes(job.stage))) {
+      if (batches.length) await prisma.photoIntakeBatch.deleteMany({ where: { projectId: p.id, state: "WAITING" } });
+      return "nothing";
+    }
+  }
   const rawPath = actualFolderPaths(p).rawPhotos;
   const entries = await dropboxListFolder(rawPath, { recursive: true }).catch(() => null);
   if (!entries) return "error"; // unreadable is not empty

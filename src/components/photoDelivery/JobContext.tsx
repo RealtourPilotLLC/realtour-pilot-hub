@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useToast } from "@/components/ui/Toast";
 import {
-  decideFindingsAction, setHeroAction, setPhotoExcludedAction, type ActionResult,
+  decideFindingsAction, setHeroAction, setPhotoExcludedAction, stopFlaggingAction, type ActionResult,
 } from "@/app/ops/photo-delivery/actions";
 import { EXCLUDE_PRESETS, HUMAN_CALL_LABEL, IGNORE_PRESETS, UNDOABLE, findingPhotoIds, reasonRequired } from "./format";
 import { usePrompt, type AskOptions } from "./usePrompt";
@@ -41,6 +41,8 @@ type Ctx = {
   pending: boolean;
   run: (fn: () => Promise<ActionResult>) => Promise<boolean>;
   decide: (findings: FindingView[], status: DecisionStatus) => Promise<boolean>;
+  /** Owner: stop flagging this check on every shoot (Oct 14 2026). */
+  stopFlagging: (ruleId: string, label: string) => Promise<boolean>;
   excludePhoto: (photo: PhotoView, exclude: boolean) => Promise<boolean>;
   makeHero: (photo: PhotoView) => Promise<boolean>;
   ask: (o: AskOptions) => Promise<string | null>;
@@ -200,6 +202,21 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
 
   const makeHero = useCallback((photo: PhotoView) => run(() => setHeroAction(jobId, photo.id)), [jobId, run]);
 
+  const stopFlagging = useCallback(
+    async (ruleId: string, label: string) => {
+      const reason = await ask({
+        title: `Stop flagging "${label}"?`,
+        description: "QC stops checking for this on every shoot, and its open findings are set aside. Turn it back on any time in Photo Delivery settings.",
+        presets: ["We don't need to know this", "Not an issue for us", "Lighting differences are fine", "Not worth fixing"],
+        required: false,
+        confirmLabel: "Stop flagging it",
+      });
+      if (reason === null) return false;
+      return run(() => stopFlaggingAction({ jobId, ruleId, reason }));
+    },
+    [ask, jobId, run],
+  );
+
   const value: Ctx = {
     data,
     viewer,
@@ -220,6 +237,7 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
     pending,
     run,
     decide,
+    stopFlagging,
     excludePhoto,
     makeHero,
     ask,

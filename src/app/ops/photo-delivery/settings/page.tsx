@@ -1,11 +1,14 @@
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Users } from "lucide-react";
+import { EyeOff, SlidersHorizontal, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etMonthDayTime } from "@/lib/datetime";
+import { houseRules } from "@/lib/photoDelivery/houseRules";
+import { ruleById } from "@/lib/photoDelivery/registry";
+import { SwitchedOffChecks } from "@/components/photoDelivery/SwitchedOffChecks";
 import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { SettingsForm } from "@/components/photoDelivery/SettingsForm";
@@ -28,13 +31,14 @@ export default async function PhotoDeliverySettingsPage() {
   if (!viewer) redirect("/login?next=/ops/photo-delivery/settings");
   if (!viewer.isOwner) redirect(viewer.role === "ADMIN" ? "/ops/photo-delivery" : homeFor(viewer.role));
 
-  const [strip, settings, profiles] = await Promise.all([
+  const [strip, settings, profiles, off] = await Promise.all([
     loadStrip(viewer),
     photoDeliverySettings(),
     loadClientProfiles().catch((e) => {
       console.error("[photo-delivery] client profiles failed", e);
       return null;
     }),
+    houseRules().catch(() => []),
   ]);
   const qcFrom = settings.qcFrom ? new Date(settings.qcFrom) : null;
 
@@ -71,6 +75,10 @@ export default async function PhotoDeliverySettingsPage() {
             }}
           />
           <p className="mt-4 border-t border-border pt-3 text-[13px] text-muted">The credit alert levels live on the Credits page.</p>
+        </Section>
+        <Section icon={EyeOff} title="Checks switched off" count={off.length}>
+          <p className="mb-3 text-[13px] text-muted">Not checked on any shoot, by the paid QC or the free photo check, and not shown on jobs.</p>
+          <SwitchedOffChecks rules={off.map((r) => ({ ruleId: r.ruleId, label: ruleById(r.ruleId)?.shortLabel ?? r.ruleId, reason: r.reason, by: r.by, when: etMonthDayTime(r.at) }))} />
         </Section>
         <Section icon={Users} title="Client QC profiles" count={profiles?.length ?? null}>
           {profiles ? <ClientProfiles profiles={profiles} rules={ruleOptions()} /> : <p role="alert" className="text-sm text-warning">The client profiles could not be read. Refresh to try again.</p>}

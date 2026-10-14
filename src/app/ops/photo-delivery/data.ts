@@ -8,6 +8,7 @@ import { STAGE_LABEL, type JobStage } from "@/lib/photoDelivery/jobState";
 import { photoDeliverySettings, type PhotoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelivery/credits";
 import { buildFixCart } from "@/lib/photoDelivery/fixes";
+import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
 import { deliveryGate, deliverySteps } from "@/lib/photoDelivery/delivery";
 import { RULES, ruleById } from "@/lib/photoDelivery/registry";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
@@ -64,6 +65,7 @@ async function verdictModule(): Promise<VerdictModule | null> {
   }
 }
 
+const houseRuleIds = async () => (await houseOverrides()).map((o) => o.ruleId);
 const overridesOf = (json: string | null | undefined): RuleOverride[] => (parse<RuleOverride[]>(json) ?? []).filter((o) => o && typeof o.ruleId === "string");
 
 // ---- who is looking ------------------------------------------------------------------------
@@ -200,7 +202,8 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
   const verdict = counts.length ? await verdictModule() : null;
   const clientIds = [...new Set(projects.map((p) => p.clientId))];
   const profileRows = verdict && clientIds.length ? await prisma.clientQcProfile.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, ruleOverridesJson: true } }) : [];
-  const overridesByClient = new Map(profileRows.map((r) => [r.clientId, overridesOf(r.ruleOverridesJson)]));
+  const house = await houseOverrides();
+  const overridesByClient = new Map(profileRows.map((r) => [r.clientId, mergeOverrides(house, overridesOf(r.ruleOverridesJson))]));
   const projectOfJob = new Map(jobs.map((j) => [j.id, j.projectId]));
   const findingsByJob = new Map<string, typeof counts>();
   for (const f of counts) {
@@ -213,7 +216,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     const rec: Record<Severity, number> = { CRITICAL: 0, MAJOR: 0, MINOR: 0 };
     if (verdict) {
       const clientId = projectById.get(projectOfJob.get(jobId) ?? "")?.clientId;
-      const { groups } = verdict.groupFindings(list, { floor: settings.displayConfidenceFloor, overrides: clientId ? overridesByClient.get(clientId) : null });
+      const { groups } = verdict.groupFindings(list, { floor: settings.displayConfidenceFloor, overrides: (clientId ? overridesByClient.get(clientId) : null) ?? house });
       for (const g of groups) rec[g.severity] += 1;
     } else {
       for (const f of list) if (f.severity === "CRITICAL" || f.severity === "MAJOR" || f.severity === "MINOR") rec[f.severity] += 1;
@@ -383,7 +386,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       },
     }),
     prisma.photoAsset.findMany({ where: { jobId }, orderBy: { sequence: "asc" } }),
-    prisma.photoQcFinding.findMany({ where: { jobId, status: { not: "SUPERSEDED" } }, orderBy: [{ createdAt: "asc" }] }),
+    // Oct 14 2026: a check Jordan switched off for every shoot is not shown at all (houseRules.ts).
+    houseRuleIds().then((off) => prisma.photoQcFinding.findMany({ where: { jobId, status: { not: "SUPERSEDED" }, ...(off.length ? { ruleId: { notIn: off } } : {}) }, orderBy: [{ createdAt: "asc" }] })),
     prisma.photoQcRun.findMany({ where: { jobId }, orderBy: { startedAt: "desc" }, take: 10 }),
     prisma.photoJobEvent.findMany({ where: { jobId }, orderBy: { at: "desc" }, take: 300 }),
     prisma.photoFixBatch.findMany({ where: { jobId }, orderBy: { approvedAt: "desc" }, take: 10 }),
@@ -499,7 +503,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     const profile = project?.clientId ? await prisma.clientQcProfile.findUnique({ where: { clientId: project.clientId }, select: { ruleOverridesJson: true } }).catch(() => null) : null;
     const res = verdict.groupFindings(findings, {
       floor: settings.displayConfidenceFloor,
-      overrides: overridesOf(profile?.ruleOverridesJson),
+      overrides: mergeOverrides(await houseOverrides(), overridesOf(profile?.ruleOverridesJson)),
       excludedPhotoIds: photos.filter((p) => p.status === "EXCLUDED").map((p) => p.id),
     });
     for (const g of [...res.groups, ...res.lowConfidence]) groupMeta[g.key] = { severity: g.severity, escalated: g.escalated, escalationReason: g.escalationReason, holds: g.holds };

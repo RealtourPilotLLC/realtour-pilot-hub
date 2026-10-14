@@ -1,4 +1,5 @@
 import "server-only";
+import { houseOverrides, mergeOverrides } from "../houseRules";
 
 import { createHash } from "node:crypto";
 import type { PhotoAsset, PhotoJob, PhotoQcRun, Prisma } from "@prisma/client";
@@ -525,7 +526,7 @@ async function persistUnavailable(ctx: Ctx, p: Asset, kind: string, reason: stri
   for (const c of ["P0", "P1", "P1B"]) ledgerSkip(ctx, p.id, c, `file not available: ${reason}`);
   await prisma.$transaction([
     prisma.photoQcFinding.updateMany({ where: { jobId: ctx.job.id, photoId: p.id, contentHash: hash, status: "OPEN", source: { in: ["FILE", "CV"] } }, data: { status: "SUPERSEDED", statusReason: "re-checked" } }),
-    prisma.photoQcFinding.createMany({ data: drafts.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: drafts.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     prisma.photoAsset.updateMany({
       where: { id: p.id, contentHash: p.contentHash },
       data: { cvJson: JSON.stringify(cv), cvHash: hash, derivJson: JSON.stringify({}), derivHash: hash, classifiedHash: hash, inspectedHash: hash, lastQcAt: new Date(now()) },
@@ -614,7 +615,7 @@ async function prepPhoto(ctx: Ctx, p: Asset): Promise<void> {
   ledgerDone(ctx, p.id, ["FILE_CHECKS", "CV"]);
   await prisma.$transaction([
     prisma.photoQcFinding.updateMany({ where: { jobId: ctx.job.id, photoId: p.id, contentHash: hash, status: "OPEN", source: { in: ["FILE", "CV"] } }, data: { status: "SUPERSEDED", statusReason: "re-checked" } }),
-    prisma.photoQcFinding.createMany({ data: drafts.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: drafts.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     prisma.photoAsset.updateMany({
       where: { id: p.id, contentHash: p.contentHash },
       data: { width: meta.width, height: meta.height, format: meta.format, bytes: bytes.length, derivJson: JSON.stringify(deriv), derivHash: hash, cvJson: JSON.stringify(cv), cvHash: hash },
@@ -856,7 +857,7 @@ async function inspectPhoto(ctx: Ctx, p: Asset, pos: number, total: number, g: G
   }
   await prisma.$transaction([
     prisma.photoQcFinding.updateMany({ where: { jobId: ctx.job.id, photoId: p.id, contentHash: hash, status: "OPEN", source: "P1" }, data: { status: "SUPERSEDED", statusReason: "re-inspected" } }),
-    prisma.photoQcFinding.createMany({ data: drafts.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: drafts.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     prisma.photoAsset.updateMany({ where: { id: p.id, contentHash: p.contentHash }, data: { inspectedHash: hash, lastQcAt: new Date(now()) } }),
     runStateWrite(ctx),
   ]);
@@ -1068,7 +1069,7 @@ async function runP1bBatch(ctx: Ctx, batch: CropPlan[], positions: Map<string, n
   }
   const ops: Prisma.PrismaPromise<unknown>[] = [
     prisma.photoQcFinding.updateMany({ where: { jobId: ctx.job.id, photoId: { in: photos.map((p) => p.id) }, source: "P1B", status: "OPEN", contentHash: { in: photos.map(hashOf) } }, data: { status: "SUPERSEDED", statusReason: "re-checked" } }),
-    prisma.photoQcFinding.createMany({ data: creates.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: creates.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     ...updates.map((u) =>
       prisma.photoQcFinding.update({ where: { id: u.id }, data: { bboxJson: u.bbox ? JSON.stringify(u.bbox) : null, confidence: u.confidence, coercedJson: JSON.stringify([u.note]) } }),
     ),
@@ -1202,7 +1203,7 @@ async function runP2Unit(ctx: Ctx, unit: P2Unit, positions: Map<string, number>,
   }
   ctx.progress.p2Units.push(unit.key);
   await prisma.$transaction([
-    prisma.photoQcFinding.createMany({ data: drafts.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: drafts.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     runStateWrite(ctx),
   ]);
   ctx.done.p2Units++;
@@ -1282,7 +1283,7 @@ async function runP4(ctx: Ctx, order: Asset[], labels: Map<string, string>, idOf
   }
   ctx.progress.p4Done = true;
   await prisma.$transaction([
-    prisma.photoQcFinding.createMany({ data: drafts.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: drafts.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     runStateWrite(ctx),
   ]);
   ctx.done.p4 = true;
@@ -1506,7 +1507,7 @@ async function finalize(ctx: Ctx): Promise<void> {
     // Gallery-level findings are re-derived by every run.
     prisma.photoQcFinding.updateMany({ where: { jobId: ctx.job.id, status: "OPEN", qcRunId: { not: ctx.run.id }, source: { in: ["P2", "P4"] } }, data: { status: "SUPERSEDED", statusReason: `re-checked in run ${ctx.run.id}` } }),
     prisma.photoQcFinding.updateMany({ where: { jobId: ctx.job.id, status: "OPEN", source: "CV", ruleId: { in: GALLERY_CV_RULES } }, data: { status: "SUPERSEDED", statusReason: `re-checked in run ${ctx.run.id}` } }),
-    prisma.photoQcFinding.createMany({ data: galleryDrafts.map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
+    prisma.photoQcFinding.createMany({ data: galleryDrafts.filter((d) => ruleOn(ctx, d.ruleId)).map((d) => draftToRow(d, ctx.run.id, ctx.job.id)) }),
     ...dustOps,
   ]);
   ledgerDone(ctx, null, ["GALLERY_CV"]);
@@ -1641,6 +1642,11 @@ async function runForJob(job: PhotoJob, settings: PhotoDeliverySettings): Promis
   return { run, created: true };
 }
 
+/** A check switched off (house-wide or for this client) is never written, whichever pass found it. */
+function ruleOn(ctx: Ctx, ruleId: string): boolean {
+  return !ctx.overrides.some((o) => o.ruleId === ruleId && o.disabled);
+}
+
 async function loadCtx(job: PhotoJob, run: PhotoQcRun, settings: PhotoDeliverySettings, deadline: number, leaseBy: string): Promise<Ctx> {
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true, addressLine: true, city: true, state: true, clientId: true } });
   const profile = project?.clientId ? await prisma.clientQcProfile.findUnique({ where: { clientId: project.clientId } }) : null;
@@ -1666,7 +1672,8 @@ async function loadCtx(job: PhotoJob, run: PhotoQcRun, settings: PhotoDeliverySe
     state,
     expected,
     clientNotes: sanitizeUntrusted(profile?.notes),
-    overrides: parseJson<RuleOverride[]>(profile?.ruleOverridesJson, []).filter((o) => o && typeof o.ruleId === "string"),
+    // Oct 14 2026: the house-wide switched-off checks (houseRules.ts) first; a client's own entry wins.
+    overrides: mergeOverrides(await houseOverrides(), parseJson<RuleOverride[]>(profile?.ruleOverridesJson, []).filter((o) => o && typeof o.ruleId === "string")),
     groupOrder: parseJson<string[] | null>(profile?.sequenceJson, null),
     ingest: { fireplace: str(ingestRaw.fireplace), tv: str(ingestRaw.tvMode ?? ingestRaw.tv), grass: str(ingestRaw.grass), declutter: str(ingestRaw.declutter) },
     photos: [],

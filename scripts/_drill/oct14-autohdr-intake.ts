@@ -259,6 +259,33 @@ async function main() {
     await intake.driveIntake({ budgetMs: 60_000, now: NOW });
     await intake.driveIntake({ budgetMs: 60_000, now: new Date(NOW.getTime() + 60 * MIN) });
     c.ok("before the start date, delivered, video-only: no batch at all", (await prisma.photoIntakeBatch.count({ where: { projectId: { in: [old.id, delivered.id, video.id] } } })) === 0);
+    // Delivered in Aryeo before the project row says so (Ridley Creek, Oct 14).
+    const ariDone = await mkProject("4 Aryeo Ct");
+    dbx.set(rawOf("4 Aryeo Ct").toLowerCase(), [file(rawOf("4 Aryeo Ct"), "A.JPG", 1)]);
+    await intake.driveIntake({ budgetMs: 60_000, now: NOW });
+    c.ok("…a waiting batch is made first", (await prisma.photoIntakeBatch.count({ where: { projectId: ariDone.id } })) === 1);
+    await prisma.photoJob.create({ data: { projectId: ariDone.id, stage: "DELIVERED" } });
+    await intake.driveIntake({ budgetMs: 60_000, now: new Date(NOW.getTime() + 60 * MIN) });
+    c.ok("a job delivered in Aryeo: the waiting batch is dropped, nothing sent", (await prisma.photoIntakeBatch.count({ where: { projectId: ariDone.id } })) === 0 && !fake.posts("/v1/photoshoots/from-urls").some((x) => /4 Aryeo/.test(String((x.body as { address: string }).address))));
+
+    // ======================================================================
+    c.head("11 · checks Jordan switched off stay off");
+    const house = await import("@/lib/photoDelivery/houseRules");
+    const verdictMod = await import("@/lib/photoDelivery/qc/verdict");
+    const hoseOpen = await prisma.photoQcFinding.count({ where: { ruleId: "EXT_GARDEN_HOSES", status: "OPEN" } });
+    const stop = await house.stopRule("EXT_GARDEN_HOSES", "We don't need to know this", "Jordan Spackman");
+    c.ok("switching a check off sets its open findings aside", stop.ok && stop.setAside === hoseOpen && hoseOpen > 0 && (await prisma.photoQcFinding.count({ where: { ruleId: "EXT_GARDEN_HOSES", status: "OPEN" } })) === 0, stop.message);
+    const setAside = await prisma.photoQcFinding.findFirstOrThrow({ where: { ruleId: "EXT_GARDEN_HOSES" } });
+    c.ok("…as IGNORED, with the reason and who", setAside.status === "IGNORED" && /Not checked any more: We don't need to know this/.test(setAside.statusReason ?? "") && setAside.decidedBy === "Jordan Spackman");
+    const offRules = house.disabledIn(await house.houseOverrides());
+    c.ok("the free check's question leaves it out", !/EXT_GARDEN_HOSES/.test(check.checkPrompt(offRules)) && /EXT_TRASH_CANS_PRIMARY/.test(check.checkPrompt(offRules)));
+    c.ok("an answer naming it anyway is dropped", check.parseCheckAnswer('{"issues":[{"id":"EXT_GARDEN_HOSES","where":"x","confidence":0.9},{"id":"EXT_TRASH_CANS_PRIMARY","where":"y","confidence":0.9}]}', offRules)!.issues.map((i) => i.ruleId).join() === "EXT_TRASH_CANS_PRIMARY");
+    const fake1 = { id: "f1", ruleId: "EXT_GARDEN_HOSES", groupKey: "g", photoId: "p", severity: "MAJOR", confidence: 0.9, status: "OPEN", arbitration: "NOT_REQUIRED", privacySensitive: false };
+    c.ok("a finding of it never counts in a verdict", verdictMod.jobVerdict([fake1], { overrides: await house.houseOverrides() }).verdict === "PASS" && verdictMod.jobVerdict([fake1], {}).verdict === "NEEDS_DECISION");
+    c.ok("a client's own entry still wins", house.mergeOverrides(await house.houseOverrides(), [{ ruleId: "EXT_GARDEN_HOSES", severity: "MINOR", reason: "client" }]).filter((o) => o.ruleId === "EXT_GARDEN_HOSES").length === 1);
+    c.ok("the catch-all cannot be switched off", !(await house.stopRule("OTHER_DEFECT", "x", "Jordan")).ok);
+    const back = await house.resumeRule("EXT_GARDEN_HOSES", "Jordan Spackman");
+    c.ok("checked again: back in the question", back.ok && /EXT_GARDEN_HOSES/.test(check.checkPrompt(house.disabledIn(await house.houseOverrides()))));
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

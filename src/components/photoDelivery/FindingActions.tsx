@@ -1,6 +1,6 @@
 "use client";
 
-import { Ban, Camera, CircleSlash, Hand, Undo2, UserRound, Wrench } from "lucide-react";
+import { Ban, Camera, CircleSlash, EyeOff, Hand, Undo2, UserRound, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useJob } from "./JobContext";
 import { HUMAN_CALL_LABEL, UNDOABLE } from "./format";
@@ -20,7 +20,8 @@ const btn =
   "inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-50";
 
 export function FindingActions({ findings, className, showFix = true }: { findings: FindingView[]; className?: string; showFix?: boolean }) {
-  const { decide, addToCart, cartLineByFinding, selected, pending } = useJob();
+  const { decide, addToCart, cartLineByFinding, selected, pending, viewer, stopFlagging } = useJob();
+  const ruleIds = [...new Set(findings.map((f) => f.ruleId))];
   const open = findings.filter((f) => f.status === "OPEN");
   const undoable = findings.filter((f) => UNDOABLE.has(f.status));
   if (!open.length && !undoable.length) return null;
@@ -70,6 +71,12 @@ export function FindingActions({ findings, className, showFix = true }: { findin
       <button type="button" className={btn} disabled={pending} onClick={() => void decide(open, "OVERRIDDEN")}>
         <Hand aria-hidden className="size-3.5" /> Override
       </button>
+      {/* OTHER_DEFECT is the catch-all: switching it off would hide everything unnamed. */}
+      {viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && (
+        <button type="button" className={btn} disabled={pending} onClick={() => void stopFlagging(ruleIds[0], findings[0].ruleLabel || ruleIds[0])} title="Stop checking for this on every shoot">
+          <EyeOff aria-hidden className="size-3.5" /> Stop flagging this
+        </button>
+      )}
       {undoable.length > 0 && (
         <button type="button" className={btn} disabled={pending} onClick={() => void decide(undoable, "OPEN")} title="Reopen the decided ones in this group">
           <Undo2 aria-hidden className="size-3.5" /> Undo {undoable.length}
