@@ -156,7 +156,7 @@ async function main() {
     const want = label === "no caption CTA" ? "hook,point,point,point,close" : "hook,point,point,point,close,caption";
     c.ok(`${label}: sections are ${want}`, roles === want, roles);
     c.ok(`${label}: the three roles are read from "Talking Point n: Role"`, L.sections.filter((s) => s.role === "point").map((s) => s.pointRole).join(",") === "re-hook,build-up,payoff");
-    c.ok(`${label}: canonical bold labels`, L.sections.slice(0, 5).map((s) => s.label).join(" | ") === "Hook | Talking Point 1 — Re-hook | Talking Point 2 — Build-up | Talking Point 3 — Payoff | Close / CTA", L.sections.map((s) => s.label).join(" | "));
+    c.ok(`${label}: canonical bold labels`, L.sections.slice(0, 5).map((s) => s.label).join(" | ") === "Hook | Talking Point 1: Re-hook | Talking Point 2: Build-up | Talking Point 3: Payoff | Close / CTA", L.sections.map((s) => s.label).join(" | "));
     c.ok(`${label}: no word lost (layout words == body words)`, JSON.stringify(pure.layoutWords(L)) === JSON.stringify(pure.scriptWords(text)));
     const spoken = [canon.hook?.text, ...canon.points.map((p) => p.text), canon.close?.text].join(" ");
     c.ok(`${label}: the spoken words are exactly the parts' words`, JSON.stringify(pure.spokenLayoutWords(L)) === JSON.stringify(pure.scriptWords(spoken)));

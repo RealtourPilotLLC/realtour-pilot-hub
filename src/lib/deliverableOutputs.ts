@@ -1632,6 +1632,13 @@ export type SessionBriefTopic = {
   script: { title: string; versionNo: number; text: string | null; clientApproved: boolean; standing: string; direction: ScriptDirection | null } | null;
   /** why there are no words to show, when there are none */
   noScript: string | null;
+  /**
+   * Oct 14 2026 (Jordan: "John Collins' first 4 scripts are for his October
+   * 14th shoot"): a month filmed over several shoots splits its topics in
+   * order, so this is the 1-based shoot of the month a topic is planned for,
+   * or null when the month has one shoot.
+   */
+  plannedShoot?: { n: number; of: number; whenISO: string | null } | null;
 };
 
 export type SessionBrand = {
@@ -1645,6 +1652,8 @@ export type SessionBrand = {
 export type SessionBrief = {
   monthKey: string;
   owed: number;
+  /** Oct 14 2026: which of the month's shoots this is (1-based), when there are several. */
+  shoot?: { n: number; of: number } | null;
   topics: SessionBriefTopic[];
   brand: SessionBrand | null;
 };
@@ -1697,9 +1706,33 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
       noScript: v ? null : t.scriptId ? "The script is still with the office; nothing has been released to the client yet." : "No script for this topic yet.",
     };
   });
+  // SPLIT ACROSS THE MONTH'S SHOOTS (Oct 14 2026). The month's live shoots, in
+  // date order; topics go to them in their own order, an equal share each, so
+  // shoot 1 of 2 is planned for the first half. Extras ride with the last.
+  let shoot: { n: number; of: number } | null = null;
+  const proj = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true } });
+  if (proj?.contentMonthId) {
+    const shoots = await prisma.project.findMany({
+      where: { contentMonthId: proj.contentMonthId, status: { not: "CANCELLED" } },
+      orderBy: [{ shootDate: "asc" }, { createdAt: "asc" }],
+      select: { id: true, shootDate: true },
+    });
+    const at = shoots.findIndex((p) => p.id === projectId);
+    if (shoots.length > 1 && at >= 0) {
+      shoot = { n: at + 1, of: shoots.length };
+      const planned = topics.filter((t) => !t.overflow);
+      const per = Math.ceil(planned.length / shoots.length);
+      planned.forEach((t, i) => {
+        const k = Math.min(Math.floor(i / Math.max(per, 1)), shoots.length - 1);
+        t.plannedShoot = { n: k + 1, of: shoots.length, whenISO: shoots[k].shootDate?.toISOString() ?? null };
+      });
+      for (const t of topics) if (t.overflow) t.plannedShoot = { n: shoots.length, of: shoots.length, whenISO: shoots[shoots.length - 1].shootDate?.toISOString() ?? null };
+    }
+  }
   return {
     monthKey: session.monthKey,
     owed: session.owed,
+    shoot,
     topics,
     brand: brand
       ? {

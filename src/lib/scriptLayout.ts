@@ -40,7 +40,7 @@ export type SectionRole = "hook" | "point" | "rehook-extra" | "payoff-extra" | "
 
 export type ScriptSection = {
   role: SectionRole;
-  /** The canonical, client-facing heading ("Talking Point 1 — Re-hook"). */
+  /** The canonical, client-facing heading ("Talking Point 1: Re-hook"). */
   label: string;
   /** 1-based for talking points. */
   index: number | null;
@@ -82,7 +82,7 @@ export function roleOf(fragment: string | null | undefined): TalkingPointRole | 
 }
 
 export function pointLabel(index: number, role: TalkingPointRole | null): string {
-  return role ? `Talking Point ${index} — ${ROLE_LABEL[role]}` : `Talking Point ${index}`;
+  return role ? `Talking Point ${index}: ${ROLE_LABEL[role]}` : `Talking Point ${index}`; // Oct 14 2026: no em dashes on anything a client or crew reads
 }
 
 /**

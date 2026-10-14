@@ -25,6 +25,8 @@ import { shootBriefLines, briefSnapshot, briefDigest, briefChanges, parseBriefSn
 import { stripMoneySentences } from "@/lib/text";
 import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
 import type { MonthBriefView } from "@/lib/monthBriefCore";
+import { ScriptView } from "@/components/script/ScriptView";
+import { stripScriptDashes } from "@/lib/contentPolicy/scriptFormat";
 
 export const dynamic = "force-dynamic";
 
@@ -233,6 +235,45 @@ export default async function ShootDetailPage({
   return <ShootScreen view={view} pay={pay} map={map} briefRead={briefRead} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} />;
 }
 
+/** One topic of a filming session, read on a phone mid-shoot (Oct 14 2026, Jordan: "make sure the text is formatted nicely and easily readable"). */
+function SessionTopicCard({ t, n }: { t: NonNullable<ShootView["session"]>["topics"][number]; n: number }) {
+  const title = stripScriptDashes(t.script?.title || t.title, { title: true });
+  const clean = (x: string | null | undefined) => (x ? stripScriptDashes(x) : x);
+  return (
+    <div className="rounded-xl border border-border bg-surface-2/40 p-3 sm:p-4">
+      <div className="text-lg font-semibold leading-snug text-balance">{n}. {title}</div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+        {t.script && (
+          <span className={`rounded-full px-2 py-0.5 font-medium ${t.script.clientApproved ? "bg-success/15 text-success" : "bg-warning/15 text-warning"}`}>
+            {t.script.clientApproved ? "Client approved" : "Not approved by the client yet"}
+          </span>
+        )}
+        {t.script && <span className="text-muted">Script v{t.script.versionNo}</span>}
+        {t.overflow && <span className="rounded-full bg-warning/10 px-2 py-0.5 font-medium text-warning">Extra, if there is time</span>}
+      </div>
+      {t.script ? (
+        <>
+          {!t.script.clientApproved && (
+            <p className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm leading-relaxed text-foreground/90">Film it as written. The client can still ask for changes.</p>
+          )}
+          {t.script.text ? (
+            <div className="mt-1 max-w-[65ch]"><ScriptView body={clean(t.script.text) ?? ""} size="lg" audience="staff" showMissingPillar={false} fileTitle={title} /></div>
+          ) : null}
+        </>
+      ) : (
+        <p className="mt-2 text-sm text-muted">{t.noScript}</p>
+      )}
+      {t.script?.direction && (t.script.direction.filmingNotes || t.script.direction.creativeDirection || t.script.direction.productionNotes) && (
+        <div className="mt-3 space-y-2 rounded-lg border border-border bg-surface/60 p-3 text-sm leading-relaxed text-foreground/90">
+          {t.script.direction.filmingNotes && <div><div className="text-[11px] font-bold uppercase tracking-wider text-brand">Filming notes</div><p className="mt-0.5">{clean(t.script.direction.filmingNotes)}</p></div>}
+          {t.script.direction.creativeDirection && <div><div className="text-[11px] font-bold uppercase tracking-wider text-brand">Direction</div><p className="mt-0.5">{clean(t.script.direction.creativeDirection)}</p></div>}
+          {t.script.direction.productionNotes && <div><div className="text-[11px] font-bold uppercase tracking-wider text-brand">Production</div><p className="mt-0.5">{clean(t.script.direction.productionNotes)}</p></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // THIS SESSION'S VIDEOS (§6.8 / §7.5 / A28, Sep 25 2026). Server-rendered and
 // read-only: the photographer directs from it, and the office changes it where
@@ -242,55 +283,41 @@ export default async function ShootDetailPage({
 function SessionBriefCard({ session, outputs, assets, clientBrief }: { session: ShootView["session"]; outputs: ShootView["outputBriefs"]; assets: AssetRow[]; clientBrief?: { view: MonthBriefView | null; clientPlanned: boolean } | null }) {
   if (!session && outputs.length === 0 && !clientBrief) return null;
   const clientPlanned = !!clientBrief?.clientPlanned;
-  const toFilm = session?.topics.filter((t) => !t.filmedElsewhere) ?? [];
+  const shoot = session?.shoot ?? null;
+  const live = session?.topics.filter((t) => !t.filmedElsewhere) ?? [];
+  // Oct 14 2026: a month filmed over several shoots shows THIS shoot's share
+  // first; the rest wait, collapsed, under the shoot they are planned for.
+  const toFilm = live.filter((t) => !shoot || !t.plannedShoot || t.plannedShoot.n === shoot.n);
+  const otherShoot = live.filter((t) => shoot && t.plannedShoot && t.plannedShoot.n !== shoot.n);
   const elsewhere = session?.topics.filter((t) => t.filmedElsewhere) ?? [];
   const brand = session?.brand ?? null;
   const hasBrand = !!brand && (!!brand.fontNames || brand.files.length > 0 || !!brand.music || brand.productionDefaults.length > 0 || brand.acceptedPreferences.length > 0);
+  const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "the other shoot");
   return (
     <Section
       icon={Clapperboard}
       title={session ? "This session's videos" : "Each video's brief"}
-      count={session ? `${toFilm.length} topic${toFilm.length === 1 ? "" : "s"}` : undefined}
+      count={session ? `${toFilm.length} topic${toFilm.length === 1 ? "" : "s"}${shoot ? ` · shoot ${shoot.n} of ${shoot.of}` : ""}` : undefined}
       bodyClassName="space-y-3"
     >
       {clientBrief && <BriefReadOnly brief={clientBrief.view} clientPlanned={clientPlanned} monthName={session?.monthKey ? new Date(Date.UTC(Number(session.monthKey.slice(0, 4)), Number(session.monthKey.slice(5, 7)) - 1, 15)).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" }) : "this month"} />}
       {session && toFilm.length === 0 && !clientPlanned && (
         <p className="text-sm text-muted">No topics are chosen for this session yet. Ask the office before you start.</p>
       )}
-      {toFilm.map((t, i) => (
-        <div key={t.topicId} className="rounded-xl border border-border bg-surface-2/40 p-3">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="text-base font-semibold">{i + 1}. {t.title}</span>
-            {t.pillarName && <span className="text-xs text-muted">{t.pillarName}</span>}
-            {t.overflow && <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">extra, if there is time</span>}
-          </div>
-          {t.script ? (
-            // OPEN BY DEFAULT, READABLE ON A PHONE (Oct 5, photographer audit):
-            // the script is what they direct from, so it is on screen at a
-            // reading size, and the whole summary row is the tap target.
-            <details open className="group/script mt-2">
-              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg px-1 text-sm font-medium text-foreground/90 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
-                <span aria-hidden="true" className="inline-block text-muted transition-transform group-open/script:rotate-90">›</span>
-                <span>Script v{t.script.versionNo}</span>
-                <span className={t.script.clientApproved ? "text-success" : "text-warning"}>· {t.script.standing}</span>
-              </summary>
-              {!t.script.clientApproved && (
-                <p className="mt-1 rounded-lg bg-warning/10 px-2.5 py-1.5 text-sm text-foreground/90">The client hasn&rsquo;t approved this script yet. Film it as written — the client can still ask for changes.</p>
-              )}
-              {t.script.text && <p className="mt-2 whitespace-pre-wrap text-base leading-relaxed">{t.script.text}</p>}
-            </details>
-          ) : (
-            <p className="mt-1 text-sm text-muted">{t.noScript}</p>
-          )}
-          {t.script?.direction && (
-            <div className="mt-2 space-y-0.5 text-sm leading-relaxed text-foreground/85">
-              {t.script.direction.filmingNotes && <p><span className="text-muted">Filming: </span>{t.script.direction.filmingNotes}</p>}
-              {t.script.direction.creativeDirection && <p><span className="text-muted">Direction: </span>{t.script.direction.creativeDirection}</p>}
-              {t.script.direction.productionNotes && <p><span className="text-muted">Production: </span>{t.script.direction.productionNotes}</p>}
-            </div>
-          )}
-        </div>
-      ))}
+      {shoot && toFilm.length > 0 && (
+        <p className="text-sm text-muted">This month is filmed over {shoot.of} shoots. Film these {toFilm.length} today; the rest are below for {shoot.of === 2 ? "the other shoot" : "the other shoots"}.</p>
+      )}
+      {toFilm.map((t, i) => <SessionTopicCard key={t.topicId} t={t} n={i + 1} />)}
+      {otherShoot.length > 0 && (
+        <details className="group/other rounded-xl border border-dashed border-border p-3">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-medium text-foreground/90">
+            <span aria-hidden="true" className="inline-block text-muted transition-transform group-open/other:rotate-90">›</span>
+            <span>Planned for {day(otherShoot[0].plannedShoot?.whenISO ?? null)} ({otherShoot.length} topic{otherShoot.length === 1 ? "" : "s"})</span>
+          </summary>
+          <p className="mt-1 text-xs text-muted">Only film these today if the office asks you to.</p>
+          <div className="mt-3 space-y-3">{otherShoot.map((t, i) => <SessionTopicCard key={t.topicId} t={t} n={toFilm.length + i + 1} />)}</div>
+        </details>
+      )}
       {elsewhere.length > 0 && (
         <p className="text-xs text-muted">Already filmed at the other session: {elsewhere.map((t) => t.title).join(", ")}.</p>
       )}
