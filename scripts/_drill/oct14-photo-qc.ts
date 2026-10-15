@@ -584,7 +584,8 @@ async function main() {
     // ---- 9. end to end ---------------------------------------------------------------------
     c.head("9 · end to end on PGlite: driveQc over 3 photos");
     const { putSetting } = await import("@/lib/settings");
-    const settings = (o: Record<string, unknown>) => putSetting("photo_delivery:settings", { qcEnabled: true, qcShadow: true, maxBuildPhase: 1, minLongEdgePx: 2000, displayConfidenceFloor: 0.5, monthlyQcBudgetUsd: 300, ...o }, "drill");
+    // paidQcAuto defaults off since Oct 15 2026 (money-spending defaults are off); this drill drives the automatic start.
+    const settings = (o: Record<string, unknown>) => putSetting("photo_delivery:settings", { qcEnabled: true, paidQcAuto: true, qcShadow: true, maxBuildPhase: 1, minLongEdgePx: 2000, displayConfidenceFloor: 0.5, monthlyQcBudgetUsd: 300, ...o }, "drill");
     await settings({});
     const client = await prisma.client.create({ data: { name: "Drill Realty" } });
     const project = await prisma.project.create({ data: { title: "12 Drill Lane, Allentown, PA", addressLine: "12 Drill Lane", city: "Allentown", state: "PA", clientId: client.id } });
@@ -733,6 +734,25 @@ async function main() {
       async put(pathname, data) { store.set(pathname, Buffer.from(data)); return { pathname, url: `https://drill-store.private.blob.vercel-storage.invalid/${pathname}` }; },
       async read(ref) { const b = store.get(ref.pathname); return b ? { stream: new Blob([new Uint8Array(b)]).stream(), size: b.length, contentType: "image/jpeg" } : null; },
     });
+    // Oct 15 2026 (perf audit #1): an AutoHDR photo reads the copies the QC run
+    // stored (its content hash is the key, not a key of its own), and a photo
+    // rendered on the fly keeps every size in the store for the next request.
+    const kitchenWas = await prisma.photoAsset.findUniqueOrThrow({ where: { id: kid }, select: { sourceKind: true, autohdrVersionUuid: true, derivJson: true, derivHash: true } });
+    await prisma.photoAsset.update({ where: { id: kid }, data: { sourceKind: "AUTOHDR", autohdrVersionUuid: "ver-kitchen-1" } });
+    D.derivCache.clear();
+    const loadsA = loads.length;
+    const rA = await get("qc2048");
+    c.ok("an AutoHDR photo is served from the copies the QC run stored (same key), with no download", rA.status === 200 && rA.headers.get("cache-control") === "private, max-age=3600" && loads.length === loadsA, `${rA.status} ${rA.headers.get("cache-control")} loads ${loads.length - loadsA}`);
+    await prisma.photoAsset.update({ where: { id: kid }, data: { derivJson: null, derivHash: null } });
+    D.derivCache.clear();
+    const rB = await get("thumb256");
+    const keptRow = await prisma.photoAsset.findUniqueOrThrow({ where: { id: kid }, select: { contentHash: true, derivJson: true, derivHash: true } });
+    const keptMap = D.parseDerivMap(keptRow.derivJson);
+    c.ok("rendered on the fly: ONE download makes every size, each kept in the private store under the QC key", rB.status === 200 && loads.length === loadsA + 1 && keptRow.derivHash === keptRow.contentHash && D.UI_SIZES.every((s) => !!keptMap[s]?.pathname && store.has(keptMap[s]!.pathname!)) && keptMap.qc2048?.w === 2048 && keptMap.qc2048?.h === 1365, JSON.stringify(keptMap));
+    D.derivCache.clear();
+    const rC = await get("qc1024");
+    c.ok("...so the next size comes from the store (any instance), with no second download", rC.status === 200 && rC.headers.get("cache-control") === "private, max-age=3600" && loads.length === loadsA + 1);
+    await prisma.photoAsset.update({ where: { id: kid }, data: kitchenWas });
 
     // A person ignores the kitchen finding, then asks for a full re-inspection.
     await prisma.photoQcFinding.update({ where: { id: kit!.id }, data: { status: "IGNORED", statusReason: "client keeps the soap out", decidedBy: "Kyle" } });

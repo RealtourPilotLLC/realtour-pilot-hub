@@ -1,15 +1,13 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { appBase } from "@/lib/appUrl";
 import { autohdr, AutohdrError } from "@/lib/integrations/autohdr";
 import { photoDeliverySettings } from "./settings";
 import { logJobEvent, setStage } from "./jobState";
 import { ruleById, SEVERITY_RANK, type Severity } from "./registry";
-import { jobVerdict, qcStageFor } from "./qc/verdict";
-import { houseOverrides } from "./houseRules";
 import { creditThresholds } from "./credits";
-import { transformPrice } from "./fixes";
+import { ClaimLost, transformPrice } from "./fixes";
+import { reviewStage } from "./decisions";
 
 // ---------------------------------------------------------------------------
 // AUTOMATIC QC FIXES ON A BUDGET (Oct 14 2026).
@@ -228,6 +226,7 @@ export function secondLookPrompt(items: { label: string; where: string | null }[
 
 type Photo = { id: string; sourceKind: string; sourceRef: string | null; autohdrImageUuid: string | null; sequence: number; status: string };
 
+/** Which AutoHDR shoot a photo lives in: the hub's own shoots (intake.ts) are in sourceRef "<shoot>/<image_uuid>", else the job's shoot. */
 export function shootIdOf(photo: Pick<Photo, "sourceKind" | "sourceRef">, jobShoot: number | null): number | null {
   if (photo.sourceKind === "AUTOHDR" && photo.sourceRef?.includes("/")) {
     const n = Number(photo.sourceRef.split("/")[0]);
@@ -262,7 +261,11 @@ export async function secondLookJob(jobId: string, deadline: number): Promise<{ 
         try {
           answer = jsonFrom(await describePhoto(shoot, p.autohdrImageUuid, secondLookPrompt(items)));
         } catch (e) {
-          if (e instanceof AutohdrError && (e.status === 404 || e.expired)) answer = null;
+          // AutoHDR failing to answer (network, 429, 5xx) is no answer at all:
+          // left as it is for the next pass, never confirmed (backend audit #9:
+          // that would pay to fix what nobody looked at again). Only a photo
+          // AutoHDR no longer has counts as unreadable.
+          if (!(e instanceof AutohdrError && (e.status === 404 || e.expired))) return;
         }
         for (let k = 0; k < list.length; k++) {
           const f = list[k];
@@ -290,16 +293,12 @@ export async function secondLookJob(jobId: string, deadline: number): Promise<{ 
   return { done: left === 0, confirmed, overturned };
 }
 
-/** Recompute the verdict and stage after findings changed (second look, fixes). */
+/** Recompute the verdict and stage after findings changed (second look, fixes, a re-check): the one review rule (decisions.reviewStage). */
 export async function refreshVerdict(jobId: string, actor: string): Promise<void> {
-  const settings = await photoDeliverySettings();
-  const findings = await prisma.photoQcFinding.findMany({ where: { jobId, status: { not: "SUPERSEDED" } }, select: { id: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true, specificIssue: true, source: true } });
-  const v = jobVerdict(findings, { floor: settings.displayConfidenceFloor, overrides: await houseOverrides() });
-  const target = qcStageFor(v, settings.qcShadow);
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, qcVerdict: true } });
+  const [r, job] = await Promise.all([reviewStage(jobId), prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, qcVerdict: true } })]);
   if (!job) return;
-  if (["QC_REVIEW", "READY"].includes(job.stage) && job.stage !== target) await setStage(jobId, ["QC_REVIEW", "READY"], target, actor, { why: `verdict now ${v.verdict}`, extra: { qcVerdict: v.verdict } });
-  else if (job.qcVerdict !== v.verdict) await prisma.photoJob.update({ where: { id: jobId }, data: { qcVerdict: v.verdict } });
+  if (r.stage !== "stay" && ["QC_REVIEW", "READY"].includes(job.stage) && job.stage !== r.stage) await setStage(jobId, ["QC_REVIEW", "READY"], r.stage, actor, { why: `verdict now ${r.verdict}`, extra: { qcVerdict: r.verdict } });
+  else if (job.qcVerdict !== r.verdict) await prisma.photoJob.update({ where: { id: jobId }, data: { qcVerdict: r.verdict } });
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +391,8 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   const settings = await photoDeliverySettings();
   const none = (reason: string, extra: Partial<PlanResult> = {}): PlanResult => ({ planned: false, reason, photos: 0, credits: 0, asIs: false, left: 0, ...extra });
   if (!settings.autoFix) return none("automatic fixes are switched off");
+  // Backend audit #12: a plan the runner will never send would park the job in FIXING.
+  if (!settings.fixRunnerEnabled) return none("AutoHDR fixes are switched off");
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, projectId: true, autohdrPhotoshootId: true, lastQcRunId: true } });
   if (!job || !["QC_REVIEW", "READY"].includes(job.stage)) return none("not waiting on QC review");
   const run = job.lastQcRunId ? await prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, startedAt: true } }) : null;
@@ -399,8 +400,7 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   if (await alreadyPlanned(jobId, run.startedAt)) return none("already planned for this check");
   if (await prisma.photoQcFinding.count({ where: { jobId, status: "OPEN", source: "AHDR", arbitration: "NOT_REQUIRED", photoId: { not: null } } })) return none("the second look is still running");
 
-  const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true, clientId: true } });
-  const street = (project?.title ?? "A shoot").split(",")[0];
+  const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { clientId: true } });
   const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, select: { id: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, sequence: true, status: true } });
   const everyOpen = await prisma.photoQcFinding.findMany({
     where: { jobId, status: "OPEN", photoId: { in: photos.map((p) => p.id) }, arbitration: { not: "OVERTURNED" }, source: { not: "ADDON" } },
@@ -408,10 +408,19 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   });
   // Huddle finding 9: what people's calls taught the hub.
   const learned = await learnedRules();
+  // One automatic try per issue: one an AI fix already ran on (still there, or
+  // put back) waits for a person, even when a re-check plans the shoot again.
+  const tried = new Set((await prisma.photoFixOperation.findMany({ where: { jobId }, select: { findingIdsJson: true } })).flatMap((o) => {
+    try { return JSON.parse(o.findingIdsJson) as string[]; } catch { return []; }
+  }));
   const notes = new Map<string, string>();
   const findings = everyOpen.filter((f) => {
     const l = learned.get(f.ruleId);
     const floor = l?.strict ? STRICT_CONFIDENCE : 0.6;
+    if (tried.has(f.id)) {
+      notes.set(f.id, "Not fixed automatically again: an AI fix already tried this one. Look at it, then Fix or set it aside.");
+      return false;
+    }
     if (f.privacySensitive) {
       notes.set(f.id, neverWhy(f.ruleId, true));
       return false;
@@ -509,20 +518,25 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
     let n = 0;
     for (const c of chosen) {
       const items = [...c.always, ...c.prep];
+      // Only what is still OPEN (backend audit #6): a person's approval that
+      // won the race keeps its findings, and this whole plan is undone.
+      const claimed = await tx.photoQcFinding.updateMany({ where: { id: { in: items.map((f) => f.id) }, status: "OPEN" }, data: { status: "APPROVED_FIX", decidedBy: "auto-fix", decidedAt: new Date() } });
+      if (claimed.count !== items.length) throw new ClaimLost();
       // Every finding carries its instruction (the runner merges them into one re-edit).
       for (const f of items) if (!f.reeditPrompt) await tx.photoQcFinding.update({ where: { id: f.id }, data: { reeditPrompt: instructionFor(f.ruleId, f.locationText) } });
       await tx.photoFixOperation.create({
         data: { batchId: b.id, jobId, photoId: c.photo.id, findingIdsJson: JSON.stringify(items.map((f) => f.id)), seq: 0, strategy: "REEDIT_PROMPT", transformName: "reedit", estimatedCredits: price, status: "QUEUED" },
       });
-      await tx.photoQcFinding.updateMany({ where: { id: { in: items.map((f) => f.id) } }, data: { status: "APPROVED_FIX", decidedBy: "auto-fix", decidedAt: new Date() } });
       n++;
     }
     return { id: b.id, n };
+  }).catch((e) => {
+    if (e instanceof ClaimLost) return null;
+    throw e;
   });
+  if (!batch) return none("someone decided these issues first");
   await setStage(jobId, ["QC_REVIEW", "READY"], "FIXING", "auto-fix", { why: `automatic fixes: ${batch.n} photo${batch.n === 1 ? "" : "s"}, ${credits} credits (${usd(credits)})` });
   await logJobEvent(jobId, "auto-fix", `automatic fixes planned: ${batch.n} photo${batch.n === 1 ? "" : "s"}, ${credits} credit${credits === 1 ? "" : "s"} (${usd(credits)}; target ${usd(target)}, max ${usd(max)}).${leftOver ? ` ${leftOver} more photo${leftOver === 1 ? "" : "s"} left for a person (over budget).` : ""}${clutterNote}`, { batchId: batch.id, runStartedAt: run.startedAt.toISOString(), asIs, credits, photos: batch.n, leftOver });
-  void appBase;
-  void street;
   return { planned: true, reason: "planned", photos: batch.n, credits, asIs, left: leftOver };
 }
 
@@ -590,13 +604,20 @@ export async function suggestAddOns(jobId: string): Promise<{ suggested: number;
   const settings = await photoDeliverySettings();
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, expectedJson: true, autohdrPhotoshootId: true } });
   if (!job) return { suggested: 0, twilightRerenders: 0, skipped: "no job" };
-  const run = await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "DONE" }, orderBy: { startedAt: "desc" }, select: { id: true, checksJson: true } });
+  const run = await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "DONE" }, orderBy: { startedAt: "desc" }, select: { id: true, checksJson: true, startedAt: true } });
   if (!run) return { suggested: 0, twilightRerenders: 0, skipped: "no finished free check" };
-  if (await prisma.photoQcFinding.count({ where: { jobId, qcRunId: run.id, source: "ADDON" } })) return { suggested: 0, twilightRerenders: 0, skipped: "already suggested for this check" };
   let expected: Expected = {};
   try { expected = JSON.parse(job.expectedJson ?? "{}") as Expected; } catch { expected = {}; }
-  const want = { twilight: expected.twilightVirtual ?? 0, staging: expected.virtualStagingCount ?? 0, declutter: expected.virtualDeclutterCount ?? 0, real: expected.twilightReal ?? 0 };
-  if (!want.twilight && !want.staging && !want.declutter && !want.real) return { suggested: 0, twilightRerenders: 0, skipped: "no add-ons ordered" };
+  const ordered = { twilight: expected.twilightVirtual ?? 0, staging: expected.virtualStagingCount ?? 0, declutter: expected.virtualDeclutterCount ?? 0, real: expected.twilightReal ?? 0 };
+  if (!ordered.twilight && !ordered.staging && !ordered.declutter && !ordered.real) return { suggested: 0, twilightRerenders: 0, skipped: "no add-ons ordered" };
+  // Once per add-on and photo for the whole job: a re-check (photos added
+  // later) suggests only what is still missing, and never re-renders a real
+  // twilight twice.
+  const earlier = await prisma.photoQcFinding.findMany({ where: { jobId, source: "ADDON" }, select: { ruleId: true, photoId: true } });
+  const taken = new Set(earlier.map((f) => `${f.ruleId}:${f.photoId}`));
+  const untaken = (ruleId: string) => (p: { id: string }) => !taken.has(`${ruleId}:${p.id}`);
+  const left = (ruleId: string, n: number) => Math.max(0, n - earlier.filter((f) => f.ruleId === ruleId).length);
+  const want = { twilight: left("ADDON_VIRTUAL_TWILIGHT", ordered.twilight), staging: left("ADDON_VIRTUAL_STAGING", ordered.staging), declutter: left("ADDON_VIRTUAL_DECLUTTER", ordered.declutter), real: ordered.real };
   let maps: CheckMaps = { rooms: {}, light: {}, furnished: {} };
   try { const p = JSON.parse(run.checksJson ?? "{}") as Partial<CheckMaps>; maps = { rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {} }; } catch { /* nothing seen */ }
   const photos = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true, name: true, sequence: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, contentHash: true } });
@@ -605,12 +626,14 @@ export async function suggestAddOns(jobId: string): Promise<{ suggested: number;
   const picks: Pick[] = [];
   if (want.twilight) {
     const day = (id: string) => (maps.light[id] ?? "day") === "day";
-    const fronts = photos.filter((p) => FRONT.test(room(p.id)) && !NOT_FRONT.test(room(p.id)) && day(p.id));
-    const exteriors = fronts.length ? fronts : photos.filter((p) => /exterior|outside/i.test(room(p.id)) && day(p.id));
+    const open = photos.filter(untaken("ADDON_VIRTUAL_TWILIGHT"));
+    const fronts = open.filter((p) => FRONT.test(room(p.id)) && !NOT_FRONT.test(room(p.id)) && day(p.id));
+    const exteriors = fronts.length ? fronts : open.filter((p) => /exterior|outside/i.test(room(p.id)) && day(p.id));
     for (const p of exteriors.slice(0, want.twilight)) picks.push({ photoId: p.id, ruleId: "ADDON_VIRTUAL_TWILIGHT", text: `Ordered: virtual twilight. Suggested here: the ${room(p.id) || "exterior"}.` });
   }
   if (want.staging) {
     const stageable = photos
+      .filter(untaken("ADDON_VIRTUAL_STAGING"))
       .map((p) => ({ p, type: STAGE_ROOM.find(([re]) => re.test(room(p.id)))?.[1] ?? null, f: maps.furnished[p.id] }))
       .filter((x) => x.type && (x.f === "empty" || x.f === "sparse"))
       .sort((a, b) => Number(b.f === "empty") - Number(a.f === "empty") || a.p.sequence - b.p.sequence);
@@ -620,13 +643,17 @@ export async function suggestAddOns(jobId: string): Promise<{ suggested: number;
     const prep = await prisma.photoQcFinding.findMany({ where: { jobId, status: { in: ["OPEN", "IGNORED"] }, photoId: { in: photos.map((p) => p.id) } }, select: { photoId: true, ruleId: true } });
     const count = new Map<string, number>();
     for (const f of prep) if (fixClass(f.ruleId) === "prep") count.set(f.photoId!, (count.get(f.photoId!) ?? 0) + 1);
-    const messy = photos.filter((p) => (count.get(p.id) ?? 0) > 0).sort((a, b) => (count.get(b.id) ?? 0) - (count.get(a.id) ?? 0) || a.sequence - b.sequence);
+    const messy = photos.filter((p) => (count.get(p.id) ?? 0) > 0 && untaken("ADDON_VIRTUAL_DECLUTTER")(p)).sort((a, b) => (count.get(b.id) ?? 0) - (count.get(a.id) ?? 0) || a.sequence - b.sequence);
     for (const p of messy.slice(0, want.declutter)) picks.push({ photoId: p.id, ruleId: "ADDON_VIRTUAL_DECLUTTER", text: `Ordered: virtual declutter. Suggested here: ${count.get(p.id)} clutter item${count.get(p.id) === 1 ? "" : "s"} in the ${room(p.id) || "room"}.` });
   }
-  const dusk = want.real ? photos.filter((p) => maps.light[p.id] === "twilight" || maps.light[p.id] === "night") : [];
+  const dusk = want.real ? photos.filter((p) => (maps.light[p.id] === "twilight" || maps.light[p.id] === "night") && untaken("ADDON_REAL_TWILIGHT_LOOK")(p)) : [];
   for (const p of dusk) picks.push({ photoId: p.id, ruleId: "ADDON_REAL_TWILIGHT_LOOK", text: "Real twilight photo edited with the day look: re-render it with the twilight model.", params: { model_id: settings.realTwilightModelId } });
   if (!picks.length) {
-    await logJobEvent(jobId, "add-ons", `ordered add-ons: no photo fits yet (twilight ${want.twilight}, staging ${want.staging}, declutter ${want.declutter}, real twilight ${want.real})`);
+    if (earlier.length) return { suggested: 0, twilightRerenders: 0, skipped: "already suggested" };
+    // Said once per check, not every pass (backend audit #18).
+    if (!(await prisma.photoJobEvent.findFirst({ where: { jobId, actor: "add-ons", at: { gte: run.startedAt } }, select: { id: true } }))) {
+      await logJobEvent(jobId, "add-ons", `ordered add-ons: no photo fits yet (twilight ${want.twilight}, staging ${want.staging}, declutter ${want.declutter}, real twilight ${want.real})`);
+    }
     return { suggested: 0, twilightRerenders: 0 };
   }
   const created = [];
@@ -640,7 +667,7 @@ export async function suggestAddOns(jobId: string): Promise<{ suggested: number;
   // Real twilights: re-rendered with the twilight model now (the order pays; not the fix budget).
   let rerenders = 0;
   const realOnes = created.filter((f) => f.ruleId === "ADDON_REAL_TWILIGHT_LOOK");
-  if (realOnes.length && settings.autoFix) {
+  if (realOnes.length && settings.autoFix && settings.fixRunnerEnabled) {
     const { modelCatalog } = await import("./catalog");
     const price = (await modelCatalog().catch(() => null))?.find((m) => m.id === settings.realTwilightModelId)?.style_credit_cost ?? null;
     const shootable = realOnes.filter((f) => { const p = photos.find((x) => x.id === f.photoId); return !!p?.autohdrImageUuid && !!shootIdOf(p, job.autohdrPhotoshootId); });

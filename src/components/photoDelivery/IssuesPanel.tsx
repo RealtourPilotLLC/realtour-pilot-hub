@@ -8,20 +8,20 @@ import { etMonthDayTime } from "@/lib/datetime";
 import { PhotoImg } from "./PhotoImg";
 import { FindingActions } from "./FindingActions";
 import { photoTitle, useJob } from "./JobContext";
-import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, STRATEGY_LABEL, groupFindings, plural, type FindingGroup } from "./format";
+import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, groupFindings, plural, type FindingGroup } from "./format";
 import type { FindingView } from "./types";
 
 // ---------------------------------------------------------------------------
 // THE ISSUES TAB (plan 9.4, 7.5): finding GROUPS first ("Trash or recycling
-// bin, 3 photos"), each with its photos, severity, confidence, who it belongs
-// to (photographer, editor, office) and the decision buttons; a decision on a
+// bin, 3 photos"), each with its photos, severity, who it belongs to
+// (photographer, editor, office) and the decision buttons; a decision on a
 // group applies to every open finding in it. Decided groups fold away, and
 // everything under the confidence floor sits in a collapsed "Low confidence"
-// drawer that never blocks delivery. Order coverage (P4) lives on its own tab.
+// drawer marked unsure, which never blocks delivery. Order coverage (P4) lives
+// on its own tab.
 // ---------------------------------------------------------------------------
 
 const LIVE = new Set(["OPEN", "APPROVED_FIX", "FIXING"]);
-const pct = (n: number) => `${Math.round(n * 100)}%`;
 
 function StatusChip({ status }: { status: string }) {
   if (status === "OPEN") return null;
@@ -30,10 +30,9 @@ function StatusChip({ status }: { status: string }) {
 }
 
 function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
-  const { photoById, openLightbox, selected } = useJob();
+  const { photoById, openLightbox } = useJob();
   const first = g.findings[0];
   const single = g.findings.length === 1;
-  const inCart = g.findings.some((f) => selected.has(f.id) && f.status === "OPEN");
   return (
     <li className={cn("rounded-xl border bg-surface p-3", g.severity === "CRITICAL" && g.openIds.length ? "border-danger/40" : "border-border")}>
       <div className="flex flex-wrap items-center gap-1.5">
@@ -47,13 +46,11 @@ function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
         )}
         {g.findings.some((f) => f.isPermanentFeature) && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[12px] text-muted">Permanent feature</span>}
         {g.holds && <span className="rounded-full bg-danger-action px-2 py-0.5 text-[12px] font-semibold text-white">Holds delivery</span>}
-        {inCart && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[12px] font-medium">In cart</span>}
         {g.sharedStatus && <StatusChip status={g.sharedStatus} />}
       </div>
       <p className="mt-1 text-[13px] text-muted">
-        Confidence {pct(g.confidence)}
-        {low && " (below the floor: advisory only)"} · {RESPONSIBILITY_LABEL[g.responsibility] ?? g.responsibility}
-        {first.fixStrategy && ` · ${STRATEGY_LABEL[first.fixStrategy] ?? first.fixStrategy}`}
+        {low && "Unsure · "}
+        {RESPONSIBILITY_LABEL[g.responsibility] ?? g.responsibility}
         {first.arbitration === "PENDING" && " · second check pending"}
         {first.arbitration === "OVERTURNED" && " · downgraded by the second check"}
       </p>
@@ -122,7 +119,6 @@ function FindingRow({ f }: { f: FindingView }) {
       <div className="flex flex-wrap items-center gap-1.5">
         <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[f.severity])}>{SEVERITY_LABEL[f.severity]}</span>
         {p && <span className="font-medium">{photoTitle(p)} · {p.roomLabel}</span>}
-        <span className="text-muted">{pct(f.confidence)}</span>
         <StatusChip status={f.status} />
       </div>
       <p className="mt-0.5 break-words">{f.specificIssue}</p>
@@ -144,9 +140,9 @@ export function IssuesPanel() {
   const skippable = visible.filter((f) => f.status === "OPEN" || f.status === "APPROVED_FIX").length;
   const skipAll = async () => {
     const yes = await confirm({
-      title: `Skip all ${plural(skippable, "finding")} on this shoot?`,
-      body: "Every open finding is set aside, and fixes that have not been sent to AutoHDR yet are called off (nothing is charged for those). Ordered add-ons stay. You can reopen any finding afterwards.",
-      confirmLabel: "Skip all findings",
+      title: `Skip all ${plural(skippable, "issue")} on this shoot?`,
+      body: "Every open issue is set aside, and fixes that have not been sent to AutoHDR yet are called off (nothing is charged for those). Ordered add-ons stay. You can reopen any issue afterwards.",
+      confirmLabel: "Skip all",
     });
     if (yes) await run(() => skipAllFindingsAction(jobId));
   };
@@ -162,17 +158,15 @@ export function IssuesPanel() {
     <div className="space-y-3">
       {live.length === 0 ? (
         <p className="flex items-center gap-2 rounded-xl border border-success/30 bg-success-soft/40 p-3 text-sm">
-          <CheckCircle2 aria-hidden className="size-4 text-success" /> No open issues above the confidence floor.
+          <CheckCircle2 aria-hidden className="size-4 text-success" /> No issues to decide.
         </p>
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            <p className="min-w-0 flex-1 text-[13px] text-muted">
-              {plural(openCount, "open issue")} in {plural(live.length, "group")}. A decision on a group applies to every photo in it.
-            </p>
+            <p className="min-w-0 flex-1 text-[13px] text-muted">{plural(openCount, "issue")} to decide.</p>
             {skippable > 0 && (
-              <button type="button" onClick={() => void skipAll()} disabled={pending} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50">
-                <SkipForward aria-hidden className="size-4" /> Skip all findings
+              <button type="button" onClick={() => void skipAll()} disabled={pending} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-50">
+                <SkipForward aria-hidden className="size-4" /> Skip all
               </button>
             )}
           </div>
@@ -199,7 +193,7 @@ export function IssuesPanel() {
         <details className="rounded-xl border border-border">
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-medium text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
             <ShieldAlert aria-hidden className="size-4" /> Low confidence ({low.reduce((n, g) => n + g.findings.length, 0)})
-            <span className="text-[12px] font-normal text-muted-2">under {pct(data.displayFloor)}, never blocks delivery</span>
+            <span className="text-[12px] font-normal text-muted-2">Unsure. Never blocks delivery.</span>
           </summary>
           <ul className="space-y-2 border-t border-border p-2">
             {low.map((g) => (

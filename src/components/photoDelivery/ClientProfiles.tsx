@@ -10,10 +10,11 @@ import type { ClientProfileView, RuleOption, RuleOverrideView, Severity } from "
 
 // ---------------------------------------------------------------------------
 // CLIENT QC PROFILES (plan 4 ClientQcProfile, 7.5), owner only. Per client
-// with photo jobs: SLA hours, notes the QC prompt reads, the delivery message
-// (client-facing, Realtour Pilot Team voice), and rule overrides: turn a rule
-// off or re-grade it for this client, always with a reason, picked from the
-// rules registry with a search box.
+// with photo jobs: notes the QC prompt reads, the delivery message (Kyle
+// copies it when he delivers by hand; Realtour Pilot Team voice), and rule
+// overrides: turn a rule off or re-grade it for this client, always with a
+// reason, picked from the rules registry with a search box. (The profile's
+// SLA hours column is not shown: the due time comes from the project.)
 // ---------------------------------------------------------------------------
 
 const input = "w-full rounded-lg border border-border-strong bg-surface-2 px-3 text-sm focus-visible:outline-2 focus-visible:outline-brand";
@@ -65,7 +66,6 @@ function RulePicker({ rules, taken, onPick }: { rules: RuleOption[]; taken: Set<
 }
 
 function ProfileEditor({ p, rules, ruleById }: { p: ClientProfileView; rules: RuleOption[]; ruleById: Map<string, RuleOption> }) {
-  const [sla, setSla] = useState(p.slaHours == null ? "" : String(p.slaHours));
   const [notes, setNotes] = useState(p.notes);
   const [message, setMessage] = useState(p.deliveryMessage);
   const [overrides, setOverrides] = useState<RuleOverrideView[]>(p.overrides);
@@ -76,10 +76,8 @@ function ProfileEditor({ p, rules, ruleById }: { p: ClientProfileView; rules: Ru
   const save = () =>
     start(async () => {
       try {
-        const slaN = sla.trim() === "" ? null : Number(sla);
         const r = await saveClientProfileAction({
           clientId: p.clientId,
-          slaHours: slaN,
           notes,
           deliveryMessage: message,
           ruleOverrides: overrides.map((o) => (o.disabled ? { ruleId: o.ruleId, disabled: true, reason: o.reason } : { ruleId: o.ruleId, severity: o.severity, reason: o.reason })),
@@ -92,22 +90,15 @@ function ProfileEditor({ p, rules, ruleById }: { p: ClientProfileView; rules: Ru
   const id = `pd-prof-${p.clientId}`;
   return (
     <div className="space-y-4 border-t border-border p-4">
-      <div className="grid gap-4 sm:grid-cols-[10rem_minmax(0,1fr)]">
-        <div>
-          <label htmlFor={`${id}-sla`} className="text-sm font-medium">SLA hours</label>
-          <input id={`${id}-sla`} type="number" min={1} max={336} step={1} value={sla} onChange={(e) => setSla(e.target.value)} placeholder="24" className={cn(input, "min-h-11 tabular-nums")} />
-          <p className="mt-1 text-[12px] text-muted">From the shoot to delivered. Blank: the default.</p>
-        </div>
-        <div>
-          <label htmlFor={`${id}-notes`} className="text-sm font-medium">Notes for QC</label>
-          <textarea id={`${id}-notes`} rows={3} maxLength={4000} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="For example: bins at the curb are fine; always flag a crooked hero." className={cn(input, "py-2")} />
-          <p className="mt-1 text-[12px] text-muted">The QC checks read these for this client&rsquo;s galleries.</p>
-        </div>
+      <div>
+        <label htmlFor={`${id}-notes`} className="text-sm font-medium">Notes for QC</label>
+        <textarea id={`${id}-notes`} rows={3} maxLength={4000} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="For example: bins at the curb are fine; always flag a crooked hero." className={cn(input, "py-2")} />
+        <p className="mt-1 text-[12px] text-muted">The QC checks read these for this client&rsquo;s galleries.</p>
       </div>
       <div>
         <label htmlFor={`${id}-msg`} className="text-sm font-medium">Delivery message</label>
         <textarea id={`${id}-msg`} rows={4} maxLength={2000} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Blank uses the standard message, signed Realtour Pilot Team." className={cn(input, "py-2")} />
-        <p className="mt-1 text-[12px] text-muted">The client reads this when the listing is delivered. Speak as Realtour Pilot Team; long dashes are turned into commas when it is saved.</p>
+        <p className="mt-1 text-[12px] text-muted">Kyle copies this when he delivers by hand.</p>
       </div>
       <div>
         <p className="text-sm font-medium">Rule overrides ({overrides.length})</p>
@@ -179,7 +170,7 @@ export function ClientProfiles({ profiles, rules }: { profiles: ClientProfileVie
       )}
       <ul className="space-y-2">
         {shown.map((p) => {
-          const custom = p.slaHours != null || p.notes || p.deliveryMessage || p.overrides.length > 0;
+          const custom = p.notes || p.deliveryMessage || p.overrides.length > 0;
           return (
             <li key={p.clientId}>
               <details className="rounded-xl border border-border bg-surface">
@@ -194,7 +185,7 @@ export function ClientProfiles({ profiles, rules }: { profiles: ClientProfileVie
                     </span>
                   </span>
                   <span className={cn("rounded-full px-2 py-0.5 text-[12px]", custom ? "bg-brand-soft text-foreground" : "bg-surface-2 text-muted")}>
-                    {custom ? [p.slaHours != null && `${p.slaHours} h SLA`, p.overrides.length > 0 && `${p.overrides.length} override${p.overrides.length === 1 ? "" : "s"}`, p.deliveryMessage && "own message"].filter(Boolean).join(" · ") || "notes" : "Defaults"}
+                    {custom ? [p.overrides.length > 0 && `${p.overrides.length} override${p.overrides.length === 1 ? "" : "s"}`, p.deliveryMessage && "own message"].filter(Boolean).join(" · ") || "notes" : "Defaults"}
                   </span>
                 </summary>
                 <ProfileEditor p={p} rules={rules} ruleById={ruleById} />

@@ -16,9 +16,9 @@ import type { FindingView, PhotoView, VersionView } from "./types";
 // ---------------------------------------------------------------------------
 // THE LIGHTBOX (plan 9.4): one photo large (qc2048 on a desktop, qc1024 on a
 // phone), the finding boxes on or off (O), the findings on this photo with
-// their decision buttons, the AI description, the CV numbers, every version
-// the hub has seen (the original vs the current one), and previous / next
-// with the arrow keys.
+// their decision buttons, the AI description (the CV numbers and hero score
+// for the owner only), every version the hub has seen (the original vs the
+// current one), and previous / next with the arrow keys.
 // ---------------------------------------------------------------------------
 
 const navBtn = "inline-flex size-11 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-30";
@@ -30,6 +30,7 @@ export function sortFindings(list: FindingView[]): FindingView[] {
 }
 
 export function PhotoFacts({ photo }: { photo: PhotoView }) {
+  const { viewer } = useJob();
   return (
     <>
       {(photo.description || photo.features.length > 0) && (
@@ -42,11 +43,11 @@ export function PhotoFacts({ photo }: { photo: PhotoView }) {
             {photo.isAerial ? " · aerial" : ""}
             {photo.isTwilight ? " · twilight" : ""}
             {photo.isVirtuallyStaged ? " · virtually staged" : ""}
-            {photo.heroScore != null ? ` · hero score ${photo.heroScore}` : ""}
+            {viewer.isOwner && photo.heroScore != null ? ` · hero score ${photo.heroScore}` : ""}
           </p>
         </section>
       )}
-      {photo.cv.length > 0 && (
+      {viewer.isOwner && photo.cv.length > 0 && (
         <section className="mt-4">
           <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Measured (CV)</h3>
           <dl className="mt-1 grid grid-cols-1 gap-y-0.5 text-[13px]">
@@ -185,7 +186,7 @@ export function Lightbox() {
               </button>
             )}
             <button type="button" disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
-              {excluded ? <Eye aria-hidden className="size-3.5" /> : <EyeOff aria-hidden className="size-3.5" />} {excluded ? "Put it back" : "Exclude from delivery"}
+              {excluded ? <Eye aria-hidden className="size-3.5" /> : <EyeOff aria-hidden className="size-3.5" />} {excluded ? "Put back" : "Leave out"}
             </button>
             <button type="button" aria-pressed={overlays} onClick={() => setOverlays((v) => !v)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <Layers aria-hidden className="size-3.5" /> Boxes {overlays ? "on" : "off"} <kbd className="text-[11px] text-muted">O</kbd>
@@ -208,7 +209,8 @@ export function Lightbox() {
                       <span className={cn("rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset", SEVERITY_CLASS[f.severity])}>{SEVERITY_LABEL[f.severity]}</span>
                       <span className="text-sm font-medium">{f.ruleLabel || f.specificIssue}</span>
                       <span className="text-[12px] text-muted">
-                        {Math.round(f.confidence * 100)}%{!shown(f) ? " (low confidence)" : ""} · {RESPONSIBILITY_LABEL[f.responsibility] ?? f.responsibility}
+                        {!shown(f) ? "Unsure · " : ""}
+                        {RESPONSIBILITY_LABEL[f.responsibility] ?? f.responsibility}
                       </span>
                     </div>
                     {f.ruleLabel && f.specificIssue !== f.ruleLabel && <p className="mt-1 break-words text-[13px]">{f.specificIssue}</p>}
@@ -249,7 +251,7 @@ function versionName(v: VersionView, all: VersionView[]): string {
  * it beside the current one, Restore it (it becomes what downloads and what
  * goes to 06-Ready-for-Aryeo), or load every step AutoHDR has (the capture,
  * its first edit, the straightening, each fix) to find where a photo went
- * wrong. Sharpness is measured at one size, so a softer step stands out.
+ * wrong. Sharpness is measured at one size, so a softer step is flagged.
  */
 function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoView; showingId: string | null; currentId: string | null; onShow: (id: string | null) => void }) {
   const { jobId, run, confirm, pending } = useJob();
@@ -272,8 +274,8 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
       <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Versions ({versions.length})</h3>
       <p className="mt-0.5 text-[12px] text-muted">
         {photo.sourceKind === "AUTOHDR"
-          ? "The current version is what downloads and goes to 06-Ready-for-Aryeo. Pick another to compare it side by side."
-          : "The current version is the file on the Aryeo listing. Pick an AutoHDR version to compare it side by side; Restore puts its file under Replace these on the Aryeo listing."}
+          ? "Pick a version to compare. The current one is what gets delivered."
+          : "Pick a version to compare. The current one is the file on the Aryeo listing; Restore puts its file under Replace these on the Aryeo listing."}
       </p>
       {versions.length > 0 && (
         <ul className="mt-1.5 flex flex-wrap gap-1.5">
@@ -295,10 +297,7 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
                     {versionName(v, versions)}
                     {v.current ? " (current)" : ""}
                   </span>
-                  <span className="block text-muted">
-                    {etMonthDayTime(v.createdAt)}
-                    {v.sharpness != null ? ` · sharpness ${Math.round(v.sharpness)}` : ""}
-                  </span>
+                  <span className="block text-muted">{etMonthDayTime(v.createdAt)}</span>
                   {softer && <span className="block font-medium text-warning">{Math.round(loss * 100)}% softer than the sharpest version</span>}
                   {!v.kept && !v.current && <span className="block text-muted-2">No copy kept yet</span>}
                 </button>
@@ -310,7 +309,7 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
       {showing && !showing.current && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {showing.inAutohdr ? (
-            <button type="button" disabled={pending} onClick={() => void restore(showing)} className="inline-flex min-h-10 items-center rounded-lg bg-brand px-3 text-[13px] font-semibold text-white hover:bg-brand/90 disabled:opacity-50">
+            <button type="button" disabled={pending} onClick={() => void restore(showing)} className="inline-flex min-h-10 items-center rounded-lg bg-brand-action px-3 text-[13px] font-semibold text-brand-fg hover:brightness-95 disabled:opacity-50">
               Restore this version
             </button>
           ) : (

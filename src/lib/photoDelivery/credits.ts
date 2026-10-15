@@ -1,6 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "crypto";
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { getSetting, putSetting } from "@/lib/settings";
 import { appBase } from "@/lib/appUrl";
@@ -121,14 +122,16 @@ export async function recordLedgerEntry(e: { kind: "DOWNLOAD" | "TRANSFORM" | "S
 /** Days of credits left at the last 14 days' average daily net spend (refills excluded). */
 export async function runwayDays(balance: number, now = new Date()): Promise<{ days: number | null; perDay: number }> {
   const since = new Date(now.getTime() - 14 * 86_400_000);
-  const rows = await prisma.autohdrCreditEntry.findMany({ where: { at: { gte: since }, kind: { not: "BALANCE_SNAPSHOT" } }, select: { credits: true, kind: true, note: true } });
+  const [rows, firstSnap] = await Promise.all([
+    prisma.autohdrCreditEntry.findMany({ where: { at: { gte: since }, kind: { not: "BALANCE_SNAPSHOT" } }, select: { credits: true, kind: true } }),
+    prisma.autohdrCreditEntry.findFirst({ where: { kind: "BALANCE_SNAPSHOT" }, orderBy: { at: "asc" }, select: { at: true } }),
+  ]);
   let spent = 0;
   for (const r of rows) {
     if (r.kind === "ADJUSTMENT" && r.credits > 0) continue; // refills and top-ups are not spend
     if (r.credits < 0) spent += -r.credits;
     else if (r.kind === "REFUND") spent -= r.credits;
   }
-  const firstSnap = await prisma.autohdrCreditEntry.findFirst({ where: { kind: "BALANCE_SNAPSHOT" }, orderBy: { at: "asc" }, select: { at: true } });
   const spanDays = firstSnap ? Math.max(1, Math.min(14, (now.getTime() - firstSnap.at.getTime()) / 86_400_000)) : 14;
   const perDay = Math.max(0, spent) / spanDays;
   return { days: perDay > 0 ? Math.floor(balance / perDay) : null, perDay: Math.round(perDay * 10) / 10 };
@@ -218,12 +221,23 @@ export async function committedCredits(): Promise<number> {
   return ops?._sum.estimatedCredits ?? 0;
 }
 
-export async function creditView(now = new Date()): Promise<CreditView> {
-  const [connected, snap, thresholds, conn] = await Promise.all([
+const creditViewNow = cache(() => computeCreditView(new Date()));
+
+/**
+ * The credit summary. Without `now` it is worked out once per page render
+ * (React cache): the strip, the job page and the Fix Cart all ask for it.
+ */
+export function creditView(now?: Date): Promise<CreditView> {
+  return now ? computeCreditView(now) : creditViewNow();
+}
+
+async function computeCreditView(now: Date): Promise<CreditView> {
+  const [connected, snap, thresholds, conn, committed] = await Promise.all([
     autohdrConfigured().catch(() => false),
     latestSnapshot().catch(() => null),
     creditThresholds(),
     prisma.connection.findUnique({ where: { provider: "autohdr" }, select: { lastError: true } }).catch(() => null),
+    committedCredits(),
   ]);
   const balance = snap?.balance ?? null;
   const runway = balance != null ? await runwayDays(balance, now).catch(() => ({ days: null, perDay: 0 })) : { days: null, perDay: 0 };
@@ -236,7 +250,7 @@ export async function creditView(now = new Date()): Promise<CreditView> {
     runwayDays: runway.days,
     perDay: runway.perDay,
     thresholds,
-    committed: await committedCredits(),
+    committed,
     lastError: conn?.lastError ?? null,
   };
 }

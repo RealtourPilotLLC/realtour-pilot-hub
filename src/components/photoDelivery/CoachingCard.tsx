@@ -48,22 +48,24 @@ export function CoachingCard({ jobId, coaching }: { jobId: string; coaching: Coa
       {!done && (
         <div className="flex flex-wrap gap-2">
           <button
+            type="button"
             disabled={busy}
             onClick={() => start(async () => setMsg(await sendCoachingAction({ jobId, note, reminders })))}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-3.5 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send to {first}
+            {busy ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Send aria-hidden className="size-4" />} Send to {first}
           </button>
           <button
+            type="button"
             disabled={busy}
             onClick={() => start(async () => setMsg(await discardCoachingAction(jobId)))}
-            className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Trash2 className="size-4" /> Discard
+            <Trash2 aria-hidden className="size-4" /> Discard
           </button>
         </div>
       )}
-      {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
+      {msg && <p role="status" className={`text-[12px] ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
     </section>
   );
 }

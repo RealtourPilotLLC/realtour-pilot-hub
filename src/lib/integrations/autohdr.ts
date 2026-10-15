@@ -1,5 +1,6 @@
 import "server-only";
 
+import { cache } from "react";
 import { getConnection, getSecret } from "./connections";
 
 // ---------------------------------------------------------------------------
@@ -98,9 +99,8 @@ export async function autohdrCredentials(): Promise<AutohdrCredentials | null> {
   return null;
 }
 
-export async function autohdrConfigured(): Promise<boolean> {
-  return (await autohdrCredentials()) !== null;
-}
+/** Is an API client saved? Read once per page render (React cache): the credit strip and the Fix Cart both ask. */
+export const autohdrConfigured = cache(async (): Promise<boolean> => (await autohdrCredentials()) !== null);
 
 // ---- token --------------------------------------------------------------------
 

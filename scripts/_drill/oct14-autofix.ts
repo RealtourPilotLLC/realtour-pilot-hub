@@ -266,6 +266,97 @@ async function main() {
     c.ok("the free check writes no paid instruction for them", /reeditPrompt: fixClass\(rule\.id\) === "autohdr" \? null : instructionFor/.test(checkSrc) && /"PERSP_AUTOHDR_ROOF_PEAKS_CROPPED"/.test(checkSrc));
     c.ok("the Fix Cart shows them in their own 'Free in AutoHDR' list", /Free in AutoHDR \(\{inAutohdr\.length\}\)/.test(fs.readFileSync("src/components/photoDelivery/FixCartPanel.tsx", "utf8")));
 
+    // ======================================================================
+    c.head("9 · the engine audit (Oct 15 2026)");
+    const decisions = await import("@/lib/photoDelivery/decisions");
+    const check = await import("@/lib/photoDelivery/autohdrCheck");
+    const D9 = await import("@/lib/photoDelivery/delivery");
+    const { AutohdrError } = await import("@/lib/integrations/autohdr");
+    await prisma.photoFixOperation.updateMany({ where: { status: "QUEUED" }, data: { status: "CANCELLED" } }); // earlier sections' leftovers
+    const drive = () => runner.driveFixes({ budgetMs: 60_000, leaseBy: "drill" });
+    // #12: the switch.
+    await savePhotoDeliverySettings({ fixRunnerEnabled: false }, "drill");
+    const K = await mkJob("90 Switch St", 2);
+    await find(K.job.id, K.qcRun.id, K.photos[0].id, "EXT_TRASH_CANS_PRIMARY", "curb", 0.9, { arbitration: "CONFIRMED" });
+    const pK = await policy.planAutoFix(K.job.id);
+    c.ok("AutoHDR fixes switched off: nothing planned, the job is never parked in FIXING", !pK.planned && /switched off/.test(pK.reason) && (await prisma.photoJob.findUniqueOrThrow({ where: { id: K.job.id } })).stage === "QC_REVIEW", pK.reason);
+    await savePhotoDeliverySettings({ fixRunnerEnabled: true }, "drill");
+    // #15: one review rule, which waits while a fix is still to run.
+    const pK2 = await policy.planAutoFix(K.job.id);
+    c.ok("the review rule says stay while a fix is still waiting", pK2.planned && (await decisions.reviewStage(K.job.id)).stage === "stay", JSON.stringify(pK2));
+    await prisma.photoFixOperation.updateMany({ where: { jobId: K.job.id, status: "QUEUED" }, data: { status: "CANCELLED" } });
+    // #6: two approvals at once.
+    const R9 = await mkJob("91 Race Rd", 1);
+    const fR9 = await find(R9.job.id, R9.qcRun.id, R9.photos[0].id, "EXT_TRASH_CANS_PRIMARY", "curb", 0.9, { arbitration: "CONFIRMED" });
+    const both = await Promise.all([fixes.approveFixBatch({ jobId: R9.job.id, findingIds: [fR9.id], mode: "SELECTED", by: "Kyle", role: "ADMIN" }), fixes.approveFixBatch({ jobId: R9.job.id, findingIds: [fR9.id], mode: "SELECTED", by: "Jordan", role: "OWNER" })]);
+    c.ok("two approvals at once: one batch, one paid edit", both.filter((x) => x.ok).length === 1 && (await prisma.photoFixOperation.count({ where: { jobId: R9.job.id } })) === 1, JSON.stringify(both));
+    await prisma.photoFixOperation.updateMany({ where: { jobId: R9.job.id, status: "QUEUED" }, data: { status: "CANCELLED" } });
+    // #6: a lost submission on a later batch's photo, looked up in that photo's own shoot.
+    const U9 = await mkJob("94 Later Ln", 1);
+    const later = fake.seedShoot({ address: "94 Later Ln (more photos 2)", photos: [{ name: "Later-2.jpg", downloaded: false }] });
+    const lp = await prisma.photoAsset.create({ data: { jobId: U9.job.id, name: "Later-2.jpg", sourceKind: "AUTOHDR", sourceRef: `${later.photoshoot_id}/${later.photos[0].image_uuid}`, autohdrImageUuid: later.photos[0].image_uuid, autohdrVersionUuid: later.photos[0].head, contentHash: "later-2", sequence: 1, status: "ACTIVE" } });
+    await find(U9.job.id, U9.qcRun.id, lp.id, "EXT_TRASH_CANS_PRIMARY", "curb", 0.9, { arbitration: "CONFIRMED" });
+    await policy.planAutoFix(U9.job.id);
+    fake.script("POST /v1/transforms", "lose-response");
+    await drive();
+    const lostOp = await prisma.photoFixOperation.findFirstOrThrow({ where: { jobId: U9.job.id } });
+    await prisma.photoFixOperation.update({ where: { id: lostOp.id }, data: { submittedAt: new Date(Date.now() - 3 * 60_000) } });
+    const postsLost = fake.posts("/v1/transforms").length;
+    await drive();
+    const foundOp = await prisma.photoFixOperation.findUniqueOrThrow({ where: { id: lostOp.id } });
+    c.ok("a lost submission on a later batch's photo is found in its own shoot, never sent again", lostOp.status === "SUBMITTING" && !!foundOp.autohdrJobId && fake.posts("/v1/transforms").length === postsLost, `${lostOp.status} → ${foundOp.status} ${foundOp.error ?? ""}`);
+    // #9: AutoHDR failing during the second look.
+    const S9 = await mkJob("92 Down St", 1);
+    const fS9 = await find(S9.job.id, S9.qcRun.id, S9.photos[0].id, "EXT_TRASH_CANS_PRIMARY", "curb");
+    policy.__setFixDescribeForTests(async () => { throw new AutohdrError("AutoHDR is down", 503, null, true); });
+    await policy.secondLookJob(S9.job.id, Date.now() + 60_000);
+    await policy.secondLookJob(S9.job.id, Date.now() + 60_000);
+    policy.__setFixDescribeForTests(null);
+    const sl = await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: fS9.id } });
+    c.ok("AutoHDR down during the second look: the finding is left as it was, never confirmed or fixed", sl.arbitration === "NOT_REQUIRED" && sl.status === "OPEN" && !(await policy.planAutoFix(S9.job.id)).planned, `${sl.arbitration} ${sl.status}`);
+    // #18: "no photo fits yet" once per check.
+    const T9 = await mkJob("93 Fit Ln", 1);
+    await prisma.photoJob.update({ where: { id: T9.job.id }, data: { expectedJson: JSON.stringify({ virtualStagingCount: 1 }) } });
+    await policy.suggestAddOns(T9.job.id);
+    await policy.suggestAddOns(T9.job.id);
+    c.ok("'no photo fits yet' is said once per check, not every pass", (await prisma.photoJobEvent.count({ where: { jobId: T9.job.id, actor: "add-ons" } })) === 1);
+    // #8 and #11: a photo the free check could not read is never a pass; the checked ones count as inspected.
+    const W9 = await mkJob("95 Check Ct", 3);
+    await prisma.photoJob.update({ where: { id: W9.job.id }, data: { stage: "EDITED", finalsChangedAt: new Date() } });
+    const prevDescribe = fake.state.describe;
+    let described: string[] = [];
+    let outage = true;
+    fake.state.describe = (name, prompt, version) => {
+      if (!/checking a real estate listing photo/.test(prompt)) return prevDescribe ? prevDescribe(name, prompt, version) : "A room.";
+      described.push(name);
+      if (name === "95-3.jpg" && outage) return "no idea";
+      return name === "95-1.jpg" ? '{"room":"kitchen","issues":[{"id":"KIT_PAPER_TOWEL_ROLLS","where":"counter","confidence":0.9}]}' : '{"room":"bedroom","issues":[]}';
+    };
+    for (let i = 0; i < 3; i++) await check.driveAutohdrChecks({ budgetMs: 60_000 });
+    const w1 = await prisma.photoJob.findUniqueOrThrow({ where: { id: W9.job.id } });
+    const notChecked = await prisma.photoQcFinding.findFirst({ where: { jobId: W9.job.id, ruleId: "OTHER_DEFECT", status: "OPEN" } });
+    c.ok("a photo the free check could not read: Needs decision, with an issue saying so", w1.stage === "QC_REVIEW" && notChecked?.photoId === W9.photos[2].id && notChecked.severity === "MAJOR" && /could not look/.test(notChecked.specificIssue), `${w1.stage} ${notChecked?.specificIssue}`);
+    const bell = await prisma.notification.findFirst({ where: { kind: "photo_free_check", body: { contains: "1 could not be checked" } } });
+    c.ok("…and the bell says how many could not be checked", !!bell, bell?.body ?? "");
+    const wPhotos = await prisma.photoAsset.findMany({ where: { jobId: W9.job.id }, orderBy: { sequence: "asc" } });
+    c.ok("the photos it looked at count as inspected, the unread one does not", wPhotos[0].inspectedHash === wPhotos[0].contentHash && wPhotos[1].inspectedHash === wPhotos[1].contentHash && wPhotos[2].inspectedHash === null);
+    const gate9 = await D9.deliveryGate(W9.job.id);
+    c.ok("the checklist after a free check: no gallery line, and the unread photo is the one not inspected", !gate9.checks.some((x) => x.key === "gallery") && gate9.checks.find((x) => x.key === "qc")?.detail === "1 photo not inspected", JSON.stringify(gate9.checks));
+    // #10: the gallery changes after the check: only the new and changed photos are looked at.
+    const more = fake.seedShoot({ address: "95 Check Ct (more photos 2)", photos: [{ name: "95-4.jpg" }] });
+    await prisma.photoAsset.create({ data: { jobId: W9.job.id, name: "95-4.jpg", sourceKind: "AUTOHDR", sourceRef: `${more.photoshoot_id}/${more.photos[0].image_uuid}`, autohdrImageUuid: more.photos[0].image_uuid, autohdrVersionUuid: more.photos[0].head, contentHash: "95-4", sequence: 3, status: "ACTIVE" } });
+    await prisma.photoJob.update({ where: { id: W9.job.id }, data: { finalsChangedAt: new Date() } });
+    outage = false;
+    described = [];
+    const firstRun = w1.lastQcRunId;
+    await check.driveAutohdrChecks({ budgetMs: 60_000 });
+    const w2 = await prisma.photoJob.findUniqueOrThrow({ where: { id: W9.job.id } });
+    c.ok("a changed gallery in review is checked again: only the new and the unread photo", w2.lastQcRunId !== firstRun && described.sort().join() === "95-3.jpg,95-4.jpg", described.join());
+    c.ok("…the unchanged photos keep their findings; the unread one's 'could not look' is history", (await prisma.photoQcFinding.count({ where: { jobId: W9.job.id, ruleId: "KIT_PAPER_TOWEL_ROLLS", status: "OPEN" } })) === 1 && (await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: notChecked!.id } })).status === "SUPERSEDED");
+    fake.state.describe = prevDescribe;
+    const rq = await decisions.requestQcRerun(W9.job.id, "Jordan");
+    c.ok("asking for the paid QC still has it inspect what only the free check looked at", rq.ok && (await prisma.photoAsset.count({ where: { jobId: W9.job.id, inspectedHash: { not: null } } })) === 0);
+
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));
     c.summary();

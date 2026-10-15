@@ -9,28 +9,23 @@ import { alertOwnerAndKyle } from "./notifyOps";
 import { appBase } from "@/lib/appUrl";
 
 // ---------------------------------------------------------------------------
-// THE DELIVER PANEL (docs/photo-delivery/01 §9.6), Aryeo-assisted.
+// THE DELIVER PANEL (docs/photo-delivery/01 §9.6).
 //
-// Aryeo's public API cannot upload listing images or press Deliver, so the
-// last mile stays two clicks for Kyle in Aryeo. The hub's job is everything
-// around those clicks:
-//   · the GATE: a live checklist that says whether this gallery may go out;
-//   · the STEPS: open the listing, upload from Dropbox (the folder, in the
-//     right order), check the order against the thumbnails, deliver with the
-//     pre-written message;
+// The hub uploads the finished photos to the Aryeo listing and presses
+// Deliver itself (aryeoPush.ts, through Aryeo's own web app: the public API
+// cannot). This file is everything around that:
+//   · the GATE: a live checklist that says whether this gallery may go out
+//     (the hub delivers by itself only when it really passes);
+//   · the STEPS: the numbered photos in 06-Ready-for-Aryeo (handoff.ts), the
+//     delivery order, the listing and the pre-written message, for when a
+//     person does it by hand;
 //   · VERIFICATION: when Aryeo says the listing was delivered, compare the
 //     listing's images with what QC approved, and raise DELIVERY_MISMATCH if
 //     a photo is missing or extra.
 //
-// Shadow mode (the first two weeks): the gate is ADVISORY. It is computed and
-// shown, but a failed check never stops Kyle, because QC is still being
-// calibrated against his manual review.
-//
-// Staging sequenced copies (01-Front-Exterior.jpg …) is OFF until a staging
-// folder is set in settings: the job folders live under /AutoHDR, which
-// AutoHDR's watcher reads, and a copied image in the wrong place there could
-// be edited (and charged) a second time. Until then the steps point at
-// 04-Final-Photos and show the order to drag them in.
+// Shadow mode (the first two weeks): the gate is ADVISORY for a person. It is
+// computed and shown, but a failed check never stops Kyle, because QC is
+// still being calibrated against his manual review.
 // ---------------------------------------------------------------------------
 
 export type GateCheck = { key: string; label: string; ok: boolean; detail?: string };
@@ -38,7 +33,7 @@ export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boole
 
 export async function deliveryGate(jobId: string): Promise<GateResult> {
   const [job, settings] = await Promise.all([
-    prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, lastQcRunId: true, finalsCount: true, qcShadow: true } }),
+    prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, lastQcRunId: true, finalsCount: true } }),
     photoDeliverySettings(),
   ]);
   if (!job) throw new Error("Photo job not found.");
@@ -48,7 +43,7 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
       select: { id: true, severity: true, confidence: true, arbitration: true, pass: true, ruleId: true, privacySensitive: true },
     }),
     prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, select: { id: true, contentHash: true, inspectedHash: true, width: true, height: true, format: true } }),
-    job.lastQcRunId ? prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, passesJson: true } }) : Promise.resolve(null),
+    job.lastQcRunId ? prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, passesJson: true, trigger: true } }) : Promise.resolve(null),
   ]);
   const floor = settings.displayConfidenceFloor;
   const shown = open.filter((f) => f.confidence >= floor);
@@ -66,14 +61,18 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
   })();
   const checks: GateCheck[] = [
     { key: "critical", label: "No unresolved critical issue", ok: critical.length === 0, detail: critical.length ? `${critical.length} open` : undefined },
-    { key: "major", label: "Every major issue fixed, ignored with a reason, or overridden", ok: major.length === 0, detail: major.length ? `${major.length} open` : undefined },
+    { key: "major", label: "Every major issue fixed or marked not worth fixing", ok: major.length === 0, detail: major.length ? `${major.length} open` : undefined },
     { key: "coverage", label: "Everything ordered is covered (or accepted with a reason)", ok: coverage.length === 0, detail: coverage.length ? `${coverage.length} open` : undefined },
     { key: "files", label: "Every photo is a full-size JPEG", ok: badFiles.length === 0 && photos.length > 0, detail: photos.length === 0 ? "no photos" : badFiles.length ? `${badFiles.length} file${badFiles.length === 1 ? "" : "s"} too small or not JPEG` : undefined },
     { key: "qc", label: "The latest QC run covers every photo's current version", ok: !!lastRun && lastRun.status !== "RUNNING" && notInspected.length === 0, detail: !lastRun ? "QC has not run" : notInspected.length ? `${notInspected.length} photo${notInspected.length === 1 ? "" : "s"} not inspected` : undefined },
-    { key: "gallery", label: "Gallery and order checks completed", ok: passes.includes("P4") || passes.includes("P4_ORDER"), detail: passes.length ? undefined : "not run yet" },
+    // The free check looks at each photo, not the gallery as a whole: after
+    // it, this paid-QC-only line is left out (backend audit #11).
+    ...(lastRun?.trigger === "AUTOHDR_CHECK" ? [] : [{ key: "gallery", label: "Gallery and order checks completed", ok: passes.includes("P4") || passes.includes("P4_ORDER"), detail: passes.length ? undefined : "not run yet" }]),
   ];
   const passed = checks.every((c) => c.ok);
-  const advisory = settings.qcShadow || job.qcShadow;
+  // The house setting decides (audit, Oct 15): a job's own qcShadow only records
+  // how its last check ran, and kept a job advisory after shadow mode was off.
+  const advisory = settings.qcShadow;
   const privacyOrWrong = critical.find((f) => f.privacySensitive || /FILE_NO_MIXED_PROPERTIES|FILE_PROJECT_ASSOCIATION|FILE_CORRECT_PROPERTY_UPLOAD/.test(f.ruleId));
   return {
     checks,
@@ -126,12 +125,14 @@ export function suggestedOrder(photos: OrderablePhoto[], heroId: string | null):
 
 /** The delivery order: a person's saved order, else the suggested one. */
 export async function deliveryOrderFor(jobId: string): Promise<{ photoId: string; name: string; deliveryName: string }[]> {
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { orderJson: true, heroPhotoId: true } });
-  const photos = await prisma.photoAsset.findMany({
-    where: { jobId, status: "ACTIVE" },
-    orderBy: { sequence: "asc" },
-    select: { id: true, name: true, sequence: true, sequenceGroup: true, heroScore: true, isTwilight: true, roomType: true },
-  });
+  const [job, photos] = await Promise.all([
+    prisma.photoJob.findUnique({ where: { id: jobId }, select: { orderJson: true, heroPhotoId: true } }),
+    prisma.photoAsset.findMany({
+      where: { jobId, status: "ACTIVE" },
+      orderBy: { sequence: "asc" },
+      select: { id: true, name: true, sequence: true, sequenceGroup: true, heroScore: true, isTwilight: true, roomType: true },
+    }),
+  ]);
   let ordered: OrderablePhoto[];
   const saved = (() => {
     try {
@@ -162,23 +163,32 @@ export async function deliveryOrderFor(jobId: string): Promise<{ photoId: string
 }
 
 export async function deliverySteps(jobId: string): Promise<DeliverySteps> {
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, finalsPath: true, deliveryPath: true } });
+  // Independent reads side by side (perf audit #3): the job, every photo's
+  // versions and the delivery order; then the project and the ready folder.
+  const [job, versions, order] = await Promise.all([
+    prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, finalsPath: true, deliveryPath: true } }),
+    prisma.photoVersion.findMany({
+      where: { photo: { jobId, status: "ACTIVE" } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, source: true, label: true, createdAt: true, derivJson: true, photoId: true, photo: { select: { name: true } } },
+    }),
+    deliveryOrderFor(jobId),
+  ]);
   if (!job) throw new Error("Photo job not found.");
-  const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true, aryeoOrderId: true, title: true, clientId: true } });
+  const { readyFolderState } = await import("./handoff");
+  const { dropboxWebUrl } = await import("@/lib/dropboxFolders");
+  const [project, rs] = await Promise.all([
+    prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true, aryeoOrderId: true, title: true, clientId: true } }),
+    readyFolderState(jobId, order.length).catch(() => null),
+  ]);
   const profile = project?.clientId ? await prisma.clientQcProfile.findUnique({ where: { clientId: project.clientId }, select: { deliveryMessage: true } }).catch(() => null) : null;
   const street = (project?.title ?? "your listing").split(",")[0];
   const message =
     profile?.deliveryMessage?.trim() ||
     `Your photos for ${street} are ready. Thank you for trusting us with this listing. If anything needs a second look, reply here and we will take care of it. Realtour Pilot Team`;
-  // The newest stored fix per photo is what Kyle uploads in place of the
-  // listing's copy (the hub cannot upload to Aryeo).
-  // Once the listing's copy is replaced, the sync records a newer "Replaced"
-  // version, and the photo drops off this list by itself.
-  const versions = await prisma.photoVersion.findMany({
-    where: { photo: { jobId, status: "ACTIVE" } },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, source: true, label: true, createdAt: true, derivJson: true, photoId: true, photo: { select: { name: true } } },
-  });
+  // The newest stored fix per photo, for a person replacing the listing's
+  // copy by hand. Once the listing's copy is replaced, the sync records a
+  // newer "Replaced" version, and the photo drops off this list by itself.
   const seenPhoto = new Set<string>();
   const replacements: DeliverySteps["replacements"] = [];
   for (const f of versions) {
@@ -187,10 +197,6 @@ export async function deliverySteps(jobId: string): Promise<DeliverySteps> {
     if (f.source !== "FIX" || !f.derivJson?.includes('"file"')) continue;
     replacements.push({ photoId: f.photoId, photoName: f.photo.name, versionId: f.id, downloadUrl: `/api/photo-fixes/${f.id}`, label: f.label, at: f.createdAt.toISOString() });
   }
-  const order = await deliveryOrderFor(jobId);
-  const { readyFolderState } = await import("./handoff");
-  const { dropboxWebUrl } = await import("@/lib/dropboxFolders");
-  const rs = await readyFolderState(jobId, order.length).catch(() => null);
   return {
     replacements,
     ready: rs ? { folderUrl: dropboxWebUrl(rs.folder), files: rs.files, expected: rs.preparing ? rs.total : order.length, ready: rs.ready, stagedAt: rs.stagedAt, preparing: rs.preparing, failed: rs.failed, note: rs.note } : null,
@@ -278,7 +284,10 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   } catch (e) {
     return { ok: false, error: true, message: `Couldn't read the Aryeo listing (${(e as Error).message.slice(0, 140)}).`, aryeoCount: null, approved };
   }
-  const delivered = listing.data?.delivery_status === "DELIVERED" || !!project.deliveredAt;
+  // Only the listing's own delivery_status says so (backend audit #14):
+  // Project.deliveredAt can be the hub's guess from the status sweep (it is
+  // still the best time to record once Aryeo agrees).
+  const delivered = String(listing.data?.delivery_status ?? "").toUpperCase() === "DELIVERED";
   if (!delivered) return { ok: false, waiting: true, message: `Aryeo still has the listing as ${(listing.data?.delivery_status ?? "not delivered").toLowerCase().replace(/_/g, " ")}.`, aryeoCount: null, approved };
   const shown = (listing.data?.images ?? []).filter((i) => i.display_in_gallery !== false);
   const shownIds = new Set(shown.map((i) => i.id).filter(Boolean) as string[]);

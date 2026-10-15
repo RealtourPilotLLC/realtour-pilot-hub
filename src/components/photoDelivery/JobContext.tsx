@@ -192,7 +192,7 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
         description: "Its own open issues are set aside with this reason. Putting it back reopens them.",
         presets: EXCLUDE_PRESETS,
         required: true,
-        confirmLabel: "Leave it out",
+        confirmLabel: "Leave out",
       });
       if (reason === null) return false;
       return run(() => setPhotoExcludedAction({ jobId, photoId: photo.id, excluded: true, reason }));

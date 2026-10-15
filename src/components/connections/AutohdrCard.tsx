@@ -15,10 +15,11 @@ import { AutohdrConnectForm, AutohdrConnectedControls } from "./AutohdrConnect";
 // Sep 26 lines: the last reading a person typed and the last top-up seen.
 //
 // THE TOP-UP LINE IS THE OWNER'S (Sep 26 2026 review). This card also sits on
-// Settings → AutoHDR balance, which Kyle and James (ADMIN) open — and the
+// Settings → AutoHDR balance, which Kyle and James (ADMIN) open, and the
 // top-up is Jordan's own payment off his bank feed. For anyone but the owner
-// the bank and the books are not read at all and the line is not drawn. The
-// connect form is owner-only too: credentials are the owner's.
+// the bank and the books are not read at all and the line is not drawn, and a
+// reading's dollar figure is left out. The connect form is owner-only too:
+// credentials are the owner's.
 export async function AutohdrCard() {
   const me = await getCurrentUser().catch(() => null);
   const money = me ? canSeeMoney(me.role) : !authEnforced();
@@ -36,10 +37,10 @@ export async function AutohdrCard() {
     <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5" data-card="autohdr">
       <div className="flex items-center gap-2 text-sm font-semibold">
         <Images className="size-4 text-brand" /> AutoHDR
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${tone}`}>
+        <span className={`rounded-full px-2 py-0.5 text-ui-status font-medium ${tone}`}>
           {connected ? (credits?.balance != null ? `${credits.balance.toLocaleString("en-US")} credits` : "Connected") : "API not connected"}
         </span>
-        <Link href="/ops/photo-delivery/credits" className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
+        <Link href="/ops/photo-delivery/credits" className="ml-auto inline-flex min-h-11 items-center gap-1 text-ui-status font-semibold text-brand hover:underline">
           Credits <ArrowRight className="size-3" />
         </Link>
       </div>
@@ -48,7 +49,7 @@ export async function AutohdrCard() {
         <ul className="mt-2 space-y-1 text-xs text-muted">
           <li>
             <span className="font-medium text-foreground">API:</span> connected{idHint ? ` (client ${idHint})` : ""}
-            {creds?.source === "env" ? ", from the deployment's environment" : ""}. The hub reads the balance every 15 minutes; it never buys credits and never spends them without a click.
+            {creds?.source === "env" ? ", from the deployment's environment" : ""}. Reads the balance every 15 minutes. Never buys credits. Spends them only within your Photo Delivery limits.
           </li>
           <li>
             <span className="font-medium text-foreground">Balance:</span>{" "}
@@ -69,7 +70,7 @@ export async function AutohdrCard() {
           <li>
             <span className="font-medium text-foreground">Last reading:</span>{" "}
             {v.lastReading
-              ? `${v.lastReading.credits != null ? `${v.lastReading.credits.toLocaleString("en-US")} credits` : ""}${v.lastReading.credits != null && v.lastReading.dollars != null ? " · " : ""}${v.lastReading.dollars != null ? `$${v.lastReading.dollars.toFixed(2)}` : ""} on ${etDate(v.lastReading.observedAt)} (${v.lastReading.recordedBy})`
+              ? `${v.lastReading.credits != null ? `${v.lastReading.credits.toLocaleString("en-US")} credits` : ""}${v.lastReading.credits != null && money && v.lastReading.dollars != null ? " · " : ""}${money && v.lastReading.dollars != null ? `$${v.lastReading.dollars.toFixed(2)}` : ""} on ${etDate(v.lastReading.observedAt)} (${v.lastReading.recordedBy})`
               : "none recorded yet"}
           </li>
           {money && (
@@ -84,11 +85,8 @@ export async function AutohdrCard() {
       )}
 
       {isOwner && (connected ? (creds?.source === "connection" ? <AutohdrConnectedControls /> : null) : <AutohdrConnectForm developerUrl={AUTOHDR_DEVELOPER_URL} />)}
-      {!isOwner && !connected && <p className="mt-2 text-[11px] text-muted">Jordan connects the AutoHDR API here.</p>}
-      <p className="mt-2 text-[11px] text-muted">
-        Editing still runs through the Dropbox folders (AutoHDR watches /AutoHDR). The API adds the live balance, photo QC fixes and version history.{" "}
-        <Link href="/settings/autohdr" className="font-medium text-brand hover:underline">Settings</Link>
-      </p>
+      {!isOwner && !connected && <p className="mt-2 text-xs text-muted">Jordan connects the AutoHDR API here.</p>}
+      <p className="mt-2 text-xs text-muted">The hub sends each shoot to AutoHDR, checks and fixes the edits, and reads the balance.</p>
     </section>
   );
 }

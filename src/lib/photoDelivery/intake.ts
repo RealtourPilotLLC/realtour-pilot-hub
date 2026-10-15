@@ -161,8 +161,18 @@ export type IntakeSummary = {
   errors: string[];
 };
 
-/** One bounded pass: move in-flight batches on, then look for new uploads. */
-export async function driveIntake(opts: { budgetMs: number; now?: Date }): Promise<IntakeSummary> {
+// Every batch sent and finished (or linked, or failed): the raws folder is
+// only listed again for files added later, hourly, then every 6 hours once
+// the last batch is 2 days old. The time sits on the newest batch's nextCheckAt.
+const SETTLED = ["DONE", "LINKED", "FAILED"];
+const RELIST_MS = 60 * MIN;
+const RELIST_LATE_MS = 6 * 60 * MIN;
+
+/**
+ * One bounded pass: move in-flight batches on, then look for new uploads.
+ * The cron passes `listShoots` so the link step and this one share one list.
+ */
+export async function driveIntake(opts: { budgetMs: number; now?: Date; listShoots?: () => Promise<AutohdrPhotoshoot[]> }): Promise<IntakeSummary> {
   const started = Date.now();
   const now = opts.now ?? new Date();
   const out: IntakeSummary = { watched: 0, waiting: 0, sent: [], linked: [], committed: 0, done: [], failed: [], errors: [] };
@@ -175,10 +185,11 @@ export async function driveIntake(opts: { budgetMs: number; now?: Date }): Promi
   const live = await prisma.photoIntakeBatch.findMany({
     where: { state: { in: ["LANDING", "PROCESSING", "UNCERTAIN", "SENDING"] }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] },
     orderBy: { updatedAt: "asc" },
+    select: { id: true, state: true, address: true },
     take: 20,
   });
   let shoots: AutohdrPhotoshoot[] | null = null;
-  const listShoots = async () => (shoots ??= await autohdr.listPhotoshoots());
+  const listShoots = async () => (shoots ??= opts.listShoots ? await opts.listShoots() : await autohdr.listPhotoshoots());
   for (const b of live) {
     if (left() < 15_000) break;
     try {
@@ -210,15 +221,24 @@ export async function driveIntake(opts: { budgetMs: number; now?: Date }): Promi
     select: { id: true, title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, debriefSubmittedAt: true, uploadedAt: true, deliveredAt: true, client: { select: { name: true } } },
     take: 60,
   });
+  const batchRows = await prisma.photoIntakeBatch.findMany({ where: { projectId: { in: projects.map((p) => p.id) } }, orderBy: { batchNo: "asc" }, select: { id: true, projectId: true, state: true, nextCheckAt: true, doneAt: true, seenAt: true } });
   let sentThisPass = 0;
   for (const p of projects) {
     if (left() < 20_000) break;
+    const mine = batchRows.filter((b) => b.projectId === p.id);
+    const last = mine.at(-1);
+    const settled = !!last && mine.every((b) => SETTLED.includes(b.state));
+    if (settled && last.nextCheckAt && last.nextCheckAt > now) continue;
     out.watched++;
     try {
       const r = await watchProject(p, now, { canSend: sentThisPass < 2 && left() > 60_000, listShoots });
       if (r === "waiting") out.waiting++;
       if (r === "sent") { sentThisPass++; out.sent.push(streetOf(p)); }
       if (r === "linked") out.linked.push(streetOf(p));
+      if (settled && r === "nothing") {
+        const age = now.getTime() - (last.doneAt ?? last.seenAt).getTime();
+        await prisma.photoIntakeBatch.update({ where: { id: last.id }, data: { nextCheckAt: new Date(now.getTime() + (age > 48 * 60 * MIN ? RELIST_LATE_MS : RELIST_MS)) } });
+      }
     } catch (e) {
       out.errors.push(`${streetOf(p)}: ${(e as Error).message.slice(0, 160)}`);
     }
@@ -229,7 +249,7 @@ export async function driveIntake(opts: { budgetMs: number; now?: Date }): Promi
 type WatchResult = "nothing" | "waiting" | "sent" | "linked" | "error";
 
 async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; listShoots: () => Promise<AutohdrPhotoshoot[]> }): Promise<WatchResult> {
-  const batches = await prisma.photoIntakeBatch.findMany({ where: { projectId: p.id }, orderBy: { batchNo: "asc" } });
+  const batches = await prisma.photoIntakeBatch.findMany({ where: { projectId: p.id }, orderBy: { batchNo: "asc" }, select: { id: true, batchNo: true, state: true, fingerprint: true, seenAt: true, filesJson: true } });
   // A delivered job's first upload was edited some other way: never sent (a
   // job can be delivered in Aryeo before the project row says so).
   if (!batches.some((b) => b.state !== "WAITING")) {

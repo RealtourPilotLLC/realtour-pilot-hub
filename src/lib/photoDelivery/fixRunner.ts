@@ -3,13 +3,15 @@ import "server-only";
 import sharp from "sharp";
 import { prisma } from "@/lib/prisma";
 import { appBase } from "@/lib/appUrl";
-import { autohdr, autohdrConfigured, AutohdrError, type AutohdrTransformJob } from "@/lib/integrations/autohdr";
+import { autohdr, autohdrConfigured, AutohdrError, type AutohdrPhoto, type AutohdrTransformJob } from "@/lib/integrations/autohdr";
 import { photoDeliverySettings } from "./settings";
 import { capabilityCatalog, modelCatalog } from "./catalog";
 import { latestSnapshot, recordCreditSnapshot, recordLedgerEntry } from "./credits";
 import { linkAutohdrShoot } from "./autohdrLink";
-import { logJobEvent, setStage } from "./jobState";
+import { logJobEvent, releaseHold, setStage, type JobStage } from "./jobState";
 import { alertOwnerAndKyle } from "./notifyOps";
+import { reviewStage } from "./decisions";
+import { shootIdOf } from "./fixPolicy";
 
 // ---------------------------------------------------------------------------
 // THE FIX RUNNER (docs/photo-delivery/01 §8.4, AUTOHDR_API_PLAN.md §3).
@@ -36,8 +38,8 @@ import { alertOwnerAndKyle } from "./notifyOps";
 //     RIGHT photo: it downloads AutoHDR's current version (free, the photo is
 //     already paid for) and compares a perceptual hash with the photo the hub
 //     inspected. A mismatch stops the operation.
-// Results are stored in the private Blob store (never the public one) for
-// Kyle to swap into the Aryeo listing; the hub cannot upload to Aryeo.
+// Results are stored in the private Blob store (never the public one); the
+// ready folder and the hub's push to Aryeo (aryeoPush.ts) take them from there.
 //
 // Oct 14 2026, the hub's OWN shoots (intake.ts, rows sourceKind AUTOHDR): the
 // hub made the shoot and recorded each photo's id, so there is nothing to
@@ -56,8 +58,39 @@ const SUBMIT_LOOKUP_AFTER_MS = 2 * MIN;
 const SUBMIT_GIVE_UP_MS = 10 * MIN;
 const POLL_ESCALATE_MS = 45 * MIN;
 const TERMINAL = ["SUCCEEDED", "NOOP", "FAILED", "VERIFIED", "REVERTED", "ESCALATED", "CANCELLED"];
+/** The only stages the runner itself puts on hold (never a job being or already delivered). */
+const HOLDABLE: JobStage[] = ["FIXING", "QC_REVIEW", "READY"];
 
 type Op = Awaited<ReturnType<typeof prisma.photoFixOperation.findFirstOrThrow>>;
+
+/**
+ * What one pass reads once (backend audit #19): AutoHDR's live price list,
+ * the balance (less what this pass has spent), and each shoot's photo list.
+ */
+function newPass() {
+  let caps: ReturnType<typeof capabilityCatalog> | null = null;
+  let models: ReturnType<typeof modelCatalog> | null = null;
+  let balance: Promise<number | null> | null = null;
+  let spent = 0;
+  const shoots = new Map<number, Promise<AutohdrPhoto[]>>();
+  return {
+    caps: () => (caps ??= capabilityCatalog(true)),
+    models: () => (models ??= modelCatalog(true)),
+    async balance(): Promise<number | null> {
+      balance ??= autohdr.credits().then((c) => c.credit_balance, () => null).then(async (b) => b ?? (await latestSnapshot())?.balance ?? null);
+      const b = await balance;
+      return b == null ? null : b - spent;
+    },
+    spend(n: number) {
+      spent += n;
+    },
+    photos(shootId: number) {
+      if (!shoots.has(shootId)) shoots.set(shootId, autohdr.listPhotos(shootId));
+      return shoots.get(shootId)!;
+    },
+  };
+}
+type Pass = ReturnType<typeof newPass>;
 
 // ---- test hooks (drills replace the byte loaders and the blob store) ----------
 type BytesLoader = (p: { sourceKind: string; sourceUrl: string | null; dropboxPath: string | null }) => Promise<Buffer>;
@@ -144,12 +177,8 @@ export async function renderMask(w: number, h: number, boxes: [number, number, n
 
 const REEDIT_SUFFIX = "Change nothing else in the photo.";
 
-/** The hub's own shoot photo (intake.ts): its AutoHDR shoot is in sourceRef "<shoot>/<image_uuid>". */
-function hubShootOf(photo: { sourceKind: string; sourceRef: string | null }): number | null {
-  if (photo.sourceKind !== "AUTOHDR" || !photo.sourceRef?.includes("/")) return null;
-  const n = Number(photo.sourceRef.split("/")[0]);
-  return Number.isFinite(n) ? n : null;
-}
+/** The hub's own shoot photo (intake.ts): its own AutoHDR shoot, else null. */
+const hubShootOf = (photo: { sourceKind: string; sourceRef: string | null }) => shootIdOf(photo, null);
 function mergePrompts(prompts: string[]): string | null {
   const parts = prompts
     .map((p) => p.replace(REEDIT_SUFFIX, "").trim())
@@ -166,9 +195,9 @@ async function escalate(op: Op, why: string, by = "fix-runner"): Promise<void> {
 }
 
 // ---- one step for a QUEUED operation -------------------------------------------------
-async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | "waiting"> {
+async function submitStep(op: Op, pass: Pass): Promise<"submitted" | "escalated" | "held" | "waiting"> {
   const settings = await photoDeliverySettings();
-  const job = await prisma.photoJob.findUnique({ where: { id: op.jobId }, select: { id: true, projectId: true, autohdrPhotoshootId: true, autohdrCreatedAt: true, stage: true } });
+  const job = await prisma.photoJob.findUnique({ where: { id: op.jobId }, select: { id: true, autohdrPhotoshootId: true } });
   const photo = await prisma.photoAsset.findUnique({ where: { id: op.photoId } });
   if (!job || !photo) {
     await escalate(op, "the job or photo no longer exists");
@@ -179,22 +208,24 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
   }
   const fresh = await prisma.photoAsset.findUnique({ where: { id: op.photoId }, select: { autohdrImageUuid: true } });
   const linked = await prisma.photoJob.findUnique({ where: { id: job.id }, select: { autohdrPhotoshootId: true, autohdrCreatedAt: true } });
-  if (!linked?.autohdrPhotoshootId || !fresh?.autohdrImageUuid) {
+  // The photo's own shoot: a later upload batch is its own "(more photos N)" shoot (intake.ts).
+  const hubShoot = hubShootOf(photo);
+  const shootId = hubShoot ?? linked?.autohdrPhotoshootId ?? null;
+  if (!shootId || !fresh?.autohdrImageUuid) {
     await escalate(op, "this photo is not matched to its AutoHDR shoot, so AutoHDR cannot edit it here; fix it in AutoHDR's web app or send it to the editor");
     return "escalated";
   }
   // A photo's history is being copied on this shoot (versions.ts switches its current version for a moment): wait.
   const { versionProbeActive } = await import("./versions");
   if (await versionProbeActive(job.id)) return "waiting";
-  const hubShoot = hubShootOf(photo);
-  const shootId = hubShoot ?? linked.autohdrPhotoshootId;
-  if (linked.autohdrCreatedAt && Date.now() - linked.autohdrCreatedAt.getTime() > 7 * 86_400_000 - 60 * MIN) {
+  const createdAt = hubShoot != null ? (await prisma.photoIntakeBatch.findFirst({ where: { photoshootId: hubShoot }, select: { sentAt: true } }))?.sentAt ?? linked?.autohdrCreatedAt : linked?.autohdrCreatedAt;
+  if (createdAt && Date.now() - createdAt.getTime() > 7 * 86_400_000 - 60 * MIN) {
     await escalate(op, "the AutoHDR shoot is older than 7 days and has expired there");
     return "escalated";
   }
 
-  // The live price, never a remembered one.
-  const catalog = await capabilityCatalog(true);
+  // The live price, never a remembered one (read once per pass).
+  const catalog = await pass.caps();
   const cap = catalog?.find((c) => c.name === op.transformName);
   if (!cap) {
     await escalate(op, `AutoHDR's API does not offer "${op.transformName}" right now`);
@@ -205,7 +236,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
   if (op.transformName === "style") {
     const params = op.paramsJson ? (JSON.parse(op.paramsJson) as { model_id?: number }) : {};
     modelId = typeof params.model_id === "number" ? params.model_id : null;
-    const model = modelId != null ? (await modelCatalog(true))?.find((m) => m.id === modelId) : null;
+    const model = modelId != null ? (await pass.models())?.find((m) => m.id === modelId) : null;
     if (!model) {
       await escalate(op, "a restyle needs a model chosen from AutoHDR's list");
       return "escalated";
@@ -229,15 +260,14 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     }
   }
   // Pre-flight: the live balance must cover it.
-  const credits = await autohdr.credits().catch(() => null);
-  const balance = credits?.credit_balance ?? (await latestSnapshot())?.balance ?? null;
+  const balance = await pass.balance();
   if (balance == null || balance < price) {
-    if (job.stage !== "ON_HOLD") await setStage(job.id, "any", "ON_HOLD", "fix-runner", { why: `AutoHDR balance ${balance ?? "unknown"} is below the fix price ${price}`, holdReason: "CREDITS" });
+    await setStage(job.id, HOLDABLE, "ON_HOLD", "fix-runner", { why: `AutoHDR balance ${balance ?? "unknown"} is below the fix price ${price}`, holdReason: "CREDITS" });
     return "held";
   }
 
   // Is the hub's photo the one AutoHDR would edit? (and is it already paid for?)
-  const remote = (await autohdr.listPhotos(shootId)).find((r) => r.image_uuid === fresh.autohdrImageUuid);
+  const remote = (await pass.photos(shootId)).find((r) => r.image_uuid === fresh.autohdrImageUuid);
   if (!remote) {
     await escalate(op, "AutoHDR no longer lists this photo in the shoot");
     return "escalated";
@@ -361,6 +391,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
   if (claimed.count !== 1) return "waiting";
   try {
     const r = await autohdr.submitTransform(body);
+    pass.spend(price);
     await prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "SUBMITTED", autohdrJobId: r.data.job_id, chargedCredits: price } });
     await recordLedgerEntry({ kind: op.transformName === "style" ? "STYLE" : "TRANSFORM", credits: -price, jobId: job.id, ref: r.data.job_id, note: `${cap.name} on ${photo.name}` });
     await prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { status: "FIXING" } });
@@ -375,8 +406,9 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
       return "waiting";
     }
     if (err.insufficientCredits) {
+      pass.spend(Number.POSITIVE_INFINITY); // nothing else is sent this pass
       await prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "QUEUED", submittedAt: null, error: "AutoHDR is out of credits (nothing was charged)" } });
-      await setStage(job.id, "any", "ON_HOLD", "fix-runner", { why: "AutoHDR is out of credits (402, nothing charged)", holdReason: "CREDITS" });
+      await setStage(job.id, HOLDABLE, "ON_HOLD", "fix-runner", { why: "AutoHDR is out of credits (402, nothing charged)", holdReason: "CREDITS" });
       return "held";
     }
     if (err.status === 429) {
@@ -393,11 +425,14 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
 // ---- a SUBMITTING row: look it up, never resend blindly ---------------------------------
 async function resolveSubmitting(op: Op): Promise<void> {
   const job = await prisma.photoJob.findUnique({ where: { id: op.jobId }, select: { autohdrPhotoshootId: true } });
-  const photo = await prisma.photoAsset.findUnique({ where: { id: op.photoId }, select: { autohdrImageUuid: true, name: true } });
-  if (!job?.autohdrPhotoshootId || !photo?.autohdrImageUuid || !op.submittedAt) return;
+  const photo = await prisma.photoAsset.findUnique({ where: { id: op.photoId }, select: { autohdrImageUuid: true, name: true, sourceKind: true, sourceRef: true } });
+  // Looked up in the photo's OWN shoot (backend audit #6): a later batch's photo
+  // looked up in the job's first shoot was never found, then sent and paid again.
+  const shootId = photo ? hubShootOf(photo) ?? job?.autohdrPhotoshootId : null;
+  if (!shootId || !photo?.autohdrImageUuid || !op.submittedAt) return;
   const age = Date.now() - op.submittedAt.getTime();
   if (age < SUBMIT_LOOKUP_AFTER_MS) return;
-  const jobs = await autohdr.listTransforms(job.autohdrPhotoshootId, "all");
+  const jobs = await autohdr.listTransforms(shootId, "all");
   const hit = jobs.find(
     (j) =>
       j.image_uuid === photo.autohdrImageUuid &&
@@ -631,8 +666,7 @@ async function finishBatches(jobIds: Set<string>): Promise<void> {
       const status = ok === b.operations.length ? "DONE" : ok > 0 ? "PARTIAL" : "FAILED";
       const done = await prisma.photoFixBatch.updateMany({ where: { id: b.id, status: { in: ["PENDING", "RUNNING"] } }, data: { status } });
       if (done.count !== 1) continue;
-      const open = await prisma.photoQcFinding.count({ where: { jobId, status: "OPEN", severity: { in: ["CRITICAL", "MAJOR"] } } });
-      await setStage(jobId, ["FIXING"], open ? "QC_REVIEW" : "READY", "fix-runner", { why: `fix batch ${status.toLowerCase()}: ${ok} of ${b.operations.length} applied` });
+      const open = await settleJob(jobId, `fix batch ${status.toLowerCase()}: ${ok} of ${b.operations.length} applied`);
       const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
       const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }) : null;
       const street = (project?.title ?? "a listing").split(",")[0];
@@ -650,16 +684,54 @@ async function finishBatches(jobIds: Set<string>): Promise<void> {
   }
 }
 
+/**
+ * Out of FIXING once nothing on the job is left to run, by the one review
+ * rule (decisions.reviewStage). A job on hold for credits moves too: its
+ * hold has nothing left to wait for. Returns the open major issues left.
+ */
+async function settleJob(jobId: string, why: string): Promise<number> {
+  const [r, job] = await Promise.all([reviewStage(jobId), prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, holdReason: true } })]);
+  if (r.stage === "stay" || !job || job.stage === r.stage) return r.open;
+  const from: JobStage[] = job.stage === "ON_HOLD" && job.holdReason === "CREDITS" ? ["ON_HOLD"] : HOLDABLE;
+  await setStage(jobId, from, r.stage, "fix-runner", { why, extra: { qcVerdict: r.verdict } });
+  return r.open;
+}
+
+/**
+ * Release holds for credits (backend audit #5): once nothing on the job is
+ * left to run it goes where the review rule says; once the balance covers
+ * what is waiting it goes back to where it was and the fixes run.
+ */
+export async function releaseCreditHolds(balance: () => Promise<number | null>): Promise<void> {
+  const held = await prisma.photoJob.findMany({ where: { stage: "ON_HOLD", holdReason: "CREDITS" }, select: { id: true } });
+  for (const j of held) {
+    const ops = await prisma.photoFixOperation.findMany({ where: { jobId: j.id, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } }, select: { status: true, estimatedCredits: true } });
+    if (!ops.length) {
+      await settleJob(j.id, "nothing left to fix, so the hold for credits is over");
+      continue;
+    }
+    const need = ops.filter((o) => o.status === "QUEUED").reduce((n, o) => n + (o.estimatedCredits ?? 0), 0);
+    const b = need ? await balance() : null;
+    if (need && (b == null || b < need)) continue;
+    await releaseHold(j.id, "fix-runner", need ? `AutoHDR has credits again (${b})` : "nothing is waiting for credits any more", "FIXING");
+  }
+}
+
 /** One tick: move every approved operation one step. */
 export async function driveFixes(opts: { budgetMs: number; leaseBy: string }): Promise<{ skipped?: string; submitted: number; polled: number; resolved: number; held: number; escalated: number }> {
   const out = { submitted: 0, polled: 0, resolved: 0, held: 0, escalated: 0 };
   const settings = await photoDeliverySettings();
-  const pending = await prisma.photoFixOperation.count({ where: { status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
-  if (!pending) return { ...out };
+  const [pending, creditHolds] = await Promise.all([
+    prisma.photoFixOperation.count({ where: { status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } }),
+    prisma.photoJob.count({ where: { stage: "ON_HOLD", holdReason: "CREDITS" } }),
+  ]);
+  if (!pending && !creditHolds) return { ...out };
   if (!(await autohdrConfigured())) return { skipped: "AutoHDR API not connected", ...out };
   const started = Date.now();
   const touched = new Set<string>();
   let spent = false;
+  const pass = newPass();
+  if (creditHolds) await releaseCreditHolds(() => pass.balance());
 
   // In flight first (they already cost credits): poll, and resolve lost submissions.
   const inflight = await prisma.photoFixOperation.findMany({ where: { status: { in: ["SUBMITTED", "SUBMITTING"] } }, orderBy: { updatedAt: "asc" }, take: 40 });
@@ -690,7 +762,7 @@ export async function driveFixes(opts: { budgetMs: number; leaseBy: string }): P
       touched.add(op.jobId);
       await prisma.photoFixBatch.updateMany({ where: { id: op.batchId, status: "PENDING" }, data: { status: "RUNNING" } });
       try {
-        const r = await submitStep(op);
+        const r = await submitStep(op, pass);
         if (r === "submitted") {
           out.submitted++;
           spent = true;

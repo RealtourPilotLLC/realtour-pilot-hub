@@ -124,7 +124,7 @@ async function main() {
     const jobHtml = await render("the job page", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({}) }));
     const cartHtml = await render("the job page on the Fix Cart tab with the lightbox open", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({ tab: "cart", photo: A.id }) }));
     const coverageHtml = await render("the job page on the Coverage tab", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({ tab: "coverage" }) }));
-    const filesHtml = await render("the job page on the Files tab", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({ tab: "files" }) }));
+    const filesHtml = await render("the job page on the History tab (an old ?tab=files link)", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({ tab: "files" }) }));
     const reviewHtml = await render("review mode", () => ReviewPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({ photo: B.id }) }));
     const creditsHtml = await render("the credits page", () => CreditsPage({ searchParams: Promise.resolve({}) }));
     const settingsHtml = await render("the settings page (owner)", () => SettingsPage());
@@ -140,49 +140,148 @@ async function main() {
     c.head("2 · what the pages say");
     // =======================================================================
     const tb = text(board);
-    c.ok("board: every column, in order", ["Editing", "QC running", "Needs decision", "Fixing", "On hold", "Ready", "Delivering", "Delivered"].every((w) => tb.includes(w)) && tb.indexOf("Editing") < tb.indexOf("Needs decision") && tb.indexOf("Needs decision") < tb.indexOf("Delivered"));
-    c.ok("board: the card shows the street, client, photographer, SLA, ticket counts (privacy critical; bins + coverage major) and shadow badge", /9 Render Row/.test(tb) && /Render Client TEST/.test(tb) && /Render Photographer/.test(tb) && /left/.test(tb) && /1 critical/.test(tb) && /2 major/.test(tb) && /Shadow/.test(tb), tb.slice(tb.indexOf("9 Render Row"), tb.indexOf("9 Render Row") + 300));
-    c.ok("board: the shadow-mode note", /QC is in shadow mode: results are advisory while Kyle keeps his manual check/.test(tb));
+    c.ok("board: every column, in order", ["Editing", "Checking", "Needs decision", "Fixing", "On hold", "Ready to deliver", "Delivering", "Delivered"].every((w) => tb.includes(w)) && tb.indexOf("Editing") < tb.indexOf("Needs decision") && tb.indexOf("Needs decision") < tb.indexOf("Delivered"));
+    c.ok("board: the card shows the street, client, photographer, SLA and ticket counts (privacy critical; bins + coverage major)", /9 Render Row/.test(tb) && /Render Client TEST/.test(tb) && /Render Photographer/.test(tb) && /left/.test(tb) && /1 critical/.test(tb) && /2 major/.test(tb), tb.slice(tb.indexOf("9 Render Row"), tb.indexOf("9 Render Row") + 300));
+    // Oct 15 2026 (settings audit #10): shadow mode shows once, on Settings; no banner, chip or table line on the queue.
+    c.ok("board: no shadow banner, chip or line", !/shadow/i.test(tb) && !/shadow/i.test(text(table)));
     c.ok("board: AutoHDR not connected, said plainly", /AutoHDR API not connected/.test(tb));
     c.ok("table view renders rows with a caption", /Photo jobs, sorted by when they are due/.test(table) && /9 Render Row/.test(text(table)));
     const tj = text(jobHtml);
-    c.ok("job: header facts (stage stepper, Aryeo links, verdict, credits spent)", /Decision/.test(tj) && /realtourpilot\.aryeo\.com\/admin\/listings\/lst-render\/edit/.test(jobHtml) && /Needs a decision/.test(tj) && /3 AutoHDR credits spent/.test(tj));
+    c.ok("job: header facts (stage stepper, Aryeo links, verdict, credits spent)", /Review/.test(tj) && /realtourpilot\.aryeo\.com\/admin\/listings\/lst-render\/edit/.test(jobHtml) && /Needs a decision/.test(tj) && /3 AutoHDR credits spent/.test(tj));
     c.ok("job: groups first, with the privacy chip and the low-confidence drawer", /Trash or recycling bin/.test(tj) && /Privacy/.test(tj) && /Low confidence/.test(tj));
     c.ok("job: the deliver panel with the advisory badge and the steps", /Delivery checklist: \d+ of \d+ pass/.test(tj) && /Advisory/.test(tj) && /Mark as delivering/.test(tj) && /Copy message/.test(tj));
     c.ok("job: Replace these on the Aryeo listing, with the download", /Replace these on the Aryeo listing/.test(tj) && /href="\/api\/photo-fixes\/[a-z0-9]+"/.test(jobHtml));
     c.ok("job: images use the staff route with the content hash", /\/api\/photo-delivery\/img\/[a-z0-9]+\/thumb768\?v=h-A\.jpg/.test(jobHtml));
     const tc = text(cartHtml);
-    c.ok("fix cart: blockers said plainly (switched off, not connected)", /Fixes can.t run right now/.test(tc) && /switched off until Jordan approves/.test(tc) && /not connected/.test(tc), tc.slice(tc.indexOf("Fixes can"), tc.indexOf("Fixes can") + 300));
-    c.ok("fix cart: the three ways to decide and Run selected", /Fix all/.test(tc) && /Fix Critical \+ Major only/.test(tc) && /Ignore all Minor/.test(tc) && /Run selected/.test(tc));
+    c.ok("fix cart: blockers said plainly (switched off, not connected)", /Fixes can.t run right now/.test(tc) && /AutoHDR fixes are switched off \(Photo Delivery settings, Fixes\)/.test(tc) && /not connected/.test(tc), tc.slice(tc.indexOf("Fixes can"), tc.indexOf("Fixes can") + 300));
+    c.ok("fix cart: one Run selected, no Fix all (the ticks pick what runs)", /Run selected/.test(tc) && !/Fix all|Fix Critical \+ Major only|Ignore all Minor/.test(tc));
+    // Oct 15 2026 (job page UI audit, item 4): at most three decision buttons on an issue, the rest under "More".
+    const DECIDE = /\bFix\b|In cart|Not worth fixing|Not there|Send to editor|Reshoot|Override|Stop flagging this/;
+    const decideRows = (h: string) => h.split('aria-label="Decide"').slice(1).map((seg) => seg.split("</li>")[0]);
+    const outside = (seg: string) => (seg.replace(/<details[\s\S]*?<\/details>/g, "").match(/<button[\s\S]*?<\/button>/g) ?? []).map((b) => text(b).trim()).filter((b) => DECIDE.test(b) && !/Undo/.test(b));
+    const rows = [...decideRows(jobHtml), ...decideRows(cartHtml)];
+    c.ok("an issue shows at most three decision buttons; Send to editor, Reshoot and Override wait under More", rows.length >= 2 && rows.every((seg) => outside(seg).length <= 3 && /<summary[^>]*>\s*More/.test(seg) && !outside(seg).some((b) => /Send to editor|Reshoot|Override/.test(b)) && /Send to editor/.test(text(seg))), rows.map((seg) => outside(seg).join("/")).join(" | "));
+    c.ok("Fix is hidden, not greyed out, when there is nothing to fix, and the reason has no 'No Fix button' prefix", rows.some((seg) => /Privacy: choose blur/.test(text(seg)) && !outside(seg).some((b) => /\bFix\b/.test(b))) && !/No Fix button/.test(tj + tc));
     c.ok("fix cart: human calls say why", /Needs your call/.test(tc));
     c.ok("lightbox: findings, boxes, versions, CV numbers", /Findings on this photo/.test(tc) && /Sharpness score/.test(tc) && /Versions/.test(tc) && /left:[\d.]+%/.test(cartHtml));
     const tcov = text(coverageHtml);
     c.ok("coverage: ordered vs the gallery, and Accept with reason", /What was ordered/.test(tcov) && /Drone photos/.test(tcov) && /Accept with reason/.test(tcov) && /Not met/.test(tcov));
-    c.ok("files: sources, versions, QC runs, batches", /Aryeo listing/.test(text(filesHtml)) && /QC runs/.test(text(filesHtml)) && /Fix batches/.test(text(filesHtml)));
+    c.ok("history: sources, versions, QC runs, batches", /Aryeo listing/.test(text(filesHtml)) && /QC runs/.test(text(filesHtml)) && /Fix batches/.test(text(filesHtml)));
     const tr = text(reviewHtml);
     c.ok("review mode: starts on the asked photo, with its findings and the keys", /2 of 3/.test(tr) && /Family photos on the fridge/.test(tr) && /Next/.test(tr) && /Previous/.test(tr), tr.slice(0, 300));
     const tcr = text(creditsHtml);
     c.ok("credits: balance, sparkline, spend by kind, alerts, ledger, top-up line", /389/.test(tcr) && /Lowest 389/.test(tcr) && /Used outside the pipeline/.test(tcr) && /Warning below/.test(tcr) && /Top up in AutoHDR: the hub never buys credits/.test(tcr) && /Ledger/.test(tcr));
     const ts = text(settingsHtml);
-    c.ok("settings: the fix runner switch with its explanation", /Run approved AutoHDR fixes/.test(ts) && /nothing is sent to AutoHDR/.test(ts));
-    c.ok("settings: every setting is on the page", ["Track photo jobs", "Run QC", "Shadow mode", "Build phase", "Auto-run fixes that cost no credits", "Kyle&rsquo;s approval limit", "Daily automatic credit limit", "Mirror status into Aryeo", "Confidence floor", "Minimum long edge", "QC start date", "Monthly QC budget", "Mask padding", "Compare every photo with its original"].every((w) => ts.includes(w.replace("&rsquo;", "\u2019")) || ts.includes(w.replace("&rsquo;", "'"))), ts.slice(0, 200));
-    c.ok("settings: the client profile is listed with its override", /Render Client TEST/.test(ts) && /1 override/.test(ts) && /12 h SLA/.test(ts));
+    // Oct 15 2026 (settings audit): fixes and paid QC are one choice each; the dead switches and the mask padding are gone.
+    c.ok("settings: fixes are one three-way choice", /Fixes/.test(ts) && /Only when someone approves/.test(ts) && /Automatic/.test(ts) && /not even one approved in the Fix Cart/.test(ts));
+    c.ok("settings: every setting is on the page", ["Photo Delivery on", "Send shoots to AutoHDR", "Bring the edits back into the hub", "Free photo check", "Daily limit on automatic fixes", "Upload and deliver by itself", "Advanced", "Paid QC (Claude)", "Only when someone presses Run QC", "Every gallery", "shadow mode", "Which checks the paid QC runs", "Kyle&rsquo;s approval limit", "Confidence floor", "Smallest photo allowed", "Track shoots from", "Monthly QC budget"].every((w) => ts.includes(w.replace("&rsquo;", "\u2019")) || ts.includes(w.replace("&rsquo;", "'"))), ts.slice(0, 200));
+    c.ok("settings: the dead switches are gone", !/Auto-run fixes that cost no credits|Mirror status into Aryeo|Compare every photo with its original|Daily automatic credit limit|Mask padding/.test(ts));
+    c.ok("settings: the client profile is listed with its override, without the SLA", /Render Client TEST/.test(ts) && /1 override/.test(ts) && !/h SLA|SLA hours/.test(ts));
 
     // =======================================================================
     c.head("3 · money stays with the owner");
     // =======================================================================
     const { JobWorkspace } = await import("@/components/photoDelivery/JobWorkspace");
-    const { FilesPanel, ActivityPanel } = await import("@/components/photoDelivery/JobPanels");
+    const { HistoryPanel } = await import("@/components/photoDelivery/JobPanels");
     const asAdmin = (await data.loadJobDetail(job.id, { viewer: admin, now }))!;
-    const adminJob = html(createElement(JobWorkspace, { data: asAdmin, viewer: admin, initialTab: "files", activity: createElement(ActivityPanel, { events: asAdmin.events }), files: createElement(FilesPanel, { header: asAdmin.header, photos: asAdmin.photos, runs: asAdmin.runs, batches: asAdmin.batches, canSeeMoney: false }) }));
-    c.ok("an admin's job page (Files tab, with run costs) carries no dollar figure", adminJob.length > 1000 && !DOLLARS.test(text(adminJob)), (text(adminJob).match(/.{40}\$\s?\d.{20}/) ?? [""])[0]);
-    const adminCart = html(createElement(JobWorkspace, { data: asAdmin, viewer: admin, initialTab: "cart", activity: null, files: null }));
+    const adminJob = html(createElement(JobWorkspace, { data: asAdmin, viewer: admin, initialTab: "activity", history: createElement(HistoryPanel, { events: asAdmin.events, header: asAdmin.header, photos: asAdmin.photos, runs: asAdmin.runs, batches: asAdmin.batches, canSeeMoney: false }) }));
+    c.ok("an admin's job page (History tab, with run costs) carries no dollar figure", adminJob.length > 1000 && !DOLLARS.test(text(adminJob)), (text(adminJob).match(/.{40}\$\s?\d.{20}/) ?? [""])[0]);
+    const adminCart = html(createElement(JobWorkspace, { data: asAdmin, viewer: admin, initialTab: "cart", history: null }));
     c.ok("... nor its Fix Cart, which shows the approval limit instead", !DOLLARS.test(text(adminCart)) && /Your approval limit is 25 credits per batch/.test(text(adminCart)));
     c.ok("... and the admin's page payload has no dollar fields filled", asAdmin.header.lastRunCostUsd === null && asAdmin.cart?.usdPerCredit === null && asAdmin.batches.every((b) => b.estimatedUsd === null));
+    // The seeded shoot is not linked to AutoHDR, so its real cart has nothing AutoHDR can run: the same lines as runnable ones.
+    const runnable = { ...asAdmin, cart: { ...asAdmin.cart!, lines: asAdmin.cart!.lines.map((l) => (l.ruleId === "PREP_TRASH_CANS" ? { ...l, humanCall: null, credits: 1 } : l)) } };
+    const tRun = text(html(createElement(JobWorkspace, { data: runnable, viewer: admin, initialTab: "cart", history: null })));
+    c.ok("fix cart: Select all · Critical + Major · Clear tick fixes, Run selected is the one button that runs, prices in credits", /AutoHDR can fix/.test(tRun) && /Select all · Critical \+ Major · Clear/.test(tRun) && /Run selected/.test(tRun) && /· 1 credit\b/.test(tRun) && !/\b1 cr\b/.test(tRun) && !/Fix all|Ignore all Minor/.test(tRun), tRun.slice(Math.max(0, tRun.indexOf("AutoHDR can fix")), tRun.indexOf("AutoHDR can fix") + 160));
+    const adminBox = text(html(createElement(JobWorkspace, { data: asAdmin, viewer: admin, initialTab: "issues", initialPhoto: A.id, history: null })));
+    c.ok("an admin's lightbox leaves out the measurements (CV numbers, hero score); the owner's keeps them", /Findings on this photo/.test(adminBox) && !/Measured \(CV\)|Sharpness score|hero score/.test(adminBox) && /Measured \(CV\)/.test(tc));
     c.ok("the owner's job page shows the run cost", /\$2\.37/.test(text(jobHtml)) || /\$2\.37/.test(text(filesHtml)));
     const adminCredits = await data.loadCreditsPage(admin, { now });
     c.ok("an admin's credits data has no dollar rate", adminCredits.credit.usdPerCredit === null);
     c.ok("the owner's credits page shows dollars", DOLLARS.test(tcr));
+
+    // =======================================================================
+    c.head("3b · the job frame: one main button, one download, four tabs");
+    // =======================================================================
+    // Oct 15 2026 (job page UI audit, items 1-3, 6-9, 12; perf audit 4-5).
+    const deliverOf = (h: string) => (h.split('aria-label="Deliver"')[1] ?? "").replace(/^[^>]*>/, "").split("</section>")[0];
+    const barOf = (h: string) => deliverOf(h).split('id="pd-deliver-body"')[0];
+    const mains = (h: string) => (deliverOf(h).match(/<(?:button|a)\b[^>]*bg-brand-action[^>]*>[\s\S]*?<\/(?:button|a)>/g) ?? []).map((b) => text(b).trim());
+    const folderUrl = "https://www.dropbox.com/home/render/06-Ready-for-Aryeo";
+    type Push = typeof asAdmin.aryeoPush;
+    const withStage = (stage: string, aryeoPush: Push, extra: Partial<typeof asAdmin.header> = {}) => ({
+      ...asAdmin,
+      header: { ...asAdmin.header, stage, ...extra },
+      steps: { ...asAdmin.steps!, listingUrl: asAdmin.steps!.listingUrl ?? "https://realtourpilot.aryeo.com/admin/listings/lst-render/edit", ready: { folderUrl, files: 3, expected: 3, ready: true, stagedAt: null } },
+      aryeoPush,
+    });
+    const hubOff: Push = { mode: "off", connected: false, progress: null };
+    const hubOn: Push = { mode: "approve", connected: true, progress: null };
+    const prog = (o: Partial<NonNullable<Push["progress"]>>): Push => ({ ...hubOn, progress: { state: "WAITING", active: false, total: 3, sent: 3, already: 0, note: null, startedAt: now.toISOString(), finishedAt: null, deliveredAt: null, waitingForApproval: true, ...o } });
+    const frame = (label: string, d: typeof asAdmin) => {
+      const h = html(createElement(JobWorkspace, { data: d, viewer: admin, history: null }));
+      all[`deliver bar: ${label}`] = h;
+      return h;
+    };
+    c.ok("the seeded checklist lets Kyle deliver (shadow mode advises)", asAdmin.gate?.canDeliver === true, JSON.stringify(asAdmin.gate?.checks.map((x) => x.ok)));
+    const readyOn = frame("READY, hub on", withStage("READY", hubOn));
+    c.ok("READY with the hub's upload on: Send to Aryeo is the one main button, and no Mark as delivering", JSON.stringify(mains(readyOn)) === '["Send to Aryeo"]' && !/Mark as delivering/.test(text(deliverOf(readyOn))), mains(readyOn).join(" | "));
+    c.ok("... the steps by hand wait behind Do it by hand instead, and the copy no longer says the hub can't upload", /<summary[^>]*>\s*Do it by hand instead/.test(deliverOf(readyOn)) && /Copy message/.test(text(deliverOf(readyOn).split("Do it by hand instead")[1] ?? "")) && !/can.t upload/.test(text(deliverOf(readyOn))));
+    const waitingOn = frame("waiting for Deliver in Aryeo", withStage("READY", prog({})));
+    c.ok("photos up and waiting: Deliver in Aryeo is the one main button; Send to Aryeo again waits inside", JSON.stringify(mains(waitingOn)) === '["Deliver in Aryeo"]' && !/Send to Aryeo again/.test(text(barOf(waitingOn))) && /Send to Aryeo again/.test(text(deliverOf(waitingOn))), mains(waitingOn).join(" | "));
+    const sendingOn = frame("sending", withStage("READY", prog({ state: "SENDING", active: true, sent: 1, waitingForApproval: false })));
+    c.ok("while the hub sends: no main button, the bar says how far", mains(sendingOn).length === 0 && /Sending to Aryeo: 1 of 3/.test(text(barOf(sendingOn))), text(barOf(sendingOn)).slice(0, 200));
+    const failedOn = frame("send failed", withStage("READY", prog({ state: "FAILED", note: "Aryeo said no.", waitingForApproval: false })));
+    c.ok("after a failed send: Send to Aryeo again is the main button", JSON.stringify(mains(failedOn)) === '["Send to Aryeo again"]', mains(failedOn).join(" | "));
+    const readyOff = frame("READY, hub off", withStage("READY", hubOff));
+    c.ok("hub upload off: Mark as delivering is the one main button, no Send to Aryeo", JSON.stringify(mains(readyOff)) === '["Mark as delivering"]' && !/Send to Aryeo/.test(text(deliverOf(readyOff))), mains(readyOff).join(" | "));
+    const editing = frame("EDITING", withStage("EDITING", hubOn));
+    c.ok("a stage that can't deliver yet: no main button (not a greyed one), the reason instead", mains(editing).length === 0 && !/Mark as delivering|Send to Aryeo|Deliver in Aryeo/.test(text(barOf(editing))) && /AutoHDR.s edits are not in yet/.test(text(barOf(editing))));
+    const delivering = frame("DELIVERING", withStage("DELIVERING", hubOff, { deliveryNextCheckAt: new Date(now.getTime() + 5 * 60_000).toISOString() }));
+    c.ok("Verify now sits inside the panel, not on the bar", !/Verify now/.test(text(barOf(delivering))) && /Verify now/.test(text(deliverOf(delivering))));
+    const links = (h: string) => (deliverOf(h).match(/href="https:\/\/www\.dropbox\.com\/home\/render\/06-Ready-for-Aryeo"/g) ?? []).length;
+    c.ok("one download: Download photos on the bar, none in the steps", links(readyOff) === 1 && links(readyOn) === 1 && /Download photos/.test(text(barOf(readyOff))) && !/Download all/.test(text(deliverOf(readyOff))));
+    c.ok("main buttons share one look (brand action, brand text, brightness hover)", [readyOn, waitingOn, readyOff].every((h) => !/bg-brand-action text-white|hover:opacity-90/.test(deliverOf(h)) && /bg-brand-action text-brand-fg hover:brightness-95/.test(deliverOf(h))));
+    const tabNames = [...adminJob.matchAll(/<button[^>]*role="tab"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => text(m[1]).trim().replace(/\s*\d+$/, ""));
+    c.ok("four tabs: Issues, Fix Cart, Coverage, History", tabNames.join("|") === "Issues|Fix Cart|Coverage|History", tabNames.join("|"));
+    c.ok("history keeps the files behind one line and leaves out the debug (passes and models, Aryeo's CDN link)", /Photos, versions, QC runs and fixes/.test(text(adminJob)) && /Fix batches/.test(text(adminJob)) && !/Passes and models|Aryeo.s CDN/.test(text(adminJob)));
+    const stepper = (jobHtml.match(/aria-label="Pipeline stage"[\s\S]*?<\/ol>/) ?? [""])[0];
+    c.ok("stepper: Edited, Checking, Review; on a phone only the current step is named", ["Edited", "Checking", "Review"].every((w) => text(stepper).includes(w)) && !/Landed|Decision|>QC</.test(stepper) && /sr-only sm:not-sr-only">Edited/.test(stepper) && /font-semibold text-foreground">Review/.test(stepper), text(stepper));
+    const summary = (jobHtml.split('aria-label="Job summary"')[1] ?? "").replace(/^[^>]*>/, "").split("</section>")[0];
+    c.ok("shadow mode shows once on the job page: the Deliver bar's Advisory badge", /Advisory/.test(text(barOf(jobHtml))) && !/shadow/i.test(text(summary)) && !/advisory in shadow mode/i.test(tj), (text(summary).match(/.{0,60}shadow.{0,60}/i) ?? [""])[0]);
+    const { JobHeaderActions } = await import("@/components/photoDelivery/JobHeaderActions");
+    const head = html(createElement(JobHeaderActions, { jobId: job.id, stage: "QC_REVIEW", qcEnabled: true, autohdr: true }));
+    const [inView, menu = ""] = head.split("<details");
+    c.ok("header: Review mode in view; Put on hold, Check again and Sync from AutoHDR under More", /Review mode/.test(text(inView)) && /<summary[^>]*>\s*More/.test(menu) && ["Put on hold", "Check again", "Sync from AutoHDR"].every((w) => text(menu).includes(w)) && /title="Runs the photo check again\."/.test(head) && !/Re-run QC|Check AutoHDR for changes|Anthropic/.test(head));
+    const held = html(createElement(JobHeaderActions, { jobId: job.id, stage: "ON_HOLD", qcEnabled: true }));
+    c.ok("on hold: Release hold in view, Review mode under More", /Release hold/.test(text(held.split("<details")[0])) && /Review mode/.test(text(held.split("<details")[1] ?? "")));
+    const find = (node: unknown, type: unknown): { props: Record<string, unknown> } | null => {
+      if (!node || typeof node !== "object") return null;
+      if (Array.isArray(node)) {
+        for (const n of node) {
+          const f = find(n, type);
+          if (f) return f;
+        }
+        return null;
+      }
+      const el = node as { type?: unknown; props?: { children?: unknown } };
+      return el.type === type ? (el as { props: Record<string, unknown> }) : find(el.props?.children, type);
+    };
+    const ws = find(await JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({}) }), JobWorkspace);
+    const wsData = ws?.props.data as { events: unknown[]; batches: unknown[] } | undefined;
+    const histEvents = ((ws?.props.history as { props?: { events?: unknown[] } } | undefined)?.props?.events ?? []).length;
+    c.ok("the page hands the browser no events or batches; History renders them on the server", !!wsData && wsData.events.length === 0 && wsData.batches.length === 0 && histEvents > 0, `${wsData?.events.length}/${wsData?.batches.length}/${histEvents}`);
+    const fsMod = await import("node:fs");
+    const src = (f: string) => fsMod.readFileSync(f, "utf8");
+    const pollers = ["src/components/photoDelivery/AryeoPushControls.tsx", "src/components/photoDelivery/ReadyProgressBar.tsx", "src/components/photoDelivery/DeliverPanel.tsx"].map(src).join("\n");
+    c.ok("the polls go through the GET route (not a server action), pause while hidden, and the 45 s refresh is gone", !/aryeoPushProgressAction|readyProgressAction|45_000/.test(pollers) && (pollers.match(/\/api\/photo-delivery\/progress\//g) ?? []).length === 2 && (pollers.match(/document\.hidden/g) ?? []).length >= 3);
+    const route = await import("@/app/api/photo-delivery/progress/[jobId]/route");
+    const ask = async (what: string) => {
+      const res = await route.GET({ nextUrl: new URL(`http://hub.test/api/photo-delivery/progress/${job.id}?what=${what}`) } as never, { params: Promise.resolve({ jobId: job.id }) });
+      return { status: res.status, body: (await res.json()) as { ok: boolean; progress: unknown } };
+    };
+    const [rPush, rReady, rBad] = [await ask("push"), await ask("ready"), await ask("nope")];
+    c.ok("the progress route answers (nothing running here) and refuses a bad ask", rPush.status === 200 && rPush.body.ok && rPush.body.progress === null && rReady.status === 200 && rReady.body.ok && rBad.status === 400 && /await requireAdmin\(\)/.test(src("src/app/api/photo-delivery/progress/[jobId]/route.ts")), JSON.stringify([rPush, rReady, rBad]));
 
     // =======================================================================
     c.head("4 · copy");

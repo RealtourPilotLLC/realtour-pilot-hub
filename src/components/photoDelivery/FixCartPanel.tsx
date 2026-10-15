@@ -2,21 +2,22 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { AlertTriangle, Ban, Hand, Play, Wrench } from "lucide-react";
+import { AlertTriangle, Ban, Hand, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { approveFixesAction } from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
 import { photoTitle, useJob } from "./JobContext";
-import { HUMAN_CALL_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, STRATEGY_LABEL, plural, usd } from "./format";
+import { HUMAN_CALL_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, STRATEGY_LABEL, credits, plural, usd } from "./format";
 import type { CartLineView } from "./types";
 
 // ---------------------------------------------------------------------------
-// THE FIX CART (plan 8.3). Three ways to decide, as Jordan asked: Proceed
-// (Fix all), Ignore (per item, per group, or all Minor), Select (checkboxes,
-// then Run selected). Every number comes from the cart the server built from
-// AutoHDR's LIVE price list (lib/photoDelivery/fixes.ts): line credits and the
-// planner's estimate are shown as given, never typed into this screen, and a
-// price that could not be read says so and keeps Run disabled.
+// THE FIX CART (plan 8.3). One button runs fixes: Run selected. The ticks
+// can be set one by one or in a click (Select all, Critical + Major, Clear),
+// and all Minor issues can be marked not worth fixing at once. Every number
+// comes from the cart the server built from AutoHDR's LIVE price list
+// (lib/photoDelivery/fixes.ts): line credits are shown as given, never typed
+// into this screen, and a price that could not be read says so and keeps Run
+// disabled.
 //
 // Guard rails shown before the click, and enforced again on the server:
 //   · blockers (fixes switched off, API not connected, shoot not linked,
@@ -41,7 +42,7 @@ const estimateOf = (lines: CartLineView[]): number | null => {
   });
   return total;
 };
-const cr = (n: number | null) => (n == null ? "price unknown" : `${n.toLocaleString("en-US")} cr`);
+const cr = (n: number | null) => (n == null ? "price unknown" : credits(n));
 
 export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
   const { data, viewer, jobId, selected, setSelected, run, confirm, decide, pending, photoById, openLightbox, notify } = useJob();
@@ -76,7 +77,7 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
     return { ok: true, est: e, crosses };
   }
 
-  async function approve(lines: CartLineView[], mode: "ALL" | "SELECTED" | "CRITICAL_MAJOR_ONLY") {
+  async function approve(lines: CartLineView[]) {
     const p = preflight(lines);
     if (!p.ok) {
       notify("err", p.why);
@@ -92,14 +93,13 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
       if (!go) return;
     }
     const ids = lines.flatMap((l) => l.findingIds);
-    const ok = await run(() => approveFixesAction({ jobId, findingIds: ids, mode }));
+    const ok = await run(() => approveFixesAction({ jobId, findingIds: ids, mode: "SELECTED" }));
     if (ok) setSelected((s) => {
       for (const id of ids) s.delete(id);
       return s;
     });
   }
 
-  const all = preflight(runnable);
   const cm = runnable.filter((l) => l.severity !== "MINOR");
   const minorLines = cart.lines.filter((l) => l.severity === "MINOR");
   const sel = preflight(chosen);
@@ -111,6 +111,9 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
       }
       return s;
     });
+  /** Tick exactly these lines (the old "Fix all" and "Fix Critical + Major only", as a selection). */
+  const selectOnly = (lines: CartLineView[]) => setSelected(() => new Set(lines.flatMap((l) => l.findingIds)));
+  const link = "min-h-10 px-1 text-muted hover:text-foreground disabled:opacity-50";
 
   const lineRow = (l: CartLineView) => {
     const p = l.photoId ? photoById.get(l.photoId) : null;
@@ -172,7 +175,7 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
               <li key={b}>{b}</li>
             ))}
           </ul>
-          <p className="mt-1 text-[13px] text-muted">You can still ignore, send to the editor, or decide each issue.</p>
+          <p className="mt-1 text-[13px] text-muted">You can still decide each issue: Not worth fixing, Not there, or Send to editor.</p>
         </div>
       )}
 
@@ -180,62 +183,37 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
         // Oct 14 2026: the shoot's QC fix budget, so whoever submits knows what is left.
         <div className="rounded-xl border border-border bg-surface p-3">
           <p className="text-sm font-semibold">
-            Fix budget for this shoot: {cart.budget.maxCredits} credits max ({cart.budget.targetCredits} normally){rate != null ? ` · ${usd(cart.budget.maxCredits * rate)} max` : ""}
+            Fix budget: {cart.budget.spent + cart.budget.pending} of {credits(cart.budget.targetCredits)} (up to {cart.budget.maxCredits})
           </p>
           <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-2" aria-hidden>
             <div className={cn("h-full rounded-full", cart.budget.spent + cart.budget.pending > cart.budget.targetCredits ? "bg-warning" : "bg-success")} style={{ width: `${Math.min(100, ((cart.budget.spent + cart.budget.pending) / Math.max(1, cart.budget.maxCredits)) * 100)}%` }} />
           </div>
-          <p className="mt-1 text-[13px] text-muted">
-            Used so far: {cart.budget.spent + cart.budget.pending} credit{cart.budget.spent + cart.budget.pending === 1 ? "" : "s"} ({cart.budget.automatic} automatic, {cart.budget.byHand} by hand{cart.budget.pending ? `; ${cart.budget.pending} still running` : ""}) · Left: {Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending)}{rate != null ? ` (${usd(Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending) * rate)})` : ""}.
-            {" "}One credit per photo: several fixes on the same photo are one edit.
-          </p>
-          <BudgetRules b={cart.budget} />
+          <BudgetRules b={cart.budget} rate={rate} />
         </div>
       )}
 
       <div className="rounded-xl border border-border bg-surface-2/40 p-3">
         <p className="text-sm font-semibold">
-          {plural(chosen.length, "fix", "fixes")} on {plural(photoCount, "photo")} · est. {est == null ? "price unknown" : `${est.toLocaleString("en-US")} credit${est === 1 ? "" : "s"}`}
+          {plural(chosen.length, "fix", "fixes")} on {plural(photoCount, "photo")} · est. {cr(est)}
           {rate != null && est != null ? ` (${usd(est * rate)})` : ""}
         </p>
         <p className="mt-0.5 text-[13px] text-muted">
           {cart.balance != null ? `Balance ${cart.balance.toLocaleString("en-US")}${after != null ? ` → ${after.toLocaleString("en-US")}` : ""}` : "Balance not read yet"}
-          {cart.estimatedCredits != null ? ` · the planner's suggested set: ${cart.estimatedCredits.toLocaleString("en-US")} credit${cart.estimatedCredits === 1 ? "" : "s"}` : runnable.length ? " · the planner could not price its suggested set" : ""}
-          . Estimates; the ledger records what AutoHDR actually charges.
         </p>
         {!viewer.isOwner && <p className="mt-0.5 text-[13px] text-muted">Your approval limit is {cart.adminCap} credits per batch. Above that, Jordan approves.</p>}
-        <div className="mt-2.5 flex flex-wrap gap-2">
+        {minorLines.length > 0 && (
           <button
             type="button"
-            disabled={pending || !all.ok}
-            title={all.ok ? undefined : all.why}
-            onClick={() => void approve(runnable, "ALL")}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-3.5 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Wrench aria-hidden className="size-4" /> Fix all
-          </button>
-          <button
-            type="button"
-            disabled={pending || !cm.length || !preflight(cm).ok}
-            title={!cm.length ? "No critical or major fixes in the cart" : undefined}
-            onClick={() => void approve(cm, "CRITICAL_MAJOR_ONLY")}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 text-sm font-semibold hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Fix Critical + Major only
-          </button>
-          <button
-            type="button"
-            disabled={pending || !minorLines.length}
+            disabled={pending}
             onClick={() => {
               const list = minorLines.flatMap((l) => l.findingIds).map((id) => findingById.get(id)).filter((f): f is NonNullable<typeof f> => !!f);
               void decide(list, "IGNORED");
             }}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 text-sm font-semibold hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-2.5 inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-[13px] font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Ban aria-hidden className="size-4" /> Ignore all Minor{minorLines.length ? ` (${minorLines.length})` : ""}
+            <Ban aria-hidden className="size-4" /> Not worth fixing: all Minor ({minorLines.length})
           </button>
-        </div>
-        {!all.ok && runnable.length > 0 && !blocked && <p className="mt-1.5 text-[13px] text-warning">{all.why}</p>}
+        )}
       </div>
 
       {cart.lines.length === 0 ? (
@@ -246,8 +224,11 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
             <section aria-label="Fixes AutoHDR can run">
               <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[13px]">
                 <span className="font-medium">AutoHDR can fix ({runnable.length})</span>
-                <button type="button" className="min-h-10 px-1 text-muted hover:text-foreground" onClick={() => setSelected((s) => { for (const l of runnable) for (const id of l.findingIds) s.add(id); return s; })}>Select all</button>
-                <button type="button" className="min-h-10 px-1 text-muted hover:text-foreground" onClick={() => setSelected(() => new Set())}>Clear</button>
+                <button type="button" className={link} onClick={() => selectOnly(runnable)}>Select all</button>
+                <span aria-hidden className="text-muted-2">·</span>
+                <button type="button" className={link} disabled={!cm.length} title={cm.length ? undefined : "No critical or major fixes in the cart"} onClick={() => selectOnly(cm)}>Critical + Major</button>
+                <span aria-hidden className="text-muted-2">·</span>
+                <button type="button" className={link} onClick={() => setSelected(() => new Set())}>Clear</button>
               </div>
               <ul className={cn("space-y-1.5", inDrawer && "max-h-[50dvh] overflow-y-auto pr-1")}>{runnable.map(lineRow)}</ul>
             </section>
@@ -275,10 +256,10 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
         <button
           type="button"
           disabled={pending || !sel.ok}
-          onClick={() => void approve(chosen, "SELECTED")}
+          onClick={() => void approve(chosen)}
           className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <Play aria-hidden className="size-4" /> Run selected ({plural(chosen.length, "fix", "fixes")}, {est == null ? "price unknown" : `${est} credit${est === 1 ? "" : "s"}`}
+          <Play aria-hidden className="size-4" /> Run selected ({plural(chosen.length, "fix", "fixes")}, {cr(est)}
           {rate != null && est != null ? `, ${usd(est * rate)}` : ""})
         </button>
         {!sel.ok && chosen.length > 0 && <span className="text-[13px] text-warning">{sel.why}</span>}
@@ -290,11 +271,16 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
   );
 }
 
-/** What counts toward the budget and what never does (huddle finding 7). */
-function BudgetRules({ b }: { b: { reverted: number; repeats: number; refunded: number } }) {
+/** What is used so far, what counts toward the budget and what never does (huddle finding 7). */
+function BudgetRules({ b, rate }: { b: { spent: number; pending: number; automatic: number; byHand: number; maxCredits: number; reverted: number; repeats: number; refunded: number }; rate: number | null }) {
+  const used = b.spent + b.pending;
+  const left = Math.max(0, b.maxCredits - used);
   return (
     <details className="mt-1.5 text-[13px]">
       <summary className="cursor-pointer text-muted hover:text-foreground">What counts toward this budget</summary>
+      <p className="mt-1 text-muted">
+        Used so far: {credits(used)} ({b.automatic} automatic, {b.byHand} by hand{b.pending ? `; ${b.pending} still running` : ""}). Left: {left}{rate != null ? ` (${usd(left * rate)})` : ""}. One credit per photo: several fixes on the same photo are one edit.
+      </p>
       <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted">
         <li>Counts: every paid fix, automatic or by hand, and a fix still waiting to run.</li>
         <li>Counts: a second paid edit of the same photo{b.repeats ? ` (${b.repeats} credit${b.repeats === 1 ? "" : "s"} so far)` : ""}.</li>

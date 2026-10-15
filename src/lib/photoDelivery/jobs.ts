@@ -29,8 +29,8 @@ import { logJobEvent, setStage, type JobStage } from "./jobState";
 //      over several minutes; a gallery has "landed" after FINALS_SETTLE_MS
 //      without a change),
 //   4. asks for a re-QC when the gallery changes after QC (a replaced photo),
-//   5. follows the delivery the hub already detects (Project.deliveredAt, the
-//      listing's delivery_status) and then verifies it against the QC'd set.
+//   5. follows the delivery the listing reports (its delivery_status) and
+//      then verifies it against the QC'd set.
 // Read-only toward Aryeo, Dropbox and AutoHDR. Every write is a hub row.
 //
 // Oct 14 2026: a third source. When the hub sent the raws itself (intake.ts),
@@ -87,12 +87,6 @@ export async function listFinals(folder: string): Promise<FinalEntry[] | null> {
     console.warn("photo delivery: finals read failed", folder, (e as Error).message);
     return null;
   }
-}
-
-export function finalsFingerprint(entries: FinalEntry[]): string {
-  const h = createHash("sha256");
-  for (const e of entries) h.update(`${e.name}\u0000${e.contentHash ?? e.size ?? ""}\n`);
-  return h.digest("hex").slice(0, 32);
 }
 
 type ExpectedDeliverables = {
@@ -274,6 +268,7 @@ export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
 }
 
 const N_OF_M = /\((\d+) of (\d+)\)\.[a-z0-9]+$/i;
+const CANCELLED_NOTE = "project cancelled: sync stopped";
 
 /** The hub's own AutoHDR shoot(s) for a project, as gallery entries. */
 async function autohdrGallery(projectId: string): Promise<GalleryEntry[]> {
@@ -305,12 +300,15 @@ async function autohdrGallery(projectId: string): Promise<GalleryEntry[]> {
  * pushed them): carry each row over in place, so its findings and checks stay
  * with it. Only when every listing name is "(N of M)" with M equal to the
  * hub's photo count (AutoHDR names them in its gallery order, verified Oct 14
- * on 2236 Gregory Dr); anything else is left to the normal match.
+ * on 2236 Gregory Dr), or every 06-Ready-for-Aryeo file is there; anything
+ * else is left to the normal match. "uploading": part of the ready files are
+ * on the listing so far (an upload lands over several minutes), so nothing
+ * is carried over yet and the AutoHDR gallery stays the one to read.
  */
-async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<number> {
+async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<"adopted" | "uploading" | "no"> {
   const rows = await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "AUTOHDR", status: { in: ["ACTIVE", "EXCLUDED"] } }, orderBy: { sequence: "asc" }, select: { id: true, contentHash: true, inspectedHash: true, classifiedHash: true } });
-  if (!rows.length) return 0;
-  if (await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } })) return 0;
+  if (!rows.length) return "no";
+  if (await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } })) return "no";
   // Oct 14 2026 (huddle): Kyle uploads the 06-Ready-for-Aryeo files, named in
   // delivery order ("01-Front-Exterior.jpg"). When every listing image is one
   // of them, each carries over to its own AutoHDR photo, so its versions,
@@ -318,11 +316,12 @@ async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<num
   const ready = await (await import("./handoff")).readyNamesFor(jobId).catch(() => new Map<string, string>());
   const byId = new Map(rows.map((r) => [r.id, r]));
   const viaReady = entries.length > 0 && entries.every((e) => byId.has(ready.get(e.name.toLowerCase()) ?? "")) && new Set(entries.map((e) => ready.get(e.name.toLowerCase()))).size === entries.length;
-  if (!viaReady && rows.length !== entries.length) return 0;
+  if (viaReady && entries.length < ready.size) return "uploading";
+  if (!viaReady && rows.length !== entries.length) return "no";
   const slots = entries.map((e) => N_OF_M.exec(e.name));
   if (!viaReady) {
-    if (slots.some((m) => !m || Number(m[2]) !== rows.length)) return 0;
-    if (new Set(slots.map((m) => Number(m![1]))).size !== rows.length) return 0;
+    if (slots.some((m) => !m || Number(m[2]) !== rows.length)) return "no";
+    if (new Set(slots.map((m) => Number(m![1]))).size !== rows.length) return "no";
   }
   const ops = entries.flatMap((e, i) => {
     const row = viaReady ? byId.get(ready.get(e.name.toLowerCase())!)! : rows[Number(slots[i]![1]) - 1];
@@ -341,7 +340,7 @@ async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<num
   });
   await prisma.$transaction(ops);
   await logJobEvent(jobId, "sync", `the ${entries.length} AutoHDR photos reached the Aryeo listing${viaReady ? " (the 06-Ready-for-Aryeo files)" : ""}: carried over in place (findings, versions and the AutoHDR link kept)`);
-  return entries.length;
+  return "adopted";
 }
 
 /** Read one job's gallery and keep its photo rows and stage in step. */
@@ -350,12 +349,13 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   if (!job) return { changed: false, count: null, stage: "missing", source: null };
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, deliveredAt: true, aryeoListingId: true, client: { select: { name: true } } },
+    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, aryeoListingId: true, client: { select: { name: true } } },
   });
   if (!project?.client) return { changed: false, count: null, stage: job.stage, source: null };
   if (project.status === "CANCELLED") {
-    await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: null } });
-    await logJobEvent(jobId, "sync", "project cancelled: sync stopped");
+    // Looked at again once a day (a project can be un-cancelled); said once.
+    await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: new Date(now.getTime() + 24 * 60 * MIN) } });
+    if (!(await prisma.photoJobEvent.count({ where: { jobId, actor: "sync", action: CANCELLED_NOTE } }))) await logJobEvent(jobId, "sync", CANCELLED_NOTE);
     return { changed: false, count: null, stage: job.stage, source: null };
   }
 
@@ -373,11 +373,12 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   // Kyle's push from AutoHDR to Aryeo lands photo by photo: while the listing
   // holds only part of the hub's AutoHDR gallery ("(N of M)" with M = the
   // hub's count), the AutoHDR gallery is still the one to read.
-  const pushing = hubShoot.length > 0 && !!listing && listing.entries.length > 0 && listing.entries.length < hubShoot.length && listing.entries.every((e) => Number(N_OF_M.exec(e.name)?.[2]) === hubShoot.length);
+  // The same while only part of the 06-Ready-for-Aryeo files are on it.
+  let pushing = hubShoot.length > 0 && !!listing && listing.entries.length > 0 && listing.entries.length < hubShoot.length && listing.entries.every((e) => Number(N_OF_M.exec(e.name)?.[2]) === hubShoot.length);
+  if (listing && listing.entries.length > 0 && !pushing) pushing = (await adoptListing(jobId, listing.entries)) === "uploading" && hubShoot.length > 0;
   if (listing && listing.entries.length > 0 && !pushing) {
     entries = listing.entries;
     source = "aryeo";
-    await adoptListing(jobId, entries);
   } else if (pushing) {
     entries = hubShoot;
     source = "autohdr";
@@ -457,8 +458,10 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     });
     await logJobEvent(jobId, "sync", `gallery changed (${source}): ${entries.length} photo${entries.length === 1 ? "" : "s"}`, { added, gone: gone.length });
     if (["QC_REVIEW", "READY", "FIXING", "ON_HOLD"].includes(job.stage) && (added > 0 || existing.some((e) => e.sourceKind !== "AUTOHDR" && entries!.some((x) => x.name === e.name && x.contentHash !== e.contentHash)))) {
-      // Oct 14 2026: with the paid QC on request only, a changed gallery is
-      // re-checked by the free photo check (it follows finalsChangedAt).
+      // Oct 14 2026: with the paid QC on request only, the free photo check
+      // re-runs on a QC_REVIEW or READY job whose gallery changed after its
+      // last check (finalsChangedAt, autohdrCheck.ts); the paid QC only when
+      // it runs by itself.
       if ((await photoDeliverySettings()).paidQcAuto) {
         await prisma.photoJob.update({ where: { id: jobId }, data: { qcRequestedAt: now } });
         await logJobEvent(jobId, "sync", "re-QC requested: the gallery changed after QC");
@@ -476,10 +479,12 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   }
 
   // Delivered (Kyle pressed Deliver in Aryeo): verify against the QC'd set.
+  // Only the listing's own delivery_status says so: Project.deliveredAt can be
+  // the hub's guess from the status sweep, before Aryeo has delivered.
   const deliveredOnAryeo = listing?.deliveryStatus === "DELIVERED";
-  if ((project.deliveredAt || deliveredOnAryeo) && !["DELIVERED", "DELIVERY_MISMATCH"].includes(stage)) {
+  if (deliveredOnAryeo && !["DELIVERED", "DELIVERY_MISMATCH"].includes(stage)) {
     const from: JobStage[] = ["EDITING", "EDITED", "QC_RUNNING", "QC_REVIEW", "FIXING", "ON_HOLD", "READY", "DELIVERING", "REVISION_REQUESTED", "EDIT_FAILED"];
-    if (stage !== "DELIVERING") await setStage(jobId, from, "DELIVERING", "sync", { why: "delivered in Aryeo", extra: { deliveryStartedAt: project.deliveredAt ?? now } });
+    if (stage !== "DELIVERING") await setStage(jobId, from, "DELIVERING", "sync", { why: "delivered in Aryeo", extra: { deliveryStartedAt: now } });
     try {
       const { verifyDelivery } = await import("./delivery");
       const v = await verifyDelivery(jobId, "sync");

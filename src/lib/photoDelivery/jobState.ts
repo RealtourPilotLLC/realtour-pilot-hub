@@ -37,8 +37,6 @@ export const JOB_STAGES = [
 ] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
-export const ACTIVE_STAGES: JobStage[] = ["EDITING", "EDITED", "QC_RUNNING", "QC_REVIEW", "FIXING", "READY", "DELIVERING", "REVISION_REQUESTED"];
-
 export const STAGE_LABEL: Record<JobStage, string> = {
   EDITING: "Editing",
   EDIT_FAILED: "Edit failed",

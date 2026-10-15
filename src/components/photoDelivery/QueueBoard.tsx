@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, Camera, FlaskConical, Images, Wrench } from "lucide-react";
+import { AlertTriangle, Camera, Images, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDay, etMonthDayTime } from "@/lib/datetime";
 import { PhotoImg } from "./PhotoImg";
@@ -10,8 +10,9 @@ import type { QueueCard, QueueColumn, QueueData, Severity } from "./types";
 // ---------------------------------------------------------------------------
 // THE QUEUE (plan 9.3): a board by default, a table on request, both sorted by
 // SLA due. On a desktop the board is columns side by side; on a phone the
-// same columns stack, so an approval or an alert is one scroll away and never
-// a sideways hunt.
+// same columns stack with Needs decision, On hold and Ready first, so an
+// approval or an alert is one scroll away and never a sideways hunt. Each
+// column's hint is its heading's tooltip; an empty column is its header only.
 // ---------------------------------------------------------------------------
 
 const FIX_TONE = { ok: "text-success", warn: "text-warning", danger: "text-danger", muted: "text-muted" } as const;
@@ -80,11 +81,6 @@ function Card({ card, nowIso }: { card: QueueCard; nowIso: string }) {
         {card.holdReason && card.stage === "ON_HOLD" && <span className={cn("rounded-full px-2 py-0.5 font-medium ring-1 ring-inset", SEVERITY_CLASS.MAJOR)}>{HOLD_REASON_LABEL[card.holdReason] ?? card.holdReason}</span>}
         <span className="text-muted">{plural(card.photoCount, "photo")}</span>
         <IssueCounts issues={card.issues} />
-        {card.shadow && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 font-medium text-muted ring-1 ring-inset ring-border" title="QC is advisory on this job (shadow mode)">
-            <FlaskConical aria-hidden className="size-3" /> Shadow
-          </span>
-        )}
         {card.fix && (
           <span className={cn("inline-flex items-center gap-1 font-medium", FIX_TONE[card.fix.tone])}>
             <Wrench aria-hidden className="size-3" /> {card.fix.label}
@@ -102,18 +98,23 @@ function Card({ card, nowIso }: { card: QueueCard; nowIso: string }) {
   );
 }
 
+/** On a phone these come first: the columns that need a person. */
+const FIRST_ON_PHONE = new Set(["decision", "hold", "ready"]);
+
 function Column({ col, nowIso }: { col: QueueColumn; nowIso: string }) {
   const headingId = `pd-col-${col.key}`;
+  const empty = col.cards.length === 0;
   return (
-    <section aria-labelledby={headingId} className="flex min-w-0 flex-col rounded-2xl border border-border bg-surface-2/30 lg:w-[19rem] lg:shrink-0">
-      <header className="flex items-baseline gap-2 border-b border-border px-3 py-2.5">
+    <section aria-labelledby={headingId} className={cn("flex min-w-0 flex-col rounded-2xl border border-border bg-surface-2/30 lg:w-[19rem] lg:shrink-0", FIRST_ON_PHONE.has(col.key) && "order-first lg:order-none")}>
+      <header title={col.hint} className={cn("flex items-baseline gap-2 px-3 py-2.5", !empty && "border-b border-border")}>
         <h2 id={headingId} className="text-sm font-semibold">{col.label}</h2>
         <span className="rounded-full bg-surface-2 px-2 text-ui-status font-medium text-muted">{col.cards.length}</span>
       </header>
-      <p className="px-3 pt-2 text-[12px] leading-snug text-muted">{col.hint}</p>
-      <div className="flex flex-col gap-2 p-2 lg:max-h-[calc(100dvh-20rem)] lg:overflow-y-auto">
-        {col.cards.length === 0 ? <p className="px-1 py-2 text-[13px] text-muted-2">Nothing here.</p> : col.cards.map((card) => <Card key={card.id} card={card} nowIso={nowIso} />)}
-      </div>
+      {!empty && (
+        <div className="flex flex-col gap-2 p-2 lg:max-h-[calc(100dvh-20rem)] lg:overflow-y-auto">
+          {col.cards.map((card) => <Card key={card.id} card={card} nowIso={nowIso} />)}
+        </div>
+      )}
     </section>
   );
 }
@@ -163,7 +164,6 @@ export function QueueTable({ data }: { data: QueueData }) {
               <td className="px-3 py-2.5">
                 <span className="block">{column}</span>
                 {card.stageLabel !== column && <span className="block text-[12px] text-muted">{card.stageLabel}</span>}
-                {card.shadow && <span className="block text-[12px] text-muted">Shadow QC</span>}
               </td>
               <td className="px-3 py-2.5">
                 {card.stage === "DELIVERED" ? <span className="text-muted">{card.deliveredAt ? `Delivered ${etMonthDay(card.deliveredAt)}` : "Delivered"}</span> : <SlaChip dueAt={card.slaDueAt} serverNow={data.nowIso} />}

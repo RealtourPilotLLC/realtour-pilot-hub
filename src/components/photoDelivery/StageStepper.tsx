@@ -5,13 +5,14 @@ import { cn } from "@/lib/utils";
 // Where the job is in the pipeline (plan 3.3), as a stepper. Side states sit
 // on the step they belong to: a hold on the stage it left, a failed edit on
 // Editing, a delivery mismatch on Delivering, a client revision on Fixing.
+// On a phone only the current step is named; the rest are numbered dots.
 // ---------------------------------------------------------------------------
 
 const STEPS: { key: string; label: string }[] = [
   { key: "EDITING", label: "Editing" },
-  { key: "EDITED", label: "Landed" },
-  { key: "QC_RUNNING", label: "QC" },
-  { key: "QC_REVIEW", label: "Decision" },
+  { key: "EDITED", label: "Edited" },
+  { key: "QC_RUNNING", label: "Checking" },
+  { key: "QC_REVIEW", label: "Review" },
   { key: "FIXING", label: "Fixing" },
   { key: "READY", label: "Ready" },
   { key: "DELIVERING", label: "Delivering" },
@@ -29,11 +30,12 @@ export function StageStepper({ stage, holdResumeStage }: { stage: string; holdRe
   const at = s ? s.at : stage;
   const idx = Math.max(0, STEPS.findIndex((x) => x.key === at));
   return (
-    <ol className="flex w-full items-center gap-1 overflow-x-auto pb-1" aria-label="Pipeline stage">
+    <ol className="flex w-full items-center gap-1.5 overflow-x-auto pb-1 sm:gap-1" aria-label="Pipeline stage">
       {STEPS.map((step, i) => {
         const done = i < idx || (stage === "DELIVERED" && i === idx);
         const current = i === idx && stage !== "DELIVERED";
         const label = current && s ? s.label : step.label;
+        const named = i === idx; // the step the job is on (or Delivered), named on a phone too
         return (
           <li key={step.key} className="flex min-w-0 shrink-0 items-center gap-1" aria-current={current ? "step" : undefined}>
             <span
@@ -47,11 +49,11 @@ export function StageStepper({ stage, holdResumeStage }: { stage: string; holdRe
             >
               {done ? <Check aria-hidden className="size-3.5" /> : i + 1}
             </span>
-            <span className={cn("whitespace-nowrap text-[12px]", current ? "font-semibold text-foreground" : "text-muted")}>
+            <span className={cn("whitespace-nowrap text-[12px]", current ? "font-semibold text-foreground" : "text-muted", !named && "sr-only sm:not-sr-only")}>
               {label}
               {done && <span className="sr-only"> (done)</span>}
             </span>
-            {i < STEPS.length - 1 && <span aria-hidden className={cn("mx-1 h-px w-4 shrink-0 sm:w-6", i < idx ? "bg-success/50" : "bg-border-strong")} />}
+            {i < STEPS.length - 1 && <span aria-hidden className={cn("mx-1 hidden h-px w-6 shrink-0 sm:block", i < idx ? "bg-success/50" : "bg-border-strong")} />}
           </li>
         );
       })}

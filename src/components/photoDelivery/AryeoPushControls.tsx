@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, CircleAlert, Loader2, Send, UploadCloud } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
-import { aryeoPushProgressAction, deliverInAryeoAction, sendToAryeoAction } from "@/app/ops/photo-delivery/actions";
+import { deliverInAryeoAction, sendToAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { useJob } from "./JobContext";
 import type { AryeoPushView } from "./types";
 
@@ -13,25 +11,64 @@ import type { AryeoPushView } from "./types";
 // THE HUB UPLOADS AND DELIVERS IN ARYEO (Oct 14 2026, aryeoPush.ts).
 // "Send to Aryeo" puts the 06-Ready-for-Aryeo photos on the listing, in
 // order, checked through Aryeo's API; "Deliver in Aryeo" presses Aryeo's own
-// Deliver Listing once the delivery checklist passes. While a push runs, the
-// panel moves it on and refreshes itself, like the Ready bar.
+// Deliver Listing once the delivery checklist passes. The Deliver panel shows
+// whichever is next as its one main button (aryeoPushNext). While a push
+// runs, useLivePush asks how far it is (each ask also moves it on a step)
+// and reloads the page only when the push reaches a new state.
 // ---------------------------------------------------------------------------
 
-const btn = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-3.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50";
+type Progress = NonNullable<AryeoPushView["progress"]>;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function useAryeoPushPolling(push: AryeoPushView) {
+/**
+ * The push as the panel should show it: the server's view, kept live while a
+ * push runs. Asks every 8 s through a GET route (a server action would make
+ * Kyle's clicks wait behind it), never while the tab is hidden.
+ */
+export function useLivePush(push: AryeoPushView): AryeoPushView {
   const { jobId } = useJob();
   const router = useRouter();
-  const active = !!push.progress?.active;
+  const server = push.progress;
+  const [live, setLive] = useState<{ base: Progress | null; p: Progress } | null>(null);
+  const active = !!server?.active;
+  const state = server?.state ?? null;
   useEffect(() => {
     if (!active) return;
-    const t = setInterval(() => {
-      void aryeoPushProgressAction(jobId)
-        .then(() => router.refresh())
-        .catch(() => undefined);
-    }, 8_000);
-    return () => clearInterval(t);
-  }, [active, jobId, router]);
+    let stop = false;
+    void (async () => {
+      while (!stop) {
+        await sleep(8_000);
+        if (stop) return;
+        if (document.hidden) continue;
+        const r = (await fetch(`/api/photo-delivery/progress/${jobId}?what=push`, { cache: "no-store" })
+          .then((res) => (res.ok ? res.json() : null))
+          .catch(() => null)) as { progress: Progress | null } | null;
+        const p = r?.progress;
+        if (stop || !p) continue;
+        // A new state (or the end) changes what the page shows: reload it. Otherwise only the line moves.
+        if (p.state !== state || !p.active) router.refresh();
+        else setLive({ base: server, p });
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+  }, [active, state, server, jobId, router]);
+  return live && live.base === server ? { ...push, progress: live.p } : push;
+}
+
+/** The hub's upload is switched on and its Aryeo login is saved. */
+export const aryeoPushOn = (push: AryeoPushView) => push.mode !== "off" && push.connected;
+
+/** What the hub's push needs next: send, send again (after a failure or a change), deliver, or nothing (running, delivered, off). */
+export function aryeoPushNext(push: AryeoPushView): "send" | "send-again" | "deliver" | null {
+  const p = push.progress;
+  if (!aryeoPushOn(push)) return null;
+  if (!p) return "send";
+  if (p.active || p.deliveredAt) return null;
+  if (p.state === "FAILED") return "send-again";
+  if (p.state === "WAITING" || p.state === "DONE") return /Send to Aryeo again/.test(p.note ?? "") ? "send-again" : "deliver";
+  return null;
 }
 
 export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted" | "good" | "bad" | "busy" } | null {
@@ -50,22 +87,11 @@ export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted
   return null;
 }
 
-export function AryeoPushControls({ push, readyToSend, compact = false }: { push: AryeoPushView; readyToSend: boolean; compact?: boolean }) {
-  const { jobId, run, pending, confirm, notify } = useJob();
-  const p = push.progress;
-  if (push.mode === "off" || !push.connected) {
-    if (compact) return null;
-    return (
-      <p className="mt-0.5 text-[12px] text-muted">
-        {push.connected ? "The hub can upload and deliver for you: choose a stage in Photo Delivery settings." : "The hub can upload and deliver for you once its Aryeo login is set up (Connections → Aryeo hub login)."}
-      </p>
-    );
-  }
-  const busy = !!p?.active;
-  const canDeliver = !!p && !p.deliveredAt && (p.state === "WAITING" || (p.state === "DONE" && !p.deliveredAt));
-  const canSend = !busy && !(p?.deliveredAt);
-  const send = async (anyway = false) => {
-    const r = await sendToAryeoAction(jobId, { anyway });
+/** The two presses, each with its confirm: "Send to Aryeo" (and "Send anyway") and "Deliver in Aryeo". */
+export function useAryeoPushActions() {
+  const { jobId, run, confirm, notify } = useJob();
+  const send = async () => {
+    const r = await sendToAryeoAction(jobId, { anyway: false }).catch(() => ({ ok: false, message: "The hub didn't answer. Try again in a moment." }));
     if (!r.ok && /Send anyway/.test(r.message)) {
       const go = await confirm({ title: "The listing already has other photos", body: r.message, confirmLabel: "Send anyway" });
       if (go) await run(() => sendToAryeoAction(jobId, { anyway: true }));
@@ -81,39 +107,5 @@ export function AryeoPushControls({ push, readyToSend, compact = false }: { push
     });
     if (ok) await run(() => deliverInAryeoAction(jobId));
   };
-  const line = aryeoPushLine(push);
-  if (compact) {
-    return canDeliver ? (
-      <button type="button" disabled={pending} onClick={() => void deliver()} className={cn(btn, "bg-brand-action text-brand-fg hover:brightness-95")}>
-        <Send aria-hidden className="size-4" /> Deliver in Aryeo
-      </button>
-    ) : null;
-  }
-  return (
-    <div className="mt-1 space-y-1">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {canSend && (
-          <button type="button" disabled={pending || !readyToSend} onClick={() => void send()} title={readyToSend ? "Put the finished photos on the listing, in order (06-Ready-for-Aryeo is made first when needed)" : "The photos are being copied to 06-Ready-for-Aryeo; send them when that finishes"} className={cn(btn, "border border-border-strong hover:bg-surface-2")}>
-            <UploadCloud aria-hidden className="size-4" /> {p?.state === "FAILED" ? "Send to Aryeo again" : "Send to Aryeo"}
-          </button>
-        )}
-        {busy && (
-          <span className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 text-sm font-semibold text-muted">
-            <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> Working in Aryeo
-          </span>
-        )}
-        {canDeliver && (
-          <button type="button" disabled={pending} onClick={() => void deliver()} className={cn(btn, "bg-brand-action text-brand-fg hover:brightness-95")}>
-            <Send aria-hidden className="size-4" /> Deliver in Aryeo
-          </button>
-        )}
-      </div>
-      {line && (
-        <p className={cn("flex items-start gap-1.5 text-[12px]", line.tone === "bad" ? "text-danger" : line.tone === "good" ? "text-success" : "text-muted")}>
-          {line.tone === "good" ? <CheckCircle2 aria-hidden className="mt-px size-3.5 shrink-0" /> : line.tone === "bad" ? <CircleAlert aria-hidden className="mt-px size-3.5 shrink-0" /> : null}
-          {line.text}
-        </p>
-      )}
-    </div>
-  );
+  return { send, deliver };
 }

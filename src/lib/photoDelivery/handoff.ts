@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { getSetting, putSetting } from "@/lib/settings";
 import { actualFolderPaths } from "@/lib/dropboxFolders";
 import { dbx, dropboxCreateFolder, dropboxDelete, dropboxListFolder, dropboxMoveFolder, dropboxUpload } from "@/lib/integrations/dropbox";
 import { deliveryOrderFor } from "./delivery";
@@ -55,16 +56,16 @@ const PREPARING = ` - preparing `;
 const RUN_KEY = (jobId: string) => `photo_ready_run:${jobId}`;
 const MAX_TRIES = 3;
 const LEASE_MS = 40_000;
+const HEADS_KEY = "photo_ready_heads_read";
+const HEADS_EVERY_MS = 30 * 60_000;
 
 export type ReadyItem = {
   photoId: string;
   name: string;
-  state: "PENDING" | "COPYING" | "DONE" | "FAILED";
-  job: string | null;
+  state: "PENDING" | "DONE" | "FAILED";
   tries: number;
-  /** The size AutoHDR says the file is: the copy must match it. */
+  /** The size uploaded: the copy in the folder must match it. */
   bytes: number | null;
-  since: string | null;
   error: string | null;
   /** Times Dropbox asked to slow down (not counted as tries). */
   waits?: number;
@@ -183,10 +184,11 @@ function retry(it: ReadyItem, error: string) {
   }
   it.tries++;
   it.error = error.slice(0, 160);
-  it.job = null;
-  it.since = null;
   it.state = it.tries >= MAX_TRIES ? "FAILED" : "PENDING";
 }
+
+/** Still to copy: anything not finished (a run saved by an older version can hold other states). */
+const toCopy = (i: ReadyItem) => i.state !== "DONE" && i.state !== "FAILED";
 
 /** Delete "06-Ready-for-Aryeo - preparing …" folders other than `keep` (earlier presses, superseded). */
 async function sweepPreparing(folder: string, keep: string | null) {
@@ -217,7 +219,7 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
     const { versionProbeActive } = await import("./versions");
     if (await versionProbeActive(jobId)) return null;
     // The hub fetches each photo and uploads it: confirmed on the spot, at its size.
-    const batch = r.items.filter((i) => i.state === "PENDING" || i.state === "COPYING").slice(0, 6);
+    const batch = r.items.filter(toCopy).slice(0, 6);
     if (!batch.length) { r.state = "FINISHING"; return r; }
     const links = await linksFor(batch);
     // Two at a time: Dropbox locks a folder per write, more just queues "too many writes".
@@ -239,12 +241,12 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
         const up = await dropboxUpload(path, bytes, { overwrite: true, autorename: false });
         if (up.size != null && up.size !== bytes.length) throw new Error(`Dropbox stored ${up.size} bytes of ${bytes.length}`);
         it.bytes = bytes.length;
-        it.state = "DONE"; it.error = null; it.job = null;
+        it.state = "DONE"; it.error = null;
       } catch (e) {
         retry(it, (e as Error).message);
       }
     });
-    if (!r.items.some((i) => i.state === "PENDING" || i.state === "COPYING")) r.state = "FINISHING";
+    if (!r.items.some(toCopy)) r.state = "FINISHING";
     return r;
   }
   if (r.state === "FINISHING") {
@@ -287,22 +289,16 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
     if (!moved) { r.note = "Dropbox would not swap the folder in yet; trying again."; return r; }
     await sweepPreparing(r.folder, null);
     const done = r.items.filter((i) => i.state === "DONE").length;
-    const failed: ReadyItem[] = [];
     await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryPath: r.folder, deliveryStagedAt: new Date() } });
-    await logJobEvent(jobId, "ready-for-aryeo", `${done} of ${r.items.length} photo${r.items.length === 1 ? "" : "s"} in ${READY_FOLDER}, numbered in delivery order, each one checked in the folder${failed.length ? ` (${failed.length} could not be copied: ${failed.slice(0, 5).map((i) => i.name).join(", ")})` : ""}${r.by ? ` (asked by ${r.by})` : ""}`, { fingerprint: r.fingerprint, staged: done, failed: failed.map((i) => i.name), run: r.id });
+    await logJobEvent(jobId, "ready-for-aryeo", `${done} of ${r.items.length} photo${r.items.length === 1 ? "" : "s"} in ${READY_FOLDER}, numbered in delivery order, each one checked in the folder${r.by ? ` (asked by ${r.by})` : ""}`, { fingerprint: r.fingerprint, staged: done, run: r.id });
     r.state = "DONE";
     r.finishedAt = new Date().toISOString();
-    r.note = failed.length ? `${failed.length} could not be copied: ${failed.map((i) => i.name).join(", ")}. Press Get them ready again to try them again.` : null;
+    r.note = null;
     return r;
   }
   return null;
 }
 
-/**
- * Start (or restart) getting a job's photos ready. Returns at once; the run
- * is moved on by advanceReady. Without `force`, a run that is already going
- * or already done for the same photos and versions is left as it is.
- */
 /**
  * The names the last finished Ready run gave each photo ("01-Front-Exterior.jpg"
  * → photo id), lower-cased: what Kyle uploads to Aryeo, so the sync can carry
@@ -314,11 +310,16 @@ export async function readyNamesFor(jobId: string): Promise<Map<string, string>>
   return new Map(run.items.filter((i) => i.state === "DONE").map((i) => [i.name.toLowerCase(), i.photoId]));
 }
 
-/** The fingerprint a Ready run copies (photos, order and each photo's version): drills and diagnostics. */
+/** The fingerprint a Ready run copies (photos, order and each photo's version). */
 export async function readyFingerprintFor(jobId: string): Promise<string> {
   return (await currentSet(jobId)).fingerprint;
 }
 
+/**
+ * Start (or restart) getting a job's photos ready. Returns at once; the run
+ * is moved on by advanceReady. Without `force`, a run that is already going
+ * or already done for the same photos and versions is left as it is.
+ */
 export async function requestReady(jobId: string, opts: { force?: boolean; by?: string | null } = {}): Promise<{ ok: boolean; started: boolean; message: string; total: number }> {
   // Oct 14 2026 (huddle finding 3): a change made in AutoHDR's own editor
   // (Perspective Off, Crop & Tilt, a restore there) is read first, so the
@@ -340,7 +341,7 @@ export async function requestReady(jobId: string, opts: { force?: boolean; by?: 
   const next: ReadyRun = {
     id, state: "QUEUED", folder: cur.folder, staging: `${cur.folder}${PREPARING}${id}`, fingerprint: cur.fingerprint, by: opts.by ?? null,
     startedAt: now, updatedAt: now, finishedAt: null, note: null, lease: null,
-    items: cur.order.map((o) => ({ photoId: o.photoId, name: o.deliveryName, state: "PENDING", job: null, tries: 0, bytes: null, since: null, error: null })),
+    items: cur.order.map((o) => ({ photoId: o.photoId, name: o.deliveryName, state: "PENDING", tries: 0, bytes: null, error: null })),
   };
   // A press while another run holds the lease takes over: the old run's
   // folder is swept away by this one, and its writes fail the swap check.
@@ -423,13 +424,16 @@ export async function stageForAryeo(jobId: string, opts: { force?: boolean; by?:
   return { ok: !!p && p.done > 0, message: p?.active ? `${p.done} of ${p.total} copied so far.` : p?.failed ? p.note ?? "Some could not be copied." : `${p?.done ?? 0} photos ready in ${READY_FOLDER}.`, staged: p?.done ?? 0, folder: p?.folder ?? null };
 }
 
-/** How the folder is doing, for the deliver panel. */
+/**
+ * How the folder is doing, for the deliver panel. Read from the run record (a
+ * run checks every file in the folder before it finishes), so a page never
+ * waits on Dropbox; only a folder made before the run record existed is listed.
+ */
 export async function readyFolderState(jobId: string, expected: number): Promise<{ folder: string; files: number; ready: boolean; stagedAt: string | null; preparing: boolean; total: number; failed: number; note: string | null } | null> {
   const [job, prog] = await Promise.all([prisma.photoJob.findUnique({ where: { id: jobId }, select: { deliveryPath: true, deliveryStagedAt: true } }), readyProgress(jobId)]);
   if (prog?.active) return { folder: prog.folder, files: prog.done, ready: false, stagedAt: job?.deliveryStagedAt?.toISOString() ?? null, preparing: true, total: prog.total, failed: prog.failed, note: prog.note };
   if (!job?.deliveryPath || !job.deliveryPath.endsWith(READY_FOLDER)) return prog ? { folder: prog.folder, files: 0, ready: false, stagedAt: null, preparing: false, total: prog.total, failed: prog.failed, note: prog.note } : null;
-  // Done: count what is really in the folder (one list call), so a file removed by hand shows.
-  const files = await dropboxListFolder(job.deliveryPath).then((es) => es.filter((e) => e.tag === "file").length).catch(() => prog?.done ?? 0);
+  const files = prog ? prog.done : await dropboxListFolder(job.deliveryPath).then((es) => es.filter((e) => e.tag === "file").length).catch(() => 0);
   const total = prog?.total ?? expected;
   return { folder: job.deliveryPath, files, ready: expected > 0 && files >= expected && (prog ? prog.failed === 0 : true), stagedAt: job.deliveryStagedAt?.toISOString() ?? null, preparing: false, total, failed: prog?.failed ?? 0, note: prog?.note ?? null };
 }
@@ -444,21 +448,42 @@ export async function stageReadyJobs(opts: { max?: number; budgetMs?: number } =
   const jobs = await prisma.photoJob.findMany({
     where: { stage: { in: ["QC_REVIEW", "READY"] }, photos: { some: { status: "ACTIVE", sourceKind: "AUTOHDR" } }, stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) } },
     select: { id: true },
-    take: 10,
+    orderBy: { stageChangedAt: "desc" },
+    take: 20,
   });
+  // When AutoHDR's own editor was last read for each job (requestReady reads it first).
+  const headsRead = await getSetting<Record<string, number>>(HEADS_KEY, {});
+  const headsNow: Record<string, number> = {};
   for (const j of jobs) {
-    if (started.length >= (opts.max ?? 2)) break;
+    if (headsRead[j.id]) headsNow[j.id] = headsRead[j.id];
+    if (started.length >= (opts.max ?? 2)) continue;
     // Done = nothing queued or running, the second look finished, and the photos downloaded.
     const busy = await prisma.photoFixOperation.count({ where: { jobId: j.id, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
     const looking = await prisma.photoQcFinding.count({ where: { jobId: j.id, status: "OPEN", source: "AHDR", arbitration: "NOT_REQUIRED" } });
     const notShown = await prisma.photoAsset.count({ where: { jobId: j.id, status: "ACTIVE", sourceKind: "AUTOHDR", sourceUrl: null } });
     const planned = settings.autoFix ? await prisma.photoJobEvent.count({ where: { jobId: j.id, actor: "auto-fix" } }) : 1;
     if (busy || looking || !planned || (notShown > 0 && !(await anyDownloaded(j.id)))) continue;
+    // Same photos and versions as the last run: a run still going is moved on
+    // below, and a finished one only has AutoHDR's editor read again (every
+    // 30 minutes, not every pass). A change starts a new run at once.
+    const { run } = await load(j.id);
+    if (run && run.fingerprint === (await readyFingerprintFor(j.id)) && (run.state !== "DONE" || Date.now() - (headsNow[j.id] ?? 0) < HEADS_EVERY_MS)) continue;
+    headsNow[j.id] = Date.now();
     const r = await requestReady(j.id).catch(() => null);
     if (r?.started) started.push(j.id);
   }
-  // Every run still going, oldest first.
-  const live = await prisma.appSetting.findMany({ where: { key: { startsWith: "photo_ready_run:" }, NOT: { value: { contains: '"state":"DONE"' } } }, select: { key: true }, orderBy: { updatedAt: "asc" }, take: 10 });
+  if (JSON.stringify(headsNow) !== JSON.stringify(headsRead)) await putSetting(HEADS_KEY, headsNow, "ready-for-aryeo").catch(() => {});
+  // Every run still going, least recently moved first. Each photo in a run has
+  // a state too, so the run's own state is read from the record; the text
+  // filter only narrows (a finished run always has a finishedAt).
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: "photo_ready_run:" }, value: { contains: '"finishedAt":null' } }, select: { key: true, value: true }, orderBy: { updatedAt: "asc" }, take: 10 });
+  const live = rows.filter((row) => {
+    try {
+      return (JSON.parse(row.value) as ReadyRun).state !== "DONE";
+    } catch {
+      return false;
+    }
+  });
   const moved: string[] = [];
   for (const row of live) {
     const left = budget - (Date.now() - t0);

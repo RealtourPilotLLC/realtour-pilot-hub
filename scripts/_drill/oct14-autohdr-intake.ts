@@ -242,7 +242,11 @@ async function main() {
     c.head("5 · files added later: their own shoot");
     dbx.set(wRaw.toLowerCase(), [...wFiles, ...Array.from({ length: 5 }, (_, i) => file(wRaw, `DSC0${7100 + i}.JPG`, 200 + i))]);
     fake.state.intake.landAfter = 0;
-    const lateAt = new Date(sendAt.getTime() + 60 * MIN);
+    // Oct 15 2026: a finished shoot's raws are listed again hourly, not every pass.
+    const soon = await intake.driveIntake({ budgetMs: 60_000, now: new Date(sendAt.getTime() + 60 * MIN) });
+    const b1w = await prisma.photoIntakeBatch.findFirstOrThrow({ where: { projectId: pW.id, batchNo: 1 } });
+    c.ok("14 minutes after AutoHDR finished: the folder is not listed again yet (hourly)", soon.watched === 0 && (await prisma.photoIntakeBatch.count({ where: { projectId: pW.id } })) === 1 && b1w.nextCheckAt?.getTime() === sendAt.getTime() + 106 * MIN, `${JSON.stringify(soon)} ${b1w.nextCheckAt?.toISOString()}`);
+    const lateAt = new Date(sendAt.getTime() + 107 * MIN);
     await intake.driveIntake({ budgetMs: 60_000, now: lateAt });
     const b2w = await prisma.photoIntakeBatch.findFirstOrThrow({ where: { projectId: pW.id, batchNo: 2 } });
     c.ok("a second batch sees only the 5 new files", b2w.state === "WAITING" && b2w.fileCount === 5);
@@ -344,6 +348,38 @@ async function main() {
     c.ok("the catch-all cannot be switched off", !(await house.stopRule("OTHER_DEFECT", "x", "Jordan")).ok);
     const back = await house.resumeRule("EXT_GARDEN_HOSES", "Jordan Spackman");
     c.ok("checked again: back in the question", back.ok && /EXT_GARDEN_HOSES/.test(check.checkPrompt(house.disabledIn(await house.houseOverrides()))));
+
+    // ======================================================================
+    c.head("12 · finding each job's AutoHDR shoot: fair to every job, backs off (Oct 15 2026)");
+    const link = await import("@/lib/photoDelivery/autohdrLink");
+    for (const s of ["21 Nomatch Rd", "22 Nomatch Rd", "23 Nomatch Rd"]) await prisma.photoJob.create({ data: { projectId: (await mkProject(s)).id, stage: "EDITED" } });
+    const waitingJobs = await prisma.photoJob.count({ where: { autohdrPhotoshootId: null, stage: { in: ["EDITED", "QC_RUNNING", "QC_REVIEW", "READY", "ON_HOLD"] }, createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } } });
+    let shootLists = 0;
+    const listShoots = async () => { shootLists++; return []; };
+    const triesOf = async () => Object.values(JSON.parse((await prisma.appSetting.findUnique({ where: { key: "photo_delivery:autohdr_link_tries" } }))?.value ?? "{}") as Record<string, { misses: number }>);
+    const round = Math.ceil(waitingJobs / 2);
+    for (let i = 0; i < round; i++) await link.linkOpenJobs(2, { listShoots });
+    const once = await triesOf();
+    c.ok("every waiting job is tried once before any is tried again", waitingJobs >= 4 && once.length === waitingJobs && once.every((t) => t.misses === 1), `${waitingJobs} ${JSON.stringify(once)}`);
+    c.ok("one shoot list per pass (the cron shares it with the intake)", shootLists === round);
+    for (let i = 0; i < 2 * round; i++) await link.linkOpenJobs(2, { listShoots });
+    const thrice = await triesOf();
+    const resting = await link.linkOpenJobs(2, { listShoots });
+    c.ok("after 3 misses a job is tried about hourly, not every pass", thrice.every((t) => t.misses === 3) && resting.tried === 0, `${JSON.stringify(thrice)} ${JSON.stringify(resting)}`);
+
+    // ======================================================================
+    c.head("13 · only Aryeo says a photo job is delivered; a cancelled project is said once (Oct 15 2026)");
+    const stageBefore = (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } })).stage;
+    await prisma.project.update({ where: { id: pW.id }, data: { deliveredAt: new Date() } });
+    // (photo 5 replaced on the listing, so this pass reads a changed gallery and fetches no file)
+    listings.set(lid, [1, 2, 3, 4, 5].map((n) => ({ id: `img-${n}`, filename: aryeoName(n), original_url: `https://cdn.aryeo.com/listings/x/${n}${n === 5 ? "-v2" : ""}.jpg`, index: n - 1 })));
+    await jobs.syncJobFinals(jobW.id, new Date(syncAt.getTime() + 70 * MIN));
+    c.ok("the hub's own delivered stamp on the project does not move the job (the listing says not delivered)", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } })).stage === stageBefore, stageBefore);
+    await prisma.project.update({ where: { id: pW.id }, data: { status: "CANCELLED" } });
+    const cancelAt = new Date(syncAt.getTime() + 75 * MIN);
+    for (let i = 0; i < 3; i++) await jobs.syncJobFinals(jobW.id, new Date(cancelAt.getTime() + i * 5 * MIN));
+    const jCancelled = await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } });
+    c.ok("cancelled: said once in the log, looked at again a day later (not every 5 minutes)", (await prisma.photoJobEvent.count({ where: { jobId: jobW.id, action: "project cancelled: sync stopped" } })) === 1 && jCancelled.nextCheckAt?.getTime() === cancelAt.getTime() + 10 * MIN + 24 * 60 * MIN, jCancelled.nextCheckAt?.toISOString());
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

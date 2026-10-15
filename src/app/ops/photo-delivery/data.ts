@@ -1,11 +1,12 @@
 import "server-only";
 
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canSeeMoney } from "@/lib/auth/access";
 import { STAGE_LABEL, type JobStage } from "@/lib/photoDelivery/jobState";
-import { photoDeliverySettings, type PhotoDeliverySettings } from "@/lib/photoDelivery/settings";
+import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelivery/credits";
 import { buildFixCart } from "@/lib/photoDelivery/fixes";
 import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
@@ -66,7 +67,9 @@ async function verdictModule(): Promise<VerdictModule | null> {
   }
 }
 
-const houseRuleIds = async () => (await houseOverrides()).map((o) => o.ruleId);
+// Read once per page render (React cache).
+const houseOverridesOnce = cache(houseOverrides);
+const houseRuleIds = async () => (await houseOverridesOnce()).map((o) => o.ruleId);
 const overridesOf = (json: string | null | undefined): RuleOverride[] => (parse<RuleOverride[]>(json) ?? []).filter((o) => o && typeof o.ruleId === "string");
 
 // ---- who is looking ------------------------------------------------------------------------
@@ -118,14 +121,14 @@ export async function loadStrip(viewer: Viewer): Promise<StripData> {
  * revision waits for a decision like QC findings do (plan 3.3 loop).
  */
 export const QUEUE_COLUMNS: { key: QueueColumnKey; label: string; hint: string; stages: JobStage[] }[] = [
-  { key: "editing", label: "Editing", hint: "Shot. The raws go to AutoHDR when the upload is finished; waiting for the edits.", stages: ["EDITING", "EDIT_FAILED"] },
-  { key: "qc", label: "QC running", hint: "The edited gallery landed. QC is checking it, or waiting to.", stages: ["EDITED", "QC_RUNNING"] },
-  { key: "decision", label: "Needs decision", hint: "QC found issues, or a client asked for a revision.", stages: ["QC_REVIEW", "REVISION_REQUESTED"] },
-  { key: "fixing", label: "Fixing", hint: "Approved fixes are running in AutoHDR.", stages: ["FIXING"] },
-  { key: "hold", label: "On hold", hint: "Delivery is blocked until the hold is released.", stages: ["ON_HOLD"] },
-  { key: "ready", label: "Ready", hint: "Checks done. Deliver it in Aryeo.", stages: ["READY"] },
-  { key: "delivering", label: "Delivering", hint: "Marked as delivering. The hub confirms when Aryeo says it was delivered.", stages: ["DELIVERING", "DELIVERY_MISMATCH"] },
-  { key: "delivered", label: "Delivered", hint: "Delivered in the last 7 days.", stages: ["DELIVERED"] },
+  { key: "editing", label: "Editing", hint: "Waiting for AutoHDR's edits", stages: ["EDITING", "EDIT_FAILED"] },
+  { key: "qc", label: "Checking", hint: "Edits landed, being checked", stages: ["EDITED", "QC_RUNNING"] },
+  { key: "decision", label: "Needs decision", hint: "Issues found, or a client revision", stages: ["QC_REVIEW", "REVISION_REQUESTED"] },
+  { key: "fixing", label: "Fixing", hint: "Fixes running in AutoHDR", stages: ["FIXING"] },
+  { key: "hold", label: "On hold", hint: "Blocked until the hold is released", stages: ["ON_HOLD"] },
+  { key: "ready", label: "Ready to deliver", hint: "Checks passed", stages: ["READY"] },
+  { key: "delivering", label: "Delivering", hint: "Waiting for Aryeo to confirm", stages: ["DELIVERING", "DELIVERY_MISMATCH"] },
+  { key: "delivered", label: "Delivered", hint: "Delivered in the last 7 days", stages: ["DELIVERED"] },
 ];
 const COLUMN_OF = new Map<string, QueueColumnKey>(QUEUE_COLUMNS.flatMap((c) => c.stages.map((s) => [s, c.key] as const)));
 
@@ -155,21 +158,27 @@ function fixStatusOf(batchStatus: string, ops: Map<string, number>): FixStatusVi
   }
 }
 
+/** What a queue card needs of its cover photo. */
+const COVER_FIELDS = { id: true, jobId: true, contentHash: true, sourceKind: true, sourceUrl: true, roomType: true } as const;
+
 export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilters> } = {}): Promise<QueueData> {
   const now = opts.now ?? new Date();
   const filters: QueueFilters = { client: opts.filters?.client || null, photographer: opts.filters?.photographer || null, atRisk: !!opts.filters?.atRisk };
   const since = new Date(now.getTime() - 7 * DAY);
-  const settings = await photoDeliverySettings();
-
-  const jobs = await prisma.photoJob.findMany({
-    where: {
-      OR: [{ stage: { not: "DELIVERED" } }, { stage: "DELIVERED", OR: [{ deliveredAt: { gte: since } }, { deliveredAt: null, stageChangedAt: { gte: since } }] }],
-    },
-    select: { id: true, projectId: true, stage: true, slaDueAt: true, qcShadow: true, heroPhotoId: true, holdReason: true, lastError: true, deliveredAt: true, stageChangedAt: true, finalsCount: true },
-    take: 400,
-  });
+  const [settings, jobs] = await Promise.all([
+    photoDeliverySettings(),
+    prisma.photoJob.findMany({
+      where: {
+        OR: [{ stage: { not: "DELIVERED" } }, { stage: "DELIVERED", OR: [{ deliveredAt: { gte: since } }, { deliveredAt: null, stageChangedAt: { gte: since } }] }],
+      },
+      select: { id: true, projectId: true, stage: true, slaDueAt: true, qcShadow: true, heroPhotoId: true, holdReason: true, lastError: true, deliveredAt: true, stageChangedAt: true, finalsCount: true },
+      orderBy: { slaDueAt: { sort: "asc", nulls: "last" } },
+      take: 400,
+    }),
+  ]);
   const ids = jobs.map((j) => j.id);
-  const [projects, photos, counts, batches] = ids.length
+  const heroIds = jobs.map((j) => j.heroPhotoId).filter((x): x is string => !!x);
+  const [projects, heroes, photoStats, counts, batches] = ids.length
     ? await Promise.all([
         prisma.project.findMany({
           where: { id: { in: jobs.map((j) => j.projectId) } },
@@ -178,32 +187,48 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
             client: { select: { name: true } }, photographer: { select: { name: true } },
           },
         }),
-        prisma.photoAsset.findMany({
-          where: { jobId: { in: ids }, status: "ACTIVE" },
-          select: { id: true, jobId: true, name: true, sequence: true, contentHash: true, sourceKind: true, sourceUrl: true, roomType: true },
-          orderBy: { sequence: "asc" },
-        }),
+        // The card's cover: the hero, read by id (not every photo of every job).
+        heroIds.length ? prisma.photoAsset.findMany({ where: { id: { in: heroIds }, status: "ACTIVE" }, select: COVER_FIELDS }) : [],
+        // Included photos per job, and the first one's place for a job with no hero.
+        prisma.photoAsset.groupBy({ by: ["jobId"], where: { jobId: { in: ids }, status: "ACTIVE" }, _count: { _all: true }, _min: { sequence: true } }),
         prisma.photoQcFinding.findMany({
           where: { jobId: { in: ids }, status: "OPEN", confidence: { gte: settings.displayConfidenceFloor } },
-          select: { id: true, jobId: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true },
+          select: { id: true, jobId: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true, source: true },
         }),
         prisma.photoFixBatch.findMany({ where: { jobId: { in: ids } }, orderBy: { approvedAt: "desc" }, select: { id: true, jobId: true, status: true } }),
       ])
-    : [[], [], [], []];
+    : [[], [], [], [], []];
 
   const projectById = new Map(projects.map((p) => [p.id, p]));
-  const photosByJob = new Map<string, typeof photos>();
-  for (const p of photos) {
-    const list = photosByJob.get(p.jobId);
-    if (list) list.push(p);
-    else photosByJob.set(p.jobId, [p]);
-  }
+  const statsByJob = new Map(photoStats.map((r) => [r.jobId, { count: r._count._all, first: r._min.sequence }]));
+  const heroById = new Map(heroes.map((h) => [h.id, h]));
+  const ownHero = (j: (typeof jobs)[number]) => {
+    const h = j.heroPhotoId ? heroById.get(j.heroPhotoId) : undefined;
+    return h?.jobId === j.id ? h : null;
+  };
+  // A job with no hero shows its first included photo (by sequence): one row
+  // per job, matched on the place the groupBy found. (Prisma's `distinct`
+  // would read every photo of those jobs and drop the rest in memory.)
+  const needFirst = jobs.filter((j) => !ownHero(j) && statsByJob.get(j.id)?.first != null);
+  const latestBatch = new Map<string, { id: string; status: string }>();
+  for (const b of batches) if (!latestBatch.has(b.jobId)) latestBatch.set(b.jobId, b);
+  const clientIds = [...new Set(projects.map((p) => p.clientId))];
+
   // Open issues by severity, counted as TICKETS (one per rule and groupKey,
   // with the engine's effective severity) when the QC engine is available.
-  const verdict = counts.length ? await verdictModule() : null;
-  const clientIds = [...new Set(projects.map((p) => p.clientId))];
-  const profileRows = verdict && clientIds.length ? await prisma.clientQcProfile.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, ruleOverridesJson: true } }) : [];
-  const house = await houseOverrides();
+  const [verdict, profileRows, house, opRows, firsts] = await Promise.all([
+    counts.length ? verdictModule() : null,
+    counts.length && clientIds.length ? prisma.clientQcProfile.findMany({ where: { clientId: { in: clientIds } }, select: { clientId: true, ruleOverridesJson: true } }) : [],
+    houseOverridesOnce(),
+    latestBatch.size
+      ? prisma.photoFixOperation.groupBy({ by: ["batchId", "status"], where: { batchId: { in: [...latestBatch.values()].map((b) => b.id) } }, _count: { _all: true } })
+      : [],
+    needFirst.length
+      ? prisma.photoAsset.findMany({ where: { status: "ACTIVE", OR: needFirst.map((j) => ({ jobId: j.id, sequence: statsByJob.get(j.id)!.first! })) }, select: COVER_FIELDS })
+      : [],
+  ]);
+  const firstByJob = new Map<string, (typeof firsts)[number]>();
+  for (const f of firsts) if (!firstByJob.has(f.jobId)) firstByJob.set(f.jobId, f);
   const overridesByClient = new Map(profileRows.map((r) => [r.clientId, mergeOverrides(house, overridesOf(r.ruleOverridesJson))]));
   const projectOfJob = new Map(jobs.map((j) => [j.id, j.projectId]));
   const findingsByJob = new Map<string, typeof counts>();
@@ -224,11 +249,6 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     }
     issuesByJob.set(jobId, rec);
   }
-  const latestBatch = new Map<string, { id: string; status: string }>();
-  for (const b of batches) if (!latestBatch.has(b.jobId)) latestBatch.set(b.jobId, b);
-  const opRows = latestBatch.size
-    ? await prisma.photoFixOperation.groupBy({ by: ["batchId", "status"], where: { batchId: { in: [...latestBatch.values()].map((b) => b.id) } }, _count: { _all: true } })
-    : [];
   const opsByBatch = new Map<string, Map<string, number>>();
   for (const r of opRows) {
     const m = opsByBatch.get(r.batchId) ?? new Map<string, number>();
@@ -242,8 +262,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
     const p = projectById.get(j.projectId);
     // A cancelled shoot is not work: the sync stops following it, so the board does too.
     if (p?.status === "CANCELLED") continue;
-    const list = photosByJob.get(j.id) ?? [];
-    const hero = list.find((x) => x.id === j.heroPhotoId) ?? list[0] ?? null;
+    const hero = ownHero(j) ?? firstByJob.get(j.id) ?? null;
     const column = COLUMN_OF.get(j.stage) ?? "editing";
     const delivered = column === "delivered";
     const left = j.slaDueAt ? j.slaDueAt.getTime() - now.getTime() : null;
@@ -262,7 +281,7 @@ export async function loadQueue(opts: { now?: Date; filters?: Partial<QueueFilte
       slaDueAt: iso(j.slaDueAt),
       deliveredAt: iso(j.deliveredAt ?? (j.stage === "DELIVERED" ? j.stageChangedAt : null)),
       shootDate: iso(p?.shootDate),
-      photoCount: list.length || j.finalsCount,
+      photoCount: statsByJob.get(j.id)?.count || j.finalsCount,
       issues: issuesByJob.get(j.id) ?? { CRITICAL: 0, MAJOR: 0, MINOR: 0 },
       shadow: j.qcShadow,
       hero: hero ? { photoId: hero.id, hash: hero.contentHash, fallbackUrl: hero.sourceKind === "ARYEO" ? hero.sourceUrl : null, alt: `${streetOf(p)}: ${prettyRoom(hero.roomType)}` } : null,
@@ -371,43 +390,69 @@ function expectedRows(e: Expected | null): ExpectedView {
 
 const COVERAGE = new Set(["MET", "NOT_MET", "UNKNOWN"]);
 
+/** What the job page reads of a photo (not derivJson and the other bookkeeping columns). */
+const PHOTO_FIELDS = {
+  id: true, name: true, status: true, excludeReason: true, sequence: true, roomType: true, sequenceGroup: true, description: true, featuresJson: true,
+  width: true, height: true, cvJson: true, contentHash: true, sourceKind: true, sourceUrl: true, dropboxPath: true, isAerial: true, isTwilight: true,
+  isVirtuallyStaged: true, heroScore: true, verdict: true, autohdrVersionUuid: true,
+} as const;
+
+/** What the job page and the verdict engine read of a finding (the model's raw answer is read only for the P4 checklist). */
+const FINDING_FIELDS = {
+  id: true, photoId: true, photoIdsJson: true, ruleId: true, groupKey: true, pass: true, source: true, specificIssue: true, explanation: true,
+  locationText: true, bboxJson: true, severity: true, confidence: true, responsibility: true, postFixable: true, reshootMayBeNeeded: true,
+  isPermanentFeature: true, privacySensitive: true, recommendedAction: true, fixStrategy: true, status: true, statusReason: true, planNote: true,
+  decidedBy: true, decidedAt: true, arbitration: true,
+} as const;
+
+/** How many of the job's newest events the Activity tab shows. */
+const EVENT_LIMIT = 100;
+
 export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?: Date }): Promise<JobDetail | null> {
   const now = opts.now ?? new Date();
   const { viewer } = opts;
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId } });
+  const [job, settings] = await Promise.all([prisma.photoJob.findUnique({ where: { id: jobId } }), photoDeliverySettings()]);
   if (!job) return null;
-  const settings: PhotoDeliverySettings = await photoDeliverySettings();
 
-  const [project, photos, findings, runs, events, batches, ops] = await Promise.all([
-    prisma.project.findUnique({
-      where: { id: job.projectId },
-      select: {
-        id: true, title: true, addressLine: true, city: true, state: true, shootDate: true, paymentStatus: true, aryeoListingId: true, aryeoOrderId: true, clientId: true,
-        client: { select: { name: true } }, photographer: { select: { name: true } },
-      },
-    }),
-    prisma.photoAsset.findMany({ where: { jobId }, orderBy: { sequence: "asc" } }),
+  // Every read the page needs, in one round: none of them waits for another.
+  const outcome = <T,>(p: Promise<T>) => p.then((v) => ({ v, e: null as string | null })).catch((e: Error) => ({ v: null, e: e.message }));
+  const projectP = prisma.project.findUnique({
+    where: { id: job.projectId },
+    select: {
+      id: true, title: true, addressLine: true, city: true, state: true, shootDate: true, paymentStatus: true, aryeoListingId: true, aryeoOrderId: true, clientId: true,
+      client: { select: { name: true } }, photographer: { select: { name: true } },
+    },
+  });
+  const [project, profile, photos, findings, p4Raw, versions, runs, events, batches, ops, gateR, stepsR, cartR, creditR, aryeoPush, intake] = await Promise.all([
+    projectP,
+    projectP.then((p) => (p?.clientId ? prisma.clientQcProfile.findUnique({ where: { clientId: p.clientId }, select: { ruleOverridesJson: true } }) : null)).catch(() => null),
+    prisma.photoAsset.findMany({ where: { jobId }, orderBy: { sequence: "asc" }, select: PHOTO_FIELDS }),
     // Oct 14 2026: a check Jordan switched off for every shoot is not shown at all (houseRules.ts).
-    houseRuleIds().then((off) => prisma.photoQcFinding.findMany({ where: { jobId, status: { not: "SUPERSEDED" }, ...(off.length ? { ruleId: { notIn: off } } : {}) }, orderBy: [{ createdAt: "asc" }] })),
+    houseRuleIds().then((off) => prisma.photoQcFinding.findMany({ where: { jobId, status: { not: "SUPERSEDED" }, ...(off.length ? { ruleId: { notIn: off } } : {}) }, orderBy: [{ createdAt: "asc" }], select: FINDING_FIELDS })),
+    prisma.photoQcFinding.findMany({ where: { jobId, pass: "P4_ORDER", status: { not: "SUPERSEDED" } }, select: { id: true, rawJson: true } }),
+    prisma.photoVersion.findMany({
+      where: { photo: { jobId } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, photoId: true, label: true, source: true, contentHash: true, createdAt: true, createdBy: true, width: true, height: true, autohdrVersionUuid: true, derivJson: true },
+    }),
     prisma.photoQcRun.findMany({ where: { jobId }, orderBy: { startedAt: "desc" }, take: 10 }),
-    prisma.photoJobEvent.findMany({ where: { jobId }, orderBy: { at: "desc" }, take: 300 }),
+    prisma.photoJobEvent.findMany({ where: { jobId }, orderBy: { at: "desc" }, take: EVENT_LIMIT }),
     prisma.photoFixBatch.findMany({ where: { jobId }, orderBy: { approvedAt: "desc" }, take: 10 }),
     prisma.photoFixOperation.findMany({
       where: { jobId },
       select: { id: true, batchId: true, photoId: true, strategy: true, status: true, estimatedCredits: true, chargedCredits: true, error: true, seq: true },
       orderBy: [{ photoId: "asc" }, { seq: "asc" }],
     }),
+    outcome(deliveryGate(jobId)),
+    outcome(deliverySteps(jobId)),
+    outcome(buildFixCart(jobId)),
+    creditView().catch(() => null),
+    aryeoPushView(job.id),
+    prisma.photoIntakeBatch
+      .findMany({ where: { projectId: job.projectId }, orderBy: { batchNo: "asc" }, select: { batchNo: true, state: true, fileCount: true, expectedPhotos: true, sentAt: true, doneAt: true, imageCount: true, lastError: true } })
+      .catch(() => []),
   ]);
-  const versions = photos.length
-    ? await prisma.photoVersion.findMany({ where: { photoId: { in: photos.map((p) => p.id) } }, orderBy: { createdAt: "asc" } })
-    : [];
-
-  const [gateR, stepsR, cartR, creditR] = await Promise.all([
-    deliveryGate(jobId).then((v) => ({ v, e: null as string | null })).catch((e: Error) => ({ v: null, e: e.message })),
-    deliverySteps(jobId).then((v) => ({ v, e: null as string | null })).catch((e: Error) => ({ v: null, e: e.message })),
-    buildFixCart(jobId).then((v) => ({ v, e: null as string | null })).catch((e: Error) => ({ v: null, e: e.message })),
-    creditView(now).catch(() => null),
-  ]);
+  const p4RawById = new Map(p4Raw.map((f) => [f.id, f.rawJson]));
 
   // Delivery order: the steps' order (a person's order, else the QC suggestion,
   // else AutoHDR's) for included photos; excluded ones follow, so they can be put back.
@@ -452,7 +497,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   photoViews.sort((a, b) => rank(a) - rank(b));
 
   const findingViews: FindingView[] = findings.map((f) => {
-    const raw = parse<Record<string, unknown>>(f.rawJson);
+    const raw = f.pass === "P4_ORDER" ? parse<Record<string, unknown>>(p4RawById.get(f.id)) : null;
     const bbox = parse<unknown[]>(f.bboxJson);
     const cov = typeof raw?.status === "string" && COVERAGE.has(raw.status) ? raw.status : null;
     return {
@@ -492,10 +537,9 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   const groupMeta: Record<string, GroupMeta> = {};
   const verdict = findings.length ? await verdictModule() : null;
   if (verdict) {
-    const profile = project?.clientId ? await prisma.clientQcProfile.findUnique({ where: { clientId: project.clientId }, select: { ruleOverridesJson: true } }).catch(() => null) : null;
     const res = verdict.groupFindings(findings, {
       floor: settings.displayConfidenceFloor,
-      overrides: mergeOverrides(await houseOverrides(), overridesOf(profile?.ruleOverridesJson)),
+      overrides: mergeOverrides(await houseOverridesOnce(), overridesOf(profile?.ruleOverridesJson)),
       excludedPhotoIds: photos.filter((p) => p.status === "EXCLUDED").map((p) => p.id),
     });
     for (const g of [...res.groups, ...res.lowConfidence]) groupMeta[g.key] = { severity: g.severity, escalated: g.escalated, escalationReason: g.escalationReason, holds: g.holds };
@@ -631,7 +675,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     gateError: gateR.e,
     steps,
     stepsError: stepsR.e,
-    aryeoPush: await aryeoPushView(job.id),
+    aryeoPush,
     runs: runViews,
     events: eventViews,
     batches: batchViews,
@@ -643,7 +687,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     qcEnabled: settings.qcEnabled,
     freeCheck: settings.freeCheck,
     paidQcAuto: settings.paidQcAuto,
-    intake: (await prisma.photoIntakeBatch.findMany({ where: { projectId: job.projectId }, orderBy: { batchNo: "asc" }, select: { batchNo: true, state: true, fileCount: true, expectedPhotos: true, sentAt: true, doneAt: true, imageCount: true, lastError: true } }).catch(() => [])).map((b) => ({ ...b, sentAt: b.sentAt?.toISOString() ?? null, doneAt: b.doneAt?.toISOString() ?? null })),
+    intake: intake.map((b) => ({ ...b, sentAt: b.sentAt?.toISOString() ?? null, doneAt: b.doneAt?.toISOString() ?? null })),
     nowIso: now.toISOString(),
   };
 }
@@ -666,7 +710,8 @@ export async function loadCreditsPage(viewer: Viewer, opts: { now?: Date; showCh
   const since30 = new Date(now.getTime() - 30 * DAY);
   const since14 = new Date(now.getTime() - 14 * DAY);
   const [view, alert, snaps, ledger, recent] = await Promise.all([
-    creditView(now),
+    // Without a fixed clock this is the strip's credit view (React cache), not a second one.
+    creditView(opts.now),
     creditAlertState(),
     prisma.autohdrCreditEntry.findMany({ where: { kind: "BALANCE_SNAPSHOT", at: { gte: since30 }, balanceAfter: { not: null } }, orderBy: { at: "asc" }, select: { at: true, balanceAfter: true } }),
     prisma.autohdrCreditEntry.findMany({ where: opts.showChecks ? {} : { kind: { not: "BALANCE_SNAPSHOT" } }, orderBy: { at: "desc" }, take: limit + 1 }),
@@ -726,19 +771,14 @@ export function ruleOptions(): RuleOption[] {
 
 /** Clients that have photo jobs, with their QC profile (if any). */
 export async function loadClientProfiles(): Promise<ClientProfileView[]> {
-  const jobs = await prisma.photoJob.findMany({ select: { projectId: true, stage: true } });
-  if (!jobs.length) return [];
-  const projects = await prisma.project.findMany({ where: { id: { in: [...new Set(jobs.map((j) => j.projectId))] } }, select: { id: true, clientId: true } });
-  const clientOf = new Map(projects.map((p) => [p.id, p.clientId]));
-  const counts = new Map<string, { all: number; open: number }>();
-  for (const j of jobs) {
-    const c = clientOf.get(j.projectId);
-    if (!c) continue;
-    const rec = counts.get(c) ?? { all: 0, open: 0 };
-    rec.all++;
-    if (j.stage !== "DELIVERED") rec.open++;
-    counts.set(c, rec);
-  }
+  // Jobs per client, counted in the database: one row per client, not one per
+  // job ever made. (PhotoJob has no Prisma relation to Project to group through.)
+  const rows = await prisma.$queryRaw<{ clientId: string; all: number; open: number }[]>`
+    SELECT p."clientId" AS "clientId", COUNT(*)::int AS "all", COUNT(*) FILTER (WHERE j."stage" <> 'DELIVERED')::int AS "open"
+    FROM "PhotoJob" j JOIN "Project" p ON p."id" = j."projectId"
+    GROUP BY p."clientId"`;
+  if (!rows.length) return [];
+  const counts = new Map(rows.map((r) => [r.clientId, { all: Number(r.all), open: Number(r.open) }]));
   const clientIds = [...counts.keys()];
   const [clients, profiles] = await Promise.all([
     prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true, company: true } }),

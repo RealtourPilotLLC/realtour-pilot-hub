@@ -40,18 +40,24 @@ export const hashOfVersion = (versionUuid: string) => createHash("sha256").updat
 
 type PhotoRef = { id: string; jobId: string; sourceRef: string | null; autohdrImageUuid: string | null; sourceKind: string };
 
+/** What autohdrRefOf reads for one job, kept between calls for that job's photos (syncHeads). */
+type RefCache = { job?: { autohdrPhotoshootId: number | null; projectId: string } | null; shoots?: { photoshootId: number | null; photosJson: string | null }[] };
+
 /** The AutoHDR shoot and image a photo lives in, or null. */
-export async function autohdrRefOf(photo: PhotoRef): Promise<{ shootId: number; imageUuid: string } | null> {
+export async function autohdrRefOf(photo: PhotoRef, cache: RefCache = {}): Promise<{ shootId: number; imageUuid: string } | null> {
   if (photo.sourceKind === "AUTOHDR" && photo.sourceRef?.includes("/")) {
     const [s, u] = photo.sourceRef.split("/");
     const n = Number(s);
     if (Number.isFinite(n) && u) return { shootId: n, imageUuid: u };
   }
   if (!photo.autohdrImageUuid) return null;
-  const job = await prisma.photoJob.findUnique({ where: { id: photo.jobId }, select: { autohdrPhotoshootId: true, projectId: true } });
+  if (cache.job === undefined) cache.job = await prisma.photoJob.findUnique({ where: { id: photo.jobId }, select: { autohdrPhotoshootId: true, projectId: true } });
+  const job = cache.job;
   if (job?.autohdrPhotoshootId) return { shootId: job.autohdrPhotoshootId, imageUuid: photo.autohdrImageUuid };
+  if (!job) return null;
   // A hub shoot's photo carried over to its Aryeo copy keeps its AutoHDR image, not the shoot: the intake knows it.
-  const batch = job ? await prisma.photoIntakeBatch.findFirst({ where: { projectId: job.projectId, photoshootId: { not: null }, photosJson: { contains: photo.autohdrImageUuid } }, select: { photoshootId: true } }) : null;
+  cache.shoots ??= await prisma.photoIntakeBatch.findMany({ where: { projectId: job.projectId, photoshootId: { not: null }, photosJson: { not: null } }, select: { photoshootId: true, photosJson: true } });
+  const batch = cache.shoots.find((b) => b.photosJson?.includes(photo.autohdrImageUuid!));
   return batch?.photoshootId ? { shootId: batch.photoshootId, imageUuid: photo.autohdrImageUuid } : null;
 }
 
@@ -179,11 +185,13 @@ export async function syncHeads(jobId: string, opts: { by?: string } = {}): Prom
   // A photo's history is being copied: its current version is switched for a moment, so not now.
   if (await versionProbeActive(jobId)) return out;
   const photos = await prisma.photoAsset.findMany({ where: { jobId, status: { in: ["ACTIVE", "EXCLUDED"] } }, select: { id: true, jobId: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, autohdrVersionUuid: true } });
-  const byShoot = new Map<number, typeof photos>();
+  // The job and its shoots are read once for all its photos.
+  const cache: RefCache = {};
+  const byShoot = new Map<number, { p: (typeof photos)[number]; ref: { shootId: number; imageUuid: string } }[]>();
   for (const p of photos) {
-    const ref = await autohdrRefOf(p);
+    const ref = await autohdrRefOf(p, cache);
     if (!ref) continue;
-    (byShoot.get(ref.shootId) ?? byShoot.set(ref.shootId, []).get(ref.shootId)!).push(p);
+    (byShoot.get(ref.shootId) ?? byShoot.set(ref.shootId, []).get(ref.shootId)!).push({ p, ref });
   }
   for (const [shootId, list] of byShoot) {
     let live: Awaited<ReturnType<typeof autohdr.listPhotos>>;
@@ -194,10 +202,9 @@ export async function syncHeads(jobId: string, opts: { by?: string } = {}): Prom
       continue;
     }
     const head = new Map(live.map((x) => [x.image_uuid, x.image_version_uuid]));
-    for (const p of list) {
-      const ref = await autohdrRefOf(p);
-      const now = ref ? head.get(ref.imageUuid) : undefined;
-      if (!ref || !now || now === p.autohdrVersionUuid) continue;
+    for (const { p, ref } of list) {
+      const now = head.get(ref.imageUuid);
+      if (!now || now === p.autohdrVersionUuid) continue;
       // A fix in flight sets the head itself; the runner records it.
       const busy = await prisma.photoFixOperation.count({ where: { photoId: p.id, status: { in: ["SUBMITTING", "SUBMITTED"] } } });
       if (busy) continue;

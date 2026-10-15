@@ -142,6 +142,13 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
     b.images.forEach((x, k) => { const i = l.images.find((y) => y.id === x.id); if (i) i.index = k; });
     return redirect(`/admin/listings/${l.id}/edit`, 303);
   }
+  if (m && method === "DELETE") {
+    const l = listings.get(m[1])!;
+    const b = JSON.parse(String(init?.body)) as { images: string[] };
+    calls.push({ kind: "delete", body: b });
+    l.images = l.images.filter((i) => !b.images.includes(i.id));
+    return redirect(`/admin/listings/${l.id}/edit`, 303);
+  }
   m = /^\/admin\/listings\/([^/]+)\/deliver$/.exec(u.pathname);
   if (m && method === "POST") {
     const l = listings.get(m[1])!;
@@ -427,6 +434,47 @@ async function main() {
     c.ok("auto, shadow mode on, an open privacy issue: uploaded, NOT delivered, waits with why", listings.get("L-K")!.delivery === "UNDELIVERED" && pk?.state === "WAITING" && /open items/.test(pk.note ?? ""), JSON.stringify(pk));
     const pkOk = await P.approvePushDelivery(K.job.id, "Kyle");
     c.ok("…a person's Deliver in Aryeo still goes through the usual gate (shadow mode advises)", pkOk.ok, pkOk.message);
+
+    // ======================================================================
+    c.head("9 · a photo fixed after it went on the listing (audit, Oct 15)");
+    await savePhotoDeliverySettings({ aryeoPush: "approve" }, "drill");
+    const M = await mkJob("100 Changed Ct", "L-M", 3);
+    const dm = await P.drivePushes({ budgetMs: 60_000 });
+    for (let i = 0; i < 8; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
+    c.ok("sent and waiting for Kyle", dm.started.includes(M.job.id) && (await P.pushProgress(M.job.id))?.state === "WAITING" && listings.get("L-M")!.images.length === 3, JSON.stringify(await P.pushProgress(M.job.id)));
+    // A fix lands on photo 2 (a new version, same name in the folder).
+    const second = M.order[1];
+    await prisma.photoAsset.update({ where: { id: second.photoId }, data: { contentHash: "100 Changed Ct-1-fixed", inspectedHash: "100 Changed Ct-1-fixed" } });
+    const stale = await P.approvePushDelivery(M.job.id, "Kyle");
+    c.ok("Deliver in Aryeo refuses the old set and says what to do", !stale.ok && /changed after they went on the listing/.test(stale.message) && listings.get("L-M")!.delivery === "UNDELIVERED", stale.message);
+    const uploads0 = calls.filter((x) => x.kind === "upload").length;
+    const oldImg = listings.get("L-M")!.images.find((i) => i.filename === second.deliveryName)!.id;
+    const dm2 = await P.drivePushes({ budgetMs: 60_000 });
+    for (let i = 0; i < 10; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
+    const lm = listings.get("L-M")!;
+    const del0 = calls.filter((x) => x.kind === "delete").pop()?.body as { images: string[] } | undefined;
+    c.ok("the cron sends it again by itself (approve stage)", dm2.started.includes(M.job.id), JSON.stringify(dm2));
+    c.ok("only the changed photo is replaced: the old one taken off, the new one sent, nothing doubled", JSON.stringify(del0?.images) === JSON.stringify([oldImg]) && calls.filter((x) => x.kind === "upload").length - uploads0 === 1 && lm.images.length === 3 && !lm.images.some((i) => i.id === oldImg), `${JSON.stringify(del0)} uploads=${calls.filter((x) => x.kind === "upload").length - uploads0} ${lm.images.length}`);
+    c.ok("…back in delivery order, waiting for Kyle again", [...lm.images].sort((a, b) => a.index - b.index).map((i) => i.filename).join() === M.order.map((o) => o.deliveryName).join() && (await P.pushProgress(M.job.id))?.state === "WAITING");
+    const fresh = await P.approvePushDelivery(M.job.id, "Kyle");
+    for (let i = 0; i < 4; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
+    c.ok("then Deliver in Aryeo goes", fresh.ok && lm.delivery === "DELIVERED", fresh.message);
+
+    // ======================================================================
+    c.head("10 · the cron does not retry a refusal every five minutes");
+    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    const N = await mkJob("110 Others Rd", "L-N", 2);
+    listings.get("L-N")!.images.push({ id: "theirs-1", filename: "Theirs.jpg", index: 0, live: true, visibleAfter: 0 });
+    await P.drivePushes({ budgetMs: 30_000 });
+    const pn = await P.pushProgress(N.job.id);
+    const reads1 = listings.get("L-N")!.reads;
+    await P.drivePushes({ budgetMs: 30_000 });
+    c.ok("the reason shows on the job and the next pass leaves the listing alone", pn?.state === "FAILED" && /not from 06-Ready-for-Aryeo/.test(pn.note ?? "") && listings.get("L-N")!.reads === reads1 && listings.get("L-N")!.images.length === 1, `${JSON.stringify(pn)} reads ${reads1}→${listings.get("L-N")!.reads}`);
+    const rowN = await prisma.appSetting.findUniqueOrThrow({ where: { key: `photo_aryeo_push:${N.job.id}` } });
+    await prisma.appSetting.update({ where: { key: rowN.key }, data: { value: JSON.stringify({ ...JSON.parse(rowN.value), retryAfter: new Date(Date.now() - 1000).toISOString() }) } });
+    await P.drivePushes({ budgetMs: 30_000 });
+    c.ok("…an hour later it looks again", listings.get("L-N")!.reads > reads1);
+    c.ok("the reason is written in the job's activity once", (await prisma.photoJobEvent.count({ where: { jobId: N.job.id, action: { startsWith: "not sent to Aryeo" } } })) === 1);
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

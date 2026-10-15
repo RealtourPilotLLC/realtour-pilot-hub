@@ -24,24 +24,24 @@ export function AutohdrConnectForm({ developerUrl }: { developerUrl: string }) {
         </li>
       </ol>
       {!open ? (
-        <button onClick={() => setOpen(true)} className="w-full rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2">
+        <button onClick={() => setOpen(true)} className="min-h-11 w-full rounded-lg border border-border-strong px-3 text-sm font-medium hover:bg-surface-2">
           I have the AutoHDR Client ID and Secret
         </button>
       ) : (
         <form action={action} className="space-y-2 rounded-xl border bg-surface-2 p-3">
           <label className="block text-xs font-medium text-foreground/80" htmlFor="autohdr-client-id">Client ID</label>
-          <input id="autohdr-client-id" name="clientId" type="text" autoComplete="off" spellCheck={false} className="w-full rounded-lg border bg-surface px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
+          <input id="autohdr-client-id" name="clientId" type="text" autoComplete="off" spellCheck={false} className="min-h-11 w-full rounded-lg border border-border-strong bg-surface px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
           <label className="block text-xs font-medium text-foreground/80" htmlFor="autohdr-client-secret">Client Secret</label>
-          <input id="autohdr-client-secret" name="clientSecret" type="password" autoComplete="off" spellCheck={false} className="w-full rounded-lg border bg-surface px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
-          <p className="text-[11px] text-muted">
+          <input id="autohdr-client-secret" name="clientSecret" type="password" autoComplete="off" spellCheck={false} className="min-h-11 w-full rounded-lg border border-border-strong bg-surface px-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
+          <p className="text-xs text-muted">
             Checked by signing in and reading your credit balance. That spends nothing. A pair AutoHDR rejects is not saved. The secret is encrypted before it is stored and is never shown again.
           </p>
           <div className="flex gap-2">
-            <button type="submit" disabled={pending} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
+            <button type="submit" disabled={pending} className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
               {pending && <Loader2 className="size-4 animate-spin" />}
               Test &amp; save
             </button>
-            <button type="button" onClick={() => setOpen(false)} className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface">
+            <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-border-strong px-3 text-sm font-medium hover:bg-surface">
               Cancel
             </button>
           </div>
@@ -61,17 +61,17 @@ export function AutohdrConnectedControls() {
         <button
           disabled={busy}
           onClick={() => start(async () => setMsg(await retestAutohdr()))}
-          className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-60"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
         >
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Check balance now
         </button>
         <button
           disabled={busy}
           onClick={() => {
-            if (!confirm("Remove the AutoHDR API client from the hub? Editing through Dropbox keeps working; the hub just stops reading the balance.")) return;
+            if (!confirm("Remove the AutoHDR API client from the hub? The hub stops sending shoots, fixing photos and reading the balance.")) return;
             start(async () => setMsg(await disconnectAutohdr()));
           }}
-          className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-surface-2 disabled:opacity-60"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-sm font-medium text-danger hover:bg-surface-2 disabled:opacity-60"
         >
           <PowerOff className="size-3.5" /> Disconnect
         </button>

@@ -13,25 +13,25 @@ import type { JobDetail, Viewer } from "./types";
 
 // ---------------------------------------------------------------------------
 // The job page body (plan 9.4): the gallery on the left (about 60%), the
-// tabs on the right (Issues, Fix Cart, Coverage, Activity, Files), the
-// lightbox over both, and the Deliver panel stuck to the bottom. On a phone
-// the tabs follow the gallery. Activity and Files arrive already rendered on
-// the server; they need no interaction.
+// tabs on the right (Issues, Fix Cart, Coverage, History), the lightbox over
+// both, and the Deliver panel stuck to the bottom. On a phone the tabs follow
+// the gallery. History (Oct 15 2026: Activity and Files in one tab, under the
+// "activity" key) arrives already rendered on the server; it needs no
+// interaction.
 // ---------------------------------------------------------------------------
 
-export function JobWorkspace({ data, viewer, initialTab, initialPhoto, activity, files }: {
+export function JobWorkspace({ data, viewer, initialTab, initialPhoto, history }: {
   data: JobDetail;
   viewer: Viewer;
   initialTab?: TabKey;
   initialPhoto?: string | null;
-  activity: ReactNode;
-  files: ReactNode;
+  history: ReactNode;
 }) {
   return (
-    <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={initialTab} initialPhoto={initialPhoto}>
+    <JobProvider data={data} viewer={viewer} mode="workspace" initialTab={initialTab === "files" ? "activity" : initialTab} initialPhoto={initialPhoto}>
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Gallery />
-        <RightPanel activity={activity} files={files} />
+        <RightPanel history={history} />
       </div>
       <DeliverPanel />
       <Lightbox />
@@ -39,7 +39,7 @@ export function JobWorkspace({ data, viewer, initialTab, initialPhoto, activity,
   );
 }
 
-function RightPanel({ activity, files }: { activity: ReactNode; files: ReactNode }) {
+function RightPanel({ history }: { history: ReactNode }) {
   const { tab, setTab, data, selected } = useJob();
   const refs = useRef<Record<string, HTMLButtonElement | null>>({});
   const openIssues = data.findings.filter((f) => f.pass !== "P4_ORDER" && f.status === "OPEN" && f.confidence >= data.displayFloor).length;
@@ -49,8 +49,7 @@ function RightPanel({ activity, files }: { activity: ReactNode; files: ReactNode
     { key: "issues", label: "Issues", count: openIssues },
     { key: "cart", label: "Fix Cart", count: inCart },
     { key: "coverage", label: "Coverage", count: openCoverage },
-    { key: "activity", label: "Activity" },
-    { key: "files", label: "Files" },
+    { key: "activity", label: "History" },
   ];
   const onKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "Home" && e.key !== "End") return;
@@ -96,7 +95,7 @@ function RightPanel({ activity, files }: { activity: ReactNode; files: ReactNode
           className="p-3 sm:p-4 lg:max-h-[calc(100dvh-14rem)] lg:overflow-y-auto"
         >
           {tab === t.key &&
-            (t.key === "issues" ? <IssuesPanel /> : t.key === "cart" ? <FixCartPanel /> : t.key === "coverage" ? <CoveragePanel /> : t.key === "activity" ? activity : files)}
+            (t.key === "issues" ? <IssuesPanel /> : t.key === "cart" ? <FixCartPanel /> : t.key === "coverage" ? <CoveragePanel /> : history)}
         </div>
       ))}
     </section>

@@ -1,6 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth/guards";
+import type { DerivativeStore } from "@/lib/photoDelivery/blob";
+import type { Rendered, UiSize } from "@/lib/photoDelivery/qc/derivatives";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,13 +24,17 @@ export const maxDuration = 60;
 //      QC run persisted this size for the photo's current version
 //      (private, max-age=3600);
 //   2. otherwise the derivative is rendered on the fly from the photo's
-//      source (the Aryeo listing image or the Dropbox file) with the same
-//      sharp pipeline the QC run uses, so sizes match the stored boxes
-//      (private, max-age=86400). Bounded: one image per request, a small
-//      per-instance concurrency cap, and a 55 s ceiling inside the 60 s
-//      function limit.
-// `v` is the photo's content hash: it changes when the photo does, so the
-// URL is cache-busted and the long browser cache is safe.
+//      source (the Aryeo listing image, the Dropbox file or AutoHDR) with
+//      the same sharp pipeline the QC run uses, so sizes match the stored
+//      boxes (private, max-age=86400). ONE download makes every size, and
+//      after the response they are saved to the private store under the
+//      same key the QC run uses, so the next request, on any instance, is a
+//      store hit. Bounded: a small per-instance concurrency cap (a request
+//      for a photo already being rendered joins it), and a 55 s ceiling
+//      inside the 60 s function limit.
+// `v` is the photo's content hash: it changes when the photo does (for an
+// AutoHDR photo, when its version does), so the URL is cache-busted and the
+// long browser cache is safe.
 // ---------------------------------------------------------------------------
 
 const SIZES = new Set(["thumb256", "thumb768", "qc1024", "qc2048"]);
@@ -36,6 +42,9 @@ const RENDER_TIMEOUT_MS = 55_000;
 const MAX_RENDERS = 3;
 let rendering = 0;
 const waiting: (() => void)[] = [];
+type AllSizes = Record<UiSize, Rendered>;
+/** Renders in progress on this instance, by photo and version. */
+const inFlight = new Map<string, Promise<AllSizes>>();
 
 async function acquire(): Promise<void> {
   if (rendering < MAX_RENDERS) {
@@ -70,7 +79,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
 
   const photo = await prisma.photoAsset.findUnique({
     where: { id: photoId },
-    select: { id: true, name: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true, derivJson: true, derivHash: true, autohdrVersionUuid: true },
+    select: { id: true, jobId: true, name: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true, derivJson: true, derivHash: true, autohdrVersionUuid: true },
   });
   if (!photo) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -86,9 +95,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
     if (!isCurrent) return serveVersion(req, photo.id, v, size);
   }
 
-  // The hub's own AutoHDR photo shows AutoHDR's CURRENT version (a fix changes it), so its version is part of the key.
+  // The key the QC run stores under (qc/run.ts hashOf). An AutoHDR photo's
+  // content hash IS its current version (versions.ts adoptVersion), so a fix
+  // or a restore changes the key. (Until Oct 15 2026 this used its own
+  // "ahdr-<version>" key, which never matched what QC stored: every AutoHDR
+  // photo was downloaded again for every size.)
   const autohdrPhoto = photo.sourceKind === "AUTOHDR";
-  const hash = autohdrPhoto && photo.autohdrVersionUuid ? `ahdr-${photo.autohdrVersionUuid}` : photo.contentHash || `asset:${photo.id}`;
+  const hash = photo.contentHash || `asset:${photo.id}`;
   const etag = `"${hash.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40)}-${size}"`;
   if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: headers(etag, 86400) });
 
@@ -107,24 +120,52 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
   const cached = D.derivCache.get(key);
   if (cached) return new Response(new Uint8Array(cached), { status: 200, headers: headers(etag, 86400) });
 
-  // 3. Render from the source, bounded.
+  // 3. Render from the source, bounded: one download makes every size.
   const { loadPhotoBytes, PhotoSourceError } = await import("@/lib/photoDelivery/qc/source");
-  await acquire();
+  const flight = `${photo.id}:${hash}`;
+  let work = inFlight.get(flight);
+  let keepHere: Promise<void> | null = null;
+  if (!work) {
+    work = (async () => {
+      await acquire();
+      try {
+        const bytes = await loadPhotoBytes(photo);
+        const raster = await D.decodeRaster(bytes, await D.readMeta(bytes));
+        const all = {} as AllSizes;
+        for (const s of D.UI_SIZES) all[s] = await D.renderFromRaster(raster, s);
+        return all;
+      } finally {
+        release();
+      }
+    })();
+    inFlight.set(flight, work);
+    const done = () => inFlight.delete(flight);
+    work.then(done, done);
+    // Whoever is still waiting, every size is kept: in this instance's memory
+    // at once, and in the private store after the response.
+    const keep = work.then(
+      (all) => {
+        for (const s of D.UI_SIZES) D.derivCache.set(D.derivKey(photo.id, hash, s), all[s].data);
+        if (store) return keepSizes(store, photo, hash, all).catch((e: Error) => console.warn("photo-delivery img: sizes not kept", photo.id, e.message.slice(0, 160)));
+      },
+      () => undefined, // the response says why the photo can't be shown
+    );
+    try {
+      after(() => keep);
+    } catch {
+      keepHere = keep; // no request scope (a drill): finish before answering
+    }
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const work = (async () => {
-      const bytes = await loadPhotoBytes(photo);
-      const meta = await D.readMeta(bytes);
-      return D.renderFromSource(bytes, meta, size as "qc2048");
-    })();
-    const out = await Promise.race([
+    const all = await Promise.race([
       work,
       new Promise<never>((_r, reject) => {
         timer = setTimeout(() => reject(new Error("render timed out")), RENDER_TIMEOUT_MS);
       }),
     ]);
-    D.derivCache.set(key, out.data);
-    return new Response(new Uint8Array(out.data), { status: 200, headers: headers(etag, autohdrPhoto ? 600 : 86400) });
+    if (keepHere) await keepHere;
+    return new Response(new Uint8Array(all[size as UiSize].data), { status: 200, headers: headers(etag, autohdrPhoto ? 600 : 86400) });
   } catch (e) {
     if (e instanceof PhotoSourceError) {
       const status = e.kind === "gone" ? 404 : e.kind === "transient" ? 503 : 422;
@@ -134,8 +175,30 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
     return NextResponse.json({ error: "This photo can't be shown right now." }, { status: 503, headers: { "cache-control": "no-store" } });
   } finally {
     clearTimeout(timer);
-    release();
   }
+}
+
+/**
+ * Every size of the photo's current version into the private store, recorded
+ * on the photo the way the QC run records them (derivJson + derivHash), so
+ * the next request on any instance reads the store instead of the source. A
+ * write the QC run made meanwhile is never overwritten.
+ */
+async function keepSizes(store: DerivativeStore, photo: { id: string; jobId: string; contentHash: string | null; derivJson: string | null; derivHash: string | null }, hash: string, all: AllSizes): Promise<void> {
+  const [{ derivativePathname }, D] = await Promise.all([import("@/lib/photoDelivery/blob"), import("@/lib/photoDelivery/qc/derivatives")]);
+  // The dust crops the QC run kept for this version stay; anything for an older version goes.
+  const map: Record<string, unknown> = photo.derivHash === hash ? { ...D.parseDerivMap(photo.derivJson) } : {};
+  await Promise.all(
+    D.UI_SIZES.map(async (s) => {
+      const r = all[s];
+      const ref = await store.put(derivativePathname(photo.jobId, photo.id, hash, s), r.data, "image/jpeg");
+      map[s] = { w: r.w, h: r.h, pathname: ref.pathname, url: ref.url, bytes: r.data.length };
+    }),
+  );
+  await prisma.photoAsset.updateMany({
+    where: { id: photo.id, contentHash: photo.contentHash, derivHash: photo.derivHash },
+    data: { derivJson: JSON.stringify(map), derivHash: hash },
+  });
 }
 
 /** A kept earlier version: never changes, so it caches for a day. */

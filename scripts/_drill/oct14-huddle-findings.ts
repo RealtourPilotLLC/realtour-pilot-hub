@@ -433,6 +433,11 @@ async function main() {
     const now = new Date().toISOString();
     await prisma.appSetting.create({ data: { key: `photo_ready_run:${R.job.id}`, updatedBy: "drill", value: JSON.stringify({ id: "r1", state: "DONE", folder: "/x/06-Ready-for-Aryeo", staging: "/x/s", fingerprint: "f", by: "Kyle", startedAt: now, updatedAt: now, finishedAt: now, note: null, lease: null, items: [{ photoId: r0.id, name: "01-Front-Exterior.jpg", state: "DONE", job: null, tries: 0, bytes: 9, since: null, error: null }, { photoId: rB.id, name: "02-Kitchen.jpg", state: "DONE", job: null, tries: 0, bytes: 9, since: null, error: null }] }) } });
     await prisma.project.update({ where: { id: R.project.id }, data: { aryeoListingId: "LR" } });
+    // Oct 15 2026: an upload lands over several minutes. Half way, nothing is carried over and nothing is lost.
+    listingBodies.set("LR", { id: "LR", delivery_status: "NOT_DELIVERED", images: [{ id: "a1", filename: "01-Front-Exterior.jpg", original_url: "https://cdn.aryeo.com/listings/r/01.jpg", display_in_gallery: true, index: 0 }] });
+    await J.syncJobFinals(R.job.id);
+    const half = await prisma.photoAsset.findMany({ where: { jobId: R.job.id } });
+    c.ok("1 of the 2 ready files on the listing: still uploading, nothing carried over or marked gone", half.length === 2 && half.every((x) => x.sourceKind === "AUTOHDR" && x.status === "ACTIVE"), JSON.stringify(half.map((x) => [x.name, x.sourceKind, x.status])));
     listingBodies.set("LR", { id: "LR", delivery_status: "DELIVERED", images: [{ id: "a1", filename: "01-Front-Exterior.jpg", original_url: "https://cdn.aryeo.com/listings/r/01.jpg", display_in_gallery: true, index: 0 }, { id: "a2", filename: "02-Kitchen.jpg", original_url: "https://cdn.aryeo.com/listings/r/02.jpg", display_in_gallery: true, index: 1 }] });
     await J.syncJobFinals(R.job.id);
     const r0b = await prisma.photoAsset.findUniqueOrThrow({ where: { id: r0.id } });
@@ -486,6 +491,13 @@ async function main() {
     listings.set("LQ", "DELIVERED");
     await sweep.verifySoonAfterStart(jq.id);
     c.ok("Mark as delivering checks straight away", (await prisma.photoJob.findUniqueOrThrow({ where: { id: jq.id } })).stage === "DELIVERED");
+    // Backend audit #14: the hub's own guess (Project.deliveredAt) never stands in for Aryeo's word.
+    const proj3 = await prisma.project.create({ data: { title: "32 Guess St, Reading, PA", aryeoListingId: "LG", clientId: A.client.id, deliveredAt: new Date() } });
+    const jg = await prisma.photoJob.create({ data: { projectId: proj3.id, stage: "DELIVERING", deliveryStartedAt: new Date() } });
+    await prisma.photoAsset.create({ data: { jobId: jg.id, name: "g0.jpg", sourceKind: "DROPBOX", contentHash: "g0", sequence: 0, status: "ACTIVE" } });
+    listings.set("LG", "SCHEDULED");
+    const vg = await (await import("@/lib/photoDelivery/delivery")).verifyDelivery(jg.id, "drill");
+    c.ok("the project marked delivered by the hub, the listing not: still waiting on Aryeo", vg.waiting === true && (await prisma.photoJob.findUniqueOrThrow({ where: { id: jg.id } })).stage === "DELIVERING", vg.message);
 
     c.head("isolation");
     c.ok("nothing left the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

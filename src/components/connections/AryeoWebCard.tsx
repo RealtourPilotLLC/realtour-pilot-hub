@@ -16,7 +16,7 @@ const STAGE: Record<string, string> = {
   off: "Off: Kyle uploads and delivers by hand",
   upload: "Uploads on a press of Send to Aryeo; Kyle delivers",
   approve: "Uploads by itself; Kyle presses Deliver in Aryeo",
-  auto: "Uploads and delivers by itself",
+  auto: "Uploads by itself; delivers by itself only when the delivery checklist passes",
 };
 
 export async function AryeoWebCard() {
@@ -32,23 +32,22 @@ export async function AryeoWebCard() {
     <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5" data-card="aryeo-web">
       <div className="flex items-center gap-2 text-sm font-semibold">
         <UploadCloud className="size-4 text-brand" /> Aryeo hub login
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${conn?.lastError ? "bg-danger/10 text-danger" : connected ? "bg-success/10 text-success" : "bg-surface-2 text-muted"}`}>
+        <span className={`rounded-full px-2 py-0.5 text-ui-status font-medium ${conn?.lastError ? "bg-danger/10 text-danger" : connected ? "bg-success/10 text-success" : "bg-surface-2 text-muted"}`}>
           {conn?.lastError ? "Sign-in failing" : connected ? "Connected" : "Not set up"}
         </span>
-        <Link href="/ops/photo-delivery/settings" className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
+        <Link href="/ops/photo-delivery/settings" className="ml-auto inline-flex min-h-11 items-center gap-1 text-ui-status font-semibold text-brand hover:underline">
           Stage <ArrowRight className="size-3" />
         </Link>
       </div>
       <p className="mt-2 text-xs text-muted">Lets the hub put the 06-Ready-for-Aryeo photos on a listing, in order, and deliver it, the way Kyle does in Aryeo. Aryeo&rsquo;s public API can&rsquo;t, so the hub signs in as its own team member.</p>
-      {connected && (
-        <ul className="mt-2 space-y-1 text-xs text-muted">
-          <li><span className="font-medium text-foreground">Login:</span> {email ?? "saved"}{conn?.updatedAt ? `, saved ${etDateTime(conn.updatedAt)}` : ""}</li>
-          <li><span className="font-medium text-foreground">Stage:</span> {STAGE[settings.aryeoPush] ?? settings.aryeoPush}</li>
-          {conn?.lastError && <li className="text-danger"><span className="font-medium">Last error:</span> {conn.lastError}</li>}
-        </ul>
-      )}
+      <ul className="mt-2 space-y-1 text-xs text-muted">
+        {connected && <li><span className="font-medium text-foreground">Login:</span> {email ?? "saved"}{conn?.updatedAt ? `, saved ${etDateTime(conn.updatedAt)}` : ""}</li>}
+        <li><span className="font-medium text-foreground">Stage:</span> {STAGE[settings.aryeoPush] ?? settings.aryeoPush}</li>
+        {!connected && settings.aryeoPush !== "off" && <li className="text-warning">The stage is not Off, but the login is not set up, so nothing reaches Aryeo yet.</li>}
+        {conn?.lastError && <li className="text-danger"><span className="font-medium">Last error:</span> {conn.lastError}</li>}
+      </ul>
       {isOwner && (connected ? <AryeoWebConnectedControls /> : <AryeoWebConnectForm />)}
-      {!isOwner && !connected && <p className="mt-2 text-[11px] text-muted">Jordan sets the hub&rsquo;s Aryeo login up here.</p>}
+      {!isOwner && !connected && <p className="mt-2 text-xs text-muted">Jordan sets the hub&rsquo;s Aryeo login up here.</p>}
     </section>
   );
 }

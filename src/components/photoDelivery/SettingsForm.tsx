@@ -1,68 +1,102 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Loader2, Save } from "lucide-react";
+import { ChevronDown, Loader2, Save } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { saveSettingsAction } from "@/app/ops/photo-delivery/actions";
 
 // ---------------------------------------------------------------------------
 // Photo Delivery switches and thresholds (plan 14), owner only, every field
-// with a plain-English line. Everything that can spend money or reach a
-// client defaults OFF (lib/photoDelivery/settings.ts). The server action
-// validates each value again.
+// with one plain line. Up front: what the hub does by itself. Behind
+// "Advanced": the paid QC and the delivery-check thresholds. Two pairs of
+// stored switches show as one choice each (fixes: fixRunnerEnabled + autoFix;
+// paid QC: qcEnabled + paidQcAuto) and Save writes both. Everything that can
+// spend money or reach a client defaults OFF (lib/photoDelivery/settings.ts).
+// The server action validates each value again.
 // ---------------------------------------------------------------------------
+
+export type FixesMode = "off" | "approve" | "auto";
+export type PaidQcMode = "off" | "press" | "auto";
+export type AryeoMode = "off" | "upload" | "approve" | "auto";
 
 export type SettingsValues = {
   enabled: boolean;
-  qcEnabled: boolean;
-  qcShadow: boolean;
-  fixRunnerEnabled: boolean;
-  maxBuildPhase: 1 | 2 | 3;
-  autoFixZeroCredit: boolean;
-  adminCreditCap: number;
-  dailyAutoCreditCap: number;
-  aryeoTags: boolean;
-  p3AllPhotos: boolean;
-  displayConfidenceFloor: number;
-  maskPaddingPct: number;
-  maskPaddingMinPx: number;
-  minLongEdgePx: number;
-  /** ET day key (YYYY-MM-DD) or "" */
-  qcFromDay: string;
-  monthlyQcBudgetUsd: number;
   autoSubmit: boolean;
-  freeCheck: boolean;
-  paidQcAuto: boolean;
-  autoFix: boolean;
   showAutohdrPhotos: boolean;
+  freeCheck: boolean;
+  fixes: FixesMode;
   fixTargetUsd: number;
   fixMaxUsd: number;
+  autoFixDailyMaxCredits: number;
   /** How far the hub takes photos into Aryeo by itself (aryeoPush.ts). */
-  aryeoPush: "off" | "upload" | "approve" | "auto";
+  aryeoPush: AryeoMode;
+  paidQc: PaidQcMode;
+  monthlyQcBudgetUsd: number;
+  maxBuildPhase: 1 | 2 | 3;
+  qcShadow: boolean;
+  /** ET day key (YYYY-MM-DD) or "" */
+  qcFromDay: string;
+  /** Percent (0 to 100). */
+  displayConfidenceFloor: number;
+  minLongEdgePx: number;
+  adminCreditCap: number;
 };
 
-const ARYEO_STAGES: { value: SettingsValues["aryeoPush"]; label: string; help: string }[] = [
-  { value: "off", label: "Off", help: "The hub never touches the Aryeo listing. Kyle uploads and delivers by hand." },
-  { value: "upload", label: "Upload on a press", help: "Send to Aryeo on the job page puts the 06-Ready-for-Aryeo photos on the listing, in order, checked. Kyle delivers in Aryeo." },
-  { value: "approve", label: "Upload by itself, Kyle delivers", help: "When the photos are ready, the hub puts them on the listing by itself. Kyle presses Deliver in Aryeo on the job page." },
-  { value: "auto", label: "Upload and deliver by itself", help: "The hub uploads and delivers when the photos are ready and the delivery checklist passes. The listing's customers get Aryeo's usual email." },
+type Option<T extends string> = { value: T; label: string; help: string };
+
+const FIXES: Option<FixesMode>[] = [
+  { value: "off", label: "Off", help: "No fix runs, not even one approved in the Fix Cart." },
+  { value: "approve", label: "Only when someone approves", help: "Fixes run once Kyle or you approve them in the Fix Cart." },
+  { value: "auto", label: "Automatic", help: "After each check the hub picks and runs the fixes itself, within the limits below." },
 ];
 
-const SWITCHES: { key: keyof SettingsValues; label: string; help: string }[] = [
-  { key: "enabled", label: "Track photo jobs", help: "Opens a job for every photo shoot and follows its gallery until delivery. Reads Aryeo and Dropbox only; writes nothing outside the hub." },
-  { key: "autoSubmit", label: "Send uploads to AutoHDR", help: "When a photographer's upload is finished (and when files are added later), the hub sends the raws to AutoHDR with your account's default look. Editing is free; a credit per photo comes off at the first download, as always. Kyle is told, so nobody adds the folder by hand too." },
-  { key: "showAutohdrPhotos", label: "Show AutoHDR photos in the hub", help: "When AutoHDR finishes a shoot the hub sent, the hub downloads its photos once so they show on the job page. That is the same 1 credit per photo the push to Aryeo charges; the push does not charge them again." },
-  { key: "freeCheck", label: "Free photo check", help: "Asks AutoHDR's free describe tool to check every edited photo against the checklist (bins, hoses, toilet seats, reflections, crooked lines and more). No credits, no Claude cost." },
-  { key: "qcEnabled", label: "Paid QC available", help: "The Claude QC (measured checks plus Claude vision, about $3 to $4 a shoot, never AutoHDR credits). Whether it starts by itself is the switch below." },
-  { key: "paidQcAuto", label: "Run the paid QC by itself", help: "Off: the Claude QC only runs when someone presses Run QC on a job. On: it inspects every gallery as it lands, about $3 to $4 a shoot." },
-  { key: "qcShadow", label: "Shadow mode", help: "QC results are advisory: nothing is held or blocked by them, and Kyle keeps his manual check. Leave on until the checks have proven themselves." },
-  { key: "autoFix", label: "Fix automatically", help: "After the free check and a free second look, the hub picks the fixes itself: camera mistakes, crooked lines, cars and trash cans always; clutter only in a prepared home and only within the target. One AI re-edit per photo (1 credit), checked again for free after the edit. Needs the switch below on too." },
-  { key: "fixRunnerEnabled", label: "Run approved AutoHDR fixes", help: "Off until you have approved the first live test. While off, the Fix Cart cannot start a batch and nothing is sent to AutoHDR." },
-  { key: "autoFixZeroCredit", label: "Auto-run fixes that cost no credits", help: "Off by default. When on, a fix AutoHDR prices at zero runs without a click, only on non-critical findings at 90% confidence or more. Everything else waits for a click." },
-  { key: "aryeoTags", label: "Mirror status into Aryeo", help: "Off: Aryeo order tags and internal notes stay untouched until you switch this on." },
-  { key: "p3AllPhotos", label: "Compare every photo with its original", help: "Runs the original vs edited check on every photo instead of only the risky ones (kitchens, exteriors, fixed photos). More thorough, costs more." },
+const ARYEO_STAGES: Option<AryeoMode>[] = [
+  { value: "off", label: "Off", help: "The hub never touches the Aryeo listing; Kyle uploads and delivers by hand." },
+  { value: "upload", label: "Upload on a press", help: "Send to Aryeo on the job page puts the 06-Ready-for-Aryeo photos on the listing in order; Kyle delivers in Aryeo." },
+  { value: "approve", label: "Upload by itself, Kyle delivers", help: "The hub uploads when the photos are ready, and Kyle presses Deliver in Aryeo on the job page." },
+  { value: "auto", label: "Upload and deliver by itself", help: "The hub uploads when the photos are ready and delivers with Aryeo's usual email only when the whole delivery checklist passes; anything open waits for Kyle." },
+];
+
+const PAID_QC: Option<PaidQcMode>[] = [
+  { value: "off", label: "Off", help: "No Claude QC runs; the free photo check is separate." },
+  { value: "press", label: "Only when someone presses Run QC", help: "Runs on a job only when someone asks for it." },
+  { value: "auto", label: "Every gallery", help: "Checks every gallery as it lands, until the monthly budget is reached." },
 ];
 
 const input = "min-h-11 w-full rounded-lg border border-border-strong bg-surface-2 px-3 text-sm tabular-nums focus-visible:outline-2 focus-visible:outline-brand";
+const card = "flex cursor-pointer items-start gap-3 rounded-xl border p-3 hover:bg-surface-2/40";
+
+function Switch({ label, help, checked, onChange }: { label: string; help: string; checked: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className={cn(card, "border-border")}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
+      <span>
+        <span className="block text-sm font-medium">{label}</span>
+        <span className="block text-ui-status text-muted">{help}</span>
+      </span>
+    </label>
+  );
+}
+
+function Choice<T extends string>({ name, legend, help, options, value, onChange, grid }: { name: string; legend: string; help?: string; options: Option<T>[]; value: T; onChange: (v: T) => void; grid?: string }) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-semibold">{legend}</legend>
+      {help && <p className="text-ui-status text-muted">{help}</p>}
+      <div className={cn("grid gap-2", grid)}>
+        {options.map((o) => (
+          <label key={o.value} className={cn(card, value === o.value ? "border-brand bg-brand-soft/40" : "border-border")}>
+            <input type="radio" name={name} value={o.value} checked={value === o.value} onChange={() => onChange(o.value)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
+            <span>
+              <span className="block text-sm font-medium">{o.label}</span>
+              <span className="block text-ui-status text-muted">{o.help}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
 
 function NumberField({ id, label, help, value, onChange, min, max, step = 1, suffix }: { id: string; label: string; help: string; value: number; onChange: (n: number) => void; min: number; max: number; step?: number; suffix?: string }) {
   return (
@@ -72,7 +106,7 @@ function NumberField({ id, label, help, value, onChange, min, max, step = 1, suf
         <input id={id} type="number" min={min} max={max} step={step} value={Number.isFinite(value) ? value : ""} onChange={(e) => onChange(e.target.value === "" ? NaN : Number(e.target.value))} className={input} aria-describedby={`${id}-help`} />
         {suffix && <span className="shrink-0 text-sm text-muted">{suffix}</span>}
       </div>
-      <p id={`${id}-help`} className="mt-1 text-[12px] text-muted">{help}</p>
+      <p id={`${id}-help`} className="mt-1 text-ui-status text-muted">{help}</p>
     </div>
   );
 }
@@ -87,29 +121,24 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
       try {
         const r = await saveSettingsAction({
           enabled: v.enabled,
-          qcEnabled: v.qcEnabled,
-          qcShadow: v.qcShadow,
-          fixRunnerEnabled: v.fixRunnerEnabled,
           autoSubmit: v.autoSubmit,
-          freeCheck: v.freeCheck,
-          paidQcAuto: v.paidQcAuto,
-          autoFix: v.autoFix,
           showAutohdrPhotos: v.showAutohdrPhotos,
+          freeCheck: v.freeCheck,
+          fixRunnerEnabled: v.fixes !== "off",
+          autoFix: v.fixes === "auto",
           fixTargetUsd: v.fixTargetUsd,
           fixMaxUsd: v.fixMaxUsd,
-          maxBuildPhase: v.maxBuildPhase,
-          autoFixZeroCredit: v.autoFixZeroCredit,
-          adminCreditCap: v.adminCreditCap,
-          dailyAutoCreditCap: v.dailyAutoCreditCap,
-          aryeoTags: v.aryeoTags,
-          p3AllPhotos: v.p3AllPhotos,
-          displayConfidenceFloor: Math.round(v.displayConfidenceFloor) / 100,
-          maskPaddingPct: v.maskPaddingPct,
-          maskPaddingMinPx: v.maskPaddingMinPx,
-          minLongEdgePx: v.minLongEdgePx,
-          qcFrom: v.qcFromDay || null,
-          monthlyQcBudgetUsd: v.monthlyQcBudgetUsd,
+          autoFixDailyMaxCredits: v.autoFixDailyMaxCredits,
           aryeoPush: v.aryeoPush,
+          qcEnabled: v.paidQc !== "off",
+          paidQcAuto: v.paidQc === "auto",
+          monthlyQcBudgetUsd: v.monthlyQcBudgetUsd,
+          maxBuildPhase: v.maxBuildPhase,
+          qcShadow: v.qcShadow,
+          qcFrom: v.qcFromDay || null,
+          displayConfidenceFloor: Math.round(v.displayConfidenceFloor) / 100,
+          minLongEdgePx: v.minLongEdgePx,
+          adminCreditCap: v.adminCreditCap,
         });
         setMsg({ ok: r.ok, text: r.message });
       } catch {
@@ -124,71 +153,62 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
       }}
       className="space-y-6"
     >
-      <fieldset className="space-y-3">
-        <legend className="text-sm font-semibold">Switches</legend>
-        {SWITCHES.map((s) => (
-          <label key={s.key} className="flex cursor-pointer items-start gap-3 rounded-xl border border-border p-3 hover:bg-surface-2/40">
-            <input type="checkbox" checked={v[s.key] as boolean} onChange={(e) => set(s.key, e.target.checked as never)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
-            <span>
-              <span className="block text-sm font-medium">{s.label}</span>
-              <span className="block text-[13px] text-muted">{s.help}</span>
-            </span>
-          </label>
-        ))}
-      </fieldset>
+      <div className="space-y-3">
+        <Switch label="Photo Delivery on" help="Opens a job for every photo shoot and follows it until delivery; the AutoHDR switches below need it on." checked={v.enabled} onChange={(on) => set("enabled", on)} />
+        <Switch label="Send shoots to AutoHDR" help="The hub sends each finished upload to AutoHDR with your default look; editing is free until the photos are downloaded." checked={v.autoSubmit} onChange={(on) => set("autoSubmit", on)} />
+        <Switch label="Bring the edits back into the hub" help="Downloads each finished shoot once (1 credit a photo, the same credit Aryeo charges) so it shows here; needed for the Aryeo upload." checked={v.showAutohdrPhotos} onChange={(on) => set("showAutohdrPhotos", on)} />
+        <Switch label="Free photo check" help="AutoHDR's free describe tool checks every edited photo against the checklist, with no credits and no Claude cost." checked={v.freeCheck} onChange={(on) => set("freeCheck", on)} />
+      </div>
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-semibold">Aryeo: upload and delivery by the hub</legend>
-        <p className="text-[13px] text-muted">Uses the hub&rsquo;s own Aryeo login (Connections → Aryeo hub login). Start with a test listing, then let Kyle approve each delivery, then let it run by itself.</p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {ARYEO_STAGES.map((st) => (
-            <label key={st.value} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 hover:bg-surface-2/40 ${v.aryeoPush === st.value ? "border-brand bg-brand-soft/40" : "border-border"}`}>
-              <input type="radio" name="pd-aryeo-push" value={st.value} checked={v.aryeoPush === st.value} onChange={() => set("aryeoPush", st.value)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
-              <span>
-                <span className="block text-sm font-medium">{st.label}</span>
-                <span className="block text-[13px] text-muted">{st.help}</span>
-              </span>
-            </label>
-          ))}
+      <div className="space-y-4">
+        <Choice name="pd-fixes" legend="Fixes" options={FIXES} value={v.fixes} onChange={(m) => set("fixes", m)} grid="sm:grid-cols-3" />
+        <div className="grid gap-4 sm:grid-cols-3">
+          <NumberField id="pd-fix-target" label="Fix target per shoot" suffix="USD" help="Most shoots stay inside this, and clutter is fixed only inside it." value={v.fixTargetUsd} onChange={(n) => set("fixTargetUsd", n)} min={0} max={1000} step={0.5} />
+          <NumberField id="pd-fix-max" label="Fix maximum per shoot" suffix="USD" help="Never passed; only camera, crooked-line, car and trash fixes go above the target." value={v.fixMaxUsd} onChange={(n) => set("fixMaxUsd", n)} min={0} max={1000} step={0.5} />
+          <NumberField id="pd-daily" label="Daily limit on automatic fixes" suffix="credits" help="Automatic fixes on all shoots stop for the day at this many credits." value={v.autoFixDailyMaxCredits} onChange={(n) => set("autoFixDailyMaxCredits", n)} min={0} max={10000} />
         </div>
-      </fieldset>
+      </div>
 
-      <fieldset className="grid gap-4 sm:grid-cols-2">
-        <legend className="mb-2 text-sm font-semibold">QC</legend>
-        <div>
-          <label htmlFor="pd-phase" className="text-sm font-medium">Build phase</label>
-          <select id="pd-phase" value={v.maxBuildPhase} onChange={(e) => set("maxBuildPhase", Number(e.target.value) as 1 | 2 | 3)} className={input} aria-describedby="pd-phase-help">
-            <option value={1}>1: the checklist&rsquo;s priority checks</option>
-            <option value={2}>2: plus the second tier</option>
-            <option value={3}>3: every rule</option>
-          </select>
-          <p id="pd-phase-help" className="mt-1 text-[12px] text-muted">Which QC rules run. Rules that can be critical (privacy, wrong property, damaged files) always run.</p>
+      <Choice name="pd-aryeo-push" legend="Aryeo upload and delivery" help="Uses the hub's own Aryeo login (Connections, Aryeo hub login)." options={ARYEO_STAGES} value={v.aryeoPush} onChange={(m) => set("aryeoPush", m)} grid="sm:grid-cols-2" />
+
+      <details className="group rounded-xl border border-border">
+        <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 px-3 text-sm font-semibold hover:bg-surface-2/40 [&::-webkit-details-marker]:hidden">
+          <ChevronDown aria-hidden className="size-4 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none" /> Advanced
+          {initial.qcShadow && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-ui-status font-medium text-muted ring-1 ring-inset ring-border">Shadow mode on</span>}
+        </summary>
+        <div className="space-y-5 border-t border-border p-3">
+          <Choice name="pd-paid-qc" legend="Paid QC (Claude)" help="Claude vision checks, paid in Anthropic money, never AutoHDR credits." options={PAID_QC} value={v.paidQc} onChange={(m) => set("paidQc", m)} grid="sm:grid-cols-3" />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <NumberField id="pd-budget" label="Monthly QC budget" suffix="USD" help="The paid QC pauses, and you are alerted, once the month's spend passes this." value={v.monthlyQcBudgetUsd} onChange={(n) => set("monthlyQcBudgetUsd", n)} min={0} max={100000} step={1} />
+            <div>
+              <label htmlFor="pd-phase" className="text-sm font-medium">Which checks the paid QC runs</label>
+              <select id="pd-phase" value={v.maxBuildPhase} onChange={(e) => set("maxBuildPhase", Number(e.target.value) as 1 | 2 | 3)} className={input} aria-describedby="pd-phase-help">
+                <option value={1}>The checklist&rsquo;s priority checks</option>
+                <option value={2}>Plus the second tier</option>
+                <option value={3}>Every check</option>
+              </select>
+              <p id="pd-phase-help" className="mt-1 text-ui-status text-muted">Checks that can be critical (privacy, wrong property, damaged files) always run.</p>
+            </div>
+          </div>
+          <Switch label="Never hold a delivery for open issues (shadow mode)" help="A check never puts a job on hold and Mark as delivering is never blocked; the hub's own Aryeo delivery still waits for a clean checklist." checked={v.qcShadow} onChange={(on) => set("qcShadow", on)} />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="pd-from" className="text-sm font-medium">Track shoots from</label>
+              <input id="pd-from" type="date" value={v.qcFromDay} onChange={(e) => set("qcFromDay", e.target.value)} className={input} aria-describedby="pd-from-help" />
+              <p id="pd-from-help" className="mt-1 text-ui-status text-muted">Shoots before this day (Eastern) get no photo job and no paid QC; blank means since Photo Delivery started.</p>
+            </div>
+            <NumberField id="pd-floor" label="Confidence floor" suffix="%" help="Findings below this go in a collapsed Low confidence drawer and never block delivery." value={v.displayConfidenceFloor} onChange={(n) => set("displayConfidenceFloor", n)} min={0} max={100} />
+            <NumberField id="pd-edge" label="Smallest photo allowed" suffix="px" help="A photo whose long edge is shorter than this fails the delivery check." value={v.minLongEdgePx} onChange={(n) => set("minLongEdgePx", n)} min={300} max={20000} />
+            <NumberField id="pd-cap" label="Kyle's approval limit" suffix="credits per batch" help="Kyle can approve a fix batch up to this many credits; above it, you approve." value={v.adminCreditCap} onChange={(n) => set("adminCreditCap", n)} min={0} max={10000} />
+          </div>
         </div>
-        <NumberField id="pd-floor" label="Confidence floor" suffix="%" help="Findings below this go in a collapsed Low confidence drawer and never block delivery." value={v.displayConfidenceFloor} onChange={(n) => set("displayConfidenceFloor", n)} min={0} max={100} />
-        <NumberField id="pd-edge" label="Minimum long edge" suffix="px" help="A photo smaller than this fails the delivery file check." value={v.minLongEdgePx} onChange={(n) => set("minLongEdgePx", n)} min={300} max={20000} />
-        <div>
-          <label htmlFor="pd-from" className="text-sm font-medium">QC start date</label>
-          <input id="pd-from" type="date" value={v.qcFromDay} onChange={(e) => set("qcFromDay", e.target.value)} className={input} aria-describedby="pd-from-help" />
-          <p id="pd-from-help" className="mt-1 text-[12px] text-muted">Only galleries that landed on or after this day (Eastern) are checked. Blank: since the feature started.</p>
-        </div>
-        <NumberField id="pd-budget" label="Monthly QC budget" suffix="USD" help="QC pauses, and you are alerted, once the month's Anthropic spend passes this." value={v.monthlyQcBudgetUsd} onChange={(n) => set("monthlyQcBudgetUsd", n)} min={0} max={100000} step={1} />
-        <NumberField id="pd-fix-target" label="Fix target per shoot" suffix="USD" help="Most shoots stay inside this. Clutter fixes only happen inside it." value={v.fixTargetUsd} onChange={(n) => set("fixTargetUsd", n)} min={0} max={1000} step={0.5} />
-        <NumberField id="pd-fix-max" label="Fix maximum per shoot" suffix="USD" help="Never passed. Only camera, crooked-line, car and trash fixes go above the target." value={v.fixMaxUsd} onChange={(n) => set("fixMaxUsd", n)} min={0} max={1000} step={0.5} />
-      </fieldset>
+      </details>
 
-      <fieldset className="grid gap-4 sm:grid-cols-2">
-        <legend className="mb-2 text-sm font-semibold">Fixes</legend>
-        <NumberField id="pd-cap" label="Kyle's approval limit" suffix="credits per batch" help="Kyle can approve a fix batch up to this many credits; above it, you approve." value={v.adminCreditCap} onChange={(n) => set("adminCreditCap", n)} min={0} max={10000} />
-        <NumberField id="pd-daily" label="Daily automatic credit limit" suffix="credits" help="The most credits automatic fixes may spend in a day. 0 means nothing automatic spends credits." value={v.dailyAutoCreditCap} onChange={(n) => set("dailyAutoCreditCap", n)} min={0} max={10000} />
-        <NumberField id="pd-mpct" label="Mask padding" suffix="% of the box" help="How much room around each issue box an AutoRemove mask gets." value={v.maskPaddingPct} onChange={(n) => set("maskPaddingPct", n)} min={0} max={100} step={0.5} />
-        <NumberField id="pd-mpx" label="Minimum mask padding" suffix="px" help="Never less than this many pixels around a box." value={v.maskPaddingMinPx} onChange={(n) => set("maskPaddingMinPx", n)} min={0} max={500} />
-      </fieldset>
-
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="sticky bottom-0 z-10 -mx-5 -mb-4 flex flex-wrap items-center gap-3 rounded-b-2xl border-t border-border bg-surface px-5 py-3">
         <button type="submit" disabled={pending} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:opacity-50">
           {pending ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Save aria-hidden className="size-4" />} Save settings
         </button>
-        <p role="status" className={`text-[13px] ${msg ? (msg.ok ? "text-success" : "text-warning") : ""}`}>{msg?.text ?? ""}</p>
+        <p role="status" className={cn("text-ui-status", msg && (msg.ok ? "text-success" : "text-warning"))}>{msg?.text ?? ""}</p>
       </div>
     </form>
   );

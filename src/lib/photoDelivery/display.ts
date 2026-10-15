@@ -39,8 +39,11 @@ const parse = (json: string | null): Entry[] => {
 export async function downloadForDisplay(opts: { max?: number; batchId?: string } = {}): Promise<{ skipped?: string; batches: number; photos: number; credits: number }> {
   const settings = await photoDeliverySettings();
   if (!settings.showAutohdrPhotos) return { skipped: "showing AutoHDR photos is switched off", batches: 0, photos: 0, credits: 0 };
+  // A batch with every photo downloaded is skipped by the filter: once anything
+  // is downloaded each entry carries an explicit flag (written below).
+  const notAllDownloaded = { OR: [{ photosJson: { contains: '"downloaded":false' } }, { NOT: { photosJson: { contains: '"downloaded":true' } } }] };
   const batches = await prisma.photoIntakeBatch.findMany({
-    where: { state: "DONE", photoshootId: { not: null }, photosJson: { not: null }, ...(opts.batchId ? { id: opts.batchId } : { doneAt: { gte: new Date(Date.now() - 6 * 86_400_000) } }) },
+    where: { state: "DONE", photoshootId: { not: null }, photosJson: { not: null }, ...(opts.batchId ? { id: opts.batchId } : { doneAt: { gte: new Date(Date.now() - 6 * 86_400_000) }, ...notAllDownloaded }) },
     orderBy: { doneAt: "asc" },
     select: { id: true, projectId: true, photoshootId: true, photosJson: true, address: true },
     take: 20,
@@ -52,6 +55,7 @@ export async function downloadForDisplay(opts: { max?: number; batchId?: string 
     const todo = entries.filter((e) => !e.downloaded);
     if (!todo.length) continue;
     done++;
+    for (const e of entries) e.downloaded = !!e.downloaded;
     const job = await prisma.photoJob.findUnique({ where: { projectId: b.projectId }, select: { id: true } });
     for (let i = 0; i < todo.length; i += 50) {
       const chunk = todo.slice(i, i + 50);
@@ -70,9 +74,11 @@ export async function downloadForDisplay(opts: { max?: number; batchId?: string 
       await prisma.photoIntakeBatch.update({ where: { id: b.id }, data: { photosJson: JSON.stringify(entries) } });
     }
     // The gallery rows pick up the links now (they last 6 hours; views refresh them for free).
-    for (const e of todo) {
-      if (!e.url) continue;
-      await prisma.photoAsset.updateMany({ where: { sourceKind: "AUTOHDR", sourceRef: `${b.photoshootId}/${e.image_uuid}` }, data: { sourceUrl: e.url } });
+    const rows = job ? await prisma.photoAsset.findMany({ where: { jobId: job.id, sourceKind: "AUTOHDR" }, select: { id: true, sourceRef: true } }) : [];
+    const urlOf = new Map(todo.filter((e) => e.url).map((e) => [`${b.photoshootId}/${e.image_uuid}`, e.url!]));
+    for (const r of rows) {
+      const url = r.sourceRef ? urlOf.get(r.sourceRef) : undefined;
+      if (url) await prisma.photoAsset.update({ where: { id: r.id }, data: { sourceUrl: url } });
     }
     if (job) await logJobEvent(job.id, "display", `${todo.length} photo${todo.length === 1 ? "" : "s"} downloaded from AutoHDR to show in the hub${credits ? "" : " (already paid for)"}`);
   }

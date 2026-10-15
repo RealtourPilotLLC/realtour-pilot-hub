@@ -20,22 +20,22 @@ export function AryeoWebConnectForm() {
         </li>
       </ol>
       {!open ? (
-        <button onClick={() => setOpen(true)} className="w-full rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2">
+        <button onClick={() => setOpen(true)} className="min-h-11 w-full rounded-lg border border-border-strong px-3 text-sm font-medium hover:bg-surface-2">
           Add the hub&rsquo;s Aryeo login
         </button>
       ) : (
         <form action={action} className="space-y-2 rounded-xl border bg-surface-2 p-3">
           <label className="block text-xs font-medium text-foreground/80" htmlFor="aryeo-web-email">Email</label>
-          <input id="aryeo-web-email" name="email" type="email" autoComplete="off" spellCheck={false} className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
+          <input id="aryeo-web-email" name="email" type="email" autoComplete="off" spellCheck={false} className="min-h-11 w-full rounded-lg border border-border-strong bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
           <label className="block text-xs font-medium text-foreground/80" htmlFor="aryeo-web-password">Password</label>
-          <input id="aryeo-web-password" name="password" type="password" autoComplete="new-password" spellCheck={false} className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
-          <p className="text-[11px] text-muted">Checked by signing in and opening one listing page, which changes nothing. A login Aryeo refuses is not saved. The password is encrypted before it is stored and is never shown again.</p>
+          <input id="aryeo-web-password" name="password" type="password" autoComplete="new-password" spellCheck={false} className="min-h-11 w-full rounded-lg border border-border-strong bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
+          <p className="text-xs text-muted">Checked by signing in and opening one listing page, which changes nothing. A login Aryeo refuses is not saved. The password is encrypted before it is stored and is never shown again.</p>
           <div className="flex gap-2">
-            <button type="submit" disabled={pending} className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
+            <button type="submit" disabled={pending} className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
               {pending && <Loader2 className="size-4 animate-spin" />}
               Test &amp; save
             </button>
-            <button type="button" onClick={() => setOpen(false)} className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface">
+            <button type="button" onClick={() => setOpen(false)} className="min-h-11 rounded-lg border border-border-strong px-3 text-sm font-medium hover:bg-surface">
               Cancel
             </button>
           </div>
@@ -52,7 +52,7 @@ export function AryeoWebConnectedControls() {
   return (
     <div className="mt-2 space-y-1.5">
       <div className="flex flex-wrap gap-2">
-        <button disabled={busy} onClick={() => start(async () => setMsg(await retestAryeoWebLogin()))} className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-60">
+        <button disabled={busy} onClick={() => start(async () => setMsg(await retestAryeoWebLogin()))} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-sm font-medium hover:bg-surface-2 disabled:opacity-60">
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Test the login
         </button>
         <button
@@ -61,7 +61,7 @@ export function AryeoWebConnectedControls() {
             if (!confirm("Remove the hub's Aryeo login? The hub stops uploading and delivering; Kyle does it by hand.")) return;
             start(async () => setMsg(await disconnectAryeoWebLogin()));
           }}
-          className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-surface-2 disabled:opacity-60"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-3 text-sm font-medium text-danger hover:bg-surface-2 disabled:opacity-60"
         >
           <PowerOff className="size-3.5" /> Disconnect
         </button>

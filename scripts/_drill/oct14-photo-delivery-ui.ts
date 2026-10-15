@@ -356,6 +356,16 @@ async function main() {
     const badCap = await actions.saveSettingsAction({ adminCreditCap: -5 });
     c.ok("an out-of-range value is refused and nothing changes", !badCap.ok && (await photoDeliverySettings()).adminCreditCap === 30, badCap.message);
     await actions.saveSettingsAction({ fixRunnerEnabled: false });
+    // Oct 15 2026 (settings audit): the four dead switches are gone. A stored value that still has them reads fine,
+    // and the "daily limit on automatic fixes" field saves the cap the fix policy really reads.
+    const { getSetting, putSetting } = await import("@/lib/settings");
+    const storedNow = await getSetting<Record<string, unknown>>("photo_delivery:settings", {});
+    await putSetting("photo_delivery:settings", { ...storedNow, autoFixZeroCredit: true, aryeoTags: true, p3AllPhotos: true, dailyAutoCreditCap: 0 }, "drill");
+    const legacy = await photoDeliverySettings();
+    c.ok("a stored value with the retired keys still reads, without them", legacy.adminCreditCap === 30 && !("aryeoTags" in legacy) && !("dailyAutoCreditCap" in legacy) && legacy.autoFixDailyMaxCredits === 100 && legacy.paidQcAuto === false);
+    const daily = await actions.saveSettingsAction({ autoFixDailyMaxCredits: 40 });
+    c.ok("the daily limit saves to autoFixDailyMaxCredits, and saving drops the retired keys", daily.ok && (await photoDeliverySettings()).autoFixDailyMaxCredits === 40 && !("aryeoTags" in (await getSetting<Record<string, unknown>>("photo_delivery:settings", {}))), daily.message);
+    await actions.saveSettingsAction({ autoFixDailyMaxCredits: 100 });
     c.ok("the rule picker lists every registry rule", options.length === RULES.length && RULES.length > 400 && options.every((o) => o.id && o.label && o.section), `${options.length} of ${RULES.length}`);
 
     // =======================================================================
@@ -385,11 +395,11 @@ async function main() {
     c.ok("the settings page is owner-only", !!settingsPage && /isOwner|role !== "OWNER"/.test(fs.readFileSync(settingsPage, "utf8")));
 
     const read = (rel: string) => fs.readFileSync(path.join(REPO, rel), "utf8");
-    c.ok("settings: the fix runner switch is labelled and explained", /Run approved AutoHDR fixes/.test(read("src/components/photoDelivery/SettingsForm.tsx")) && /nothing is sent to AutoHDR/.test(read("src/components/photoDelivery/SettingsForm.tsx")));
+    c.ok("settings: the fixes choice is labelled and explained, and writes both stored switches", /Only when someone approves/.test(read("src/components/photoDelivery/SettingsForm.tsx")) && /not even one approved in the Fix Cart/.test(read("src/components/photoDelivery/SettingsForm.tsx")) && /fixRunnerEnabled: v\.fixes !== "off"/.test(read("src/components/photoDelivery/SettingsForm.tsx")) && /autoFix: v\.fixes === "auto"/.test(read("src/components/photoDelivery/SettingsForm.tsx")));
     const deliver = read("src/components/photoDelivery/DeliverPanel.tsx");
     c.ok("deliver panel: the replacements list, hidden when empty, with a download per photo", /Replace these on the Aryeo listing/.test(deliver) && /replacements\.length > 0 &&/.test(deliver) && /href=\{r\.downloadUrl\}/.test(deliver));
     const cartSrc = read("src/components/photoDelivery/FixCartPanel.tsx");
-    c.ok("fix cart: prices come from the cart (line credits, the planner's estimate), never typed in", /l\.credits/.test(cartSrc) && /cart\.estimatedCredits/.test(cartSrc) && !/credit_cost|\b(autoremove|reedit|declutter)\b[^\n]*\b[0-9]+ ?cr/i.test(cartSrc));
+    c.ok("fix cart: prices come from the cart (line credits, the balance), never typed in", /l\.credits/.test(cartSrc) && /cart\.balance/.test(cartSrc) && !/credit_cost|\b(autoremove|reedit|declutter)\b[^\n]*\b[0-9]+ ?(cr|credits?)\b/i.test(cartSrc));
     const clientFiles = [...filesUnder("src/components/photoDelivery")].filter((f) => /^\s*["']use client["']/.test(fs.readFileSync(f, "utf8")));
     const leaky = clientFiles.filter((f) => /from "@\/lib\/(prisma|photoDelivery\/(registry|qc|jobState|credits|fixes|delivery|settings))/.test(fs.readFileSync(f, "utf8"))).map((f) => path.relative(REPO, f));
     c.ok(`no client component imports a server module or the rules JSON (${clientFiles.length} client files)`, clientFiles.length >= 10 && leaky.length === 0, leaky.join(", "));

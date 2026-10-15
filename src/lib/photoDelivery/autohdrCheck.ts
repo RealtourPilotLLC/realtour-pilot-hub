@@ -9,7 +9,8 @@ import { logJobEvent, setStage } from "./jobState";
 import { ruleById, RULES_REGISTRY_VERSION, type RoomType } from "./registry";
 import { jobVerdict, photoVerdicts, qcStageFor } from "./qc/verdict";
 import { disabledIn, houseOverrides } from "./houseRules";
-import { fixClass, instructionFor } from "./fixPolicy";
+import { fixClass, instructionFor, refreshVerdict, shootIdOf as shootOf } from "./fixPolicy";
+import { overridesFor } from "./decisions";
 
 // ---------------------------------------------------------------------------
 // THE FREE PHOTO CHECK (Oct 14 2026).
@@ -30,7 +31,14 @@ import { fixClass, instructionFor } from "./fixPolicy";
 //
 // It needs the photo's AutoHDR id: the hub-sent shoots have it from the start
 // (intake.ts), and the link step maps a hand-made shoot's photos (by name, or
-// "(N of M)" position). A photo without one is skipped, and the run says so.
+// "(N of M)" position). A photo it could not look at (no id, or no answer after
+// three tries) is never a pass: it becomes an issue for a person.
+//
+// A photo it looked at counts as inspected at that version (inspectedHash),
+// like the paid QC's own inspection, so the delivery checklist can pass on the
+// free check alone. When the gallery changes after the check (photos added in
+// a later batch, or replaced), it runs again on the new and changed photos
+// only; the others keep their findings.
 // ---------------------------------------------------------------------------
 
 const CHECK_RULES = [
@@ -139,26 +147,19 @@ export function parseCheckAnswer(text: string, off: Set<string> = new Set()): { 
   return { room: typeof j.room === "string" ? j.room.slice(0, 60) : null, light: pick(j.light, ["day", "twilight", "night"]), furnished: pick(j.furnished, ["empty", "sparse", "furnished"]), issues };
 }
 
-type Progress = { done: Record<string, number>; errors: Record<string, number>; skipped: string[]; rooms: Record<string, string>; light?: Record<string, string>; furnished?: Record<string, string> };
+/** kept: photos already inspected at their current version when the run began (a re-check leaves them alone). */
+type Progress = { done: Record<string, number>; errors: Record<string, number>; skipped: string[]; rooms: Record<string, string>; light?: Record<string, string>; furnished?: Record<string, string>; kept?: string[] };
 const readProgress = (json: string | null | undefined): Progress => {
   try {
     const p = JSON.parse(json ?? "{}") as Partial<Progress>;
-    return { done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {} };
+    return { done: p.done ?? {}, errors: p.errors ?? {}, skipped: p.skipped ?? [], rooms: p.rooms ?? {}, light: p.light ?? {}, furnished: p.furnished ?? {}, kept: p.kept ?? [] };
   } catch {
-    return { done: {}, errors: {}, skipped: [], rooms: {} };
+    return { done: {}, errors: {}, skipped: [], rooms: {}, kept: [] };
   }
 };
 
-type Photo = { id: string; name: string; sourceKind: string; sourceRef: string | null; autohdrImageUuid: string | null; contentHash: string | null };
-
-/** Which AutoHDR shoot a photo lives in. */
-function shootOf(p: Photo, jobShoot: number | null): number | null {
-  if (p.sourceKind === "AUTOHDR" && p.sourceRef?.includes("/")) {
-    const n = Number(p.sourceRef.split("/")[0]);
-    return Number.isFinite(n) ? n : null;
-  }
-  return jobShoot;
-}
+type Photo = { id: string; name: string; sourceKind: string; sourceRef: string | null; autohdrImageUuid: string | null; contentHash: string | null; inspectedHash: string | null };
+const inspected = (p: Pick<Photo, "contentHash" | "inspectedHash">) => !!p.contentHash && p.inspectedHash === p.contentHash;
 
 let describeImpl: ((shootId: number, imageUuid: string, prompt: string) => Promise<string>) | null = null;
 /** Drills only. */
@@ -181,16 +182,34 @@ export async function labelRoom(photoId: string, room: string, light?: string | 
 
 export type CheckSummary = { skipped?: string; jobs: { jobId: string; checked: number; findings: number; finished: boolean; verdict?: string }[] };
 
-/** Jobs to check: a run under way, then landed galleries not yet checked. */
+/**
+ * Jobs to check: a run under way, landed galleries not yet checked, then
+ * (backend audit #10) checked galleries that changed since their last check
+ * and have a photo not inspected at its current version.
+ */
 async function jobsToCheck(take: number): Promise<string[]> {
-  const running = await prisma.photoQcRun.findMany({ where: { trigger: "AUTOHDR_CHECK", status: "RUNNING" }, orderBy: { startedAt: "asc" }, select: { jobId: true }, take });
-  const landed = await prisma.photoJob.findMany({
-    where: { stage: "EDITED", photos: { some: { status: "ACTIVE", autohdrImageUuid: { not: null } } } },
-    orderBy: { stageChangedAt: "asc" },
-    select: { id: true, finalsChangedAt: true, qcRuns: { where: { trigger: "AUTOHDR_CHECK" }, orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } },
-    take: take * 3,
-  });
-  const fresh = landed.filter((j) => !j.qcRuns[0] || (j.finalsChangedAt && j.finalsChangedAt > j.qcRuns[0].startedAt)).map((j) => j.id);
+  const linked = { some: { status: "ACTIVE", autohdrImageUuid: { not: null } } };
+  const [running, landed, changed] = await Promise.all([
+    prisma.photoQcRun.findMany({ where: { trigger: "AUTOHDR_CHECK", status: "RUNNING" }, orderBy: { startedAt: "asc" }, select: { jobId: true }, take }),
+    prisma.photoJob.findMany({
+      where: { stage: "EDITED", photos: linked },
+      orderBy: { stageChangedAt: "asc" },
+      select: { id: true, finalsChangedAt: true, qcRuns: { where: { trigger: "AUTOHDR_CHECK" }, orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } } },
+      take: take * 3,
+    }),
+    prisma.photoJob.findMany({
+      where: { stage: { in: ["QC_REVIEW", "READY"] }, finalsChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) }, qcRuns: { some: { trigger: "AUTOHDR_CHECK", status: "DONE" } }, photos: linked },
+      orderBy: { finalsChangedAt: "desc" },
+      select: {
+        id: true, finalsChangedAt: true,
+        qcRuns: { where: { trigger: "AUTOHDR_CHECK" }, orderBy: { startedAt: "desc" }, take: 1, select: { startedAt: true } },
+        photos: { where: { status: "ACTIVE", autohdrImageUuid: { not: null } }, select: { contentHash: true, inspectedHash: true } },
+      },
+      take: 20,
+    }),
+  ]);
+  const since = (j: { finalsChangedAt: Date | null; qcRuns: { startedAt: Date }[] }) => !j.qcRuns[0] || (!!j.finalsChangedAt && j.finalsChangedAt > j.qcRuns[0].startedAt);
+  const fresh = [...landed.filter(since), ...changed.filter((j) => since(j) && j.photos.some((p) => !inspected(p)))].map((j) => j.id);
   return [...new Set([...running.map((r) => r.jobId), ...fresh])].slice(0, take);
 }
 
@@ -215,19 +234,26 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
     const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, projectId: true, autohdrPhotoshootId: true, finalsChangedAt: true } });
     if (!job) return { jobId, checked: 0, findings: 0, finished: false };
     const settings = await photoDeliverySettings();
+    const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, contentHash: true, inspectedHash: true } });
     let run = await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING" }, orderBy: { startedAt: "desc" } });
     if (!run) {
+      // Photos already inspected at their current version are left as they
+      // are, with what the last check saw in them (rooms, light: the add-ons read it).
+      const last = readProgress((await prisma.photoQcRun.findFirst({ where: { jobId, trigger: "AUTOHDR_CHECK", status: "DONE" }, orderBy: { startedAt: "desc" }, select: { checksJson: true } }))?.checksJson);
+      const unchanged = photos.filter(inspected).map((p) => p.id);
+      const carry = (m: Record<string, string> | undefined) => Object.fromEntries(unchanged.filter((id) => m?.[id]).map((id) => [id, m![id]]));
       run = await prisma.photoQcRun.create({
-        data: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING", shadow: settings.qcShadow, rulesVersion: RULES_REGISTRY_VERSION, promptVersionsJson: JSON.stringify({ autohdrCheck: CHECK_PROMPT_VERSION }), modelsJson: JSON.stringify({ describe: "AutoHDR describe (free)" }), checksJson: JSON.stringify({ done: {}, errors: {}, skipped: [], rooms: {} }) },
+        data: { jobId, trigger: "AUTOHDR_CHECK", status: "RUNNING", shadow: settings.qcShadow, rulesVersion: RULES_REGISTRY_VERSION, promptVersionsJson: JSON.stringify({ autohdrCheck: CHECK_PROMPT_VERSION }), modelsJson: JSON.stringify({ describe: "AutoHDR describe (free)" }), checksJson: JSON.stringify({ done: {}, errors: {}, skipped: [], kept: unchanged, rooms: carry(last.rooms), light: carry(last.light), furnished: carry(last.furnished) }) },
       });
-      await logJobEvent(jobId, "autohdr-check", "free photo check started (AutoHDR describe, no credits)", { runId: run.id });
+      const fresh = photos.length - unchanged.length;
+      await logJobEvent(jobId, "autohdr-check", `free photo check started (AutoHDR describe, no credits)${unchanged.length ? `: ${fresh} new or changed photo${fresh === 1 ? "" : "s"}` : ""}`, { runId: run.id });
     }
-    const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, contentHash: true } });
     const progress = readProgress(run.checksJson);
+    const kept = new Set(progress.kept);
     const house = await houseOverrides();
     const off = disabledIn(house);
     const prompt = checkPrompt(off);
-    const todo = photos.filter((p) => !(p.id in progress.done) && (progress.errors[p.id] ?? 0) < PER_PHOTO_TRIES && !progress.skipped.includes(p.id));
+    const todo = photos.filter((p) => !(p.id in progress.done) && !kept.has(p.id) && (progress.errors[p.id] ?? 0) < PER_PHOTO_TRIES && !progress.skipped.includes(p.id));
     for (const p of todo) if (!p.autohdrImageUuid || !shootOf(p, job.autohdrPhotoshootId)) progress.skipped.push(p.id);
     const work = todo.filter((p) => !progress.skipped.includes(p.id));
     let checked = 0, found = 0;
@@ -245,11 +271,13 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
         }),
       );
       const rows: Prisma.PhotoQcFindingCreateManyInput[] = [];
+      const looked: Photo[] = [];
       for (const a of answers) {
         if (a.error === "gone") { progress.skipped.push(a.p.id); continue; }
         const parsed = a.text ? parseCheckAnswer(a.text, off) : null;
         if (!parsed) { progress.errors[a.p.id] = (progress.errors[a.p.id] ?? 0) + 1; continue; }
         progress.done[a.p.id] = parsed.issues.length;
+        looked.push(a.p);
         if (parsed.room) {
           progress.rooms[a.p.id] = parsed.room;
           await labelRoom(a.p.id, parsed.room, parsed.light);
@@ -276,11 +304,13 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
       }
       await prisma.$transaction([
         prisma.photoQcFinding.createMany({ data: rows }),
+        // Inspected at the version it looked at (backend audit #11); a photo replaced meanwhile is not.
+        ...looked.map((p) => prisma.photoAsset.updateMany({ where: { id: p.id, contentHash: p.contentHash }, data: { inspectedHash: p.contentHash } })),
         prisma.photoQcRun.update({ where: { id: run.id }, data: { checksJson: JSON.stringify(progress) } }),
       ]);
       await prisma.photoJob.update({ where: { id: jobId }, data: { leaseUntil: new Date(Date.now() + 4 * 60_000) } });
     }
-    const remaining = photos.filter((p) => !(p.id in progress.done) && !progress.skipped.includes(p.id) && (progress.errors[p.id] ?? 0) < PER_PHOTO_TRIES);
+    const remaining = photos.filter((p) => !(p.id in progress.done) && !kept.has(p.id) && !progress.skipped.includes(p.id) && (progress.errors[p.id] ?? 0) < PER_PHOTO_TRIES);
     if (remaining.length) {
       await prisma.photoQcRun.update({ where: { id: run.id }, data: { checksJson: JSON.stringify(progress) } });
       return { jobId, checked, findings: found, finished: false };
@@ -293,51 +323,73 @@ async function checkJob(jobId: string, deadline: number): Promise<CheckSummary["
 
 async function finishCheck(jobId: string, runId: string, photos: Photo[], progress: Progress): Promise<{ finished: true; verdict: string }> {
   const settings = await photoDeliverySettings();
-  // Earlier free-check findings on this job are history once this run is done.
-  await prisma.photoQcFinding.updateMany({ where: { jobId, status: "OPEN", source: "AHDR", qcRunId: { not: runId } }, data: { status: "SUPERSEDED", statusReason: `re-checked in run ${runId}` } });
+  const kept = new Set(progress.kept);
+  // Backend audit #8: a photo the check could not look at is not a pass. It
+  // becomes a major issue for a person, so the job waits in Needs decision.
+  const unchecked = photos.filter((p) => !(p.id in progress.done) && !kept.has(p.id));
+  await prisma.$transaction([
+    // Earlier free-check findings on the photos looked at (or gone since) are history; a photo kept as it was keeps its own.
+    prisma.photoQcFinding.updateMany({ where: { jobId, status: "OPEN", source: "AHDR", qcRunId: { not: runId }, photoId: { notIn: [...kept] } }, data: { status: "SUPERSEDED", statusReason: `re-checked in run ${runId}` } }),
+    prisma.photoQcFinding.createMany({
+      data: unchecked.map((p) => ({
+        qcRunId: runId, jobId, photoId: p.id, ruleId: "OTHER_DEFECT", groupKey: "free-check-not-checked", pass: "P1_PHOTO", source: "AHDR", arbitration: "CONFIRMED",
+        specificIssue: "The free check could not look at this photo",
+        explanation: progress.skipped.includes(p.id) ? "AutoHDR does not have this photo, so its free check could not look at it. Look at the photo yourself before it goes out." : "AutoHDR did not answer about this photo after 3 tries. Look at the photo yourself before it goes out.",
+        severity: "MAJOR", confidence: 1, responsibility: "ADMIN", fixStrategy: "HUMAN_REVIEW", contentHash: p.contentHash, model: "autohdr-describe", rulesVersion: RULES_REGISTRY_VERSION, promptId: "autohdr-check", promptVersion: CHECK_PROMPT_VERSION,
+      })),
+    }),
+  ]);
   const findings = await prisma.photoQcFinding.findMany({
     where: { jobId, status: { not: "SUPERSEDED" } },
     select: { id: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true, specificIssue: true, source: true },
   });
-  const opts = { floor: settings.displayConfidenceFloor, overrides: await houseOverrides() };
+  const opts = { floor: settings.displayConfidenceFloor, overrides: await overridesFor(jobId) };
   const verdict = jobVerdict(findings, opts);
   const per = photoVerdicts(findings, photos.map((p) => p.id), opts);
   const shadow = settings.qcShadow;
   const target = qcStageFor(verdict, shadow);
   const checked = Object.keys(progress.done).length;
   await prisma.$transaction([
-    ...photos.filter((p) => p.id in progress.done).map((p) => prisma.photoAsset.update({ where: { id: p.id }, data: { verdict: per[p.id] ?? "PASS", lastQcAt: new Date() } })),
+    ...photos.filter((p) => p.id in progress.done || kept.has(p.id)).map((p) => prisma.photoAsset.update({ where: { id: p.id }, data: { verdict: per[p.id] ?? "PASS", ...(p.id in progress.done ? { lastQcAt: new Date() } : {}) } })),
     prisma.photoQcRun.update({
       where: { id: runId },
       data: {
         status: "DONE", verdict: verdict.verdict, finishedAt: new Date(), photoCount: checked, costUsd: 0, checksJson: JSON.stringify(progress),
-        summaryJson: JSON.stringify({ engine: "autohdr-describe", verdict: verdict.verdict, counts: verdict.counts, checked, skipped: progress.skipped.length, failed: Object.keys(progress.errors).filter((k) => !(k in progress.done)).length }),
+        summaryJson: JSON.stringify({ engine: "autohdr-describe", verdict: verdict.verdict, counts: verdict.counts, checked, kept: kept.size, unchecked: unchecked.length, skipped: progress.skipped.length, failed: unchecked.filter((p) => !progress.skipped.includes(p.id)).length }),
       },
     }),
   ]);
+  // A HOLD (outside shadow mode) is a CRITICAL hold: a paid QC may still be
+  // asked for it, and releasing it never lands back in EDITED.
   const moved = await setStage(jobId, ["EDITED"], target, "autohdr-check", {
     why: `free photo check ${shadow ? "(shadow) " : ""}verdict ${verdict.verdict}`,
-    data: { runId, counts: verdict.counts, checked, skipped: progress.skipped.length },
+    data: { runId, counts: verdict.counts, checked, unchecked: unchecked.length },
+    holdReason: "CRITICAL",
     extra: { qcVerdict: verdict.verdict, qcShadow: shadow, lastQcRunId: runId, lastError: null },
   });
   if (!moved) {
-    // Another engine moved the job first (the paid QC, a delivery): keep the
-    // findings, leave the stage alone, but still point at the latest verdict.
+    // A re-check of a job in review (backend audit #10), or another engine
+    // moved it first: point at the latest run and let the one review rule
+    // place it (decisions.reviewStage).
     await prisma.photoJob.update({ where: { id: jobId }, data: { lastQcRunId: runId, qcVerdict: verdict.verdict } }).catch(() => {});
+    await refreshVerdict(jobId, "autohdr-check").catch(() => {});
   }
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
   const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true } }) : null;
   const street = (project?.title ?? "A shoot").split(",")[0];
   const issues = verdict.counts.critical + verdict.counts.major + verdict.counts.minor;
-  const { bellOnly } = await import("./qc/run");
-  await bellOnly({
-    kind: "photo_free_check",
-    title: `${street}: photo check done, ${issues ? `${issues} thing${issues === 1 ? "" : "s"} to look at` : "nothing found"}`.slice(0, 120),
-    body: `${checked} photos checked by AutoHDR's free check${progress.skipped.length ? ` (${progress.skipped.length} could not be checked)` : ""}.`,
-    href: `/ops/photo-delivery/${jobId}`,
-    dedupeKey: `photo-free-check-${runId}`,
-    to: "both",
-  }).catch(() => 0);
-  await logJobEvent(jobId, "autohdr-check", `free photo check done: ${verdict.verdict}, ${checked} photos, ${issues} issue groups (${appBase()}/ops/photo-delivery/${jobId})`);
+  // A re-check that had nothing new to look at says nothing.
+  if (checked || unchecked.length) {
+    const { bellOnly } = await import("./qc/run");
+    await bellOnly({
+      kind: "photo_free_check",
+      title: `${street}: photo check done, ${issues ? `${issues} thing${issues === 1 ? "" : "s"} to look at` : "nothing found"}`.slice(0, 120),
+      body: `${checked} photo${checked === 1 ? "" : "s"} checked by AutoHDR's free check${unchecked.length ? ` (${unchecked.length} could not be checked)` : ""}.`,
+      href: `/ops/photo-delivery/${jobId}`,
+      dedupeKey: `photo-free-check-${runId}`,
+      to: "both",
+    }).catch(() => 0);
+  }
+  await logJobEvent(jobId, "autohdr-check", `free photo check done: ${verdict.verdict}, ${checked} photos checked${unchecked.length ? `, ${unchecked.length} could not be checked` : ""}${kept.size ? `, ${kept.size} unchanged` : ""}, ${issues} issue groups (${appBase()}/ops/photo-delivery/${jobId})`);
   return { finished: true, verdict: verdict.verdict };
 }

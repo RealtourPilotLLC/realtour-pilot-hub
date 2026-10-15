@@ -19,8 +19,9 @@ export const dynamic = "force-dynamic";
 // ---------------------------------------------------------------------------
 // /ops/photo-delivery/credits: THE AUTOHDR CREDITS PAGE (docs/photo-delivery/
 // 01 section 10.4). The live balance, 30 days of balance readings, spend by
-// kind over 14 and 30 days, the alert levels and where the alert state
-// stands, and the ledger (newest first). Owner and admin; dollars and the
+// kind over 14 and 30 days (kinds that did not move are left out), the alert
+// levels (where the alert state stands is folded away), and the ledger
+// (newest first). Owner and admin; dollars and the
 // threshold form are the owner's only. The hub never buys credits: top-ups
 // happen in the AutoHDR web app.
 // ---------------------------------------------------------------------------
@@ -61,6 +62,8 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
       return null;
     }),
   ]);
+  // Only the kinds that moved in the last 30 days (the 30 days include the 14).
+  const spend = page ? page.spend.filter((r) => r.d14 !== 0 || r.d30 !== 0) : [];
   const href = (o: { checks?: boolean; limit?: number }) => {
     const q = new URLSearchParams();
     if (o.checks ?? showChecks) q.set("checks", "1");
@@ -92,7 +95,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
                 <dl className="grid min-w-0 flex-1 grid-cols-1 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
                   <div>
                     <dt className="text-muted">Runway</dt>
-                    <dd>{page.credit.runwayDays != null ? `About ${page.credit.runwayDays} day${page.credit.runwayDays === 1 ? "" : "s"} at ${page.credit.perDay} a day (14-day average)` : "No recent spend to project from"}</dd>
+                    <dd>{page.credit.runwayDays != null ? `${page.credit.runwayDays < 1 ? "Under a day" : `About ${page.credit.runwayDays} day${page.credit.runwayDays === 1 ? "" : "s"}`} at ${page.credit.perDay} a day (14-day average)` : "No recent spend to project from"}</dd>
                   </div>
                   <div>
                     <dt className="text-muted">Committed</dt>
@@ -136,63 +139,74 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
             </Section>
 
             <Section icon={PieChart} title="Spend by kind" flush>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[30rem] text-sm">
-                  <caption className="sr-only">Credits spent and added by kind, last 14 and 30 days</caption>
-                  <thead className="text-left text-[12px] uppercase tracking-wide text-muted">
-                    <tr>
-                      <th scope="col" className="px-5 py-2 font-medium">Kind</th>
-                      <th scope="col" className="px-5 py-2 text-right font-medium">Last 14 days</th>
-                      <th scope="col" className="px-5 py-2 text-right font-medium">Last 30 days</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {page.spend.map((r) => (
-                      <tr key={r.key}>
-                        <th scope="row" className="px-5 py-2 text-left font-normal">{r.label}</th>
-                        {[r.d14, r.d30].map((n, i) => (
-                          <td key={i} className={cn("px-5 py-2 text-right tabular-nums", n === 0 && "text-muted")}>
-                            {n === 0 ? "None" : n < 0 ? `${(-n).toLocaleString("en-US")} spent` : `${n.toLocaleString("en-US")} added`}
-                            {page.credit.usdPerCredit != null && n !== 0 ? <span className="block text-[12px] text-muted">{usd(Math.abs(n) * page.credit.usdPerCredit)}</span> : null}
-                          </td>
-                        ))}
+              {spend.length === 0 ? (
+                <p className="px-5 py-4 text-sm text-muted">Nothing spent or added in the last 30 days.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[30rem] text-sm">
+                    <caption className="sr-only">Credits spent and added by kind, last 14 and 30 days</caption>
+                    <thead className="text-left text-[12px] uppercase tracking-wide text-muted">
+                      <tr>
+                        <th scope="col" className="px-5 py-2 font-medium">Kind</th>
+                        <th scope="col" className="px-5 py-2 text-right font-medium">Last 14 days</th>
+                        <th scope="col" className="px-5 py-2 text-right font-medium">Last 30 days</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {spend.map((r) => (
+                        <tr key={r.key}>
+                          <th scope="row" className="px-5 py-2 text-left font-normal">{r.label}</th>
+                          {[r.d14, r.d30].map((n, i) => (
+                            <td key={i} className={cn("px-5 py-2 text-right tabular-nums", n === 0 && "text-muted")}>
+                              {n === 0 ? "None" : n < 0 ? `${(-n).toLocaleString("en-US")} spent` : `${n.toLocaleString("en-US")} added`}
+                              {page.credit.usdPerCredit != null && n !== 0 ? <span className="block text-[12px] text-muted">{usd(Math.abs(n) * page.credit.usdPerCredit)}</span> : null}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
               <p className="px-5 pb-3 pt-1 text-[12px] text-muted">&ldquo;Used outside the pipeline&rdquo; is the difference between two balance readings that the hub&rsquo;s own spends don&rsquo;t explain: AutoHDR&rsquo;s Dropbox watcher editing uploads, the web app, or Aryeo&rsquo;s integration.</p>
             </Section>
 
             <Section icon={BellRing} title="Alerts">
               <div className="grid gap-4 lg:grid-cols-2">
-                <dl className="space-y-1.5 text-sm">
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-muted">Warning below</dt>
-                    <dd className="tabular-nums">{page.credit.warn}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-muted">Critical below</dt>
-                    <dd className="tabular-nums">{page.credit.critical}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-muted">Re-arms after a refill of</dt>
-                    <dd className="tabular-nums">{page.credit.resetBuffer} above a level</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-muted">Warning alert</dt>
-                    <dd>{page.alert.below250Sent ? "Sent for this low spell" : "Armed"}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-muted">Critical alert</dt>
-                    <dd>{page.alert.below100Sent ? "Sent for this low spell" : "Armed"}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-muted">Last evaluated</dt>
-                    <dd>{page.alert.lastCheckedAt ? `${etDateTime(page.alert.lastCheckedAt)}${page.alert.lastBalance != null ? ` at ${page.alert.lastBalance}` : ""}` : "Never"}</dd>
-                  </div>
+                <div className="space-y-1.5 text-sm">
+                  <dl className="space-y-1.5">
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted">Warning below</dt>
+                      <dd className="tabular-nums">{page.credit.warn}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted">Critical below</dt>
+                      <dd className="tabular-nums">{page.credit.critical}</dd>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-muted">Re-arms after a refill of</dt>
+                      <dd className="tabular-nums">{page.credit.resetBuffer} above a level</dd>
+                    </div>
+                  </dl>
                   <p className="pt-1 text-[12px] text-muted">Alerts go to Jordan and Kyle by Slack or text and in the hub bell, once per low spell.</p>
-                </dl>
+                  <details>
+                    <summary className="flex min-h-11 cursor-pointer items-center text-[13px] font-medium text-muted hover:text-foreground">Where the alerts stand</summary>
+                    <dl className="space-y-1.5">
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-muted">Warning alert</dt>
+                        <dd>{page.alert.below250Sent ? "Sent for this low spell" : "Armed"}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-muted">Critical alert</dt>
+                        <dd>{page.alert.below100Sent ? "Sent for this low spell" : "Armed"}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-muted">Last evaluated</dt>
+                        <dd>{page.alert.lastCheckedAt ? `${etDateTime(page.alert.lastCheckedAt)}${page.alert.lastBalance != null ? ` at ${page.alert.lastBalance}` : ""}` : "Never"}</dd>
+                      </div>
+                    </dl>
+                  </details>
+                </div>
                 {viewer.isOwner ? (
                   <ThresholdsForm initial={{ warn: page.credit.warn, critical: page.credit.critical, resetBuffer: page.credit.resetBuffer, usdPerCredit: page.credit.usdPerCredit ?? 0.5 }} />
                 ) : (

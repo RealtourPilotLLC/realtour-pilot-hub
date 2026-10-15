@@ -9,20 +9,15 @@ import { getSetting, putSetting } from "@/lib/settings";
 //
 //   enabled        the job sync + queue (reads Dropbox, writes hub rows only)
 //   qcEnabled      run the QC engine on new finals (Claude + sharp; costs
-//                  Anthropic API money, about $2 a gallery, never AutoHDR credits)
+//                  Anthropic API money, never AutoHDR credits)
 //   qcShadow       QC results are advisory: nothing is held or blocked by them
 //                  (first two weeks, plan §7.7). Kyle keeps his manual QC.
+//                  The hub's own Aryeo delivery ignores it (aryeoPush.ts).
 //   maxBuildPhase  which rules run (1 = the checklist's priority detections)
-//   autoFixZeroCredit  plan §8.3 optional: auto-run 0-credit fixes on
-//                  non-CRITICAL findings at confidence >= 0.9. Default OFF.
 //   adminCreditCap Kyle may approve fix batches up to this many credits.
-//   fixRunnerEnabled  AutoHDR fixes actually run. OFF until Jordan approves the
-//                  first live paid test (Oct 14: "require explicit approval
-//                  before any paid API test"); until then a batch cannot be
-//                  approved and nothing is sent to AutoHDR.
-//   aryeoTags      mirror pipeline status into Aryeo order tags/notes. OFF:
-//                  Aryeo writes wait for Jordan's go-ahead.
-//   p3AllPhotos    run the original-vs-edited pass on every photo.
+//   fixRunnerEnabled  AutoHDR fixes actually run. While off a batch cannot be
+//                  approved and no fix is sent to AutoHDR. The settings page
+//                  shows it with autoFix as one choice: off / approved / auto.
 //   autoSubmit     (Oct 14 2026) the hub sends each finished upload, and files
 //                  added later, to AutoHDR with the account's default look.
 //                  Free until download (house models). Only shoots on or after
@@ -46,8 +41,9 @@ import { getSetting, putSetting } from "@/lib/settings";
 //                    upload   on a press of "Send to Aryeo"; Kyle delivers in Aryeo
 //                    approve  by itself when the photos are ready; Kyle presses
 //                             "Deliver in Aryeo" in the hub
-//                    auto     uploads and delivers by itself (the delivery
-//                             checklist still has to pass)
+//                    auto     uploads by itself, and delivers by itself only
+//                             when the delivery checklist really passes (open
+//                             issues stop it, shadow mode or not)
 // ---------------------------------------------------------------------------
 
 export type PhotoDeliverySettings = {
@@ -55,12 +51,8 @@ export type PhotoDeliverySettings = {
   qcEnabled: boolean;
   qcShadow: boolean;
   maxBuildPhase: 1 | 2 | 3;
-  autoFixZeroCredit: boolean;
   fixRunnerEnabled: boolean;
   adminCreditCap: number;
-  dailyAutoCreditCap: number;
-  aryeoTags: boolean;
-  p3AllPhotos: boolean;
   displayConfidenceFloor: number;
   maskPaddingPct: number;
   maskPaddingMinPx: number;
@@ -96,12 +88,8 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   qcEnabled: false,
   qcShadow: true,
   maxBuildPhase: 1,
-  autoFixZeroCredit: false,
   fixRunnerEnabled: false,
   adminCreditCap: 25,
-  dailyAutoCreditCap: 0,
-  aryeoTags: false,
-  p3AllPhotos: false,
   displayConfidenceFloor: 0.5,
   maskPaddingPct: 10,
   maskPaddingMinPx: 16,
@@ -111,7 +99,7 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   autoSubmit: false,
   autoSubmitFrom: "2026-10-13T04:00:00.000Z",
   freeCheck: false,
-  paidQcAuto: true,
+  paidQcAuto: false,
   autoFix: false,
   fixTargetUsd: 5,
   fixMaxUsd: 10,
@@ -135,12 +123,8 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     qcEnabled: bool(raw.qcEnabled, d.qcEnabled),
     qcShadow: bool(raw.qcShadow, d.qcShadow),
     maxBuildPhase: phase,
-    autoFixZeroCredit: bool(raw.autoFixZeroCredit, d.autoFixZeroCredit),
     fixRunnerEnabled: bool(raw.fixRunnerEnabled, d.fixRunnerEnabled),
     adminCreditCap: num(raw.adminCreditCap, d.adminCreditCap, 0, 10_000),
-    dailyAutoCreditCap: num(raw.dailyAutoCreditCap, d.dailyAutoCreditCap, 0, 10_000),
-    aryeoTags: bool(raw.aryeoTags, d.aryeoTags),
-    p3AllPhotos: bool(raw.p3AllPhotos, d.p3AllPhotos),
     displayConfidenceFloor: num(raw.displayConfidenceFloor, d.displayConfidenceFloor, 0, 1),
     maskPaddingPct: num(raw.maskPaddingPct, d.maskPaddingPct, 0, 100),
     maskPaddingMinPx: num(raw.maskPaddingMinPx, d.maskPaddingMinPx, 0, 500),

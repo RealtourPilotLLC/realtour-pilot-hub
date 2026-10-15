@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { logJobEvent, releaseHold, setStage, JOB_STAGES, type JobStage } from "./jobState";
 import { photoDeliverySettings } from "./settings";
 import { ruleById, SEVERITIES, type RuleOverride, type Severity } from "./registry";
+import { houseOverrides, mergeOverrides } from "./houseRules";
+import { jobVerdict, type JobVerdict } from "./qc/verdict";
 
 // ---------------------------------------------------------------------------
 // THE SIMPLE DECISION WRITES behind the Photo Delivery page (docs/photo-
@@ -19,10 +21,10 @@ import { ruleById, SEVERITIES, type RuleOverride, type Severity } from "./regist
 //   · logs one PhotoJobEvent: plan 0.3, "every automated decision is logged
 //     (who or what, when, why, inputs) in the job activity log".
 //
-// The stage rule (plan 3.3): a job in QC_REVIEW moves to READY the moment no
-// MAJOR or CRITICAL finding at or above the display floor is left unresolved;
-// reopening one sends a READY job back to QC_REVIEW. Findings below the floor
-// sit in the "Low confidence" drawer and never block (plan 7.5).
+// The stage rule (plan 3.3, reviewStage below): a job in QC_REVIEW moves to
+// READY the moment no open MAJOR or CRITICAL finding at or above the display
+// floor is left; reopening one sends a READY job back to QC_REVIEW. Findings
+// below the floor sit in the "Low confidence" drawer and never block (plan 7.5).
 // ---------------------------------------------------------------------------
 
 export type DecisionStatus = "IGNORED" | "FALSE_POSITIVE" | "OVERRIDDEN" | "SENT_TO_EDITOR" | "RESHOOT_REQUESTED" | "OPEN";
@@ -34,8 +36,6 @@ export type WriteResult = { ok: true; message: string; changed: number; stage: s
 const HUMAN_DECIDED: readonly string[] = ["IGNORED", "FALSE_POSITIVE", "OVERRIDDEN", "SENT_TO_EDITOR", "RESHOOT_REQUESTED"];
 /** Plan 8.3: ignoring (or overriding, or calling a false positive) a MAJOR or CRITICAL finding needs a reason. */
 const REASON_REQUIRED: readonly string[] = ["IGNORED", "OVERRIDDEN", "FALSE_POSITIVE"];
-/** Unresolved for the stage rule and the delivery gate (delivery.ts reads the same set). */
-const UNRESOLVED = ["OPEN", "APPROVED_FIX", "FIXING"];
 /** Marks the findings an exclusion resolved, so re-including the photo can reopen exactly those. */
 export const EXCLUDED_REASON_PREFIX = "Photo excluded from delivery";
 
@@ -54,41 +54,63 @@ const VERB: Record<DecisionStatus, string> = {
 const clean = (s: unknown, max: number) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().slice(0, max) : "");
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-/** MAJOR+ findings at or above the floor that are still unresolved (the gate's own test). */
-async function blockingCount(jobId: string, floor: number): Promise<number> {
-  return prisma.photoQcFinding.count({
-    where: {
-      jobId,
-      status: { in: UNRESOLVED },
-      confidence: { gte: floor },
-      OR: [{ severity: "MAJOR" }, { severity: "CRITICAL", arbitration: { not: "OVERTURNED" } }],
-    },
-  });
+/** The house's switched-off checks, then the client's own overrides: what the job page and the paid QC group findings by. */
+export async function overridesFor(jobId: string): Promise<RuleOverride[]> {
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
+  const project = job ? await prisma.project.findUnique({ where: { id: job.projectId }, select: { clientId: true } }) : null;
+  const [house, profile] = await Promise.all([
+    houseOverrides(),
+    project?.clientId ? prisma.clientQcProfile.findUnique({ where: { clientId: project.clientId }, select: { ruleOverridesJson: true } }) : null,
+  ]);
+  let own: RuleOverride[] = [];
+  try {
+    own = JSON.parse(profile?.ruleOverridesJson ?? "[]") as RuleOverride[];
+  } catch {
+    own = [];
+  }
+  return mergeOverrides(house, Array.isArray(own) ? own.filter((o) => o && typeof o.ruleId === "string") : []);
+}
+
+export type ReviewStage = { stage: "QC_REVIEW" | "READY" | "stay"; verdict: JobVerdict; open: number };
+
+/**
+ * THE rule for QC_REVIEW versus READY (backend audit #15: there were three).
+ * Used after every decision, when a fix batch finishes, and whenever a
+ * verdict is refreshed. "stay" while a fix on the job is still waiting or
+ * running; otherwise QC_REVIEW while an OPEN major or critical issue at or
+ * above the display floor is left (grouped the way the job page groups them,
+ * house and client overrides applied), else READY.
+ */
+export async function reviewStage(jobId: string): Promise<ReviewStage> {
+  const [running, settings, overrides, open] = await Promise.all([
+    prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } }),
+    photoDeliverySettings(),
+    overridesFor(jobId),
+    prisma.photoQcFinding.findMany({
+      where: { jobId, status: "OPEN" },
+      select: { id: true, ruleId: true, groupKey: true, photoId: true, photoIdsJson: true, severity: true, confidence: true, status: true, arbitration: true, privacySensitive: true, specificIssue: true, source: true },
+    }),
+  ]);
+  const v = jobVerdict(open, { floor: settings.displayConfidenceFloor, overrides });
+  const n = v.counts.critical + v.counts.major;
+  return { stage: running ? "stay" : n ? "QC_REVIEW" : "READY", verdict: v.verdict, open: n };
 }
 
 /**
- * After any decision: QC_REVIEW → READY when nothing blocking is left, and
- * READY → QC_REVIEW when a blocking finding was reopened. Returns the stage
- * the job is in afterwards.
+ * After any decision the job follows the review rule: QC_REVIEW ⇄ READY, and
+ * out of FIXING once no fix is left to run. Returns the stage it is in after.
  */
-async function reconcileReviewStage(jobId: string, by: string, reopenedBlocking: boolean): Promise<string | null> {
-  const [job, settings] = await Promise.all([prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } }), photoDeliverySettings()]);
+async function reconcileReviewStage(jobId: string, by: string): Promise<string | null> {
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
   if (!job) return null;
-  if (job.stage === "QC_REVIEW") {
-    if ((await blockingCount(jobId, settings.displayConfidenceFloor)) === 0) {
-      if (await setStage(jobId, ["QC_REVIEW"], "READY", by, { why: "every major and critical issue is decided" })) return "READY";
-    }
-  } else if (job.stage === "READY" && reopenedBlocking) {
-    if ((await blockingCount(jobId, settings.displayConfidenceFloor)) > 0) {
-      if (await setStage(jobId, ["READY"], "QC_REVIEW", by, { why: "an issue was reopened" })) return "QC_REVIEW";
-    }
-  }
+  if (!["QC_REVIEW", "READY", "FIXING"].includes(job.stage)) return job.stage;
+  const r = await reviewStage(jobId);
+  if (r.stage === "stay" || r.stage === job.stage) return job.stage;
+  const why = r.stage === "READY" ? "every major and critical issue is decided" : job.stage === "FIXING" ? "no fixes left to run" : "a major issue is open again";
+  if (await setStage(jobId, [job.stage as JobStage], r.stage, by, { why, extra: { qcVerdict: r.verdict } })) return r.stage;
   const fresh = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
   return fresh?.stage ?? job.stage;
 }
-
-const isBlocking = (f: { severity: string; confidence: number; arbitration: string }, floor: number) =>
-  f.confidence >= floor && (f.severity === "MAJOR" || (f.severity === "CRITICAL" && f.arbitration !== "OVERTURNED"));
 
 // ---- findings -------------------------------------------------------------------------------
 
@@ -109,7 +131,7 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
 
   const found = await prisma.photoQcFinding.findMany({
     where: { id: { in: ids } },
-    select: { id: true, jobId: true, severity: true, status: true, confidence: true, arbitration: true },
+    select: { id: true, jobId: true, severity: true, status: true },
   });
   if (found.length !== ids.length) return { ok: false, message: "Some of those issues no longer exist. Reload the page." };
   const jobIds = new Set(found.map((f) => f.jobId));
@@ -139,14 +161,12 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
   });
   if (res.count === 0) return { ok: false, message: "Someone else decided these a moment ago. Reload the page." };
 
-  const settings = await photoDeliverySettings();
   await logJobEvent(jobId, by, `${plural(res.count, "issue")} ${VERB[status]}${reason ? `: ${reason}` : ""}`, {
     findingIds: decidable.map((f) => f.id),
     status,
     reason: reason || null,
   });
-  const reopenedBlocking = status === "OPEN" && decidable.some((f) => isBlocking(f, settings.displayConfidenceFloor));
-  const stage = await reconcileReviewStage(jobId, by, reopenedBlocking);
+  const stage = await reconcileReviewStage(jobId, by);
   const skipped = ids.length - res.count;
   return {
     ok: true,
@@ -171,7 +191,7 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
 const fixes = (n: number) => `${n} fix${n === 1 ? "" : "es"}`;
 export async function skipAllFindings(jobId: string, by: string): Promise<WriteResult & { cancelled?: number }> {
   const who = clean(by, 120) || "staff";
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true } });
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true } });
   if (!job) return { ok: false, message: "That job no longer exists. Reload the page." };
   const now = new Date();
   // 1. Fixes still waiting their turn: called off, their findings back in hand.
@@ -210,8 +230,7 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
   await logJobEvent(jobId, who, `Skipped all findings: ${plural(res.count, "issue")} set aside${cancelled ? `, ${fixes(cancelled)} not yet sent to AutoHDR called off (nothing charged)` : ""}`, { skippedAll: true, findings: res.count, cancelled });
   // 3. The stage follows: out of FIXING when nothing is running, then Ready.
   const running = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
-  if (job.stage === "FIXING" && !running) await setStage(jobId, ["FIXING"], "QC_REVIEW", who, { why: "every finding was skipped" });
-  const stage = await reconcileReviewStage(jobId, who, false);
+  const stage = await reconcileReviewStage(jobId, who);
   return {
     ok: true,
     changed: res.count,
@@ -236,7 +255,6 @@ export async function setPhotoExcluded(photoId: string, excluded: boolean, reaso
   if (!photo) return { ok: false, message: "That photo no longer exists. Reload the page." };
   if (expectJobId && photo.jobId !== expectJobId) return { ok: false, message: "That photo belongs to a different job." };
   if (photo.status === "GONE") return { ok: false, message: "That photo is no longer in the gallery." };
-  const settings = await photoDeliverySettings();
   const now = new Date();
 
   if (excluded) {
@@ -250,7 +268,7 @@ export async function setPhotoExcluded(photoId: string, excluded: boolean, reaso
     // An excluded photo cannot lead the gallery.
     const unhero = await prisma.photoJob.updateMany({ where: { id: photo.jobId, heroPhotoId: photo.id }, data: { heroPhotoId: null } });
     await logJobEvent(photo.jobId, who, `photo excluded: ${photo.name}: ${why}`, { photoId: photo.id, resolvedFindings: resolved.count, heroCleared: unhero.count > 0 });
-    const stage = await reconcileReviewStage(photo.jobId, who, false);
+    const stage = await reconcileReviewStage(photo.jobId, who);
     return {
       ok: true,
       changed: 1,
@@ -264,13 +282,13 @@ export async function setPhotoExcluded(photoId: string, excluded: boolean, reaso
   if (res.count !== 1) return { ok: false, message: "That photo changed in the meantime. Reload the page." };
   const toReopen = await prisma.photoQcFinding.findMany({
     where: { jobId: photo.jobId, photoId: photo.id, status: "OVERRIDDEN", statusReason: { startsWith: EXCLUDED_REASON_PREFIX } },
-    select: { id: true, severity: true, confidence: true, arbitration: true },
+    select: { id: true },
   });
   if (toReopen.length) {
     await prisma.photoQcFinding.updateMany({ where: { id: { in: toReopen.map((f) => f.id) }, status: "OVERRIDDEN" }, data: { status: "OPEN", statusReason: null, decidedBy: null, decidedAt: null } });
   }
   await logJobEvent(photo.jobId, who, `photo included again: ${photo.name}`, { photoId: photo.id, reopenedFindings: toReopen.length });
-  const stage = await reconcileReviewStage(photo.jobId, who, toReopen.some((f) => isBlocking(f, settings.displayConfidenceFloor)));
+  const stage = await reconcileReviewStage(photo.jobId, who);
   return { ok: true, changed: 1, stage, message: `Back in the delivery.${toReopen.length ? ` ${plural(toReopen.length, "issue")} on it reopened.` : ""}` };
 }
 
@@ -347,6 +365,11 @@ export async function requestQcRerun(jobId: string, by: string): Promise<WriteRe
   if (job.stage === "EDITING" || job.stage === "EDIT_FAILED") return { ok: false, message: "The edited gallery has not landed yet, so there is nothing to check." };
   if (job.stage === "QC_RUNNING") return { ok: false, message: "QC is already running on this job." };
   if (job.stage === "DELIVERED") return { ok: false, message: "This job is delivered. Open a revision to check it again." };
+  // The free check marks the photos it looked at as inspected (the delivery
+  // checklist needs it); the paid QC still looks at every photo it has not
+  // inspected itself (its own inspections also carry classifiedHash).
+  const freeOnly = (await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE", inspectedHash: { not: null } }, select: { id: true, inspectedHash: true, classifiedHash: true } })).filter((p) => p.classifiedHash !== p.inspectedHash);
+  if (freeOnly.length) await prisma.photoAsset.updateMany({ where: { id: { in: freeOnly.map((p) => p.id) } }, data: { inspectedHash: null } });
   await prisma.photoJob.update({ where: { id: jobId }, data: { qcRequestedAt: new Date() } });
   await logJobEvent(jobId, who, "QC re-run requested");
   return { ok: true, changed: 1, stage: job.stage, message: "QC re-run requested. It starts on the next pass (within about 5 minutes)." };

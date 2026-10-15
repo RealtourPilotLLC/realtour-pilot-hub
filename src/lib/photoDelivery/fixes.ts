@@ -121,7 +121,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true, sourceKind: true } });
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
   const hubPhoto = new Set(photos.filter((p) => p.sourceKind === "AUTOHDR").map((p) => p.id));
-  const { fixClass, instructionFor, fixBudgetFor, AUTOHDR_FREE_FIX } = await import("./fixPolicy");
+  const { fixClass, fixBudgetFor, AUTOHDR_FREE_FIX } = await import("./fixPolicy");
   const { capabilityCatalog } = await import("./catalog");
   const catalog = await capabilityCatalog().catch(() => null);
   const offered = catalog ? new Set(catalog.map((c) => c.name)) : null;
@@ -156,7 +156,6 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
     const hub = !!f.photoId && hubPhoto.has(f.photoId);
     let strategy = resolveStrategy(f.fixStrategy as FixStrategy, (rule?.fixStrategies ?? []) as FixStrategy[], offered, !!f.bboxJson && !hub, canWrite);
     if (hub && strategy === "AUTOREMOVE_MASK") strategy = canWrite ? "REEDIT_PROMPT" : "HUMAN_REVIEW";
-    void instructionFor;
     const transform = STRATEGY_TRANSFORM[strategy] ?? null;
     let humanCall: CartLine["humanCall"] = HUMAN[strategy] ?? null;
     if (f.isPermanentFeature || rule?.permanentFeatureRisk) humanCall = "permanent-feature";
@@ -185,7 +184,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   const estimatedCredits = unknown ? null : mergedCredits(runnable.filter((l) => l.selectedByDefault));
   const budget = await fixBudgetFor(jobId).catch(() => null);
   const blockers: string[] = [];
-  if (!settings.fixRunnerEnabled) blockers.push("AutoHDR fixes are switched off until Jordan approves the first live test (Photo Delivery settings).");
+  if (!settings.fixRunnerEnabled) blockers.push("AutoHDR fixes are switched off (Photo Delivery settings, Fixes).");
   if (!credits?.connected) blockers.push("The AutoHDR API is not connected (Connections → AutoHDR).");
   else if (!job.autohdrPhotoshootId) blockers.push("This job's AutoHDR shoot has not been found yet, so fixes cannot run on it.");
   if (unknown && runnable.length) blockers.push("AutoHDR's price list could not be read, so the cost is unknown.");
@@ -217,6 +216,9 @@ export function mergedCredits(lines: { photoId: string | null; strategy: string;
   return total;
 }
 
+/** Thrown inside a transaction when another approval took a finding first: everything in it is undone. */
+export class ClaimLost extends Error {}
+
 export type ApproveResult = { ok: true; batchId: string; operations: number; estimatedCredits: number } | { ok: false; message: string };
 
 /**
@@ -240,7 +242,12 @@ export async function approveFixBatch(input: { jobId: string; findingIds: string
     return { ok: false, message: `This would pass the shoot's fix budget: ${cart.budget.spent + cart.budget.pending} of ${cart.budget.maxCredits} credits already used, ${left} left, and this batch is ${estimate}. Pick fewer fixes, or Jordan can approve it.` };
   }
   if (cart.balance != null && cart.balance < estimate) return { ok: false, message: `The AutoHDR balance (${cart.balance}) is below this batch's estimate (${estimate}). Top up first.` };
+  const findingIds = [...new Set(lines.flatMap((l) => l.findingIds))];
   const batch = await prisma.$transaction(async (tx) => {
+    // Claim first, and only what is still OPEN: two approvals at once never
+    // make two paid batches (the one that loses changes nothing).
+    const claimed = await tx.photoQcFinding.updateMany({ where: { id: { in: findingIds }, status: "OPEN" }, data: { status: "APPROVED_FIX", decidedBy: input.by, decidedAt: new Date() } });
+    if (claimed.count !== findingIds.length) throw new ClaimLost();
     const b = await tx.photoFixBatch.create({
       data: {
         jobId: input.jobId,
@@ -299,9 +306,12 @@ export async function approveFixBatch(input: { jobId: string; findingIds: string
         if (f && !f.reeditPrompt) await tx.photoQcFinding.update({ where: { id: fid }, data: { reeditPrompt: instructionFor(f.ruleId, f.locationText) } });
       }
     }
-    await tx.photoQcFinding.updateMany({ where: { id: { in: lines.flatMap((l) => l.findingIds) } }, data: { status: "APPROVED_FIX", decidedBy: input.by, decidedAt: new Date() } });
     return { id: b.id, count };
+  }).catch((e) => {
+    if (e instanceof ClaimLost) return null;
+    throw e;
   });
+  if (!batch) return { ok: false, message: "Someone else decided some of these issues a moment ago. Reload the page." };
   await setStage(input.jobId, ["QC_REVIEW", "READY", "ON_HOLD", "REVISION_REQUESTED"], "FIXING", input.by, { why: `fix batch approved (${batch.count} fixes, est. ${estimate} credits)` });
   await logJobEvent(input.jobId, input.by, "fix batch approved", { batchId: batch.id, estimate, mode: input.mode });
   return { ok: true, batchId: batch.id, operations: batch.count, estimatedCredits: estimate };

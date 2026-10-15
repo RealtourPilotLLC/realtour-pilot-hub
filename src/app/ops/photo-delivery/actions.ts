@@ -197,24 +197,6 @@ export async function deliverInAryeoAction(jobId: string): Promise<ActionResult>
   }
 }
 
-/** The push's progress for the panel (and a small step forward, like the Ready bar). */
-export async function aryeoPushProgressAction(jobId: string): Promise<{ ok: boolean; progress: import("@/lib/photoDelivery/aryeoPush").PushProgress | null }> {
-  try {
-    await requireAdmin();
-  } catch {
-    return { ok: false, progress: null };
-  }
-  if (!ID.test(String(jobId))) return { ok: false, progress: null };
-  try {
-    const { pushProgress, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
-    const p = await pushProgress(jobId);
-    if (!p?.active) return { ok: true, progress: p };
-    return { ok: true, progress: (await advancePush(jobId, { budgetMs: 5_000 })) ?? p };
-  } catch {
-    return { ok: false, progress: null };
-  }
-}
-
 export async function readyProgressAction(jobId: string): Promise<{ ok: boolean; progress: import("@/lib/photoDelivery/handoff").ReadyProgress | null }> {
   try {
     await requireAdmin();
@@ -590,14 +572,12 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
 
 type SettingsInput = Partial<Omit<PhotoDeliverySettings, "qcFrom">> & { qcFrom?: string | null };
 
-const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoFixZeroCredit", "aryeoTags", "p3AllPhotos", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos"] as const;
+const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos"] as const;
 const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label: string }> = {
   adminCreditCap: { min: 0, max: 10_000, int: true, label: "Kyle's approval limit" },
-  dailyAutoCreditCap: { min: 0, max: 10_000, int: true, label: "Daily automatic credit limit" },
+  autoFixDailyMaxCredits: { min: 0, max: 10_000, int: true, label: "Daily limit on automatic fixes" },
   displayConfidenceFloor: { min: 0, max: 1, int: false, label: "Confidence floor" },
-  maskPaddingPct: { min: 0, max: 100, int: false, label: "Mask padding (percent)" },
-  maskPaddingMinPx: { min: 0, max: 500, int: true, label: "Mask padding (pixels)" },
-  minLongEdgePx: { min: 300, max: 20_000, int: true, label: "Minimum long edge" },
+  minLongEdgePx: { min: 300, max: 20_000, int: true, label: "Smallest photo allowed" },
   monthlyQcBudgetUsd: { min: 0, max: 100_000, int: false, label: "Monthly QC budget" },
   fixTargetUsd: { min: 0, max: 1_000, int: false, label: "Fix target per shoot" },
   fixMaxUsd: { min: 0, max: 1_000, int: false, label: "Fix maximum per shoot" },
@@ -631,7 +611,7 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
     next.aryeoPush = input.aryeoPush;
   }
   if ("maxBuildPhase" in input) {
-    if (input.maxBuildPhase !== 1 && input.maxBuildPhase !== 2 && input.maxBuildPhase !== 3) return { ok: false, message: "The build phase must be 1, 2 or 3." };
+    if (input.maxBuildPhase !== 1 && input.maxBuildPhase !== 2 && input.maxBuildPhase !== 3) return { ok: false, message: "Which checks the paid QC runs must be 1, 2 or 3." };
     next.maxBuildPhase = input.maxBuildPhase;
   }
   if ("qcFrom" in input) {
@@ -639,7 +619,7 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
     else if (typeof input.qcFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.qcFrom) && !Number.isNaN(etAt(input.qcFrom, 0).getTime())) {
       // A calendar day in Eastern time: QC starts with galleries from midnight ET that day.
       next.qcFrom = etAt(input.qcFrom, 0).toISOString();
-    } else return { ok: false, message: "The QC start date must be a date (or blank)." };
+    } else return { ok: false, message: "Track shoots from must be a date (or blank)." };
   }
   try {
     const { by } = await actor();
@@ -654,7 +634,6 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
 
 export async function saveClientProfileAction(input: {
   clientId: string;
-  slaHours: number | null;
   notes: string;
   deliveryMessage: string;
   ruleOverrides: RuleOverride[];
@@ -670,7 +649,6 @@ export async function saveClientProfileAction(input: {
     const r = await saveClientQcProfile(
       input.clientId,
       {
-        slaHours: input.slaHours === null || input.slaHours === undefined ? null : Number(input.slaHours),
         notes: typeof input.notes === "string" ? input.notes : null,
         deliveryMessage: typeof input.deliveryMessage === "string" ? input.deliveryMessage : null,
         ruleOverrides: Array.isArray(input.ruleOverrides) ? input.ruleOverrides : [],

@@ -146,7 +146,12 @@ async function main() {
     c.ok("first step: a fresh folder of its own, nothing in the final folder yet", p1?.active === true && siblings().length === 1 && names().length === 0, JSON.stringify(p1));
     const midState = await handoff.readyFolderState(job.id, 6);
     c.ok("while copying, the panel's state says preparing, not ready", midState?.preparing === true && midState.ready === false && midState.total === 6, JSON.stringify(midState));
-    const p2 = await handoff.advanceReady(job.id, { budgetMs: 30_000 });
+    await handoff.advanceReady(job.id, { budgetMs: 1 }); // one slice: some photos copied, the run still going
+    const sliced = await handoff.readyProgress(job.id);
+    // Oct 15 2026: the cron used to drop a run once one photo in it was copied (each photo has a state too).
+    const cron1 = await handoff.stageReadyJobs({ budgetMs: 30_000 });
+    c.ok("with photos already copied, the cron still moves the run on (and starts no second one)", sliced?.active === true && sliced.done > 0 && cron1.moved.includes(job.id) && !cron1.started.includes(job.id), JSON.stringify({ sliced, cron1 }));
+    const p2 = await handoff.readyProgress(job.id);
     c.ok("it finishes: 6 of 6, none failed", p2?.active === false && p2.done === 6 && p2.failed === 0, JSON.stringify(p2));
     c.ok("the final folder holds exactly the 6 names, in order", JSON.stringify(names()) === JSON.stringify(["01-Front-Exterior.jpg", "02-Front-Exterior.jpg", "03-Living.jpg", "04-Kitchen.jpg", "05-Bedroom.jpg", "06-Bathroom.jpg"]), names().join(", "));
     c.ok("the failed upload was done again", uploads.filter((p) => p.endsWith("/03-Living.jpg")).length === 2);
@@ -159,6 +164,12 @@ async function main() {
     c.ok("the job points at the folder; the log says each one was checked", (await prisma.photoJob.findUniqueOrThrow({ where: { id: job.id } })).deliveryPath === folder && /6 of 6 photos .*checked in the folder/.test(ev?.action ?? ""), ev?.action ?? "");
     const again = await handoff.requestReady(job.id);
     c.ok("nothing changed: not copied again", again.ok && !again.started && /up to date/.test(again.message));
+    const headReads = () => fake.state.calls.filter((x) => x.method === "GET" && /\/photoshoots\/\d+\/photos$/.test(x.path)).length;
+    const reads0 = headReads();
+    await handoff.stageReadyJobs({ budgetMs: 10_000 });
+    const reads1 = headReads();
+    await handoff.stageReadyJobs({ budgetMs: 10_000 });
+    c.ok("an up-to-date folder: the cron reads AutoHDR's editor again at most every 30 minutes, not every pass", reads1 === reads0 + 1 && headReads() === reads1, `${reads0} ${reads1} ${headReads()}`);
 
     // ======================================================================
     c.head("2 · pressed again while copying: no duplicates, no leftovers; a short run never replaces the folder");
@@ -227,7 +238,7 @@ async function main() {
     const twice = await actions.skipAllFindingsAction(job.id);
     c.ok("pressing it again: nothing left to skip", !twice.ok && /Nothing to skip/.test(twice.message));
     const issues = fs.readFileSync("src/components/photoDelivery/IssuesPanel.tsx", "utf8");
-    c.ok("the issues list has the button, behind a confirm", /Skip all findings/.test(issues) && /skipAllFindingsAction\(jobId\)/.test(issues) && /await confirm\(/.test(issues));
+    c.ok("the issues list has the button, behind a confirm", /> Skip all\b/.test(issues) && /skipAllFindingsAction\(jobId\)/.test(issues) && /await confirm\(/.test(issues));
 
     c.head("isolation");
     c.ok("only the fakes answered", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

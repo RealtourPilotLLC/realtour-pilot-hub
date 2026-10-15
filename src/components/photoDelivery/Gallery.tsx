@@ -12,8 +12,8 @@ import type { PhotoView, Severity } from "./types";
 // ---------------------------------------------------------------------------
 // THE GALLERY (plan 9.4): every photo in delivery order. Star sets the hero,
 // the eye leaves a photo out (with a reason) or puts it back, drag a tile to
-// reorder (desktop), or switch on "Reorder" for move-earlier / move-later
-// buttons (phone and keyboard). Hover, or press and hold on a phone, shows
+// reorder (desktop), or switch on "Reorder" to tick photos and move them with
+// the toolbar (phone and keyboard). Hover, or press and hold on a phone, shows
 // the AI description. The order saves as photo ids (PhotoJob.orderJson); the
 // hero always leads the delivery.
 //
@@ -230,7 +230,7 @@ export function Gallery() {
 
         {isExcluded && (
           <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 px-2 text-center">
-            <span className="inline-block rounded-md bg-black/75 px-2 py-1 text-[12px] font-semibold uppercase tracking-wide text-white">Excluded</span>
+            <span className="inline-block rounded-md bg-black/75 px-2 py-1 text-[12px] font-semibold uppercase tracking-wide text-white">Left out</span>
             {p.excludeReason && <span className="mt-1 block truncate text-[12px] text-white drop-shadow">{p.excludeReason}</span>}
           </div>
         )}
@@ -252,13 +252,13 @@ export function Gallery() {
           </div>
         )}
 
-        {/* bottom row: room label + actions */}
+        {/* bottom row: room label + actions (hidden while reordering: the toolbar moves photos then) */}
         <div className={cn("flex items-center gap-1 p-1.5", p.description && "lg:group-hover:invisible")}>
           <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-muted" title={p.name}>{p.roomLabel}</span>
-          {!isExcluded && (
+          {!reorder && !isExcluded && (
             <button
               type="button"
-              className={cn(iconBtn, "size-9", isHero && "text-brand")}
+              className={cn(iconBtn, isHero && "text-brand")}
               disabled={pending || isHero}
               aria-pressed={isHero}
               aria-label={isHero ? `${title} is the hero` : `Make ${title} the hero`}
@@ -268,25 +268,17 @@ export function Gallery() {
               <Star aria-hidden className={cn("size-4", isHero && "fill-current")} />
             </button>
           )}
-          <button
-            type="button"
-            className={cn(iconBtn, "size-9")}
-            disabled={pending}
-            aria-label={isExcluded ? `Put ${title} back in the delivery` : `Leave ${title} out of the delivery`}
-            title={isExcluded ? "Put it back" : "Leave it out (asks why)"}
-            onClick={() => void excludePhoto(p, !isExcluded)}
-          >
-            {isExcluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
-          </button>
-          {reorder && index != null && (
-            <>
-              <button type="button" className={cn(iconBtn, "size-9")} disabled={pending || index === 0} aria-label={`Move ${title} earlier`} onClick={() => void move(p.id, index - 1)}>
-                <ArrowUp aria-hidden className="size-4" />
-              </button>
-              <button type="button" className={cn(iconBtn, "size-9")} disabled={pending || index === order.length - 1} aria-label={`Move ${title} later`} onClick={() => void move(p.id, index + 1)}>
-                <ArrowDown aria-hidden className="size-4" />
-              </button>
-            </>
+          {!reorder && (
+            <button
+              type="button"
+              className={iconBtn}
+              disabled={pending}
+              aria-label={isExcluded ? `Put ${title} back in the delivery` : `Leave ${title} out of the delivery`}
+              title={isExcluded ? "Put back" : "Leave out (asks why)"}
+              onClick={() => void excludePhoto(p, !isExcluded)}
+            >
+              {isExcluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
+            </button>
           )}
         </div>
       </li>
@@ -308,15 +300,13 @@ export function Gallery() {
               setReorder((v) => !v);
               setPicked(new Set());
             }}
-            className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium", reorder ? "border-brand bg-brand-soft" : "border-border-strong hover:bg-surface-2")}
+            className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 text-sm font-medium", reorder ? "border-brand bg-brand-soft" : "border-border-strong hover:bg-surface-2")}
           >
             <GripVertical aria-hidden className="size-4" /> {reorder ? "Done reordering" : "Reorder"}
           </button>
         </div>
       </div>
-      <p className="mb-2 text-[12px] text-muted">
-        Drag a photo to reorder: the page scrolls by itself near the top or bottom. Or press Reorder to tick several photos and move them together. The hero always goes first. Order and hero save as you go.
-      </p>
+      <p className="mb-2 text-[12px] text-muted">Drag to reorder. The hero always goes first.</p>
       {reorder && (
         <div className="sticky top-2 z-10 mb-2 flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-surface/95 p-2 text-sm backdrop-blur" role="toolbar" aria-label="Move the selected photos">
           <span className="px-1 font-medium">{chosen.length ? `${chosen.length} selected` : "Tick photos to move them together"}</span>
@@ -330,7 +320,7 @@ export function Gallery() {
             <ArrowDown aria-hidden className="size-4" /> Later
           </button>
           <form
-            className="flex items-center gap-1"
+            className="hidden items-center gap-1 sm:flex"
             onSubmit={(e) => {
               e.preventDefault();
               const n = Number(posInput);

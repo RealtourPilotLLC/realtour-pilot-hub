@@ -19,7 +19,7 @@ import type { JobDetail, Viewer } from "./types";
 //   J / K   next / previous photo        Up / Down  pick a finding
 //   F       add the picked finding's fix to the cart (marked "In cart" here,
 //           approved only when Run is pressed in the cart)
-//   I       ignore the picked finding (asks for a reason when MAJOR or worse)
+//   I       not worth fixing: the picked finding (asks for a reason when MAJOR or worse)
 //   X       leave the photo out (asks why) or put it back
 //   H       make the photo the hero       B  original vs current version
 //   O       finding boxes on or off       ?  these shortcuts
@@ -48,7 +48,7 @@ export function ReviewMode({ data, viewer, initialPhoto }: { data: JobDetail; vi
   );
 }
 
-const tool = "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-brand aria-pressed:bg-brand-soft";
+const tool = "inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-2.5 text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 aria-pressed:border-brand aria-pressed:bg-brand-soft";
 
 function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
   const { data, jobId, findingsByPhoto, selected, decide, excludePhoto, makeHero, addToCart, cartOpen, setCartOpen, promptOpen, pending, shown } = useJob();
@@ -130,7 +130,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
         <div className="max-w-md text-center">
           <p className="font-semibold">No photos to review yet.</p>
           <p className="mt-1 text-sm text-muted">{intakeLine(data.intake, false)}</p>
-          <Link href={`/ops/photo-delivery/${jobId}`} className="mt-4 inline-flex min-h-11 items-center rounded-lg border border-border-strong px-4 text-sm font-medium">Back to the job</Link>
+          <Link href={`/ops/photo-delivery/${jobId}`} className="mt-4 inline-flex min-h-11 items-center rounded-xl border border-border-strong px-4 text-sm font-medium">Back to the job</Link>
         </div>
       </div>
     );
@@ -163,8 +163,8 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
           <button type="button" className={tool} aria-pressed={isHero} disabled={pending || excluded || isHero} onClick={() => void makeHero(photo)} title="Make hero (H)">
             <Star aria-hidden className={cn("size-4", isHero && "fill-current text-brand")} /> <span className="hidden sm:inline">Hero</span> <kbd className="text-[11px] text-muted">H</kbd>
           </button>
-          <button type="button" className={tool} disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} title={excluded ? "Put it back (X)" : "Leave it out (X)"}>
-            {excluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />} <span className="hidden sm:inline">{excluded ? "Put back" : "Exclude"}</span> <kbd className="text-[11px] text-muted">X</kbd>
+          <button type="button" className={tool} disabled={pending} onClick={() => void excludePhoto(photo, !excluded)} title={excluded ? "Put back (X)" : "Leave out (X)"}>
+            {excluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />} <span className="hidden sm:inline">{excluded ? "Put back" : "Leave out"}</span> <kbd className="text-[11px] text-muted">X</kbd>
           </button>
           <button type="button" className={tool} aria-pressed={cartOpen} onClick={() => setCartOpen(!cartOpen)} title="Fix Cart">
             <ShoppingCart aria-hidden className="size-4" /> Cart{cartCount ? ` (${cartCount})` : ""}
@@ -209,7 +209,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
             />
             {overlays && !showOriginal && <BoxOverlay photo={photo} findings={findings.filter(shown)} selectedId={picked?.id} numbers={numbers} />}
             {showOriginal && <span className="absolute left-2 top-2 rounded bg-black/75 px-2 py-0.5 text-[12px] font-semibold text-white">Original</span>}
-            {excluded && <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded bg-black/80 px-3 py-1 text-sm font-semibold uppercase tracking-wide text-white">Excluded</span>}
+            {excluded && <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded bg-black/80 px-3 py-1 text-sm font-semibold uppercase tracking-wide text-white">Left out</span>}
           </div>
           {next && (
             <div hidden>
@@ -242,7 +242,8 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
                       </button>
                       <p className="mt-1 break-words text-[13px]">{f.specificIssue}</p>
                       <p className="text-[12px] text-muted">
-                        {Math.round(f.confidence * 100)}%{!shown(f) ? " (low confidence)" : ""} · {RESPONSIBILITY_LABEL[f.responsibility] ?? f.responsibility}
+                        {!shown(f) ? "Unsure · " : ""}
+                        {RESPONSIBILITY_LABEL[f.responsibility] ?? f.responsibility}
                         {f.locationText ? ` · ${f.locationText}` : ""}
                       </p>
                       {on && <FindingActions findings={[f]} className="mt-2" />}
@@ -260,7 +261,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
         <button type="button" className={tool} disabled={idx === 0} onClick={() => step(-1)}>
           <ChevronLeft aria-hidden className="size-5" /> Previous <kbd className="hidden text-[11px] text-muted sm:inline">K</kbd>
         </button>
-        <span className="text-[13px] text-muted">{picked ? `Finding ${numbers.get(picked.id)} picked: F fix, I ignore` : "Swipe or use J and K"}</span>
+        <span className="text-[13px] text-muted">{picked ? `Finding ${numbers.get(picked.id)} picked: F fix, I not worth fixing` : "Swipe or use J and K"}</span>
         <button type="button" className={tool} disabled={idx >= photos.length - 1} onClick={() => step(1)}>
           Next <kbd className="hidden text-[11px] text-muted sm:inline">J</kbd> <ChevronRight aria-hidden className="size-5" />
         </button>
@@ -276,7 +277,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              <p className="mb-3 text-[13px] text-muted">Fixes you pressed F on are ticked. Nothing runs until you approve below.</p>
+              <p className="mb-3 text-[13px] text-muted">Fixes you pressed F on are ticked. Nothing runs until you press Run selected.</p>
               <FixCartPanel inDrawer />
             </div>
           </div>

@@ -53,9 +53,7 @@ async function main() {
   const other = await picture("other");
   // Which bytes AutoHDR serves for a version: by the photo's name.
   const bytesByPhotoName: Record<string, Buffer> = {};
-  // eslint-disable-next-line prefer-const
-  let fake: ReturnType<typeof createFakeAutohdr>;
-  fake = createFakeAutohdr({
+  const fake: ReturnType<typeof createFakeAutohdr> = createFakeAutohdr({
     transforms: TRANSFORMS,
     models: [{ id: 1, name: "Classic", type: "predefined", variant: "indoor", style_credit_cost: 1 }],
     balance: 20,
@@ -222,6 +220,20 @@ async function main() {
     const beforeOff = fake.posts("/v1/transforms").length;
     const off = await runner.driveFixes({ budgetMs: 30_000, leaseBy: "drill" });
     c.ok("switch off: no new submission", fake.posts("/v1/transforms").length === beforeOff && /switched off/.test(String(off.skipped)));
+    const back = await prisma.photoJob.findUnique({ where: { id: job.id } });
+    c.ok("credits back: the hold for credits is released by itself, back to FIXING", back?.stage === "FIXING" && back.holdReason === null, `${back?.stage} ${back?.holdReason}`);
+
+    // ---- backend audit #5: never holds a delivery; a hold with nothing left to run ends in review ----------
+    await savePhotoDeliverySettings({ fixRunnerEnabled: true }, "drill-owner");
+    fake.state.balance = 0;
+    await prisma.photoJob.update({ where: { id: job.id }, data: { stage: "DELIVERING" } });
+    await runner.driveFixes({ budgetMs: 30_000, leaseBy: "drill" });
+    c.ok("out of credits on a job being delivered: never put on hold", (await prisma.photoJob.findUnique({ where: { id: job.id } }))?.stage === "DELIVERING");
+    await prisma.photoFixOperation.updateMany({ where: { jobId: job.id, status: "QUEUED" }, data: { status: "CANCELLED" } });
+    await prisma.photoJob.update({ where: { id: job.id }, data: { stage: "ON_HOLD", holdReason: "CREDITS", holdResumeStage: "FIXING" } });
+    await runner.driveFixes({ budgetMs: 30_000, leaseBy: "drill" });
+    const settled = await prisma.photoJob.findUnique({ where: { id: job.id } });
+    c.ok("a hold for credits with nothing left to run ends in review, never back in FIXING", ["QC_REVIEW", "READY"].includes(settled?.stage ?? "") && settled?.holdReason === null, `${settled?.stage} ${settled?.holdReason}`);
 
     c.ok("no request left the machine", fence.blocked.length === 0, fence.blocked.join(", "));
     c.summary();

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { AlertTriangle, Camera, ExternalLink, FlaskConical, PauseCircle } from "lucide-react";
+import { AlertTriangle, Camera, ExternalLink, PauseCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { requirePageAccess } from "@/lib/auth/guards";
@@ -11,7 +11,7 @@ import { SlaChip } from "@/components/photoDelivery/SlaChip";
 import { StageStepper } from "@/components/photoDelivery/StageStepper";
 import { JobHeaderActions } from "@/components/photoDelivery/JobHeaderActions";
 import { JobWorkspace } from "@/components/photoDelivery/JobWorkspace";
-import { ActivityPanel, FilesPanel } from "@/components/photoDelivery/JobPanels";
+import { HistoryPanel } from "@/components/photoDelivery/JobPanels";
 import { HOLD_REASON_LABEL, VERDICT_LABEL, usd } from "@/components/photoDelivery/format";
 import type { TabKey } from "@/components/photoDelivery/JobContext";
 import { CoachingCard } from "@/components/photoDelivery/CoachingCard";
@@ -24,10 +24,12 @@ export const dynamic = "force-dynamic";
 // Header (address, client, Aryeo links, photographer, shoot time, SLA, stage,
 // credits spent, QC verdict, and the run's cost for the owner only), then the
 // gallery and the tabs, the lightbox, and the Deliver panel at the bottom.
-// Deep links: ?tab=cart|coverage|activity|files, ?photo=<photoId>.
+// Deep links: ?tab=cart|coverage|history (activity and files, the two tabs
+// History replaced, still work), ?photo=<photoId>. Shadow mode shows in one
+// place only: the Deliver bar's Advisory badge.
 // ---------------------------------------------------------------------------
 
-const TABS: TabKey[] = ["issues", "cart", "coverage", "activity", "files"];
+const TABS = new Map<string, TabKey>([["issues", "issues"], ["cart", "cart"], ["coverage", "coverage"], ["history", "activity"], ["activity", "activity"], ["files", "activity"]]);
 const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
 export default async function PhotoJobPage({ params, searchParams }: { params: Promise<{ jobId: string }>; searchParams: Promise<{ tab?: string | string[]; photo?: string | string[] }> }) {
@@ -49,7 +51,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
   ]);
   if (!data) notFound();
   const h = data.header;
-  const initialTab = TABS.includes(tabRaw as TabKey) ? (tabRaw as TabKey) : "issues";
+  const initialTab = TABS.get(tabRaw ?? "") ?? "issues";
   const initialPhoto = photoRaw && data.photos.some((p) => p.id === photoRaw) ? photoRaw : null;
 
   return (
@@ -92,15 +94,10 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
             </Fact>
             <Fact label="QC">
               {h.qcVerdict ? VERDICT_LABEL[h.qcVerdict] ?? h.qcVerdict : data.runs.length ? "No verdict yet" : "Not run yet"}
-              {h.qcShadow && (
-                <span className="ml-1.5 inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[12px] text-muted">
-                  <FlaskConical aria-hidden className="size-3" /> Shadow
-                </span>
-              )}
               <span className="block text-[13px] text-muted">
                 {h.creditsSpent.toLocaleString("en-US")} AutoHDR credit{h.creditsSpent === 1 ? "" : "s"} spent on this job
                 {viewer.canSeeMoney && h.lastRunCostUsd != null ? ` · last QC run ${usd(h.lastRunCostUsd)}` : ""}
-                {h.qcRequestedAt ? ` · re-run requested ${etDateTime(h.qcRequestedAt)}` : ""}
+                {h.qcRequestedAt ? ` · new check requested ${etDateTime(h.qcRequestedAt)}` : ""}
               </span>
             </Fact>
           </dl>
@@ -108,7 +105,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
             <p className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning-soft/40 p-3 text-sm">
               <PauseCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
               <span>
-                <strong className="font-semibold">On hold{h.holdReason ? `: ${HOLD_REASON_LABEL[h.holdReason] ?? h.holdReason}` : ""}.</strong> {h.holdNote ?? ""} Delivery is blocked until the hold is released.
+                <strong className="font-semibold">On hold{h.holdReason ? `: ${HOLD_REASON_LABEL[h.holdReason] ?? h.holdReason}` : ""}.</strong> {h.holdNote ?? ""}
               </span>
             </p>
           )}
@@ -121,13 +118,13 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
 
         {coaching && <CoachingCard jobId={h.id} coaching={{ photographerName: coaching.photographerName, note: coaching.note, preShootReminders: coaching.preShootReminders, status: coaching.status }} />}
 
+        {/* The events and batches render here on the server; the browser never needs them. */}
         <JobWorkspace
-          data={data}
+          data={{ ...data, events: [], batches: [] }}
           viewer={viewer}
           initialTab={initialTab}
           initialPhoto={initialPhoto}
-          activity={<ActivityPanel events={data.events} />}
-          files={<FilesPanel header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} />}
+          history={<HistoryPanel events={data.events} header={h} photos={data.photos} runs={data.runs} batches={data.batches} canSeeMoney={viewer.canSeeMoney} />}
         />
       </div>
     </div>

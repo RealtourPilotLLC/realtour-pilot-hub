@@ -1,15 +1,35 @@
+import { ChevronDown } from "lucide-react";
 import { etDateTime, etMonthDayTime } from "@/lib/datetime";
 import { STRATEGY_LABEL, VERDICT_LABEL, prettyEnum, usd } from "./format";
 import type { EventView, FixBatchView, JobHeaderView, PhotoView, RunView } from "./types";
 
 // ---------------------------------------------------------------------------
-// The two read-only tabs of the job page, rendered on the server:
-//   · ACTIVITY: the PhotoJobEvent timeline, newest first (plan 0.3: every
-//     automated decision and every human action is logged);
-//   · FILES (plan 9.4): where each photo is read from (Aryeo listing or
-//     Dropbox), the AutoHDR shoot when linked, every version per photo, the
-//     QC runs (status, models, cost for the owner) and the fix batches.
+// The job page's read-only HISTORY tab, rendered on the server (Oct 15 2026:
+// Activity and Files became one tab):
+//   · the files (plan 9.4), behind one closed line: where the photos are read
+//     from (Aryeo listing or Dropbox), the AutoHDR shoot when linked, every
+//     version per photo, the QC runs (status, cost for the owner) and the fix
+//     batches;
+//   · the PhotoJobEvent timeline, newest first (plan 0.3: every automated
+//     decision and every human action is logged).
 // ---------------------------------------------------------------------------
+
+export function HistoryPanel({ events, ...files }: { events: EventView[] } & FilesProps) {
+  return (
+    <div className="space-y-4">
+      <details className="group rounded-xl border border-border">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+          Photos, versions, QC runs and fixes
+          <ChevronDown aria-hidden className="size-4 shrink-0 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="border-t border-border p-3">
+          <FilesPanel {...files} />
+        </div>
+      </details>
+      <ActivityPanel events={events} />
+    </div>
+  );
+}
 
 export function ActivityPanel({ events }: { events: EventView[] }) {
   if (!events.length) return <p className="text-sm text-muted">Nothing logged yet.</p>;
@@ -35,7 +55,9 @@ export function ActivityPanel({ events }: { events: EventView[] }) {
 
 const SOURCE_LABEL: Record<string, string> = { ARYEO: "Aryeo listing", DROPBOX: "Dropbox", AUTOHDR: "AutoHDR" };
 
-export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: { header: JobHeaderView; photos: PhotoView[]; runs: RunView[]; batches: FixBatchView[]; canSeeMoney: boolean }) {
+type FilesProps = { header: JobHeaderView; photos: PhotoView[]; runs: RunView[]; batches: FixBatchView[]; canSeeMoney: boolean };
+
+export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: FilesProps) {
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
   const sources = [...new Set(photos.map((p) => p.sourceKind))];
   return (
@@ -70,12 +92,6 @@ export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: { hea
                 <span className="text-[12px] text-muted">{SOURCE_LABEL[p.sourceKind] ?? p.sourceKind}</span>
                 {p.status !== "ACTIVE" && <span className="text-[12px] text-warning">{p.status === "EXCLUDED" ? "left out" : "no longer in the gallery"}</span>}
               </p>
-              {p.dropboxPath && <p className="break-all text-[12px] text-muted">{p.dropboxPath}</p>}
-              {p.sourceUrl && (
-                <a href={p.sourceUrl} target="_blank" rel="noreferrer" className="text-[12px] text-brand hover:underline">
-                  Open on Aryeo&rsquo;s CDN
-                </a>
-              )}
               {p.versions.length > 0 && (
                 <ul className="mt-1 space-y-0.5 text-[12px] text-muted">
                   {p.versions.map((v) => (
@@ -98,14 +114,13 @@ export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: { hea
           <p className="mt-1 text-muted">QC has not run on this job.</p>
         ) : (
           <div className="mt-1.5 overflow-x-auto rounded-xl border border-border">
-            <table className="w-full min-w-[34rem] text-[13px]">
+            <table className="w-full min-w-[26rem] text-[13px]">
               <thead className="text-left text-[12px] text-muted">
                 <tr>
                   <th scope="col" className="px-2 py-1.5 font-medium">Started</th>
                   <th scope="col" className="px-2 py-1.5 font-medium">Why</th>
                   <th scope="col" className="px-2 py-1.5 font-medium">Status</th>
                   <th scope="col" className="px-2 py-1.5 font-medium">Verdict</th>
-                  <th scope="col" className="px-2 py-1.5 font-medium">Passes and models</th>
                   {canSeeMoney && <th scope="col" className="px-2 py-1.5 font-medium">Cost</th>}
                 </tr>
               </thead>
@@ -119,11 +134,6 @@ export function FilesPanel({ header, photos, runs, batches, canSeeMoney }: { hea
                       {r.error && <span className="block max-w-[14rem] break-words text-[12px] text-warning">{r.error}</span>}
                     </td>
                     <td className="px-2 py-1.5">{r.verdict ? VERDICT_LABEL[r.verdict] ?? r.verdict : "None yet"}</td>
-                    <td className="px-2 py-1.5 text-[12px] text-muted">
-                      {r.passes.join(", ") || "None"}
-                      {r.models.length > 0 && <span className="block">{r.models.join(", ")}</span>}
-                      <span className="block">{r.photoCount} photo{r.photoCount === 1 ? "" : "s"}</span>
-                    </td>
                     {canSeeMoney && <td className="px-2 py-1.5 tabular-nums">{r.costUsd != null ? usd(r.costUsd) : ""}</td>}
                   </tr>
                 ))}

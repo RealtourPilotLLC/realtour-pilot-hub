@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import { getSetting, putSetting } from "@/lib/settings";
 import { autohdr, autohdrConfigured, type AutohdrPhotoshoot } from "@/lib/integrations/autohdr";
 import { logJobEvent } from "./jobState";
 
@@ -82,20 +83,43 @@ export async function linkAutohdrShoot(jobId: string, opts: { shoots?: AutohdrPh
   return { linked: true, photos: linked, note: `${linked}/${photos.length} photos matched` };
 }
 
-/** Link the open jobs that still lack a shoot (one listPhotoshoots call per pass). */
-export async function linkOpenJobs(max = 6): Promise<{ tried: number; linked: number }> {
+// When each unlinked job was last tried and how many times it missed. The
+// least recently tried go first, so shoots that can never match (made by
+// hand, or two for one street) cannot block newer jobs; after 3 misses a job
+// is tried about hourly.
+const TRIES_KEY = "photo_delivery:autohdr_link_tries";
+const MISSES_BEFORE_HOURLY = 3;
+
+/**
+ * Link the open jobs that still lack a shoot. One listPhotoshoots call per
+ * pass: the cron passes `listShoots` so the intake step reuses the same list.
+ */
+export async function linkOpenJobs(max = 6, opts: { listShoots?: () => Promise<AutohdrPhotoshoot[]> } = {}): Promise<{ tried: number; linked: number }> {
   if (!(await autohdrConfigured())) return { tried: 0, linked: 0 };
-  const jobs = await prisma.photoJob.findMany({
+  const open = await prisma.photoJob.findMany({
     where: { autohdrPhotoshootId: null, stage: { in: ["EDITED", "QC_RUNNING", "QC_REVIEW", "READY", "ON_HOLD"] }, createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } },
     select: { id: true },
-    take: max,
+    orderBy: { createdAt: "desc" },
+    take: 200,
   });
-  if (!jobs.length) return { tried: 0, linked: 0 };
-  const shoots = await autohdr.listPhotoshoots();
+  const before = await getSetting<Record<string, { at: number; misses: number }>>(TRIES_KEY, {});
+  // Only jobs still waiting are remembered.
+  const tries = Object.fromEntries(open.filter((j) => before[j.id]).map((j) => [j.id, before[j.id]]));
+  const due = open
+    .filter((j) => !tries[j.id] || tries[j.id].misses < MISSES_BEFORE_HOURLY || Date.now() - tries[j.id].at >= 60 * 60_000)
+    .sort((a, b) => (tries[a.id]?.at ?? 0) - (tries[b.id]?.at ?? 0))
+    .slice(0, max);
   let linked = 0;
-  for (const j of jobs) {
-    const r = await linkAutohdrShoot(j.id, { shoots }).catch(() => ({ linked: false }));
-    if (r.linked) linked++;
+  if (due.length) {
+    const shoots = opts.listShoots ? await opts.listShoots() : await autohdr.listPhotoshoots();
+    for (const j of due) {
+      const r = await linkAutohdrShoot(j.id, { shoots }).catch(() => ({ linked: false }));
+      if (r.linked) {
+        linked++;
+        delete tries[j.id];
+      } else tries[j.id] = { at: Date.now(), misses: (tries[j.id]?.misses ?? 0) + 1 };
+    }
   }
-  return { tried: jobs.length, linked };
+  if (JSON.stringify(tries) !== JSON.stringify(before)) await putSetting(TRIES_KEY, tries, "autohdr-link");
+  return { tried: due.length, linked };
 }
