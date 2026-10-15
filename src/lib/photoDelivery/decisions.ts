@@ -196,12 +196,16 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
       await prisma.photoFixBatch.updateMany({ where: { id: batchId, status: { in: ["PENDING", "RUNNING"] } }, data: { status: okOps ? "PARTIAL" : "FAILED" } });
     }
   }
-  // 2. Every open finding (and the called-off ones) set aside.
+  // 2. Every open finding (and the called-off ones) set aside. Never one
+  // saying an earlier AI fix changed the house (huddle finding 8: "skipping
+  // findings must not approve damage from earlier edits"): that stays open
+  // until a person restores the photo.
   const reason = "Skipped all findings on this shoot";
   const res = await prisma.photoQcFinding.updateMany({
-    where: { jobId, source: { not: "ADDON" }, OR: [{ status: "OPEN" }, { id: { in: freed }, status: { in: ["APPROVED_FIX", "FIXING"] } }] },
+    where: { jobId, source: { not: "ADDON" }, ruleId: { not: "FIX_DAMAGE_AI_EDIT" }, OR: [{ status: "OPEN" }, { id: { in: freed }, status: { in: ["APPROVED_FIX", "FIXING"] } }] },
     data: { status: "IGNORED", statusReason: reason, decidedBy: who, decidedAt: now },
   });
+  const damage = await prisma.photoQcFinding.count({ where: { jobId, ruleId: "FIX_DAMAGE_AI_EDIT", status: "OPEN" } });
   if (!res.count && !cancelled) return { ok: false, message: "Nothing to skip: there are no open findings on this shoot." };
   await logJobEvent(jobId, who, `Skipped all findings: ${plural(res.count, "issue")} set aside${cancelled ? `, ${fixes(cancelled)} not yet sent to AutoHDR called off (nothing charged)` : ""}`, { skippedAll: true, findings: res.count, cancelled });
   // 3. The stage follows: out of FIXING when nothing is running, then Ready.
@@ -213,7 +217,7 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
     changed: res.count,
     cancelled,
     stage,
-    message: `${plural(res.count, "finding")} skipped${cancelled ? ` and ${fixes(cancelled)} that had not started called off (nothing charged)` : ""}.${running ? ` ${fixes(running)} already at AutoHDR will finish.` : ""}${stage === "READY" ? " The job is Ready." : ""}`,
+    message: `${plural(res.count, "finding")} skipped${cancelled ? ` and ${fixes(cancelled)} that had not started called off (nothing charged)` : ""}.${running ? ` ${fixes(running)} already at AutoHDR will finish.` : ""}${damage ? ` ${damage === 1 ? "One photo an AI fix changed stays" : `${damage} photos AI fixes changed stay`} open: restore ${damage === 1 ? "it" : "them"} in the lightbox.` : ""}${stage === "READY" ? " The job is Ready." : ""}`,
   };
 }
 

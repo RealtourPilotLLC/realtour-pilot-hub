@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { EyeOff, SlidersHorizontal, Users } from "lucide-react";
+import { Brain, EyeOff, ListChecks, SlidersHorizontal, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
@@ -10,6 +10,7 @@ import { houseRules } from "@/lib/photoDelivery/houseRules";
 import { ruleById } from "@/lib/photoDelivery/registry";
 import { SwitchedOffChecks } from "@/components/photoDelivery/SwitchedOffChecks";
 import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
+import { fixPolicySummary, learnedRules, LEARN_DAYS, STRICT_CONFIDENCE } from "@/lib/photoDelivery/fixPolicy";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { SettingsForm } from "@/components/photoDelivery/SettingsForm";
 import { ClientProfiles } from "@/components/photoDelivery/ClientProfiles";
@@ -31,7 +32,7 @@ export default async function PhotoDeliverySettingsPage() {
   if (!viewer) redirect("/login?next=/ops/photo-delivery/settings");
   if (!viewer.isOwner) redirect(viewer.role === "ADMIN" ? "/ops/photo-delivery" : homeFor(viewer.role));
 
-  const [strip, settings, profiles, off] = await Promise.all([
+  const [strip, settings, profiles, off, learned] = await Promise.all([
     loadStrip(viewer),
     photoDeliverySettings(),
     loadClientProfiles().catch((e) => {
@@ -39,7 +40,10 @@ export default async function PhotoDeliverySettingsPage() {
       return null;
     }),
     houseRules().catch(() => []),
+    learnedRules().catch(() => null),
   ]);
+  const policy = fixPolicySummary(settings);
+  const lessons = learned ? [...learned.values()].filter((l) => l.notThere + l.notWorth + l.wanted >= 2).sort((a, b) => Number(b.skip || b.strict) - Number(a.skip || a.strict) || b.notThere + b.notWorth - (a.notThere + a.notWorth)) : null;
   const qcFrom = settings.qcFrom ? new Date(settings.qcFrom) : null;
 
   return (
@@ -79,6 +83,58 @@ export default async function PhotoDeliverySettingsPage() {
             }}
           />
           <p className="mt-4 border-t border-border pt-3 text-[13px] text-muted">The credit alert levels live on the Credits page.</p>
+        </Section>
+        <Section icon={ListChecks} title="How automatic fixes are chosen">
+          <p className="mb-3 text-[13px] text-muted">What the hub fixes on its own, what it never does, and the free checks around every fix. Each finding on a job also says why it was or was not fixed.</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {policy.map((g) => (
+              <div key={g.title}>
+                <h3 className="text-sm font-semibold">{g.title}</h3>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[13px] text-muted">
+                  {g.lines.map((l) => (
+                    <li key={l}>{l}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </Section>
+        <Section icon={Brain} title="What the hub learned from your calls" count={lessons?.length ?? null}>
+          <p className="mb-3 text-[13px] text-muted">
+            The last {LEARN_DAYS} days of people&rsquo;s calls on each check. &ldquo;Not there&rdquo; means the check got it wrong; &ldquo;not worth fixing&rdquo; means it was right but nobody wanted it fixed. Skip all and the hub&rsquo;s own calls do not count.
+          </p>
+          {!lessons ? (
+            <p role="alert" className="text-sm text-warning">This could not be read. Refresh to try again.</p>
+          ) : lessons.length === 0 ? (
+            <p className="text-sm text-muted">Not enough calls yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[36rem] text-left text-[13px]">
+                <thead className="text-muted">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">Check</th>
+                    <th className="py-1 pr-3 text-right font-medium">Not there</th>
+                    <th className="py-1 pr-3 text-right font-medium">Not worth fixing</th>
+                    <th className="py-1 pr-3 text-right font-medium">Fixed</th>
+                    <th className="py-1 font-medium">What changes</th>
+                  </tr>
+                </thead>
+                <tbody className="tabular-nums">
+                  {lessons.map((l) => (
+                    <tr key={l.ruleId} className="border-t border-border">
+                      <td className="py-1.5 pr-3">{ruleById(l.ruleId)?.shortLabel ?? l.ruleId}</td>
+                      <td className="py-1.5 pr-3 text-right">{l.notThere}</td>
+                      <td className="py-1.5 pr-3 text-right">{l.notWorth}</td>
+                      <td className="py-1.5 pr-3 text-right">{l.wanted}</td>
+                      <td className="py-1.5 text-muted">
+                        {[l.skip ? "No longer fixed on its own" : null, l.strict ? `Fixed on its own only when ${Math.round(STRICT_CONFIDENCE * 100)}% sure` : null].filter(Boolean).join("; ") || "Nothing yet"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Section>
         <Section icon={EyeOff} title="Checks switched off" count={off.length}>
           <p className="mb-3 text-[13px] text-muted">Not checked on any shoot, by the paid QC or the free photo check, and not shown on jobs.</p>

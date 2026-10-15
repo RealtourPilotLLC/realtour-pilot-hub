@@ -183,6 +183,9 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     await escalate(op, "this photo is not matched to its AutoHDR shoot, so AutoHDR cannot edit it here; fix it in AutoHDR's web app or send it to the editor");
     return "escalated";
   }
+  // A photo's history is being copied on this shoot (versions.ts switches its current version for a moment): wait.
+  const { versionProbeActive } = await import("./versions");
+  if (await versionProbeActive(job.id)) return "waiting";
   const hubShoot = hubShootOf(photo);
   const shootId = hubShoot ?? linked.autohdrPhotoshootId;
   if (linked.autohdrCreatedAt && Date.now() - linked.autohdrCreatedAt.getTime() > 7 * 86_400_000 - 60 * MIN) {
@@ -240,7 +243,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     return "escalated";
   }
   const ids = JSON.parse(op.findingIdsJson) as string[];
-  const findings = await prisma.photoQcFinding.findMany({ where: { id: { in: ids } }, select: { id: true, bboxJson: true, reeditPrompt: true } });
+  const findings = await prisma.photoQcFinding.findMany({ where: { id: { in: ids } }, select: { id: true, ruleId: true, bboxJson: true, reeditPrompt: true } });
   const body: Parameters<typeof autohdr.submitTransform>[0] = {
     photoshoot_id: shootId,
     image_uuid: remote.image_uuid,
@@ -248,6 +251,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     transform_name: cap.name,
     transform_version: cap.version ?? 1,
   };
+  let inputBytes: Buffer | null = null;
   if (hubShoot != null) {
     // The hub's own shoot: the photo is the one the hub recorded; nothing to
     // download (that would pay its first download early). Re-edits only.
@@ -273,6 +277,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     return "escalated";
   }
   const [headBytes, srcBytes] = await Promise.all([fetchBytes(headUrl), loadSource(photo)]);
+  inputBytes = headBytes;
   const [hh, hs] = await Promise.all([dHash(headBytes), dHash(srcBytes)]);
   const distance = hamming(hh, hs);
   if (distance > 12) {
@@ -311,11 +316,34 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
     body.mask_url = up.s3_url;
   }
   }
+  // Oct 14 2026 (huddle finding 1): a copy of the photo as it is BEFORE the
+  // fix, so before and after can be compared and the "before" restored (free:
+  // a photo already bought re-downloads at no cost; one never bought is skipped).
+  const { captureVersion } = await import("./versions");
+  const ref = { id: photo.id, jobId: photo.jobId, sourceKind: photo.sourceKind, sourceRef: photo.sourceRef, autohdrImageUuid: fresh.autohdrImageUuid };
+  const before = await captureVersion(ref, { versionUuid: remote.image_version_uuid, label: "Before the fix", source: "BEFORE_FIX", by: "fix-runner", bytes: inputBytes }).catch(() => null);
+  let house: string | null = null;
+  let counts: import("./fixPolicy").FeatureCounts | null = null;
+  let structure = false;
   if (cap.name === "reedit" || cap.name === "autofill") {
-    const prompt = mergePrompts(findings.map((f) => f.reeditPrompt ?? "").filter(Boolean));
+    let prompt = mergePrompts(findings.map((f) => f.reeditPrompt ?? "").filter(Boolean));
     if (!prompt) {
       await escalate(op, "this edit needs a written instruction and the issue has none");
       return "escalated";
+    }
+    // Huddle finding 2: a removal outside never invents part of the house.
+    const { touchesStructure, structureCheck, STRUCTURE_CLAUSE } = await import("./fixPolicy");
+    if (touchesStructure(findings.map((f) => f.ruleId))) {
+      structure = true;
+      const look = await structureCheck(shootId, remote.image_uuid, remote.image_version_uuid, prompt).catch(() => null);
+      if (look?.covers && batchRow?.approvedBy === "auto-fix") {
+        await escalate(op, `needs a person: what would be removed hides part of the house${look.covered ? ` (${look.covered})` : ""}, so the AI would have to guess what is behind it. The photo was left as it is`, "auto-fix");
+        return "escalated";
+      }
+      house = look?.house || null;
+      const { featureCounts } = await import("./fixPolicy");
+      counts = await featureCounts(shootId, remote.image_uuid, remote.image_version_uuid).catch(() => null);
+      if (!prompt.includes(STRUCTURE_CLAUSE)) prompt = `${prompt.replace(REEDIT_SUFFIX, "").trim()} ${STRUCTURE_CLAUSE} ${REEDIT_SUFFIX}`.slice(0, 1500);
     }
     body.prompt = prompt;
   }
@@ -328,7 +356,7 @@ async function submitStep(op: Op): Promise<"submitted" | "escalated" | "held" | 
   // Intent first: SUBMITTING, with everything needed to recognise the job.
   const claimed = await prisma.photoFixOperation.updateMany({
     where: { id: op.id, status: "QUEUED" },
-    data: { status: "SUBMITTING", submittedAt: new Date(), inputVersionUuid: remote.image_version_uuid, estimatedCredits: price, prompt: body.prompt ?? null, maskUrl: body.mask_url ?? null },
+    data: { status: "SUBMITTING", submittedAt: new Date(), inputVersionUuid: remote.image_version_uuid, estimatedCredits: price, prompt: body.prompt ?? null, maskUrl: body.mask_url ?? null, verificationJson: JSON.stringify({ before: { structure, house, counts, sharpness: before?.sharpness ?? null } }) },
   });
   if (claimed.count !== 1) return "waiting";
   try {
@@ -402,16 +430,27 @@ const ADDON_INSTRUCTION: Record<string, string> = {
   declutter: "Remove the general clutter and small loose items (not the furniture)",
   style: "Re-render the photo with the twilight look: a dusk sky with lights on",
 };
-type FixCheck = { verdict: "fixed" | "not-fixed" | "damaged" | "unchecked"; note: string };
-export async function checkFix(input: { shootId: number; imageUuid: string; output: string; prompt: string }): Promise<FixCheck> {
-  const { describePhoto, jsonFrom } = await import("./fixPolicy");
-  const instruction = input.prompt.replace(REEDIT_SUFFIX, "").trim() || "the requested fix";
+type FixCheck = { verdict: "fixed" | "not-fixed" | "damaged" | "unchecked"; note: string; houseChanged?: boolean };
+/**
+ * The check after a fix (free). With `house` (the free look before a removal,
+ * huddle finding 2) it also compares the permanent parts of the house: steps,
+ * railings, doors or walls that appeared, went or changed shape are damage.
+ */
+export async function checkFix(input: { shootId: number; imageUuid: string; output: string; prompt: string; house?: string | null; before?: { version: string; counts?: import("./fixPolicy").FeatureCounts | null } | null }): Promise<FixCheck> {
+  const { describePhoto, jsonFrom, STRUCTURE_CLAUSE, houseChanged } = await import("./fixPolicy");
+  // The house first (huddle finding 2): its features counted on both versions the same way, a difference counted again.
+  if (input.before?.version) {
+    const h = await houseChanged(input.shootId, input.imageUuid, input.before, input.output).catch(() => null);
+    if (h?.changed) return { verdict: "damaged", note: `it changed the house (${h.what.join(", ")})`.slice(0, 200), houseChanged: true };
+  }
+  const instruction = input.prompt.replace(REEDIT_SUFFIX, "").replace(STRUCTURE_CLAUSE, "").trim() || "the requested fix";
   const prompt = [
     `This real estate photo was just edited with this instruction: "${instruction}"`,
     "Check whether it was fixed properly. Answer ONLY with JSON:",
     '{"fixed": true or false, "left": "what is still there, or empty", "damaged": true or false, "damage": "what is clearly broken, or empty"}',
     "fixed = the thing the instruction names is gone or corrected. Judge ONLY what the instruction names: other objects in the photo that it does not mention do not count, and neither do reflections or shadows of something that was removed.",
     "damaged = the edit clearly broke the photo (warped or smeared walls, melted or half-erased objects, missing windows or furniture, strange artifacts). Small imperfections are not damage.",
+    ...(input.house ? [`Before the edit the house had: ${input.house}. Steps, railings, doors or walls that are now warped, melted or half there are damage.`] : []),
   ].join("\n");
   try {
     const j = jsonFrom<{ fixed?: boolean; left?: string; damaged?: boolean; damage?: string }>(await describePhoto(input.shootId, input.imageUuid, prompt, input.output));
@@ -422,6 +461,9 @@ export async function checkFix(input: { shootId: number; imageUuid: string; outp
     return { verdict: "unchecked", note: "" };
   }
 }
+
+/** A fix that lost more than this share of the photo's sharpness (same resolution) softened it (huddle finding 4). */
+export const SOFTENED_BELOW = 0.65;
 
 // ---- a SUBMITTED row: poll the job ---------------------------------------------------------
 async function pollStep(op: Op): Promise<"done" | "waiting"> {
@@ -467,40 +509,114 @@ async function pollStep(op: Op): Promise<"done" | "waiting"> {
     await autohdr.setVersion(job.autohdrPhotoshootId, j.image_uuid, output);
   }
   let stored: { pathname: string; url: string } | null = null;
+  let fixedBytes: Buffer | null = null;
   if (hubShoot == null) try {
     const dl = await autohdr.download(job.autohdrPhotoshootId, [{ image_uuid: j.image_uuid }]);
     if ((dl.data.credits_charged ?? 0) > 0) await recordLedgerEntry({ kind: "DOWNLOAD", credits: -(dl.data.credits_charged ?? 0), jobId: op.jobId, ref: op.autohdrJobId, note: "download of the fixed version" });
     const url = dl.data.downloads?.[0]?.url;
-    if (url) stored = await storeResult(`photo-fixes/${op.jobId}/${op.photoId}/${output}.jpg`, await fetchBytes(url));
+    if (url) {
+      fixedBytes = await fetchBytes(url);
+      stored = await storeResult(`photo-fixes/${op.jobId}/${op.photoId}/${output}.jpg`, fixedBytes);
+    }
   } catch (e) {
     await logJobEvent(op.jobId, "fix-runner", `the fixed ${photo.name} could not be saved yet (${(e as Error).message}); AutoHDR keeps it for 7 days`, { operationId: op.id });
   }
-  // The check after the fix (free): was it fixed properly?
-  const check = await checkFix({ shootId: job.autohdrPhotoshootId, imageUuid: j.image_uuid, output, prompt: op.prompt || ADDON_INSTRUCTION[op.transformName ?? ""] || "" });
+  // Huddle findings 1 and 4: keep the fixed version (a free re-download) and
+  // measure its sharpness at the same resolution as the version before it.
+  const { captureVersion, versionMeta } = await import("./versions");
+  const ref = { id: photo.id, jobId: photo.jobId, sourceKind: photo.sourceKind, sourceRef: photo.sourceRef, autohdrImageUuid: photo.autohdrImageUuid ?? j.image_uuid };
+  const kept = await captureVersion(ref, { versionUuid: output, parentVersionUuid: j.image_version_uuid, label: `AutoHDR ${op.transformName}`, source: "FIX", by: "fix-runner", bytes: fixedBytes }).catch(() => null);
+  const pre = (() => {
+    try {
+      return (op.verificationJson ? (JSON.parse(op.verificationJson) as { before?: { structure?: boolean; house?: string | null; counts?: import("./fixPolicy").FeatureCounts | null; sharpness?: number | null } }) : {}).before ?? {};
+    } catch {
+      return {};
+    }
+  })();
+  const beforeRow = j.image_version_uuid ? await prisma.photoVersion.findFirst({ where: { photoId: op.photoId, autohdrVersionUuid: j.image_version_uuid }, orderBy: { createdAt: "desc" }, select: { derivJson: true } }) : null;
+  const sharpBefore = pre.sharpness ?? versionMeta(beforeRow?.derivJson ?? null).sharpness ?? null;
+  const sharpAfter = kept?.sharpness ?? null;
+  const softened = sharpBefore != null && sharpAfter != null && sharpBefore > 0 && sharpAfter < sharpBefore * SOFTENED_BELOW;
+  // The check after the fix (free): was it fixed properly, and is the house still the house?
+  let check = await checkFix({ shootId: job.autohdrPhotoshootId, imageUuid: j.image_uuid, output, prompt: op.prompt || ADDON_INSTRUCTION[op.transformName ?? ""] || "", house: pre.house ?? null, before: pre.structure && j.image_version_uuid ? { version: j.image_version_uuid, counts: pre.counts ?? null } : null });
+  if (softened && check.verdict !== "damaged") check = { verdict: "damaged", note: `it made the photo noticeably softer (sharpness ${Math.round(sharpAfter!)} after, ${Math.round(sharpBefore!)} before)` };
+  const verification = JSON.stringify({ ...check, before: pre, sharpness: { before: sharpBefore, after: sharpAfter } });
   const where = hubShoot != null ? "It is the current version in AutoHDR and goes out with the push to Aryeo." : "Replace this photo on the Aryeo listing.";
   if (check.verdict === "damaged" && j.image_version_uuid) {
-    // Clearly broken: put the previous version back (free) and say so.
-    await autohdr.setVersion(job.autohdrPhotoshootId, j.image_uuid, j.image_version_uuid).catch(() => null);
+    // Broken, softer, or the house changed: put the previous version back (free),
+    // CHECK that AutoHDR took it, and say so. A revert that did not take is
+    // never reported as done: the photo is held for a person.
+    const back = await revertTo(job.autohdrPhotoshootId, j.image_uuid, j.image_version_uuid);
+    if (back) {
+      await prisma.$transaction([
+        prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "REVERTED", outputVersionUuid: output, finishedAt: new Date(), verificationJson: verification } }),
+        prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { status: "OPEN", statusReason: `The AI fix was put back: ${check.note || "it damaged the photo"}. The photo is as it was before the fix; a person decides.`.slice(0, 500) } }),
+      ]);
+      await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name}: ${check.note || "the check after the fix found damage"}; previous version put back (checked)`, { operationId: op.id, check, sharpBefore, sharpAfter });
+      return "done";
+    }
+    const { adoptVersion } = await import("./versions");
+    await adoptVersion(op.photoId, output, photo.sourceKind);
+    const now = await prisma.photoAsset.findUnique({ where: { id: op.photoId }, select: { contentHash: true } });
+    const runOf = await prisma.photoQcFinding.findFirst({ where: { id: { in: ids } }, select: { qcRunId: true } });
     await prisma.$transaction([
-      prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "REVERTED", outputVersionUuid: output, finishedAt: new Date(), verificationJson: JSON.stringify(check) } }),
-      prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { status: "OPEN", statusReason: `The AI fix damaged the photo (${check.note || "see AutoHDR"}), so the previous version was put back.`.slice(0, 500) } }),
+      prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: "SUCCEEDED", outputVersionUuid: output, finishedAt: new Date(), error: "damaged, and AutoHDR did not take the previous version back", verificationJson: verification } }),
+      prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { status: "OPEN", statusReason: `The AI fix ${check.note || "damaged the photo"} and AutoHDR did not take the previous version back.`.slice(0, 500) } }),
+      ...(runOf ? [prisma.photoQcFinding.create({ data: damageFinding(op, runOf.qcRunId, op.photoId, now?.contentHash ?? null, `The AI fix ${check.note || "damaged the photo"}, and AutoHDR did not take the version before it back. Open the photo, compare the versions and press Restore on the one before the fix.`) })] : []),
     ]);
-    await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name}: the check after the fix found damage; previous version put back`, { operationId: op.id, check });
+    await logJobEvent(op.jobId, "fix-runner", `WARNING: ${op.transformName} on ${photo.name}: ${check.note || "damage"}, and the previous version could NOT be put back; held for a person`, { operationId: op.id, check });
+    await refreshAfterDamage(op.jobId);
     return "done";
   }
   const fixedIds = check.verdict === "not-fixed" ? [] : ids;
+  const { adoptVersion } = await import("./versions");
+  await adoptVersion(op.photoId, output, photo.sourceKind);
   await prisma.$transaction([
-    prisma.photoVersion.create({
-      data: { photoId: op.photoId, label: `AutoHDR ${op.transformName}`, source: "FIX", autohdrVersionUuid: output, parentVersionUuid: j.image_version_uuid, derivJson: stored ? JSON.stringify({ file: stored }) : null, createdBy: "fix-runner" },
-    }),
-    // A hub photo's stored link points at the old version: the next view fetches the fixed one (free).
-    prisma.photoAsset.update({ where: { id: op.photoId }, data: { autohdrVersionUuid: output, ...(hubShoot != null ? { sourceUrl: null } : {}) } }),
-    prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: check.verdict === "fixed" ? "VERIFIED" : "SUCCEEDED", outputVersionUuid: output, finishedAt: new Date(), error: hubShoot != null || stored ? null : "fixed in AutoHDR; file not stored in the hub yet", verificationJson: JSON.stringify(check) } }),
+    ...(kept
+      ? []
+      : [prisma.photoVersion.create({
+          data: { photoId: op.photoId, label: `AutoHDR ${op.transformName}`, source: "FIX", autohdrVersionUuid: output, parentVersionUuid: j.image_version_uuid, derivJson: stored ? JSON.stringify({ file: stored }) : null, createdBy: "fix-runner" },
+        })]),
+    ...(kept && stored ? [prisma.photoVersion.updateMany({ where: { id: kept.id }, data: { derivJson: JSON.stringify({ ...(await keptMeta(kept.id)), file: stored }) } })] : []),
+    prisma.photoFixOperation.update({ where: { id: op.id }, data: { status: check.verdict === "fixed" ? "VERIFIED" : "SUCCEEDED", outputVersionUuid: output, finishedAt: new Date(), error: hubShoot != null || stored ? null : "fixed in AutoHDR; file not stored in the hub yet", verificationJson: verification } }),
     prisma.photoQcFinding.updateMany({ where: { id: { in: fixedIds } }, data: { status: "FIXED", statusReason: `${check.verdict === "fixed" ? "Fixed and checked." : "Fixed (the check afterwards could not run)."} ${where}` } }),
     prisma.photoQcFinding.updateMany({ where: { id: { in: check.verdict === "not-fixed" ? ids : [] } }, data: { status: "OPEN", statusReason: `Still there after the AI fix${check.note ? `: ${check.note}` : ""}. A person should look.`.slice(0, 500) } }),
   ]);
   await logJobEvent(op.jobId, "fix-runner", `${op.transformName} on ${photo.name}: ${check.verdict === "fixed" ? "fixed and checked" : check.verdict === "not-fixed" ? "the check after the fix says it is still there" : "done (not checked)"} (new version ${output.slice(0, 8)})`, { operationId: op.id, check });
   return "done";
+}
+
+/** Put a photo back on a version and confirm AutoHDR took it. */
+async function revertTo(shootId: number, imageUuid: string, versionUuid: string): Promise<boolean> {
+  for (let i = 0; i < 2; i++) {
+    await autohdr.setVersion(shootId, imageUuid, versionUuid).catch(() => null);
+    const live = (await autohdr.listPhotos(shootId).catch(() => [])).find((x) => x.image_uuid === imageUuid);
+    if (live?.image_version_uuid === versionUuid) return true;
+  }
+  return false;
+}
+
+async function keptMeta(versionId: string): Promise<Record<string, unknown>> {
+  const row = await prisma.photoVersion.findUnique({ where: { id: versionId }, select: { derivJson: true } });
+  try {
+    return row?.derivJson ? (JSON.parse(row.derivJson) as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** A CRITICAL "AI fix changed the house" finding on the photo: delivery waits for a person to restore it. */
+export function damageFinding(op: { jobId: string }, qcRunId: string, photoId: string, contentHash: string | null, text: string) {
+  return {
+    qcRunId, jobId: op.jobId, photoId, ruleId: "FIX_DAMAGE_AI_EDIT", groupKey: "FIX_DAMAGE_AI_EDIT", pass: "P1_PHOTO", source: "FIX_CHECK",
+    specificIssue: text.slice(0, 500), explanation: "Found by the free check after an AI fix. Restore the version before the fix in the lightbox (Versions).", severity: "CRITICAL", confidence: 0.95,
+    responsibility: "ADMIN", fixStrategy: "HUMAN_REVIEW", arbitration: "CONFIRMED", contentHash, isPermanentFeature: true, rulesVersion: "fix-damage-2026-10-14",
+  };
+}
+
+async function refreshAfterDamage(jobId: string): Promise<void> {
+  const { refreshVerdict } = await import("./fixPolicy");
+  await refreshVerdict(jobId, "fix-runner").catch(() => null);
 }
 
 async function finishBatches(jobIds: Set<string>): Promise<void> {

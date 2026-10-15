@@ -415,8 +415,18 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
       } else {
         seen.add(prev.name);
         const data: Record<string, unknown> = { sourceKind: e.sourceKind, sourceUrl: e.sourceUrl, sourceRef: e.sourceRef, dropboxPath: e.dropboxPath, dropboxId: e.dropboxId, sequence: i, bytes: e.bytes ?? undefined, ...(e.autohdrImageUuid ? { autohdrImageUuid: e.autohdrImageUuid, autohdrVersionUuid: e.autohdrVersionUuid ?? null } : {}) };
+        // Oct 14 2026 (huddle finding 1): an AutoHDR photo's CURRENT version is
+        // owned by the fix runner, a restore and the head sync (versions.ts),
+        // never by the shoot's intake snapshot. The snapshot holds the FIRST
+        // edit, so copying it back here quietly undid every fix and restore
+        // whenever any other photo in the gallery changed.
+        const ownsVersion = prev.sourceKind === "AUTOHDR" && e.sourceKind === "AUTOHDR";
+        if (ownsVersion) {
+          delete data.autohdrVersionUuid;
+          delete data.sourceUrl;
+        }
         if (prev.status === "GONE") data.status = "ACTIVE";
-        if (prev.contentHash !== e.contentHash) {
+        if (!ownsVersion && prev.contentHash !== e.contentHash) {
           data.contentHash = e.contentHash;
           // Replaced outside the hub's fix flow (an editor's manual fix, a
           // re-import in Aryeo): a new version, and the old findings no longer
@@ -436,7 +446,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
       data: { finalsPath: source === "dropbox" ? folder : null, finalsFingerprint: fp, finalsCount: entries.length, finalsChangedAt: now, finalsStableAt: null, lastError: null },
     });
     await logJobEvent(jobId, "sync", `gallery changed (${source}): ${entries.length} photo${entries.length === 1 ? "" : "s"}`, { added, gone: gone.length });
-    if (["QC_REVIEW", "READY", "FIXING", "ON_HOLD"].includes(job.stage) && (added > 0 || existing.some((e) => entries!.some((x) => x.name === e.name && x.contentHash !== e.contentHash)))) {
+    if (["QC_REVIEW", "READY", "FIXING", "ON_HOLD"].includes(job.stage) && (added > 0 || existing.some((e) => e.sourceKind !== "AUTOHDR" && entries!.some((x) => x.name === e.name && x.contentHash !== e.contentHash)))) {
       // Oct 14 2026: with the paid QC on request only, a changed gallery is
       // re-checked by the free photo check (it follows finalsChangedAt).
       if ((await photoDeliverySettings()).paidQcAuto) {

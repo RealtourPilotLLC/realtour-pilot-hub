@@ -10,13 +10,14 @@ import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelive
 import { buildFixCart } from "@/lib/photoDelivery/fixes";
 import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
 import { deliveryGate, deliverySteps } from "@/lib/photoDelivery/delivery";
+import { checkEveryMs } from "@/lib/photoDelivery/verifySweep";
 import { RULES, ruleById } from "@/lib/photoDelivery/registry";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { AUTOHDR_BILLING_URL } from "@/lib/integrations/autohdr";
 import { prettyRoom } from "@/components/photoDelivery/format";
 import type { RuleOverride } from "@/lib/photoDelivery/registry";
 import type {
-  CartView, ClientProfileView, CoverageCounts, CreditStripView, CreditsPageData, CvMetric, EventView, ExpectedView, FindingView, FixBatchView,
+  CartView, ClientProfileView, CoverageCounts, CreditStripView, CreditsPageData, CvMetric, EventView, ExpectedView, FindingView, FixBatchView, VersionView,
   FixStatusView, GateView, GroupMeta, JobDetail, LedgerRowView, PhotoView, QueueCard, QueueColumn, QueueColumnKey, QueueData, QueueFilters, RuleOption,
   RuleOverrideView, RunView, Severity, SpendRow, StepsView, StripData, Viewer,
 } from "@/components/photoDelivery/types";
@@ -442,17 +443,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     heroScore: p.heroScore,
     verdict: p.verdict,
     cv: cvSummary(p.cvJson),
-    versions: (versionsByPhoto.get(p.id) ?? []).map((v) => ({
-      id: v.id,
-      label: v.label,
-      source: v.source,
-      contentHash: v.contentHash,
-      createdAt: v.createdAt.toISOString(),
-      createdBy: v.createdBy,
-      width: v.width,
-      height: v.height,
-      current: !!p.contentHash && v.contentHash === p.contentHash,
-    })),
+    versions: versionViews(versionsByPhoto.get(p.id) ?? [], p),
     position: p.status === "ACTIVE" ? position.get(p.id) ?? null : null,
     deliveryName: p.status === "ACTIVE" ? deliveryNameOf.get(p.id) ?? null : null,
     fixing: fixingPhotos.has(p.id),
@@ -488,6 +479,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       fixStrategy: f.fixStrategy,
       status: f.status,
       statusReason: f.statusReason,
+      planNote: f.planNote,
       decidedBy: f.decidedBy,
       decidedAt: iso(f.decidedAt),
       arbitration: f.arbitration,
@@ -624,6 +616,10 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       autohdrExpiresAt: job.autohdrCreatedAt ? new Date(job.autohdrCreatedAt.getTime() + 7 * DAY).toISOString() : null,
       lastRunCostUsd: viewer.canSeeMoney && lastRun ? lastRun.costUsd : null,
       lastRunAt: lastRun ? lastRun.startedAt.toISOString() : null,
+      deliveryStartedAt: iso(job.deliveryStartedAt),
+      deliveryCheckedAt: iso(job.deliveryCheckedAt),
+      deliveryCheckNote: job.deliveryCheckNote,
+      deliveryNextCheckAt: job.stage === "DELIVERING" ? nextDeliveryCheck(job.deliveryStartedAt, job.deliveryCheckedAt) : null,
     },
     photos: photoViews,
     heroPhotoId: job.heroPhotoId,
@@ -767,4 +763,67 @@ export async function loadClientProfiles(): Promise<ClientProfileView[]> {
       };
     })
     .sort((a, b) => b.openJobCount - a.openJobCount || a.clientName.localeCompare(b.clientName));
+}
+
+/**
+ * A photo's versions for the lightbox strip (Oct 14 2026, huddle finding 1):
+ * one entry per AutoHDR version (the kept copy wins over an older bare row),
+ * "current" by the AutoHDR version the hub uses (the content hash for a
+ * Dropbox or Aryeo file), with whether a copy was kept and its sharpness.
+ */
+function versionViews(
+  rows: { id: string; label: string; source: string; contentHash: string | null; createdAt: Date; createdBy: string | null; width: number | null; height: number | null; autohdrVersionUuid: string | null; derivJson: string | null }[],
+  p: { contentHash: string | null; autohdrVersionUuid: string | null },
+): VersionView[] {
+  const meta = (j: string | null) => {
+    try {
+      return j ? (JSON.parse(j) as { preview?: unknown; sharpness?: number }) : {};
+    } catch {
+      return {};
+    }
+  };
+  const byUuid = new Map<string, (typeof rows)[number]>();
+  const out: (typeof rows)[number][] = [];
+  for (const v of rows) {
+    if (!v.autohdrVersionUuid) {
+      out.push(v);
+      continue;
+    }
+    const had = byUuid.get(v.autohdrVersionUuid);
+    if (!had) {
+      byUuid.set(v.autohdrVersionUuid, v);
+      out.push(v);
+    } else if (!meta(had.derivJson).preview && meta(v.derivJson).preview) {
+      out[out.indexOf(had)] = v;
+      byUuid.set(v.autohdrVersionUuid, v);
+    }
+  }
+  return out.map((v) => {
+    const m = meta(v.derivJson);
+    const current = v.autohdrVersionUuid && p.autohdrVersionUuid ? v.autohdrVersionUuid === p.autohdrVersionUuid : !!p.contentHash && v.contentHash === p.contentHash;
+    return {
+      id: v.id,
+      label: v.label,
+      source: v.source,
+      contentHash: v.contentHash,
+      createdAt: v.createdAt.toISOString(),
+      createdBy: v.createdBy,
+      width: v.width,
+      height: v.height,
+      current,
+      kept: !!m.preview,
+      sharpness: typeof m.sharpness === "number" ? m.sharpness : null,
+      inAutohdr: !!v.autohdrVersionUuid,
+    };
+  });
+}
+
+/** When the sweep (every 5 minutes, verifySweep.checkEveryMs) next asks Aryeo about a DELIVERING job. */
+function nextDeliveryCheck(startedAt: Date | null, checkedAt: Date | null): string {
+  const now = Date.now();
+  if (!checkedAt) return new Date(now + 5 * 60_000).toISOString();
+  const due = checkedAt.getTime() + checkEveryMs(now - (startedAt ?? checkedAt).getTime());
+  // The sweep runs on the five-minute mark after the job is due.
+  const at = Math.max(due, now);
+  return new Date(Math.ceil(at / (5 * 60_000)) * 5 * 60_000).toISOString();
 }

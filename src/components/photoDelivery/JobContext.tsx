@@ -161,15 +161,15 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
       const what = n === 1 ? "this issue" : `these ${n} issues`;
       let reason: string | null = null;
       if (status === "IGNORED" && required) {
-        reason = await ask({ title: `Ignore ${what}?`, description: "A major or critical issue needs a reason. It stays in the activity log.", presets: IGNORE_PRESETS, required: true, confirmLabel: "Ignore" });
+        reason = await ask({ title: n === 1 ? "Not worth fixing?" : `Mark ${n} issues not worth fixing?`, description: "It is there, but not worth fixing here. A major or critical issue needs a reason; it stays in the activity log.", presets: IGNORE_PRESETS, required: true, confirmLabel: "Not worth fixing" });
         if (reason === null) return false;
       } else if (status === "FALSE_POSITIVE" && required) {
         reason = await ask({
-          title: n === 1 ? "Not an issue?" : `Mark ${n} issues as not an issue?`,
-          description: "Say what QC got wrong. False positives are how the checks get better.",
+          title: n === 1 ? "Not there?" : `Mark ${n} issues as not there?`,
+          description: "The check saw something that is not in the photo. Say what it got wrong: these calls make the hub stricter before it fixes this kind of thing on its own.",
           presets: ["Nothing like this is in the photo", "It is part of the house", "It is intended staging"],
           required: true,
-          confirmLabel: "Not an issue",
+          confirmLabel: "Not there",
         });
         if (reason === null) return false;
       } else if (status === "OVERRIDDEN") {

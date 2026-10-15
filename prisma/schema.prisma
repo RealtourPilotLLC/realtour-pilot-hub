@@ -5580,6 +5580,9 @@ model PhotoJob {
   deliveryStartedAt   DateTime?
   deliveredAt         DateTime?
   deliveredBy         String?
+  // Oct 14 2026 (huddle finding 12): when the hub last asked Aryeo whether the listing is delivered, and what it found.
+  deliveryCheckedAt DateTime?
+  deliveryCheckNote String?
   deliveryDiffJson    String?
   leaseUntil          DateTime?
   leaseOwner          String?
@@ -5726,6 +5729,8 @@ model PhotoQcFinding {
   recommendedAction  String?
   fixStrategy        String
   reeditPrompt       String?
+  // Oct 14 2026 (huddle finding 5): why the automatic fix plan fixed or skipped this finding, in plain words.
+  planNote String?
   arbitration        String    @default("NOT_REQUIRED") // NOT_REQUIRED | PENDING | CONFIRMED | OVERTURNED
   // OPEN | APPROVED_FIX | FIXING | FIXED | IGNORED | OVERRIDDEN | SENT_TO_EDITOR
   // | RESHOOT_REQUESTED | FALSE_POSITIVE | SUPERSEDED

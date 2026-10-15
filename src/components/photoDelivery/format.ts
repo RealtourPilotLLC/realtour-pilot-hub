@@ -50,11 +50,11 @@ export const FINDING_STATUS_LABEL: Record<string, string> = {
   APPROVED_FIX: "Fix approved",
   FIXING: "Fixing",
   FIXED: "Fixed",
-  IGNORED: "Ignored",
+  IGNORED: "Not worth fixing",
   OVERRIDDEN: "Overridden",
   SENT_TO_EDITOR: "Sent to editor",
   RESHOOT_REQUESTED: "Reshoot recommended",
-  FALSE_POSITIVE: "Not an issue",
+  FALSE_POSITIVE: "Not there",
   SUPERSEDED: "Replaced by a newer QC run",
 };
 
@@ -296,4 +296,26 @@ export function intakeLine(intake: IntakeView[], hasPhotos: boolean): string | n
   if (live.state === "UNCERTAIN") return `${more(live)}Checking whether AutoHDR received the upload (the reply was lost).`;
   if (live.state === "FAILED") return `${more(live)}Sending to AutoHDR did not work: ${live.lastError ?? "unknown error"}`;
   return null;
+}
+
+// ---- the gallery order (Oct 14 2026, huddle finding 10) ---------------------------------------
+
+/** `ids` moved together (in their current order) so they land where `targetId` is. */
+export function moveTogether(order: string[], ids: string[], targetIndex: number): string[] {
+  const set = new Set(ids);
+  const moving = order.filter((id) => set.has(id));
+  if (!moving.length) return order;
+  const rest = order.filter((id) => !set.has(id));
+  const target = order[Math.max(0, Math.min(order.length - 1, targetIndex))];
+  let at: number;
+  if (set.has(target)) {
+    // Dropped on one of the moving photos: the block starts where that photo is now.
+    at = order.slice(0, targetIndex).filter((id) => !set.has(id)).length;
+  } else {
+    const firstFrom = order.indexOf(moving[0]);
+    const pos = rest.indexOf(target);
+    at = firstFrom < targetIndex ? pos + 1 : pos;
+  }
+  at = Math.max(0, Math.min(rest.length, at));
+  return [...rest.slice(0, at), ...moving, ...rest.slice(at)];
 }

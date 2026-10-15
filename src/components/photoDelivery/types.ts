@@ -105,6 +105,12 @@ export type VersionView = {
   width: number | null;
   height: number | null;
   current: boolean;
+  /** A copy of this version is kept (it can be shown side by side). */
+  kept: boolean;
+  /** Sharpness at a fixed resolution (higher is crisper); null when not measured. */
+  sharpness: number | null;
+  /** The version lives in AutoHDR, so it can be restored from the hub. */
+  inAutohdr: boolean;
 };
 
 export type CvMetric = { label: string; value: string };
@@ -164,6 +170,8 @@ export type FindingView = {
   fixStrategy: string;
   status: string;
   statusReason: string | null;
+  /** Why the automatic fix plan fixed or skipped it, in plain words (huddle finding 5). */
+  planNote: string | null;
   decidedBy: string | null;
   decidedAt: string | null;
   arbitration: string;
@@ -195,7 +203,7 @@ export type CartLineView = {
 export type CartView = {
   lines: CartLineView[];
   /** Oct 14 2026: the shoot's QC fix budget (credits) and what is already used. */
-  budget: { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number } | null;
+  budget: { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number; reverted: number; repeats: number; refunded: number } | null;
   /** The fix planner's estimate for its default picks (null = a price could not be read). */
   estimatedCredits: number | null;
   balance: number | null;
@@ -290,6 +298,11 @@ export type JobHeaderView = {
   /** Owner only: the latest QC run's Anthropic cost. */
   lastRunCostUsd: number | null;
   lastRunAt: string | null;
+  /** Delivery checks against Aryeo (huddle finding 12): when the job was marked delivering, the last check and what it found, and the next one. */
+  deliveryStartedAt: string | null;
+  deliveryCheckedAt: string | null;
+  deliveryCheckNote: string | null;
+  deliveryNextCheckAt: string | null;
 };
 
 /** The QC engine's view of each group (qc/verdict.ts groupFindings), keyed `${ruleId}::${groupKey}`. */

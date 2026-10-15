@@ -62,13 +62,15 @@ export const AUTOHDR_FREE_FIX: Record<string, string> = {
   PERSP_LEANING_DOOR_FRAMES: VERTICALS_HOW,
   PERSP_EXTERIOR_WALLS_LEANING: VERTICALS_HOW,
   PERSP_CROOKED_HORIZON: "Level it in AutoHDR with Crop & Tilt. Free.",
-  PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "AutoHDR's straightening cut off the top of the house. Open this photo in AutoHDR and turn Perspective Off (free), then press Get them ready again here. If the original photo has no room above the roof either, only a reshoot fixes it.",
+  PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "AutoHDR's straightening cut off the top of the house. Open this photo in AutoHDR and turn Perspective Off on THIS photo (free; the account's Perspective Correction switch only changes new uploads, never photos already edited), then press Check AutoHDR for changes here: the hub and the Aryeo folder take the new version. Compare it in the photo's Versions. If the original photo has no room above the roof either, only a reshoot fixes it.",
 };
 const VEHICLES = ["EXT_PARKED_CARS_DRIVEWAY", "EXT_VEHICLES_BLOCKING_HOME", "EXT_VEHICLES_THROUGH_WINDOWS"];
 const TRASH = ["PREP_TRASH_CANS", "EXT_TRASH_CANS_PRIMARY", "BATH_TRASH_CANS", "UTIL_GARAGE_TRASH_CANS", "LIV_OFFICE_TRASH_CANS", "PREP_GARBAGE_BAGS_LOOSE_TRASH"];
 export const ALWAYS_FIX = new Set([...CAMERA, ...DISTORTION, ...VEHICLES, ...TRASH]);
 /** A person decides these, every time. */
-const NEVER_AUTO = new Set(["PREP_PERSONAL_DOCUMENTS", "PREP_PERSONAL_PHOTOS", "BED_PERSONAL_PHOTOS_SENSITIVE", "PREP_VISIBLE_PEOPLE_PETS", "OTHER_DEFECT"]);
+const NEVER_AUTO = new Set(["PREP_PERSONAL_DOCUMENTS", "PREP_PERSONAL_PHOTOS", "BED_PERSONAL_PHOTOS_SENSITIVE", "PREP_VISIBLE_PEOPLE_PETS", "OTHER_DEFECT", "FIX_DAMAGE_AI_EDIT"]);
+/** An AI fix that changed the house and could not be put back (fixRunner): a person restores it, never skipped in bulk. */
+export const FIX_DAMAGE_RULE = "FIX_DAMAGE_AI_EDIT";
 const PREP_PREFIX = /^(PREP|KIT|BATH|BED|LIV|UTIL|EXT)_/;
 
 /** "autohdr": fixed for free in AutoHDR's own editor, never a paid re-edit (AUTOHDR_FREE_FIX). */
@@ -91,8 +93,8 @@ const INSTRUCTION: Record<string, string> = {
   REFL_TRIPOD_EQUIPMENT_SHADOW: "Remove the tripod's shadow",
   REFL_SENSOR_DUST: "Remove the small dark dust spots",
   EXT_PHOTOGRAPHER_VEHICLE: "Remove the photographer's vehicle",
-  EXT_PARKED_CARS_DRIVEWAY: "Remove the parked cars and fill in the driveway or street naturally",
-  EXT_VEHICLES_BLOCKING_HOME: "Remove the vehicles and fill in the street, driveway and house behind them naturally",
+  EXT_PARKED_CARS_DRIVEWAY: "Remove the parked cars and fill in only the pavement, lawn or street where they were",
+  EXT_VEHICLES_BLOCKING_HOME: "Remove the vehicles and fill in only the pavement, lawn or street where they were",
   EXT_VEHICLES_THROUGH_WINDOWS: "Remove the vehicle seen through the window",
   PERSP_HORIZONTAL_DISTORTION: "Correct the perspective so horizontal lines run level",
   PERSP_BOWED_WALLS: "Correct the lens distortion so the walls are straight, not bowed",
@@ -102,6 +104,87 @@ const INSTRUCTION: Record<string, string> = {
   PREP_INCONSISTENT_BLINDS: "Set all the window blinds to the same even height",
   KIT_OPEN_APPLIANCE_DOORS: "Close the open appliance doors",
 };
+
+// ---------------------------------------------------------------------------
+// THE HOUSE STAYS THE HOUSE (Oct 14 2026, huddle finding 2). A car removal on
+// one of Nehemiah's shoots gave the house steps it does not have: the car hid
+// them and the AI made some up. So, for a removal outside (cars, the
+// photographer's vehicle, trash cans, anything on the lot):
+//   · BEFORE (free): the photo is described as it is now: the permanent parts
+//     of the house in view, and whether the thing to remove HIDES part of the
+//     house. If it does, an automatic fix does not run: the original stays
+//     and a person decides (a fix someone chose by hand still runs, with the
+//     rule below, and is checked after);
+//   · the instruction says to fill in only ground, never to add or reshape
+//     any part of the house;
+//   · AFTER (free, fixRunner checkFix): the fixed photo is compared with that
+//     description; a step, railing, door or wall that appeared, went or
+//     changed shape is damage, and the previous version is put back (and
+//     checked).
+// ---------------------------------------------------------------------------
+const STRUCTURE_RULES = new Set([...VEHICLES, "EXT_PHOTOGRAPHER_VEHICLE", "PREP_TRASH_CANS", "PREP_GARBAGE_BAGS_LOOSE_TRASH"]);
+export const STRUCTURE_CLAUSE = "Do not add, remove, move or reshape any part of the house or lot (steps, stoops, porch, railings, doors, garage doors, windows, walls, walkways, fences). Where something removed was hiding part of the house, do not invent what was behind it.";
+
+/** Does a fix of these findings remove something that could stand in front of the house? */
+export function touchesStructure(ruleIds: string[]): boolean {
+  return ruleIds.some((id) => STRUCTURE_RULES.has(id) || id.startsWith("EXT_"));
+}
+
+export type StructureLook = { house: string; covers: boolean; covered: string };
+
+/** The free look before a removal: the house as it is, and whether the thing to remove hides part of it. */
+export async function structureCheck(shootId: number, imageUuid: string, versionUuid: string | null, instruction: string): Promise<StructureLook | null> {
+  const prompt = [
+    `This real estate photo is about to be edited with this instruction: "${instruction.replace(STRUCTURE_CLAUSE, "").trim()}"`,
+    "Answer ONLY with JSON:",
+    '{"house": "the permanent parts of the building and lot you can see, with counts where it matters: steps, stoops, porch, railings, doors, garage doors, windows, walkways, retaining walls, fences, roofline", "covers": true or false, "covered": "which feature the things to remove are hiding, or empty"}',
+    "covers = something the instruction says to remove stands in front of a distinct FEATURE of a house and hides it in whole or in part: steps or a stoop, a porch, a railing, a door, a garage door, a window, or the walkway to a door. Then removing it means guessing what that feature looks like.",
+    "Hiding only plain wall, brick, siding, foundation, a fence, the sidewalk, the curb, pavement, lawn, the street or the sky is NOT covering: those can be filled in. Inside a house, nothing is covering.",
+  ].join("\n");
+  const j = jsonFrom<{ house?: string; covers?: boolean; covered?: string }>(await describePhoto(shootId, imageUuid, prompt, versionUuid));
+  if (!j || typeof j.covers !== "boolean") return null;
+  return { house: String(j.house ?? "").slice(0, 600), covers: j.covers, covered: String(j.covered ?? "").slice(0, 200) };
+}
+
+/**
+ * The house's features, counted the same way on any version (free describe).
+ * The check after a removal counts the version before and the version after
+ * with the same question, and only a difference that a second count of both
+ * confirms is a changed house: one free-text judgment alone said "the steps
+ * changed" on one run and "fixed" on the next for the same photo (Oct 14).
+ */
+export const FEATURES = ["steps", "stoops", "porches", "railings", "doors", "garage_doors"] as const;
+export type FeatureCounts = Partial<Record<(typeof FEATURES)[number], number>>;
+const COUNT_PROMPT = [
+  "Count these permanent features of every house you can see in this real estate photo, including neighbouring houses. Count only what is clearly visible.",
+  'Answer ONLY with JSON: {"steps": number of separate flights of outdoor steps, "stoops": number, "porches": number, "railings": number of separate railings, "doors": number of exterior doors, "garage_doors": number}',
+].join("\n");
+
+export async function featureCounts(shootId: number, imageUuid: string, versionUuid: string | null): Promise<FeatureCounts | null> {
+  const j = jsonFrom<Record<string, unknown>>(await describePhoto(shootId, imageUuid, COUNT_PROMPT, versionUuid));
+  if (!j) return null;
+  const out: FeatureCounts = {};
+  for (const k of FEATURES) if (typeof j[k] === "number" && Number.isFinite(j[k] as number)) out[k] = Math.max(0, Math.round(j[k] as number));
+  return Object.keys(out).length ? out : null;
+}
+
+/** The features whose count differs between two counts ("steps 2 → 3"). */
+export function featureDiff(a: FeatureCounts | null | undefined, b: FeatureCounts | null | undefined): string[] {
+  if (!a || !b) return [];
+  return FEATURES.filter((k) => a[k] != null && b[k] != null && a[k] !== b[k]).map((k) => `${k.replace("_", " ")} ${a[k]} → ${b[k]}`);
+}
+
+/** Did a removal change the house? Counted before and after, and a difference is counted again on both before it counts. */
+export async function houseChanged(shootId: number, imageUuid: string, before: { version: string; counts?: FeatureCounts | null }, afterVersion: string): Promise<{ changed: boolean; what: string[]; counts: { before: FeatureCounts | null; after: FeatureCounts | null } }> {
+  const b1 = before.counts ?? (await featureCounts(shootId, imageUuid, before.version).catch(() => null));
+  const a1 = await featureCounts(shootId, imageUuid, afterVersion).catch(() => null);
+  const first = featureDiff(b1, a1);
+  if (!first.length) return { changed: false, what: [], counts: { before: b1, after: a1 } };
+  const [b2, a2] = await Promise.all([featureCounts(shootId, imageUuid, before.version).catch(() => null), featureCounts(shootId, imageUuid, afterVersion).catch(() => null)]);
+  const keys = new Set(FEATURES.filter((k) => b1?.[k] != null && a1?.[k] != null && b1[k] !== a1[k]));
+  const confirmed = [...keys].filter((k) => b2?.[k] != null && a2?.[k] != null && b2[k] !== a2[k] && Math.sign(a2[k]! - b2[k]!) === Math.sign(a1![k]! - b1![k]!));
+  return { changed: confirmed.length > 0, what: confirmed.map((k) => `${k.replace("_", " ")} ${b1![k]} → ${a1![k]}`), counts: { before: b1, after: a1 } };
+}
 
 /** The re-edit instruction for one finding: what to do, where (when known). */
 export function instructionFor(ruleId: string, where?: string | null): string {
@@ -220,9 +303,82 @@ export async function refreshVerdict(jobId: string, actor: string): Promise<void
 }
 
 // ---------------------------------------------------------------------------
+// WHAT THE HUB LEARNED FROM PEOPLE'S CALLS (Oct 14 2026, huddle finding 9).
+// Two different answers, kept apart:
+//   · "Not there" (FALSE_POSITIVE): the check saw something that is not in
+//     the photo. Three or more in 60 days, half or more of the calls on that
+//     check: it is fixed automatically only when the check is at least 80%
+//     sure.
+//   · "Not worth fixing" (IGNORED): it is there, but nobody wants it fixed.
+//     Three or more in 60 days and 60% or more of the calls on that check:
+//     no automatic fix for it (a person can still press Fix). Only for
+//     clutter: camera mistakes, cars and trash cans are always wanted
+//     (Jordan, Oct 14), whatever happened on one listing.
+// Calls made in bulk for one listing (Skip all, an as-is home) and the hub's
+// own calls (the free second look, the automatic plan) never count.
+// ---------------------------------------------------------------------------
+export type RuleLearning = { ruleId: string; notThere: number; notWorth: number; wanted: number; skip: boolean; strict: boolean };
+const SYSTEM_DECIDER = /^(auto-|free second look|fix-runner|hub\b|system)/i;
+export const LEARN_DAYS = 60;
+export const STRICT_CONFIDENCE = 0.8;
+
+export async function learnedRules(now = new Date()): Promise<Map<string, RuleLearning>> {
+  const rows = await prisma.photoQcFinding.findMany({
+    where: { decidedAt: { gte: new Date(now.getTime() - LEARN_DAYS * 86_400_000) }, status: { in: ["IGNORED", "FALSE_POSITIVE", "APPROVED_FIX", "FIXING", "FIXED"] }, source: { not: "ADDON" } },
+    select: { ruleId: true, status: true, decidedBy: true, statusReason: true },
+  });
+  const out = new Map<string, RuleLearning>();
+  for (const r of rows) {
+    if (!r.decidedBy || SYSTEM_DECIDER.test(r.decidedBy)) continue;
+    if (/^Skipped all findings/i.test(r.statusReason ?? "")) continue;
+    const l = out.get(r.ruleId) ?? { ruleId: r.ruleId, notThere: 0, notWorth: 0, wanted: 0, skip: false, strict: false };
+    if (r.status === "FALSE_POSITIVE") l.notThere++;
+    else if (r.status === "IGNORED") l.notWorth++;
+    else l.wanted++;
+    out.set(r.ruleId, l);
+  }
+  for (const l of out.values()) {
+    const calls = l.notThere + l.notWorth + l.wanted;
+    l.strict = l.notThere >= 3 && l.notThere / calls >= 0.5;
+    l.skip = fixClass(l.ruleId) === "prep" && l.notWorth >= 3 && l.notWorth / (l.notWorth + l.wanted) >= 0.6;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // THE PLAN
 // ---------------------------------------------------------------------------
 export type PlanResult = { planned: boolean; reason: string; photos: number; credits: number; asIs: boolean; left: number };
+
+/**
+ * The automatic fix policy, as the settings page shows it (Oct 14 2026,
+ * huddle finding 8: "make it explicit and testable"). Each line is what the
+ * plan above actually does; the drill checks the plan against it.
+ */
+export function fixPolicySummary(s: { fixTargetUsd: number; fixMaxUsd: number; asIsClientIds: string[] }): { title: string; lines: string[] }[] {
+  const label = (ids: string[]) => ids.map((id) => ruleById(id)?.shortLabel ?? id).join(", ");
+  return [
+    { title: "Always fixed (every home, prepared or not)", lines: [`Camera and photographer mistakes: ${label(CAMERA)}.`, `Cars: ${label(VEHICLES)}.`, `Trash cans: ${label(TRASH)}.`, `Lens distortion: ${label(DISTORTION)}.`, `Up to the shoot maximum ($${s.fixMaxUsd}).`] },
+    { title: "Clutter (prepared homes only)", lines: [`Fixed only while the shoot stays inside the target ($${s.fixTargetUsd}).`, "Never on an as-is home: a client on the as-is list, or a shoot where a third or more of the photos show clutter.", 'Not on its own any more once people have marked that kind of clutter "not worth fixing" 3 or more times in 60 days (60% or more of the calls).'] },
+    { title: "Free in AutoHDR, never a paid fix", lines: Object.entries(AUTOHDR_FREE_FIX).map(([id, how]) => `${ruleById(id)?.shortLabel ?? id}: ${how}`) },
+    { title: "Never automatic (a person decides)", lines: ["Privacy: documents, personal photos, people and pets.", "Anything that could change a permanent part of the house.", "Color calls, coverage, and anything an edit cannot fix (blur, a missing room).", "A car or bin that hides part of the house (steps, a porch, a door): removing it means guessing what is behind it, so the original stays.", "A photo an earlier AI fix changed: restore the version before the fix. Skip all never touches it."] },
+    { title: "Checks on every automatic fix (free)", lines: ["Before: a second look confirms each finding; for a removal outside, the house is described and checked for anything hidden.", "After: was it fixed, is anything broken, did the house change (steps, railings, doors), and is it noticeably softer. If so, the version before the fix is put back and AutoHDR is checked to have taken it.", `A finding the check was under 60% sure of is not fixed on its own (80% for a kind people often marked "not there").`] },
+  ];
+}
+
+/** Why a class of finding is or is not fixed automatically, in Kyle's words (no dollar amounts: Kyle never sees them). */
+const ALWAYS_WHY = (ruleId: string) =>
+  CAMERA.includes(ruleId) ? "a camera or photographer mistake" : VEHICLES.includes(ruleId) ? "a car" : TRASH.includes(ruleId) ? "a trash can" : DISTORTION.includes(ruleId) ? "lens distortion" : "always fixed";
+
+function neverWhy(ruleId: string, privacy: boolean): string {
+  if (privacy) return "Never automatic: privacy. A person chooses blur, remove, or leave the photo out.";
+  if (ruleId === FIX_DAMAGE_RULE) return "Never automatic: an AI fix changed this photo. Restore the version before the fix.";
+  if (NEVER_AUTO.has(ruleId)) return "Never automatic: a person decides this one every time.";
+  const rule = ruleById(ruleId);
+  if (rule?.permanentFeatureRisk) return "Never automatic: fixing it could change a permanent part of the house.";
+  if (!PREP_PREFIX.test(ruleId)) return "Never automatic: an AI edit cannot fix this (it needs an editor, a reshoot or a person's call).";
+  return "Never automatic: there is no AI edit for this.";
+}
 
 const etDay = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 
@@ -246,9 +402,27 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { title: true, clientId: true } });
   const street = (project?.title ?? "A shoot").split(",")[0];
   const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, select: { id: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, sequence: true, status: true } });
-  const findings = await prisma.photoQcFinding.findMany({
-    where: { jobId, status: "OPEN", photoId: { in: photos.map((p) => p.id) }, arbitration: { not: "OVERTURNED" }, confidence: { gte: 0.6 }, privacySensitive: false },
-    select: { id: true, photoId: true, ruleId: true, severity: true, confidence: true, locationText: true, reeditPrompt: true },
+  const everyOpen = await prisma.photoQcFinding.findMany({
+    where: { jobId, status: "OPEN", photoId: { in: photos.map((p) => p.id) }, arbitration: { not: "OVERTURNED" }, source: { not: "ADDON" } },
+    select: { id: true, photoId: true, ruleId: true, severity: true, confidence: true, locationText: true, reeditPrompt: true, privacySensitive: true },
+  });
+  // Huddle finding 9: what people's calls taught the hub.
+  const learned = await learnedRules();
+  const notes = new Map<string, string>();
+  const findings = everyOpen.filter((f) => {
+    const l = learned.get(f.ruleId);
+    const floor = l?.strict ? STRICT_CONFIDENCE : 0.6;
+    if (f.privacySensitive) {
+      notes.set(f.id, neverWhy(f.ruleId, true));
+      return false;
+    }
+    if (f.confidence < floor) {
+      notes.set(f.id, l?.strict
+        ? `Not fixed automatically: people said "not there" ${l.notThere} times lately for this check, so it waits until the check is ${Math.round(STRICT_CONFIDENCE * 100)}% sure (this one: ${Math.round(f.confidence * 100)}%).`
+        : `Not fixed automatically: the check was only ${Math.round(f.confidence * 100)}% sure. Look at it, then Fix or set it aside.`);
+      return false;
+    }
+    return true;
   });
   // As-is: on Jordan's list, or a third or more of the photos show clutter.
   const prepPhotos = new Set(findings.filter((f) => fixClass(f.ruleId) === "prep").map((f) => f.photoId));
@@ -270,11 +444,25 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
 
   type Cand = { photo: Photo; always: typeof findings; prep: typeof findings; worst: number };
   const cands: Cand[] = [];
+  const asIsWhy = listed ? "the client is on the as-is list" : `${prepPhotos.size} of ${photos.length} photos show clutter`;
+  for (const f of findings) {
+    const c = fixClass(f.ruleId);
+    if (c === "never") notes.set(f.id, neverWhy(f.ruleId, false));
+    else if (c === "autohdr") notes.set(f.id, `Free in AutoHDR, never a paid fix: ${AUTOHDR_FREE_FIX[f.ruleId]}`);
+    else if (c === "prep" && asIs) notes.set(f.id, `Skipped: as-is home (${asIsWhy}). Clutter is not fixed on an as-is home; camera mistakes, cars and trash cans still are.`);
+    else if (c === "prep" && learned.get(f.ruleId)?.skip) {
+      const l = learned.get(f.ruleId)!;
+      notes.set(f.id, `Skipped: people marked this "not worth fixing" ${l.notWorth} times in the last ${LEARN_DAYS} days (fixed ${l.wanted}). Press Fix if this one matters.`);
+    }
+  }
   for (const p of photos) {
-    if (!p.autohdrImageUuid || !shootIdOf(p, job.autohdrPhotoshootId)) continue;
     const mine = findings.filter((f) => f.photoId === p.id);
+    if (!p.autohdrImageUuid || !shootIdOf(p, job.autohdrPhotoshootId)) {
+      for (const f of mine) if (!notes.has(f.id)) notes.set(f.id, "Not fixed automatically: this photo is not matched to its AutoHDR shoot, so AutoHDR cannot edit it from the hub.");
+      continue;
+    }
     const always = mine.filter((f) => fixClass(f.ruleId) === "always");
-    const prep = asIs ? [] : mine.filter((f) => fixClass(f.ruleId) === "prep");
+    const prep = asIs ? [] : mine.filter((f) => fixClass(f.ruleId) === "prep" && !learned.get(f.ruleId)?.skip);
     if (!always.length && !prep.length) continue;
     const worst = Math.max(...[...always, ...prep].map((f) => SEVERITY_RANK[(f.severity as Severity) ?? "MINOR"] ?? 0));
     cands.push({ photo: p, always, prep, worst });
@@ -283,14 +471,30 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   cands.sort((a, b) => Number(!!b.always.length) - Number(!!a.always.length) || b.worst - a.worst || b.always.length + b.prep.length - (a.always.length + a.prep.length) || a.photo.sequence - b.photo.sequence);
   const chosen: Cand[] = [];
   let credits = 0;
+  let dailyHit = false;
   for (const c of cands) {
     const cap = c.always.length ? max : target;
-    if (credits + price > cap) continue;
-    if (spentToday + credits + price > settings.autoFixDailyMaxCredits) break;
+    const items = [...c.always, ...c.prep];
+    if (dailyHit || spentToday + credits + price > settings.autoFixDailyMaxCredits) {
+      dailyHit = true;
+      for (const f of items) notes.set(f.id, "Left for a person: today's limit on automatic fixes (all shoots) was reached. Press Fix to run it now.");
+      continue;
+    }
+    if (credits + price > cap) {
+      for (const f of items) notes.set(f.id, c.always.length
+        ? "Left for a person: the shoot reached its automatic fix maximum. Press Fix to run it anyway."
+        : "Left for a person: clutter is fixed automatically only while the shoot stays inside its usual fix budget, and it would go over. Press Fix if it matters.");
+      continue;
+    }
     chosen.push(c);
     credits += price;
+    const n = items.length;
+    for (const f of c.always) notes.set(f.id, `Fixing automatically: ${ALWAYS_WHY(f.ruleId)}, always fixed.${n > 1 ? ` One AI re-edit with the photo's ${n - 1} other fix${n === 2 ? "" : "es"}.` : ""} Checked after the fix; put back if it changes the house.`);
+    for (const f of c.prep) notes.set(f.id, `Fixing automatically: clutter in a prepared home, inside the usual fix budget.${n > 1 ? ` One AI re-edit with the photo's ${n - 1} other fix${n === 2 ? "" : "es"}.` : ""} Checked after the fix.`);
   }
   const leftOver = cands.length - chosen.length;
+  // Every open finding says why it was or was not fixed automatically (huddle finding 5).
+  await savePlanNotes(notes);
   const usd = (n: number) => `$${(n * usdPerCredit).toFixed(2)}`;
   const clutterNote = asIs ? ` As-is home (${listed ? "client on the as-is list" : `${prepPhotos.size} of ${photos.length} photos show clutter`}): clutter is not fixed.` : "";
   if (!chosen.length) {
@@ -320,6 +524,12 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   void appBase;
   void street;
   return { planned: true, reason: "planned", photos: batch.n, credits, asIs, left: leftOver };
+}
+
+async function savePlanNotes(notes: Map<string, string>): Promise<void> {
+  const byNote = new Map<string, string[]>();
+  for (const [id, note] of notes) byNote.set(note, [...(byNote.get(note) ?? []), id]);
+  for (const [note, ids] of byNote) await prisma.photoQcFinding.updateMany({ where: { id: { in: ids } }, data: { planNote: note.slice(0, 500) } });
 }
 
 /** Jobs whose free checks are done: second look, then plan. One bounded slice. */
@@ -459,28 +669,55 @@ export async function suggestAddOns(jobId: string): Promise<{ suggested: number;
 // Ordered add-ons (virtual twilight, staging, declutter, the real-twilight
 // look) are the client's order, not the fix budget.
 // ---------------------------------------------------------------------------
-export type FixBudget = { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number; usdPerCredit: number };
+// What counts (Oct 14 2026, huddle finding 7, "confirm whether manual fixes,
+// retries and reprocessing count toward the cap"):
+//   · COUNTS: every paid fix, automatic or by hand; a second (or third) paid
+//     edit of the same photo; a fix put back after the check (AutoHDR still
+//     charged it); a fix waiting to run (held against the budget).
+//   · NEVER COUNTS: a fix AutoHDR refunded (it failed, or changed nothing);
+//     ordered add-ons; anything free: the checks, re-downloads, restoring a
+//     version, AutoHDR's own editor (Perspective Off, Crop & Tilt).
+export type FixBudget = {
+  targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number; usdPerCredit: number;
+  /** Paid, then put back after the check (still charged). */
+  reverted: number;
+  /** Paid edits of a photo that already had one (counted). */
+  repeats: number;
+  /** Refunded by AutoHDR (failed or changed nothing): not counted. */
+  refunded: number;
+};
 
 export async function fixBudgetFor(jobId: string): Promise<FixBudget> {
   const settings = await photoDeliverySettings();
   const { usdPerCredit } = await creditThresholds();
   const ops = await prisma.photoFixOperation.findMany({
     where: { jobId, status: { notIn: ["CANCELLED"] }, batch: { approvedBy: { not: "auto-twilight" } } },
-    select: { status: true, chargedCredits: true, estimatedCredits: true, refunded: true, strategy: true, findingIdsJson: true, batch: { select: { approvedBy: true } } },
+    orderBy: { createdAt: "asc" },
+    select: { photoId: true, status: true, chargedCredits: true, estimatedCredits: true, refunded: true, strategy: true, findingIdsJson: true, batch: { select: { approvedBy: true } } },
   });
   const addOnFindings = new Set((await prisma.photoQcFinding.findMany({ where: { jobId, source: "ADDON" }, select: { id: true } })).map((f) => f.id));
-  let spent = 0, pending = 0, automatic = 0, byHand = 0;
+  let spent = 0, pending = 0, automatic = 0, byHand = 0, reverted = 0, repeats = 0, refunded = 0;
+  const paidPhotos = new Set<string>();
   for (const o of ops) {
     if (o.strategy === "VIRTUAL_TWILIGHT" || o.strategy === "VIRTUAL_STAGING") continue;
     let ids: string[] = [];
     try { ids = JSON.parse(o.findingIdsJson) as string[]; } catch { ids = []; }
     if (ids.length && ids.every((id) => addOnFindings.has(id))) continue;
-    const charged = o.refunded ? 0 : o.chargedCredits ?? 0;
+    if (o.refunded) {
+      refunded += o.chargedCredits ?? 0;
+      continue;
+    }
+    const charged = o.chargedCredits ?? 0;
     const waiting = ["QUEUED", "SUBMITTING"].includes(o.status) && o.chargedCredits == null ? o.estimatedCredits ?? 0 : 0;
     spent += charged;
     pending += waiting;
+    if (o.status === "REVERTED") reverted += charged;
+    if (charged + waiting > 0) {
+      if (paidPhotos.has(o.photoId)) repeats += charged + waiting;
+      paidPhotos.add(o.photoId);
+    }
     if (o.batch.approvedBy === "auto-fix") automatic += charged + waiting;
     else byHand += charged + waiting;
   }
-  return { targetCredits: Math.floor(settings.fixTargetUsd / usdPerCredit + 1e-9), maxCredits: Math.floor(settings.fixMaxUsd / usdPerCredit + 1e-9), spent, pending, automatic, byHand, usdPerCredit };
+  return { targetCredits: Math.floor(settings.fixTargetUsd / usdPerCredit + 1e-9), maxCredits: Math.floor(settings.fixMaxUsd / usdPerCredit + 1e-9), spent, pending, automatic, byHand, usdPerCredit, reverted, repeats, refunded };
 }

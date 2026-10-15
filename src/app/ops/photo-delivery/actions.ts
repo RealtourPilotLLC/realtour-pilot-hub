@@ -207,6 +207,86 @@ export async function setPhotoExcludedAction(input: { jobId: string; photoId: st
   }
 }
 
+// ---- versions (Oct 14 2026, huddle findings 1 and 3) --------------------------------------------
+
+/** Make an earlier version of a photo the current one (AutoHDR and the hub; free). */
+export async function restoreVersionAction(jobId: string, photoId: string, versionId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId)) || !ID.test(String(photoId)) || !ID.test(String(versionId))) return { ok: false, message: "That version is not valid." };
+  try {
+    const { by } = await actor();
+    const { restoreVersion } = await import("@/lib/photoDelivery/versions");
+    const r = await restoreVersion(photoId, versionId, by);
+    if (r.ok) {
+      refresh(jobId);
+      // The Aryeo folder follows (its fingerprint is the version): refreshed after the answer.
+      const refill = async () => {
+        const { requestReady, advanceReady, readyProgress } = await import("@/lib/photoDelivery/handoff");
+        const had = await readyProgress(jobId).catch(() => null);
+        if (!had) return;
+        const q = await requestReady(jobId, { by }).catch(() => null);
+        if (q?.started) await advanceReady(jobId, { budgetMs: 45_000 }).catch(() => null);
+      };
+      try {
+        after(refill);
+      } catch {
+        // Outside a request (a script): the cron's next pass refills the folder.
+      }
+    }
+    return r;
+  } catch (e) {
+    return failed("restore", e);
+  }
+}
+
+/** Fetch every version AutoHDR has of one photo, to compare them (free for a bought photo). */
+export async function loadVersionsAction(jobId: string, photoId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId)) || !ID.test(String(photoId))) return { ok: false, message: "That photo id is not valid." };
+  try {
+    const { by } = await actor();
+    const { loadVersionTimeline } = await import("@/lib/photoDelivery/versions");
+    const r = await loadVersionTimeline(photoId, by);
+    if (r.loaded || r.ok) refresh(jobId);
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return failed("load versions", e);
+  }
+}
+
+/** Read what AutoHDR shows now (a change made in its editor: Perspective Off, Crop & Tilt). */
+export async function syncFromAutohdrAction(jobId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { syncHeads } = await import("@/lib/photoDelivery/versions");
+    const r = await syncHeads(jobId, { by });
+    if (r.changed.length) refresh(jobId);
+    if (r.error && !r.changed.length) return { ok: false, message: `AutoHDR could not be read just now (${r.error}). Try again in a minute.` };
+    return {
+      ok: true,
+      message: r.changed.length
+        ? `${r.changed.length} photo${r.changed.length === 1 ? "" : "s"} changed in AutoHDR (${r.changed.slice(0, 3).map((c) => `${c.name}: ${c.label}`).join("; ")}). The hub uses them now; press Get them ready again so the Aryeo folder has them.`
+        : "Every photo matches what AutoHDR shows.",
+    };
+  } catch (e) {
+    return failed("refresh from AutoHDR", e);
+  }
+}
+
 export async function setHeroAction(jobId: string, photoId: string): Promise<ActionResult> {
   try {
     await requireAdmin();
@@ -331,10 +411,25 @@ export async function startDeliveryAction(jobId: string): Promise<ActionResult> 
   try {
     const { by } = await actor();
     const r = await startDelivery(jobId, by);
-    if (r.ok) refresh(jobId);
+    if (r.ok) {
+      refresh(jobId);
+      checkSoon(jobId);
+    }
     return r;
   } catch (e) {
     return failed("delivery", e);
+  }
+}
+
+/** After the answer: ask Aryeo now and twice more (Kyle often delivers there first). */
+function checkSoon(jobId: string) {
+  try {
+    after(async () => {
+      const { verifySoonAfterStart } = await import("@/lib/photoDelivery/verifySweep");
+      await verifySoonAfterStart(jobId).catch(() => null);
+    });
+  } catch {
+    // Outside a request (a script): the 5-minute sweep checks it.
   }
 }
 
@@ -351,7 +446,10 @@ export async function overrideDeliverAction(jobId: string, reason: string): Prom
   try {
     const { by } = await actor();
     const r = await startDelivery(jobId, by, { override: { reason: why, role: "OWNER" } });
-    if (r.ok) refresh(jobId);
+    if (r.ok) {
+      refresh(jobId);
+      checkSoon(jobId);
+    }
     return r;
   } catch (e) {
     return failed("override", e);

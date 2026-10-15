@@ -2,20 +2,22 @@
 
 import Link from "next/link";
 import { useTransition } from "react";
-import { Maximize2, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
+import { CloudDownload, Maximize2, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
-import { holdJobAction, releaseHoldAction, requestQcAction, type ActionResult } from "@/app/ops/photo-delivery/actions";
+import { holdJobAction, releaseHoldAction, requestQcAction, syncFromAutohdrAction, type ActionResult } from "@/app/ops/photo-delivery/actions";
 import { usePrompt } from "./usePrompt";
 
 // ---------------------------------------------------------------------------
 // Job-level actions in the page header: put the job on hold (a reason is
 // required; delivery is blocked until it is released), release the hold, ask
-// for a fresh QC run, and open review mode.
+// for a fresh QC run, open review mode, and (Oct 14 2026, huddle finding 3)
+// read what AutoHDR shows now, so a change made in AutoHDR's own editor
+// (Perspective Off, Crop & Tilt) reaches the hub and the Aryeo folder.
 // ---------------------------------------------------------------------------
 
 const btn = "inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-border-strong px-3 text-sm font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50";
 
-export function JobHeaderActions({ jobId, stage, qcEnabled }: { jobId: string; stage: string; qcEnabled: boolean }) {
+export function JobHeaderActions({ jobId, stage, qcEnabled, autohdr = false }: { jobId: string; stage: string; qcEnabled: boolean; autohdr?: boolean }) {
   const [pending, start] = useTransition();
   const { toast, show } = useToast();
   const { ask, dialog } = usePrompt();
@@ -57,6 +59,11 @@ export function JobHeaderActions({ jobId, stage, qcEnabled }: { jobId: string; s
       {canRerun && (
         <button type="button" className={btn} disabled={pending} onClick={() => run(() => requestQcAction(jobId))} title="QC runs again on the next pass (Anthropic cost, no AutoHDR credits)">
           <RefreshCw aria-hidden className="size-4" /> Re-run QC
+        </button>
+      )}
+      {autohdr && stage !== "DELIVERED" && (
+        <button type="button" className={btn} disabled={pending} onClick={() => run(() => syncFromAutohdrAction(jobId))} title="Changed a photo in AutoHDR's editor (Perspective Off, Crop & Tilt)? This brings the change into the hub and the Aryeo folder. Free.">
+          <CloudDownload aria-hidden className="size-4" /> Check AutoHDR for changes
         </button>
       )}
       <Link href={`/ops/photo-delivery/${jobId}/review`} className={btn}>

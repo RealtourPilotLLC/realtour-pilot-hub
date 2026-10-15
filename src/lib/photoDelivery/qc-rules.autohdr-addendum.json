@@ -201,5 +201,29 @@
     ],
     "autohdrTransform": "style",
     "groupKey": "ADDON_REAL_TWILIGHT_LOOK"
+  },
+  {
+    "section": 20,
+    "sectionName": "AI edits",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P1_PHOTO",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "CRITICAL",
+    "responsibility": "ADMIN",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": true,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 1,
+    "id": "FIX_DAMAGE_AI_EDIT",
+    "checklistText": "An AI fix changed the house or damaged the photo and the previous version could not be put back automatically: restore the earlier version in the lightbox (Oct 14 2026 huddle)",
+    "shortLabel": "AI fix changed the house",
+    "fixStrategies": [
+      "HUMAN_REVIEW"
+    ],
+    "groupKey": "FIX_DAMAGE_AI_EDIT"
   }
 ]

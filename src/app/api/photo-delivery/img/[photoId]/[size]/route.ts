@@ -74,6 +74,18 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
   });
   if (!photo) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // An EARLIER version (?version=<PhotoVersion id>, the lightbox's versions
+  // strip): its kept 2048 px copy, resized (Oct 14 2026, huddle finding 1:
+  // before this the route ignored which version was asked for and always
+  // showed the current one, so "before" and "after" looked the same).
+  const versionId = req.nextUrl.searchParams.get("version");
+  if (versionId && /^[a-z0-9]{10,40}$/i.test(versionId)) {
+    const v = await prisma.photoVersion.findUnique({ where: { id: versionId }, select: { id: true, photoId: true, autohdrVersionUuid: true, contentHash: true, derivJson: true } });
+    if (!v || v.photoId !== photo.id) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const isCurrent = (!!v.autohdrVersionUuid && v.autohdrVersionUuid === photo.autohdrVersionUuid) || (!v.autohdrVersionUuid && !!v.contentHash && v.contentHash === photo.contentHash);
+    if (!isCurrent) return serveVersion(req, photo.id, v, size);
+  }
+
   // The hub's own AutoHDR photo shows AutoHDR's CURRENT version (a fix changes it), so its version is part of the key.
   const autohdrPhoto = photo.sourceKind === "AUTOHDR";
   const hash = autohdrPhoto && photo.autohdrVersionUuid ? `ahdr-${photo.autohdrVersionUuid}` : photo.contentHash || `asset:${photo.id}`;
@@ -124,4 +136,30 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ photoId: st
     clearTimeout(timer);
     release();
   }
+}
+
+/** A kept earlier version: never changes, so it caches for a day. */
+async function serveVersion(req: NextRequest, photoId: string, v: { id: string; derivJson: string | null }, size: string): Promise<Response> {
+  const { versionMeta } = await import("@/lib/photoDelivery/versions");
+  const kept = versionMeta(v.derivJson).preview;
+  if (!kept) return NextResponse.json({ error: "This version was not kept: it came before the hub kept copies. Press Load every version in the lightbox to fetch it from AutoHDR." }, { status: 404, headers: { "cache-control": "no-store" } });
+  const etag = `"ver-${v.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40)}-${size}"`;
+  if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: headers(etag, 86400) });
+  const [{ readDerivativeBytes }, D] = await Promise.all([import("@/lib/photoDelivery/blob"), import("@/lib/photoDelivery/qc/derivatives")]);
+  const key = D.derivKey(photoId, `ver-${v.id}`, size);
+  const cached = D.derivCache.get(key);
+  if (cached) return new Response(new Uint8Array(cached), { status: 200, headers: headers(etag, 86400) });
+  const bytes = await readDerivativeBytes(kept);
+  if (!bytes) return NextResponse.json({ error: "This version's copy could not be read right now." }, { status: 503, headers: { "cache-control": "no-store" } });
+  let out: Buffer = bytes;
+  if (size !== "qc2048") {
+    await acquire();
+    try {
+      out = (await D.renderFromSource(bytes, await D.readMeta(bytes), size as "qc2048")).data;
+    } finally {
+      release();
+    }
+  }
+  D.derivCache.set(key, out);
+  return new Response(new Uint8Array(out), { status: 200, headers: headers(etag, 86400) });
 }

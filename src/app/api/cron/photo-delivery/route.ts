@@ -13,6 +13,8 @@ export const maxDuration = 300;
 // mid-way loses nothing and the next tick carries on.
 //
 //   credits   read AutoHDR's balance (free) every 15 minutes, run the alerts
+//   verify    compare delivered Aryeo listings with the approved set (early,
+//             round robin; Aryeo's delivered webhook also checks at once)
 //   intake    (Oct 14 2026) send finished uploads, and files added later, to
 //             AutoHDR; commit and poll them (switch: autoSubmit)
 //   sync      open photo jobs, read the edited gallery (the Aryeo listing,
@@ -20,7 +22,6 @@ export const maxDuration = 300;
 //   link      find each job's AutoHDR shoot (free reads)
 //   fixes     run the fixes a person approved (never without that click, and
 //             only while the owner's fixRunnerEnabled switch is on)
-//   verify    compare delivered Aryeo listings with the approved set
 //   digest    Monday 8 AM ET: the weekly photo delivery numbers
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
@@ -34,6 +35,12 @@ export async function GET(req: NextRequest) {
     const last = await latestSnapshot();
     if (last && Date.now() - last.at.getTime() < 14 * 60_000) return { skipped: "read in the last 15 minutes" };
     return recordCreditSnapshot({ trigger: "cron" });
+  }, { maxMs: 30_000 });
+
+  await step("verify", async () => {
+    // Oct 14 2026: early in the pass (a slow intake can no longer push it out), fair to every waiting job.
+    const { verifyDeliveringJobs } = await import("@/lib/photoDelivery/verifySweep");
+    return verifyDeliveringJobs({ max: 8 });
   }, { maxMs: 30_000 });
 
   await step("intake", async () => {
@@ -70,11 +77,6 @@ export async function GET(req: NextRequest) {
     // Each copy is checked until Dropbox says it is done, then the folder is swapped in.
     return stageReadyJobs({ max: 2, budgetMs: Math.min(50_000, Math.max(10_000, remaining() - 60_000)) });
   }, { maxMs: 60_000 });
-
-  await step("verify", async () => {
-    const { verifyDeliveringJobs } = await import("@/lib/photoDelivery/verifySweep");
-    return verifyDeliveringJobs({ max: 5 });
-  }, { maxMs: 30_000 });
 
   await step("digest", async () => {
     // Monday 8 AM ET: last week's photo delivery numbers to Jordan and Kyle.

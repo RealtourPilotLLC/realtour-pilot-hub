@@ -49,7 +49,7 @@ export type FixCart = {
   jobId: string;
   lines: CartLine[];
   /** Oct 14 2026: the shoot's QC fix budget and what is already used (fixPolicy.fixBudgetFor). */
-  budget: { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number } | null;
+  budget: { targetCredits: number; maxCredits: number; spent: number; pending: number; automatic: number; byHand: number; reverted: number; repeats: number; refunded: number } | null;
   estimatedCredits: number | null;
   usdPerCredit: number;
   balance: number | null;
@@ -192,7 +192,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   return {
     jobId,
     lines,
-    budget: budget ? { targetCredits: budget.targetCredits, maxCredits: budget.maxCredits, spent: budget.spent, pending: budget.pending, automatic: budget.automatic, byHand: budget.byHand } : null,
+    budget: budget ? { targetCredits: budget.targetCredits, maxCredits: budget.maxCredits, spent: budget.spent, pending: budget.pending, automatic: budget.automatic, byHand: budget.byHand, reverted: budget.reverted, repeats: budget.repeats, refunded: budget.refunded } : null,
     estimatedCredits,
     usdPerCredit: thresholds.usdPerCredit,
     balance: credits?.balance ?? null,

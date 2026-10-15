@@ -213,6 +213,9 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
     return r;
   }
   if (r.state === "COPYING") {
+    // A photo's history is being copied (its current version is switched for a moment): wait.
+    const { versionProbeActive } = await import("./versions");
+    if (await versionProbeActive(jobId)) return null;
     // The hub fetches each photo and uploads it: confirmed on the spot, at its size.
     const batch = r.items.filter((i) => i.state === "PENDING" || i.state === "COPYING").slice(0, 6);
     if (!batch.length) { r.state = "FINISHING"; return r; }
@@ -300,7 +303,17 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
  * is moved on by advanceReady. Without `force`, a run that is already going
  * or already done for the same photos and versions is left as it is.
  */
+/** The fingerprint a Ready run copies (photos, order and each photo's version): drills and diagnostics. */
+export async function readyFingerprintFor(jobId: string): Promise<string> {
+  return (await currentSet(jobId)).fingerprint;
+}
+
 export async function requestReady(jobId: string, opts: { force?: boolean; by?: string | null } = {}): Promise<{ ok: boolean; started: boolean; message: string; total: number }> {
+  // Oct 14 2026 (huddle finding 3): a change made in AutoHDR's own editor
+  // (Perspective Off, Crop & Tilt, a restore there) is read first, so the
+  // folder gets the version AutoHDR shows, not the one the hub last saw.
+  const { syncHeads } = await import("./versions");
+  await syncHeads(jobId, { by: opts.by ?? "ready-for-aryeo" }).catch(() => null);
   const cur = await currentSet(jobId);
   if (!cur.folder) return { ok: false, started: false, message: "This job has no Dropbox folder.", total: 0 };
   if (!cur.order.length) return { ok: false, started: false, message: "No photos in the delivery yet.", total: 0 };

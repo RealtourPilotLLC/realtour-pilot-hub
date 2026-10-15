@@ -10,7 +10,8 @@ import { BoxOverlay } from "./BoxOverlay";
 import { FindingActions } from "./FindingActions";
 import { photoTitle, useJob } from "./JobContext";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SEVERITY_ORDER, photoSrc } from "./format";
-import type { FindingView, PhotoView } from "./types";
+import { loadVersionsAction, restoreVersionAction } from "@/app/ops/photo-delivery/actions";
+import type { FindingView, PhotoView, VersionView } from "./types";
 
 // ---------------------------------------------------------------------------
 // THE LIGHTBOX (plan 9.4): one photo large (qc2048 on a desktop, qc1024 on a
@@ -112,17 +113,40 @@ export function Lightbox() {
       <div className="flex max-h-[96dvh] flex-col lg:flex-row">
         <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center bg-black p-2 sm:p-4">
           <div className="relative inline-block max-w-full">
-            <PhotoImg
-              photoId={photo.id}
-              hash={showing?.contentHash ?? photo.contentHash}
-              fallbackUrl={photo.sourceUrl}
-              versionId={showing && !showing.current ? showing.id : null}
-              size="qc2048"
-              large
-              eager
-              alt={`${title}: ${photo.roomLabel}${photo.description ? `. ${photo.description}` : ""}`}
-              className="block h-auto max-h-[56dvh] w-auto max-w-full lg:max-h-[88dvh]"
-            />
+            {showing && !showing.current ? (
+              // An earlier version beside the current one, same size (huddle finding 1).
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {[showing, current].map((v, k) =>
+                  v ? (
+                    <figure key={v.id} className="min-w-0">
+                      <PhotoImg
+                        photoId={photo.id}
+                        hash={v.contentHash ?? photo.contentHash}
+                        fallbackUrl={null}
+                        versionId={k === 0 ? v.id : null}
+                        size="qc2048"
+                        large
+                        eager
+                        alt={`${title}: ${k === 0 ? v.label : "current version"}`}
+                        className="block h-auto max-h-[40dvh] w-full object-contain lg:max-h-[80dvh]"
+                      />
+                      <figcaption className="mt-1 text-center text-[12px] text-white/80">{k === 0 ? `${versionName(v, photo.versions)} (earlier)` : `${versionName(v, photo.versions)} (current: this is what downloads)`}</figcaption>
+                    </figure>
+                  ) : null,
+                )}
+              </div>
+            ) : (
+              <PhotoImg
+                photoId={photo.id}
+                hash={photo.contentHash}
+                fallbackUrl={photo.sourceUrl}
+                size="qc2048"
+                large
+                eager
+                alt={`${title}: ${photo.roomLabel}${photo.description ? `. ${photo.description}` : ""}`}
+                className="block h-auto max-h-[56dvh] w-auto max-w-full lg:max-h-[88dvh]"
+              />
+            )}
             {overlays && (!showing || showing.current) && <BoxOverlay photo={photo} findings={findings.filter(shown)} numbers={numbers} />}
           </div>
           <div className="absolute inset-y-0 left-1 flex items-center sm:left-3">
@@ -205,35 +229,106 @@ export function Lightbox() {
             )}
           </section>
 
-          {photo.versions.length > 0 && (
-            <section className="mt-4">
-              <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Versions ({photo.versions.length})</h3>
-              <ul className="mt-1.5 flex flex-wrap gap-1.5">
-                {photo.versions.map((v, i) => {
-                  const on = showing ? showing.id === v.id : v.id === current?.id;
-                  return (
-                    <li key={v.id}>
-                      <button
-                        type="button"
-                        aria-pressed={on}
-                        onClick={() => setView({ photoId: photo.id, versionId: v.current ? null : v.id })}
-                        className={cn("min-h-10 rounded-lg border px-2.5 py-1 text-left text-[12px]", on ? "border-brand bg-brand-soft" : "border-border-strong hover:bg-surface-2")}
-                        title={v.createdBy ? `By ${v.createdBy}` : undefined}
-                      >
-                        <span className="block font-medium">{i === 0 ? "Original" : v.label}{v.current ? " (current)" : ""}</span>
-                        <span className="block text-muted">{etMonthDayTime(v.createdAt)}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-              {showing && !showing.current && <p className="mt-1 text-[12px] text-muted">Showing an earlier version. Boxes describe the current one, so they are hidden.</p>}
-            </section>
-          )}
+          <VersionsStrip photo={photo} showingId={showing?.id ?? null} currentId={current?.id ?? null} onShow={(id) => setView({ photoId: photo.id, versionId: id })} />
 
           <PhotoFacts photo={photo} />
         </aside>
       </div>
     </ModalDialog>
+  );
+}
+
+/** "Original", "AutoHDR edit", "AutoHDR reedit"…: what a person calls a version. */
+function versionName(v: VersionView, all: VersionView[]): string {
+  if (v.source === "ORIGINAL_FETCH" || (all[0]?.id === v.id && !v.inAutohdr)) return "Original";
+  return v.label;
+}
+
+/**
+ * Every version of the photo (Oct 14 2026, huddle finding 1): pick one to see
+ * it beside the current one, Restore it (it becomes what downloads and what
+ * goes to 06-Ready-for-Aryeo), or load every step AutoHDR has (the capture,
+ * its first edit, the straightening, each fix) to find where a photo went
+ * wrong. Sharpness is measured at one size, so a softer step stands out.
+ */
+function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoView; showingId: string | null; currentId: string | null; onShow: (id: string | null) => void }) {
+  const { jobId, run, confirm, pending } = useJob();
+  const versions = photo.versions;
+  const sharpest = Math.max(0, ...versions.map((v) => v.sharpness ?? 0));
+  const showing = showingId ? versions.find((v) => v.id === showingId) ?? null : null;
+  const linked = versions.some((v) => v.inAutohdr) || photo.sourceKind === "AUTOHDR";
+  const restore = async (v: VersionView) => {
+    const ok = await confirm({
+      title: `Make "${versionName(v, versions)}" the current version?`,
+      body: "AutoHDR switches to it (free). The hub, its downloads and the 06-Ready-for-Aryeo folder use it from now on. Every other version stays here, so you can switch back.",
+      confirmLabel: "Restore this version",
+    });
+    if (!ok) return;
+    if (await run(() => restoreVersionAction(jobId, photo.id, v.id))) onShow(null);
+  };
+  if (!versions.length && !linked) return null;
+  return (
+    <section className="mt-4">
+      <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Versions ({versions.length})</h3>
+      <p className="mt-0.5 text-[12px] text-muted">The current version is what downloads and goes to 06-Ready-for-Aryeo. Pick another to compare it side by side.</p>
+      {versions.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1.5">
+          {versions.map((v) => {
+            const on = showing ? showing.id === v.id : v.id === currentId;
+            // Measured at one size (huddle finding 4): an AI re-edit usually loses up to a sixth of the detail; more is worth a look.
+            const loss = v.sharpness != null && sharpest > 0 ? 1 - v.sharpness / sharpest : 0;
+            const softer = loss >= 0.15;
+            return (
+              <li key={v.id}>
+                <button
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => onShow(v.current ? null : v.id)}
+                  className={cn("min-h-10 rounded-lg border px-2.5 py-1 text-left text-[12px]", on ? "border-brand bg-brand-soft" : "border-border-strong hover:bg-surface-2")}
+                  title={v.createdBy ? `By ${v.createdBy}` : undefined}
+                >
+                  <span className="block font-medium">
+                    {versionName(v, versions)}
+                    {v.current ? " (current)" : ""}
+                  </span>
+                  <span className="block text-muted">
+                    {etMonthDayTime(v.createdAt)}
+                    {v.sharpness != null ? ` · sharpness ${Math.round(v.sharpness)}` : ""}
+                  </span>
+                  {softer && <span className="block font-medium text-warning">{Math.round(loss * 100)}% softer than the sharpest version</span>}
+                  {!v.kept && !v.current && <span className="block text-muted-2">No copy kept yet</span>}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {showing && !showing.current && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {showing.inAutohdr ? (
+            <button type="button" disabled={pending} onClick={() => void restore(showing)} className="inline-flex min-h-10 items-center rounded-lg bg-brand px-3 text-[13px] font-semibold text-white hover:bg-brand/90 disabled:opacity-50">
+              Restore this version
+            </button>
+          ) : (
+            <p className="text-[12px] text-muted">This version is not in AutoHDR, so it cannot be restored from here.</p>
+          )}
+          <button type="button" onClick={() => onShow(null)} className="inline-flex min-h-10 items-center rounded-lg border border-border-strong px-3 text-[13px] hover:bg-surface-2">
+            Back to the current one
+          </button>
+          <p className="w-full text-[12px] text-muted">Boxes describe the current version, so they are hidden while comparing.</p>
+        </div>
+      )}
+      {linked && (
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => void run(() => loadVersionsAction(jobId, photo.id))}
+          className="mt-2 inline-flex min-h-10 items-center rounded-lg border border-border-strong px-3 text-[13px] hover:bg-surface-2 disabled:opacity-50"
+          title="Fetch every step AutoHDR has for this photo (free): the capture, the first edit, the straightening and each fix"
+        >
+          Load every version from AutoHDR
+        </button>
+      )}
+    </section>
   );
 }

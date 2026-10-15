@@ -98,6 +98,24 @@ export async function freshAutohdrUrl(photo: { id: string; sourceRef: string | n
 }
 
 /**
+ * A fresh link to the CURRENT version of any AutoHDR photo already bought
+ * (Oct 14 2026, versions.ts keeps a copy of each version): the hub's own
+ * shoots and the watcher's alike. AutoHDR is asked first whether the photo
+ * was downloaded; one that was not is refused, never bought.
+ */
+export async function boughtAutohdrUrl(shootId: number, uuid: string, jobId: string | null = null): Promise<string> {
+  const got = (await freshAutohdrUrls(shootId, [uuid]).catch(() => null))?.get(uuid);
+  if (got && !("error" in got)) return got.url;
+  const p = (await autohdr.listPhotos(shootId)).find((x) => x.image_uuid === uuid);
+  if (!p?.downloaded) throw new Error("this photo was never downloaded from AutoHDR, so copying it would cost a credit");
+  const r = await autohdr.download(shootId, [{ image_uuid: uuid }]);
+  if ((r.data.credits_charged ?? 0) > 0) await recordLedgerEntry({ kind: "DOWNLOAD", credits: -(r.data.credits_charged ?? 0), jobId, ref: `${shootId}:${uuid}`, note: "unexpected charge on a re-download to keep a version" });
+  const url = r.data.downloads?.[0]?.url;
+  if (!url) throw new Error("AutoHDR gave no link");
+  return url;
+}
+
+/**
  * Fresh links for many photos of one shoot in ONE call (Oct 14 2026, the
  * Aryeo folder). Only photos this file already downloaded are asked for, so
  * the call is a free re-download; any other comes back with an error and

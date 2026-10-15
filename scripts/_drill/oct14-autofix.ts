@@ -162,7 +162,7 @@ async function main() {
     const warped = opOf(5);
     const versionPosts = fake.posts("/v1/photoshoots/").filter((p) => p.path.endsWith("/version"));
     c.ok("clearly damaged → previous version put back (free), REVERTED", warped.status === "REVERTED" && versionPosts.some((p) => (p.body as { image_version_uuid: string }).image_version_uuid === warped.inputVersionUuid));
-    c.ok("…the finding is open again with why", /damaged the photo \(the facade is warped\)/.test((await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: fA[6].id } })).statusReason ?? ""));
+    c.ok("…the finding is open again with why", /put back: the facade is warped/.test((await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: fA[6].id } })).statusReason ?? ""));
     c.ok("the after-fix check looked at the NEW version", fake.state.calls.some((x) => x.path.endsWith("/describe") && !!(x.body as { image_version_uuid?: string }).image_version_uuid));
     c.ok("the job leaves FIXING when the batch is done", ["QC_REVIEW", "READY"].includes((await prisma.photoJob.findUniqueOrThrow({ where: { id: A.job.id } })).stage));
     const n = await prisma.notification.findMany({ where: { kind: "photo_fixes_done" } });

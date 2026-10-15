@@ -218,6 +218,7 @@ export async function startDelivery(jobId: string, by: string, opts: { override?
     extra: { deliveryStartedAt: new Date() },
   });
   if (!moved) return { ok: false, message: "This job moved on in the meantime. Reload the page." };
+  await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryCheckedAt: null, deliveryCheckNote: null } }).catch(() => {});
   if (opts.override) {
     await alertOwnerAndKyle({
       kind: "photo_delivery_override",
@@ -234,7 +235,13 @@ export async function startDelivery(jobId: string, by: string, opts: { override?
 
 type ListingRead = { data?: { images?: { id?: string; original_url?: string; caption?: string | null; display_in_gallery?: boolean }[]; floor_plans?: unknown[]; delivery_status?: string } };
 
-export type VerifyResult = { ok: boolean; waiting?: boolean; message: string; aryeoCount: number | null; approved: number };
+export type VerifyResult = { ok: boolean; waiting?: boolean; error?: boolean; message: string; aryeoCount: number | null; approved: number };
+
+/** Every check is written down (Oct 14 2026, huddle finding 12): when, and what Aryeo said, errors included. */
+async function noteCheck(jobId: string, r: VerifyResult): Promise<VerifyResult> {
+  await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryCheckedAt: new Date(), deliveryCheckNote: r.message.slice(0, 300) } }).catch(() => {});
+  return r;
+}
 
 /**
  * Compare the delivered Aryeo listing with the approved set. Called by the
@@ -248,21 +255,31 @@ export type VerifyResult = { ok: boolean; waiting?: boolean; message: string; ar
  * mismatch.
  */
 export async function verifyDelivery(jobId: string, by = "verify"): Promise<VerifyResult> {
+  let r: VerifyResult;
+  try {
+    r = await verifyDeliveryOnce(jobId, by);
+  } catch (e) {
+    r = { ok: false, error: true, message: `The check could not finish (${(e as Error).message.slice(0, 140)}). It runs again on the next pass.`, aryeoCount: null, approved: 0 };
+  }
+  return noteCheck(jobId, r);
+}
+
+async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResult> {
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, stage: true } });
   if (!job) return { ok: false, message: "Photo job not found.", aryeoCount: null, approved: 0 };
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true, title: true, deliveredAt: true, deliverables: { where: { removedFromOrderAt: null, waivedAt: null, type: "FLOORPLAN" }, select: { id: true } } } });
   const photos = await prisma.photoAsset.findMany({ where: { jobId, status: { in: ["ACTIVE", "EXCLUDED"] } }, select: { id: true, name: true, status: true, sourceKind: true, sourceRef: true } });
   const active = photos.filter((p) => p.status === "ACTIVE");
   const approved = active.length;
-  if (!project?.aryeoListingId) return { ok: false, message: "This job has no Aryeo listing linked yet.", aryeoCount: null, approved };
+  if (!project?.aryeoListingId) return { ok: false, error: true, message: "This job has no Aryeo listing linked yet, so the hub cannot check it.", aryeoCount: null, approved };
   let listing: ListingRead;
   try {
     listing = await aryeoRequest<ListingRead>(`/listings/${project.aryeoListingId}`, { query: { include: "images,floor_plans" } });
   } catch (e) {
-    return { ok: false, message: `Couldn't read the Aryeo listing (${(e as Error).message}).`, aryeoCount: null, approved };
+    return { ok: false, error: true, message: `Couldn't read the Aryeo listing (${(e as Error).message.slice(0, 140)}).`, aryeoCount: null, approved };
   }
   const delivered = listing.data?.delivery_status === "DELIVERED" || !!project.deliveredAt;
-  if (!delivered) return { ok: false, waiting: true, message: "Aryeo has not marked the listing delivered yet.", aryeoCount: null, approved };
+  if (!delivered) return { ok: false, waiting: true, message: `Aryeo still has the listing as ${(listing.data?.delivery_status ?? "not delivered").toLowerCase().replace(/_/g, " ")}.`, aryeoCount: null, approved };
   const shown = (listing.data?.images ?? []).filter((i) => i.display_in_gallery !== false);
   const shownIds = new Set(shown.map((i) => i.id).filter(Boolean) as string[]);
   const aryeoCount = shown.length;

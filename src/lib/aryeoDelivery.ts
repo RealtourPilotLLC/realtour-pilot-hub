@@ -2088,5 +2088,14 @@ export async function handleAryeoActivity(
   if (!opts?.authenticated) ev.occurredAt = null;
   const note =
     name === LISTING_DELIVERED ? await onListingDelivered(ev) : await onContentDownloaded(ev);
+  // Oct 14 2026: the Photo Delivery job on this listing is checked now, not on
+  // the next 5-minute pass (verifyDelivery confirms with Aryeo itself).
+  if (name === LISTING_DELIVERED && ev.listingId) {
+    try {
+      const { verifyForListing } = await import("@/lib/photoDelivery/verifySweep");
+      const v = await verifyForListing(ev.listingId);
+      if (v.checked) return { handled: true, note: `${note} Photo delivery: ${v.verified} of ${v.checked} verified.` };
+    } catch { /* the 5-minute sweep is the net */ }
+  }
   return { handled: true, note };
 }

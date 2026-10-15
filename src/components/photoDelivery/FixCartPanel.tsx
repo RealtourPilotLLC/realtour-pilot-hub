@@ -187,8 +187,9 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
           </div>
           <p className="mt-1 text-[13px] text-muted">
             Used so far: {cart.budget.spent + cart.budget.pending} credit{cart.budget.spent + cart.budget.pending === 1 ? "" : "s"} ({cart.budget.automatic} automatic, {cart.budget.byHand} by hand{cart.budget.pending ? `; ${cart.budget.pending} still running` : ""}) · Left: {Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending)}{rate != null ? ` (${usd(Math.max(0, cart.budget.maxCredits - cart.budget.spent - cart.budget.pending) * rate)})` : ""}.
-            {" "}One credit per photo: several fixes on the same photo are one edit. Ordered add-ons (virtual twilight, staging) are not part of this budget.
+            {" "}One credit per photo: several fixes on the same photo are one edit.
           </p>
+          <BudgetRules b={cart.budget} />
         </div>
       )}
 
@@ -286,5 +287,22 @@ export function FixCartPanel({ inDrawer = false }: { inDrawer?: boolean }) {
         )}
       </div>
     </div>
+  );
+}
+
+/** What counts toward the budget and what never does (huddle finding 7). */
+function BudgetRules({ b }: { b: { reverted: number; repeats: number; refunded: number } }) {
+  return (
+    <details className="mt-1.5 text-[13px]">
+      <summary className="cursor-pointer text-muted hover:text-foreground">What counts toward this budget</summary>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted">
+        <li>Counts: every paid fix, automatic or by hand, and a fix still waiting to run.</li>
+        <li>Counts: a second paid edit of the same photo{b.repeats ? ` (${b.repeats} credit${b.repeats === 1 ? "" : "s"} so far)` : ""}.</li>
+        <li>Counts: a fix the check put back because it damaged the photo or changed the house; AutoHDR still charged it{b.reverted ? ` (${b.reverted} credit${b.reverted === 1 ? "" : "s"} so far)` : ""}.</li>
+        <li>Never counts: a fix AutoHDR refunded because it failed or changed nothing{b.refunded ? ` (${b.refunded} credit${b.refunded === 1 ? "" : "s"} refunded)` : ""}.</li>
+        <li>Never counts: ordered add-ons (virtual twilight, staging, declutter, the real-twilight look).</li>
+        <li>Free, never counted: the checks, re-downloads, restoring an earlier version, and AutoHDR&rsquo;s own editor (Perspective Off, Crop &amp; Tilt).</li>
+      </ul>
+    </details>
   );
 }

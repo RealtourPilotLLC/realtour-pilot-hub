@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, FlaskConical, Loader2, RefreshCw, ShieldCheck, Truck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
@@ -66,6 +67,16 @@ export function DeliverPanel() {
   const showOverride = viewer.isOwner && !!gate && canStage && !gate.canDeliver;
   const showVerify = ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(stage);
   const replacements = steps?.replacements ?? [];
+  const ready = steps?.ready ?? null;
+  // Oct 14 2026 (huddle finding 12): while the hub waits for Aryeo, the page
+  // refreshes itself, so a confirmed delivery shows without pressing anything.
+  const router = useRouter();
+  useEffect(() => {
+    if (stage !== "DELIVERING") return;
+    const t = setInterval(() => router.refresh(), 45_000);
+    return () => clearInterval(t);
+  }, [stage, router]);
+  const checkLine = deliveryCheckLine(header);
 
   const override = async () => {
     const reason = await ask({
@@ -97,6 +108,7 @@ export function DeliverPanel() {
             <span className="block text-[12px] text-muted">
               {STAGE_WHY[stage] && !canStage ? STAGE_WHY[stage] : replacements.length ? `${replacements.length} fixed photo${replacements.length === 1 ? "" : "s"} to replace on Aryeo` : "Steps for Aryeo inside"}
             </span>
+            {checkLine && <span className={cn("block text-[12px]", checkLine.bad ? "text-danger" : "text-muted")}>{checkLine.text}</span>}
           </span>
           {open ? <ChevronDown aria-hidden className="ml-1 size-4 shrink-0" /> : <ChevronUp aria-hidden className="ml-1 size-4 shrink-0" />}
         </button>
@@ -106,6 +118,18 @@ export function DeliverPanel() {
           </span>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* Huddle finding 11: the one folder to upload from, always in reach. */}
+          {ready && !preparing && (
+            <a
+              href={ready.folderUrl}
+              target="_blank"
+              rel="noreferrer"
+              title="Opens 06-Ready-for-Aryeo in Dropbox: the finished photos, numbered in delivery order, every fix included. Press Download there for one zip."
+              className={cn(btn, ready.ready ? "border border-brand/50 bg-brand-soft hover:brightness-95" : "border border-border-strong hover:bg-surface-2")}
+            >
+              <Download aria-hidden className="size-4" /> Download photos ({ready.files} of {ready.expected})
+            </a>
+          )}
           {showVerify && (
             <button type="button" disabled={pending} onClick={() => void run(() => verifyDeliveryAction(jobId))} className={cn(btn, "border border-border-strong hover:bg-surface-2")}>
               <CheckCircle2 aria-hidden className="size-4" /> Verify now
@@ -152,7 +176,8 @@ export function DeliverPanel() {
             )}
             {gate && !gate.canDeliver && gate.blockedForOverride && <p className="mt-2 text-[13px] text-danger">{gate.blockedForOverride}</p>}
             {header.paymentStatus && <p className="mt-2 text-[13px] text-muted">Payment in Aryeo: {header.paymentStatus.toLowerCase().replace(/_/g, " ")} (information only).</p>}
-            <p className="mt-2 text-[13px] text-muted">The hub confirms by itself when Aryeo says the listing was delivered, then checks the photo count against what was approved.</p>
+            <p className="mt-2 text-[13px] text-muted">The hub confirms by itself when Aryeo says the listing was delivered (Aryeo tells the hub at once, and the hub also asks every few minutes), then checks the photo count against what was approved.</p>
+            {checkLine && <p className={cn("mt-1 text-[13px]", checkLine.bad ? "text-danger" : "text-muted")}>{checkLine.text}</p>}
           </div>
 
           <div className="space-y-3">
@@ -189,7 +214,7 @@ export function DeliverPanel() {
                 {steps.ready && (
                   // Oct 14 2026: the finished photos (fixes included), numbered, ready to drop into Aryeo.
                   <li>
-                    <p className="font-semibold">1. Download the finished photos</p>
+                    <p className="font-semibold">1. Download the finished photos from 06-Ready-for-Aryeo</p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       {preparing ? (
                         <span aria-disabled="true" className="inline-flex min-h-11 cursor-not-allowed items-center gap-1.5 rounded-lg border border-border-strong px-3 font-semibold text-muted">
@@ -208,7 +233,7 @@ export function DeliverPanel() {
                       {preparing
                         ? "Copying into a fresh folder: every photo is checked in Dropbox before it replaces 06-Ready-for-Aryeo, so there are never duplicates. The bar at the bottom shows the progress."
                         : steps.ready.ready
-                          ? "Opens the 06-Ready-for-Aryeo folder in Dropbox: press Download there for one zip. The photos are numbered in delivery order and include every fix."
+                          ? "This is the only folder to upload from. It opens in Dropbox: press Download there for one zip. The photos are numbered in delivery order and include every fix and every restored version. Other folders (04-Final-Photos, AutoHDR's own) hold earlier edits without the fixes."
                           : steps.ready.note ?? `Only ${steps.ready.files} of ${steps.ready.expected} are in the folder. Press Get them ready again.`}
                     </p>
                   </li>
@@ -227,20 +252,22 @@ export function DeliverPanel() {
                     <p className="mt-0.5 text-[13px] text-muted">This job has no Aryeo listing or order linked.</p>
                   )}
                 </li>
+                {!steps.ready && (
+                  <li>
+                    <p className="font-semibold">2. The photos</p>
+                    {steps.folderPath ? (
+                      <div className="mt-1 flex items-center gap-1 rounded-lg border border-border bg-surface-2/50 pl-2">
+                        <code className="min-w-0 flex-1 break-all text-[12px]">{steps.folderPath}</code>
+                        <CopyButton value={steps.folderPath} label="Copy" title="Copy the folder path" />
+                      </div>
+                    ) : (
+                      <p className="mt-0.5 text-[13px] text-muted">The edited photos are already on the Aryeo listing. Check their order against the strip below.</p>
+                    )}
+                    {steps.folderPath && <p className="mt-0.5 text-[12px] text-muted">{steps.folderLabel}</p>}
+                  </li>
+                )}
                 <li>
-                  <p className="font-semibold">{steps.ready ? "3" : "2"}. The photos</p>
-                  {steps.folderPath ? (
-                    <div className="mt-1 flex items-center gap-1 rounded-lg border border-border bg-surface-2/50 pl-2">
-                      <code className="min-w-0 flex-1 break-all text-[12px]">{steps.folderPath}</code>
-                      <CopyButton value={steps.folderPath} label="Copy" title="Copy the folder path" />
-                    </div>
-                  ) : (
-                    <p className="mt-0.5 text-[13px] text-muted">The edited photos are already on the Aryeo listing. Check their order against the strip below.</p>
-                  )}
-                  {steps.folderPath && <p className="mt-0.5 text-[12px] text-muted">{steps.folderLabel}</p>}
-                </li>
-                <li>
-                  <p className="font-semibold">{steps.ready ? "4" : "3"}. Check the order ({steps.order.length})</p>
+                  <p className="font-semibold">3. Check the order ({steps.order.length})</p>
                   {steps.order.length === 0 ? (
                     <p className="mt-0.5 text-[13px] text-muted">No photos in the delivery yet.</p>
                   ) : (
@@ -260,7 +287,7 @@ export function DeliverPanel() {
                   )}
                 </li>
                 <li>
-                  <p className="font-semibold">{steps.ready ? "5" : "4"}. Deliver in Aryeo with this message</p>
+                  <p className="font-semibold">4. Deliver in Aryeo with this message</p>
                   <div className="mt-1 rounded-lg border border-border bg-surface-2/50 p-2">
                     <p className="whitespace-pre-wrap text-[13px]">{steps.message}</p>
                     <div className="mt-1 flex justify-end">
@@ -276,4 +303,14 @@ export function DeliverPanel() {
       </div>
     </section>
   );
+}
+
+/** "Last asked Aryeo 3:41 PM: … Next check about 3:45 PM." (huddle finding 12) */
+function deliveryCheckLine(h: { stage: string; deliveryCheckedAt: string | null; deliveryCheckNote: string | null; deliveryNextCheckAt: string | null }): { text: string; bad: boolean } | null {
+  if (!["DELIVERING", "DELIVERY_MISMATCH"].includes(h.stage)) return null;
+  const next = h.deliveryNextCheckAt ? ` Next check about ${etMonthDayTime(h.deliveryNextCheckAt)}.` : "";
+  if (!h.deliveryCheckedAt) return { text: `Not checked with Aryeo yet.${next}`, bad: false };
+  const note = (h.deliveryCheckNote ?? "").replace(/\.$/, "");
+  const bad = h.stage === "DELIVERY_MISMATCH" || /couldn't|could not|no aryeo listing/i.test(note);
+  return { text: `Last asked Aryeo ${etMonthDayTime(h.deliveryCheckedAt)}: ${note || "no answer recorded"}.${next}`, bad };
 }

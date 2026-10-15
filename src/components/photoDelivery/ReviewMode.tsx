@@ -31,7 +31,7 @@ const KEYS: [string, string][] = [
   ["K", "Previous photo"],
   ["Up / Down", "Pick a finding"],
   ["F", "Add the picked finding's fix to the cart"],
-  ["I", "Ignore the picked finding (reason for major or critical)"],
+  ["I", "Not worth fixing: the picked finding (reason for major or critical)"],
   ["X", "Leave the photo out, or put it back"],
   ["H", "Make the photo the hero"],
   ["B", "Original vs current (when there is more than one version)"],

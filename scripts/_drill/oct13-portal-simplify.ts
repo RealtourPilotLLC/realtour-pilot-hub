@@ -64,7 +64,7 @@ async function main() {
   const linkOff = homeActions({ ...base, review, perms: { ...base.perms, approve: false }, linkVisitor: { signInHref: null } });
   c.ok("…with email sign-in not live, it watches the video and is told to sign in from the invitation", linkOff.primary?.cta === "Watch it" && linkOff.primary.href === "?tab=library&v=v1" && /invitation email/.test(linkOff.primary.detail ?? ""), JSON.stringify(linkOff.primary));
   const cut = src("src/components/portal/CutReview.tsx");
-  c.ok("the video review shows 'Sign in to approve or request changes.' to the link, with no note box or decision buttons", /Sign in to approve or request changes\./.test(cut) && /const canWrite = !readOnly && perms\.comment && !approved && !linkVisitor;/.test(cut) && /\{!linkVisitor && !readOnly && !approved && \(perms\.request \|\| perms\.approve\)/.test(cut));
+  c.ok("the video review shows 'Sign in to approve or request changes.' to the link, with no note box or decision buttons", /Sign in to approve or request changes\./.test(cut) && /const canWrite = !readOnly && perms\.comment && \(!approved \|\| reopenable\) && !linkVisitor;/.test(cut) && /const reopenable = [^;]*!linkVisitor[^;]*;/.test(cut) && /\{!linkVisitor && !readOnly && \(!approved \|\| \(reopenable && open\.length > 0\)\) && \(perms\.request \|\| perms\.approve\)/.test(cut));
   c.ok("…and the page passes the link flag only for a TOKEN actor", /linkVisitor: actor\.kind === "TOKEN",/.test(src("src/components/portal/PortalPage.tsx")));
 
   // =========================================================================

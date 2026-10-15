@@ -61,7 +61,8 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
     /** Oct 14 2026 intake: commits answered 409 files_not_landed before 202; status polls before success; the outcome. */
     intake: { landAfter: 1, processPolls: 2, outcome: "success" as "success" | "failure", recoverAfterFailure: false },
     /** describe's answer by photo name (free check drills); null = "A room." */
-    describe: null as null | ((photoName: string, prompt: string) => string),
+    /** The version asked about is passed third (the head when none was named). */
+    describe: null as null | ((photoName: string, prompt: string, versionUuid: string) => string),
   };
   let seq = 0;
   const id = (p: string) => `${p}-${(++seq).toString(16).padStart(6, "0")}`;
@@ -268,7 +269,7 @@ export function createFakeAutohdr(opts: { transforms: FakeTransform[]; models?: 
           photo.head = String(body.image_version_uuid);
           return json(200, { photoshoot_id: shoot.photoshoot_id, image_uuid: photo.image_uuid, image_version_uuid: photo.head });
         }
-        if (pm[2] === "describe" && method === "POST") return json(200, { photoshoot_id: shoot.photoshoot_id, image_uuid: photo.image_uuid, image_version_uuid: photo.head, description: state.describe ? state.describe(photo.name, String(body.prompt ?? "")) : "A room." });
+        if (pm[2] === "describe" && method === "POST") return json(200, { photoshoot_id: shoot.photoshoot_id, image_uuid: photo.image_uuid, image_version_uuid: photo.head, description: state.describe ? state.describe(photo.name, String(body.prompt ?? ""), String(body.image_version_uuid ?? photo.head)) : "A room." });
       }
       if (method === "POST" && rest === "/asset-uploads") {
         const deny = needs("images:edit");
