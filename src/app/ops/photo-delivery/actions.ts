@@ -148,6 +148,73 @@ export async function restageForAryeoAction(jobId: string): Promise<ActionResult
 }
 
 /** The progress bar's poll: where the copy stands, moving it on a step when nobody else is. */
+// ---- the photos into Aryeo by the hub (Oct 14 2026, aryeoPush.ts) ---------------------------
+
+/** "Send to Aryeo": the 06-Ready-for-Aryeo photos onto the listing (answers at once; the run carries on after). */
+export async function sendToAryeoAction(jobId: string, opts: { anyway?: boolean } = {}): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { requestPush, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
+    // A press always sends; whether it then delivers follows the settings' stage.
+    const r = await requestPush(jobId, { by, anyway: opts.anyway === true });
+    if (r.started) {
+      const go = () => advancePush(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
+      try { after(go); } catch { void go(); }
+      refresh(jobId);
+    }
+    return { ok: r.ok, message: r.message };
+  } catch (e) {
+    return failed("send to Aryeo", e);
+  }
+}
+
+/** "Deliver in Aryeo": Kyle's go-ahead for a push waiting on it (the delivery checklist still has to pass). */
+export async function deliverInAryeoAction(jobId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { approvePushDelivery, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
+    const r = await approvePushDelivery(jobId, by);
+    if (r.ok) {
+      const go = () => advancePush(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
+      try { after(go); } catch { void go(); }
+      refresh(jobId);
+    }
+    return r;
+  } catch (e) {
+    return failed("deliver in Aryeo", e);
+  }
+}
+
+/** The push's progress for the panel (and a small step forward, like the Ready bar). */
+export async function aryeoPushProgressAction(jobId: string): Promise<{ ok: boolean; progress: import("@/lib/photoDelivery/aryeoPush").PushProgress | null }> {
+  try {
+    await requireAdmin();
+  } catch {
+    return { ok: false, progress: null };
+  }
+  if (!ID.test(String(jobId))) return { ok: false, progress: null };
+  try {
+    const { pushProgress, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
+    const p = await pushProgress(jobId);
+    if (!p?.active) return { ok: true, progress: p };
+    return { ok: true, progress: (await advancePush(jobId, { budgetMs: 5_000 })) ?? p };
+  } catch {
+    return { ok: false, progress: null };
+  }
+}
+
 export async function readyProgressAction(jobId: string): Promise<{ ok: boolean; progress: import("@/lib/photoDelivery/handoff").ReadyProgress | null }> {
   try {
     await requireAdmin();
@@ -557,6 +624,11 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
       return { ok: false, message: `${rule.label} must be ${rule.int ? "a whole number " : ""}from ${rule.min} to ${rule.max.toLocaleString("en-US")}.` };
     }
     (next as Record<string, unknown>)[k] = v;
+  }
+  if ("aryeoPush" in input) {
+    const { ARYEO_PUSH_MODES } = await import("@/lib/photoDelivery/settings");
+    if (!(ARYEO_PUSH_MODES as readonly string[]).includes(String(input.aryeoPush))) return { ok: false, message: "Sending to Aryeo must be off, upload, approve or auto." };
+    next.aryeoPush = input.aryeoPush;
   }
   if ("maxBuildPhase" in input) {
     if (input.maxBuildPhase !== 1 && input.maxBuildPhase !== 2 && input.maxBuildPhase !== 3) return { ok: false, message: "The build phase must be 1, 2 or 3." };

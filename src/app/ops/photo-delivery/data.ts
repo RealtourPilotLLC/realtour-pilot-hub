@@ -631,6 +631,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     gateError: gateR.e,
     steps,
     stepsError: stepsR.e,
+    aryeoPush: await aryeoPushView(job.id),
     runs: runViews,
     events: eventViews,
     batches: batchViews,
@@ -828,4 +829,14 @@ function nextDeliveryCheck(startedAt: Date | null, checkedAt: Date | null): stri
   // The sweep runs on the five-minute mark after the job is due.
   const at = Math.max(due, now);
   return new Date(Math.ceil(at / (5 * 60_000)) * 5 * 60_000).toISOString();
+}
+
+/** The Deliver panel's Aryeo row: the stage, whether the hub's login is saved, and the last push. */
+async function aryeoPushView(jobId: string): Promise<import("@/components/photoDelivery/types").AryeoPushView> {
+  const [settings, conn, progress] = await Promise.all([
+    photoDeliverySettings(),
+    prisma.connection.findUnique({ where: { provider: "aryeo_web" }, select: { secretEncrypted: true } }).catch(() => null),
+    import("@/lib/photoDelivery/aryeoPush").then((m) => m.pushProgress(jobId)).catch(() => null),
+  ]);
+  return { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, progress };
 }

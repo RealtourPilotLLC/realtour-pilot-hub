@@ -22,6 +22,8 @@ export const maxDuration = 300;
 //   link      find each job's AutoHDR shoot (free reads)
 //   fixes     run the fixes a person approved (never without that click, and
 //             only while the owner's fixRunnerEnabled switch is on)
+//   aryeo     (Oct 14 2026) the ready photos onto the Aryeo listing through
+//             the hub's own Aryeo login, and delivery when the stage allows
 //   digest    Monday 8 AM ET: the weekly photo delivery numbers
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
@@ -77,6 +79,12 @@ export async function GET(req: NextRequest) {
     // Each copy is checked until Dropbox says it is done, then the folder is swapped in.
     return stageReadyJobs({ max: 2, budgetMs: Math.min(50_000, Math.max(10_000, remaining() - 60_000)) });
   }, { maxMs: 60_000 });
+
+  await step("aryeo", async () => {
+    // Oct 14 2026: the hub puts ready photos on the Aryeo listing (and delivers, by the settings' stage).
+    const { drivePushes } = await import("@/lib/photoDelivery/aryeoPush");
+    return drivePushes({ budgetMs: Math.min(45_000, Math.max(8_000, remaining() - 40_000)) });
+  }, { maxMs: 55_000 });
 
   await step("digest", async () => {
     // Monday 8 AM ET: last week's photo delivery numbers to Jordan and Kyle.

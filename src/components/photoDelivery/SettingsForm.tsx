@@ -36,7 +36,16 @@ export type SettingsValues = {
   showAutohdrPhotos: boolean;
   fixTargetUsd: number;
   fixMaxUsd: number;
+  /** How far the hub takes photos into Aryeo by itself (aryeoPush.ts). */
+  aryeoPush: "off" | "upload" | "approve" | "auto";
 };
+
+const ARYEO_STAGES: { value: SettingsValues["aryeoPush"]; label: string; help: string }[] = [
+  { value: "off", label: "Off", help: "The hub never touches the Aryeo listing. Kyle uploads and delivers by hand." },
+  { value: "upload", label: "Upload on a press", help: "Send to Aryeo on the job page puts the 06-Ready-for-Aryeo photos on the listing, in order, checked. Kyle delivers in Aryeo." },
+  { value: "approve", label: "Upload by itself, Kyle delivers", help: "When the photos are ready, the hub puts them on the listing by itself. Kyle presses Deliver in Aryeo on the job page." },
+  { value: "auto", label: "Upload and deliver by itself", help: "The hub uploads and delivers when the photos are ready and the delivery checklist passes. The listing's customers get Aryeo's usual email." },
+];
 
 const SWITCHES: { key: keyof SettingsValues; label: string; help: string }[] = [
   { key: "enabled", label: "Track photo jobs", help: "Opens a job for every photo shoot and follows its gallery until delivery. Reads Aryeo and Dropbox only; writes nothing outside the hub." },
@@ -100,6 +109,7 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           minLongEdgePx: v.minLongEdgePx,
           qcFrom: v.qcFromDay || null,
           monthlyQcBudgetUsd: v.monthlyQcBudgetUsd,
+          aryeoPush: v.aryeoPush,
         });
         setMsg({ ok: r.ok, text: r.message });
       } catch {
@@ -125,6 +135,22 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
             </span>
           </label>
         ))}
+      </fieldset>
+
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-semibold">Aryeo: upload and delivery by the hub</legend>
+        <p className="text-[13px] text-muted">Uses the hub&rsquo;s own Aryeo login (Connections → Aryeo hub login). Start with a test listing, then let Kyle approve each delivery, then let it run by itself.</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {ARYEO_STAGES.map((st) => (
+            <label key={st.value} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 hover:bg-surface-2/40 ${v.aryeoPush === st.value ? "border-brand bg-brand-soft/40" : "border-border"}`}>
+              <input type="radio" name="pd-aryeo-push" value={st.value} checked={v.aryeoPush === st.value} onChange={() => set("aryeoPush", st.value)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
+              <span>
+                <span className="block text-sm font-medium">{st.label}</span>
+                <span className="block text-[13px] text-muted">{st.help}</span>
+              </span>
+            </label>
+          ))}
+        </div>
       </fieldset>
 
       <fieldset className="grid gap-4 sm:grid-cols-2">

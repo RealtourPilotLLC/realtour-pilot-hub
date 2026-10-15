@@ -10,6 +10,7 @@ import { overrideDeliverAction, restageForAryeoAction, startDeliveryAction, veri
 import { PhotoImg } from "./PhotoImg";
 import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
+import { AryeoPushControls, aryeoPushLine, useAryeoPushPolling } from "./AryeoPushControls";
 
 // ---------------------------------------------------------------------------
 // THE DELIVER PANEL (plan 9.6), sticky at the bottom of the job page.
@@ -77,6 +78,9 @@ export function DeliverPanel() {
     return () => clearInterval(t);
   }, [stage, router]);
   const checkLine = deliveryCheckLine(header);
+  // Oct 14 2026: the hub's own upload and delivery into Aryeo.
+  useAryeoPushPolling(data.aryeoPush);
+  const pushLine = aryeoPushLine(data.aryeoPush);
 
   const override = async () => {
     const reason = await ask({
@@ -109,6 +113,7 @@ export function DeliverPanel() {
               {STAGE_WHY[stage] && !canStage ? STAGE_WHY[stage] : replacements.length ? `${replacements.length} fixed photo${replacements.length === 1 ? "" : "s"} to replace on Aryeo` : "Steps for Aryeo inside"}
             </span>
             {checkLine && <span className={cn("block text-[12px]", checkLine.bad ? "text-danger" : "text-muted")}>{checkLine.text}</span>}
+            {pushLine && <span className={cn("block text-[12px]", pushLine.tone === "bad" ? "text-danger" : pushLine.tone === "good" ? "text-success" : "text-muted")}>{pushLine.text}</span>}
           </span>
           {open ? <ChevronDown aria-hidden className="ml-1 size-4 shrink-0" /> : <ChevronUp aria-hidden className="ml-1 size-4 shrink-0" />}
         </button>
@@ -130,6 +135,7 @@ export function DeliverPanel() {
               <Download aria-hidden className="size-4" /> Download photos ({ready.files} of {ready.expected})
             </a>
           )}
+          <AryeoPushControls push={data.aryeoPush} readyToSend={!!ready?.ready && !preparing} compact />
           {showVerify && (
             <button type="button" disabled={pending} onClick={() => void run(() => verifyDeliveryAction(jobId))} className={cn(btn, "border border-border-strong hover:bg-surface-2")}>
               <CheckCircle2 aria-hidden className="size-4" /> Verify now
@@ -251,6 +257,7 @@ export function DeliverPanel() {
                   ) : (
                     <p className="mt-0.5 text-[13px] text-muted">This job has no Aryeo listing or order linked.</p>
                   )}
+                  {steps.ready && steps.listingUrl && <AryeoPushControls push={data.aryeoPush} readyToSend={!!steps.ready.ready && !preparing} />}
                 </li>
                 {!steps.ready && (
                   <li>

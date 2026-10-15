@@ -78,6 +78,7 @@ export default async function PhotoDeliverySettingsPage() {
               paidQcAuto: settings.paidQcAuto,
               autoFix: settings.autoFix,
               showAutohdrPhotos: settings.showAutohdrPhotos,
+              aryeoPush: settings.aryeoPush,
               fixTargetUsd: settings.fixTargetUsd,
               fixMaxUsd: settings.fixMaxUsd,
             }}

@@ -20,6 +20,7 @@ import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
 import { TranscriptionCard } from "@/components/connections/TranscriptionCard";
 import { StripeWebhookCard } from "@/components/connections/StripeWebhookCard";
 import { AutohdrCard } from "@/components/connections/AutohdrCard";
+import { AryeoWebCard } from "@/components/connections/AryeoWebCard";
 import { stripeWebhookStatus } from "@/lib/stripeSignups";
 import { transcriptionCardData } from "@/lib/cutTranscripts";
 import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
@@ -485,6 +486,7 @@ export default async function ConnectionsPage({
             its own card says so, with the last reading and the last top-up
             seen in the bank. The reading form is on Settings, where Kyle is. */}
         <AutohdrCard />
+        <AryeoWebCard />
         <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
           <div className="text-sm">

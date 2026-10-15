@@ -38,6 +38,16 @@ import { getSetting, putSetting } from "@/lib/settings";
 //                  AI re-edit per photo, checked again (free) after the edit.
 //                  Needs fixRunnerEnabled too. asIsClientIds: clients whose
 //                  homes are shot as they are (only camera, car and trash fixes).
+//   aryeoPush      (Oct 14 2026, Jordan: "There has to be" a way to automate
+//                  the upload and delivery on Aryeo) the hub puts the
+//                  06-Ready-for-Aryeo photos on the listing itself, signed in
+//                  as its own Aryeo team login (aryeoPush.ts). Staged:
+//                    off      nothing (default, until the test listing passes)
+//                    upload   on a press of "Send to Aryeo"; Kyle delivers in Aryeo
+//                    approve  by itself when the photos are ready; Kyle presses
+//                             "Deliver in Aryeo" in the hub
+//                    auto     uploads and delivers by itself (the delivery
+//                             checklist still has to pass)
 // ---------------------------------------------------------------------------
 
 export type PhotoDeliverySettings = {
@@ -74,7 +84,12 @@ export type PhotoDeliverySettings = {
   showAutohdrPhotos: boolean;
   /** AutoHDR model for REAL twilight photos (a predefined twilight model; read from GET /v1/models, Oct 14: 6 = Twilight Golden). */
   realTwilightModelId: number;
+  /** How far the hub takes photos into Aryeo by itself (aryeoPush.ts). */
+  aryeoPush: AryeoPushMode;
 };
+
+export type AryeoPushMode = "off" | "upload" | "approve" | "auto";
+export const ARYEO_PUSH_MODES: readonly AryeoPushMode[] = ["off", "upload", "approve", "auto"];
 
 export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   enabled: true,
@@ -104,6 +119,7 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   asIsClientIds: [],
   realTwilightModelId: 6,
   showAutohdrPhotos: false,
+  aryeoPush: "off",
 };
 
 const KEY = "photo_delivery:settings";
@@ -142,6 +158,7 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     realTwilightModelId: num(raw.realTwilightModelId, d.realTwilightModelId, 1, 100_000),
     showAutohdrPhotos: bool(raw.showAutohdrPhotos, d.showAutohdrPhotos),
     asIsClientIds: Array.isArray(raw.asIsClientIds) ? raw.asIsClientIds.filter((x): x is string => typeof x === "string").slice(0, 500) : d.asIsClientIds,
+    aryeoPush: (ARYEO_PUSH_MODES as readonly string[]).includes(raw.aryeoPush as string) ? (raw.aryeoPush as AryeoPushMode) : d.aryeoPush,
   };
 }
 

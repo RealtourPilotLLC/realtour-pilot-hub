@@ -321,6 +321,8 @@ export type JobDetail = {
   gateError: string | null;
   steps: StepsView | null;
   stepsError: string | null;
+  /** The hub's own upload and delivery into Aryeo (aryeoPush.ts, Oct 14 2026). */
+  aryeoPush: AryeoPushView;
   runs: RunView[];
   events: EventView[];
   batches: FixBatchView[];
@@ -382,4 +384,22 @@ export type ClientProfileView = {
   overrides: RuleOverrideView[];
   updatedAt: string | null;
   updatedBy: string | null;
+};
+
+export type AryeoPushView = {
+  mode: "off" | "upload" | "approve" | "auto";
+  /** The hub's Aryeo login is saved (Connections). */
+  connected: boolean;
+  progress: {
+    state: string;
+    active: boolean;
+    total: number;
+    sent: number;
+    already: number;
+    note: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+    deliveredAt: string | null;
+    waitingForApproval: boolean;
+  } | null;
 };
