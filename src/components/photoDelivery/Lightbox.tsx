@@ -270,7 +270,11 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
   return (
     <section className="mt-4">
       <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Versions ({versions.length})</h3>
-      <p className="mt-0.5 text-[12px] text-muted">The current version is what downloads and goes to 06-Ready-for-Aryeo. Pick another to compare it side by side.</p>
+      <p className="mt-0.5 text-[12px] text-muted">
+        {photo.sourceKind === "AUTOHDR"
+          ? "The current version is what downloads and goes to 06-Ready-for-Aryeo. Pick another to compare it side by side."
+          : "The current version is the file on the Aryeo listing. Pick an AutoHDR version to compare it side by side; Restore puts its file under Replace these on the Aryeo listing."}
+      </p>
       {versions.length > 0 && (
         <ul className="mt-1.5 flex flex-wrap gap-1.5">
           {versions.map((v) => {
