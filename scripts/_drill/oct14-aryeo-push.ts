@@ -177,6 +177,27 @@ function dropbox(url: string, init?: RequestInit): Response | null {
     return json({ entries, has_more: false });
   }
   if (url === "https://api.dropboxapi.com/2/users/get_current_account") return json({ root_info: { root_namespace_id: "1", home_namespace_id: "1" } });
+  // Enough of Dropbox for the real Ready copy (handoff.ts) to run: folders, copies, deletes, the swap.
+  const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, string>) : {};
+  const under = (dir: string) => [...dropboxFolder.keys()].filter((k) => k.toLowerCase().startsWith(`${dir.toLowerCase()}/`));
+  if (url === "https://api.dropboxapi.com/2/files/create_folder_v2") return json({ metadata: { id: id("fld"), path_display: body.path } });
+  if (url === "https://api.dropboxapi.com/2/files/delete_v2") {
+    for (const k of [...under(body.path), body.path]) dropboxFolder.delete(k);
+    return json({ metadata: { path_display: body.path } });
+  }
+  if (url === "https://api.dropboxapi.com/2/files/copy_v2") {
+    const size = dropboxFolder.get(body.from_path);
+    if (size == null) return json({ error_summary: "from_lookup/not_found/" }, 409);
+    dropboxFolder.set(body.to_path, size);
+    return json({ metadata: { path_display: body.to_path } });
+  }
+  if (url === "https://api.dropboxapi.com/2/files/move_v2") {
+    for (const k of under(body.from_path)) {
+      dropboxFolder.set(body.to_path + k.slice(body.from_path.length), dropboxFolder.get(k)!);
+      dropboxFolder.delete(k);
+    }
+    return json({ metadata: { path_display: body.to_path } });
+  }
   return null;
 }
 
@@ -320,6 +341,41 @@ async function main() {
     c.ok("…and the job's activity says so", !!ev);
     const view = await (await import("@/app/ops/photo-delivery/data")).loadJobDetail(F.job.id, { viewer: { role: "ADMIN", name: "Kyle", isOwner: false, canSeeMoney: false } });
     c.ok("the job page carries the stage, the login and the push", view?.aryeoPush.mode === "upload" && view.aryeoPush.connected && view.aryeoPush.progress?.state === "FAILED");
+
+    // ======================================================================
+    c.head("7 · marked as delivering before the folder existed (Bob's same-day override)");
+    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    const G = await mkJob("70 Same Day Rd", "L-G", 3);
+    // Bob's job: no 06-Ready-for-Aryeo yet; its photos sit in Dropbox (the real Ready copy makes the folder).
+    for (const k of [...dropboxFolder.keys()].filter((k) => k.startsWith(`${G.folder}/`))) dropboxFolder.delete(k);
+    const gPhotos = await prisma.photoAsset.findMany({ where: { jobId: G.job.id } });
+    for (const ph of gPhotos) {
+      const src = `/AutoHDR/x/70 Same Day Rd/04-Final-Photos/${ph.name}`;
+      dropboxFolder.set(src, 60_000);
+      await prisma.photoAsset.update({ where: { id: ph.id }, data: { sourceKind: "DROPBOX", dropboxPath: src } });
+    }
+    await prisma.photoJob.update({ where: { id: G.job.id }, data: { stage: "DELIVERING", deliveryPath: null, deliveryStagedAt: null } });
+    const pre = await P.requestPush(G.job.id, { by: "Jordan" });
+    const pg0 = await P.pushProgress(G.job.id);
+    c.ok("Send to Aryeo with no folder: it makes 06-Ready-for-Aryeo first", pre.ok && pre.started && pg0?.state === "PREPARING" && /ready/i.test(pre.message), `${pre.message} ${JSON.stringify(pg0)}`);
+    for (let i = 0; i < 12; i++) await P.advancePush(G.job.id, { budgetMs: 30_000 });
+    const jg = await prisma.photoJob.findUniqueOrThrow({ where: { id: G.job.id } });
+    const folderFiles = jg.deliveryPath ? [...dropboxFolder.keys()].filter((k) => k.startsWith(`${jg.deliveryPath}/`)) : [];
+    c.ok("…the folder is filled for real (the Ready copy ran)", folderFiles.length === 3 && /06-Ready-for-Aryeo$/.test(jg.deliveryPath ?? ""), `${jg.deliveryPath} ${JSON.stringify(folderFiles)}`);
+    c.ok("then it sends, delivers in Aryeo and verifies (already marked as delivering: no second checklist press)", listings.get("L-G")!.images.length === 3 && listings.get("L-G")!.delivery === "DELIVERED" && jg.stage === "DELIVERED", `${jg.stage} ${listings.get("L-G")!.images.length} ${JSON.stringify(await P.pushProgress(G.job.id))}`);
+    const drive2 = await P.drivePushes({ budgetMs: 30_000 });
+    c.ok("a delivered job is never sent again", !drive2.started.includes(G.job.id) && (await P.requestPush(G.job.id, { by: "Kyle" })).message === "This job is already delivered.");
+    // And from the cron: a job marked as delivering with no folder is picked up by itself (auto).
+    const H2 = await mkJob("80 Cron Pick Ln", "L-H", 2);
+    for (const k of [...dropboxFolder.keys()].filter((k) => k.startsWith(`${H2.folder}/`))) dropboxFolder.delete(k);
+    for (const ph of await prisma.photoAsset.findMany({ where: { jobId: H2.job.id } })) {
+      const src = `/AutoHDR/x/80 Cron Pick Ln/04-Final-Photos/${ph.name}`;
+      dropboxFolder.set(src, 60_000);
+      await prisma.photoAsset.update({ where: { id: ph.id }, data: { sourceKind: "AUTOHDR", sourceRef: null } });
+    }
+    await prisma.photoJob.update({ where: { id: H2.job.id }, data: { stage: "DELIVERING", deliveryPath: null, deliveryStagedAt: null } });
+    const d3 = await P.drivePushes({ budgetMs: 30_000 });
+    c.ok("auto: the cron picks up a job marked as delivering without a folder", d3.started.includes(H2.job.id), JSON.stringify(d3));
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

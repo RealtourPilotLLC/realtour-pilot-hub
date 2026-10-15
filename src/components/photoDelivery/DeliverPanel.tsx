@@ -257,7 +257,7 @@ export function DeliverPanel() {
                   ) : (
                     <p className="mt-0.5 text-[13px] text-muted">This job has no Aryeo listing or order linked.</p>
                   )}
-                  {steps.ready && steps.listingUrl && <AryeoPushControls push={data.aryeoPush} readyToSend={!!steps.ready.ready && !preparing} />}
+                  {steps.listingUrl && <AryeoPushControls push={data.aryeoPush} readyToSend={!preparing} />}
                 </li>
                 {!steps.ready && (
                   <li>

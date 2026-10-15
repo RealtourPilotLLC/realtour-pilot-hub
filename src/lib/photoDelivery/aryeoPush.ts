@@ -40,7 +40,7 @@ const MAX_TRIES = 3;
 const CHECK_FOR_MS = 20 * 60_000;
 
 export type PushItem = { photoId: string; name: string; path: string; uuid: string | null; tries: number; error: string | null; already: boolean };
-export type PushState = "SENDING" | "ADDING" | "CHECKING" | "ORDERING" | "WAITING" | "DELIVERING" | "CONFIRMING" | "DONE" | "FAILED";
+export type PushState = "PREPARING" | "SENDING" | "ADDING" | "CHECKING" | "ORDERING" | "WAITING" | "DELIVERING" | "CONFIRMING" | "DONE" | "FAILED";
 export type PushRun = {
   id: string;
   listingId: string;
@@ -58,6 +58,8 @@ export type PushRun = {
   finishedAt: string | null;
   note: string | null;
   lease: { token: string; until: number } | null;
+  /** Send even when the listing holds other photos (a person's "Send anyway"). */
+  anyway?: boolean;
 };
 export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean };
 
@@ -87,7 +89,7 @@ async function save(jobId: string, run: PushRun, prevRaw: string | null): Promis
   return r.count === 1 ? value : null;
 }
 
-const ACTIVE: PushState[] = ["SENDING", "ADDING", "CHECKING", "ORDERING", "DELIVERING", "CONFIRMING"];
+const ACTIVE: PushState[] = ["PREPARING", "SENDING", "ADDING", "CHECKING", "ORDERING", "DELIVERING", "CONFIRMING"];
 
 export function progressOf(run: PushRun): PushProgress {
   return {
@@ -117,6 +119,36 @@ const lower = (s: string) => s.toLowerCase();
  * Start a push for a job. `then` defaults to what the settings' stage says.
  * `anyway` sends even when the listing already holds other photos.
  */
+/**
+ * The photos to send, from the finished 06-Ready-for-Aryeo folder, checked
+ * against what the listing already holds. `wait` = the folder is not ready yet.
+ */
+async function buildItems(jobId: string, listingId: string, anyway: boolean): Promise<{ items: PushItem[] } | { wait: string } | { error: string }> {
+  const { deliveryOrderFor } = await import("./delivery");
+  const { readyFolderState } = await import("./handoff");
+  const order = await deliveryOrderFor(jobId);
+  if (!order.length) return { error: "No photos are in the delivery yet." };
+  const rs = await readyFolderState(jobId, order.length);
+  if (!rs || rs.preparing) return { wait: rs?.preparing ? `Getting the photos ready first: ${rs.files} of ${rs.total} copied to 06-Ready-for-Aryeo.` : "Getting the photos ready first (06-Ready-for-Aryeo)." };
+  if (!rs.ready) return rs.failed ? { error: `06-Ready-for-Aryeo could not be filled (${rs.failed} photo${rs.failed === 1 ? "" : "s"} failed${rs.note ? `: ${rs.note}` : ""}). Press Get them ready again, then Send to Aryeo.` } : { wait: `Getting the photos ready first: ${rs.files} of ${order.length} in 06-Ready-for-Aryeo.` };
+  const { listingGallery } = await import("./jobs");
+  const listing = await listingGallery(listingId);
+  if (!listing) return { wait: "The Aryeo listing could not be read just now; trying again." };
+  const want = new Set(order.map((o) => lower(o.deliveryName)));
+  const onListing = new Set(listing.entries.map((e) => lower(e.name)));
+  const others = listing.entries.filter((e) => !want.has(lower(e.name)));
+  if (others.length && !anyway) {
+    return { error: `The listing already has ${others.length} photo${others.length === 1 ? "" : "s"} that ${others.length === 1 ? "is" : "are"} not from 06-Ready-for-Aryeo (${others.slice(0, 3).map((e) => e.name).join(", ")}${others.length > 3 ? "…" : ""}). Remove ${others.length === 1 ? "it" : "them"} in Aryeo first, or press Send anyway to add these next to ${others.length === 1 ? "it" : "them"}.` };
+  }
+  return { items: order.map((o) => ({ photoId: o.photoId, name: o.deliveryName, path: `${rs.folder}/${o.deliveryName}`, uuid: null, tries: 0, error: null, already: onListing.has(lower(o.deliveryName)) })) };
+}
+
+/**
+ * Start a push for a job. `then` defaults to what the settings' stage says.
+ * `anyway` sends even when the listing already holds other photos. When the
+ * 06-Ready-for-Aryeo folder is not finished, it is made first (the push waits
+ * for it): a job marked as delivering before its folder existed still goes.
+ */
 export async function requestPush(jobId: string, opts: { by?: string | null; then?: PushRun["then"]; anyway?: boolean; mode?: AryeoPushMode } = {}): Promise<{ ok: boolean; started: boolean; message: string }> {
   const settings = await photoDeliverySettings();
   const mode = opts.mode ?? settings.aryeoPush;
@@ -125,37 +157,36 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
   if (!(await aryeoWebCredentials())) return { ok: false, started: false, message: "The hub's Aryeo login is not set up yet. Jordan adds it on Connections → Aryeo hub login." };
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, stage: true } });
   if (!job) return { ok: false, started: false, message: "That job no longer exists." };
+  if (job.stage === "DELIVERED") return { ok: false, started: false, message: "This job is already delivered." };
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true } });
   if (!project?.aryeoListingId) return { ok: false, started: false, message: "This job has no Aryeo listing linked yet, so there is nowhere to send the photos." };
-  const { deliveryOrderFor } = await import("./delivery");
-  const { readyFolderState } = await import("./handoff");
-  const order = await deliveryOrderFor(jobId);
-  const rs = await readyFolderState(jobId, order.length);
-  if (!rs || rs.preparing) return { ok: false, started: false, message: rs?.preparing ? "The photos are still being copied to 06-Ready-for-Aryeo. Send them when that finishes." : "The photos are not in 06-Ready-for-Aryeo yet. Press Get them ready first." };
-  if (!rs.ready) return { ok: false, started: false, message: `Only ${rs.files} of ${order.length} photos are in 06-Ready-for-Aryeo. Press Get them ready again first.` };
-  const { listingGallery } = await import("./jobs");
-  const listing = await listingGallery(project.aryeoListingId);
-  if (!listing) return { ok: false, started: false, message: "The Aryeo listing could not be read just now. Try again in a minute." };
-  const want = new Set(order.map((o) => lower(o.deliveryName)));
-  const onListing = new Set(listing.entries.map((e) => lower(e.name)));
-  const others = listing.entries.filter((e) => !want.has(lower(e.name)));
-  if (others.length && !opts.anyway) {
-    return { ok: false, started: false, message: `The listing already has ${others.length} photo${others.length === 1 ? "" : "s"} that ${others.length === 1 ? "is" : "are"} not from 06-Ready-for-Aryeo (${others.slice(0, 3).map((e) => e.name).join(", ")}${others.length > 3 ? "…" : ""}). Remove ${others.length === 1 ? "it" : "them"} in Aryeo first, or press Send anyway to add these next to ${others.length === 1 ? "it" : "them"}.` };
-  }
   const { run, raw } = await load(jobId);
-  if (run && ACTIVE.includes(run.state) && run.lease && run.lease.until > Date.now()) return { ok: true, started: false, message: "Already sending to Aryeo." };
   if (run && ACTIVE.includes(run.state)) return { ok: true, started: false, message: "Already sending to Aryeo." };
+  const built = await buildItems(jobId, project.aryeoListingId, opts.anyway === true);
+  if ("error" in built) return { ok: false, started: false, message: built.error };
+  if ("wait" in built) {
+    // The folder first: start it unless it is already being filled.
+    const { requestReady, readyProgress } = await import("./handoff");
+    const prog = await readyProgress(jobId).catch(() => null);
+    if (!prog?.active) await requestReady(jobId, { force: true, by: opts.by ?? "aryeo-push" }).catch(() => null);
+  }
   const then: PushRun["then"] = opts.then ?? (mode === "auto" ? "deliver" : mode === "approve" ? "approval" : "stop");
   const now = new Date().toISOString();
-  const items: PushItem[] = order.map((o) => ({ photoId: o.photoId, name: o.deliveryName, path: `${rs.folder}/${o.deliveryName}`, uuid: null, tries: 0, error: null, already: onListing.has(lower(o.deliveryName)) }));
+  const items = "items" in built ? built.items : [];
+  const all = items.length > 0 && items.every((i) => i.already);
   const next: PushRun = {
-    id: randomBytes(4).toString("hex"), listingId: project.aryeoListingId, state: items.every((i) => i.already) ? "CHECKING" : "SENDING", then, items, groupId: null,
-    addedAt: items.every((i) => i.already) ? now : null, ordered: false, deliveredAt: null, by: opts.by ?? null, startedAt: now, updatedAt: now, finishedAt: null, note: null, lease: null,
+    id: randomBytes(4).toString("hex"), listingId: project.aryeoListingId, state: "items" in built ? (all ? "CHECKING" : "SENDING") : "PREPARING", then, items, groupId: null,
+    addedAt: all ? now : null, ordered: false, deliveredAt: null, by: opts.by ?? null, startedAt: now, updatedAt: now, finishedAt: null, note: "wait" in built ? built.wait : null, lease: null, anyway: opts.anyway === true,
   };
   if (!(await save(jobId, next, raw))) return { ok: false, started: false, message: "Someone started it a moment ago." };
   const already = items.filter((i) => i.already).length;
-  await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${already ? ` (${already} already there)` : ""}${then === "deliver" ? ", then delivering" : then === "approval" ? ", then waiting for Deliver in Aryeo" : ""}`);
-  return { ok: true, started: true, message: already === items.length ? "Every photo is already on the listing. Checking the order." : `Sending ${items.length - already} photos to the Aryeo listing. The panel shows the progress.` };
+  const tail = then === "deliver" ? ", then delivering" : then === "approval" ? ", then waiting for Deliver in Aryeo" : "";
+  if (next.state === "PREPARING") {
+    await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending to the Aryeo listing${tail}: getting 06-Ready-for-Aryeo ready first`);
+    return { ok: true, started: true, message: "Getting the photos ready in 06-Ready-for-Aryeo first, then sending them to the Aryeo listing. The panel shows the progress." };
+  }
+  await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${already ? ` (${already} already there)` : ""}${tail}`);
+  return { ok: true, started: true, message: all ? "Every photo is already on the listing. Checking the order." : `Sending ${items.length - already} photos to the Aryeo listing. The panel shows the progress.` };
 }
 
 /** Kyle's "Deliver in Aryeo" on a push that is waiting for it (or a finished upload-only push). */
@@ -188,6 +219,25 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
   const r: PushRun = JSON.parse(JSON.stringify(r0));
   const W = await import("@/lib/integrations/aryeoWeb");
   try {
+    if (r.state === "PREPARING") {
+      // Move the folder on too (the cron's ready step also does), then look.
+      const { advanceReady } = await import("./handoff");
+      await advanceReady(jobId, { budgetMs: 20_000 }).catch(() => null);
+      const built = await buildItems(jobId, r.listingId, r.anyway === true);
+      if ("error" in built) return fail(r, built.error);
+      if ("wait" in built) {
+        if (Date.now() - Date.parse(r.startedAt) > 45 * 60_000) return fail(r, `06-Ready-for-Aryeo was not ready after 45 minutes (${built.wait}). Press Get them ready again, then Send to Aryeo.`);
+        if (built.wait === r.note) return null;
+        r.note = built.wait;
+        return r;
+      }
+      r.items = built.items;
+      r.note = null;
+      const all = r.items.every((i) => i.already);
+      r.state = all ? "CHECKING" : "SENDING";
+      if (all) r.addedAt = new Date().toISOString();
+      return r;
+    }
     if (r.state === "SENDING") {
       const batch = r.items.filter((i) => !i.already && !i.uuid && i.tries < MAX_TRIES).slice(0, 3);
       if (!batch.length) {
@@ -358,9 +408,16 @@ export async function drivePushes(opts: { budgetMs?: number } = {}): Promise<{ s
     // Jobs whose 06-Ready-for-Aryeo folder is in place and not sent yet (one new push per pass;
     // requestPush checks the folder is complete and not being refilled).
     const { READY_FOLDER } = await import("./handoff");
+    // Also a job someone marked as delivering before its folder existed (a same-day override).
     const jobs = await prisma.photoJob.findMany({
-      where: { stage: { in: ["READY", "QC_REVIEW"] }, deliveryPath: { endsWith: READY_FOLDER }, deliveryStagedAt: { not: null }, stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) } },
-      orderBy: { deliveryStagedAt: "desc" },
+      where: {
+        stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
+        OR: [
+          { stage: { in: ["READY", "QC_REVIEW"] }, deliveryPath: { endsWith: READY_FOLDER }, deliveryStagedAt: { not: null } },
+          { stage: "DELIVERING", photos: { some: { status: "ACTIVE", sourceKind: "AUTOHDR" } } },
+        ],
+      },
+      orderBy: { stageChangedAt: "desc" },
       select: { id: true },
       take: 15,
     });

@@ -39,6 +39,7 @@ export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted
   if (!p) return null;
   if (p.deliveredAt && p.state === "DONE") return { text: `Delivered in Aryeo by the hub ${etMonthDayTime(p.deliveredAt)}.`, tone: "good" };
   if (p.state === "FAILED") return { text: p.note ?? "Sending to Aryeo stopped.", tone: "bad" };
+  if (p.state === "PREPARING") return { text: p.note ?? "Getting the photos ready in 06-Ready-for-Aryeo first.", tone: "busy" };
   if (p.state === "SENDING") return { text: `Sending to Aryeo: ${p.sent} of ${p.total}${p.already ? ` (${p.already} already there)` : ""}.`, tone: "busy" };
   if (p.state === "ADDING") return { text: "Adding the photos to the listing.", tone: "busy" };
   if (p.state === "CHECKING") return { text: p.note ?? "Checking that Aryeo has every photo.", tone: "busy" };
@@ -92,7 +93,7 @@ export function AryeoPushControls({ push, readyToSend, compact = false }: { push
     <div className="mt-1 space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
         {canSend && (
-          <button type="button" disabled={pending || !readyToSend} onClick={() => void send()} title={readyToSend ? "Put the 06-Ready-for-Aryeo photos on the listing, in order" : "Get the photos ready first"} className={cn(btn, "border border-border-strong hover:bg-surface-2")}>
+          <button type="button" disabled={pending || !readyToSend} onClick={() => void send()} title={readyToSend ? "Put the finished photos on the listing, in order (06-Ready-for-Aryeo is made first when needed)" : "The photos are being copied to 06-Ready-for-Aryeo; send them when that finishes"} className={cn(btn, "border border-border-strong hover:bg-surface-2")}>
             <UploadCloud aria-hidden className="size-4" /> {p?.state === "FAILED" ? "Send to Aryeo again" : "Send to Aryeo"}
           </button>
         )}
