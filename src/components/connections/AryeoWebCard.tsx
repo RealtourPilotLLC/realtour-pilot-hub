@@ -14,9 +14,7 @@ import { AryeoWebConnectForm, AryeoWebConnectedControls } from "./AryeoWebConnec
 // The stage (off / upload / approve / auto) is in Photo Delivery settings.
 const STAGE: Record<string, string> = {
   off: "Off: Kyle uploads and delivers by hand",
-  upload: "Uploads on a press of Send to Aryeo; Kyle delivers",
-  approve: "Uploads by itself; Kyle presses Deliver in Aryeo",
-  auto: "Uploads by itself; delivers by itself only when the delivery checklist passes",
+  on: "Kyle approves each job (Approve and deliver, or Approve and upload to Aryeo)",
 };
 
 export async function AryeoWebCard() {
@@ -43,6 +41,7 @@ export async function AryeoWebCard() {
       <ul className="mt-2 space-y-1 text-xs text-muted">
         {connected && <li><span className="font-medium text-foreground">Login:</span> {email ?? "saved"}{conn?.updatedAt ? `, saved ${etDateTime(conn.updatedAt)}` : ""}</li>}
         <li><span className="font-medium text-foreground">Stage:</span> {STAGE[settings.aryeoPush] ?? settings.aryeoPush}</li>
+        {settings.aryeoPush === "on" && settings.sameDayAutoDeliver && <li>Same-day orders deliver by themselves once every check passes.</li>}
         {!connected && settings.aryeoPush !== "off" && <li className="text-warning">The stage is not Off, but the login is not set up, so nothing reaches Aryeo yet.</li>}
         {conn?.lastError && <li className="text-danger"><span className="font-medium">Last error:</span> {conn.lastError}</li>}
       </ul>

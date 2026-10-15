@@ -41,6 +41,7 @@ const validSessions = new Set<string>();
 const pendingSessions = new Set<string>(); // signed in, company not picked yet
 const processingPasses = 1; // Aryeo shows new photos only after this many API reads
 let refuseAttach = false;
+let refuseLogin = false;
 let bounceAfterAttach = false;
 const dropboxFolder = new Map<string, number>(); // path -> size
 let n = 0;
@@ -85,7 +86,7 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
     calls.push({ kind: "login" });
     if (h.get("x-xsrf-token") !== "tok==" || ck.aryeo_session !== "anon") return new Response("CSRF token mismatch", { status: 419 });
     const b = JSON.parse(String(init?.body ?? "{}")) as { email?: string; password?: string };
-    if (b.email !== LOGIN.email || b.password !== LOGIN.password) return withCookies(redirect("https://app.aryeo.com/login"), ["aryeo_session=refused; path=/; domain=.aryeo.com"]);
+    if (refuseLogin || b.email !== LOGIN.email || b.password !== LOGIN.password) return withCookies(redirect("https://app.aryeo.com/login"), ["aryeo_session=refused; path=/; domain=.aryeo.com"]);
     // Like the real Aryeo (seen live Oct 14): 409 + X-Inertia-Location to the
     // company picker; the session is only good once /companies picked the company.
     const s = `auth-${++sessionSeq}`;
@@ -255,6 +256,7 @@ async function main() {
       return Buffer.alloc(dropboxFolder.get(path)!, 7);
     });
 
+    const sameDayOrder = async (projectId: string) => prisma.orderItem.create({ data: { projectId, title: "Same Day Photo Delivery", amount: 50 } });
     const mkJob = async (street: string, listingId: string, photos: number) => {
       const client = await prisma.client.create({ data: { name: `${street} Client` } });
       const project = await prisma.project.create({ data: { title: `${street}, Reading, PA`, addressLine: street, clientId: client.id, aryeoListingId: listingId } });
@@ -294,7 +296,7 @@ async function main() {
 
     // ======================================================================
     c.head("3 · Send to Aryeo (stage: upload)");
-    await savePhotoDeliverySettings({ aryeoPush: "upload" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const loginsBefore = calls.filter((x) => x.kind === "login").length;
     const r = await P.requestPush(A.job.id, { by: "Kyle" });
     c.ok("started", r.ok && r.started, r.message);
@@ -326,33 +328,38 @@ async function main() {
     c.ok("Send anyway adds them next to it, ours first in order", anyway.ok && lb.images.length === 4 && [...lb.images].sort((a, b) => a.index - b.index)[3].filename === "Old (1 of 1).jpg", JSON.stringify([...lb.images].sort((a, b) => a.index - b.index).map((i) => i.filename)));
 
     // ======================================================================
-    c.head("5 · approve: Kyle presses Deliver in Aryeo");
-    await savePhotoDeliverySettings({ aryeoPush: "approve" }, "drill");
+    c.head("5 · Ready to review: nothing reaches Aryeo before Kyle approves (Jordan, Oct 15)");
+    const { photoDeliverySettings } = await import("@/lib/photoDelivery/settings");
+    await prisma.appSetting.update({ where: { key: "photo_delivery:settings" }, data: { value: JSON.stringify({ ...JSON.parse((await prisma.appSetting.findUniqueOrThrow({ where: { key: "photo_delivery:settings" } })).value), aryeoPush: "auto" }) } });
+    c.ok("the old stages (upload, approve, auto) read as on: Kyle approves", (await photoDeliverySettings()).aryeoPush === "on");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const C = await mkJob("30 Approve Ct", "L-C", 3);
     const drive1 = await P.drivePushes({ budgetMs: 60_000 });
-    c.ok("approve stage: the cron sends a ready job by itself", drive1.started.includes(C.job.id), JSON.stringify(drive1));
-    for (let i = 0; i < 6; i++) await P.advancePush(C.job.id, { budgetMs: 30_000 });
-    const waiting = await P.pushProgress(C.job.id);
-    c.ok("…and waits for Kyle (nothing delivered)", waiting?.state === "WAITING" && waiting.waitingForApproval && listings.get("L-C")!.delivery === "UNDELIVERED", JSON.stringify(waiting));
-    const ok = await P.approvePushDelivery(C.job.id, "Kyle");
-    for (let i = 0; i < 4; i++) await P.advancePush(C.job.id, { budgetMs: 30_000 });
+    c.ok("a job Ready to review waits for Kyle: the cron sends nothing", !drive1.started.includes(C.job.id) && !(await P.pushProgress(C.job.id)) && listings.get("L-C")!.images.length === 0, JSON.stringify(drive1));
+    const ok = await P.approveJob(C.job.id, "Kyle", { deliver: true });
+    const cStage = (await prisma.photoJob.findUniqueOrThrow({ where: { id: C.job.id } })).stage;
+    c.ok("Approve and deliver: the photos go up first (nothing marked as delivering before they are on the listing)", ok.ok && ok.started && cStage === "READY", `${ok.message} ${cStage}`);
+    for (let i = 0; i < 10; i++) await P.advancePush(C.job.id, { budgetMs: 30_000 });
     const del = calls.filter((x) => x.kind === "deliver").pop()?.body as Record<string, unknown>;
     c.ok("Deliver in Aryeo sends what Aryeo's Deliver window sends: its own email (subject, body, bcc) to the listing's customers", ok.ok && listings.get("L-C")!.delivery === "DELIVERED" && JSON.stringify(del.added_customer_ids) === JSON.stringify(["ctm-L-C"]) && (del.added_emails as unknown[]).length === 0 && del.email_subject === "Your listing media is ready!" && /902 Valley Rd/.test(String(del.email_body)) && del.email_bcc_list === "office@realtourpilot.com" && del.notify_via_email === true && del.fulfill_orders === true && del.schedule_date === null, JSON.stringify(del));
     c.ok("every change says where it comes from (Aryeo bounces one that doesn't)", !calls.some((x) => x.kind === "no-origin") && calls.some((x) => x.kind === "delivery-email"));
     const jc = await prisma.photoJob.findUniqueOrThrow({ where: { id: C.job.id } });
     const pc = await P.pushProgress(C.job.id);
     c.ok("the hub confirms DELIVERED through the API and the job is verified", jc.stage === "DELIVERED" && pc?.state === "DONE" && !!pc.deliveredAt, `${jc.stage} ${pc?.state}`);
+    c.ok("…and the job's activity says Kyle approved it", (await prisma.photoJobEvent.count({ where: { jobId: C.job.id, actor: "Kyle", action: "approved: deliver" } })) === 1);
 
     // ======================================================================
-    c.head("5b · auto: uploads and delivers by itself, and an expired session signs in again");
-    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    c.head("5b · a same-day order approves and delivers itself once every check passes, and an expired session signs in again");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const D = await mkJob("40 Auto Ln", "L-D", 2);
+    await sameDayOrder(D.project.id);
     validSessions.clear();
     const logins0 = calls.filter((x) => x.kind === "login").length;
     await P.drivePushes({ budgetMs: 60_000 });
     for (let i = 0; i < 8; i++) await P.advancePush(D.job.id, { budgetMs: 30_000 });
     const jd = await prisma.photoJob.findUniqueOrThrow({ where: { id: D.job.id } });
     c.ok("delivered and verified with nobody pressing anything", listings.get("L-D")!.delivery === "DELIVERED" && jd.stage === "DELIVERED", jd.stage);
+    c.ok("…the activity says the hub approved it as a same-day order", (await prisma.photoJobEvent.count({ where: { jobId: D.job.id, action: { startsWith: "same-day order, every check passes" } } })) === 1);
     c.ok("…after signing in again once when Aryeo dropped the session", calls.filter((x) => x.kind === "login").length - logins0 === 1);
 
     // ======================================================================
@@ -366,7 +373,7 @@ async function main() {
 
     // ======================================================================
     c.head("6 · a refusal stops the run in Aryeo's words");
-    await savePhotoDeliverySettings({ aryeoPush: "upload" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const F = await mkJob("60 Refuse St", "L-F", 2);
     refuseAttach = true;
     await P.requestPush(F.job.id, { by: "Kyle" });
@@ -377,11 +384,11 @@ async function main() {
     const ev = await prisma.photoJobEvent.findFirst({ where: { jobId: F.job.id, action: { contains: "stopped" } } });
     c.ok("…and the job's activity says so", !!ev);
     const view = await (await import("@/app/ops/photo-delivery/data")).loadJobDetail(F.job.id, { viewer: { role: "ADMIN", name: "Kyle", isOwner: false, canSeeMoney: false } });
-    c.ok("the job page carries the stage, the login and the push", view?.aryeoPush.mode === "upload" && view.aryeoPush.connected && view.aryeoPush.progress?.state === "FAILED");
+    c.ok("the job page carries the stage, the login and the push", view?.aryeoPush.mode === "on" && view.aryeoPush.connected && view.aryeoPush.progress?.state === "FAILED");
 
     // ======================================================================
     c.head("7 · marked as delivering before the folder existed (Bob's same-day override)");
-    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const G = await mkJob("70 Same Day Rd", "L-G", 3);
     // Bob's job: no 06-Ready-for-Aryeo yet; its photos sit in Dropbox (the real Ready copy makes the folder).
     for (const k of [...dropboxFolder.keys()].filter((k) => k.startsWith(`${G.folder}/`))) dropboxFolder.delete(k);
@@ -416,7 +423,7 @@ async function main() {
 
     // ======================================================================
     c.head("8 · never added twice, and never delivered past open issues by itself");
-    await savePhotoDeliverySettings({ aryeoPush: "upload" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const I = await mkJob("90 Bounce Blvd", "L-I", 3);
     bounceAfterAttach = true;
     await P.requestPush(I.job.id, { by: "Kyle" });
@@ -424,11 +431,11 @@ async function main() {
     const attachesI = calls.filter((x) => x.kind === "attach" && (x.body as { form_uuid_field: string }).form_uuid_field && ucGroups.get((x.body as { form_uuid_field: string }).form_uuid_field)?.every((u) => /^03|^02|^01/.test(ucFiles.get(u) ?? "") || true)).length;
     const pi = await P.pushProgress(I.job.id);
     c.ok("Aryeo signs the hub out right after it added the photos: the add is not sent again, the check finds them", listings.get("L-I")!.images.length === 3 && pi?.state === "DONE", `${listings.get("L-I")!.images.length} ${JSON.stringify(pi)} attaches=${attachesI}`);
-    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const K = await mkJob("95 Open Issue Way", "L-K", 2);
     const kRun = await prisma.photoJob.findUniqueOrThrow({ where: { id: K.job.id }, select: { lastQcRunId: true } });
     await prisma.photoQcFinding.create({ data: { qcRunId: kRun.lastQcRunId!, jobId: K.job.id, photoId: (await prisma.photoAsset.findFirstOrThrow({ where: { jobId: K.job.id } })).id, ruleId: "PREP_PERSONAL_DOCUMENTS", groupKey: "PREP_PERSONAL_DOCUMENTS", pass: "P1_PHOTO", source: "AHDR", specificIssue: "papers on the fridge", explanation: "x", severity: "CRITICAL", confidence: 0.95, responsibility: "ADMIN", fixStrategy: "HUMAN_REVIEW", privacySensitive: true, status: "OPEN" } });
-    await P.requestPush(K.job.id, { by: "aryeo-push" });
+    await P.requestPush(K.job.id, { by: "aryeo-push", then: "deliver" });
     for (let i = 0; i < 8; i++) await P.advancePush(K.job.id, { budgetMs: 30_000 });
     const pk = await P.pushProgress(K.job.id);
     c.ok("auto, shadow mode on, an open privacy issue: uploaded, NOT delivered, waits with why", listings.get("L-K")!.delivery === "UNDELIVERED" && pk?.state === "WAITING" && /open items/.test(pk.note ?? ""), JSON.stringify(pk));
@@ -437,33 +444,36 @@ async function main() {
 
     // ======================================================================
     c.head("9 · a photo fixed after it went on the listing (audit, Oct 15)");
-    await savePhotoDeliverySettings({ aryeoPush: "approve" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const M = await mkJob("100 Changed Ct", "L-M", 3);
-    const dm = await P.drivePushes({ budgetMs: 60_000 });
+    const dm = await P.approveJob(M.job.id, "Kyle", { deliver: false });
     for (let i = 0; i < 8; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
-    c.ok("sent and waiting for Kyle", dm.started.includes(M.job.id) && (await P.pushProgress(M.job.id))?.state === "WAITING" && listings.get("L-M")!.images.length === 3, JSON.stringify(await P.pushProgress(M.job.id)));
+    c.ok("Approve and upload: on the listing, Kyle delivers", dm.started && (await P.pushProgress(M.job.id))?.state === "DONE" && listings.get("L-M")!.images.length === 3 && listings.get("L-M")!.delivery === "UNDELIVERED", JSON.stringify(await P.pushProgress(M.job.id)));
     // A fix lands on photo 2 (a new version, same name in the folder).
     const second = M.order[1];
     await prisma.photoAsset.update({ where: { id: second.photoId }, data: { contentHash: "100 Changed Ct-1-fixed", inspectedHash: "100 Changed Ct-1-fixed" } });
     const stale = await P.approvePushDelivery(M.job.id, "Kyle");
-    c.ok("Deliver in Aryeo refuses the old set and says what to do", !stale.ok && /changed after they went on the listing/.test(stale.message) && listings.get("L-M")!.delivery === "UNDELIVERED", stale.message);
+    c.ok("Deliver in Aryeo refuses the old set and says what to do", !stale.ok && /changed after they went on the listing/.test(stale.message) && /Approve again/.test(stale.message) && listings.get("L-M")!.delivery === "UNDELIVERED", stale.message);
+    const dmCron = await P.drivePushes({ budgetMs: 30_000 });
+    c.ok("Kyle's approval covered the photos as they were: the cron does not send the change by itself", !dmCron.started.includes(M.job.id));
     const uploads0 = calls.filter((x) => x.kind === "upload").length;
     const oldImg = listings.get("L-M")!.images.find((i) => i.filename === second.deliveryName)!.id;
-    const dm2 = await P.drivePushes({ budgetMs: 60_000 });
+    const dm2 = await P.approveJob(M.job.id, "Kyle", { deliver: false });
     for (let i = 0; i < 10; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
     const lm = listings.get("L-M")!;
     const del0 = calls.filter((x) => x.kind === "delete").pop()?.body as { images: string[] } | undefined;
-    c.ok("the cron sends it again by itself (approve stage)", dm2.started.includes(M.job.id), JSON.stringify(dm2));
+    c.ok("Kyle approves again", dm2.started, JSON.stringify(dm2));
     c.ok("only the changed photo is replaced: the old one taken off, the new one sent, nothing doubled", JSON.stringify(del0?.images) === JSON.stringify([oldImg]) && calls.filter((x) => x.kind === "upload").length - uploads0 === 1 && lm.images.length === 3 && !lm.images.some((i) => i.id === oldImg), `${JSON.stringify(del0)} uploads=${calls.filter((x) => x.kind === "upload").length - uploads0} ${lm.images.length}`);
-    c.ok("…back in delivery order, waiting for Kyle again", [...lm.images].sort((a, b) => a.index - b.index).map((i) => i.filename).join() === M.order.map((o) => o.deliveryName).join() && (await P.pushProgress(M.job.id))?.state === "WAITING");
-    const fresh = await P.approvePushDelivery(M.job.id, "Kyle");
+    c.ok("…back in delivery order, up to date", [...lm.images].sort((a, b) => a.index - b.index).map((i) => i.filename).join() === M.order.map((o) => o.deliveryName).join() && (await P.pushProgress(M.job.id))?.state === "DONE" && !(await P.pushProgress(M.job.id))?.changed);
+    const fresh = await P.approveJob(M.job.id, "Kyle", { deliver: true });
     for (let i = 0; i < 4; i++) await P.advancePush(M.job.id, { budgetMs: 30_000 });
     c.ok("then Deliver in Aryeo goes", fresh.ok && lm.delivery === "DELIVERED", fresh.message);
 
     // ======================================================================
     c.head("10 · the cron does not retry a refusal every five minutes");
-    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    await savePhotoDeliverySettings({ aryeoPush: "on" }, "drill");
     const N = await mkJob("110 Others Rd", "L-N", 2);
+    await sameDayOrder(N.project.id);
     listings.get("L-N")!.images.push({ id: "theirs-1", filename: "Theirs.jpg", index: 0, live: true, visibleAfter: 0 });
     await P.drivePushes({ budgetMs: 30_000 });
     const pn = await P.pushProgress(N.job.id);
@@ -475,6 +485,27 @@ async function main() {
     await P.drivePushes({ budgetMs: 30_000 });
     c.ok("…an hour later it looks again", listings.get("L-N")!.reads > reads1);
     c.ok("the reason is written in the job's activity once", (await prisma.photoJobEvent.count({ where: { jobId: N.job.id, action: { startsWith: "not sent to Aryeo" } } })) === 1);
+
+    // ======================================================================
+    c.head("11 · Kyle's approval that stopped on the hub's Aryeo login goes again once the login works (Godfrey, Oct 15)");
+    const Q = await mkJob("120 Retry Rd", "L-Q", 2);
+    validSessions.clear();
+    refuseLogin = true;
+    const aq = await P.approveJob(Q.job.id, "Kyle", { deliver: true });
+    for (let i = 0; i < 6; i++) await P.advancePush(Q.job.id, { budgetMs: 30_000 });
+    const pq = await P.pushProgress(Q.job.id);
+    const connBad = await getConnection(W.ARYEO_WEB_PROVIDER);
+    c.ok("the sign-in fails: stopped, nothing delivered, Connections says so", aq.started && pq?.state === "FAILED" && listings.get("L-Q")!.delivery === "UNDELIVERED" && !!connBad?.lastError, `${JSON.stringify(pq)} ${connBad?.lastError}`);
+    const q0 = await P.drivePushes({ budgetMs: 30_000 });
+    c.ok("…not retried every five minutes", !q0.started.includes(Q.job.id));
+    refuseLogin = false;
+    const rowQ = await prisma.appSetting.findUniqueOrThrow({ where: { key: `photo_aryeo_push:${Q.job.id}` } });
+    await prisma.appSetting.update({ where: { key: rowQ.key }, data: { value: JSON.stringify({ ...JSON.parse(rowQ.value), retryAfter: new Date(Date.now() - 1000).toISOString() }) } });
+    const q1 = await P.drivePushes({ budgetMs: 60_000 });
+    for (let i = 0; i < 10; i++) await P.advancePush(Q.job.id, { budgetMs: 30_000 });
+    const jq = await prisma.photoJob.findUniqueOrThrow({ where: { id: Q.job.id } });
+    c.ok("half an hour later, the login working, the cron sends Kyle's approval again and it is delivered", q1.started.includes(Q.job.id) && listings.get("L-Q")!.delivery === "DELIVERED" && jq.stage === "DELIVERED", `${JSON.stringify(q1)} ${jq.stage}`);
+    c.ok("…and Connections no longer says the sign-in is failing", !(await getConnection(W.ARYEO_WEB_PROVIDER))?.lastError);
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

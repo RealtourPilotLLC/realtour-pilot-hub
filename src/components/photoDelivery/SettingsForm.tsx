@@ -17,7 +17,7 @@ import { saveSettingsAction } from "@/app/ops/photo-delivery/actions";
 
 export type FixesMode = "off" | "approve" | "auto";
 export type PaidQcMode = "off" | "press" | "auto";
-export type AryeoMode = "off" | "upload" | "approve" | "auto";
+export type AryeoMode = "off" | "on";
 
 export type SettingsValues = {
   enabled: boolean;
@@ -28,8 +28,10 @@ export type SettingsValues = {
   fixTargetUsd: number;
   fixMaxUsd: number;
   autoFixDailyMaxCredits: number;
-  /** How far the hub takes photos into Aryeo by itself (aryeoPush.ts). */
+  /** The hub uploads and delivers in Aryeo once Kyle approves the job (aryeoPush.ts). */
   aryeoPush: AryeoMode;
+  /** Same-day orders approve and deliver themselves when every check passes. */
+  sameDayAutoDeliver: boolean;
   paidQc: PaidQcMode;
   monthlyQcBudgetUsd: number;
   maxBuildPhase: 1 | 2 | 3;
@@ -52,10 +54,8 @@ const FIXES: Option<FixesMode>[] = [
 
 const ARYEO_STAGES: Option<AryeoMode>[] = [
   { value: "off", label: "Off", help: "The hub never touches the Aryeo listing; Kyle uploads and delivers by hand." },
-  { value: "upload", label: "Upload on a press", help: "Send to Aryeo on the job page puts the 06-Ready-for-Aryeo photos on the listing in order; Kyle delivers in Aryeo." },
-  { value: "approve", label: "Upload by itself, Kyle delivers", help: "The hub uploads when the photos are ready, and Kyle presses Deliver in Aryeo on the job page." },
-  { value: "auto", label: "Upload and deliver by itself", help: "The hub uploads when the photos are ready and delivers with Aryeo's usual email only when the whole delivery checklist passes; anything open waits for Kyle." },
-];
+  { value: "on", label: "Kyle approves each job", help: "Jobs wait in Ready to review. Kyle reorders and checks, then presses Approve and deliver, or Approve and upload to Aryeo." },
+]
 
 const PAID_QC: Option<PaidQcMode>[] = [
   { value: "off", label: "Off", help: "No Claude QC runs; the free photo check is separate." },
@@ -130,6 +130,7 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           fixMaxUsd: v.fixMaxUsd,
           autoFixDailyMaxCredits: v.autoFixDailyMaxCredits,
           aryeoPush: v.aryeoPush,
+          sameDayAutoDeliver: v.sameDayAutoDeliver,
           qcEnabled: v.paidQc !== "off",
           paidQcAuto: v.paidQc === "auto",
           monthlyQcBudgetUsd: v.monthlyQcBudgetUsd,
@@ -169,7 +170,12 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
         </div>
       </div>
 
-      <Choice name="pd-aryeo-push" legend="Aryeo upload and delivery" help="Uses the hub's own Aryeo login (Connections, Aryeo hub login)." options={ARYEO_STAGES} value={v.aryeoPush} onChange={(m) => set("aryeoPush", m)} grid="sm:grid-cols-2" />
+      <div className="space-y-2">
+        <Choice name="pd-aryeo-push" legend="Aryeo upload and delivery" help="Uses the hub's own Aryeo login (Connections, Aryeo hub login)." options={ARYEO_STAGES} value={v.aryeoPush} onChange={(m) => set("aryeoPush", m)} grid="sm:grid-cols-2" />
+        {v.aryeoPush === "on" && (
+          <Switch label="Same-day orders deliver by themselves" help="When the order has same-day photo delivery, the hub approves and delivers it in its suggested order once every check passes, and checks again just before delivering." checked={v.sameDayAutoDeliver} onChange={(on) => set("sameDayAutoDeliver", on)} />
+        )}
+      </div>
 
       <details className="group rounded-xl border border-border">
         <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 px-3 text-sm font-semibold hover:bg-surface-2/40 [&::-webkit-details-marker]:hidden">

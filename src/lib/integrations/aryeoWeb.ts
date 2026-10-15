@@ -161,6 +161,12 @@ export async function signIn(creds?: { email: string; password: string } | null)
   }
   const s: Session = { cookies: jar, version, at: new Date().toISOString(), email: c.email };
   await saveSession(s);
+  // Signed in: a "Sign-in failing" left on Connections from an earlier try is over.
+  if (!creds) {
+    const { getConnection, markSynced } = await import("@/lib/integrations/connections");
+    const conn = await getConnection(ARYEO_WEB_PROVIDER).catch(() => null);
+    if (conn?.lastError) await markSynced(ARYEO_WEB_PROVIDER).catch(() => {});
+  }
   return s;
 }
 

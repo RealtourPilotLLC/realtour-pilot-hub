@@ -126,7 +126,7 @@ export const QUEUE_COLUMNS: { key: QueueColumnKey; label: string; hint: string; 
   { key: "decision", label: "Needs decision", hint: "Issues found, or a client revision", stages: ["QC_REVIEW", "REVISION_REQUESTED"] },
   { key: "fixing", label: "Fixing", hint: "Fixes running in AutoHDR", stages: ["FIXING"] },
   { key: "hold", label: "On hold", hint: "Blocked until the hold is released", stages: ["ON_HOLD"] },
-  { key: "ready", label: "Ready to deliver", hint: "Checks passed", stages: ["READY"] },
+  { key: "ready", label: "Ready to review", hint: "Checks passed: Kyle reviews, then approves", stages: ["READY"] },
   { key: "delivering", label: "Delivering", hint: "Waiting for Aryeo to confirm", stages: ["DELIVERING", "DELIVERY_MISMATCH"] },
   { key: "delivered", label: "Delivered", hint: "Delivered in the last 7 days", stages: ["DELIVERED"] },
 ];
@@ -873,10 +873,11 @@ function nextDeliveryCheck(startedAt: Date | null, checkedAt: Date | null): stri
 
 /** The Deliver panel's Aryeo row: the stage, whether the hub's login is saved, and the last push. */
 async function aryeoPushView(jobId: string): Promise<import("@/components/photoDelivery/types").AryeoPushView> {
-  const [settings, conn, progress] = await Promise.all([
+  const [settings, conn, progress, sameDay] = await Promise.all([
     photoDeliverySettings(),
     prisma.connection.findUnique({ where: { provider: "aryeo_web" }, select: { secretEncrypted: true } }).catch(() => null),
     import("@/lib/photoDelivery/aryeoPush").then((m) => m.pushProgress(jobId)).catch(() => null),
+    import("@/lib/photoDelivery/aryeoPush").then((m) => m.isSameDayJob(jobId)).catch(() => false),
   ]);
-  return { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, progress };
+  return { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, progress, sameDayAuto: sameDay && settings.sameDayAutoDeliver };
 }

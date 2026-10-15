@@ -387,9 +387,12 @@ export type ClientProfileView = {
 };
 
 export type AryeoPushView = {
-  mode: "off" | "upload" | "approve" | "auto";
+  /** on: nothing reaches Aryeo before Kyle approves the job (Oct 15). */
+  mode: "off" | "on";
   /** The hub's Aryeo login is saved (Connections). */
   connected: boolean;
+  /** The order has the same-day photos add-on, and the hub approves those by itself once every check passes. */
+  sameDayAuto: boolean;
   progress: {
     state: string;
     active: boolean;
@@ -397,6 +400,8 @@ export type AryeoPushView = {
     sent: number;
     already: number;
     note: string | null;
+    /** The photos changed after they went on the listing: approve again. */
+    changed?: boolean;
     startedAt: string;
     finishedAt: string | null;
     deliveredAt: string | null;

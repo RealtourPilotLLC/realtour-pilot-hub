@@ -12,9 +12,9 @@ const STEPS: { key: string; label: string }[] = [
   { key: "EDITING", label: "Editing" },
   { key: "EDITED", label: "Edited" },
   { key: "QC_RUNNING", label: "Checking" },
-  { key: "QC_REVIEW", label: "Review" },
+  { key: "QC_REVIEW", label: "Decide" },
   { key: "FIXING", label: "Fixing" },
-  { key: "READY", label: "Ready" },
+  { key: "READY", label: "Ready to review" },
   { key: "DELIVERING", label: "Delivering" },
   { key: "DELIVERED", label: "Delivered" },
 ];

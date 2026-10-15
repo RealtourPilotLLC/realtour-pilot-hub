@@ -52,7 +52,7 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
   const ready = queue?.columns.find((c) => c.key === "ready")?.cards.length ?? 0;
   const atRisk = queue ? queue.columns.reduce((n, c) => n + c.cards.filter((x) => x.atRisk).length, 0) : 0;
   const subtitle = queue
-    ? `${plural(queue.total, "job")} on the board · ${decision} need${decision === 1 ? "s" : ""} a decision · ${ready} ready to deliver${atRisk ? ` · ${atRisk} at risk` : ""}. Sorted by when each is due; times are Eastern.`
+    ? `${plural(queue.total, "job")} on the board · ${decision} need${decision === 1 ? "s" : ""} a decision · ${ready} ready to review${atRisk ? ` · ${atRisk} at risk` : ""}. Sorted by when each is due; times are Eastern.`
     : "Every photo job from the shoot to delivered.";
 
   return (

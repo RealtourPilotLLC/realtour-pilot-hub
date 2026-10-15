@@ -36,14 +36,20 @@ import { getSetting, putSetting } from "@/lib/settings";
 //   aryeoPush      (Oct 14 2026, Jordan: "There has to be" a way to automate
 //                  the upload and delivery on Aryeo) the hub puts the
 //                  06-Ready-for-Aryeo photos on the listing itself, signed in
-//                  as its own Aryeo team login (aryeoPush.ts). Staged:
-//                    off      nothing (default, until the test listing passes)
-//                    upload   on a press of "Send to Aryeo"; Kyle delivers in Aryeo
-//                    approve  by itself when the photos are ready; Kyle presses
-//                             "Deliver in Aryeo" in the hub
-//                    auto     uploads by itself, and delivers by itself only
-//                             when the delivery checklist really passes (open
-//                             issues stop it, shadow mode or not)
+//                  as its own Aryeo team login (aryeoPush.ts).
+//                    off  nothing; Kyle uploads and delivers by hand
+//                    on   (Oct 15, Jordan: "it just goes to a ready to review
+//                         section", Kyle reorders, double-checks the fixes and
+//                         findings, then "approve and deliver or approve and
+//                         upload to Aryeo") nothing reaches Aryeo before Kyle
+//                         approves the job. The old stages upload / approve /
+//                         auto read as on.
+//   sameDayAutoDeliver (Oct 15, Jordan: "Jobs with same day delivery can just
+//                  approve and deliver automatically after multiple checks and
+//                  auto reorganize") with aryeoPush on, a job whose order has
+//                  the same-day photos add-on approves and delivers itself in
+//                  the hub's suggested order, only when every check passes
+//                  (aryeoPush.ts sameDayReady), checked again before delivery.
 // ---------------------------------------------------------------------------
 
 export type PhotoDeliverySettings = {
@@ -76,12 +82,14 @@ export type PhotoDeliverySettings = {
   showAutohdrPhotos: boolean;
   /** AutoHDR model for REAL twilight photos (a predefined twilight model; read from GET /v1/models, Oct 14: 6 = Twilight Golden). */
   realTwilightModelId: number;
-  /** How far the hub takes photos into Aryeo by itself (aryeoPush.ts). */
+  /** The hub uploads and delivers in Aryeo once Kyle approves the job (aryeoPush.ts). */
   aryeoPush: AryeoPushMode;
+  /** Same-day jobs approve and deliver themselves when every check passes. */
+  sameDayAutoDeliver: boolean;
 };
 
-export type AryeoPushMode = "off" | "upload" | "approve" | "auto";
-export const ARYEO_PUSH_MODES: readonly AryeoPushMode[] = ["off", "upload", "approve", "auto"];
+export type AryeoPushMode = "off" | "on";
+export const ARYEO_PUSH_MODES: readonly AryeoPushMode[] = ["off", "on"];
 
 export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   enabled: true,
@@ -108,6 +116,7 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   realTwilightModelId: 6,
   showAutohdrPhotos: false,
   aryeoPush: "off",
+  sameDayAutoDeliver: true,
 };
 
 const KEY = "photo_delivery:settings";
@@ -142,7 +151,9 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     realTwilightModelId: num(raw.realTwilightModelId, d.realTwilightModelId, 1, 100_000),
     showAutohdrPhotos: bool(raw.showAutohdrPhotos, d.showAutohdrPhotos),
     asIsClientIds: Array.isArray(raw.asIsClientIds) ? raw.asIsClientIds.filter((x): x is string => typeof x === "string").slice(0, 500) : d.asIsClientIds,
-    aryeoPush: (ARYEO_PUSH_MODES as readonly string[]).includes(raw.aryeoPush as string) ? (raw.aryeoPush as AryeoPushMode) : d.aryeoPush,
+    // The old stages (upload, approve, auto) all mean "on" now: Kyle approves each job.
+    aryeoPush: raw.aryeoPush === "off" ? "off" : ["on", "upload", "approve", "auto"].includes(raw.aryeoPush as string) ? "on" : d.aryeoPush,
+    sameDayAutoDeliver: bool(raw.sameDayAutoDeliver, d.sameDayAutoDeliver),
   };
 }
 

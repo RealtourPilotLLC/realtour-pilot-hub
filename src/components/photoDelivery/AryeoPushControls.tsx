@@ -3,16 +3,18 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { etMonthDayTime } from "@/lib/datetime";
-import { deliverInAryeoAction, sendToAryeoAction } from "@/app/ops/photo-delivery/actions";
+import { approveAryeoAction, deliverInAryeoAction } from "@/app/ops/photo-delivery/actions";
 import { useJob } from "./JobContext";
 import type { AryeoPushView } from "./types";
 
 // ---------------------------------------------------------------------------
 // THE HUB UPLOADS AND DELIVERS IN ARYEO (Oct 14 2026, aryeoPush.ts).
-// "Send to Aryeo" puts the 06-Ready-for-Aryeo photos on the listing, in
-// order, checked through Aryeo's API; "Deliver in Aryeo" presses Aryeo's own
-// Deliver Listing once the delivery checklist passes. The Deliver panel shows
-// whichever is next as its one main button (aryeoPushNext). While a push
+// Oct 15 (Jordan): a job waits in Ready to review until Kyle approves it:
+// "Approve and deliver" (the photos go on the listing in order, then Aryeo's
+// own Deliver Listing) or "Approve and upload to Aryeo" (Kyle delivers).
+// Photos already up: "Deliver in Aryeo". Same-day orders approve themselves
+// once every check passes. The Deliver panel shows what is next
+// (aryeoPushNext). While a push
 // runs, useLivePush asks how far it is (each ask also moves it on a step)
 // and reloads the page only when the push reaches a new state.
 // ---------------------------------------------------------------------------
@@ -60,14 +62,14 @@ export function useLivePush(push: AryeoPushView): AryeoPushView {
 /** The hub's upload is switched on and its Aryeo login is saved. */
 export const aryeoPushOn = (push: AryeoPushView) => push.mode !== "off" && push.connected;
 
-/** What the hub's push needs next: send, send again (after a failure or a change), deliver, or nothing (running, delivered, off). */
-export function aryeoPushNext(push: AryeoPushView): "send" | "send-again" | "deliver" | null {
+/** What the job needs next: Kyle's approval (first time, after a failure or a change), a delivery of photos already up, or nothing (running, delivered, off). */
+export function aryeoPushNext(push: AryeoPushView): "approve" | "deliver" | null {
   const p = push.progress;
   if (!aryeoPushOn(push)) return null;
-  if (!p) return "send";
+  if (!p) return "approve";
   if (p.active || p.deliveredAt) return null;
-  if (p.state === "FAILED") return "send-again";
-  if (p.state === "WAITING" || p.state === "DONE") return /Send to Aryeo again/.test(p.note ?? "") ? "send-again" : "deliver";
+  if (p.state === "FAILED") return "approve";
+  if (p.state === "WAITING" || p.state === "DONE") return p.changed ? "approve" : "deliver";
   return null;
 }
 
@@ -83,18 +85,26 @@ export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted
   if (p.state === "ORDERING") return { text: "Putting the photos in delivery order.", tone: "busy" };
   if (p.state === "DELIVERING" || p.state === "CONFIRMING") return { text: "Delivering in Aryeo.", tone: "busy" };
   if (p.state === "WAITING") return { text: p.note ?? `All ${p.total} photos are on the listing, in order. Ready to deliver.`, tone: p.note ? "bad" : "good" };
-  if (p.state === "DONE") return { text: `All ${p.total} photos are on the listing, in order${p.note ? ` (${p.note})` : ""}. Deliver in Aryeo when ready.`, tone: "good" };
+  if (p.state === "DONE") return p.changed ? { text: p.note ?? "", tone: "bad" } : { text: `All ${p.total} photos are on the listing, in order${p.note ? ` (${p.note})` : ""}. Deliver in Aryeo when ready.`, tone: "good" };
   return null;
 }
 
-/** The two presses, each with its confirm: "Send to Aryeo" (and "Send anyway") and "Deliver in Aryeo". */
+/** Kyle's presses, each with its confirm: Approve and deliver, Approve and upload to Aryeo (and "Upload anyway"), Deliver in Aryeo. */
 export function useAryeoPushActions() {
   const { jobId, run, confirm, notify } = useJob();
-  const send = async () => {
-    const r = await sendToAryeoAction(jobId, { anyway: false }).catch(() => ({ ok: false, message: "The hub didn't answer. Try again in a moment." }));
+  const approve = async (deliver: boolean) => {
+    if (deliver) {
+      const ok = await confirm({
+        title: "Approve and deliver?",
+        body: "The hub puts the photos on the Aryeo listing in this order, then delivers it. The listing's customers get Aryeo's usual delivery email, and the hub checks the delivery afterwards.",
+        confirmLabel: "Approve and deliver",
+      });
+      if (!ok) return;
+    }
+    const r = await approveAryeoAction(jobId, { deliver }).catch(() => ({ ok: false, message: "The hub didn't answer. Try again in a moment." }));
     if (!r.ok && /Send anyway/.test(r.message)) {
-      const go = await confirm({ title: "The listing already has other photos", body: r.message, confirmLabel: "Send anyway" });
-      if (go) await run(() => sendToAryeoAction(jobId, { anyway: true }));
+      const go = await confirm({ title: "The listing already has other photos", body: r.message.replace("press Send anyway", "press Upload anyway"), confirmLabel: "Upload anyway" });
+      if (go) await run(() => approveAryeoAction(jobId, { deliver, anyway: true }));
       return;
     }
     notify(r.ok ? "ok" : "err", r.message);
@@ -107,5 +117,5 @@ export function useAryeoPushActions() {
     });
     if (ok) await run(() => deliverInAryeoAction(jobId));
   };
-  return { send, deliver };
+  return { approve, deliver };
 }

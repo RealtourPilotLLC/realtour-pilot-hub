@@ -15,10 +15,12 @@ import { aryeoPushLine, aryeoPushNext, aryeoPushOn, useAryeoPushActions, useLive
 // ---------------------------------------------------------------------------
 // THE DELIVER PANEL (plan 9.6), sticky at the bottom of the job page.
 //   · The bar: the checklist count, one line saying where things stand, the
-//     Download photos button and ONE main button for what comes next
-//     (Oct 15 2026): with the hub's upload on, Send to Aryeo, then Deliver in
-//     Aryeo once the photos are up; with it off, Mark as delivering. When the
-//     next step can't be taken yet, there is no button, only the reason.
+//     Download photos button and what comes next (Oct 15 2026): with the
+//     hub's upload on, a job Ready to review waits for Kyle's "Approve and
+//     deliver" (or "Approve and upload to Aryeo"), then Deliver in Aryeo for
+//     photos already up; a same-day order approves itself once every check
+//     passes; with the upload off, Mark as delivering. When the next step
+//     can't be taken yet, there is no button, only the reason.
 //   · Inside: the gate checklist (in shadow mode it is ADVISORY, the bar's
 //     badge says so: shown, but it never stops Kyle while QC is calibrated),
 //     Verify now and the owner-only "Override and deliver" with a typed
@@ -39,6 +41,7 @@ const STAGE_WHY: Record<string, string> = {
   QC_RUNNING: "QC is running on this gallery right now.",
   FIXING: "Approved fixes are still running.",
   ON_HOLD: "On hold: release the hold first.",
+  QC_REVIEW: "Decide the open issues first (Issues tab).",
   DELIVERING: "Already marked as delivering. Waiting for Aryeo to confirm.",
   DELIVERED: "Delivered and verified.",
 };
@@ -104,29 +107,27 @@ export function DeliverPanel() {
   const hubOn = aryeoPushOn(push);
   const pushNext = aryeoPushNext(push);
   const pushLine = aryeoPushLine(push);
-  const { send, deliver } = useAryeoPushActions();
+  const { approve, deliver } = useAryeoPushActions();
   const checkLine = deliveryCheckLine(header);
 
-  // The ONE main button: what comes next, only when it can be pressed.
+  // What comes next, only when it can be pressed. Kyle approves a job that is
+  // Ready to review (or one already marked as delivering whose upload stopped).
   const canGoOn = canStart || stage === "DELIVERING";
-  const next: "send" | "send-again" | "deliver" | "mark" | null = hubOn
-    ? pushNext === "deliver" && canGoOn
-      ? "deliver"
-      : (pushNext === "send" || pushNext === "send-again") && canGoOn && !preparing && !!steps?.listingUrl
-        ? pushNext
-        : null
-    : canStart
-      ? "mark"
-      : null;
-  // A send after the photos went up (more photos came in, or a fix): the main button is Deliver, this sits inside.
-  const showResend = hubOn && pushNext === "deliver" && canGoOn && !preparing && !!steps?.listingUrl;
+  const approvable = hubOn && pushNext === "approve" && !preparing && !!steps?.listingUrl && (stage === "READY" || stage === "DELIVERING");
+  const next: "approve" | "deliver" | "mark" | null = hubOn ? (pushNext === "deliver" && canGoOn ? "deliver" : approvable ? "approve" : null) : canStart ? "mark" : null;
+  // Approve and deliver needs the checklist (the usual gate); Approve and upload only puts the photos up.
+  const approveDeliver = next === "approve" && canGoOn;
+  // Photos already up (a change came in, or more photos): Upload again sits inside.
+  const showResend = hubOn && pushNext === "deliver" && !preparing && !!steps?.listingUrl;
 
   // What the bar says under the title. On a phone only the first line shows (all of them once the panel is open).
   // A delivered job: the bar says so (the checklist no longer matters), once.
   const delivered = stage === "DELIVERED";
-  const why = !canStage ? STAGE_WHY[stage] ?? null : startWhy;
+  // With the hub's upload on, Kyle approves from Ready to review: open issues are decided first.
+  const why = !canStage || (hubOn && stage === "QC_REVIEW") ? STAGE_WHY[stage] ?? null : startWhy;
   const lines: { text: string; tone: keyof typeof TONE }[] = [];
   if (pushLine) lines.push(pushLine);
+  else if (hubOn && push.sameDayAuto && !delivered) lines.push({ text: "Same-day order: the hub approves and delivers it by itself once every check passes.", tone: "muted" });
   if (why && !(delivered && pushLine)) lines.push({ text: why, tone: delivered ? "good" : "muted" });
   else if (replacements.length) lines.push({ text: `${replacements.length} fixed photo${replacements.length === 1 ? "" : "s"} to replace on Aryeo`, tone: "muted" });
   else if (hubOn && steps && !steps.listingUrl) lines.push({ text: "No Aryeo listing linked yet.", tone: "muted" });
@@ -275,10 +276,17 @@ export function DeliverPanel() {
             <button type="button" disabled={pending} onClick={() => void deliver()} className={cn(btn, primary)}>
               <Send aria-hidden className="size-4" /> Deliver in Aryeo
             </button>
-          ) : next === "send" || next === "send-again" ? (
-            <button type="button" disabled={pending} onClick={() => void send()} title="Put the finished photos on the listing, in order (06-Ready-for-Aryeo is made first when needed)" className={cn(btn, primary)}>
-              <UploadCloud aria-hidden className="size-4" /> {next === "send-again" ? "Send to Aryeo again" : "Send to Aryeo"}
-            </button>
+          ) : next === "approve" ? (
+            <>
+              <button type="button" disabled={pending} onClick={() => void approve(false)} title="Put the photos on the Aryeo listing in this order; Kyle delivers in Aryeo" className={cn(btn, approveDeliver ? secondary : primary)}>
+                <UploadCloud aria-hidden className="size-4" /> <span className={cn(approveDeliver && "sr-only sm:not-sr-only")}>Approve and upload to Aryeo</span>
+              </button>
+              {approveDeliver && (
+                <button type="button" disabled={pending} onClick={() => void approve(true)} title="Put the photos on the Aryeo listing in this order, then deliver it" className={cn(btn, primary)}>
+                  <Send aria-hidden className="size-4" /> Approve and deliver
+                </button>
+              )}
+            </>
           ) : next === "mark" ? (
             <button type="button" disabled={pending} onClick={() => void run(() => startDeliveryAction(jobId))} className={cn(btn, primary)}>
               <Truck aria-hidden className="size-4" /> Mark as delivering
@@ -336,7 +344,7 @@ export function DeliverPanel() {
               <div className="rounded-xl border border-warning/40 bg-warning-soft/30 p-3">
                 <h3 className="text-sm font-semibold">Replace these on the Aryeo listing</h3>
                 <p className="mt-0.5 text-[13px] text-muted">
-                  {hubOn ? "Fixed after they went on the listing. Send to Aryeo again, or download each and swap it in." : "Fixed after they went on the listing. Download each and swap it in on Aryeo."}
+                  {hubOn ? "Fixed after they went on the listing. Approve again (or Upload again), or download each and swap it in." : "Fixed after they went on the listing. Download each and swap it in on Aryeo."}
                 </p>
                 <ul className="mt-2 space-y-1.5">
                   {replacements.map((r) => {
@@ -367,8 +375,8 @@ export function DeliverPanel() {
                 <div className="flex flex-wrap items-center gap-2">
                   {listingLink}
                   {showResend && (
-                    <button type="button" disabled={pending} onClick={() => void send()} title="Send the photos again: new ones go up, changed ones are swapped" className={cn(cardBtn, secondary)}>
-                      <UploadCloud aria-hidden className="size-4" /> Send to Aryeo again
+                    <button type="button" disabled={pending} onClick={() => void approve(false)} title="Upload the photos again: new ones go up, changed ones are swapped" className={cn(cardBtn, secondary)}>
+                      <UploadCloud aria-hidden className="size-4" /> Upload again
                     </button>
                   )}
                 </div>

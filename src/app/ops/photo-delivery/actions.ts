@@ -150,8 +150,12 @@ export async function restageForAryeoAction(jobId: string): Promise<ActionResult
 /** The progress bar's poll: where the copy stands, moving it on a step when nobody else is. */
 // ---- the photos into Aryeo by the hub (Oct 14 2026, aryeoPush.ts) ---------------------------
 
-/** "Send to Aryeo": the 06-Ready-for-Aryeo photos onto the listing (answers at once; the run carries on after). */
-export async function sendToAryeoAction(jobId: string, opts: { anyway?: boolean } = {}): Promise<ActionResult> {
+/**
+ * Kyle's approval of a job in Ready to review (Oct 15, Jordan): "Approve and
+ * deliver" or "Approve and upload to Aryeo". Answers at once; the upload (and
+ * the delivery after it) carries on after.
+ */
+export async function approveAryeoAction(jobId: string, opts: { deliver: boolean; anyway?: boolean }): Promise<ActionResult> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -160,9 +164,8 @@ export async function sendToAryeoAction(jobId: string, opts: { anyway?: boolean 
   if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
   try {
     const { by } = await actor();
-    const { requestPush, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
-    // A press always sends; whether it then delivers follows the settings' stage.
-    const r = await requestPush(jobId, { by, anyway: opts.anyway === true });
+    const { approveJob, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
+    const r = await approveJob(jobId, by, { deliver: opts.deliver === true, anyway: opts.anyway === true });
     if (r.started) {
       const go = () => advancePush(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
       try { after(go); } catch { void go(); }
@@ -170,7 +173,7 @@ export async function sendToAryeoAction(jobId: string, opts: { anyway?: boolean 
     }
     return { ok: r.ok, message: r.message };
   } catch (e) {
-    return failed("send to Aryeo", e);
+    return failed("approve", e);
   }
 }
 
@@ -572,7 +575,7 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
 
 type SettingsInput = Partial<Omit<PhotoDeliverySettings, "qcFrom">> & { qcFrom?: string | null };
 
-const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos"] as const;
+const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos", "sameDayAutoDeliver"] as const;
 const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label: string }> = {
   adminCreditCap: { min: 0, max: 10_000, int: true, label: "Kyle's approval limit" },
   autoFixDailyMaxCredits: { min: 0, max: 10_000, int: true, label: "Daily limit on automatic fixes" },
@@ -607,7 +610,7 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
   }
   if ("aryeoPush" in input) {
     const { ARYEO_PUSH_MODES } = await import("@/lib/photoDelivery/settings");
-    if (!(ARYEO_PUSH_MODES as readonly string[]).includes(String(input.aryeoPush))) return { ok: false, message: "Sending to Aryeo must be off, upload, approve or auto." };
+    if (!(ARYEO_PUSH_MODES as readonly string[]).includes(String(input.aryeoPush))) return { ok: false, message: "Aryeo upload and delivery must be off or on." };
     next.aryeoPush = input.aryeoPush;
   }
   if ("maxBuildPhase" in input) {

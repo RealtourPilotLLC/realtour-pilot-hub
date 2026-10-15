@@ -21,13 +21,19 @@ import { logJobEvent } from "./jobState";
 //   CHECKING    the public API must show every one on the listing (Aryeo
 //               processes uploads in the background; 20 minutes at most)
 //   ORDERING    the listing's order must be the delivery order (set once)
-//   then, by the settings' stage:
-//     upload    DONE: Kyle delivers in Aryeo
-//     approve   WAITING: Kyle presses "Deliver in Aryeo" on the job page
-//     auto      DELIVERING by itself
-//   DELIVERING  the delivery checklist must pass (the same gate as Mark as
-//               delivering), then Aryeo's own Deliver Listing; the public API
-//               must then say DELIVERED, and the usual delivery check runs.
+//   then, by what was approved:
+//     upload    DONE: Kyle delivers in Aryeo (or presses Deliver in Aryeo)
+//     deliver   DELIVERING
+//   DELIVERING  the delivery checklist must pass (a person's approval: the
+//               same gate as Mark as delivering; the hub's own same-day
+//               approval: every item really passes), then Aryeo's own Deliver
+//               Listing; the public API must then say DELIVERED, and the usual
+//               delivery check runs.
+// WHO STARTS ONE (Oct 15, Jordan): nothing reaches Aryeo before Kyle approves
+// the job ("Approve and deliver" / "Approve and upload to Aryeo", approveJob)
+// once it is Ready to review. Two exceptions, both already decided: a job a
+// person marked as delivering (or Jordan's override), and a same-day order
+// whose every check passes (sameDayBlocker), which approves itself.
 // Never doubled: a photo already on the listing (same file name) is not sent
 // again; a listing that holds OTHER photos is left for a person (or "Send
 // anyway"); one run per job at a time (compare-and-swap + a short lease).
@@ -76,10 +82,12 @@ export type PushRun = {
   /** The hub's own photos on the listing that changed or left the set: taken off first. */
   remove?: string[];
   removedAt?: string | null;
-  /** A refusal the cron noted: it tries again after this, not every five minutes. */
+  /** A refusal the cron noted, or a sign-in that failed: tried again after this, not every five minutes. */
   retryAfter?: string | null;
+  /** The person who approved it (their delivery uses the usual gate). Null: the hub's own (same-day, or a job already marked as delivering). */
+  approvedBy?: string | null;
 };
-export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean };
+export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean; changed: boolean };
 
 // ---- the run record ---------------------------------------------------------------------------
 
@@ -121,6 +129,7 @@ export function progressOf(run: PushRun): PushProgress {
     finishedAt: run.finishedAt,
     deliveredAt: run.deliveredAt,
     waitingForApproval: run.state === "WAITING",
+    changed: run.note === CHANGED,
   };
 }
 
@@ -190,7 +199,7 @@ async function readyRunFingerprint(jobId: string): Promise<string | null> {
   }
 }
 
-const CHANGED = "The photos changed after they went on the listing (a fix, a restore or a new order). Press Send to Aryeo again to update the listing, then deliver.";
+const CHANGED = "The photos changed after they went on the listing (a fix, a restore or a new order). Approve again to update the listing.";
 
 /** Did the photos change since this run put them on the listing? */
 async function changedSince(jobId: string, run: PushRun): Promise<boolean> {
@@ -205,7 +214,7 @@ async function changedSince(jobId: string, run: PushRun): Promise<boolean> {
  * 06-Ready-for-Aryeo folder is not finished, it is made first (the push waits
  * for it): a job marked as delivering before its folder existed still goes.
  */
-export async function requestPush(jobId: string, opts: { by?: string | null; then?: PushRun["then"]; anyway?: boolean; mode?: AryeoPushMode } = {}): Promise<{ ok: boolean; started: boolean; message: string }> {
+export async function requestPush(jobId: string, opts: { by?: string | null; then?: PushRun["then"]; anyway?: boolean; mode?: AryeoPushMode; approvedBy?: string | null } = {}): Promise<{ ok: boolean; started: boolean; message: string }> {
   const settings = await photoDeliverySettings();
   const mode = opts.mode ?? settings.aryeoPush;
   if (mode === "off") return { ok: false, started: false, message: "Sending to Aryeo is switched off (Photo Delivery settings)." };
@@ -227,7 +236,8 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
     const prog = await readyProgress(jobId).catch(() => null);
     if (!prog?.active) await requestReady(jobId, { force: true, by: opts.by ?? "aryeo-push" }).catch(() => null);
   }
-  const then: PushRun["then"] = opts.then ?? (mode === "auto" ? "deliver" : mode === "approve" ? "approval" : "stop");
+  // A job already marked as delivering goes all the way; otherwise only what was asked.
+  const then: PushRun["then"] = opts.then ?? (job.stage === "DELIVERING" ? "deliver" : "stop");
   const now = new Date().toISOString();
   const items = "items" in built ? built.items : [];
   const remove = "remove" in built ? built.remove : [];
@@ -235,11 +245,11 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
   const next: PushRun = {
     id: randomBytes(4).toString("hex"), listingId: project.aryeoListingId, state: "items" in built ? (all ? "CHECKING" : "SENDING") : "PREPARING", then, items, groupId: null,
     addedAt: all ? now : null, ordered: false, deliveredAt: null, by: opts.by ?? null, startedAt: now, updatedAt: now, finishedAt: null, note: "wait" in built ? built.wait : null, lease: null, anyway: opts.anyway === true,
-    fingerprint: "fingerprint" in built ? built.fingerprint : null, listed, remove, removedAt: null,
+    fingerprint: "fingerprint" in built ? built.fingerprint : null, listed, remove, removedAt: null, approvedBy: opts.approvedBy ?? null,
   };
   if (!(await save(jobId, next, raw))) return { ok: false, started: false, message: "Someone started it a moment ago." };
   const already = items.filter((i) => i.already).length;
-  const tail = then === "deliver" ? ", then delivering" : then === "approval" ? ", then waiting for Deliver in Aryeo" : "";
+  const tail = then === "deliver" ? ", then delivering" : then === "approval" ? ", then waiting for Deliver in Aryeo" : ", then Kyle delivers";
   if (next.state === "PREPARING") {
     await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending to the Aryeo listing${tail}: getting 06-Ready-for-Aryeo ready first`);
     return { ok: true, started: true, message: "Getting the photos ready in 06-Ready-for-Aryeo first, then sending them to the Aryeo listing. The panel shows the progress." };
@@ -266,6 +276,69 @@ export async function approvePushDelivery(jobId: string, by: string): Promise<{ 
   const next: PushRun = { ...run, state: "DELIVERING", then: "deliver", by, note: null, finishedAt: null };
   if (!(await save(jobId, next, raw))) return { ok: false, message: "That changed a moment ago. Reload the page." };
   return { ok: true, message: "Delivering in Aryeo now. The listing's customers get Aryeo's usual delivery email." };
+}
+
+/**
+ * Kyle's approval of a job that is Ready to review (Oct 15, Jordan: "click
+ * approve and deliver or approve and upload to Aryeo"). Deliver: photos
+ * already on the listing and unchanged are delivered as they are; otherwise
+ * they go up first and the delivery follows by itself. Nothing is marked as
+ * delivering before the photos are on the listing.
+ */
+export async function approveJob(jobId: string, by: string, opts: { deliver: boolean; anyway?: boolean }): Promise<{ ok: boolean; started: boolean; message: string }> {
+  const settings = await photoDeliverySettings();
+  if (settings.aryeoPush === "off") return { ok: false, started: false, message: "The hub's Aryeo upload is switched off (Photo Delivery settings)." };
+  const { run } = await load(jobId);
+  if (run && ACTIVE.includes(run.state)) return { ok: true, started: false, message: "Already working in Aryeo." };
+  if (opts.deliver) {
+    const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
+    if (job?.stage !== "DELIVERING") {
+      const { deliveryGate } = await import("./delivery");
+      const gate = await deliveryGate(jobId);
+      if (!gate.canDeliver) return { ok: false, started: false, message: `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
+    }
+    if (run && !run.deliveredAt && (run.state === "WAITING" || run.state === "DONE") && !(await changedSince(jobId, run))) {
+      const r = await approvePushDelivery(jobId, by);
+      return { ok: r.ok, started: r.ok, message: r.message };
+    }
+  }
+  const r = await requestPush(jobId, { by, then: opts.deliver ? "deliver" : "stop", anyway: opts.anyway, approvedBy: by });
+  if (r.started) await logJobEvent(jobId, by, opts.deliver ? "approved: deliver" : "approved: upload to Aryeo");
+  return r;
+}
+
+/**
+ * A same-day order (the client paid for the photos today) approves itself:
+ * null when every check passes, else why not. Checked before the upload and
+ * the checklist again before the delivery (the DELIVERING step).
+ */
+async function sameDayBlocker(jobId: string): Promise<string | null> {
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, projectId: true } });
+  if (!job || job.stage !== "READY") return "not ready to review";
+  const project = await prisma.project.findUnique({
+    where: { id: job.projectId },
+    select: { deliverables: { select: { label: true, productTitle: true } }, orderItems: { where: { isCanceled: false }, select: { title: true } } },
+  });
+  const { sameDayAddOns } = await import("@/lib/tasks");
+  if (!project || !sameDayAddOns(project.deliverables, project.orderItems).photos) return "not a same-day order";
+  const busy = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
+  if (busy) return "fixes still running";
+  const { deliveryGate } = await import("./delivery");
+  const gate = await deliveryGate(jobId);
+  if (!gate.passed) return "the checklist has open items";
+  return null;
+}
+
+/** Same-day orders, for the job page: is this one, and will the hub approve it by itself. */
+export async function isSameDayJob(jobId: string): Promise<boolean> {
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
+  if (!job) return false;
+  const project = await prisma.project.findUnique({
+    where: { id: job.projectId },
+    select: { deliverables: { select: { label: true, productTitle: true } }, orderItems: { where: { isCanceled: false }, select: { title: true } } },
+  });
+  const { sameDayAddOns } = await import("@/lib/tasks");
+  return !!project && sameDayAddOns(project.deliverables, project.orderItems).photos;
 }
 
 // ---- moving one on ------------------------------------------------------------------------------
@@ -433,18 +506,19 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
         return r;
       }
       if (job && job.stage !== "DELIVERING" && job.stage !== "DELIVERED") {
-        // The hub delivers by itself only on a checklist that really passes:
-        // shadow mode's "advisory" never lets an open critical, major or
-        // privacy issue reach a client automatically. A person's own Mark as
-        // delivering (or Jordan's override) has already decided, so it goes.
+        // The hub delivers by itself (a same-day order) only on a checklist
+        // that really passes: shadow mode's "advisory" never lets an open
+        // critical, major or privacy issue reach a client automatically.
+        // Kyle's approval goes through the usual gate (startDelivery), the
+        // same as Mark as delivering; Jordan's override has already decided.
         const { startDelivery, deliveryGate } = await import("./delivery");
         const gate = await deliveryGate(jobId);
-        if (!gate.passed) {
+        if (!r.approvedBy && !gate.passed) {
           r.state = "WAITING";
           r.note = `Not delivered by itself: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400);
           return r;
         }
-        const g = await startDelivery(jobId, r.by ?? "aryeo-push");
+        const g = await startDelivery(jobId, r.approvedBy ?? r.by ?? "aryeo-push");
         if (!g.ok) {
           r.state = "WAITING";
           r.note = `Not delivered: ${g.message}`;
@@ -480,6 +554,9 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
     if (err.name === "AryeoWebError" && (err.kind === "sign-in" || err.kind === "not-connected")) {
       const { markError } = await import("@/lib/integrations/connections");
       await markError(W.ARYEO_WEB_PROVIDER, err.message).catch(() => {});
+      // Not this job's fault: the cron tries it again once the login works
+      // (Oct 15: 1934 W Godfrey Ave sat stopped all night after one bad sign-in).
+      return { ...fail(r, err.message), retryAfter: new Date(Date.now() + 30 * 60_000).toISOString() };
     }
     return fail(r, err.message);
   }
@@ -528,7 +605,9 @@ export async function advancePush(jobId: string, opts: { budgetMs?: number } = {
 async function startAgain(jobId: string, run: PushRun): Promise<boolean> {
   if (ACTIVE.includes(run.state) || run.deliveredAt) return false;
   if (run.state === "FAILED") return !!run.retryAfter && Date.parse(run.retryAfter) < Date.now();
-  return (run.state === "DONE" || run.state === "WAITING") && (await changedSince(jobId, run));
+  // The hub's own same-day run follows a change by itself; a person's approval
+  // covered the photos as they were, so a change waits for Kyle to approve again.
+  return !run.approvedBy && run.by === "aryeo-push" && (run.state === "DONE" || run.state === "WAITING") && (await changedSince(jobId, run));
 }
 
 /** The cron could not start a push (the listing holds other photos, no listing yet…): say why once, look again in an hour. */
@@ -539,7 +618,7 @@ async function noteRefusal(jobId: string, message: string): Promise<void> {
   const next: PushRun = {
     id: randomBytes(4).toString("hex"), listingId: run?.listingId ?? "", state: "FAILED", then: run?.then ?? "stop", items: run?.items ?? [], groupId: null, addedAt: null, ordered: false,
     deliveredAt: null, by: "aryeo-push", startedAt: now, updatedAt: now, finishedAt: now, note: message.slice(0, 400), lease: null,
-    fingerprint: run?.fingerprint ?? null, listed: run?.listed ?? [], retryAfter: new Date(Date.now() + 60 * 60_000).toISOString(),
+    fingerprint: run?.fingerprint ?? null, listed: run?.listed ?? [], retryAfter: new Date(Date.now() + 60 * 60_000).toISOString(), approvedBy: run?.approvedBy ?? null, anyway: run?.anyway,
   };
   if (!(await save(jobId, next, raw))) return;
   if (run?.note !== next.note) await logJobEvent(jobId, "aryeo-push", `not sent to Aryeo: ${next.note}`);
@@ -552,21 +631,21 @@ export async function drivePushes(opts: { budgetMs?: number } = {}): Promise<{ s
   const t0 = Date.now();
   const budget = opts.budgetMs ?? 40_000;
   const started: string[] = [];
-  if (settings.aryeoPush === "approve" || settings.aryeoPush === "auto") {
-    // Jobs whose 06-Ready-for-Aryeo folder is in place and not sent yet (one new push per pass;
-    // requestPush checks the folder is complete and not being refilled).
+  {
+    // What the cron may start by itself (Oct 15, Jordan: everything else waits
+    // for Kyle's approval): a job a person already marked as delivering (or
+    // Jordan's same-day override), and a same-day order whose every check passes.
     const { READY_FOLDER } = await import("./handoff");
-    // Also a job someone marked as delivering before its folder existed (a same-day override).
     const jobs = await prisma.photoJob.findMany({
       where: {
         stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
         OR: [
-          { stage: "READY", deliveryPath: { endsWith: READY_FOLDER }, deliveryStagedAt: { not: null } },
           { stage: "DELIVERING", photos: { some: { status: "ACTIVE", sourceKind: "AUTOHDR" } } },
+          ...(settings.sameDayAutoDeliver ? [{ stage: "READY" as const, deliveryPath: { endsWith: READY_FOLDER }, deliveryStagedAt: { not: null } }] : []),
         ],
       },
       orderBy: { stageChangedAt: "desc" },
-      select: { id: true },
+      select: { id: true, stage: true },
       take: 15,
     });
     const { aryeoWebCredentials } = await import("@/lib/integrations/aryeoWeb");
@@ -575,9 +654,23 @@ export async function drivePushes(opts: { budgetMs?: number } = {}): Promise<{ s
       if (started.length >= 1 || Date.now() - t0 > budget / 2) break;
       const cur = (await load(j.id)).run;
       if (cur && !(await startAgain(j.id, cur))) continue;
-      const r = await requestPush(j.id, { by: "aryeo-push" }).catch(() => null);
-      if (r?.started) started.push(j.id);
-      else if (r && !r.ok) await noteRefusal(j.id, r.message);
+      if (j.stage === "READY" && (await sameDayBlocker(j.id))) continue; // waits for Kyle's approval
+      const r = await requestPush(j.id, { by: "aryeo-push", then: "deliver", approvedBy: cur?.approvedBy ?? null }).catch(() => null);
+      if (r?.started) {
+        started.push(j.id);
+        if (j.stage === "READY" && !cur) await logJobEvent(j.id, "aryeo-push", "same-day order, every check passes: approved by the hub, uploading and delivering");
+      } else if (r && !r.ok) await noteRefusal(j.id, r.message);
+    }
+    // A run a person approved that stopped on the hub's Aryeo login: again once its wait is over.
+    const retry = await prisma.appSetting.findMany({ where: { key: { startsWith: "photo_aryeo_push:" }, value: { contains: '"state":"FAILED"' }, AND: [{ value: { contains: '"retryAfter":"' } }, { value: { contains: '"approvedBy":"' } }] }, select: { key: true }, take: 10 });
+    for (const row of connected ? retry : []) {
+      if (started.length >= 2 || Date.now() - t0 > budget / 2) break;
+      const jobId = row.key.slice("photo_aryeo_push:".length);
+      const cur = (await load(jobId)).run;
+      if (!cur || !cur.approvedBy || !(await startAgain(jobId, cur))) continue;
+      const r = await requestPush(jobId, { by: cur.approvedBy, then: cur.then, anyway: cur.anyway, approvedBy: cur.approvedBy }).catch(() => null);
+      if (r?.started) started.push(jobId);
+      else if (r && !r.ok) await noteRefusal(jobId, r.message);
     }
   }
   // Only runs still going (finished ones stay as the job's record and must never crowd these out).

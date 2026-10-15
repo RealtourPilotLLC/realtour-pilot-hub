@@ -140,7 +140,7 @@ async function main() {
     c.head("2 · what the pages say");
     // =======================================================================
     const tb = text(board);
-    c.ok("board: every column, in order", ["Editing", "Checking", "Needs decision", "Fixing", "On hold", "Ready to deliver", "Delivering", "Delivered"].every((w) => tb.includes(w)) && tb.indexOf("Editing") < tb.indexOf("Needs decision") && tb.indexOf("Needs decision") < tb.indexOf("Delivered"));
+    c.ok("board: every column, in order", ["Editing", "Checking", "Needs decision", "Fixing", "On hold", "Ready to review", "Delivering", "Delivered"].every((w) => tb.includes(w)) && tb.indexOf("Editing") < tb.indexOf("Needs decision") && tb.indexOf("Needs decision") < tb.indexOf("Delivered"));
     c.ok("board: the card shows the street, client, photographer, SLA and ticket counts (privacy critical; bins + coverage major)", /9 Render Row/.test(tb) && /Render Client TEST/.test(tb) && /Render Photographer/.test(tb) && /left/.test(tb) && /1 critical/.test(tb) && /2 major/.test(tb), tb.slice(tb.indexOf("9 Render Row"), tb.indexOf("9 Render Row") + 300));
     // Oct 15 2026 (settings audit #10): shadow mode shows once, on Settings; no banner, chip or table line on the queue.
     c.ok("board: no shadow banner, chip or line", !/shadow/i.test(tb) && !/shadow/i.test(text(table)));
@@ -174,7 +174,7 @@ async function main() {
     const ts = text(settingsHtml);
     // Oct 15 2026 (settings audit): fixes and paid QC are one choice each; the dead switches and the mask padding are gone.
     c.ok("settings: fixes are one three-way choice", /Fixes/.test(ts) && /Only when someone approves/.test(ts) && /Automatic/.test(ts) && /not even one approved in the Fix Cart/.test(ts));
-    c.ok("settings: every setting is on the page", ["Photo Delivery on", "Send shoots to AutoHDR", "Bring the edits back into the hub", "Free photo check", "Daily limit on automatic fixes", "Upload and deliver by itself", "Advanced", "Paid QC (Claude)", "Only when someone presses Run QC", "Every gallery", "shadow mode", "Which checks the paid QC runs", "Kyle&rsquo;s approval limit", "Confidence floor", "Smallest photo allowed", "Track shoots from", "Monthly QC budget"].every((w) => ts.includes(w.replace("&rsquo;", "\u2019")) || ts.includes(w.replace("&rsquo;", "'"))), ts.slice(0, 200));
+    c.ok("settings: every setting is on the page", ["Photo Delivery on", "Send shoots to AutoHDR", "Bring the edits back into the hub", "Free photo check", "Daily limit on automatic fixes", "Kyle approves each job", "Advanced", "Paid QC (Claude)", "Only when someone presses Run QC", "Every gallery", "shadow mode", "Which checks the paid QC runs", "Kyle&rsquo;s approval limit", "Confidence floor", "Smallest photo allowed", "Track shoots from", "Monthly QC budget"].every((w) => ts.includes(w.replace("&rsquo;", "\u2019")) || ts.includes(w.replace("&rsquo;", "'"))), ts.slice(0, 200));
     c.ok("settings: the dead switches are gone", !/Auto-run fixes that cost no credits|Mirror status into Aryeo|Compare every photo with its original|Daily automatic credit limit|Mask padding/.test(ts));
     c.ok("settings: the client profile is listed with its override, without the SLA", /Render Client TEST/.test(ts) && /1 override/.test(ts) && !/h SLA|SLA hours/.test(ts));
 
@@ -215,8 +215,8 @@ async function main() {
       steps: { ...asAdmin.steps!, listingUrl: asAdmin.steps!.listingUrl ?? "https://realtourpilot.aryeo.com/admin/listings/lst-render/edit", ready: { folderUrl, files: 3, expected: 3, ready: true, stagedAt: null } },
       aryeoPush,
     });
-    const hubOff: Push = { mode: "off", connected: false, progress: null };
-    const hubOn: Push = { mode: "approve", connected: true, progress: null };
+    const hubOff: Push = { mode: "off", connected: false, progress: null, sameDayAuto: false };
+    const hubOn: Push = { mode: "on", connected: true, progress: null, sameDayAuto: false };
     const prog = (o: Partial<NonNullable<Push["progress"]>>): Push => ({ ...hubOn, progress: { state: "WAITING", active: false, total: 3, sent: 3, already: 0, note: null, startedAt: now.toISOString(), finishedAt: null, deliveredAt: null, waitingForApproval: true, ...o } });
     const frame = (label: string, d: typeof asAdmin) => {
       const h = html(createElement(JobWorkspace, { data: d, viewer: admin, history: null }));
@@ -225,18 +225,24 @@ async function main() {
     };
     c.ok("the seeded checklist lets Kyle deliver (shadow mode advises)", asAdmin.gate?.canDeliver === true, JSON.stringify(asAdmin.gate?.checks.map((x) => x.ok)));
     const readyOn = frame("READY, hub on", withStage("READY", hubOn));
-    c.ok("READY with the hub's upload on: Send to Aryeo is the one main button, and no Mark as delivering", JSON.stringify(mains(readyOn)) === '["Send to Aryeo"]' && !/Mark as delivering/.test(text(deliverOf(readyOn))), mains(readyOn).join(" | "));
+    c.ok("Ready to review with the hub's upload on: Approve and deliver is the main button, Approve and upload to Aryeo beside it, no Mark as delivering (Jordan, Oct 15)", JSON.stringify(mains(readyOn)) === '["Approve and deliver"]' && /Approve and upload to Aryeo/.test(text(barOf(readyOn))) && !/Mark as delivering|Send to Aryeo/.test(text(deliverOf(readyOn))), mains(readyOn).join(" | "));
     c.ok("... the steps by hand wait behind Do it by hand instead, and the copy no longer says the hub can't upload", /<summary[^>]*>\s*Do it by hand instead/.test(deliverOf(readyOn)) && /Copy message/.test(text(deliverOf(readyOn).split("Do it by hand instead")[1] ?? "")) && !/can.t upload/.test(text(deliverOf(readyOn))));
     const waitingOn = frame("waiting for Deliver in Aryeo", withStage("READY", prog({})));
-    c.ok("photos up and waiting: Deliver in Aryeo is the one main button; Send to Aryeo again waits inside", JSON.stringify(mains(waitingOn)) === '["Deliver in Aryeo"]' && !/Send to Aryeo again/.test(text(barOf(waitingOn))) && /Send to Aryeo again/.test(text(deliverOf(waitingOn))), mains(waitingOn).join(" | "));
+    c.ok("photos up and waiting: Deliver in Aryeo is the one main button; Upload again waits inside", JSON.stringify(mains(waitingOn)) === '["Deliver in Aryeo"]' && !/Upload again/.test(text(barOf(waitingOn))) && /Upload again/.test(text(deliverOf(waitingOn))), mains(waitingOn).join(" | "));
+    const changedOn = frame("changed after upload", withStage("READY", prog({ state: "DONE", waitingForApproval: false, changed: true, note: "The photos changed after they went on the listing (a fix, a restore or a new order). Approve again to update the listing." })));
+    c.ok("photos changed after they went up: Kyle approves again (no Deliver in Aryeo of the old set)", JSON.stringify(mains(changedOn)) === '["Approve and deliver"]' && !/Deliver in Aryeo/.test(text(barOf(changedOn))), mains(changedOn).join(" | "));
+    const decideOn = frame("QC_REVIEW, hub on", withStage("QC_REVIEW", hubOn));
+    c.ok("Needs decision: no approve yet, the bar says to decide the open issues first", mains(decideOn).length === 0 && !/Approve/.test(text(barOf(decideOn))) && /Decide the open issues first/.test(text(barOf(decideOn))));
+    const sameDayOn = frame("same-day order", withStage("READY", { ...hubOn, sameDayAuto: true }));
+    c.ok("a same-day order says the hub approves and delivers it by itself once every check passes", /Same-day order: the hub approves and delivers it by itself once every check passes/.test(text(barOf(sameDayOn))));
     const sendingOn = frame("sending", withStage("READY", prog({ state: "SENDING", active: true, sent: 1, waitingForApproval: false })));
     c.ok("while the hub sends: no main button, the bar says how far", mains(sendingOn).length === 0 && /Sending to Aryeo: 1 of 3/.test(text(barOf(sendingOn))), text(barOf(sendingOn)).slice(0, 200));
     const failedOn = frame("send failed", withStage("READY", prog({ state: "FAILED", note: "Aryeo said no.", waitingForApproval: false })));
-    c.ok("after a failed send: Send to Aryeo again is the main button", JSON.stringify(mains(failedOn)) === '["Send to Aryeo again"]', mains(failedOn).join(" | "));
+    c.ok("after a failed send: Kyle approves again", JSON.stringify(mains(failedOn)) === '["Approve and deliver"]', mains(failedOn).join(" | "));
     const readyOff = frame("READY, hub off", withStage("READY", hubOff));
-    c.ok("hub upload off: Mark as delivering is the one main button, no Send to Aryeo", JSON.stringify(mains(readyOff)) === '["Mark as delivering"]' && !/Send to Aryeo/.test(text(deliverOf(readyOff))), mains(readyOff).join(" | "));
+    c.ok("hub upload off: Mark as delivering is the one main button, no approve", JSON.stringify(mains(readyOff)) === '["Mark as delivering"]' && !/Approve and/.test(text(deliverOf(readyOff))), mains(readyOff).join(" | "));
     const editing = frame("EDITING", withStage("EDITING", hubOn));
-    c.ok("a stage that can't deliver yet: no main button (not a greyed one), the reason instead", mains(editing).length === 0 && !/Mark as delivering|Send to Aryeo|Deliver in Aryeo/.test(text(barOf(editing))) && /AutoHDR.s edits are not in yet/.test(text(barOf(editing))));
+    c.ok("a stage that can't deliver yet: no main button (not a greyed one), the reason instead", mains(editing).length === 0 && !/Mark as delivering|Approve and|Deliver in Aryeo/.test(text(barOf(editing))) && /AutoHDR.s edits are not in yet/.test(text(barOf(editing))));
     const delivering = frame("DELIVERING", withStage("DELIVERING", hubOff, { deliveryNextCheckAt: new Date(now.getTime() + 5 * 60_000).toISOString() }));
     c.ok("Verify now sits inside the panel, not on the bar", !/Verify now/.test(text(barOf(delivering))) && /Verify now/.test(text(deliverOf(delivering))));
     const links = (h: string) => (deliverOf(h).match(/href="https:\/\/www\.dropbox\.com\/home\/render\/06-Ready-for-Aryeo"/g) ?? []).length;
@@ -246,7 +252,7 @@ async function main() {
     c.ok("four tabs: Issues, Fix Cart, Coverage, History", tabNames.join("|") === "Issues|Fix Cart|Coverage|History", tabNames.join("|"));
     c.ok("history keeps the files behind one line and leaves out the debug (passes and models, Aryeo's CDN link)", /Photos, versions, QC runs and fixes/.test(text(adminJob)) && /Fix batches/.test(text(adminJob)) && !/Passes and models|Aryeo.s CDN/.test(text(adminJob)));
     const stepper = (jobHtml.match(/aria-label="Pipeline stage"[\s\S]*?<\/ol>/) ?? [""])[0];
-    c.ok("stepper: Edited, Checking, Review; on a phone only the current step is named", ["Edited", "Checking", "Review"].every((w) => text(stepper).includes(w)) && !/Landed|Decision|>QC</.test(stepper) && /sr-only sm:not-sr-only">Edited/.test(stepper) && /font-semibold text-foreground">Review/.test(stepper), text(stepper));
+    c.ok("stepper: Edited, Checking, Decide, Ready to review; on a phone only the current step is named", ["Edited", "Checking", "Decide", "Ready to review"].every((w) => text(stepper).includes(w)) && !/Landed|Decision|>QC</.test(stepper) && /sr-only sm:not-sr-only">Edited/.test(stepper) && /font-semibold text-foreground">Decide/.test(stepper), text(stepper));
     const summary = (jobHtml.split('aria-label="Job summary"')[1] ?? "").replace(/^[^>]*>/, "").split("</section>")[0];
     c.ok("shadow mode shows once on the job page: the Deliver bar's Advisory badge", /Advisory/.test(text(barOf(jobHtml))) && !/shadow/i.test(text(summary)) && !/advisory in shadow mode/i.test(tj), (text(summary).match(/.{0,60}shadow.{0,60}/i) ?? [""])[0]);
     const { JobHeaderActions } = await import("@/components/photoDelivery/JobHeaderActions");

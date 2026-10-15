@@ -68,6 +68,7 @@ export default async function PhotoDeliverySettingsPage() {
               fixMaxUsd: settings.fixMaxUsd,
               autoFixDailyMaxCredits: settings.autoFixDailyMaxCredits,
               aryeoPush: settings.aryeoPush,
+              sameDayAutoDeliver: settings.sameDayAutoDeliver,
               paidQc: !settings.qcEnabled ? "off" : settings.paidQcAuto ? "auto" : "press",
               monthlyQcBudgetUsd: settings.monthlyQcBudgetUsd,
               maxBuildPhase: settings.maxBuildPhase,
