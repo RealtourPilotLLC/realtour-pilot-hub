@@ -1,5 +1,6 @@
 import { videoNavigationFor } from "@/lib/videoNavigation";
 import { notFound, redirect } from "next/navigation";
+import { requestsForEditors } from "@/lib/specialRequests";
 import Link from "next/link";
 import {
   AlertTriangle, ChevronDown, Film, FileVideo, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
@@ -343,7 +344,11 @@ export default async function EditBriefPage({
   // the inference, and hiding them would be the worse mistake.
   const scriptOnFile = !!(project.reelHook || project.reelScript);
   const showScript = scriptOnFile || videoDeliverables.some((d) => SCRIPTED_STYLE_RE.test(videoStyleOf(d)));
-  const specialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
+  // Oct 15 2026: never a client's access note (a gate or lockbox code) and never
+  // a client's ask about the photos on a video editor's brief (specialRequests.ts).
+  // The office's own copy (For the office → Job instructions) keeps every row.
+  const allSpecialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
+  const specialRequests = requestsForEditors(allSpecialRequests, { video: true });
   const deliverableNotes = owedDeliverables.filter((d) => d.notes?.trim());
   // The customer's OWN words from the Aryeo order intake ("Special
   // Instructions", "Order Notes") — moved here from the queue's note columns
@@ -458,7 +463,17 @@ export default async function EditBriefPage({
   const activeSub = requestedCut ?? (selectedKey ? latestLivePerCut.get(selectedKey) ?? null : liveSubs[liveSubs.length - 1] ?? latestRound);
   const assetKeyOf = (s: (typeof submissions)[number]) => s.assetUrl ?? `cut:${s.id}`;
   const linkedNoteIds = new Set(quality.issues.filter((issue) => issue.sourceKind === "REVIEW_NOTE" && issue.sourceId).map((issue) => issue.sourceId));
-  const notesFor = (s: (typeof submissions)[number]) => feedback.filter((note) => note.assetUrl === assetKeyOf(s) && !linkedNoteIds.has(note.id) && note.kind === "fix" && note.status !== "RESOLVED");
+  // Oct 15 2026: every reviewer fix note becomes a revision issue (listed on
+  // the cut's panel, under its player: issuesFor). What is left here is a
+  // fix note no issue was made for. The EDITOR'S OWN notes are never fixes
+  // they owe: they were shown as "1 note to fix … from James" with a Mark
+  // fixed button on the editor's own words (audit). They show apart, as the
+  // editor's notes for the reviewer (ownNotesFor).
+  const notesFor = (s: (typeof submissions)[number]) => feedback.filter((note) => note.assetUrl === assetKeyOf(s) && !linkedNoteIds.has(note.id) && !note.fromEditor && note.kind === "fix" && note.status !== "RESOLVED");
+  const ownNotesFor = (s: (typeof submissions)[number]) => feedback.filter((note) => note.assetUrl === assetKeyOf(s) && note.fromEditor && note.status !== "RESOLVED");
+  // The reviewer's notes on this video that are still to fix (or marked fixed, waiting on the reviewer).
+  const issuesFor = (s: (typeof submissions)[number]) =>
+    quality.issues.filter((issue) => !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state) && (issue.cutKey ? issue.cutKey === cutKeyOf(s) : issue.raisedOnSubmissionId === s.id));
   const activeNotes = activeSub ? notesFor(activeSub) : [];
   // EVERY bounced cut gets its own panel, not just the active one — a link
   // that says "cut 3 of 16" has to land on cut 3 even when cut 1 is the one
@@ -773,15 +788,17 @@ export default async function EditBriefPage({
       label: refinedDeliverableLabel(d.type, d.label),
       notes: d.notes ?? "",
     })),
-    specialRequests: specialRequests.map((a) => ({ id: a.id, body: a.body })),
+    specialRequests: allSpecialRequests.map((a) => ({ id: a.id, body: a.body })),
   };
 
   // What the editor OWES on the cut in front of them. The cut panel sits below
   // the brief now, so when work is waiting the page says so at the top and
   // jumps them straight to it — a review note must never go unseen because it
   // is four cards down.
-  const openOnActive = activeNotes.filter((n) => n.status === "OPEN").length;
-  const needsWork = activeSub?.status === "CHANGES_REQUESTED" || openOnActive > 0;
+  // What is still to fix on the cut in front of them: the reviewer's open notes
+  // (issues), plus any fix note no issue was made for. Never the editor's own.
+  const openOnActive = activeNotes.filter((n) => n.status === "OPEN").length + (activeSub ? issuesFor(activeSub).filter((i) => i.state === "OPEN" || i.state === "REOPENED").length : 0);
+  const needsWork = activeSub?.status === "CHANGES_REQUESTED" || activeNotes.some((n) => n.status === "OPEN");
 
   // ---- SEND TO REVIEW: the slots, with the dead ones out of the way -------
   // 893 S Matlack owes SIXTEEN videos (the office's videosOwedOverride), so
@@ -792,7 +809,7 @@ export default async function EditBriefPage({
   // stays, plus the next empty one (the slot they would fill next).
   const cutRows = slots.map((sl) => {
     const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
-    const openNotes = latest ? feedback.filter((n) => n.assetUrl === assetKeyOf(latest) && n.status === "OPEN").length : 0;
+    const openNotes = latest ? feedback.filter((n) => n.assetUrl === assetKeyOf(latest) && n.status === "OPEN" && !n.fromEditor).length : 0;
     return {
       deliverableId: sl.deliverableId,
       slot: sl.slot,
@@ -1161,8 +1178,8 @@ export default async function EditBriefPage({
       {needsWork && <div className="px-4 pt-4 sm:px-6">
         <a href={revisionHref ?? (activeSub ? `#cut-${activeSub.id}` : "#submit-cut")} className="flex min-h-11 flex-wrap items-center gap-2 rounded-xl border border-danger/30 bg-danger-soft/50 px-4 py-3 text-sm font-medium text-danger hover:bg-danger-soft focus-visible:outline-2 focus-visible:outline-brand">
           <AlertTriangle className="size-4 shrink-0" />
-          {openOnActive > 0 ? `${openOnActive} note${openOnActive === 1 ? "" : "s"} to fix on this cut` : "Changes were requested on this cut"}
-          <span className="ml-auto font-semibold">Open exact cut →</span>
+          {openOnActive > 0 ? `${openOnActive} note${openOnActive === 1 ? "" : "s"} to fix on this video` : "Changes were requested on this video"}
+          <span className="ml-auto font-semibold">See them under the video →</span>
         </a>
       </div>}
 
@@ -1254,12 +1271,15 @@ export default async function EditBriefPage({
           {showChanges && (
             <section id="video-changes" data-brief-section="changes" className="min-w-0 space-y-3 rounded-2xl border border-danger/30 bg-danger-soft/20 p-4">
               <h3 className={H3}>Changes to make</h3>
-              {/* The reviewer's timestamped notes live on the cut itself
-                  (Send to Review, below), where each is played and marked
-                  fixed — said here once, not copied. */}
+              {/* The reviewer's timestamped notes are on the video itself
+                  (below, under its player), where a tap on a time plays that
+                  moment: said here once, not copied (Oct 15 2026). */}
               {activeSub && openOnActive > 0 && (
                 <p className="text-sm" data-cut-notes>
-                  {openOnActive} note{openOnActive === 1 ? "" : "s"} to fix on v{activeSub.round}{verdictOf(activeSub)?.by ? ` from ${verdictOf(activeSub)!.by!.split(/\s+/)[0]}` : ""} — on the cut under Send to Review, each at its moment in the video.
+                  <a href={`#cut-${activeSub.id}`} className="font-medium text-brand hover:underline">
+                    {openOnActive} note{openOnActive === 1 ? "" : "s"} to fix on version {activeSub.round}{verdictOf(activeSub)?.by ? ` from ${verdictOf(activeSub)!.by!.split(/\s+/)[0]}` : ""}, under the video below
+                  </a>
+                  . Tap a time to play that moment.
                 </p>
               )}
               {briefsHere.length === 0 && thisVideoAsks.length > 0 && (
@@ -1278,7 +1298,12 @@ export default async function EditBriefPage({
                 <RevisionBriefCard briefs={briefsHere} bounced={[]} canTick={false} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
               </details>}
               {unassignedIssues.length > 0 && <div className="rounded-lg border border-warning/30 p-3 text-sm"><p className="font-medium">Not tied to a video yet — Kyle will confirm which</p><RevisionIssuesPanel issues={unassignedIssues} canReview={false} /></div>}
-              <RevisionIssuesPanel issues={selectedIssues} canReview={false} />
+              {/* This video's own notes are under its player (EditorCutPanel); a
+                  note with no version to play stays listed here. */}
+              {(() => {
+                const unplayable = activeSub ? selectedIssues.filter((i) => !issuesFor(activeSub).some((x) => x.id === i.id)) : selectedIssues;
+                return unplayable.length > 0 ? <RevisionIssuesPanel issues={unplayable} canReview={false} /> : null;
+              })()}
             </section>
           )}
 
@@ -1540,6 +1565,8 @@ export default async function EditBriefPage({
               fileName={s.fileName}
               finalFolderUrl={finalUrl}
               notes={notesFor(s)}
+              ownNotes={ownNotesFor(s)}
+              issues={issuesFor(s).map((i) => ({ id: i.id, state: i.state, text: i.summary || i.text, timeSec: i.timeSec, by: i.raisedByName, round: i.raisedOnRound }))}
               canFix={!isOwnerAdmin}
               viewerName={viewer?.name}
               player={s.id === playerSubId}

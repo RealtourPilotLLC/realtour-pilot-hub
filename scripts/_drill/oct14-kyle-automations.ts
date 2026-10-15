@@ -237,7 +237,10 @@ async function main() {
   const msg = "The gate code is 4417, please park in the driveway.";
   await recordClientCommunication({ clientId: jane.id, clientName: jane.name, projectId: oak.id, text: msg, kind: "text", source: "openphone", commLogId: "cl-gate-1", contactName: "Jane Client" });
   const reqs = await prisma.activity.findMany({ where: { projectId: oak.id, type: "SPECIAL_REQUEST" } });
-  c.ok("the note is a SPECIAL_REQUEST on the job, with the prefix /shoot strips", reqs.length === 1 && reqs[0].body === `Client request (openphone): ${msg}`, reqs.map((r) => r.body).join(" | "));
+  // Oct 15 2026: labelled as an access note, so it never reaches an editor's brief (specialRequests.ts); /shoot strips it like the others.
+  c.ok("the note is a SPECIAL_REQUEST on the job, labelled as an access note /shoot strips", reqs.length === 1 && reqs[0].body === `Client access note (openphone): ${msg}`, reqs.map((r) => r.body).join(" | "));
+  const { requestsForEditors, stripRequestLabel } = await import("@/lib/specialRequests");
+  c.ok("…and no editor's brief, packet or PDF ever lists it", requestsForEditors(reqs, { video: true }).length === 0 && requestsForEditors(reqs, { video: false }).length === 0 && stripRequestLabel(reqs[0].body) === msg);
   const todo = await prisma.smartTask.findFirst({ where: { clientId: jane.id, taskType: "todo" } });
   c.ok("the to-do the brain opened for it is COMPLETED, saying where the words went", todo?.status === "COMPLETED" && /Added to the shoot brief/.test(todo.summary ?? ""), `${todo?.status} ${todo?.summary}`);
   const shootView = await getShoot(oak.id);

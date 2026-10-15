@@ -10,6 +10,7 @@ import { EXPORT_SPEC, EXPORT_SPEC_LINES } from "@/lib/videoStyles";
 import { etDate } from "@/lib/datetime";
 import type { FilmingBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
 import type { BrandBrief } from "@/lib/brandProfile";
+import { isAccessNote } from "@/lib/specialRequests";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -226,7 +227,8 @@ export async function buildEditorBriefPdf(
   }
 
   // ---- Special requests -------------------------------------------------
-  const requests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
+  // Oct 15 2026: a client's access note (a gate or lockbox code) never goes to an editor.
+  const requests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST && !isAccessNote(a.body));
   if (requests.length) {
     heading("Special requests");
     for (const r of requests) text(`•  ${r.body}`, { size: 11 });

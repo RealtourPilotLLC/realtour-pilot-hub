@@ -673,6 +673,8 @@ export type CutNote = {
    *  "fix the 0:14 driveway" reads very differently depending on whether the
    *  office decided it or the person who was standing there asked for it. */
   ask: boolean;
+  /** Written by the editor themselves: a note for the reviewer, never a fix they owe (Oct 15 2026). */
+  fromEditor?: boolean;
   replies: { id: string; body: string; authorName: string | null; createdAt: string }[];
 };
 
@@ -721,6 +723,7 @@ export async function getEditorFeedback(projectId: string, editorKey: string | n
     statusBy: n.statusBy,
     statusAt: n.statusAt ? n.statusAt.toISOString() : null,
     ask: n.lane === "EDITOR" && !!n.photographerId,
+    fromEditor: (n.authorKey ?? "").startsWith("editor:"),
     replies: n.replies.map((r) => ({
       id: r.id,
       body: r.body,
@@ -894,6 +897,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
       statusBy: n.statusBy,
       statusAt: n.statusAt ? n.statusAt.toISOString() : null,
       ask: n.lane === "EDITOR" && !!n.photographerId,
+      fromEditor: (n.authorKey ?? "").startsWith("editor:"),
       replies: n.replies.map((r) => ({
         id: r.id,
         body: r.body,

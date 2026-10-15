@@ -508,13 +508,11 @@ export async function recordClientCommunication(opts: {
       // (Same job the brain chose — the re-anchor above only ever swaps in a
       // delivered-ish job, which takes the branch above.) Skipped when the
       // shoot-note step above already put these words on this job's brief.
-      await prisma.activity.create({
-        data: {
-          projectId: anchorProjectId,
-          type: "SPECIAL_REQUEST",
-          body: `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`,
-        },
-      });
+      // Once (Oct 15 2026): the same email read twice (two inboxes, a rescan)
+      // put the same ask on 811 Little Shiloh Rd's brief twice, 9 s apart.
+      const body = `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`;
+      const already = await prisma.activity.findFirst({ where: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body, createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) } }, select: { id: true } });
+      if (!already) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
     }
   }
 

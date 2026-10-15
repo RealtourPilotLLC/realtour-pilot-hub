@@ -4,6 +4,7 @@ import { etDate } from "@/lib/datetime";
 import { clip, stripMoneySentences, stripQuotedReply } from "@/lib/text";
 import { synthesizeClientProfile, type ClientProfileEditing, type ClientProfileInsights } from "@/lib/integrations/ai";
 import { REVISION_FLAG_PREFIX } from "@/lib/debrief";
+import { isAccessNote } from "@/lib/specialRequests";
 
 // The client "working profile": a creative-safe synthesis of who a client is to
 // work with, drawn from comms, creatives' shoot debriefs, revision history,
@@ -149,7 +150,8 @@ export async function clientProfileInput(clientId: string): Promise<Parameters<t
     comms: comms
       .reverse()
       .map((c) => ({ who: c.direction === "out" ? "Us" : c.contactName || client.name, when: etDate(c.occurredAt), text: c.body || "" })),
-    activities: [...fieldFacts.map((f) => `${CONFIRMED_FIELD_PREFIX}${f.body}`), ...activities.map((a) => a.body)],
+    // Oct 15 2026: a client's access note (a gate or lockbox code) never feeds the profile editors read.
+    activities: [...fieldFacts.map((f) => `${CONFIRMED_FIELD_PREFIX}${f.body}`), ...activities.filter((a) => !isAccessNote(a.body)).map((a) => a.body)],
     feedback: feedback.map((f) => ({ rating: f.rating, sentiment: f.sentiment, text: f.body })),
   };
 }

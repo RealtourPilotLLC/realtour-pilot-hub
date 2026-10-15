@@ -227,7 +227,7 @@ export function orderedWords(items: { title: string; quantity: number }[], deliv
   return deliverables.map((d) => `${d.quantity > 1 ? `${d.quantity} x ` : ""}${d.label ?? d.type.replace(/_/g, " ").toLowerCase()}`).join("; ") || "nothing on the order yet";
 }
 
-const stripPrefix = (s: string) => s.replace(/^Client request \([^)]*\):\s*/i, "").trim();
+const stripPrefix = (s: string) => s.replace(/^Client (?:request|access note) \([^)]*\):\s*/i, "").trim();
 
 /** The brief's words for one shoot. Pure. */
 export function composeShootBrief(s: OpsShoot, p: {

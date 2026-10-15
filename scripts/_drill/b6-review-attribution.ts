@@ -442,7 +442,7 @@ async function main() {
       // each version's panel on the edit page — the verdict now rides as
       // EditorCutPanel's verdict={verdictOf(s)}, the same pure rule.
       c.ok("the edit page now selects the client's stamp and hands each version's panel the verdict",
-        /clientRequestedAt: true, clientRequestedBy: true/.test(page) && /<EditorCutPanel\b[^>]*?verdict=\{verdictOf\(s\)\}/.test(page.replace(/\s+/g, " ")));
+        /clientRequestedAt: true, clientRequestedBy: true/.test(page) && /<EditorCutPanel\b[\s\S]*?verdict=\{verdictOf\(s\)\}/.test(page.replace(/\s+/g, " ")));
       // The rule's other half: the office rules AFTER the client → the office's.
       const later = at.verdictOf({ status: "CHANGES_REQUESTED", decidedAt: new Date(Date.now() + 60_000), decidedBy: "Kyle Cabrera", clientRequestedAt: row.clientRequestedAt, clientRequestedBy: "Nora New" });
       c.ok("an office verdict given after the client's reads as the office's", later?.source === "office" && later.by === "Kyle Cabrera");

@@ -15,8 +15,9 @@ import { clip, noDashes } from "@/lib/text";
 // card and the editor packet all list (shoot.ts specialRequests, opsDay.ts
 // SHOOT_SELECT, editorPacket.ts). So when the brain files a client message as
 // an access or shoot instruction on a job whose shoot is still ahead:
-//   1. the words go on the job as that same SPECIAL_REQUEST row, with the same
-//      "Client request (<source>):" prefix the /shoot checklist strips;
+//   1. the words go on the job as that same SPECIAL_REQUEST row, labelled
+//      "Client access note (<source>):" (Oct 15: the label keeps it off every
+//      editor's brief, specialRequests.ts; /shoot strips it like the others);
 //   2. the to-do the brain just opened for it is COMPLETED with a note saying
 //      where the words went (only a fresh to-do this message made: a row that
 //      merged other asks stays open);
@@ -91,7 +92,8 @@ export async function fileClientShootNote(opts: {
       return { filed: false, closedTaskId: null, pinged: false, reason: "no upcoming shoot on the job" };
     }
     const key = shootNoteKey({ commLogId: opts.commLogId, clientId: opts.clientId, projectId: p.id, text: opts.text });
-    const body = `Client request (${opts.source || "comms"}): ${clip(opts.text, 280)}`;
+    const { ACCESS_NOTE_LABEL } = await import("@/lib/specialRequests");
+    const body = `${ACCESS_NOTE_LABEL} (${opts.source || "comms"}): ${clip(opts.text, 280)}`;
     // The claim and the brief line commit together: a second run finds the
     // claim and writes nothing; a failed write leaves no claim behind.
     let filed = true;

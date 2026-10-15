@@ -42,14 +42,14 @@ export function EditorCutPanel({
   submissionId,
   round,
   status,
-  cutIndex,
-  cutTotal,
   cutLabel,
   assetUrl,
   streamable = true,
   fileName,
   finalFolderUrl,
   notes,
+  ownNotes = [],
+  issues = [],
   canFix,
   viewerName,
   player = true,
@@ -59,9 +59,7 @@ export function EditorCutPanel({
   submissionId: string;
   round: number;
   status: string;
-  /** Which of the job's cuts this is — "Cut 1 of 16" (Jordan, Sep 16: a single
-   *  bounced cut buried in sixteen slots names nothing). Null on a legacy
-   *  folder row that belongs to no deliverable/slot. */
+  /** Kept for callers; the heading names the version only (Oct 15 2026). */
   cutIndex?: number | null;
   cutTotal?: number | null;
   /** The slot's own name — "Personal Branding Reel". */
@@ -72,6 +70,10 @@ export function EditorCutPanel({
   fileName: string | null;
   finalFolderUrl: string;
   notes: CutNote[];
+  /** The editor's own notes for the reviewer: shown apart, never as fixes (Oct 15 2026). */
+  ownNotes?: CutNote[];
+  /** The reviewer's notes on this video still to fix (or marked fixed, waiting on the reviewer): under the player, each time plays its moment. */
+  issues?: { id: string; state: string; text: string; timeSec: number | null; by: string | null; round: number | null }[];
   canFix: boolean;
   viewerName?: string | null;
   /** Mount the video for this cut. Only the cut the page opened on plays here
@@ -124,11 +126,6 @@ export function EditorCutPanel({
   };
 
   const withdrawn = status === "WITHDRAWN";
-  // The heading NAMES the cut — "Cut 1 of 16 · round 2 · Personal Branding
-  // Reel". Sixteen identical slots and one bounced cut is exactly the screen
-  // Jordan was looking at on Sep 16; "Your cut — round 1" told him nothing
-  // about WHICH of the sixteen he was looking at.
-  const named = !!(cutIndex && cutTotal);
 
   return (
     // The anchor every revision link on this page (and every cut-note bell)
@@ -143,7 +140,9 @@ export function EditorCutPanel({
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
         <Clapperboard className={cn("size-4", withdrawn ? "text-muted-2" : "text-brand")} />
         <h2 className={cn("text-sm font-semibold", withdrawn && "text-muted line-through")}>
-          {named ? `Cut ${cutIndex} of ${cutTotal}` : "Your cut"} · round {round}
+          {/* Oct 15 2026: the video's number is the page's ("Video 2 of 3"); this
+              panel names the version only, so the two can never disagree. */}
+          Version {round}
         </h2>
         {cutLabel && <span className="truncate text-xs text-muted">{cutLabel}</span>}
         <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", meta.cls)}>{meta.label}</span>
@@ -182,7 +181,7 @@ export function EditorCutPanel({
           <a href={finalFolderUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand hover:underline">
             <FolderOpen className="size-3.5" /> Final footage folder <ExternalLink className="size-3" />
           </a>
-          . Upload the next version above and it will play right here.
+          . Upload the next version below and it will play right here.
         </p>
       )}
       {assetUrl && player && !streamable && (
@@ -192,7 +191,7 @@ export function EditorCutPanel({
       )}
 
       {/* Nothing to say to a reviewer about a version that was pulled back. */}
-      {canFix && !withdrawn && (
+      {canFix && !withdrawn && status !== "APPROVED" && (
         <div className="border-b border-border px-4 py-2.5 sm:px-5">
           {composing ? (
             <div className="space-y-2">
@@ -231,15 +230,57 @@ export function EditorCutPanel({
         </div>
       )}
 
-      {notes.length > 0 ? (
+      {/* THE REVIEWER'S NOTES, under the player (Oct 15 2026). Every fix note
+          the reviewer writes becomes an item the reviewer later checks; they
+          used to be kept off this panel, which then said there was nothing to
+          fix while the notes sat elsewhere with no way to play their moment. */}
+      {issues.length > 0 && (
+        <div className="border-b border-border px-4 py-3 sm:px-5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-2">To fix</p>
+          <ol className="mt-2 space-y-2">
+            {issues.map((i) => {
+              const done = i.state === "ADDRESSED";
+              return (
+                <li key={i.id} className="flex items-start gap-2.5 text-sm">
+                  {i.timeSec != null && assetUrl && player ? (
+                    <button type="button" onClick={() => seek(i.timeSec!)} className="mt-0.5 shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand hover:bg-brand-soft" title="Play this moment">
+                      {fmtClock(i.timeSec)}
+                    </button>
+                  ) : i.timeSec != null ? (
+                    <span className="mt-0.5 shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">{fmtClock(i.timeSec)}</span>
+                  ) : null}
+                  <span className="min-w-0 flex-1">
+                    <span className={cn("whitespace-pre-wrap", done && "text-muted")}>{i.text}</span>
+                    <span className="mt-0.5 block text-[11px] text-muted-2">
+                      {i.by ? `${i.by.split(/\s+/)[0]}` : "The reviewer"}{i.round ? ` · on version ${i.round}` : ""} ·{" "}
+                      <span className={done ? "text-brand" : "font-semibold text-danger"}>{done ? "marked fixed, the reviewer checks it" : "to fix"}</span>
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          {canFix && <p className="mt-2 text-[11px] text-muted-2">When you upload the next version, the final check asks which of these you fixed.</p>}
+        </div>
+      )}
+      {notes.length > 0 && (
         <EditFeedback notes={notes} canFix={canFix} viewerName={viewerName} embedded onSeek={assetUrl && player ? seek : undefined} />
-      ) : (
+      )}
+      {ownNotes.length > 0 && (
+        <div className="border-t border-border">
+          <p className="px-4 pt-3 text-xs font-semibold uppercase tracking-wide text-muted-2 sm:px-5">{canFix ? "Your notes for the reviewer" : "The editor's notes for the reviewer"}</p>
+          <EditFeedback notes={ownNotes} canFix={false} viewerName={viewerName} embedded onSeek={assetUrl && player ? seek : undefined} />
+        </div>
+      )}
+      {issues.length === 0 && notes.length === 0 && (
         <p className="px-4 py-3 text-sm text-muted sm:px-5">
           {withdrawn
-            ? "This version was withdrawn — it is kept here as history. Upload a replacement above."
+            ? "This version was withdrawn. It is kept here as history. Upload a replacement below."
             : status === "PENDING"
-              ? "No notes yet — you'll see them here the moment the review starts."
-              : "No additional change requests here. Original comments and revision records are in Conversation and revision history."}
+              ? "No notes yet. You'll see them here the moment the review starts."
+              : status === "APPROVED"
+                ? "Approved. Nothing to fix on this version."
+                : "Nothing to fix on this version."}
         </p>
       )}
     </section>

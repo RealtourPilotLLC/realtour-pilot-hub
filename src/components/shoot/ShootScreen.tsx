@@ -100,7 +100,7 @@ export function ShootScreen({
       ]
         // Strip the "Client request (openphone):" provenance prefix logged on
         // special-request activities so the checklist reads as a clean instruction.
-        .map((s) => s.replace(/^Client request \([^)]*\):\s*/i, "").trim())
+        .map((s) => s.replace(/^Client (?:request|access note) \([^)]*\):\s*/i, "").trim())
         .filter(Boolean),
     ),
   ).slice(0, 6);

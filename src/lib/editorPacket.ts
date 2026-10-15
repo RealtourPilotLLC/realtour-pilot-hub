@@ -219,7 +219,8 @@ export async function buildEditorPacket(projectId: string): Promise<EditorPacket
       photographerNotes: scrub(p.editorBrief),
       scriptStatus: scrub(p.scriptConfirmNote),
       studioScript: scrub([p.reelHook, p.reelScript].filter(Boolean).join("\n\n")),
-      specialRequests: p.activities.map((a) => scrub(a.body)).filter((x): x is string => !!x),
+      // Oct 15 2026: no access notes, no photo asks on a video packet (specialRequests.ts).
+      specialRequests: (await import("@/lib/specialRequests")).requestsForEditors(p.activities, { video: true }).map((a) => scrub(a.body)).filter((x): x is string => !!x),
       customerNote: scrub(creativeCustomerNote(p.client)),
       videosFilmed: p.videosFilmed,
     },

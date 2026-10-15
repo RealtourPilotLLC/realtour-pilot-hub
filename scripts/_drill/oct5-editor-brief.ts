@@ -312,7 +312,7 @@ async function main() {
     const orderB = sectionsInOrder(articleB);
     // Oct 14 2026 (Jordan): "revision requests should be at the top of the editor brief".
     c.ok("the order holds, with Changes to make first, right under the header", JSON.stringify(orderB) === JSON.stringify(["header", "changes", "make", "script", "footage", "brand", "client", "music"]), orderB.join(" > "));
-    c.ok("Changes to make says what is waiting and where, without copying the notes", text(block(articleB, /data-brief-section="changes"/)).includes("1 note to fix on v1 from James") && !text(articleB).includes("caption covers her face"), text(block(articleB, /data-brief-section="changes"/)));
+    c.ok("Changes to make says what is waiting and where, without copying the notes", text(block(articleB, /data-brief-section="changes"/)).includes("1 note to fix on version 1 from James, under the video below") && !text(articleB).includes("caption covers her face"), text(block(articleB, /data-brief-section="changes"/)));
     c.ok("the header says it came back, and the one link to the exact cut is at the top", text(block(articleB, /data-brief-section="header"/)).includes("Changes requested") && count(back, `cut=${cut.id}`) >= 1);
     c.ok("the review history is folded away, not in the brief", !text(articleB).includes("History ·") && text(back).includes("History · 1 version"));
 
