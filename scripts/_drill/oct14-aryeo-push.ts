@@ -38,8 +38,10 @@ const ucGroups = new Map<string, string[]>();
 const calls: { kind: string; body?: unknown }[] = [];
 let sessionSeq = 0;
 const validSessions = new Set<string>();
+const pendingSessions = new Set<string>(); // signed in, company not picked yet
 const processingPasses = 1; // Aryeo shows new photos only after this many API reads
 let refuseAttach = false;
+let bounceAfterAttach = false;
 const dropboxFolder = new Map<string, number>(); // path -> size
 let n = 0;
 const id = (p: string) => `${p}-${String(++n).padStart(4, "0")}`;
@@ -84,13 +86,23 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
     if (h.get("x-xsrf-token") !== "tok==" || ck.aryeo_session !== "anon") return new Response("CSRF token mismatch", { status: 419 });
     const b = JSON.parse(String(init?.body ?? "{}")) as { email?: string; password?: string };
     if (b.email !== LOGIN.email || b.password !== LOGIN.password) return withCookies(redirect("https://app.aryeo.com/login"), ["aryeo_session=refused; path=/; domain=.aryeo.com"]);
+    // Like the real Aryeo (seen live Oct 14): 409 + X-Inertia-Location to the
+    // company picker; the session is only good once /companies picked the company.
     const s = `auth-${++sessionSeq}`;
-    validSessions.add(s);
-    return withCookies(redirect("https://realtourpilot.aryeo.com/admin"), [`aryeo_session=${s}; path=/; domain=.aryeo.com; httponly`, "XSRF-TOKEN=tok2%3D%3D; path=/; domain=.aryeo.com"]);
+    pendingSessions.add(s);
+    return withCookies(new Response(null, { status: 409, headers: { "x-inertia-location": "https://app.aryeo.com/companies" } }), [`aryeo_session=${s}; path=/; domain=.aryeo.com; httponly`, "XSRF-TOKEN=tok2%3D%3D; path=/; domain=.aryeo.com"]);
+  }
+  if (u.origin === "https://app.aryeo.com" && u.pathname === "/companies") {
+    const sess = ck.aryeo_session ?? "";
+    if (!pendingSessions.has(sess) && !validSessions.has(sess)) return redirect("https://app.aryeo.com/login");
+    pendingSessions.delete(sess);
+    validSessions.add(sess);
+    return redirect("https://realtourpilot.aryeo.com/admin/dashboard");
   }
   if (u.origin !== "https://realtourpilot.aryeo.com") return null;
   if (!validSessions.has(ck.aryeo_session ?? "")) return redirect("https://app.aryeo.com/login");
   if (method !== "GET" && h.get("x-xsrf-token") !== "tok2==") return new Response("CSRF", { status: 419 });
+  if (u.pathname === "/admin/dashboard" && method === "GET") return json({ component: "Company/Core/Dashboard/ShowDashboard", version: "v1", url: "/admin/dashboard", props: { errors: {} } });
   let m = /^\/admin\/listings\/([^/]+)\/edit$/.exec(u.pathname);
   if (m && method === "GET") {
     const l = listings.get(m[1]);
@@ -107,6 +119,7 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
       l.images.forEach((i) => i.index++);
       l.images.push({ id: id("img"), filename: ucFiles.get(uuid)!, index: 0, live: true, visibleAfter: l.reads + processingPasses });
     }
+    if (bounceAfterAttach) { bounceAfterAttach = false; validSessions.clear(); }
     return redirect(`/admin/listings/${l.id}/edit`);
   }
   m = /^\/admin\/listing\/([^/]+)\/images$/.exec(u.pathname);
@@ -226,6 +239,8 @@ async function main() {
       const project = await prisma.project.create({ data: { title: `${street}, Reading, PA`, addressLine: street, clientId: client.id, aryeoListingId: listingId } });
       const folder = `/AutoHDR/x/${street}/06-Ready-for-Aryeo`;
       const job = await prisma.photoJob.create({ data: { projectId: project.id, stage: "READY", deliveryPath: folder, deliveryStagedAt: new Date() } });
+      const run = await prisma.photoQcRun.create({ data: { jobId: job.id, trigger: "AUTOHDR_CHECK", status: "DONE", rulesVersion: "v", passesJson: JSON.stringify(["P1", "P4"]), startedAt: new Date(), finishedAt: new Date() } });
+      await prisma.photoJob.update({ where: { id: job.id }, data: { lastQcRunId: run.id } });
       for (let i = 0; i < photos; i++) await prisma.photoAsset.create({ data: { jobId: job.id, name: `p${i + 1}.jpg`, sourceKind: "AUTOHDR", contentHash: `${street}-${i}`, inspectedHash: `${street}-${i}`, sequence: i, status: "ACTIVE", roomType: i === 0 ? "EXTERIOR_FRONT" : "BEDROOM", sequenceGroup: i === 0 ? "FRONT_EXTERIOR" : "BEDROOMS" } });
       const order = await deliveryOrderFor(job.id);
       for (const o of order) dropboxFolder.set(`${folder}/${o.deliveryName}`, 50_000 + o.deliveryName.length);
@@ -376,6 +391,27 @@ async function main() {
     await prisma.photoJob.update({ where: { id: H2.job.id }, data: { stage: "DELIVERING", deliveryPath: null, deliveryStagedAt: null } });
     const d3 = await P.drivePushes({ budgetMs: 30_000 });
     c.ok("auto: the cron picks up a job marked as delivering without a folder", d3.started.includes(H2.job.id), JSON.stringify(d3));
+
+    // ======================================================================
+    c.head("8 · never added twice, and never delivered past open issues by itself");
+    await savePhotoDeliverySettings({ aryeoPush: "upload" }, "drill");
+    const I = await mkJob("90 Bounce Blvd", "L-I", 3);
+    bounceAfterAttach = true;
+    await P.requestPush(I.job.id, { by: "Kyle" });
+    for (let i = 0; i < 10; i++) await P.advancePush(I.job.id, { budgetMs: 30_000 });
+    const attachesI = calls.filter((x) => x.kind === "attach" && (x.body as { form_uuid_field: string }).form_uuid_field && ucGroups.get((x.body as { form_uuid_field: string }).form_uuid_field)?.every((u) => /^03|^02|^01/.test(ucFiles.get(u) ?? "") || true)).length;
+    const pi = await P.pushProgress(I.job.id);
+    c.ok("Aryeo signs the hub out right after it added the photos: the add is not sent again, the check finds them", listings.get("L-I")!.images.length === 3 && pi?.state === "DONE", `${listings.get("L-I")!.images.length} ${JSON.stringify(pi)} attaches=${attachesI}`);
+    await savePhotoDeliverySettings({ aryeoPush: "auto" }, "drill");
+    const K = await mkJob("95 Open Issue Way", "L-K", 2);
+    const kRun = await prisma.photoJob.findUniqueOrThrow({ where: { id: K.job.id }, select: { lastQcRunId: true } });
+    await prisma.photoQcFinding.create({ data: { qcRunId: kRun.lastQcRunId!, jobId: K.job.id, photoId: (await prisma.photoAsset.findFirstOrThrow({ where: { jobId: K.job.id } })).id, ruleId: "PREP_PERSONAL_DOCUMENTS", groupKey: "PREP_PERSONAL_DOCUMENTS", pass: "P1_PHOTO", source: "AHDR", specificIssue: "papers on the fridge", explanation: "x", severity: "CRITICAL", confidence: 0.95, responsibility: "ADMIN", fixStrategy: "HUMAN_REVIEW", privacySensitive: true, status: "OPEN" } });
+    await P.requestPush(K.job.id, { by: "aryeo-push" });
+    for (let i = 0; i < 8; i++) await P.advancePush(K.job.id, { budgetMs: 30_000 });
+    const pk = await P.pushProgress(K.job.id);
+    c.ok("auto, shadow mode on, an open privacy issue: uploaded, NOT delivered, waits with why", listings.get("L-K")!.delivery === "UNDELIVERED" && pk?.state === "WAITING" && /open items/.test(pk.note ?? ""), JSON.stringify(pk));
+    const pkOk = await P.approvePushDelivery(K.job.id, "Kyle");
+    c.ok("…a person's Deliver in Aryeo still goes through the usual gate (shadow mode advises)", pkOk.ok, pkOk.message);
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

@@ -147,24 +147,42 @@ export async function signIn(creds?: { email: string; password: string } | null)
     signal: AbortSignal.timeout(30_000),
   });
   takeCookies(jar, res);
-  // Inertia answers an off-site redirect with 409 + X-Inertia-Location instead of Location.
-  const where = res.headers.get("location") ?? res.headers.get("x-inertia-location") ?? "";
   if (res.status === 419) throw new AryeoWebError("Aryeo refused the sign-in's security check (419). Aryeo may have changed its sign-in.", "changed");
   if (res.status >= 500) throw new AryeoWebError(`Aryeo's sign-in failed on Aryeo's side (${res.status}). It is tried again later.`, "transient");
-  // Back to the login page = refused: Aryeo puts the reason in the next page's errors.
-  if (!(res.status === 302 || res.status === 303 || res.status === 409) || /\/login(\b|\/|\?|$)/.test(new URL(where || `${APP}/login`, APP).pathname)) {
-    const again = await fetch(`${APP}/login`, { headers: inertiaHeaders(jar, version, false), redirect: "manual", signal: AbortSignal.timeout(30_000) }).catch(() => null);
-    let reason = "";
-    if (again) {
-      takeCookies(jar, again);
-      const j = (await again.json().catch(() => null)) as { props?: { errors?: Record<string, unknown> } } | null;
-      reason = Object.values(j?.props?.errors ?? {}).flat().filter((x) => typeof x === "string").join(" ");
-    }
+  // Follow Aryeo all the way, the way a browser does: after the password it
+  // goes to the company picker (/companies), which puts the company on the
+  // session, then to the dashboard. Stopping after the password left a
+  // session with no company, and every listing page bounced back to the login
+  // (seen live, Oct 14, Bob Kelley's push).
+  const end = await followRedirects(jar, version, res, `${APP}/login`);
+  if (!end.page || /Login/i.test(end.page.component) || /\/login(\b|\/|\?|$)/.test(new URL(end.url).pathname)) {
+    const reason = Object.values((end.page?.props?.errors as Record<string, unknown> | undefined) ?? {}).flat().filter((x) => typeof x === "string").join(" ");
     throw new AryeoWebError(`Aryeo did not accept the hub's login${reason ? `: ${reason}` : ""}. Check the email and password on Connections → Aryeo hub login.`, "sign-in");
   }
   const s: Session = { cookies: jar, version, at: new Date().toISOString(), email: c.email };
   await saveSession(s);
   return s;
+}
+
+/** Where a response sends the browser next: Location, or Inertia's 409 + X-Inertia-Location. */
+function nextHop(res: Response, from: string): string | null {
+  const to = res.status >= 300 && res.status < 400 ? res.headers.get("location") : res.status === 409 ? res.headers.get("x-inertia-location") : null;
+  return to ? new URL(to, from).toString() : null;
+}
+
+/** Follow redirects with Inertia GETs (cookies kept), up to 6 hops; returns the page the chain ends on. */
+async function followRedirects(jar: Jar, version: string | null, first: Response, from: string): Promise<{ res: Response; url: string; page: InertiaPage | null }> {
+  let res = first;
+  let url = from;
+  for (let hop = 0; hop < 6; hop++) {
+    const to = nextHop(res, url);
+    if (!to) break;
+    url = to;
+    res = await fetch(url, { headers: inertiaHeaders(jar, version, false), redirect: "manual", signal: AbortSignal.timeout(60_000) });
+    takeCookies(jar, res);
+  }
+  const page = res.headers.get("content-type")?.includes("json") ? ((await res.clone().json().catch(() => null)) as InertiaPage | null) : null;
+  return { res, url, page: page?.component ? page : null };
 }
 
 function inertiaHeaders(jar: Jar, version: string | null, json: boolean): Record<string, string> {
@@ -187,33 +205,21 @@ type InertiaPage = { component: string; props: Record<string, unknown>; url: str
  * follows Aryeo's redirect back and returns that page (its props.errors say
  * whether Aryeo accepted it). Signs in again once when the session expired.
  */
-async function inertia(method: "GET" | "POST" | "PUT", url: string, body?: unknown, retried = false): Promise<InertiaPage> {
+async function inertia(method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: unknown, retried = false): Promise<InertiaPage> {
   let s = (await loadSession()) ?? (await signIn());
-  const send = async (m: string, u: string, b?: unknown) => {
-    const res = await fetch(u, { method: m, headers: inertiaHeaders(s.cookies, s.version, b !== undefined), ...(b !== undefined ? { body: JSON.stringify(b) } : {}), redirect: "manual", signal: AbortSignal.timeout(60_000) });
-    takeCookies(s.cookies, res);
-    return res;
-  };
-  let res = await send(method, url, body);
-  // A form answer: Aryeo redirects back; the page there carries the outcome.
-  if ((res.status === 302 || res.status === 303) && method !== "GET") {
-    const back = new URL(res.headers.get("location") ?? url, url).toString();
-    if (/\/login(\b|\/|\?|$)/.test(new URL(back).pathname)) return expired();
-    res = await send("GET", back);
-  }
-  if (res.status === 302 || res.status === 303) {
-    const to = new URL(res.headers.get("location") ?? "", url);
-    if (/\/login(\b|\/|\?|$)/.test(to.pathname)) return expired();
-    res = await send("GET", to.toString());
-  }
-  // A new deploy of Aryeo's app: refresh the version and try once more.
-  if (res.status === 409 && !retried) {
-    const jar = s.cookies;
-    const { version } = await fetchLoginPage(jar);
-    s = { ...s, cookies: jar, version };
+  const first = await fetch(url, { method, headers: inertiaHeaders(s.cookies, s.version, body !== undefined), ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: "manual", signal: AbortSignal.timeout(60_000) });
+  takeCookies(s.cookies, first);
+  // A version change of Aryeo's app (409 without a location): refresh the version and try once more.
+  if (first.status === 409 && !first.headers.get("x-inertia-location") && !retried) {
+    const { version } = await fetchLoginPage(s.cookies);
+    s = { ...s, version };
     await saveSession(s);
     return inertia(method, url, body, true);
   }
+  // A form answer redirects back (the page there carries the outcome); a page may redirect too.
+  const end = await followRedirects(s.cookies, s.version, first, url);
+  const res = end.res;
+  if (/\/login(\b|\/|\?|$)/.test(new URL(end.url).pathname) || (end.page && /Login/i.test(end.page.component))) return expired();
   if (res.status === 401 || res.status === 419) return expired();
   if (res.status === 403) throw new AryeoWebError("Aryeo says the hub's login may not do that (403). Give the hub's Aryeo login admin access to listings.", "refused");
   if (res.status === 404) throw new AryeoWebError("Aryeo did not find that listing page (404). The listing may have been removed, or Aryeo changed its pages.", "changed");
@@ -222,9 +228,8 @@ async function inertia(method: "GET" | "POST" | "PUT", url: string, body?: unkno
     throw new AryeoWebError(`Aryeo refused it: ${j?.message ?? Object.values(j?.errors ?? {}).flat().join(" ")}`.slice(0, 300), "refused");
   }
   if (res.status >= 500) throw new AryeoWebError(`Aryeo answered ${res.status}. It is tried again later.`, "transient");
-  const page = (await res.json().catch(() => null)) as InertiaPage | null;
-  if (!page?.component) throw new AryeoWebError(`Aryeo answered in a way the hub does not recognise (${res.status}). Aryeo may have changed its app.`, "changed");
-  if (/Login/i.test(page.component)) return expired();
+  const page = end.page;
+  if (!page) throw new AryeoWebError(`Aryeo answered in a way the hub does not recognise (${res.status}). Aryeo may have changed its app.`, "changed");
   await saveSession(s);
   return page;
 
@@ -232,6 +237,10 @@ async function inertia(method: "GET" | "POST" | "PUT", url: string, body?: unkno
     if (retried) throw new AryeoWebError("Aryeo signed the hub out and would not sign it back in. Check Connections → Aryeo hub login.", "sign-in");
     await saveSession(null);
     await signIn();
+    // A change (add, order, delete, deliver) is NEVER sent twice: Aryeo may
+    // have done it before it bounced the session (Oct 14, Bob Kelley: the
+    // photos were added twice). The caller checks Aryeo and decides.
+    if (method !== "GET") throw new AryeoWebError("Aryeo asked the hub to sign in again in the middle of a change. Signed back in; the hub checks the listing before doing anything else.", "transient");
     return inertia(method, url, body, true);
   }
 }
@@ -344,6 +353,14 @@ export async function reorderImages(listingId: string, images: AryeoWebImage[]):
   });
   const no = refusedBy(page);
   if (no) throw new AryeoWebError(`Aryeo would not reorder the photos: ${no}`, "refused");
+}
+
+/** Remove photos from the listing (the editor's own delete; used to undo photos the hub added twice). */
+export async function deleteImages(listingId: string, imageIds: string[]): Promise<void> {
+  if (!imageIds.length) return;
+  const page = await inertia("DELETE", `${aryeoAdminOrigin()}/admin/listing/${encodeURIComponent(listingId)}/images`, { images: imageIds });
+  const no = refusedBy(page);
+  if (no) throw new AryeoWebError(`Aryeo would not remove the photos: ${no}`, "refused");
 }
 
 /** Deliver the listing the way the Deliver Listing button does, with its own defaults (the listing's customers are emailed). */

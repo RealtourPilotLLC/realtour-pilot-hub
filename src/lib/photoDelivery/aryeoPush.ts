@@ -60,6 +60,8 @@ export type PushRun = {
   lease: { token: string; until: number } | null;
   /** Send even when the listing holds other photos (a person's "Send anyway"). */
   anyway?: boolean;
+  /** When the add call went to Aryeo (never sent twice). */
+  addSentAt?: string | null;
 };
 export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean };
 
@@ -192,9 +194,16 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
 /** Kyle's "Deliver in Aryeo" on a push that is waiting for it (or a finished upload-only push). */
 export async function approvePushDelivery(jobId: string, by: string): Promise<{ ok: boolean; message: string }> {
   const { run, raw } = await load(jobId);
+  const job0 = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
   if (!run) return { ok: false, message: "Nothing has been sent to Aryeo for this job yet." };
   if (run.state === "CONFIRMING" || run.deliveredAt) return { ok: true, message: "Already delivered in Aryeo." };
   if (run.state !== "WAITING" && !(run.state === "DONE" && run.then === "stop")) return { ok: false, message: "The photos are not all on the listing yet. Wait for the upload to finish." };
+  // A person's go-ahead: the same gate as Mark as delivering (shadow mode advises, never blocks).
+  if (job0?.stage !== "DELIVERING") {
+    const { startDelivery } = await import("./delivery");
+    const g = await startDelivery(jobId, by);
+    if (!g.ok) return { ok: false, message: g.message };
+  }
   const next: PushRun = { ...run, state: "DELIVERING", then: "deliver", by, note: null, finishedAt: null };
   if (!(await save(jobId, next, raw))) return { ok: false, message: "That changed a moment ago. Reload the page." };
   return { ok: true, message: "Delivering in Aryeo now. The listing's customers get Aryeo's usual delivery email." };
@@ -261,11 +270,36 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       return r;
     }
     if (r.state === "ADDING") {
-      const uuids = r.items.filter((i) => !i.already && i.uuid).map((i) => i.uuid!);
-      if (uuids.length) {
-        r.groupId = r.groupId ?? (await W.uploadcareGroup(uuids));
-        const page = await W.listingPage(r.listingId);
-        await W.attachImages(r.listingId, r.groupId, { agreesToMediaLicense: page.requiresMediaLicense });
+      const ours = r.items.filter((i) => !i.already && i.uuid);
+      if (!ours.length) {
+        r.addedAt = r.addedAt ?? new Date().toISOString();
+        r.state = "CHECKING";
+        return r;
+      }
+      // 1. Write the intent down first (saved before anything reaches Aryeo).
+      if (!r.addSentAt) {
+        r.groupId = r.groupId ?? (await W.uploadcareGroup(ours.map((i) => i.uuid!)));
+        r.addSentAt = new Date().toISOString();
+        return r;
+      }
+      // 2. A pass that died after sending: look before sending again (Oct 14,
+      //    Bob Kelley: the photos were added twice when the add was re-sent).
+      if (Date.now() - Date.parse(r.addSentAt) > 90_000) {
+        const { listingGallery } = await import("./jobs");
+        const listing = await listingGallery(r.listingId);
+        const names = new Set((listing?.entries ?? []).map((e) => lower(e.name)));
+        if (!listing || ours.some((i) => names.has(lower(i.name)))) {
+          r.addedAt = r.addedAt ?? r.addSentAt;
+          r.state = "CHECKING";
+          return r;
+        }
+      }
+      // 3. Send it once. Whatever happens after Aryeo received it, the check decides; never re-sent.
+      const page = await W.listingPage(r.listingId);
+      try {
+        await W.attachImages(r.listingId, r.groupId!, { agreesToMediaLicense: page.requiresMediaLicense });
+      } catch (e) {
+        if ((e as Error & { kind?: string }).kind !== "transient") throw e;
       }
       r.addedAt = new Date().toISOString();
       r.state = "CHECKING";
@@ -320,7 +354,17 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
         return r;
       }
       if (job && job.stage !== "DELIVERING" && job.stage !== "DELIVERED") {
-        const { startDelivery } = await import("./delivery");
+        // The hub delivers by itself only on a checklist that really passes:
+        // shadow mode's "advisory" never lets an open critical, major or
+        // privacy issue reach a client automatically. A person's own Mark as
+        // delivering (or Jordan's override) has already decided, so it goes.
+        const { startDelivery, deliveryGate } = await import("./delivery");
+        const gate = await deliveryGate(jobId);
+        if (!gate.passed) {
+          r.state = "WAITING";
+          r.note = `Not delivered by itself: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400);
+          return r;
+        }
         const g = await startDelivery(jobId, r.by ?? "aryeo-push");
         if (!g.ok) {
           r.state = "WAITING";
@@ -413,7 +457,7 @@ export async function drivePushes(opts: { budgetMs?: number } = {}): Promise<{ s
       where: {
         stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
         OR: [
-          { stage: { in: ["READY", "QC_REVIEW"] }, deliveryPath: { endsWith: READY_FOLDER }, deliveryStagedAt: { not: null } },
+          { stage: "READY", deliveryPath: { endsWith: READY_FOLDER }, deliveryStagedAt: { not: null } },
           { stage: "DELIVERING", photos: { some: { status: "ACTIVE", sourceKind: "AUTOHDR" } } },
         ],
       },
@@ -428,7 +472,13 @@ export async function drivePushes(opts: { budgetMs?: number } = {}): Promise<{ s
       if (r?.started) started.push(j.id);
     }
   }
-  const live = await prisma.appSetting.findMany({ where: { key: { startsWith: "photo_aryeo_push:" } }, select: { key: true, value: true }, orderBy: { updatedAt: "asc" }, take: 20 });
+  // Only runs still going (finished ones stay as the job's record and must never crowd these out).
+  const live = await prisma.appSetting.findMany({
+    where: { key: { startsWith: "photo_aryeo_push:" }, NOT: [{ value: { contains: '"state":"DONE"' } }, { value: { contains: '"state":"FAILED"' } }, { value: { contains: '"state":"WAITING"' } }] },
+    select: { key: true, value: true },
+    orderBy: { updatedAt: "asc" },
+    take: 20,
+  });
   const moved: string[] = [];
   for (const row of live) {
     let st: PushState | null = null;
