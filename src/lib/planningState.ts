@@ -124,6 +124,12 @@ export type TopicPlanFacts = {
   interview: { status: string; missing: number; sufficient: boolean | null } | null;
   /** Speaker-tagged client/Jordan lines from THIS month's call, after the confidentiality scrub. */
   callExcerpts: number;
+  /**
+   * Oct 15 2026: how this one topic's answers come in when it differs from
+   * the month. WRITTEN on a call month = "she needs more time on this one":
+   * the client answers it in writing, the rest come from the call.
+   */
+  answerRoute?: "CALL" | "WRITTEN" | null;
 };
 
 export type TopicPlanContext = {
@@ -165,6 +171,9 @@ export function topicPlanStep(f: TopicPlanFacts, ctx: TopicPlanContext): TopicPl
   if (iv?.status === "SUBMITTED" && iv.sufficient !== false) return at("WRITING");
   const gaps = !!iv && (iv.status === "NEEDS_FOLLOWUP" || iv.status === "SUBMITTED_WITH_GAPS" || (iv.status === "SUBMITTED" && iv.sufficient === false));
   if (gaps) return at("NEEDS_MORE", Math.max(1, iv!.missing));
+  // Asked for in writing (Oct 15 2026): their written answers, whatever the
+  // call said about it, until they are sent.
+  if (f.answerRoute === "WRITTEN") return at("NEEDS_ANSWERS");
   // The call already carried it: no questionnaire (A14). The same order the
   // drafting sweep reads — an interview they started wins over the excerpts.
   if (f.callExcerpts > 0 && !started) return at("WRITING");

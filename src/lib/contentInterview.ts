@@ -49,8 +49,24 @@ const followUpKey = (qid: InterviewQuestionId, cond: FollowUpCondition) => `${qi
  * only longer.
  */
 export async function getOrCreateInterview(topicId: string, monthId: string, actor: { staffUserId?: string | null; clientUserId?: string | null }, opts: { sourceKind?: "WRITTEN" | "CALL" } = {}): Promise<string> {
-  const existing = await prisma.contentInterview.findUnique({ where: { topicId_monthId: { topicId, monthId } }, select: { id: true } });
-  if (existing) return existing.id;
+  const existing = await prisma.contentInterview.findUnique({ where: { topicId_monthId: { topicId, monthId } }, select: { id: true, status: true, sourceKind: true } });
+  if (existing) {
+    // Oct 15 2026: a withdrawn interview (ABANDONED) comes back when a person
+    // opens the questions again, with whatever was already answered. (The
+    // question sweep never reaches here for one: it skips ABANDONED rows.)
+    // Asked for in writing, the full questions are asked, not only the gaps.
+    const revive = existing.status === "ABANDONED";
+    const toWritten = opts.sourceKind === "WRITTEN" && existing.sourceKind !== "WRITTEN";
+    if (revive || toWritten) {
+      const answered = revive ? await prisma.contentInterviewAnswer.count({ where: { interviewId: existing.id } }) : 0;
+      await prisma.contentInterview.update({
+        where: { id: existing.id },
+        data: { ...(revive ? { status: answered ? "IN_PROGRESS" : "NOT_STARTED", lastActivityAt: new Date() } : {}), ...(toWritten ? { sourceKind: "WRITTEN" } : {}) },
+      });
+      if (answered) await interviewState(existing.id).catch(() => null);
+    }
+    return existing.id;
+  }
   const [t, m] = await Promise.all([
     prisma.contentTopic.findUnique({ where: { id: topicId }, select: { enrollmentId: true, clientId: true } }),
     prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true } }),
@@ -332,7 +348,7 @@ export async function submitInterview(interviewId: string, actor: { staffUserId?
     return { status: "SUBMITTED", missing: [] };
   }
   const left = st.sufficiency.missing.length;
-  if (!opts.acknowledgeGaps) throw new Error(`Not enough to write this one yet — ${left} thing${left === 1 ? "" : "s"} still missing. Answer what you can, or send what you have and we'll follow up.`);
+  if (!opts.acknowledgeGaps) throw new Error(`Not enough to write this one yet: ${left} thing${left === 1 ? "" : "s"} still missing. Answer what you can, or send what you have and we'll follow up.`);
   await prisma.contentInterview.update({ where: { id: interviewId }, data: { status: "SUBMITTED_WITH_GAPS", submittedAt: null, sentWithGapsAt: new Date(), sentWithGapsByClientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? undefined, sufficiencyJson: json } });
   const { openAnswerGapTask } = await import("@/lib/programDeskTasks");
   await openAnswerGapTask(interviewId, "SENT_WITH_GAPS").catch(() => {});
@@ -449,4 +465,127 @@ export async function interviewPlanningContext(interviewId: string): Promise<{ t
   // written by planInterviewQuestions and by nothing else.
   const hasPlan = !!row.aiRunId && !!storedPhrasing(row.questionPlanJson);
   return { topic, audience, clientName, enrollmentId: row.enrollmentId, clientId: row.clientId, monthId: row.monthId, policyVersionId: row.policyVersionId, strategyVersionId: row.strategyVersionId, hasPlan };
+}
+
+
+// ---------------------------------------------------------------------------
+// THE QUESTIONS UNDER EACH CHOSEN TOPIC, AND HOW EACH TOPIC IS ANSWERED
+// (Oct 15 2026, Jordan, after Marcee McMullen's strategy call): "Once
+// selected, I'd like the questions to open underneath it" so they can be read
+// out on the call (her answers are on the recording), or answered in writing
+// when the client plans on her own; and one topic can be asked for in writing
+// ("she needed more time to get back to me on that one") while the others are
+// scripted from the call. The month keeps its route; a topic's own
+// `ContentTopicSelection.answerRoute` overrides it.
+// ---------------------------------------------------------------------------
+
+export type QuestionSheet = {
+  interviewId: string | null;
+  status: string | null;
+  questions: { key: string; text: string; answer: string | null; skipped: boolean }[];
+};
+
+const sheetKey = (topicId: string, monthId: string) => `${topicId}:${monthId}`;
+
+/** A question as a person reads it: no placeholders, and no em dashes in client copy. */
+const readable = (text: string) => text.replace(/\s+—\s+/g, ", ").replace(/—/g, ", ");
+
+/**
+ * The six questions for each (topic, month), as the person will read them —
+ * the per-topic sentence when the hub wrote one, else the house question
+ * filled in for this topic — with the current answer to each. Batched: one
+ * read per kind for every topic on the page.
+ */
+export async function questionSheets(pairs: { topicId: string; monthId: string }[]): Promise<Map<string, QuestionSheet>> {
+  const out = new Map<string, QuestionSheet>();
+  if (!pairs.length) return out;
+  const topicIds = [...new Set(pairs.map((p) => p.topicId))];
+  const [topics, interviews] = await Promise.all([
+    prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true, pillar: true, pillarId: true, enrollmentId: true, clientId: true } }),
+    prisma.contentInterview.findMany({ where: { OR: pairs.map((p) => ({ topicId: p.topicId, monthId: p.monthId })) }, select: { id: true, topicId: true, monthId: true, status: true, questionPlanJson: true } }),
+  ]);
+  const enrollments = [...new Set(topics.map((t) => t.enrollmentId))];
+  const clientIds = [...new Set(topics.map((t) => t.clientId))];
+  const [strategies, pillars, clients, answerRows] = await Promise.all([
+    Promise.all(enrollments.map(async (e) => [e, await approvedStrategy(e).catch(() => null)] as const)),
+    Promise.all(enrollments.map(async (e) => [e, await listPillars(e, { includeRetired: true }).catch(() => [])] as const)),
+    prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true } }),
+    interviews.length ? prisma.contentInterviewAnswer.findMany({ where: { interviewId: { in: interviews.map((i) => i.id) } }, orderBy: [{ questionKey: "asc" }, { version: "desc" }] }) : Promise.resolve([]),
+  ]);
+  const audienceOf = new Map(strategies.map(([e, st]) => [e, st?.document?.targetAudience.primaryClientTypes ?? null]));
+  const pillarsOf = new Map(pillars);
+  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  // The newest version per question per interview.
+  const latest = new Map<string, (typeof answerRows)[number]>();
+  for (const r of answerRows) if (!latest.has(`${r.interviewId}:${r.questionKey}`)) latest.set(`${r.interviewId}:${r.questionKey}`, r);
+  for (const p of pairs) {
+    const t = topics.find((x) => x.id === p.topicId);
+    if (!t) continue;
+    const iv = interviews.find((i) => i.topicId === p.topicId && i.monthId === p.monthId) ?? null;
+    const phrasing = iv ? storedPhrasing(iv.questionPlanJson) : null;
+    const pillarName = pillarsOf.get(t.enrollmentId)?.find((x) => x.id === t.pillarId)?.name ?? t.pillar ?? "";
+    const fillIn = (template: string) => template
+      .replace(/\{\{topic\}\}/g, t.title).replace(/\{\{pillar\}\}/g, pillarName)
+      .replace(/\{\{client\}\}/g, nameOf.get(t.clientId) ?? "you").replace(/\{\{audience\}\}/g, audienceOf.get(t.enrollmentId) ?? "people in this situation");
+    out.set(sheetKey(p.topicId, p.monthId), {
+      interviewId: iv?.id ?? null,
+      status: iv?.status ?? null,
+      questions: INTERVIEW_QUESTION_PLAN.map((q) => {
+        const own = phrasing?.[q.id]?.trim();
+        const a = iv ? latest.get(`${iv.id}:${q.id}`) : undefined;
+        return { key: q.id, text: readable(own && own.length >= 12 && !own.includes("{{") ? own : fillIn(q.template)), answer: a?.answerKind === "SKIPPED" ? null : a?.answerText ?? null, skipped: a?.answerKind === "SKIPPED" };
+      }),
+    });
+  }
+  return out;
+}
+
+export const questionSheetKey = sheetKey;
+
+/**
+ * Take the written questions back off a topic (Jordan: "I need a way to undo
+ * that change"). Nothing answered and nothing written from it: the interview
+ * goes, as if it was never opened. Otherwise it is set aside (ABANDONED): what
+ * the client wrote is kept, and opening the questions again brings it back.
+ */
+export async function withdrawInterview(topicId: string, monthId: string): Promise<"deleted" | "set-aside" | "none"> {
+  const iv = await prisma.contentInterview.findUnique({ where: { topicId_monthId: { topicId, monthId } }, select: { id: true } });
+  if (!iv) return "none";
+  const [answers, scripts, versions] = await Promise.all([
+    prisma.contentInterviewAnswer.count({ where: { interviewId: iv.id } }),
+    prisma.contentScript.count({ where: { interviewId: iv.id } }),
+    prisma.contentScriptVersion.count({ where: { interviewId: iv.id } }),
+  ]);
+  const { closeAnswerGapTask } = await import("@/lib/programDeskTasks");
+  await closeAnswerGapTask(iv.id).catch(() => {});
+  if (!answers && !scripts && !versions) {
+    await prisma.contentInterview.delete({ where: { id: iv.id } });
+    return "deleted";
+  }
+  await prisma.contentInterview.update({ where: { id: iv.id }, data: { status: "ABANDONED", lastActivityAt: new Date() } });
+  return "set-aside";
+}
+
+/**
+ * How one chosen topic's answers come in. WRITTEN: the client answers it in
+ * writing on the portal (the interview is opened, full questions) and its
+ * script waits for those answers. CALL: talked through on the strategy call
+ * and scripted from it; written questions already opened are taken back
+ * (withdrawInterview), so this is also the Undo of "Written answers".
+ */
+export async function setTopicAnswerRoute(topicId: string, monthId: string, route: "CALL" | "WRITTEN", actor: { staffUserId?: string | null; clientUserId?: string | null }): Promise<{ route: "CALL" | "WRITTEN"; interviewId: string | null; withdrawn: "deleted" | "set-aside" | "none" | null }> {
+  const sel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId, monthId } }, select: { id: true, status: true, enrollmentId: true } });
+  if (!sel || !["SELECTED", "RECONCILED", "CARRIED", "PROPOSED"].includes(sel.status)) throw new Error("That topic isn't chosen for this month.");
+  await prisma.contentTopicSelection.update({ where: { id: sel.id }, data: { answerRoute: route } });
+  let interviewId: string | null = null;
+  let withdrawn: "deleted" | "set-aside" | "none" | null = null;
+  if (route === "WRITTEN") interviewId = await getOrCreateInterview(topicId, monthId, actor, { sourceKind: "WRITTEN" });
+  else withdrawn = await withdrawInterview(topicId, monthId);
+  const { recordTopicEvent } = await import("@/lib/contentTopics");
+  await recordTopicEvent(topicId, sel.enrollmentId, "EDITED", { kind: actor.clientUserId ? "CLIENT" : "STAFF", clientUserId: actor.clientUserId ?? null, staffUserId: actor.staffUserId ?? null }, {
+    monthId, note: route === "WRITTEN" ? "Asked for in writing: the client answers this one on the portal" : withdrawn === "set-aside" ? "Back to the call: the written questions were set aside (what was written is kept)" : "Back to the call: answered on the strategy call",
+  }).catch(() => {});
+  const { recalcProgramMonth } = await import("@/lib/programMonths");
+  await recalcProgramMonth(monthId).catch(() => null);
+  return { route, interviewId, withdrawn };
 }

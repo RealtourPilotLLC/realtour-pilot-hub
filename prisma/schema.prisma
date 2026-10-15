@@ -3370,6 +3370,11 @@ model ContentTopicSelection {
   evidenceJson String? // excerpts supporting "explicitly chosen"
   overflow     Boolean   @default(false) // beyond package capacity — kept, not deleted (spec §5)
   committedAt  DateTime? // staff reconciled it after the call / preparation
+  // Oct 15 2026 (Jordan, Marcee McMullen's call): how THIS topic's answers come
+  // in, when it differs from the month. CALL = talked through on the strategy
+  // call (scripted from the transcript); WRITTEN = the client answers in
+  // writing on the portal. Null = the month's route decides.
+  answerRoute  String?
   removedAt    DateTime?
   removedBy    String?
   createdAt    DateTime  @default(now())

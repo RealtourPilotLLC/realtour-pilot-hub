@@ -1509,14 +1509,32 @@ export async function answerFollowUpLinkAction(interviewId: string): Promise<Res
 }
 
 // ---- interview ---------------------------------------------------------------------------
-export async function startInterview(topicId: string, monthId: string): Promise<Result & { interviewId?: string }> {
+/**
+ * Oct 15 2026: "Written answers" on one topic of a month (the client answers
+ * it on her portal and its script waits for those answers), and its Undo
+ * ("I need a way to undo that change"). On a month planned on a call the Undo
+ * puts the topic back on the call; otherwise it takes the questions back.
+ */
+export async function setTopicAnswerRouteAction(topicId: string, monthId: string, route: "CALL" | "WRITTEN"): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
-    const { getOrCreateInterview } = await import("@/lib/contentInterview");
-    const interviewId = await getOrCreateInterview(topicId, monthId, { staffUserId: me.email });
+    const lib = await import("@/lib/contentInterview");
+    if (route === "WRITTEN") {
+      await lib.setTopicAnswerRoute(topicId, monthId, "WRITTEN", { staffUserId: me.email });
+      revalidatePath("/content");
+      return { ok: true, message: "Open for written answers on the client's portal. Its script waits for them." };
+    }
+    const facts = await import("@/lib/planningFacts").then((m) => m.planningForMonth(monthId)).catch(() => null);
+    if (facts?.route === "CALL") {
+      const r = await lib.setTopicAnswerRoute(topicId, monthId, "CALL", { staffUserId: me.email });
+      revalidatePath("/content");
+      return { ok: true, message: r.withdrawn === "set-aside" ? "Undone: back to the call. What the client already wrote is kept." : "Undone: back to the call, scripted from it." };
+    }
+    const w = await lib.withdrawInterview(topicId, monthId);
+    await prisma.contentTopicSelection.updateMany({ where: { topicId, monthId }, data: { answerRoute: null } });
     revalidatePath("/content");
-    return { ok: true, message: "Interview ready.", interviewId };
+    return { ok: true, message: w === "set-aside" ? "Undone. What the client already wrote is kept." : "Undone." };
   } catch (e) { return fail(e); }
 }
 

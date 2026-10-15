@@ -9,6 +9,7 @@ import { portalOpenInterview, portalRemoveSelection, portalSelectTopic, portalSu
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { ScriptView } from "@/components/script/ScriptView";
 import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
+import { TopicQuestions } from "@/components/portal/TopicQuestions";
 import { StatusChip } from "@/components/portal/ui";
 import { awaitingScript, inBank } from "@/lib/portalHome";
 import { CTA_WORDS, SCRIPT_WORDS, TOPIC_WORDS, answerCta, planStepWord } from "@/lib/portalWords";
@@ -61,7 +62,7 @@ const BANK_FILTER_KEYS: readonly (PortalTopicState | "ALL")[] = ["ALL", "SUGGEST
 const monthLabel = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" }); };
 const shortMonth = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short" }); };
 
-export function TopicBank({ groups, months, total, canAct, readOnly, initialFilter, tabHref, view, initialMonthId = null, scriptsHref = null }: {
+export function TopicBank({ groups, months, total, canAct, readOnly, initialFilter, tabHref, view, initialMonthId = null, scriptsHref = null, staff = false }: {
   groups: { pillarId: string | null; pillarName: string; purpose: string | null; topics: PortalTopic[] }[];
   months: PortalTopicMonth[];
   archivedCount: number;
@@ -78,6 +79,8 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
   initialMonthId?: string | null;
   /** Your Month's Scripts view, where a script waiting on the client is read and answered. */
   scriptsHref?: string | null;
+  /** Oct 15 2026: the Realtour Pilot team is viewing (they may ask for one topic in writing). */
+  staff?: boolean;
 }) {
   const router = useRouter();
   const [filter] = useState<PortalTopicState | "ALL">(FILTERS.some((f) => f.key === initialFilter) ? (initialFilter as PortalTopicState | "ALL") : "ALL");
@@ -345,7 +348,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                           {/* R01: no questions offered for what nobody owes — an extra waiting
                               its turn, a topic the booked call covers, a call's proposal —
                               unless they already started them. */}
-                          {(t.selection || selectedHere) && t.state !== "FILMED" && canAct && !readOnly && (t.interview || !t.plan || !["EXTRA", "ON_CALL", "CONFIRMING"].includes(t.plan.step)) && (
+                          {(t.selection || selectedHere) && t.state !== "FILMED" && canAct && !readOnly && (t.interview || !t.plan || !["EXTRA", "ON_CALL", "CONFIRMING"].includes(t.plan.step)) && (!t.questions || t.plan?.step === "NEEDS_MORE") && (
                             <button type="button" onClick={() => openQuestions(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>
                               {t.plan?.step === "NEEDS_MORE" ? answerCta(t.plan.missing) : t.interview ? (t.interview.status === "SUBMITTED" ? "Your answers" : t.interview.answered > 0 ? "Continue answering" : CTA_WORDS.ANSWER) : CTA_WORDS.ANSWER} <ChevronRight className="size-3" />
                             </button>
@@ -353,6 +356,8 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                           {/* A script waiting on them is answered in Your Month › Scripts, with the words in front of them. */}
                           {scriptsHref && awaitingScript(t) && canAct && !readOnly && <Link href={`${scriptsHref}#script-${t.id}`} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ScrollText className="size-3" /> {CTA_WORDS.REVIEW}</Link>}
                         </div>
+                        {/* Oct 15 2026: the questions open underneath the chosen topic. */}
+                        {view === "month" && t.selection && <TopicQuestions t={t} canAct={canAct} readOnly={readOnly} staff={staff} tabHref={tabHref} />}
                         {cardStatus(t.id)}
                       </div>
                     </div>

@@ -975,6 +975,88 @@ export async function portalSubmitInterview(auth: PortalAuth, interviewId: strin
   }
 }
 
+// ---- the questions under each chosen topic (Oct 15 2026) ------------------------------------
+
+/**
+ * One written answer, typed in the box under its topic. The questions open on
+ * the first answer; an emptied box counts as skipped. Every answer is a new
+ * row, the earlier one stays.
+ */
+export async function portalSaveTopicAnswer(auth: PortalAuth, topicId: string, monthId: string, questionKey: string, text: string): Promise<R & { interviewId?: string }> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const [topic, month] = await Promise.all([topicForEnrollment(v.enrollment.id, topicId), openMonthForEnrollment(v.enrollment.id, monthId)]);
+  if (!topic) return fail("That topic isn't in your bank.");
+  if (!month) return fail("Pick one of your open program months.");
+  if (!/^[a-zA-Z]+$/.test(questionKey)) return fail("Unknown question.");
+  const { getOrCreateInterview, answerQuestion } = await import("@/lib/contentInterview");
+  try {
+    const a = topicActor(v);
+    const actor = { clientUserId: a.clientUserId, staffUserId: a.staffUserId };
+    const interviewId = await getOrCreateInterview(topic.id, month.id, actor, { sourceKind: "WRITTEN" });
+    const typed = clip((text ?? "").trim(), 8000);
+    await answerQuestion(interviewId, questionKey, { text: typed || null, kind: typed ? "TYPED" : "SKIPPED", actor });
+    return { ok: true, message: typed ? "Saved." : "Left blank.", interviewId };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
+  }
+}
+
+/**
+ * "Send my answers" under a topic: any question left empty is skipped, then
+ * the answers go (portalSubmitInterview, the same rules). A follow-up the
+ * answers call for is asked in the guided questions (`followUp`).
+ */
+export async function portalSendTopicAnswers(auth: PortalAuth, topicId: string, monthId: string, opts: { acknowledgeGaps?: boolean } = {}): Promise<R & { status?: "SUBMITTED" | "SUBMITTED_WITH_GAPS"; followUp?: boolean; interviewId?: string }> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const [topic, month] = await Promise.all([topicForEnrollment(v.enrollment.id, topicId), openMonthForEnrollment(v.enrollment.id, monthId)]);
+  if (!topic) return fail("That topic isn't in your bank.");
+  if (!month) return fail("Pick one of your open program months.");
+  const { getOrCreateInterview, answerQuestion, currentAnswers, interviewState } = await import("@/lib/contentInterview");
+  const { INTERVIEW_QUESTION_PLAN } = await import("@/lib/contentPolicy");
+  try {
+    const a = topicActor(v);
+    const actor = { clientUserId: a.clientUserId, staffUserId: a.staffUserId };
+    const interviewId = await getOrCreateInterview(topic.id, month.id, actor, { sourceKind: "WRITTEN" });
+    const have = new Set((await currentAnswers(interviewId)).map((r) => r.questionKey));
+    for (const q of INTERVIEW_QUESTION_PLAN) if (!have.has(q.id)) await answerQuestion(interviewId, q.id, { kind: "SKIPPED", actor });
+    const st = await interviewState(interviewId);
+    if (st.next.kind !== "done") return { ok: false, followUp: true, interviewId, message: "One more question first, to make the script work." };
+    return { ...(await portalSubmitInterview(auth, interviewId, opts)), interviewId };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't send. Try again.");
+  }
+}
+
+/**
+ * Staff only (Jordan in the client's portal on the call): how one chosen
+ * topic is answered. WRITTEN opens it for written answers here while the rest
+ * come from the call; CALL takes the written questions back (the Undo).
+ */
+export async function portalSetTopicAnswerRoute(auth: PortalAuth, topicId: string, monthId: string, route: "CALL" | "WRITTEN"): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  if (v.actor.kind !== "STAFF") return fail("Only the Realtour Pilot team can change how a topic is answered.");
+  if (route !== "CALL" && route !== "WRITTEN") return fail("Unknown choice.");
+  const [topic, month] = await Promise.all([topicForEnrollment(v.enrollment.id, topicId), openMonthForEnrollment(v.enrollment.id, monthId)]);
+  if (!topic) return fail("That topic isn't in your bank.");
+  if (!month) return fail("Pick one of your open program months.");
+  const { setTopicAnswerRoute } = await import("@/lib/contentInterview");
+  try {
+    const r = await setTopicAnswerRoute(topic.id, month.id, route, { staffUserId: v.actor.staffUserId });
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return {
+      ok: true,
+      message: r.route === "WRITTEN"
+        ? "Open for written answers. The questions are under the topic, and its script waits for the answers."
+        : r.withdrawn === "set-aside" ? "Back to the call. What was already written is kept." : "Back to the call. It is scripted from the call.",
+    };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
+  }
+}
+
 /** A correction to the released strategy → a proposal for staff, never an edit. */
 export async function portalProposeStrategyCorrection(auth: PortalAuth, input: { summary: string; section?: string | null }): Promise<R> {
   const v = await viewerFor(auth, "suggest");

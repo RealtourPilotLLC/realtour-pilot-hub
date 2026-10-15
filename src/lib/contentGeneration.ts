@@ -753,6 +753,13 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
   const built = await buildClientContext(o.enrollmentId, { monthId: o.monthId, monthKey: o.monthKey });
   const historyRows = await prisma.contentTopic.findMany({ where: { enrollmentId: o.enrollmentId }, orderBy: { createdAt: "desc" }, take: 120, select: { title: true, status: true } });
   const history = historyRows.length ? historyRows.map((t) => `- [${t.status}] ${t.title}`).join("\n") : "none yet";
+  // Oct 15 2026 (Marcee McMullen): topics are often chosen in the portal WITH
+  // the client during the call. The model gets them by name so what she said
+  // about each lands on THAT topic (createTopic matches the exact title), not
+  // on a re-worded twin that strands the chosen one with no call material.
+  const chosenRows = await prisma.contentTopicSelection.findMany({ where: { monthId: o.monthId, status: { in: ["SELECTED", "RECONCILED", "CARRIED"] } }, select: { topicId: true } });
+  const chosenTitles = chosenRows.length ? (await prisma.contentTopic.findMany({ where: { id: { in: chosenRows.map((r) => r.topicId) } }, select: { title: true } })).map((t) => t.title) : [];
+  const chosenBlock = chosenTitles.length ? `TOPICS ALREADY CHOSEN FOR THIS MONTH (picked before or during this call). When the call talks one of these through, report it in selectedTopics with its title EXACTLY as written here, with the client's excerpts and quotable lines:\n${chosenTitles.map((t) => `- ${t}`).join("\n")}\n\n` : "";
   const context = built.ctx.strategy?.document ? `APPROVED STRATEGY (${built.strategyLabel}):\n${renderStrategy(built.ctx.strategy.document, { preserveSourceHeadings: true })}` : "APPROVED STRATEGY: none on file.";
   const facts = [...(built.ctx.preferences?.explicit ?? []), ...(built.ctx.knownFacts ?? [])];
   // CP-11: the approved strategy's own section headings, so a proposal can
@@ -763,7 +770,7 @@ export async function analyzeTranscriptText(o: { enrollmentId: string; clientId:
     promptKey: "call-analysis", promptVersion: `${GENERATION_POLICY_VERSION}/analysis.3`, policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
     dedupeKey: o.callRecordId ? `analyze:${o.callRecordId}` : `analyze:month:${o.monthId}`,
     system: ANALYSIS_SYSTEM(o.videosOwed, history),
-    prompt: `CLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${o.callDate ? o.callDate.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${o.monthKey}`}\n\n${context}\n\n${headings.length ? `APPROVED STRATEGY SECTION HEADINGS (use one exactly in strategyProposals[].section):\n${headings.map((h) => `- ${h}`).join("\n")}\n\n` : ""}${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
+    prompt: `CLIENT: ${built.ctx.clientName} (id ${o.clientId})\nCALL DATE: ${o.callDate ? o.callDate.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${o.monthKey}`}\n\n${context}\n\n${headings.length ? `APPROVED STRATEGY SECTION HEADINGS (use one exactly in strategyProposals[].section):\n${headings.map((h) => `- ${h}`).join("\n")}\n\n` : ""}${facts.length ? `ACCEPTED FACTS ON FILE:\n${facts.map((f) => `- ${f}`).join("\n")}\n\n` : ""}${chosenBlock}TRANSCRIPT:\n${o.transcript.slice(0, 150_000)}`,
     schema: ANALYSIS_SCHEMA, maxTokens: 10_000,
   });
   const out = run.output;

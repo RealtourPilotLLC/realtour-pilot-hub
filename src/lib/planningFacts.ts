@@ -48,6 +48,8 @@ export type AllowanceEntry = AllowanceSelection & {
   selectionId: string | null;
   evidenceJson: string | null;
   callRecordId: string | null;
+  /** How this topic's answers come in when it differs from the month (CALL | WRITTEN), else null. */
+  answerRoute?: string | null;
   /** A topic pointer with no live selection row, read as SELECTED. */
   legacy: boolean;
 };
@@ -70,7 +72,7 @@ async function allowancesFor(months: AllowanceMonth[], db: ProgramDb): Promise<M
   const [sels, pointers] = await Promise.all([
     db.contentTopicSelection.findMany({
       where: { monthId: { in: ids }, status: { in: ALLOWANCE_SELECTION_STATUSES } },
-      select: { id: true, topicId: true, monthId: true, status: true, rank: true, createdAt: true, evidenceJson: true, callRecordId: true },
+      select: { id: true, topicId: true, monthId: true, status: true, rank: true, createdAt: true, evidenceJson: true, callRecordId: true, answerRoute: true },
     }),
     db.contentTopic.findMany({ where: { monthId: { in: ids }, status: { in: TOPIC_ON_MONTH } }, select: { id: true, monthId: true, createdAt: true } }),
   ]);
@@ -78,7 +80,7 @@ async function allowancesFor(months: AllowanceMonth[], db: ProgramDb): Promise<M
     const live = sels.filter((s) => s.monthId === m.id);
     const liveTopics = new Set(live.map((s) => s.topicId));
     const entries: AllowanceEntry[] = [
-      ...live.map((s) => ({ topicId: s.topicId, status: s.status, rank: s.rank, createdAt: s.createdAt, selectionId: s.id, evidenceJson: s.evidenceJson, callRecordId: s.callRecordId, legacy: false })),
+      ...live.map((s) => ({ topicId: s.topicId, status: s.status, rank: s.rank, createdAt: s.createdAt, selectionId: s.id, evidenceJson: s.evidenceJson, callRecordId: s.callRecordId, answerRoute: s.answerRoute, legacy: false })),
       ...pointers.filter((t) => t.monthId === m.id && !liveTopics.has(t.id))
         .map((t) => ({ topicId: t.id, status: "SELECTED", rank: null, createdAt: t.createdAt, selectionId: null, evidenceJson: null, callRecordId: null, legacy: true })),
     ];
@@ -317,6 +319,7 @@ export async function planningFactsForMonths(monthIdsIn: string[], opts: { now?:
           : null,
         interview: iv ? { status: iv.status, missing: reading.missing, sufficient: reading.sufficient } : null,
         callExcerpts: (rawLines.get(lineKey(m.id, entry.topicId)) ?? []).filter((l) => kept.has(l)).length,
+        answerRoute: entry.answerRoute === "CALL" || entry.answerRoute === "WRITTEN" ? entry.answerRoute : null,
       };
     });
 

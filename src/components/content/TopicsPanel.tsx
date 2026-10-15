@@ -13,7 +13,7 @@ import { contentHref } from "@/lib/contentNav";
 import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy/topicBank";
 import {
   addTopic, answerFollowUpLinkAction, carryNowAction, discussTopicAction, editTopic, queueScriptDraftAction, reconcileTopicSelection, runTopicRefresh, setTopicStatus, setTopicsPerPillarAction,
-  startInterview, suggestionAction, topicDecision, undeclineTopicAction,
+  setTopicAnswerRouteAction, suggestionAction, topicDecision, undeclineTopicAction,
   suggestionBulkAction, releaseSuggestionHoldAction, setSuggestionReasonAction,
 } from "@/app/content/actions";
 import { InterviewPanel, type InterviewUi } from "./InterviewPanel";
@@ -370,7 +370,10 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           )}
           {inMonth && month && !inProduction && <button disabled={busy} title="Back to the bank" onClick={() => run(() => setTopicStatus(t.id, "SAVED", null))} className={quiet}><X className="size-3" /></button>}
           {inMonth && month && draft && <DraftButton t={t} draft={draft} />}
-          {inMonth && month && !interview && <button disabled={busy} onClick={() => run(() => startInterview(t.id, month.id))} className={quiet}>Written answers</button>}
+          {inMonth && month && !interview && <button disabled={busy} title="The client answers this topic's questions in writing on her portal; its script waits for the answers" onClick={() => run(() => setTopicAnswerRouteAction(t.id, month.id, "WRITTEN"))} className={quiet}>Written answers</button>}
+          {inMonth && month && interview && !interview.hasDraft && interview.answeredCount === 0 && !["SUBMITTED", "SUBMITTED_WITH_GAPS"].includes(interview.status) && (
+            <button disabled={busy} title="Take the written questions back off this topic" onClick={() => run(() => setTopicAnswerRouteAction(t.id, month.id, "CALL"))} className={quiet}><Undo2 className="mr-0.5 inline size-3" />Undo written answers</button>
+          )}
           {t.approvalState !== "APPROVED" && !inProduction && <button disabled={busy} title="Approve this topic" onClick={() => run(() => topicDecision(t.id, "APPROVE", ""))} className={quiet}><Check className="size-3" /></button>}
           {!inProduction && <button disabled={busy} title="Reject" onClick={() => { const r = window.prompt("Why? (kept internally so it is never re-suggested)") ?? ""; run(() => topicDecision(t.id, "REJECT", r)); }} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"><X className="size-3" /></button>}
         </div>

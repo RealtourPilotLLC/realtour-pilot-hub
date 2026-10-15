@@ -122,7 +122,7 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
 
   const planned = await prisma.contentTopicSelection.findMany({
     where: { monthId, status: { in: ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"] } },
-    select: { topicId: true, status: true, callRecordId: true, evidenceJson: true, rank: true, createdAt: true },
+    select: { topicId: true, status: true, callRecordId: true, evidenceJson: true, rank: true, createdAt: true, answerRoute: true },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
   });
   if (!planned.length) return [];
@@ -221,6 +221,11 @@ export async function scriptWorkForMonth(monthId: string): Promise<ScriptWorkIte
       return read?.ready
         ? { ...base, readiness: "FROM_ANSWERS", why: `Sent with gaps, and the call covers them${fromCall}.` }
         : { ...base, readiness: "THIN_ANSWERS", why: "Sent with gaps — not enough for a script yet; Kyle is following up." };
+    }
+    // Oct 15 2026 (Jordan): a topic asked for in writing waits for the client's
+    // answers, whatever the call said about it (Malvern: "she needed more time").
+    if (sel.answerRoute === "WRITTEN") {
+      return { ...base, readiness: "WAITING_ON_ANSWERS", why: iv && iv.status !== "NOT_STARTED" ? "They have started their written answers and not sent them yet." : "Asked for in writing: it waits for their answers on the portal." };
     }
     if (iv && (iv.status === "IN_PROGRESS" || iv.status === "NEEDS_FOLLOWUP")) {
       if (read?.ready) return { ...base, readiness: "FROM_ANSWERS", why: `Their answers so far and the call already carry a script${fromCall}.` };
@@ -482,7 +487,7 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   // Committed topics only. A call's PROPOSED suggestion is not the month's plan,
   // and phrasing questions for a topic nobody has agreed to is spent credit.
   const selections = await prisma.contentTopicSelection.findMany({
-    where: { monthId: { in: months.map((m) => m.id) }, status: { in: ["SELECTED", "RECONCILED"] } },
+    where: { monthId: { in: months.map((m) => m.id) }, status: { in: ["SELECTED", "RECONCILED"] }, OR: [{ answerRoute: null }, { answerRoute: { not: "CALL" } }] },
     select: { topicId: true, monthId: true },
     take: 200,
   });
@@ -515,6 +520,8 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
     if (!timeToStart(deadline, minStartMs)) break;
     const step = stepOf(sel.topicId, sel.monthId);
     if (step && NO_QUESTIONS.has(step)) continue;
+    // Taken back (Oct 15 2026): a withdrawn interview is not brought back by the sweep.
+    if ((await prisma.contentInterview.findUnique({ where: { topicId_monthId: { topicId: sel.topicId, monthId: sel.monthId } }, select: { status: true } }))?.status === "ABANDONED") continue;
     try {
       const interviewId = await getOrCreateInterview(sel.topicId, sel.monthId, {});
       const ctx = await interviewPlanningContext(interviewId);

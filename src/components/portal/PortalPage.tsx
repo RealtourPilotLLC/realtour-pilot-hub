@@ -493,7 +493,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       planning: p.ok ? p.data : null, planningFailed: !p.ok,
       schedule: thisMonth, scheduleFailed: !sm.ok,
       slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
-      can: { suggest: perms.suggest, session: perms.session },
+      can: { suggest: perms.suggest, session: perms.session, staff: actor.kind === "STAFF" },
       scheduleHref: portalHref(contextBase, "schedule"),
       selectedSessionIndex: selectedSession,
       late: lateP ? { schedule: sm.ok ? sm.data.find((m) => m.monthId === lateP.monthId) ?? null : null, scripts: lateScripts } : null,

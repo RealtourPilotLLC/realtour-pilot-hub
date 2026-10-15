@@ -1164,6 +1164,13 @@ export type PortalTopic = {
    */
   declined: { atISO: string; reason: string | null } | null;
   carried: { selectionId: string; fromMonthKey: string | null } | null;
+  /**
+   * Oct 15 2026 (Jordan): a topic chosen for an open month carries its six
+   * questions, shown under it. CALL: read out on the strategy call (the
+   * answers are on the recording); WRITTEN: answered here. `callMonth` = the
+   * month is planned on a call, so staff may ask for one topic in writing.
+   */
+  questions?: { route: "CALL" | "WRITTEN"; callMonth: boolean; interviewId: string | null; status: string | null; items: { key: string; text: string; answer: string | null; skipped: boolean }[] } | null;
   scriptedNotFilmed: boolean;
   swappable: string | null;
   /**
@@ -1389,6 +1396,10 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   const openIds = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey && m.monthKey <= lastKey).slice(0, 3).map((m) => m.id);
   const planned = await import("@/lib/planningFacts").then((m) => m.planningFactsForMonths(openIds)).catch(() => null);
 
+  // Oct 15 2026: the questions under each topic chosen for an open month.
+  const sheetPairs = selections.filter((s) => openMonth.get(s.monthId) && s.status !== "REMOVED").map((s) => ({ topicId: s.topicId, monthId: s.monthId }));
+  const sheets = await import("@/lib/contentInterview").then((m) => m.questionSheets(sheetPairs)).catch(() => new Map<string, import("@/lib/contentInterview").QuestionSheet>());
+
   const toTopic = (t: (typeof candidates)[number], pillarName: string): PortalTopic => {
     // A selection in a month still open wins over one in a past month: after a
     // carry the topic's September row is history and its October row is the plan.
@@ -1432,6 +1443,14 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       scriptedNotFilmed: t.status === "SCRIPTED" && !!sc && !isFilmed && (!!carriedSel || !sel || !openMonth.get(sel.monthId)),
       swappable: carriedSel && !isFilmed && openMonth.get(carriedSel.monthId) ? carriedSel.id : null,
       plan: tp ? { step: tp.step, missing: tp.missing, inAllowance: tp.inAllowance } : null,
+      questions: (() => {
+        const sheet = sel && openMonth.get(sel.monthId) ? sheets.get(`${t.id}:${sel.monthId}`) : undefined;
+        if (!sel || !sheet) return null;
+        const mp = planned?.get(sel.monthId)?.planning ?? null;
+        const callMonth = mp?.route === "CALL";
+        const route: "CALL" | "WRITTEN" = sel.answerRoute === "WRITTEN" || sel.answerRoute === "CALL" ? sel.answerRoute : callMonth ? "CALL" : "WRITTEN";
+        return { route, callMonth, interviewId: sheet.interviewId, status: sheet.status, items: sheet.questions };
+      })(),
     };
   };
   const declinedIn = (pillarId: string | null) => bank.declined.filter((t) => visibleIds.has(t.id) && (pillarId ? t.pillarId === pillarId : !t.pillarId || !pillars.some((p) => p.id === t.pillarId)));
