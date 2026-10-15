@@ -119,8 +119,8 @@ export function FindingActions({ findings, className, showFix = true }: { findin
       <button type="button" className={btn} disabled={pending} onClick={() => void decide(open, "OVERRIDDEN")}>
         <Hand aria-hidden className="size-3.5" /> Override
       </button>
-      {/* OTHER_DEFECT is the catch-all: switching it off would hide everything unnamed. */}
-      {viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && (
+      {/* OTHER_DEFECT is the catch-all: switching it off would hide everything unnamed. An AI fix that changed the house is never switched off either. */}
+      {viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && ruleIds[0] !== "FIX_DAMAGE_AI_EDIT" && (
         <button type="button" className={btn} disabled={pending} onClick={() => void stopFlagging(ruleIds[0], findings[0].ruleLabel || ruleIds[0])} title="Stop checking for this on every shoot">
           <EyeOff aria-hidden className="size-3.5" /> Stop flagging this
         </button>

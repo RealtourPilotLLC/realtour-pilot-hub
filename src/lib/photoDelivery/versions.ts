@@ -48,8 +48,11 @@ export async function autohdrRefOf(photo: PhotoRef): Promise<{ shootId: number; 
     if (Number.isFinite(n) && u) return { shootId: n, imageUuid: u };
   }
   if (!photo.autohdrImageUuid) return null;
-  const job = await prisma.photoJob.findUnique({ where: { id: photo.jobId }, select: { autohdrPhotoshootId: true } });
-  return job?.autohdrPhotoshootId ? { shootId: job.autohdrPhotoshootId, imageUuid: photo.autohdrImageUuid } : null;
+  const job = await prisma.photoJob.findUnique({ where: { id: photo.jobId }, select: { autohdrPhotoshootId: true, projectId: true } });
+  if (job?.autohdrPhotoshootId) return { shootId: job.autohdrPhotoshootId, imageUuid: photo.autohdrImageUuid };
+  // A hub shoot's photo carried over to its Aryeo copy keeps its AutoHDR image, not the shoot: the intake knows it.
+  const batch = job ? await prisma.photoIntakeBatch.findFirst({ where: { projectId: job.projectId, photoshootId: { not: null }, photosJson: { contains: photo.autohdrImageUuid } }, select: { photoshootId: true } }) : null;
+  return batch?.photoshootId ? { shootId: batch.photoshootId, imageUuid: photo.autohdrImageUuid } : null;
 }
 
 /** Sharpness at a fixed resolution: the median Laplacian variance of a 3x3 grid (robust to a different crop). */
@@ -271,12 +274,35 @@ export async function restoreVersion(photoId: string, versionId: string, by: str
   if (live && live.image_version_uuid !== v.autohdrVersionUuid) return { ok: false, message: "AutoHDR did not make that version current. Nothing was changed in the hub; try again." };
   await adoptVersion(photo.id, v.autohdrVersionUuid, photo.sourceKind);
   if (photo.sourceKind !== "AUTOHDR") {
-    // The file on the Aryeo listing (or in Dropbox) is not AutoHDR's: it does not change by itself.
+    // The file on the Aryeo listing (or in Dropbox) is not AutoHDR's: it does
+    // not change by itself. The restored version is kept full size, so the
+    // Deliver panel lists it under "Replace these on the Aryeo listing" with a
+    // Download named after the listing's copy.
+    const kept = await keepForListing(photo, ref, v).catch(() => false);
     await logJobEvent(photo.jobId, by, `restored ${photo.name} to "${v.label}" in AutoHDR; the listing's copy still needs replacing by hand`, { photoId, versionId, versionUuid: v.autohdrVersionUuid });
-    return { ok: true, message: `AutoHDR has "${v.label}" as ${photo.name}'s current version again. This photo comes from the ${photo.sourceKind === "ARYEO" ? "Aryeo listing" : "Dropbox finals folder"}, so download it from AutoHDR and replace it there.` };
+    return {
+      ok: true,
+      message: kept
+        ? `${photo.name} is back to "${v.label}". Download it from "Replace these on the Aryeo listing" in the Deliver panel and swap it in on the listing.`
+        : `AutoHDR has "${v.label}" as ${photo.name}'s current version again. Download it from AutoHDR and replace it on the ${photo.sourceKind === "ARYEO" ? "Aryeo listing" : "Dropbox finals folder"}.`,
+    };
   }
   await logJobEvent(photo.jobId, by, `restored ${photo.name} to "${v.label}"; the hub, its downloads and the Aryeo folder use it now`, { photoId, versionId, versionUuid: v.autohdrVersionUuid });
   return { ok: true, message: `${photo.name} is back to "${v.label}". The 06-Ready-for-Aryeo folder picks it up on the next pass (or press Get them ready again).` };
+}
+
+/** The restored version, full size, as a replacement for the listing's copy (the Deliver panel's download). */
+async function keepForListing(photo: PhotoRef & { name: string }, ref: { shootId: number; imageUuid: string }, v: { id: string; label: string; autohdrVersionUuid: string | null }): Promise<boolean> {
+  const bytes = await headBytes(ref);
+  const { putDerivative } = await import("./blob");
+  const safe = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 40) || "x";
+  const file = await putDerivative(`photo-fixes/${safe(photo.jobId)}/${safe(photo.id)}/${safe(v.autohdrVersionUuid ?? v.id)}-restored.jpg`, bytes);
+  if (!file) return false;
+  const was = await prisma.photoVersion.findUnique({ where: { id: v.id }, select: { derivJson: true, width: true, height: true } });
+  await prisma.photoVersion.create({
+    data: { photoId: photo.id, label: `Restored: ${v.label}`.slice(0, 80), source: "FIX", autohdrVersionUuid: v.autohdrVersionUuid, derivJson: JSON.stringify({ ...versionMeta(was?.derivJson ?? null), file }), width: was?.width ?? null, height: was?.height ?? null, bytes: bytes.byteLength, createdBy: "restore" },
+  });
+  return true;
 }
 
 /**

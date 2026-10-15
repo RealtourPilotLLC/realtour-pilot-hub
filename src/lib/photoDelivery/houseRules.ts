@@ -44,6 +44,8 @@ export async function stopRule(ruleId: string, reason: string, by: string): Prom
   const rule = ruleById(ruleId);
   if (!rule) return { ok: false, message: "That check is not one the hub knows.", setAside: 0 };
   if (ruleId === "OTHER_DEFECT") return { ok: false, message: "The catch-all check can't be switched off; ignore those one by one.", setAside: 0 };
+  // Oct 14 2026 (huddle): an AI fix that changed the house is never hidden house-wide.
+  if (ruleId === "FIX_DAMAGE_AI_EDIT") return { ok: false, message: "This one can't be switched off: it is how the hub says an AI fix changed a house. Restore the photo, or decide it one by one.", setAside: 0 };
   const why = reason.trim().slice(0, 300) || "Jordan does not need to know about this";
   const list = await houseRules();
   if (!list.some((r) => r.ruleId === ruleId)) {

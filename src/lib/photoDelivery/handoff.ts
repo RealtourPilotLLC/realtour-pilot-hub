@@ -303,6 +303,17 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
  * is moved on by advanceReady. Without `force`, a run that is already going
  * or already done for the same photos and versions is left as it is.
  */
+/**
+ * The names the last finished Ready run gave each photo ("01-Front-Exterior.jpg"
+ * → photo id), lower-cased: what Kyle uploads to Aryeo, so the sync can carry
+ * each AutoHDR photo over to its listing copy in place (jobs.ts adoptListing).
+ */
+export async function readyNamesFor(jobId: string): Promise<Map<string, string>> {
+  const { run } = await load(jobId);
+  if (!run || run.state !== "DONE") return new Map();
+  return new Map(run.items.filter((i) => i.state === "DONE").map((i) => [i.name.toLowerCase(), i.photoId]));
+}
+
 /** The fingerprint a Ready run copies (photos, order and each photo's version): drills and diagnostics. */
 export async function readyFingerprintFor(jobId: string): Promise<string> {
   return (await currentSet(jobId)).fingerprint;

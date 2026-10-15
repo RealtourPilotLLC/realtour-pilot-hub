@@ -309,13 +309,23 @@ async function autohdrGallery(projectId: string): Promise<GalleryEntry[]> {
  */
 async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<number> {
   const rows = await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "AUTOHDR", status: { in: ["ACTIVE", "EXCLUDED"] } }, orderBy: { sequence: "asc" }, select: { id: true, contentHash: true, inspectedHash: true, classifiedHash: true } });
-  if (!rows.length || rows.length !== entries.length) return 0;
+  if (!rows.length) return 0;
   if (await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } })) return 0;
+  // Oct 14 2026 (huddle): Kyle uploads the 06-Ready-for-Aryeo files, named in
+  // delivery order ("01-Front-Exterior.jpg"). When every listing image is one
+  // of them, each carries over to its own AutoHDR photo, so its versions,
+  // findings and AutoHDR link (Restore) stay with it after delivery.
+  const ready = await (await import("./handoff")).readyNamesFor(jobId).catch(() => new Map<string, string>());
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const viaReady = entries.length > 0 && entries.every((e) => byId.has(ready.get(e.name.toLowerCase()) ?? "")) && new Set(entries.map((e) => ready.get(e.name.toLowerCase()))).size === entries.length;
+  if (!viaReady && rows.length !== entries.length) return 0;
   const slots = entries.map((e) => N_OF_M.exec(e.name));
-  if (slots.some((m) => !m || Number(m[2]) !== rows.length)) return 0;
-  if (new Set(slots.map((m) => Number(m![1]))).size !== rows.length) return 0;
+  if (!viaReady) {
+    if (slots.some((m) => !m || Number(m[2]) !== rows.length)) return 0;
+    if (new Set(slots.map((m) => Number(m![1]))).size !== rows.length) return 0;
+  }
   const ops = entries.flatMap((e, i) => {
-    const row = rows[Number(slots[i]![1]) - 1];
+    const row = viaReady ? byId.get(ready.get(e.name.toLowerCase())!)! : rows[Number(slots[i]![1]) - 1];
     const old = row.contentHash;
     return [
       prisma.photoAsset.update({
@@ -330,8 +340,8 @@ async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<num
     ];
   });
   await prisma.$transaction(ops);
-  await logJobEvent(jobId, "sync", `the ${rows.length} AutoHDR photos reached the Aryeo listing: carried over in place (findings kept)`);
-  return rows.length;
+  await logJobEvent(jobId, "sync", `the ${entries.length} AutoHDR photos reached the Aryeo listing${viaReady ? " (the 06-Ready-for-Aryeo files)" : ""}: carried over in place (findings, versions and the AutoHDR link kept)`);
+  return entries.length;
 }
 
 /** Read one job's gallery and keep its photo rows and stage in step. */

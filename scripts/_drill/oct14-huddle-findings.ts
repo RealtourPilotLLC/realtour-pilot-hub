@@ -56,6 +56,8 @@ const fakeRef: typeof fake | null = fake;
 let ignoreSetVersion = false;
 // Aryeo listings for the delivery checks: id → delivery status, or "error".
 const listings = new Map<string, string>();
+// Full listing bodies (images with file names) for the carry-over check.
+const listingBodies = new Map<string, unknown>();
 const aryeoReads: string[] = [];
 const fence = fenceFetch(async (url, init) => {
   if (ignoreSetVersion && /\/photos\/[^/]+\/version$/.test(new URL(url).pathname) && (init?.method ?? "GET") === "POST") return json({ ok: true });
@@ -64,6 +66,7 @@ const fence = fenceFetch(async (url, init) => {
   if (url.startsWith("https://api.aryeo.com/v1/listings/")) {
     const id = new URL(url).pathname.split("/")[3];
     aryeoReads.push(id);
+    if (listingBodies.has(id)) return json({ data: listingBodies.get(id) });
     const st = listings.get(id);
     if (!st) return json({ message: "not found" }, 404);
     if (st === "error") return json({ message: "nope" }, 403);
@@ -415,6 +418,35 @@ async function main() {
     c.ok("ticked d and f dropped on b: they land before b, in their order", moveTogether(ord, ["f", "d"], 1).join("") === "adfbce");
     c.ok("ticked a and b dropped on e (downward): they land after e", moveTogether(ord, ["a", "b"], 4).join("") === "cdeabf");
     c.ok("dropped on one of themselves: nothing moves", moveTogether(ord, ["c", "d"], 3).join("") === "abcdef");
+
+    // ======================================================================
+    c.head("1c · after delivery: the listing copy keeps its versions, findings and Restore");
+    const R = await mkJob("12 Carry Ct", ["c-1.jpg", "c-2.jpg"]);
+    const [r0, rB] = R.photos;
+    const rf = R.shoot.photos;
+    await prisma.photoJob.update({ where: { id: R.job.id }, data: { autohdrPhotoshootId: null } });
+    await prisma.photoIntakeBatch.create({ data: { projectId: R.project.id, batchNo: 1, state: "DONE", rawPath: "/raw", filesJson: "[]", fileCount: 2, fingerprint: "fp-carry", photoshootId: R.shoot.photoshoot_id, photosJson: JSON.stringify(rf.map((x) => ({ image_uuid: x.image_uuid, image_version_uuid: x.head, name: x.name, url: null, downloaded: true }))) } });
+    await V.captureVersion(r0, { versionUuid: r0.autohdrVersionUuid!, label: "AutoHDR edit", source: "AUTOHDR_INITIAL", by: "drill" });
+    const originalUuid = rf[0].versions[0].uuid;
+    const origRow = await prisma.photoVersion.create({ data: { photoId: r0.id, label: "Original", source: "ORIGINAL_FETCH", autohdrVersionUuid: originalUuid } });
+    const rFinding = await find(R, r0.id, "EXT_PARKED_CARS_DRIVEWAY", "street");
+    const now = new Date().toISOString();
+    await prisma.appSetting.create({ data: { key: `photo_ready_run:${R.job.id}`, updatedBy: "drill", value: JSON.stringify({ id: "r1", state: "DONE", folder: "/x/06-Ready-for-Aryeo", staging: "/x/s", fingerprint: "f", by: "Kyle", startedAt: now, updatedAt: now, finishedAt: now, note: null, lease: null, items: [{ photoId: r0.id, name: "01-Front-Exterior.jpg", state: "DONE", job: null, tries: 0, bytes: 9, since: null, error: null }, { photoId: rB.id, name: "02-Kitchen.jpg", state: "DONE", job: null, tries: 0, bytes: 9, since: null, error: null }] }) } });
+    await prisma.project.update({ where: { id: R.project.id }, data: { aryeoListingId: "LR" } });
+    listingBodies.set("LR", { id: "LR", delivery_status: "DELIVERED", images: [{ id: "a1", filename: "01-Front-Exterior.jpg", original_url: "https://cdn.aryeo.com/listings/r/01.jpg", display_in_gallery: true, index: 0 }, { id: "a2", filename: "02-Kitchen.jpg", original_url: "https://cdn.aryeo.com/listings/r/02.jpg", display_in_gallery: true, index: 1 }] });
+    await J.syncJobFinals(R.job.id);
+    const r0b = await prisma.photoAsset.findUniqueOrThrow({ where: { id: r0.id } });
+    c.ok("Kyle's 06-Ready-for-Aryeo files on the listing: each AutoHDR photo carried over in place (no GONE copy)", r0b.status === "ACTIVE" && r0b.sourceKind === "ARYEO" && r0b.name === "01-Front-Exterior.jpg" && (await prisma.photoAsset.count({ where: { jobId: R.job.id } })) === 2, `${r0b.status} ${r0b.sourceKind} ${r0b.name}`);
+    c.ok("…its versions, findings and AutoHDR link stay with it", r0b.autohdrImageUuid === rf[0].image_uuid && (await prisma.photoVersion.count({ where: { photoId: r0.id } })) === 2 && (await prisma.photoQcFinding.findUniqueOrThrow({ where: { id: rFinding.id } })).photoId === r0.id);
+    c.ok("…and its AutoHDR shoot is still found (from the intake), so Restore works", (await V.autohdrRefOf(r0b))?.shootId === R.shoot.photoshoot_id);
+    const rDetail = await data.loadJobDetail(R.job.id, { viewer });
+    const rView = rDetail!.photos.find((x) => x.id === r0.id)!;
+    c.ok("…the strip calls the listing's file current, the AutoHDR versions restorable", !rView.versions.some((v) => v.inAutohdr && v.current), JSON.stringify(rView.versions.map((v) => [v.label, v.current, v.inAutohdr])));
+    const rr = await V.restoreVersion(r0.id, origRow.id, "Kyle");
+    const steps2 = await (await import("@/lib/photoDelivery/delivery")).deliverySteps(R.job.id);
+    const rep = steps2.replacements.find((x) => x.photoId === r0.id);
+    c.ok("Restore on a delivered photo: AutoHDR switched, and the file waits in 'Replace these on the Aryeo listing'", rr.ok && fake.photoOfVersion(originalUuid)!.head === originalUuid && !!rep && /^\/api\/photo-fixes\//.test(rep.downloadUrl) && /Replace these on the Aryeo listing/.test(rr.message), `${rr.message} ${JSON.stringify(rep)}`);
+    c.ok("…named after the listing's copy, so Aryeo keeps its order", rep?.photoName === "01-Front-Exterior.jpg");
 
     // ======================================================================
     c.head("12 · delivery checks: recorded, fair, prompt");

@@ -773,7 +773,7 @@ export async function loadClientProfiles(): Promise<ClientProfileView[]> {
  */
 function versionViews(
   rows: { id: string; label: string; source: string; contentHash: string | null; createdAt: Date; createdBy: string | null; width: number | null; height: number | null; autohdrVersionUuid: string | null; derivJson: string | null }[],
-  p: { contentHash: string | null; autohdrVersionUuid: string | null },
+  p: { contentHash: string | null; autohdrVersionUuid: string | null; sourceKind: string },
 ): VersionView[] {
   const meta = (j: string | null) => {
     try {
@@ -800,7 +800,9 @@ function versionViews(
   }
   return out.map((v) => {
     const m = meta(v.derivJson);
-    const current = v.autohdrVersionUuid && p.autohdrVersionUuid ? v.autohdrVersionUuid === p.autohdrVersionUuid : !!p.contentHash && v.contentHash === p.contentHash;
+    // The hub's own AutoHDR photo IS its current AutoHDR version; a photo read from the Aryeo listing (or
+    // Dropbox) is the file there, and its AutoHDR versions are the ones that can be restored.
+    const current = p.sourceKind === "AUTOHDR" && v.autohdrVersionUuid && p.autohdrVersionUuid ? v.autohdrVersionUuid === p.autohdrVersionUuid : !!p.contentHash && v.contentHash === p.contentHash;
     return {
       id: v.id,
       label: v.label,
