@@ -116,6 +116,28 @@ async function main() {
     const attested = await submitSelfCheck(held.id, await check(saved, 4));
     c.ok("assigned Kim can attest an unclaimed held upload without an open task", attested.ok && !!(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: held.id } })).selfCheckedAt, attested.message);
     c.ok("upload actions never fabricate Start or call external providers", await prisma.editorWorkEvent.count({ where: { kind: "START" } }) === 0 && fence.blocked.length === 0 && fence.faked.length === 0);
+    // Oct 15 2026 (Jordan): "Allow editors to upload a revised video in the
+    // editor brief whenever they need to." The editor who did the work may hand
+    // in a revised version after the task closed, approval or delivery; nobody
+    // else may, and never while another editor holds the job's open work.
+    const done = await job("Delivered, Kim's card closed", true, 4);
+    await prisma.project.update({ where: { id: done.projectId }, data: { status: "DELIVERED" } });
+    await prisma.smartTask.create({ data: { projectId: done.projectId, taskType: "edit_video", title: "Kim's closed card", assignedKey: "kim", assignedManually: true, status: "COMPLETED" } });
+    await signIn(kim);
+    const revised = await start(done, 1);
+    c.ok("Kim hands in a revised version on her delivered job, her card closed", revised.ok, revised.ok ? "" : revised.message);
+    await prisma.reviewSubmission.create({ data: { projectId: done.projectId, deliverableId: done.deliverableId, slot: 2, round: 1, status: "APPROVED", source: "upload", fileName: "office.mp4", sizeBytes: 77, decidedAt: new Date(), completedAt: new Date() } });
+    const needs = await start(done, 2);
+    c.ok("an approved video asks why first", !needs.ok && "needsReason" in needs && needs.needsReason === true, needs.ok ? "" : needs.message);
+    const withWhy = await actions.startCutUpload({ ...done, slot: 2, fileName: "fixture.mp4", sizeBytes: 77, width: 1080, height: 1920, reopenReason: "The agent's name is misspelled in the end card", selfCheck: await check(done, 2) });
+    c.ok("…with a reason, Kim replaces the approved video the office uploaded", withWhy.ok, withWhy.ok ? "" : withWhy.message);
+    c.ok("the page draws the revised-version door for her on that approved video", await actions.canReplaceApprovedCut({ projectId: done.projectId, deliverableId: done.deliverableId, slot: 2 }));
+    await signIn(john);
+    c.ok("John, who never worked on it, still cannot upload there", !(await start(done, 3)).ok);
+    await prisma.smartTask.create({ data: { projectId: done.projectId, taskType: "edit_video", title: "John has it now", assignedKey: "john", assignedManually: true } });
+    await signIn(kim);
+    const taken = await start(done, 4);
+    c.ok("once John holds the job's open work, Kim is refused and told who has it", !taken.ok && /John/.test(taken.message), taken.ok ? "" : taken.message);
     c.summary();
   } finally { undici.setGlobalDispatcher(dispatcher); await mock.close(); fence.restore(); await db.stop(); }
   process.exit(process.exitCode ?? 0);

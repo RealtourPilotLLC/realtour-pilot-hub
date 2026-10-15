@@ -13,7 +13,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 import { reportError } from "@/lib/errorTracker";
 import { advisoryKeyPair } from "@/lib/dbLocks";
-import { editorHoldsAssignedWork } from "@/lib/editorWork";
+import { editorHoldsAssignedWork, editorMayReviseAnyTime } from "@/lib/editorWork";
 // Who wrote / ruled, in one vocabulary (Review Room attribution, Sep 28).
 import { attributeLines, LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
 import { displayNameFor } from "@/lib/actorName";
@@ -2023,7 +2023,22 @@ async function uploadAuthor(
     // Finishing an exact reservation follows the same identity as its upload
     // token. The store callback can close the task before the browser returns.
     if (!mine && reservedByKey !== key && !(replacing && (await standingApprovedCutIsTheirs(projectId, replacing, key)))) {
-      return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
+      // WHENEVER THEY NEED TO (Oct 15 2026, Jordan: "Allow editors to upload a
+      // revised video in the editor brief whenever they need to"): the editor
+      // who did the work on this job may hand in a revised version at any time,
+      // after the task closed, after approval, after delivery, unless somebody
+      // else holds the job's open work right now (editorMayReviseAnyTime).
+      const may = await editorMayReviseAnyTime(projectId, key);
+      if (!may.ok) {
+        return {
+          ok: false,
+          message: may.reason === "OTHER_EDITOR"
+            ? `${editorMeta(may.heldBy)?.name ?? "Another editor"} has this job's open work right now. Ask Kyle or Jordan if you need to upload here.`
+            : may.reason === "OFFICE"
+              ? "The office has this job's open work right now. Ask Kyle or Jordan if you need to upload here."
+              : "This job isn't on your queue — ask Kyle or Jordan to assign it to you first.",
+        };
+      }
     }
   }
   // The display name, roster before email (Sep 28) — it signs the version.

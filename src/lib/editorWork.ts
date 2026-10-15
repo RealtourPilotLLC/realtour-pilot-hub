@@ -218,6 +218,34 @@ export async function editorHoldsAssignedWork(projectId: string, key: string | n
   return (await holdersFor([projectId], db)).get(projectId)?.has(key) === true;
 }
 
+/**
+ * MAY THIS EDITOR HAND IN A REVISED VERSION NOW, holding no live work here?
+ * (Oct 15 2026, Jordan: "Allow editors to upload a revised video in the
+ * editor brief whenever they need to.") Yes when they did the work on this
+ * job (a version of theirs, a task of theirs open or closed, a video they
+ * own, or the job hand-picked for them) and nobody else holds its open work:
+ * no other editor (holdersFor), and no open video card the office gave to
+ * someone else or explicitly to nobody. A routing guess is not work they did,
+ * and a version from here never closes somebody else's work item.
+ */
+export async function editorMayReviseAnyTime(projectId: string, key: string, db: Db = prisma): Promise<{ ok: true } | { ok: false; reason: "OTHER_EDITOR" | "OFFICE" | "NOT_THEIRS"; heldBy: string | null }> {
+  const holders = (await holdersFor([projectId], db)).get(projectId) ?? new Set<string>();
+  if (holders.has(key)) return { ok: true };
+  const other = [...holders].find((k) => k !== key) ?? null;
+  if (other) return { ok: false, reason: "OTHER_EDITOR", heldBy: other };
+  const open = await db.smartTask.findMany({ where: { projectId, taskType: { in: ["edit_video", "revision"] }, status: OPEN_TASK }, select: { taskType: true, assignedKey: true, assignedManually: true } });
+  const lane = open.filter((t) => t.taskType === "edit_video" || t.assignedKey == null || VIDEO_LANE_KEYS.some((k) => k === t.assignedKey));
+  if (lane.some((t) => t.assignedKey !== key && (t.assignedKey != null || t.assignedManually))) return { ok: false, reason: "OFFICE", heldBy: null };
+  const [sub, task, output, pinned] = await Promise.all([
+    db.reviewSubmission.findFirst({ where: { projectId, submittedByKey: key }, select: { id: true } }),
+    db.smartTask.findFirst({ where: { projectId, assignedKey: key, taskType: { in: ["edit_video", "revision"] } }, select: { id: true } }),
+    db.deliverableOutput.findFirst({ where: { projectId, ownerKey: key, removedFromOrderAt: null, waivedAt: null }, select: { id: true } }),
+    db.project.findFirst({ where: { id: projectId, editorManual: true }, select: { editor: { select: { name: true } } } }),
+  ]);
+  const pinnedToThem = !!pinned && editorKeyForTeamName(pinned.editor?.name) === key;
+  return sub || task || output || pinnedToThem ? { ok: true } : { ok: false, reason: "NOT_THEIRS", heldBy: null };
+}
+
 /** The live edit card on a job, and whose it is. */
 async function editCardOf(projectId: string, db: Db = prisma) {
   return db.smartTask.findFirst({

@@ -821,7 +821,9 @@ export default async function EditBriefPage({
     (
       await Promise.all(
         cutRows
-          .filter((r) => canUploadCuts && !revisionOpen && r.latest?.status === "APPROVED")
+          // Oct 15 2026: asked on every approved row, an open revision on another
+          // video or not: editors may hand in a revised version whenever they need to.
+          .filter((r) => canUploadCuts && r.latest?.status === "APPROVED")
           .map(async (r) =>
             (await canReplaceApprovedCut({ projectId: id, deliverableId: r.deliverableId, slot: r.slot }).catch(() => false))
               ? `${r.deliverableId}:${r.slot}`

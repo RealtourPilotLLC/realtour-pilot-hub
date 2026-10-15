@@ -1087,11 +1087,11 @@ export function CutUploader({
                       onClick={() => inputs.current[key]?.click()}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] font-semibold text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-60"
                     >
-                      <RotateCcw className="size-3" /> Replace the approved video
+                      <RotateCcw className="size-3" /> Upload a revised version
                     </button>
                     <p className="mt-1 text-[11px] leading-relaxed text-muted-2">
-                      Only if this cut itself is wrong. You pick the file, say why in a line, and it goes back through
-                      review as v{approvedRound + 1} — v{approvedRound} keeps its approval either way.
+                      Pick the file and say why in a line. It goes back through review as v{approvedRound + 1}, and
+                      v{approvedRound} keeps its approval either way.
                     </p>
                   </div>
                 )}
@@ -1101,8 +1101,8 @@ export function CutUploader({
                     a corrected file goes. One line, and it names the route. */}
                 {canUpload && !next && !c.canReplace && c.latest?.status === "APPROVED" && (
                   <p className="mt-2 text-[11px] leading-relaxed text-muted-2">
-                    Approved — replacing it is the office&rsquo;s call. If this cut is wrong, tell Kyle or Jordan and
-                    they can put the corrected file through review.
+                    Approved. Someone else has this job&rsquo;s open work right now, so Kyle or Jordan can put a
+                    corrected file through review.
                   </p>
                 )}
               </div>
