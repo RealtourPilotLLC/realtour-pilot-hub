@@ -178,16 +178,22 @@ async function followRedirects(jar: Jar, version: string | null, first: Response
     const to = nextHop(res, url);
     if (!to) break;
     url = to;
-    res = await fetch(url, { headers: inertiaHeaders(jar, version, false), redirect: "manual", signal: AbortSignal.timeout(60_000) });
+    res = await fetch(url, { headers: inertiaHeaders(jar, version, false, url), redirect: "manual", signal: AbortSignal.timeout(60_000) });
     takeCookies(jar, res);
   }
   const page = res.headers.get("content-type")?.includes("json") ? ((await res.clone().json().catch(() => null)) as InertiaPage | null) : null;
   return { res, url, page: page?.component ? page : null };
 }
 
-function inertiaHeaders(jar: Jar, version: string | null, json: boolean): Record<string, string> {
+function inertiaHeaders(jar: Jar, version: string | null, json: boolean, referer?: string, extra?: Record<string, string>): Record<string, string> {
+  const origin = referer ? new URL(referer).origin : APP;
   return {
     "User-Agent": UA,
+    // A browser always says where a request comes from; Aryeo sends a change
+    // without it to the login page (seen live Oct 14: Deliver Listing).
+    Origin: origin,
+    Referer: referer ?? `${origin}/`,
+    ...(extra ?? {}),
     Accept: "text/html, application/xhtml+xml",
     "X-Requested-With": "XMLHttpRequest",
     "X-Inertia": "true",
@@ -205,16 +211,19 @@ type InertiaPage = { component: string; props: Record<string, unknown>; url: str
  * follows Aryeo's redirect back and returns that page (its props.errors say
  * whether Aryeo accepted it). Signs in again once when the session expired.
  */
-async function inertia(method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: unknown, retried = false): Promise<InertiaPage> {
+type InertiaOpts = { referer?: string; partial?: { component: string; data: string[] } };
+
+async function inertia(method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: unknown, retried = false, opts: InertiaOpts = {}): Promise<InertiaPage> {
   let s = (await loadSession()) ?? (await signIn());
-  const first = await fetch(url, { method, headers: inertiaHeaders(s.cookies, s.version, body !== undefined), ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: "manual", signal: AbortSignal.timeout(60_000) });
+  const extra = opts.partial ? { "X-Inertia-Partial-Component": opts.partial.component, "X-Inertia-Partial-Data": opts.partial.data.join(",") } : undefined;
+  const first = await fetch(url, { method, headers: inertiaHeaders(s.cookies, s.version, body !== undefined, opts.referer ?? url, extra), ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: "manual", signal: AbortSignal.timeout(60_000) });
   takeCookies(s.cookies, first);
   // A version change of Aryeo's app (409 without a location): refresh the version and try once more.
   if (first.status === 409 && !first.headers.get("x-inertia-location") && !retried) {
     const { version } = await fetchLoginPage(s.cookies);
     s = { ...s, version };
     await saveSession(s);
-    return inertia(method, url, body, true);
+    return inertia(method, url, body, true, opts);
   }
   // A form answer redirects back (the page there carries the outcome); a page may redirect too.
   const end = await followRedirects(s.cookies, s.version, first, url);
@@ -241,7 +250,7 @@ async function inertia(method: "GET" | "POST" | "PUT" | "DELETE", url: string, b
     // have done it before it bounced the session (Oct 14, Bob Kelley: the
     // photos were added twice). The caller checks Aryeo and decides.
     if (method !== "GET") throw new AryeoWebError("Aryeo asked the hub to sign in again in the middle of a change. Signed back in; the hub checks the listing before doing anything else.", "transient");
-    return inertia(method, url, body, true);
+    return inertia(method, url, body, true, opts);
   }
 }
 
@@ -259,6 +268,8 @@ export async function testAryeoWebLogin(creds: { email: string; password: string
 
 // ---- the listing -----------------------------------------------------------------------------
 
+const editor = (listingId: string) => `${aryeoAdminOrigin()}/admin/listings/${encodeURIComponent(listingId)}/edit`;
+
 export type AryeoWebImage = { id: string; title: string | null; is_live: boolean; filename: string; filename_extension: string };
 
 function deepFind(o: unknown, key: string, depth = 0): unknown {
@@ -272,14 +283,20 @@ function deepFind(o: unknown, key: string, depth = 0): unknown {
 }
 
 /** The listing editor's page props: its images and the settings the deliver form starts from. */
-export async function listingPage(listingId: string): Promise<{ images: AryeoWebImage[]; requiresMediaLicense: boolean; fulfillByDefault: boolean; timezone: string | null; delivered: boolean }> {
-  const page = await inertia("GET", `${aryeoAdminOrigin()}/admin/listings/${encodeURIComponent(listingId)}/edit`);
+export async function listingPage(listingId: string): Promise<{ images: AryeoWebImage[]; requiresMediaLicense: boolean; fulfillByDefault: boolean; timezone: string | null; delivered: boolean; recipients: { id: string; name: string }[]; component: string }> {
+  const page = await inertia("GET", editor(listingId));
   const p = page.props;
   const rawImages = (p.images as { data?: unknown[] } | unknown[] | undefined) ?? (deepFind(p, "images") as unknown[] | undefined);
   const list = Array.isArray(rawImages) ? rawImages : Array.isArray((rawImages as { data?: unknown[] })?.data) ? (rawImages as { data: unknown[] }).data : [];
   const images = (list as Record<string, unknown>[])
     .filter((i) => typeof i?.id === "string")
-    .map((i) => ({ id: String(i.id), title: typeof i.title === "string" ? i.title : null, is_live: i.is_live !== false, filename: String(i.filename ?? ""), filename_extension: String(i.filename_extension ?? "jpg") }));
+    .map((i) => {
+      // The editor's filename already carries its extension ("01-Front-Exterior.jpg" + "jpg", seen live Oct 14): keep the base only.
+      const ext = String(i.filename_extension ?? "jpg").replace(/^\./, "") || "jpg";
+      const name = String(i.filename ?? "");
+      const base = name.toLowerCase().endsWith(`.${ext.toLowerCase()}`) ? name.slice(0, -(ext.length + 1)) : name;
+      return { id: String(i.id), title: typeof i.title === "string" ? i.title : null, is_live: i.is_live !== false, filename: base, filename_extension: ext };
+    });
   const company = (p.company ?? deepFind(p, "company")) as Record<string, unknown> | undefined;
   const listing = (p.listing ?? {}) as Record<string, unknown>;
   return {
@@ -288,7 +305,21 @@ export async function listingPage(listingId: string): Promise<{ images: AryeoWeb
     fulfillByDefault: company?.default_enable_mark_orders_fulfilled === true,
     timezone: typeof company?.default_timezone === "string" ? company.default_timezone : null,
     delivered: String(listing.delivery_status ?? "").toLowerCase() === "delivered",
+    // Who the Deliver Listing window lists by default: the listing's customer memberships.
+    recipients: (Array.isArray(listing.customer_team_memberships) ? (listing.customer_team_memberships as Record<string, unknown>[]) : [])
+      .filter((m) => typeof m?.id === "string")
+      .map((m) => ({ id: String(m.id), name: String((m.customer_user as { full_name?: string } | undefined)?.full_name ?? "customer") })),
+    component: page.component,
   };
+}
+
+/** The delivery email Aryeo fills in when the Deliver Listing window opens (subject, body, cc, bcc). */
+export async function deliveryEmail(listingId: string, component: string): Promise<{ subject: string; body: string; cc: string; bcc: string }> {
+  const page = await inertia("GET", editor(listingId), undefined, false, { referer: editor(listingId), partial: { component, data: ["delivery_email"] } });
+  const d = (page.props.delivery_email ?? {}) as Record<string, unknown>;
+  const subject = typeof d.email_subject === "string" ? d.email_subject : "";
+  if (!subject) throw new AryeoWebError("Aryeo did not give its delivery email (subject) for this listing. Deliver it in Aryeo by hand.", "changed");
+  return { subject, body: typeof d.email_body === "string" ? d.email_body : "", cc: typeof d.email_cc_list === "string" ? d.email_cc_list : "", bcc: typeof d.email_bcc_list === "string" ? d.email_bcc_list : "" };
 }
 
 // ---- Uploadcare (Aryeo's own upload service) ---------------------------------------------------
@@ -341,7 +372,7 @@ export async function attachImages(listingId: string, groupId: string, opts: { a
     form_uuid_field: groupId,
     set_captions: false,
     agrees_to_zillow_media_license: opts.agreesToMediaLicense,
-  });
+  }, false, { referer: editor(listingId) });
   const no = refusedBy(page);
   if (no) throw new AryeoWebError(`Aryeo would not add the photos: ${no}`, "refused");
 }
@@ -350,7 +381,7 @@ export async function attachImages(listingId: string, groupId: string, opts: { a
 export async function reorderImages(listingId: string, images: AryeoWebImage[]): Promise<void> {
   const page = await inertia("PUT", `${aryeoAdminOrigin()}/admin/listing/${encodeURIComponent(listingId)}/images`, {
     images: images.map((i) => ({ id: i.id, caption: i.title, is_live: i.is_live, filename: `${i.filename}.${i.filename_extension}` })),
-  });
+  }, false, { referer: editor(listingId) });
   const no = refusedBy(page);
   if (no) throw new AryeoWebError(`Aryeo would not reorder the photos: ${no}`, "refused");
 }
@@ -358,26 +389,34 @@ export async function reorderImages(listingId: string, images: AryeoWebImage[]):
 /** Remove photos from the listing (the editor's own delete; used to undo photos the hub added twice). */
 export async function deleteImages(listingId: string, imageIds: string[]): Promise<void> {
   if (!imageIds.length) return;
-  const page = await inertia("DELETE", `${aryeoAdminOrigin()}/admin/listing/${encodeURIComponent(listingId)}/images`, { images: imageIds });
+  const page = await inertia("DELETE", `${aryeoAdminOrigin()}/admin/listing/${encodeURIComponent(listingId)}/images`, { images: imageIds }, false, { referer: editor(listingId) });
   const no = refusedBy(page);
   if (no) throw new AryeoWebError(`Aryeo would not remove the photos: ${no}`, "refused");
 }
 
-/** Deliver the listing the way the Deliver Listing button does, with its own defaults (the listing's customers are emailed). */
-export async function deliverListing(listingId: string, opts: { fulfillOrders: boolean; timezone: string | null }): Promise<void> {
-  const page = await inertia("POST", `${aryeoAdminOrigin()}/admin/listings/${encodeURIComponent(listingId)}/deliver`, {
-    added_customer_ids: [],
+/**
+ * Deliver the listing exactly as the Deliver Listing window does when Kyle
+ * presses Deliver without changing anything: Aryeo's own subject and body,
+ * its cc/bcc, and the listing's customers as recipients (the window lists
+ * them by default; an empty list would email nobody).
+ */
+export async function deliverListing(listingId: string, opts: { fulfillOrders: boolean; timezone: string | null }): Promise<{ recipients: string[] }> {
+  const page = await listingPage(listingId);
+  const email = await deliveryEmail(listingId, page.component);
+  const result = await inertia("POST", `${aryeoAdminOrigin()}/admin/listings/${encodeURIComponent(listingId)}/deliver`, {
+    added_customer_ids: page.recipients.map((r) => r.id),
     added_emails: [],
-    email_bcc_list: "",
-    email_body: null,
-    email_cc_list: "",
-    email_subject: null,
+    email_bcc_list: email.bcc,
+    email_body: email.body,
+    email_cc_list: email.cc,
+    email_subject: email.subject,
     fulfill_orders: opts.fulfillOrders,
     notify_via_email: true,
     schedule_date: null,
     schedule_time: null,
     schedule_timezone: opts.timezone ?? "America/New_York",
-  });
-  const no = refusedBy(page);
+  }, false, { referer: editor(listingId) });
+  const no = refusedBy(result);
   if (no) throw new AryeoWebError(`Aryeo would not deliver the listing: ${no}`, "refused");
+  return { recipients: page.recipients.map((r) => r.name) };
 }

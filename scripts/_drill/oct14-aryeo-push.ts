@@ -62,7 +62,7 @@ function editPage(l: Listing) {
     url: `/admin/listings/${l.id}/edit`,
     props: {
       errors: {},
-      listing: { id: l.id, delivery_status: l.delivery === "DELIVERED" ? "delivered" : "undelivered" },
+      listing: { id: l.id, delivery_status: l.delivery === "DELIVERED" ? "delivered" : "undelivered", customer_team_memberships: [{ id: `ctm-${l.id}`, customer_user: { full_name: "Bob Kelley" } }] },
       images: [...l.images].sort((a, b) => a.index - b.index).map((i) => ({ id: i.id, title: null, is_live: i.live, filename: i.filename.replace(/\.jpg$/i, ""), filename_extension: "jpg" })),
       company: { default_enable_mark_orders_fulfilled: true, default_timezone: "America/New_York" },
       image_uploads_require_media_license: true,
@@ -102,11 +102,23 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
   if (u.origin !== "https://realtourpilot.aryeo.com") return null;
   if (!validSessions.has(ck.aryeo_session ?? "")) return redirect("https://app.aryeo.com/login");
   if (method !== "GET" && h.get("x-xsrf-token") !== "tok2==") return new Response("CSRF", { status: 419 });
+  // Like the real Aryeo (seen live Oct 14): a change that doesn't say where it
+  // comes from (Origin + Referer) is sent to the login page.
+  if (method !== "GET" && (h.get("origin") !== "https://realtourpilot.aryeo.com" || !(h.get("referer") ?? "").startsWith("https://realtourpilot.aryeo.com/admin/listings/"))) {
+    calls.push({ kind: "no-origin" });
+    return redirect("https://app.aryeo.com/login");
+  }
   if (u.pathname === "/admin/dashboard" && method === "GET") return json({ component: "Company/Core/Dashboard/ShowDashboard", version: "v1", url: "/admin/dashboard", props: { errors: {} } });
   let m = /^\/admin\/listings\/([^/]+)\/edit$/.exec(u.pathname);
   if (m && method === "GET") {
     const l = listings.get(m[1]);
-    return l ? json(editPage(l)) : new Response("nope", { status: 404 });
+    if (!l) return new Response("nope", { status: 404 });
+    // The Deliver Listing window's partial reload: only the delivery email comes back.
+    if (h.get("x-inertia-partial-component") === "Company/Listings/EditListing" && (h.get("x-inertia-partial-data") ?? "").split(",").includes("delivery_email")) {
+      calls.push({ kind: "delivery-email" });
+      return json({ component: "Company/Listings/EditListing", version: "v1", url: `/admin/listings/${l.id}/edit`, props: { delivery_email: { email_subject: "Your listing media is ready!", email_body: "<p>Your media for 902 Valley Rd is ready.</p>", email_cc_list: "", email_bcc_list: "office@realtourpilot.com" } } });
+    }
+    return json(editPage(l));
   }
   m = /^\/admin\/listing\/([^/]+)\/image-uploads$/.exec(u.pathname);
   if (m && method === "POST") {
@@ -133,7 +145,9 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
   m = /^\/admin\/listings\/([^/]+)\/deliver$/.exec(u.pathname);
   if (m && method === "POST") {
     const l = listings.get(m[1])!;
-    calls.push({ kind: "deliver", body: JSON.parse(String(init?.body)) });
+    const b = JSON.parse(String(init?.body)) as { email_subject?: string | null };
+    calls.push({ kind: "deliver", body: b });
+    if (!b.email_subject) return redirect(`/admin/listings/${l.id}/edit?err=subject`);
     l.delivery = "DELIVERED";
     return redirect(`/admin/listings/${l.id}/edit`);
   }
@@ -143,10 +157,10 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
 // After a redirect back the page props carry the outcome: a refused attach shows errors.
 async function aryeoWebWithErrors(url: string, init?: RequestInit): Promise<Response | null> {
   const u = new URL(url);
-  if (u.origin === "https://realtourpilot.aryeo.com" && u.searchParams.get("err") === "1") {
+  if (u.origin === "https://realtourpilot.aryeo.com" && (u.searchParams.get("err") === "1" || u.searchParams.get("err") === "subject")) {
     const l = listings.get(u.pathname.split("/")[3])!;
     const p = editPage(l);
-    return json({ ...p, props: { ...p.props, errors: { form_uuid_field: "You must agree to the Zillow media license." } } });
+    return json({ ...p, props: { ...p.props, errors: u.searchParams.get("err") === "subject" ? { email_subject: "The email subject field is required." } : { form_uuid_field: "You must agree to the Zillow media license." } } });
   }
   return aryeoWeb(url, init);
 }
@@ -316,7 +330,8 @@ async function main() {
     const ok = await P.approvePushDelivery(C.job.id, "Kyle");
     for (let i = 0; i < 4; i++) await P.advancePush(C.job.id, { budgetMs: 30_000 });
     const del = calls.filter((x) => x.kind === "deliver").pop()?.body as Record<string, unknown>;
-    c.ok("Deliver in Aryeo presses Deliver Listing with the form's own defaults (no added recipients, the listing's customers emailed)", ok.ok && listings.get("L-C")!.delivery === "DELIVERED" && Array.isArray(del.added_customer_ids) && (del.added_customer_ids as unknown[]).length === 0 && (del.added_emails as unknown[]).length === 0 && del.notify_via_email === true && del.fulfill_orders === true && del.schedule_date === null, JSON.stringify(del));
+    c.ok("Deliver in Aryeo sends what Aryeo's Deliver window sends: its own email (subject, body, bcc) to the listing's customers", ok.ok && listings.get("L-C")!.delivery === "DELIVERED" && JSON.stringify(del.added_customer_ids) === JSON.stringify(["ctm-L-C"]) && (del.added_emails as unknown[]).length === 0 && del.email_subject === "Your listing media is ready!" && /902 Valley Rd/.test(String(del.email_body)) && del.email_bcc_list === "office@realtourpilot.com" && del.notify_via_email === true && del.fulfill_orders === true && del.schedule_date === null, JSON.stringify(del));
+    c.ok("every change says where it comes from (Aryeo bounces one that doesn't)", !calls.some((x) => x.kind === "no-origin") && calls.some((x) => x.kind === "delivery-email"));
     const jc = await prisma.photoJob.findUniqueOrThrow({ where: { id: C.job.id } });
     const pc = await P.pushProgress(C.job.id);
     c.ok("the hub confirms DELIVERED through the API and the job is verified", jc.stage === "DELIVERED" && pc?.state === "DONE" && !!pc.deliveredAt, `${jc.stage} ${pc?.state}`);
