@@ -195,8 +195,12 @@ async function main() {
     c.head("7 · the screens");
     const page = read("src/app/review/[id]/page.tsx");
     const panel = read("src/components/review/CutReviewPanel.tsx");
-    c.ok("both blocks render above the verdict, creative signable by the approver", /<ReviewChecklist[\s\S]*?canSignCreative=\{!checklist\.creativeRequired \|\| creativeApprover\}/.test(page) && page.indexOf("<ReviewChecklist") < page.indexOf("<CutReviewPanel"));
-    c.ok("Approve is held with the reason until the checks are saved", /approveBlockedReason=\{checklist\?\.approveBlockedReason \?\? null\}/.test(page) && /disabled=\{pending \|\| needsReload \|\| !!approveBlockedReason\}/.test(panel));
+    // Oct 16 2026 (Jordan: "Make sure you didn't overcomplicate the review
+    // portion ... We know what to look for"): the Review Room asks for no
+    // checklist; the approval is the sign-off. The store and the server gate
+    // stay (switched off), and nothing on the page holds Approve back.
+    c.ok("the Review Room shows no checklist: Approve is one press", !page.includes("<ReviewChecklist") && !/approveBlockedReason=\{checklist/.test(page));
+    c.ok("…and the panel still honours a reason if one is ever passed", /disabled=\{pending \|\| needsReload \|\| !!approveBlockedReason\}/.test(panel));
     c.ok("the approved script, their brand and style sit beside the cut", /<JudgeAgainst topicTitle=\{judgeTopic\} script=\{judgeScript\} brand=\{judgeBrand\} style=\{judgeStyle\} \/>/.test(page));
     c.ok("the server gate sits after the issue gate in approveCut", (() => { const a = read("src/app/review/actions.ts"); return a.indexOf("checklistRefusal(submissionId)") > a.indexOf("issueGate.canApproveAnyway") && a.indexOf("checklistRefusal(submissionId)") < a.indexOf("const ruler = await rulerOf()"); })());
 

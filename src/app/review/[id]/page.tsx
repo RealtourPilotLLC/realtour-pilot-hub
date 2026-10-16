@@ -20,7 +20,6 @@ import { BackLink } from "@/components/ui/BackLink";
 // §8.1: the one person each waiting cut is waiting on, and the take / cover /
 // hand-on doors — the same strip /edit/<id> carries, here where review happens.
 import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
-import { ReviewChecklist } from "@/components/review/ReviewChecklist";
 import { CreativeReviewPanel } from "@/components/review/CreativeReviewPanel";
 import { JudgeAgainst, type JudgeBrand, type JudgeScript } from "@/components/review/JudgeAgainst";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
@@ -40,6 +39,16 @@ export const maxDuration = 60;
 // photographer left, and the reel recipe. Photo review stays in the project
 // gallery; the header links straight to it.
 // ---------------------------------------------------------------------------
+
+// The client's ask in their own words: the work order's system preamble
+// ("[Video 2 of 4] Video revision requested from the client portal by … (cut:
+// …mp4, v1):") is for the ledger, not for the person watching the video.
+function plainAsk(text: string): string {
+  return text
+    .replace(/^\s*(?:\[[^\]]*\]\s*)?(?:Video\s+)?revision requested\b[^\n]*?:\s*(?:\n|$)/i, "")
+    .replace(/^\s*•\s*/gm, "• ")
+    .trim();
+}
 
 export default async function CutReviewPage({
   params,
@@ -189,11 +198,13 @@ export default async function CutReviewPage({
   // ---- Oct 15 2026: the reviewer's two-part check, creative review, and what
   // to judge the cut against (lib/reviewChecklist, lib/creativeReview,
   // components/review/JudgeAgainst). The desk only; a failed read shows none.
+  // Oct 16 2026 (Jordan: "Make sure you didn't overcomplicate the review
+  // portion ... We know what to look for when reviewing the video"): no
+  // checklist to tick before Approve. The approval itself is the sign-off and
+  // is recorded with who and when; the script, brand and style stay one tap
+  // away beside the video (JudgeAgainst), folded.
   const { isCreativeApprover } = await import("@/lib/reviewChecklist");
   const creativeApprover = !shotThis && (await isCreativeApprover(me, { authEnforced: authEnforced() }).catch(() => false));
-  const checklist = active && !shotThis && active.status === "PENDING" && !active.heldForCheck
-    ? await import("@/lib/reviewChecklist").then((m) => m.checklistStatus(active.id)).catch(() => null)
-    : null;
   const creativeReviews = shotThis ? [] : await import("@/lib/creativeReview").then((m) => m.openCreativeReviews(w.projectId)).catch(() => []);
   let judgeScript: JudgeScript = null;
   let judgeTopic: string | null = null;
@@ -314,29 +325,14 @@ export default async function CutReviewPage({
                     {/* The office's reopen is not the client's ask (review, Sep 28):
                         the heading used to say "client" right above "Put back by
                         Kyle Cabrera (the office)". */}
-                    {officeReopen
-                      ? clientAsk.status === "IN_PROGRESS" ? "Corrected cut for work the office reopened" : "The office reopened this job for a new cut"
-                      : clientAsk.status === "IN_PROGRESS" ? "Corrected cut for a client revision" : "A client revision is open on this job"}
+                    {officeReopen ? "What the office asked for" : "What the client asked for"}
                     <span className="font-normal text-muted"> · {officeReopen ? "reopened" : "asked"} {formatDistanceToNow(new Date(clientAsk.createdAt), { addSuffix: true })}</span>
                   </p>
                   {askedByLine && <p className="text-xs text-muted">{askedByLine}</p>}
                   {(clientAsk.description ?? clientAsk.summary) && (
-                    <p className="mt-1 whitespace-pre-wrap text-foreground/85">{(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
+                    <p className="mt-1 whitespace-pre-wrap text-foreground/85">{plainAsk(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
                   )}
-                  <p className="mt-1.5 text-xs text-muted">Approving closes this ask; sending it back keeps it open.</p>
                 </div>
-              )}
-              {checklist && (
-                <ReviewChecklist
-                  key={`checks-${active.id}`}
-                  submissionId={active.id}
-                  tech={checklist.tech}
-                  creative={checklist.creative}
-                  prefill={checklist.prefill}
-                  creativeRequired={checklist.creativeRequired}
-                  canSignCreative={!checklist.creativeRequired || creativeApprover}
-                  approveBlockedReason={checklist.approveBlockedReason}
-                />
               )}
               <CutReviewPanel
                 key={active.id}
@@ -352,7 +348,6 @@ export default async function CutReviewPage({
                 readStamp={new Date().toISOString()}
                 nextCut={nextCut ? { href: nextCut.href, label: nextCut.label } : null}
                 street={w.street}
-                approveBlockedReason={checklist?.approveBlockedReason ?? null}
               />
 
             </>

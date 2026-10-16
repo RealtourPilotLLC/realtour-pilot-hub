@@ -927,7 +927,7 @@ async function main() {
       const pageSrc = fs.readFileSync(path.join(REPO, "src/app/review/[id]/page.tsx"), "utf8");
       const uploaderSrc = fs.readFileSync(path.join(REPO, "src/components/editing/CutUploader.tsx"), "utf8");
       const editSrc = fs.readFileSync(path.join(REPO, "src/app/edit/[id]/page.tsx"), "utf8");
-      c.ok("13c · the Room's heading for an office reopen is the office's, not \"a client revision\"", !!at.officeReopenOf(oTask) && /The office reopened this job for a new cut/.test(pageSrc) && /officeReopen\s*\?/.test(pageSrc));
+      c.ok("13c · the Room's heading for an office reopen is the office's, not \"a client revision\"", !!at.officeReopenOf(oTask) && /What the office asked for/.test(pageSrc) && /officeReopen \? "What the office asked for" : "What the client asked for"/.test(pageSrc));
       c.ok("…the editor's pill says who reopened it (the edit page passes it), not \"client asked for changes\"", /reopened by \$\{firstName\(officeReopen\.by\) \?\? "the office"\}/.test(uploaderSrc) && /officeReopen=\{officeReopen\}/.test(editSrc) && at.firstName(at.officeReopenOf(oTask)?.by) === "Kyle");
 
       // ---- 13d · finding 4: a desk seat who SHOT the job is the creative on his own thread ----

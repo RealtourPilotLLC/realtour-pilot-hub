@@ -21,13 +21,13 @@ async function main() {
     c.ok("historical replaced cut is neither a new change request nor approvable", stale.includes("Earlier version") && !stale.includes("Changes requested") && !stale.includes("Approve cut</button>"));
     const internal = paint({ status: "CHANGES_REQUESTED", verdict: { kind: "sent_back", source: "office", by: "James Fixture", atISO: "2026-09-29T14:00:00Z" } });
     const client = paint({ status: "CHANGES_REQUESTED", verdict: { kind: "sent_back", source: "client", by: "Maya Fixture", atISO: "2026-09-29T14:00:00Z" } });
-    c.ok("creative and client requests name only their recorded origin", internal.includes("Creative review changes requested") && internal.includes("James Fixture") && client.includes("Client changes requested") && client.includes("Maya Fixture"));
+    c.ok("creative and client requests name only their recorded origin", internal.includes("Changes requested") && !internal.includes("Client changes requested") && internal.includes("James Fixture") && client.includes("Client changes requested") && client.includes("Maya Fixture"));
     c.ok("unknown request attribution remains unknown", paint({ status: "CHANGES_REQUESTED" }).includes("source not recorded"));
     const approved = paint({ status: "APPROVED" });
-    c.ok("creative approval does not claim delivery or client approval", approved.includes("Approved in creative review") && !approved.includes("Delivered to") && !approved.includes("Client approved"));
+    c.ok("creative approval does not claim delivery or client approval", approved.includes("Approved") && !approved.includes("Approval recorded at delivery") && !approved.includes("Delivered to") && !approved.includes("Client approved"));
     c.ok("historical system delivery stamp never claims a human creative verdict", paint({ status: "APPROVED", verdict: { kind: "approved", source: "delivered", by: null, atISO: "2026-09-29T14:00:00Z" } }).includes("Approval recorded at delivery"));
     const pending = paint({ id: "fixture-v2", status: "PENDING", round: 2 });
-    c.ok("current pending cut exposes exact round and displayed fix check", pending.includes("Awaiting creative review") && pending.includes("version 2") && pending.includes("Replace the old logo.") && pending.includes('type="checkbox"') && pending.includes("Approve cut</button>"));
+    c.ok("current pending cut exposes exact round and displayed fix check", pending.includes("Ready for review") && pending.includes("version 2") && pending.includes("Replace the old logo.") && pending.includes('type="checkbox"') && pending.includes("Approve cut</button>"));
     const held = paint({ status: "PENDING" }, true);
     c.ok("held upload cannot expose creative verdict buttons", held.includes("Waiting on Kim") && !held.includes("Approve cut</button>"));
     c.ok("withdrawn and incomplete uploads cannot impersonate change requests", ["WITHDRAWN", "UPLOADING", "UPLOAD_FAILED"].every((status) => !paint({ status }).includes("Changes requested")));

@@ -25,61 +25,66 @@ export type JudgeBrand = {
 
 export function JudgeAgainst({ topicTitle, script, brand, style }: { topicTitle: string | null; script: JudgeScript; brand: JudgeBrand; style: StyleMemory | null }) {
   const hasBrand = !!brand && (brand.colors.length > 0 || !!brand.fontNames || brand.files.length > 0 || !!brand.videoStyle || !!brand.preferences || brand.acceptedPreferences.length > 0 || !!brand.music);
-  if (!script && !hasBrand && !style) return null;
+  const hasStyle = !!style && ((style.guard?.provenFormats.length ?? 0) > 0 || (style.guard?.discontinued.length ?? 0) > 0 || style.examples.length > 0 || style.recentVideos.length > 0);
+  if (!script && !topicTitle && !hasBrand && !hasStyle) return null;
+  // Oct 16 2026 (Jordan: "I want it to be easy. We know what to look for"):
+  // reference only, one card, every part folded — the video and its notes
+  // are the page; this is a tap away when a question comes up.
+  const fold = "border-t border-border first:border-t-0";
+  const summary = "flex min-h-11 cursor-pointer items-center gap-1.5 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
   return (
-    <div className="space-y-3" data-judge-against>
+    <div className="rounded-2xl border border-border bg-surface px-4 py-1" data-judge-against>
       {(script || topicTitle) && (
-        <div className="rounded-2xl border border-border bg-surface p-4">
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold"><ScrollText className="size-4 text-muted" aria-hidden /> The approved script</h3>
-          {topicTitle && <p className="mt-1 text-sm">{topicTitle}</p>}
-          {script ? (
-            <>
-              <p className="text-xs text-muted">{script.title}{script.versionNo ? ` · version ${script.versionNo}` : ""} · {script.standing}</p>
-              {script.text && (
-                <details className="mt-1">
-                  <summary className="cursor-pointer text-xs font-medium text-brand">Read the script</summary>
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-foreground/85">{script.text}</p>
-                </details>
-              )}
-            </>
-          ) : (
-            <p className="text-xs text-muted">No script on file for this video.</p>
-          )}
-        </div>
+        <details className={fold}>
+          <summary className={summary}><ScrollText className="size-4 text-muted" aria-hidden /> The script{topicTitle ? <span className="min-w-0 truncate font-normal text-muted">· {topicTitle}</span> : null}</summary>
+          <div className="pb-3">
+            {script ? (
+              <>
+                <p className="text-xs text-muted">{script.title}{script.versionNo ? ` · version ${script.versionNo}` : ""} · {script.standing}</p>
+                {script.text && <p className="mt-1 whitespace-pre-wrap text-sm text-foreground/85">{script.text}</p>}
+              </>
+            ) : (
+              <p className="text-xs text-muted">No script on file for this video.</p>
+            )}
+          </div>
+        </details>
       )}
       {hasBrand && brand && (
-        <div className="rounded-2xl border border-border bg-surface p-4 text-sm">
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold"><Palette className="size-4 text-muted" aria-hidden /> Their brand</h3>
-          {brand.colors.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              {brand.colors.map((c) => (
-                <span key={c} className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px]"><span aria-hidden className="size-3 rounded-sm border border-border" style={{ backgroundColor: c }} />{c.toUpperCase()}</span>
-              ))}
-              {brand.colorWords && <span className="text-xs text-muted">{brand.colorWords}</span>}
-            </div>
-          )}
-          {brand.fontNames && <p className="mt-1.5"><span className="text-muted">Fonts:</span> {brand.fontNames}</p>}
-          {brand.files.length > 0 && (
-            <ul className="mt-1.5 flex flex-wrap gap-1.5">
-              {brand.files.map((f, i) => (
-                <li key={i} className="rounded-lg border border-border px-2 py-0.5 text-xs">
-                  <span className="text-muted">{f.typeWord}</span> {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">{f.name}</a> : f.name} <span className="text-muted-2">v{f.versionNo}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {brand.videoStyle && <p className="mt-1.5"><span className="text-muted">How they like their videos:</span> {brand.videoStyle}</p>}
-          {brand.preferences && <p className="mt-1"><span className="text-muted">How they like to work:</span> {brand.preferences}</p>}
-          {brand.music && <p className="mt-1"><span className="text-muted">Music:</span> {brand.music}</p>}
-          {brand.acceptedPreferences.length > 0 && (
-            <div className="mt-1.5">
-              <p className="text-xs text-muted">Confirmed preferences</p>
-              <ul className="list-disc space-y-0.5 pl-4">{brand.acceptedPreferences.map((p, i) => <li key={i}>{p}</li>)}</ul>
-            </div>
-          )}
-        </div>
+        <details className={fold}>
+          <summary className={summary}><Palette className="size-4 text-muted" aria-hidden /> Their brand</summary>
+          <div className="pb-3 text-sm">
+            {brand.colors.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {brand.colors.map((c) => (
+                  <span key={c} className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px]"><span aria-hidden className="size-3 rounded-sm border border-border" style={{ backgroundColor: c }} />{c.toUpperCase()}</span>
+                ))}
+                {brand.colorWords && <span className="text-xs text-muted">{brand.colorWords}</span>}
+              </div>
+            )}
+            {brand.fontNames && <p className="mt-1.5"><span className="text-muted">Fonts:</span> {brand.fontNames}</p>}
+            {brand.files.length > 0 && (
+              <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                {brand.files.map((f, i) => (
+                  <li key={i} className="rounded-lg border border-border px-2 py-0.5 text-xs">
+                    <span className="text-muted">{f.typeWord}</span> {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">{f.name}</a> : f.name}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {brand.videoStyle && <p className="mt-1.5"><span className="text-muted">How they like their videos:</span> {brand.videoStyle}</p>}
+            {brand.music && <p className="mt-1"><span className="text-muted">Music:</span> {brand.music}</p>}
+            {brand.acceptedPreferences.length > 0 && (
+              <ul className="mt-1.5 list-disc space-y-0.5 pl-4">{brand.acceptedPreferences.map((p, i) => <li key={i}>{p}</li>)}</ul>
+            )}
+          </div>
+        </details>
       )}
-      <ClientStyleMemory memory={style} />
+      {hasStyle && (
+        <details className={fold}>
+          <summary className={summary}>Their style and recent videos</summary>
+          <div className="pb-3"><ClientStyleMemory memory={style} /></div>
+        </details>
+      )}
     </div>
   );
 }
