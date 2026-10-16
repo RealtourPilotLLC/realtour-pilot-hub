@@ -1141,6 +1141,15 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   const { approvalGate } = await import("@/lib/revisionIssues");
   const issueGate = await approvalGate(submission, { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, verifyIssueIds: opts?.verifyIssueIds ?? null, approveUncheckedFixes: opts?.approveUncheckedFixes === true });
   if (!issueGate.ok) return { ok: false, message: issueGate.message, canApproveAnyway: issueGate.canApproveAnyway };
+  // THE REVIEWER'S TWO-PART CHECK (Oct 15 2026, lib/reviewChecklist.ts): the
+  // technical and creative blocks saved on THIS version, the creative one by
+  // James or Jordan on program and premium videos. Only while the
+  // review_checklist switch is on; off, approval is exactly as before.
+  {
+    const { checklistRefusal } = await import("@/lib/reviewChecklist");
+    const refusal = await checklistRefusal(submissionId);
+    if (refusal) return { ok: false, message: refusal };
+  }
 
   const { authorName, authorUserId } = await sessionAuthor();
   const ruler = await rulerOf();

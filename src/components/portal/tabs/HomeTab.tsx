@@ -8,6 +8,7 @@ import type { HomeAction } from "@/lib/portalHome";
 import { awaitingScript } from "@/lib/portalHome";
 import { SCRIPT_WORDS, TOPIC_WORDS, planStepWord } from "@/lib/portalWords";
 import { Card, CardTitle, CountBadge, StatusChip, fmtDate, fmtTime, tzShort } from "@/components/portal/ui";
+import { ExpectedLine } from "@/components/portal/ExpectedLine";
 import type { SetupCardData } from "@/components/portal/PortalProfile";
 
 // ---------------------------------------------------------------------------
@@ -183,6 +184,9 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
   // never counted as "in production or review" here.
   const approvedWaiting = prod?.approvedWaiting ?? 0;
   const inProgress = d.program ? Math.max(0, d.program.total - d.program.delivered - approvedWaiting) : 0;
+  // Oct 15 2026: each video still in production with its stage and expected
+  // date (lib/programWatch; absent while that switch is off).
+  const expected = (d.videos?.rows ?? []).filter((v) => v.expected && v.monthKey === d.monthKey);
   return (
     <Card>
       <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
@@ -203,6 +207,16 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
             {inProgress > 0 && <li>{inProgress} in production or review</li>}
             {prod && !prod.known && <li>We&rsquo;re still adding this month&rsquo;s delivered videos to your library. This count will catch up shortly.</li>}
           </ul>
+          {expected.length > 0 && (
+            <ul className="mt-2 space-y-1.5 border-t border-border pt-2">
+              {expected.slice(0, 8).map((v) => (
+                <li key={v.id} className="text-xs">
+                  <span className="break-words font-medium">{v.title}</span>
+                  <ExpectedLine e={v.expected!} />
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
       {d.planning?.clientPlanned ? (

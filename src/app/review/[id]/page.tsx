@@ -20,6 +20,9 @@ import { BackLink } from "@/components/ui/BackLink";
 // §8.1: the one person each waiting cut is waiting on, and the take / cover /
 // hand-on doors — the same strip /edit/<id> carries, here where review happens.
 import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
+import { ReviewChecklist } from "@/components/review/ReviewChecklist";
+import { CreativeReviewPanel } from "@/components/review/CreativeReviewPanel";
+import { JudgeAgainst, type JudgeBrand, type JudgeScript } from "@/components/review/JudgeAgainst";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
@@ -183,6 +186,38 @@ export default async function CutReviewPage({
       : clientAsk?.contactName
         ? `Asked by ${clientAsk.contactName} · ${whenET(clientAsk.createdAt)}`
         : null;
+  // ---- Oct 15 2026: the reviewer's two-part check, creative review, and what
+  // to judge the cut against (lib/reviewChecklist, lib/creativeReview,
+  // components/review/JudgeAgainst). The desk only; a failed read shows none.
+  const { isCreativeApprover } = await import("@/lib/reviewChecklist");
+  const creativeApprover = !shotThis && (await isCreativeApprover(me, { authEnforced: authEnforced() }).catch(() => false));
+  const checklist = active && !shotThis && active.status === "PENDING" && !active.heldForCheck
+    ? await import("@/lib/reviewChecklist").then((m) => m.checklistStatus(active.id)).catch(() => null)
+    : null;
+  const creativeReviews = shotThis ? [] : await import("@/lib/creativeReview").then((m) => m.openCreativeReviews(w.projectId)).catch(() => []);
+  let judgeScript: JudgeScript = null;
+  let judgeTopic: string | null = null;
+  let judgeBrand: JudgeBrand = null;
+  let judgeStyle: import("@/lib/creativeGuard").StyleMemory | null = null;
+  if (!shotThis) {
+    const clientId = (await prisma.project.findUnique({ where: { id: w.projectId }, select: { clientId: true } }).catch(() => null))?.clientId ?? null;
+    const [brief, brand] = await Promise.all([
+      active?.deliverableId ? import("@/lib/deliverableOutputs").then((m) => m.filmingBriefFor(w.projectId)).catch(() => null) : Promise.resolve(null),
+      clientId ? import("@/lib/brandProfile").then((m) => m.brandBriefFor(clientId, { projectId: w.projectId, scrub: !!me && me.role !== "OWNER" })).catch(() => null) : Promise.resolve(null),
+    ]);
+    const row = active?.deliverableId ? brief?.rows.find((r) => r.key === `${active.deliverableId}:${active.slot ?? 1}`) ?? null : null;
+    judgeTopic = row?.topicTitle ?? null;
+    judgeScript = row?.script ? { title: row.script.title, versionNo: row.script.versionNo, text: row.script.text, standing: row.script.standing } : null;
+    if (brand) {
+      judgeBrand = {
+        colors: brand.colors, colorWords: brand.colorWords, fontNames: brand.fontNames,
+        files: brand.files.map((f) => ({ name: f.fileName ?? f.name, typeWord: f.typeWord, url: f.url, versionNo: f.versionNo })),
+        videoStyle: brand.videoStyle, preferences: brand.preferences, acceptedPreferences: brand.acceptedPreferences, music: brand.music,
+      };
+      judgeStyle = brand.styleMemory;
+    }
+  }
+
   // Which cut each client note is on, in the Room's own words.
   const cutNameOf = (submissionId: string) => {
     const s = w.submissions.find((x) => x.id === submissionId);
@@ -230,6 +265,7 @@ export default async function CutReviewPage({
       <div className="grid min-w-0 grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the cut */}
         <div className="min-w-0 space-y-4 lg:col-span-2">
+          {creativeReviews.length > 0 && <CreativeReviewPanel reviews={creativeReviews} canResolve={creativeApprover} />}
           {slots.length > 0 && <nav aria-label="Project videos" className="-mx-1 flex max-w-full snap-x gap-2 overflow-x-auto px-1 py-1">
             {slots.map((slot, index) => {
               const key = `${slot.deliverableId}:${slot.slot}`;
@@ -290,6 +326,18 @@ export default async function CutReviewPage({
                   <p className="mt-1.5 text-xs text-muted">Approving closes this ask; sending it back keeps it open.</p>
                 </div>
               )}
+              {checklist && (
+                <ReviewChecklist
+                  key={`checks-${active.id}`}
+                  submissionId={active.id}
+                  tech={checklist.tech}
+                  creative={checklist.creative}
+                  prefill={checklist.prefill}
+                  creativeRequired={checklist.creativeRequired}
+                  canSignCreative={!checklist.creativeRequired || creativeApprover}
+                  approveBlockedReason={checklist.approveBlockedReason}
+                />
+              )}
               <CutReviewPanel
                 key={active.id}
                 projectId={w.projectId}
@@ -304,6 +352,7 @@ export default async function CutReviewPage({
                 readStamp={new Date().toISOString()}
                 nextCut={nextCut ? { href: nextCut.href, label: nextCut.label } : null}
                 street={w.street}
+                approveBlockedReason={checklist?.approveBlockedReason ?? null}
               />
 
             </>
@@ -349,6 +398,7 @@ export default async function CutReviewPage({
 
         {/* RIGHT — what to judge it against */}
         <div className="min-w-0 space-y-4">
+          {!shotThis && <JudgeAgainst topicTitle={judgeTopic} script={judgeScript} brand={judgeBrand} style={judgeStyle} />}
           {/* What to judge the cut against, folded to one line (Oct 5): the
               order, the plan and the photographer's notes are a tap away, and
               the one fact that changes the bar — premium — stays on the line. */}

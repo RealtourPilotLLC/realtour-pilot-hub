@@ -101,6 +101,7 @@ export function CutReviewPanel({
   readStamp,
   nextCut = null,
   street,
+  approveBlockedReason = null,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -130,6 +131,10 @@ export function CutReviewPanel({
   nextCut?: { href: string; label: string } | null;
   /** The job's street, for the receipt that follows the reviewer. */
   street?: string;
+  /** Oct 15 2026: why Approve waits (the two-part review check is not saved
+   *  yet), in words. Null = Approve may be pressed. The server says the same
+   *  when its switch is on (lib/reviewChecklist.ts). */
+  approveBlockedReason?: string | null;
 }) {
   const router = useRouter();
   // Words this reviewer left on this cut when a verdict they pressed did not go
@@ -325,6 +330,7 @@ export function CutReviewPanel({
   }
 
   function requestApproval() {
+    if (approveBlockedReason) { setErr(approveBlockedReason); return; }
     if (notFixed.size) {
       setApprovalWarning(`${notFixed.size} fix${notFixed.size === 1 ? " isn't" : "es aren't"} ticked as verified. Approve anyway? The missing ticks will remain unverified.`);
       return;
@@ -464,8 +470,8 @@ export function CutReviewPanel({
             </button>
             <button
               onClick={requestApproval}
-              disabled={pending || needsReload}
-              title={notFixed.size > 0 ? "Review the missing ticks before approving anyway" : undefined}
+              disabled={pending || needsReload || !!approveBlockedReason}
+              title={approveBlockedReason ?? (notFixed.size > 0 ? "Review the missing ticks before approving anyway" : undefined)}
               className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 sm:flex-none"
             >
               <ThumbsUp className="size-4" /> Approve cut

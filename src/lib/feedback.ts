@@ -137,6 +137,10 @@ export async function recordFeedback(opts: {
         dedupeKey: feedbackTaskKey(fb.id),
       },
     });
+    // Oct 15 2026: unhappy feedback is also a complaint on the client's record
+    // (lib/clientIssues.ts) — cause, correction and the client's confirmation
+    // are tracked there. Once per feedback row; never throws.
+    await import("@/lib/clientIssues").then((m) => m.openIssueFromFeedback(fb.id)).catch(() => null);
   }
 
   // Bell: every piece of feedback rings someone. Negative = an owner-only FYI

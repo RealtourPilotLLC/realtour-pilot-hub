@@ -883,6 +883,10 @@ export type BrandBrief = {
   acceptedPreferences: string[];
   scopedInstructions: import("@/lib/clientFacts").PromptFact[];
   pending: PendingBrandChange[];
+  /** Oct 15 2026 (creativeGuard.ts): the client's proven format, the series
+   *  they stopped, their example videos and their last approved videos from
+   *  other jobs. Null when it could not be read. */
+  styleMemory: import("@/lib/creativeGuard").StyleMemory | null;
 };
 
 const HEX_RE = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g;
@@ -909,6 +913,10 @@ export async function brandBriefFor(clientId: string, opts: { projectId?: string
     productionFactsForBrief(clientId, opts.projectId ?? null),
     pendingBrandChanges(clientId, { editorKey: opts.editorKey }),
   ]);
+  const styleMemory = await import("@/lib/creativeGuard")
+    .then((m) => m.styleMemoryFor(clientId, { forProjectId: opts.projectId ?? null, registry }))
+    .then((mem) => ({ ...mem, examples: mem.examples.map((x) => ({ ...x, name: s(x.name) ?? "Example video", text: s(x.text) })) }))
+    .catch(() => null);
   const raw = client?.brandColors ?? "";
   const colors = [...new Set((raw.match(HEX_RE) ?? []).map((c) => c.toLowerCase()))];
   const colorWords = raw.replace(HEX_RE, "").replace(/[,\s]+/g, " ").trim() || null;
@@ -923,6 +931,7 @@ export async function brandBriefFor(clientId: string, opts: { projectId?: string
     acceptedPreferences: accepted.filter((fact) => fact.scope === "PERMANENT").map((fact) => s(fact.body)).filter((x): x is string => !!x),
     scopedInstructions: accepted.filter((fact) => fact.scope !== "PERMANENT").map((fact) => ({ ...fact, body: s(fact.body) ?? "" })).filter((fact) => !!fact.body),
     pending: opts.scrub ? pending.map((p) => ({ ...p, fromText: s(p.fromText), toText: s(p.toText), line: scrubMoney(p.line) })) : pending,
+    styleMemory,
   };
 }
 

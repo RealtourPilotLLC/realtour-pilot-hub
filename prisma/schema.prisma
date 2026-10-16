@@ -891,6 +891,15 @@ model DeliverableOutput {
   briefJson      String?
   briefUpdatedAt DateTime?
   briefUpdatedBy String?
+
+  // Oct 15 2026 (lib/programWatch.ts): WHY a late program video was late. A
+  // person's call; the hub only suggests one. EDIT_CAPACITY | MISSING_ASSETS |
+  // INCOMPLETE_BRIEF | SLOW_HANDOFF | REVIEW_BOTTLENECK | REVISION_CYCLES |
+  // CLIENT_APPROVAL. Null = not recorded yet.
+  missCause String?
+  missNote  String?
+  missBy    String?
+  missAt    DateTime?
   @@unique([deliverableId, slot])
   @@index([projectId])
   @@index([ownerKey])

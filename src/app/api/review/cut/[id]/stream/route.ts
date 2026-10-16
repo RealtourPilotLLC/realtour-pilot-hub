@@ -131,6 +131,20 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       const { canViewProject } = await import("@/lib/auth/guards");
       allowed = await canViewProject(sub.projectId); // no-op in local dev, same as every guard
     }
+    // THE CLIENT'S OWN REFERENCE VIDEOS (Oct 15 2026, creativeGuard.styleMemoryFor).
+    // An editor working a job may PLAY (never download) that same client's
+    // APPROVED videos from their other jobs, named on the brief as their style
+    // reference: `ref` is the job they hold. Still nothing unreleased, nothing
+    // of another client, and no file through this door.
+    const ref = req.nextUrl.searchParams.get("ref");
+    if (!allowed && sub && ref && /^[a-z0-9]{10,40}$/i.test(ref) && sub.status === "APPROVED" && req.nextUrl.searchParams.get("dl") !== "1") {
+      const { canViewProject } = await import("@/lib/auth/guards");
+      if (await canViewProject(ref)) {
+        const pair = await prisma.project.findMany({ where: { id: { in: [sub.projectId, ref] } }, select: { id: true, clientId: true } });
+        const mine = pair.find((p) => p.id === sub.projectId)?.clientId;
+        allowed = !!mine && pair.find((p) => p.id === ref)?.clientId === mine;
+      }
+    }
   }
   // A missing row and a forbidden row answer the SAME way to a signed-in
   // stranger — "no" must not double as "that id exists".

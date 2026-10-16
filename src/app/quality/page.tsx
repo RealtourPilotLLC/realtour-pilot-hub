@@ -27,6 +27,7 @@ import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
 import { SelfCheckSettings, UnclassifiedIssues } from "@/components/editing/QualityDesk";
 import { HandledToggle } from "./HandledToggle";
 import { FeedbackReply } from "./FeedbackReply";
+import { OpenComplaintsList } from "@/components/clientCare/OpenComplaintsList";
 import {
   getClientFeedbackFeed,
   getPhotographerBoard,
@@ -98,6 +99,12 @@ export default async function QualityPage({
     tab === "editors" ? loadEditorsTab(editorSelf ? (me?.editorKey ?? "__none__") : null, sp.test === "1") : null,
   ]);
 
+  // Oct 15 2026: complaints still open on any client (lib/clientIssues.ts),
+  // money scrubbed for anyone but the owner.
+  const openComplaints = tab === "clients" && officeView
+    ? await import("@/lib/clientIssues").then((m) => m.listClientIssues({ states: ["OPEN", "CORRECTED", "UNRESOLVED"], scrubMoney: !!me && me.role !== "OWNER", take: 40 })).catch(() => [])
+    : null;
+
   // Sessionless local dev (gate off) reads as the owner, same as /feedback.
   const canModerate = !me || me.role === "OWNER";
   const mod: Moderation = {
@@ -117,6 +124,7 @@ export default async function QualityPage({
       />
       <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:px-6">
         <QualityTabs active={tab} counts={{ ...tabCounts, editors: editors?.unclassified.length }} only={officeView ? undefined : ["editors"]} />
+        {openComplaints && <OpenComplaintsList issues={openComplaints} />}
         {feed && <ClientTab feed={feed} />}
         {board && <PhotographerTab board={board} mod={mod} />}
         {editors && <>

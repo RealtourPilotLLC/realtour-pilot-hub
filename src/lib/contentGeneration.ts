@@ -16,6 +16,7 @@ import {
   creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
+import { creativeGuardFromOverrides, discontinuedHit } from "@/lib/creativeGuardCore";
 
 // ---------------------------------------------------------------------------
 // GENERATION — the only place the Content Program talks to the model, and it
@@ -193,6 +194,8 @@ export async function buildClientContext(enrollmentId: string, opts: { monthId?:
     // Oct 14 2026: the auto-built creative identity (creativeIdentity.ts) and this month's priorities.
     creativeIdentity: creativeIdentityFromOverrides(e.overridesJson),
     monthPriorities: priorities,
+    // Oct 15 2026: proven format, discontinued series, experiment limit (creativeGuardCore.ts).
+    creativeGuard: creativeGuardFromOverrides(e.overridesJson),
   };
   return {
     ctx, enrollmentId, clientId: e.clientId, strategyVersionId: strategy?.versionId ?? null, strategyLabel: strategy?.label ?? null, policyVersionId: policy.id,
@@ -387,11 +390,23 @@ async function assertUnscripted(topicId: string, monthId: string | null, intervi
   if (existing) throw new AlreadyDraftedError(what);
 }
 
+/** Refused in words when a topic names a series the client stopped (Oct 15 2026). */
+export class DiscontinuedSeriesError extends Error {
+  constructor(title: string, series: string) { super(`"${title}" is part of "${series}", which this client stopped. Pick another topic.`); this.name = "DiscontinuedSeriesError"; }
+}
+function assertNotDiscontinued(text: string, ctx: ClientContext, title: string): void {
+  const hit = discontinuedHit(text, ctx.creativeGuard);
+  if (hit) throw new DiscontinuedSeriesError(title, hit);
+}
+
 /** Transcript / topic path: one script version (INTERNAL_REVIEW) for a topic, through the policy prompt + validator. */
 export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number }> {
   const { topic, row } = await policyTopic(o.topicId);
   await (await import("@/lib/programStyle")).assertWeWriteFor(row.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(row.enrollmentId, { monthId: o.monthId });
+  // Oct 15 2026: a topic that names a series this client stopped is refused
+  // before any model call (creativeGuardCore.discontinuedHit).
+  assertNotDiscontinued(`${row.title} ${row.concept ?? ""}`, built.ctx, row.title);
   const excerpts = o.excerpts ?? (await excerptsForTopic(o.topicId, o.monthId));
   const scrub = await scrubOtherClients(row.clientId, excerpts.map((e) => e.text));
   const quotableLines = await quotableLinesForTopic(o.topicId, o.monthId, row.clientId).catch(() => []);
@@ -435,6 +450,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
   const a = await assembleInterviewInputs(interviewId);
   await (await import("@/lib/programStyle")).assertWeWriteFor(a.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
+  assertNotDiscontinued(`${a.topic.title} ${a.topic.description ?? ""}`, built.ctx, a.topic.title); // Oct 15 2026
   // The call's own words about this topic ride along beside the answers
   // (CP-08) — already confidential- and other-client-scrubbed.
   const quotableLines = a.topic.id ? await quotableLinesForTopic(a.topic.id, a.monthId, a.clientId).catch(() => []) : [];
@@ -621,6 +637,8 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   const validation = validateTopicBank(bank, { topicsPerPillar: perPillar, mode: "generated", strategyPillarNames: strategyPillars.map((p) => p.name), pillarEmphasis });
   let created = 0, resurfaced = 0, duplicates = 0, notKept = 0;
   const formulaic: string[] = [];
+  // Oct 15 2026: an idea that names a series this client stopped never reaches the bank.
+  const stopped: string[] = [];
   const rows: Prisma.ContentTopicSuggestionCreateManyInput[] = [];
   for (const p of bank.pillars) {
     if (!p.pillarId) continue; // an unknown pillar name is a finding, never a new pillar
@@ -630,6 +648,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     for (const t of p.topics) {
       const hash = topicDedupeHash(t.title);
       if (blocked.has(hash)) { resurfaced++; continue; } // archived/rejected concepts never come back
+      { const hit = discontinuedHit(`${t.title} ${t.description ?? ""} ${t.intendedMessage ?? ""}`, built.ctx.creativeGuard); if (hit) { stopped.push(`${t.title} (${hit})`); continue; } }
       // Oct 14 2026: a banned formulaic title shape the prompt asked the model not to use is dropped, and logged.
       const shape = formulaicTitleShape(t.title);
       if (shape) { formulaic.push(`${t.title} (${shape})`); continue; }
@@ -655,6 +674,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
     } catch (e) { console.warn(`[topic bank] run ${runId}: auto-accept failed, ideas stay pending`, e); }
   }
   if (formulaic.length) console.warn(`[topic bank] run ${runId}: dropped ${formulaic.length} formulaic title(s): ${formulaic.join(" | ").slice(0, 600)}`);
+  if (stopped.length) console.warn(`[topic bank] run ${runId}: dropped ${stopped.length} idea(s) naming a discontinued series: ${stopped.join(" | ").slice(0, 600)}`);
   await setRunOutputRef(runRes.runId, `ContentTopicRefreshRun:${runId}`);
   const unknownPillars = validation.findings.filter((f) => f.code === "pillar.unknown").map((f) => f.message);
   const gaps = [...(Array.isArray(out.gaps) ? out.gaps : []), ...validation.gaps];
@@ -662,7 +682,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   await finishRefreshRun(runId, {
     status, generatedCount: created, pillarCount: bank.pillars.length, aiRunId: runRes.runId,
     missingContext: gaps.length || unknownPillars.length || !out.complete ? { gaps: gaps.map((g) => g.text), unknownPillars, complete: out.complete === true } : undefined,
-    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
+    changeSummary: `${created} new suggestion${created === 1 ? "" : "s"}${opts.keep ? ` (kept ${created} of ${created + notKept} fresh ideas as the replacement)` : ""} · ${duplicates} already in the bank · ${resurfaced} archived concept${resurfaced === 1 ? "" : "s"} withheld · ${validation.duplicates.length} near-duplicate warning${validation.duplicates.length === 1 ? "" : "s"}${formulaic.length ? ` · ${formulaic.length} formulaic title${formulaic.length === 1 ? "" : "s"} dropped` : ""}${stopped.length ? ` · ${stopped.length} idea${stopped.length === 1 ? "" : "s"} from a discontinued series dropped` : ""}${out.complete === false ? " · the model reported it could not reach the count at the quality bar" : ""}`,
   });
 }
 

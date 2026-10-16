@@ -18,6 +18,9 @@ import { ClientTodos } from "@/components/clients/ClientTodos";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ClientNotificationPrefs } from "@/components/clients/ClientNotificationPrefs";
 import { FieldReportsCard } from "./FieldReportsCard";
+import { CreativeGuardEditor } from "@/components/clientCare/CreativeGuardEditor";
+import { EntitlementsCard } from "@/components/clientCare/EntitlementsCard";
+import { ClientIssuesCard } from "@/components/clientCare/ClientIssuesCard";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ShowMore } from "@/components/ui/ShowMore";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -60,7 +63,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
         !/\bsent to\b|sent\.|\breplied\b/i.test(t.body),
     )?.body ?? "";
 
-  const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true } }).catch(() => null);
+  const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true, overridesJson: true } }).catch(() => null);
 
   // Who may flip the per-client notification switches. Same shape as the other
   // owner/admin gates on this hub: middleware already keeps creatives off
@@ -109,6 +112,19 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
         )
         .catch(() => [])
     : [];
+
+  // Oct 15 2026: the client's creative guardrails, what they're owed beyond
+  // the package, and their complaints (lib/creativeGuard, lib/entitlements,
+  // lib/clientIssues). Office eyes; money is scrubbed for anyone but the owner.
+  const seesCare = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  const canEditGuard = canEditPrefs || (await import("@/lib/reviewChecklist").then((m) => m.isCreativeApprover(me, { authEnforced: authEnforced() })).catch(() => false));
+  const [creativeGuard, entitlements, complaints] = seesCare
+    ? await Promise.all([
+        enrollment ? import("@/lib/creativeGuardCore").then((m) => m.creativeGuardFromOverrides(enrollment.overridesJson)) : Promise.resolve(null),
+        enrollment ? import("@/lib/entitlements").then((m) => m.entitlementSummary(enrollment.id)).catch(() => null) : Promise.resolve(null),
+        import("@/lib/clientIssues").then((m) => m.listClientIssues({ clientId: client.id, scrubMoney: !showMoney })).catch(() => []),
+      ])
+    : [null, null, []];
 
   return (
     <div>
@@ -202,6 +218,10 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
 
           {/* §7.8: what photographers reported, waiting on the office. */}
           {fieldReports.length > 0 && <FieldReportsCard reports={fieldReports} canDecide={canEditPrefs} />}
+
+          {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canEditPrefs} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} />}
+          {entitlements && <EntitlementsCard summary={entitlements} canEdit={canEditPrefs} />}
+          {enrollment && creativeGuard && <CreativeGuardEditor enrollmentId={enrollment.id} guard={creativeGuard} canEdit={canEditGuard} />}
 
           {/* Orders */}
           <section>

@@ -26,8 +26,8 @@ import { readCatchUps } from "@/lib/catchUp";
 export type ChangeField =
   | "package" | "videosPerMonth" | "sessionsPerMonth" | "sessionHours" | "status" | "callMode" | "noCallEligible"
   | "billingType" | "billingRate" | "billingMonths" | "overrides" | "clientSuppliesTopics" | "strategyCallRequired" | "timezone" | "notes"
-  // Oct 15 2026: monthly ↔ bulk plan (bulkPlan.ts).
-  | "programKind";
+  // Oct 15 2026: monthly ↔ bulk plan (bulkPlan.ts); the agreed term (entitlements.ts).
+  | "programKind" | "termStartMonth" | "termEndMonth";
 
 export type CurrentMonthChoice = "KEEP" | "APPLY";
 

@@ -407,6 +407,23 @@ export async function recordClientCommunication(opts: {
       if (taskId) await attachPromiseToReplyTask({ taskId, projectId: effProjectId });
     }
   }
+  // THE CHASE COUNTER (Oct 15 2026, lib/chaseCounter.ts): the same question
+  // counted per client and job over 14 days; the 2nd opens a HIGH task for
+  // Kyle with the promise line, the 3rd rings the owner too. Once per message;
+  // tasks and bells only, nothing to the client. A message whose job is in
+  // doubt is counted on the client alone.
+  if (opts.clientId) {
+    const { isReadyQuestion } = await import("@/lib/promiseWatch");
+    if (isReadyQuestion(opts.text)) {
+      const { recordChase } = await import("@/lib/chaseCounter");
+      await recordChase({
+        clientId: opts.clientId, clientName: opts.clientName,
+        projectId: effProjectId && !checked.issue ? effProjectId : null,
+        text: opts.text, commLogId: opts.commLogId ?? (await findSourceCommLog({ clientId: opts.clientId, text: opts.text })),
+        source: opts.source ?? opts.kind,
+      }).catch(() => null);
+    }
+  }
 
   // Whether this is a real revision request: trust the Smart Brain (it can tell a
   // booking/scheduling/pricing message from an actual "redo the delivered work"
@@ -465,7 +482,7 @@ export async function recordClientCommunication(opts: {
     });
     if (gate.file) {
       const sourceRef = opts.commLogId ?? (await findSourceCommLog({ clientId: opts.clientId, text: opts.text }));
-      await prisma.feedback.create({
+      const fb = await prisma.feedback.create({
         data: {
           projectId: anchorProjectId,
           sentiment: "NEGATIVE",
@@ -477,7 +494,10 @@ export async function recordClientCommunication(opts: {
           source: opts.kind === "email" ? "email" : "text",
           sourceRef,
         },
-      }).catch(() => {});
+        select: { id: true },
+      }).catch(() => null);
+      // Oct 15 2026: and a complaint on the client's record (lib/clientIssues.ts).
+      if (fb) await import("@/lib/clientIssues").then((m) => m.openIssueFromFeedback(fb.id)).catch(() => null);
     }
   }
 
@@ -897,6 +917,12 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
       staffReceipt: opts.staffReceipt,
     });
   } catch { /* the revision itself already landed */ }
+  // CREATIVE REVIEW (Oct 15 2026): when everything the client said is a
+  // feeling with the creative reviewer, the editor's card waits and their bell
+  // stays quiet until it comes back as concrete changes (creativeReview.ts).
+  const editorWaits = briefId
+    ? await import("@/lib/creativeReview").then((m) => m.editorHeldFor(briefId)).catch(() => false)
+    : false;
 
   // EVERY PORTAL ROUND AND EVERY ADDENDUM RINGS THE EDITOR (CP-03). The
   // !wasAlreadyOpen rule below kept a repeat TEXT quiet, which is right for a
@@ -911,12 +937,12 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
       const inHouse = (k: string | null | undefined): k is string => !!k && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(k);
       const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
       const holder = existing?.assignedManually ? existing.assignedKey : assignedKey;
-      if (inHouse(holder)) targets.push({ roles: ["EDITOR"], userKey: `editor:${holder}`, href: `/edit/${project.id}` });
+      if (inHouse(holder) && !editorWaits) targets.push({ roles: ["EDITOR"], userKey: `editor:${holder}`, href: `/edit/${project.id}` });
       // The editor carrying THIS video, when it is not the job's editor.
       const owner = opts.pin.outputId
         ? (await prisma.deliverableOutput.findUnique({ where: { id: opts.pin.outputId }, select: { ownerKey: true } }).catch(() => null))?.ownerKey ?? null
         : null;
-      if (inHouse(owner) && owner !== holder) targets.push({ roles: ["EDITOR"], userKey: `editor:${owner}`, href: `/edit/${project.id}` });
+      if (inHouse(owner) && owner !== holder && !editorWaits) targets.push({ roles: ["EDITOR"], userKey: `editor:${owner}`, href: `/edit/${project.id}` });
       await notifyInApp({
         kind: opts.addendum ? "revision_addendum" : "revision_raised",
         title: `${opts.addendum ? "More notes" : opts.reopened ? "Reopened for revisions" : "Revision"} — ${project.title.split(",")[0].trim()} · ${opts.pin.videoLabel}`,
@@ -953,7 +979,7 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
       // EDITOR role, and the Slack/SMS bridge ships whatever href this row has.
       {
         const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
-        if (assignedKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(assignedKey)) {
+        if (assignedKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(assignedKey) && !editorWaits) {
           targets.push({ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: `/edit/${project.id}` });
         }
       }

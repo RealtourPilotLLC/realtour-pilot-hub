@@ -101,10 +101,30 @@ export async function describeJobStages(projectIds: string[]): Promise<Map<strin
 
 const isContentSession = (titles: string[]) => titles.some((t) => /video (starter|accelerator|pro)|content (session|day)/i.test(t));
 
-export type PromiseWatchResult = { checked: number; alerted: number; drafted: number; closedDrafts: number; skipped?: string; jobs: string[] };
+export type PromiseWatchResult = {
+  checked: number; alerted: number; drafted: number; closedDrafts: number; skipped?: string; jobs: string[];
+  /** PROGRAM videos (Oct 15 2026, lib/programWatch): milestones, not only the last 3 hours. */
+  program?: import("@/lib/programWatch").ProgramWatchResult | { error: string };
+};
 
-/** Every 5 minutes (cron/gmail). */
+/**
+ * Every 5 minutes (cron/gmail). The job-level watch below, then the program
+ * videos (Oct 15 2026, lib/programWatch.sweepProgramWatch), which this file's
+ * job query has always left out (`contentMonthId: null`): a monthly video is
+ * flagged the moment it misses a milestone, and told to Kyle the same way,
+ * with a drafted client update and nothing sent. The Delivery watch switch
+ * turns both off; the program half has its own switch as well.
+ */
 export async function sweepPromiseWatch(now: Date = new Date()): Promise<PromiseWatchResult> {
+  const jobs = await sweepJobPromises(now);
+  if (jobs.skipped) return jobs;
+  const program = await import("@/lib/programWatch")
+    .then((m) => m.sweepProgramWatch(now))
+    .catch((e: unknown) => ({ error: e instanceof Error ? e.message.slice(0, 200) : "program watch failed" }));
+  return { ...jobs, program };
+}
+
+async function sweepJobPromises(now: Date): Promise<PromiseWatchResult> {
   const { closeDeliveredWatchDrafts } = await import("@/lib/atRiskUpdates");
   // Desk truth outside the switch: a watch draft whose job went out closes.
   const closedDrafts = (await closeDeliveredWatchDrafts().catch(() => ({ closed: 0 }))).closed;
@@ -182,13 +202,37 @@ export async function sweepPromiseWatch(now: Date = new Date()): Promise<Promise
 
 const READY_QUESTION_RE =
   /\b(when (?:will|would|can|do|does|should|are|is)\b[^?.!]{0,60}\b(?:ready|done|back|delivered|finished|up|available|out|come|coming|get|have|see|receive|expect)|eta\b|any (?:update|news|word)s?\b|how (?:much )?longer|status (?:on|of|update)|where (?:are|is) (?:the |my |our )?(?:photos?|pictures?|pics|videos?|reels?|edits?|gallery|floor ?plans?|tour)|still waiting|by when|what time (?:will|would|can|should))/i;
+// "Is it ready?", "are my videos done yet", "just checking in on the reels"
+// (Oct 15 2026, the chase counter): the plain ways a client asks again.
+const READY_QUESTION_RE_2 =
+  /\b((?:is|are) (?:it|they|these|those|(?:the|my|our) (?:photos?|pictures?|pics|videos?|reels?|edits?|gallery|floor ?plans?|tour|content)) (?:ready|done|finished|back|up|delivered)\b|(?:just )?(?:checking|following) (?:in|up) on (?:the |my |our )?(?:photos?|pictures?|pics|videos?|reels?|edits?|gallery|floor ?plans?|tour|content|order|status|progress))/i;
 
 /** A client asking when their work will be ready. Pure. */
 export function isReadyQuestion(text: string): boolean {
-  return READY_QUESTION_RE.test((text ?? "").trim());
+  const t = (text ?? "").trim();
+  return READY_QUESTION_RE.test(t) || READY_QUESTION_RE_2.test(t);
 }
 
 const PROMISE_LINE = "Promise on file:";
+
+/**
+ * The one line a staff task carries about a job's promise and where it
+ * stands. A PROGRAM job (Oct 15 2026) names each of its videos' own promise
+ * and stage instead, from lib/programWatch, because "no promise pinned" was
+ * what a monthly client's "any update?" task said. Internal words, no money.
+ */
+export async function promiseLineFor(projectId: string, now: Date = new Date()): Promise<string> {
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, promisedDueAt: true, shootDate: true, contentMonthId: true } });
+  if (!p) return `${PROMISE_LINE} unknown job.`;
+  if (p.contentMonthId) {
+    const lines = await import("@/lib/programWatch").then((m) => m.programPromiseLines(p.id, now)).catch(() => [] as string[]);
+    if (lines.length) return noDashes(scrubMoney(`${PROMISE_LINE} ${lines.join("; ")}.`)).slice(0, 400);
+  }
+  const promise = pinnedPromise(p);
+  const stage = (await describeJobStages([p.id])).get(p.id);
+  const when = promise ? `${etDateTime(promise)} ET${promise < now ? " (already past)" : ""}` : "no promise pinned yet";
+  return noDashes(scrubMoney(`${PROMISE_LINE} ${when}. Now: ${stage?.words ?? "unknown"}.`));
+}
 
 /**
  * Put the job's promise and stage on the reply task a "when will it be ready?"
@@ -204,10 +248,7 @@ export async function attachPromiseToReplyTask(input: { taskId: string; projectI
       prisma.project.findUnique({ where: { id: input.projectId }, select: { id: true, promisedDueAt: true, shootDate: true, deliveredAt: true, status: true } }),
     ]);
     if (!task || !p || task.taskType !== "client_reply" || ["COMPLETED", "CANCELLED"].includes(task.status)) return false;
-    const promise = pinnedPromise(p);
-    const stage = (await describeJobStages([p.id])).get(p.id);
-    const when = promise ? `${etDateTime(promise)} ET${promise < now ? " (already past)" : ""}` : "no promise pinned yet";
-    const line = noDashes(scrubMoney(`${PROMISE_LINE} ${when}. Now: ${stage?.words ?? "unknown"}.`));
+    const line = await promiseLineFor(p.id, now);
     const rest = (task.summary ?? "").split("\n").filter((l) => !l.startsWith(PROMISE_LINE)).join("\n");
     await prisma.smartTask.update({ where: { id: task.id }, data: { summary: `${line}\n${rest}`.trim().slice(0, 500) } });
     return true;

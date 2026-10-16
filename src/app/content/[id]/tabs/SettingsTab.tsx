@@ -5,6 +5,9 @@ import { ProgramStyleCard } from "@/components/content/ProgramStyleCard";
 import { loadSettingsTab } from "../workspaceData";
 import { videoStyleFromOverrides } from "@/lib/contentPolicy/prompts";
 import type { TabCtx } from "./shared";
+import { CreativeGuardEditor } from "@/components/clientCare/CreativeGuardEditor";
+import { EntitlementsCard } from "@/components/clientCare/EntitlementsCard";
+import { ClientIssuesCard } from "@/components/clientCare/ClientIssuesCard";
 
 // ---------------------------------------------------------------------------
 // SETTINGS (UI-02) — package and allowance, status, the call requirement, who
@@ -22,8 +25,22 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
   const d = await loadSettingsTab(ctx.id, ctx.ownerEyes);
   if (!d) return <p className="text-sm text-warning">Couldn&rsquo;t load the settings — refresh to try again.</p>;
   const s = d.settings;
+  // Oct 15 2026 (Marcee McMullen's call): what this client is owed beyond the
+  // package, their complaints, and their style guardrails — the same cards as
+  // the client page, here where the program is run.
+  const care = ctx.staffEyes
+    ? await Promise.all([
+        import("@/lib/entitlements").then((m) => m.entitlementSummary(ctx.id)).catch(() => null),
+        import("@/lib/clientIssues").then((m) => m.listClientIssues({ clientId: ctx.client.id, scrubMoney: !ctx.ownerEyes })).catch(() => []),
+        import("@/lib/prisma").then(({ prisma }) => prisma.contentEnrollment.findUnique({ where: { id: ctx.id }, select: { overridesJson: true } })).then(async (e) => (await import("@/lib/creativeGuardCore")).creativeGuardFromOverrides(e?.overridesJson ?? null)).catch(() => null),
+        import("@/lib/prisma").then(({ prisma }) => prisma.project.findMany({ where: { clientId: ctx.client.id }, orderBy: { shootDate: "desc" }, take: 40, select: { id: true, title: true } })).catch(() => []),
+      ])
+    : null;
   return (
     <div className="space-y-5">
+      {care && <ClientIssuesCard clientId={ctx.client.id} issues={care[1]} canEdit projects={care[3]} />}
+      {care?.[0] && <EntitlementsCard summary={care[0]} canEdit />}
+      {care?.[2] && <CreativeGuardEditor enrollmentId={ctx.id} guard={care[2]} canEdit />}
       {/* Oct 8 2026: strategy calls on/off and "we show up and shoot" — owner/admin. */}
       {/* Oct 13 2026: + video style, Direct-to-camera or Skits (overridesJson.videoStyle). */}
       <ProgramStyleCard enrollmentId={ctx.id} strategyCalls={s.callMode !== "NOT_INCLUDED"} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />

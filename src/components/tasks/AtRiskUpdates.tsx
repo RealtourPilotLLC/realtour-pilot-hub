@@ -32,6 +32,8 @@ export async function AtRiskUpdates({ excludeClientIds }: { excludeClientIds?: s
               <p className={cn("text-xs", r.overdue ? "font-semibold text-danger" : "text-muted")}>
                 {r.owed} — {r.overdue ? "was due" : "due"} {promiseWords(r.promisedAt)}
               </p>
+              {/* Oct 15 2026: a program video is here because it missed a milestone. */}
+              {r.why && <p className="text-[11px] text-muted">Behind schedule: {r.why}</p>}
               {r.taskId && (
                 <Link href={`/tasks?tab=other&task=${r.taskId}`} className="text-[11px] text-brand underline">
                   An update is drafted on Kyle&rsquo;s list

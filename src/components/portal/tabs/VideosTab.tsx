@@ -10,6 +10,7 @@ import { Card, CardTitle, Empty, LoadFailed, StatusChip, fmtShort } from "@/comp
 import { CutReview } from "@/components/portal/CutReview";
 import { PostingKitPanel } from "@/components/portal/PostingKitPanel";
 import { PortalPlayer } from "@/components/portal/PortalPlayer";
+import { ExpectedLine } from "@/components/portal/ExpectedLine";
 import { ScriptView } from "@/components/script/ScriptView";
 import { cn } from "@/lib/utils";
 
@@ -101,6 +102,7 @@ function VideoRowV2({ v, to, deadline, previous }: { v: VideoListRow; to: string
             {v.kind !== "PROGRAM" && <span className="inline-flex items-center gap-0.5 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted"><Tag className="size-2.5" aria-hidden /> {v.kind === "LISTING" ? "Listing video" : v.kind === "EXTRA" ? "Extra" : v.kind.toLowerCase()}</span>}
             {deadline && <span className="text-[11px] font-medium text-foreground/80">Review by {deadline}</span>}
           </div>
+          {v.expected && <ExpectedLine e={v.expected} />}
           <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
             {!previous && v.filmedAtISO && <span>Filmed {fmtShort(v.filmedAtISO)}</span>}
             {v.deliveredAtISO && <span>Delivered {fmtShort(v.deliveredAtISO)}</span>}

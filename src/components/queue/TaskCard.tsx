@@ -581,7 +581,10 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
   const projectHref = task.projectId
     ? editorView
       ? `/edit/${task.projectId}`
-      : `/projects/${task.projectId}`
+      // Oct 15 2026: a creative review is answered in the Review Room.
+      : task.taskType === "creative_review"
+        ? `/review/${task.projectId}#creative-review`
+        : `/projects/${task.projectId}`
     : null;
   const isLuma = task.taskType === "vendor_update" && /luma/i.test(task.title);
   // Phone leads carry their number in sourceDetail ("phone:(610) 555-1234") —

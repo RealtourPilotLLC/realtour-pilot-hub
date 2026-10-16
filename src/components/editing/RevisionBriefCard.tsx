@@ -352,10 +352,14 @@ function Item({
       </button>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-1.5">
-          <p className={cn("min-w-0 flex-1 text-[13px] leading-snug", isDone ? "text-success line-through" : "font-medium text-foreground")}>
+          <p className={cn("min-w-0 flex-1 text-[13px] leading-snug", isDone ? "text-success line-through" : it.held ? "italic text-muted" : "font-medium text-foreground")}>
             {it.ask}
           </p>
-          {!isDone && (
+          {/* Oct 15 2026 (creative review): a feeling with no instruction in it
+              waits with Jordan or James; a change they wrote says so. */}
+          {it.held && <span className="shrink-0 rounded bg-brand-soft px-1 py-px text-[10px] font-medium text-brand">Creative review</span>}
+          {!it.held && it.fromReview && <span className="shrink-0 rounded bg-success/10 px-1 py-px text-[10px] font-medium text-success" title={`Written in creative review by ${it.fromReview.by}`}>From creative review</span>}
+          {!isDone && !it.held && (
             <>
               {scopeChip && (
                 <span className={cn("shrink-0 rounded px-1 py-px text-[10px] font-medium", scopeChip.cls)} title={scopeChip.title}>
@@ -370,6 +374,9 @@ function Item({
             for — the detail plus the client's verbatim quote on every item are
             what made the old card five screens tall. Nothing is hidden from
             the editor; it's one click, per item. */}
+        {it.interpretation && !it.held && (
+          <p className="mt-0.5 text-[11px] leading-relaxed text-foreground/80"><span className="font-medium">What it means:</span> {it.interpretation}</p>
+        )}
         {hasMore && (
           <>
             {it.detail && !showing && !isDone && (

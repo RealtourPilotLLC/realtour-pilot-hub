@@ -120,7 +120,7 @@ export const EXCEPTION_LABEL: Record<ExceptionKind, string> = {
   "stalled-render": "Render stuck at the provider",
   "unsent-replacement": "Approved replacement, not sent",
   "unverified-render": "1080p file held — sound not verified",
-  "library-missing": "Approved video not in the client's library",
+  "library-missing": "Video missing from the client's library",
   "reopened-work": "Reopened work",
   "unmapped-scope": "Product nobody has mapped",
   "other-output": "Order line with no known output",
@@ -727,6 +727,38 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
     });
   }
 
+  // 7b. A MONTH WHOSE LIBRARY IS SHORT (Oct 15 2026, portalLibrary
+  // .checkLibraryCompleteness). Nightly, every program month whose work should
+  // be done is set against what the client can see in their library; a short
+  // month, a listing video the library does not have, or a row still playing a
+  // replaced file is recorded with what is missing, said plainly. Marcee
+  // McMullen found her missing August videos before we did. Same kind as the
+  // rebuild failure above (the same fix lives on the same screen); one row per
+  // client month, its own small read.
+  const libraryShort = await import("@/lib/portalLibrary")
+    .then((m) => m.openLibraryShortRecords({ excludeClientIds: excludedClientIds }))
+    .catch(() => [] as import("@/lib/portalLibrary").LibraryShortRecord[]);
+  const shortDays = (r: { firstSeenAt: string }) => Math.max(0, Math.floor((now - new Date(r.firstSeenAt).getTime()) / DAY) || 0);
+  const shortIsHigh = (r: { short: number; firstSeenAt: string }) => r.short > 0 || shortDays(r) >= 2;
+  // One kind, one cap: the rebuild failures above take their places first.
+  for (const r of libraryShort.slice(0, Math.max(0, cap - Math.min(cap, libraryFailures.length)))) {
+    const monthName = /^\d{4}-\d{2}$/.test(r.monthKey) ? new Date(`${r.monthKey}-15T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" }) : r.monthKey;
+    const head = r.short > 0
+      ? `${monthName}: ${r.due} owed, ${r.inLibrary} in the library.`
+      : `${monthName}: the library does not match the listing.`;
+    out.push({
+      id: `library-short:${r.monthId}`,
+      kind: "library-missing",
+      severity: shortIsHigh(r) ? "high" : "medium",
+      title: r.clientName,
+      why: `${head} ${r.missing.slice(0, 3).join("; ")}${r.missing.length > 3 ? `; and ${r.missing.length - 3} more` : ""}`.slice(0, 300),
+      owner: "Kyle",
+      nextAction: "Open the client's videos and add or publish what is missing; the check runs again tonight",
+      href: `/content/${r.enrollmentId}?tab=production&view=videos`,
+      ageDays: shortDays(r),
+    });
+  }
+
   // 8. (retired Oct 13 2026, Jordan) OLD LIBRARY FILES NOBODY HAS VOUCHED
   // FOR used to be a row here. It is history, not a live fault (the client
   // already has those files), so it no longer takes a place on Kyle's Home
@@ -827,7 +859,10 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
       "unsent-replacement": { all: qualifying.length, high: qualifying.length },
       // Read whole (under the ceiling), so this is the pile too.
       "unverified-render": { all: heldRenders.length, high: heldRenders.filter((j) => heldHours(j) >= 24).length },
-      "library-missing": { all: libraryFailures.length, high: libraryFailures.filter((e) => libraryHours(e) >= 24).length },
+      "library-missing": {
+        all: libraryFailures.length + libraryShort.length,
+        high: libraryFailures.filter((e) => libraryHours(e) >= 24).length + libraryShort.filter(shortIsHigh).length,
+      },
       "reopened-work": { all: reopened.length, high: reopened.filter((r) => r.overdue).length },
       "unmapped-scope": scope?.totals["unmapped-scope"] ?? { all: 0, high: 0 },
       "other-output": scope?.totals["other-output"] ?? { all: 0, high: 0 },

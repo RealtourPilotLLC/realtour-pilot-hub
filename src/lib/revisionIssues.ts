@@ -5,6 +5,7 @@ import { stripMoneySentences } from "@/lib/text";
 import { cutSlots, owedSlotKeyOf, slotKeyOf, videoLaneRevisionWhere } from "@/lib/reviewCuts";
 import { CAUSE_LABEL, hasConfirmedIssueCause, isIssueCause, ISSUE_CATEGORIES, ISSUE_SEVERITIES, type IssueCause } from "@/lib/issueCauses";
 import { parseDeclarations, SELF_CHECK_REQUIRED_SINCE } from "@/lib/selfCheck";
+import { causeSuggestionFor } from "@/lib/creativeReviewCore";
 import type { TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
@@ -159,7 +160,7 @@ export async function ingestReviewNote(noteId: string, opts: { imported?: boolea
   }
 }
 
-type BriefItemShape = { id: string; ask: string; area?: string | null; quote?: string | null; detail?: string | null; cuts?: string[] | null; scope?: string };
+type BriefItemShape = { id: string; ask: string; area?: string | null; quote?: string | null; detail?: string | null; cuts?: string[] | null; scope?: string; kind?: string; held?: boolean };
 
 /** Is this brief about the VIDEO lane? A photo retouch ask is Kyle's and must
  *  never become an editor issue. A portal (pinned) brief is always a video. */
@@ -205,6 +206,11 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
     // question) — so there is no issue, and any earlier one stands down below.
     const readAsNoEdits = items.length === 0 && !!brief.analyzedAt && !!brief.itemsJson;
     if (items.length === 0 && !readAsNoEdits) items = [{ id: "whole", ask: brief.originalText.slice(0, 1000), area: "Other", cuts: null, scope: "unknown" }];
+    // CREATIVE REVIEW (Oct 15 2026): a held item is a feeling with the creative
+    // reviewer, never an editor issue. An ask whose items are ALL held makes no
+    // issue at all until the reviewer releases it (and was never the "whole
+    // text" fallback above: it has items).
+    items = items.filter((it) => !it.held);
 
     const slots = await cutSlots(brief.projectId).catch(() => []);
     const owedKeys = slots.map((s) => slotKeyOf(s.deliverableId, s.slot));
@@ -270,6 +276,9 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
             assignedEditorKey: assigned ?? author,
             // The client found it on a version we had already approved.
             foundAfterApproval: latest?.status === "APPROVED",
+            // The work order's kind of ask as a SUGGESTED cause (Oct 15 2026,
+            // creativeReviewCore.causeSuggestionFor) — never the cause itself.
+            causeSuggested: causeSuggestionFor(w.item.kind),
             contentRoundId: brief.roundId,
             imported: brief.createdAt.getTime() < SELF_CHECK_REQUIRED_SINCE.getTime(),
           },
@@ -735,6 +744,10 @@ export async function reopenIssue(id: string, actor: IssueActor, note?: string |
   if (won.count) {
     await event(prisma, id, "REOPENED", actor, { from: cur.state, to: "REOPENED", note: note ?? null });
     if (claimedIn) await event(prisma, id, "MISSED", actor, { submissionId: claimedIn, note: "reopened — the version that said it was fixed wasn't" });
+    // A client's CREATIVE ask that a version claimed fixed and still isn't
+    // (Oct 15 2026): the direction gets a creative review before the editor
+    // guesses again. Only adds a task; never throws.
+    if (claimedIn) await import("@/lib/creativeReview").then((m) => m.creativeReviewForReopenedIssue(id)).catch(() => false);
   }
   return { ok: true, message: "Reopened — it's back with the editor." };
 }

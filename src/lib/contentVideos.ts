@@ -630,6 +630,10 @@ export type VideoListRow = {
   /** CP-12: RECENT rows are grouped under the month they fulfil; PREVIOUS
    *  rows are older backfill whose month we cannot vouch for (librarySection). */
   section: LibrarySection;
+  /** Oct 15 2026 (lib/programWatch.portalExpectedFor): a video in production
+   *  says where it is and when to expect it, or that its date moved and why.
+   *  Absent while the portalExpectedBy switch is off. Client words only. */
+  expected?: { stage: string; line: string; reason: string | null; movedFrom: string | null; late: boolean } | null;
 };
 
 export type VideoListPage = {
@@ -836,6 +840,13 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
         hasFinalFile: downloadable, downloadable, section: sectionOf.get(v.id) ?? "RECENT",
       };
     });
+  // Oct 15 2026: stage and "expected by" on the videos still in production.
+  // A database read behind its own switch; a failure leaves the rows as they were.
+  const outputOf = new Map(videos.map((v) => [v.id, v.outputId ?? null]));
+  const expected = await import("@/lib/programWatch")
+    .then((m) => m.portalExpectedFor(rows.map((r) => ({ id: r.id, outputId: outputOf.get(r.id) ?? null, state: r.state }))))
+    .catch(() => null);
+  if (expected?.size) for (const r of rows) r.expected = expected.get(r.id) ?? null;
   return { rows, total, page, pages, perPage, years, year, previousTotal, section };
 }
 

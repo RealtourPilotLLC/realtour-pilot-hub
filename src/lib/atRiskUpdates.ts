@@ -56,6 +56,9 @@ export type AtRiskRow = {
   hoursLeft: number;
   /** the at_risk_update task already drafted for THIS promise, if any */
   taskId: string | null;
+  /** A PROGRAM video (Oct 15 2026, lib/programWatch): the milestone it missed,
+   *  in the office's words. Null on every other row. */
+  why?: string | null;
 };
 
 const streetOf = (title: string | null | undefined) => (title ?? "").split(",")[0].trim() || "the job";
@@ -129,13 +132,37 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
     const phrase = owedPhrase(owedNow(parseEvidence(p.statusEvidence)));
     rows.push(row(now, { projectId: p.id, outputId: null, title: p.title, clientId: p.clientId, clientName: p.client.name, promisedAt: pin, promiseSource: p.promisedTierKey ?? "project", owed: phrase || "the order" }));
   }
+  // PROGRAM VIDEOS (Oct 15 2026, lib/programWatch): a monthly video is at risk
+  // the moment it misses a milestone (editing started, first cut in review,
+  // final approved), not only inside AT_RISK_HOURS of its promise, and most
+  // of them carry no promise of their own (the job's answers for them), so
+  // the per-output read above never saw them. Their rows replace any clock
+  // row for the same video.
+  const program = await import("@/lib/programWatch")
+    .then((m) => m.programAtRiskRows({ now, lookbackDays: LOOKBACK_DAYS, excludeClientIds: opts.excludeClientIds }))
+    .catch(() => []);
+  for (const pr of program) {
+    if (!pr.promisedAt) continue;
+    const at = rows.findIndex((r) => r.outputId === pr.outputId);
+    const next = row(now, {
+      projectId: pr.projectId, outputId: pr.outputId, title: `${pr.monthWords} videos`, clientId: pr.clientId, clientName: pr.clientName,
+      promisedAt: pr.promisedAt, promiseSource: "program", owed: `the video "${pr.title.replace(/"/g, "'")}"`,
+    });
+    next.why = pr.why;
+    if (at >= 0) rows[at] = next;
+    else rows.push(next);
+  }
   if (rows.length) {
+    // A program video is also covered by the watch's one draft for its month's
+    // job (keyed on the job and the promise, not the video).
+    const jobKey = (r: AtRiskRow) => atRiskTaskKey({ outputId: null, projectId: r.projectId, promisedAt: r.promisedAt });
+    const keys = [...new Set([...rows.map(atRiskTaskKey), ...rows.filter((r) => r.why).map(jobKey)])];
     const tasks = await prisma.smartTask.findMany({
-      where: { dedupeKey: { in: rows.map(atRiskTaskKey) }, status: { notIn: ["CANCELLED"] } },
+      where: { dedupeKey: { in: keys }, status: { notIn: ["CANCELLED"] } },
       select: { id: true, dedupeKey: true, status: true },
     });
     for (const r of rows) {
-      const t = tasks.find((x) => x.dedupeKey === atRiskTaskKey(r));
+      const t = tasks.find((x) => x.dedupeKey === atRiskTaskKey(r)) ?? (r.why ? tasks.find((x) => x.dedupeKey === jobKey(r)) : undefined);
       r.taskId = t?.id ?? null;
     }
   }
@@ -319,7 +346,9 @@ export async function atRiskExceptionRows(opts: { now?: Date; cap: number; exclu
     kind: "at-risk-promise" as const,
     severity: r.overdue ? ("high" as const) : ("medium" as const),
     title: r.street,
-    why: r.overdue
+    why: r.why
+      ? `${r.owed} (${r.clientName}): ${r.why}. Due ${promiseWords(r.promisedAt)}; the client has not been updated`.slice(0, 220)
+      : r.overdue
       ? `${r.owed} was promised by ${promiseWords(r.promisedAt)} and the client has not been updated`
       : `${r.owed} is due ${promiseWords(r.promisedAt)} (${Math.max(0, Math.round(r.hoursLeft))}h left) and the client has not been updated`,
     owner: "Kyle",
@@ -357,7 +386,20 @@ export function atRiskTemplate(r: { firstName: string | null; street: string; ow
 /** Marks a task this file wrote for the watch (the close-on-delivery sweep reads it). */
 export const WATCH_DRAFT_REASON = "Delivery watch: 3 covered hours before the promise";
 
-export async function autoDraftAtRiskUpdate(input: { projectId: string; promisedAt: Date; stage?: string | null; now?: Date }): Promise<
+export async function autoDraftAtRiskUpdate(input: {
+  projectId: string;
+  promisedAt: Date;
+  stage?: string | null;
+  now?: Date;
+  /** PROGRAM videos (Oct 15 2026, lib/programWatch): what the update is about
+   *  in place of the street ("your October videos"), what is owed in place of
+   *  the evidence phrase ("your video \"Tip #1\""), its verb, and the reason
+   *  stamped on the task (the program watch closes its own drafts). */
+  about?: string;
+  owed?: string;
+  verb?: "is" | "are";
+  reason?: string;
+}): Promise<
   { ok: true; taskId: string; created: boolean; draft: string } | { ok: false; message: string }
 > {
   const now = input.now ?? new Date();
@@ -367,12 +409,12 @@ export async function autoDraftAtRiskUpdate(input: { projectId: string; promised
   });
   if (!p) return { ok: false, message: "No such job." };
   const owed = owedNow(parseEvidence(p.statusEvidence));
-  const phrase = owedPhrase(owed);
+  const phrase = input.owed ?? owedPhrase(owed);
   const draft = atRiskTemplate({
     firstName: (p.client.name ?? "").trim().split(/\s+/)[0] || null,
-    street: streetOf(p.title),
+    street: input.about ?? streetOf(p.title),
     owed: phrase || "your order",
-    verb: phrase ? owedVerb(owed) : "is",
+    verb: input.verb ?? (phrase ? owedVerb(owed) : "is"),
     promisedAt: input.promisedAt,
   });
   const foreign = foreignDates(draft, [input.promisedAt]);
@@ -386,10 +428,10 @@ export async function autoDraftAtRiskUpdate(input: { projectId: string; promised
     const t = await prisma.smartTask.create({
       data: {
         taskType: "at_risk_update",
-        title: `Send ${p.client.name} an update: ${streetOf(p.title)}`.slice(0, 120),
+        title: `Send ${p.client.name} an update: ${input.about ?? streetOf(p.title)}`.slice(0, 120),
         summary: `${phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : "The order"} promised by ${promiseWords(input.promisedAt)}.${input.stage ? ` Now: ${input.stage}.` : ""} The update below is drafted and NOT sent. If the job will not make it, send it from the client's conversation; if it will, close this task.`.slice(0, 500),
         description: draft,
-        reasonCreated: WATCH_DRAFT_REASON,
+        reasonCreated: input.reason ?? WATCH_DRAFT_REASON,
         source: "system",
         sourceDetail: "/tasks?tab=comms",
         priority: "HIGH",

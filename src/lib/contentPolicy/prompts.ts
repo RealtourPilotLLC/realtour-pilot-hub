@@ -18,6 +18,7 @@ import type { CanonicalScript } from "./scriptFormat";
 import { type Topic, emphasisOfPillar, topicsForEmphasis } from "./topicBank";
 import { renderScript } from "./scriptFormat";
 import { type CreativeIdentity, creativeIdentityBlock } from "./creativeIdentity";
+import { type CreativeGuard, creativeGuardBlock } from "../creativeGuardCore";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -52,6 +53,8 @@ export type ClientContext = {
   creativeIdentity?: CreativeIdentity | null;
   /** Oct 14 2026: this month's priorities (ContentMonth.prioritiesJson), when the month is known. */
   monthPriorities?: string[] | null;
+  /** Oct 15 2026: the office's creative guardrails (creativeGuardCore.ts): proven format, discontinued series, experiment limit. */
+  creativeGuard?: CreativeGuard | null;
 };
 
 export type SourceExcerpt = {
@@ -254,6 +257,9 @@ function contextBlock(ctx: ClientContext, opts: { identity?: boolean } = {}): st
   // Oct 14 2026: the account's creative identity (auto-built, auto-approved).
   const identity = opts.identity === false ? "" : creativeIdentityBlock(ctx.creativeIdentity);
   if (identity) lines.push("", identity);
+  // Oct 15 2026: the office's guardrails win over the strategy and identity above.
+  const guard = creativeGuardBlock(ctx.creativeGuard);
+  if (guard) lines.push("", guard);
   lines.push("", "Everything above belongs to this one client. Nothing from any other client is available and none may be assumed.");
   return lines.join("\n");
 }

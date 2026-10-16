@@ -10,6 +10,7 @@ import { lockAdvisory } from "@/lib/dbLocks";
 // dynamically below so this module's import graph does not change.
 import type { DueSource, ReopenedClock } from "@/lib/deliveryBoard";
 import { isRequesterKind, type Requester } from "@/lib/reviewAttribution";
+import { ITEM_KINDS, REASON_WORDS, creativeReviewOf, heldPlaceholder, kindOf, type CreativeReviewState, type ItemKind } from "@/lib/creativeReviewCore";
 
 // ---------------------------------------------------------------------------
 // THE REVISION WORK ORDER.
@@ -73,6 +74,15 @@ export type RevisionItem = {
    *  identity the cut, its notes and its verdicts already use. */
   cuts?: string[] | null;
   scope?: ItemScope;
+  /** Oct 15 2026 (creativeReviewCore.ts): what kind of ask this is. Absent on
+   *  rows written before it existed, which read as CORRECTION. */
+  kind?: ItemKind;
+  /** With creative review: never an editor task until a person releases it. */
+  held?: boolean;
+  /** The creative reviewer's reading, attached when they send it on as is. */
+  interpretation?: string | null;
+  /** Written by the creative reviewer, not read off the client's words. */
+  fromReview?: { by: string; at: string } | null;
 };
 
 export type RevisionAnalysis = {
@@ -97,7 +107,12 @@ const SCHEMA = {
         type: "object",
         properties: {
           area: { type: "string", enum: [...REVISION_AREAS] },
-          ask: { type: "string", description: "The instruction, imperative and specific, as an editor would read it off a work order. Max ~90 chars." },
+          ask: { type: "string", description: "The instruction, imperative and specific, as an editor would read it off a work order. Max ~90 chars. For a DIRECTION_UNCLEAR item: the feeling restated neutrally (\"Client feels the pacing is off but can't say how\"), never a guessed fix." },
+          kind: {
+            type: "string",
+            enum: [...ITEM_KINDS],
+            description: "CORRECTION = something we got wrong or missed (a misspelled name, a wrong clip, an instruction not followed). REFINEMENT = a clear creative change the client can name (\"use the standing take\", \"warmer music\"). DIRECTION_UNCLEAR = a feeling with no instruction in it (\"it feels flat\", \"something is off\", \"too slow or too fast or whatever\", \"I don't like something but can't say what\"). SCOPE = new work beyond this video (another video, a new format, something never ordered).",
+          },
           detail: { type: "string", description: "The specifics that make it doable — colours, wording, timestamps, which video. Empty string if there are none." },
           quote: { type: "string", description: "The client's own words this came from, verbatim, trimmed to the relevant sentence(s)." },
           scope: {
@@ -111,7 +126,7 @@ const SCHEMA = {
             items: { type: "string" },
           },
         },
-        required: ["area", "ask", "detail", "quote", "scope", "videos"],
+        required: ["area", "ask", "kind", "detail", "quote", "scope", "videos"],
       },
     },
     keep: {
@@ -133,7 +148,7 @@ const SCHEMA = {
     },
     questions: {
       type: "array",
-      description: "Anything too vague to start on that the editor should get answered first. Empty if the ask is clear.",
+      description: "Anything too vague to start on that somebody has to answer before an editor can act. These go to creative review (Jordan), not to the editor. Empty if the ask is clear.",
       items: { type: "string" },
     },
   },
@@ -147,7 +162,7 @@ The editor was not on the call and cannot ask the client anything. Your output I
 RULES
 1. Never invent an instruction. Every item must trace to something the client actually said.
 2. Split compound asks. "The music is weird and the background is weird" is TWO items.
-3. Keep vague feelings as items — do not drop them and do not sharpen them into something they didn't say. "I don't love them, they don't look polished" is a real item under Overall direction, with their wording in the quote.
+3. Keep vague feelings as items, kind DIRECTION_UNCLEAR. Do not drop them and do not sharpen them into something they didn't say or a fix they never asked for. "I don't love them, they don't look polished" is a real item under Overall direction, kind DIRECTION_UNCLEAR, with their wording in the quote. These are read by our creative director first, never handed to the editor as a task.
 4. Attribute correctly. In a two-sided call transcript, only the CLIENT's asks count. Something our own staff proposed is only an item if the client agreed to it — and then it's phrased as the change, not as our suggestion.
 5. A question, an aside, or small talk is not a change request.
 6. If the client reverses an earlier instruction ("I said less polished, but now I want more"), the item is the NEW direction, and say so in the detail.
@@ -155,7 +170,8 @@ RULES
 8. Write asks in the imperative: "Replace the gold glitter with big chunky colourful glitter."
 9. Never mention prices, invoices, or payment. If the client discussed money, leave it out entirely.
 10. SAY WHICH VIDEO. When the job has more than one video you are given the list, each with a reference code and its current file name. Match each item to the video(s) the client was talking about and put those codes in "videos" with scope "named". Use "all" only when they plainly meant every one of them. If they never said, scope is "unknown" — an item on the wrong video is worse than one nobody has placed.
-11. NEVER STATE PROPERTY FACTS. Lot lines, property or boundary lines, acreage, easements and survey measurements come only from a recorded plat or survey the client supplies. Never state, estimate or describe where a boundary runs. If the client asks for lot lines or a boundary drawn, the item says to draw them from the plat or survey they send, and that document goes under what the client is sending.`;
+11. NEVER STATE PROPERTY FACTS. Lot lines, property or boundary lines, acreage, easements and survey measurements come only from a recorded plat or survey the client supplies. Never state, estimate or describe where a boundary runs. If the client asks for lot lines or a boundary drawn, the item says to draw them from the plat or survey they send, and that document goes under what the client is sending.
+12. SAY WHAT KIND OF ASK EACH ITEM IS (kind): CORRECTION, REFINEMENT, DIRECTION_UNCLEAR or SCOPE. When the client says they can't tell what is wrong, or names a feeling and not a change, it is DIRECTION_UNCLEAR, however strongly they feel it.`;
 
 // The client's ask can be long (a 20-minute call). Give the model plenty of
 // room but keep a hard ceiling so one runaway transcript can't blow the request.
@@ -221,7 +237,7 @@ export async function analyzeRevisionText(opts: {
       // which holds the revision open rather than closing it on a guess.
       const scope: ItemScope =
         cuts.length === 1 ? "all" : named.length > 0 ? "named" : (i as { scope?: string }).scope === "all" && cuts.length > 0 ? "all" : "unknown";
-      return {
+      const item = {
         id: `i${n + 1}`,
         area: REVISION_AREAS.includes(i.area as (typeof REVISION_AREAS)[number]) ? i.area : "Other",
         ask: i.ask.trim(),
@@ -230,6 +246,9 @@ export async function analyzeRevisionText(opts: {
         cuts: scope === "named" ? [...new Set(named)] : scope === "all" && cuts.length === 1 ? [cuts[0].key] : null,
         scope,
       };
+      // The model's kind, with the floor creativeReviewCore keeps: words that
+      // say the client can't name what is wrong are unclear direction.
+      return { ...item, kind: kindOf({ ...item, kind: (i as { kind?: unknown }).kind }) };
     });
 
   return {
@@ -267,7 +286,7 @@ export async function analyzeRevisionText(opts: {
 /** The part of an item this rule reads. Narrow on purpose: reviewCuts parses
  *  itemsJson itself and must not have to reconstruct a whole RevisionItem (nor
  *  import the analyser, which drags in the AI client) to ask the question. */
-export type ScopedItem = { id: string; ask: string; cuts?: string[] | null; scope?: ItemScope };
+export type ScopedItem = { id: string; ask: string; cuts?: string[] | null; scope?: ItemScope; held?: boolean };
 
 /** Pure, so the rule can be exercised without a database (and is, in
  *  scripts/_agent/A-units). `approvedKeys` are the slots with an approved round
@@ -286,6 +305,9 @@ export function outstandingItems<T extends ScopedItem>(opts: {
   // worked on is not an obligation).
   const everythingBack = opts.owedKeys.every((k) => opts.approvedKeys.has(k));
   return opts.items.filter((it) => {
+    // With creative review (Oct 15 2026): no approval answers it, only the
+    // reviewer releasing it does.
+    if (it.held) return true;
     if (ticked.has(it.id)) return false;
     const scope: ItemScope = it.scope ?? "unknown";
     if (scope === "named") {
@@ -449,7 +471,7 @@ export function staffReceiptIntake(itemsJson: string | null): StaffReceiptIntake
 export function pinnedItems(text: string, cutKey: string): RevisionItem[] {
   const bullets = text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("•")).map((l) => l.replace(/^•\s*/, "").trim()).filter(Boolean);
   const lines = bullets.length ? bullets : [text.trim()];
-  return lines.map((ask, i) => ({ id: `i${i + 1}`, area: "Other", ask: ask.slice(0, 1000), detail: null, quote: null, scope: "named" as const, cuts: [cutKey] }));
+  return lines.map((ask, i) => ({ id: `i${i + 1}`, area: "Other", ask: ask.slice(0, 1000), detail: null, quote: null, scope: "named" as const, cuts: [cutKey], kind: kindOf({ ask }) }));
 }
 
 export async function createRevisionBrief(opts: {
@@ -547,7 +569,10 @@ export async function createRevisionBrief(opts: {
 
   if (!worthAnalyzing) {
     // Already a work order (a short ask, or a portal pin) — its items are the
-    // editor's issues now (§8.3). A model run ingests at its own end.
+    // editor's issues now (§8.3). A model run ingests at its own end. A
+    // feeling with no instruction in it goes to creative review FIRST, so it
+    // never becomes an editor issue (Oct 15 2026).
+    await routeToCreativeReview(brief.id);
     await ingestBriefIssues(brief.id);
     return brief.id;
   }
@@ -561,6 +586,15 @@ export async function createRevisionBrief(opts: {
 function requesterColumns(r: Requester | null | undefined): { requestedBy?: string | null; requestedByKind?: string; requestedByUserId?: string | null } {
   if (!r || !isRequesterKind(r.kind)) return {};
   return { requestedBy: r.name?.trim().slice(0, 200) || null, requestedByKind: r.kind, requestedByUserId: r.userId ?? null };
+}
+
+/** Creative review routing (creativeReview.ts) — dynamic, so the analyser's
+ *  import graph does not grow, and best-effort: the client's words are saved. */
+async function routeToCreativeReview(briefId: string): Promise<void> {
+  try {
+    const { routeCreativeReview } = await import("@/lib/creativeReview");
+    await routeCreativeReview(briefId);
+  } catch { /* the brief stands; the editor sees the items as before */ }
 }
 
 /** The work order's items as revision issues (§8.3) — one per item × video it
@@ -634,6 +668,14 @@ export async function analyzeBrief(
     },
   });
   if (!brief) return false;
+  // A creative review already turned this ask into changes (Oct 15 2026): a
+  // re-read would bring the client's feeling back as items. Refused.
+  if (creativeReviewOf(brief.itemsJson)?.state === "RESOLVED") {
+    await prisma.revisionBrief
+      .update({ where: { id: briefId }, data: { analysisError: "Not re-read: creative review already turned this ask into changes for the editor." } })
+      .catch(() => {});
+    return false;
+  }
   // A RE-READ MUST NOT RENUMBER WORK A PERSON HAS ACTED ON (§8.3). Once any of
   // this request's issues is classified, fixed, verified or merged, a fresh
   // split would orphan those decisions — refused, with the reason on the card.
@@ -695,6 +737,7 @@ export async function analyzeBrief(
       };
       if (brief.source === "review_room_staff") await prisma.$transaction(async (tx) => { await lockAdvisory(tx, `staff-intake:${briefId}`); await savePinned(tx); });
       else await savePinned(prisma);
+      await routeToCreativeReview(briefId);
       await ingestBriefIssues(briefId);
       return true;
     }
@@ -739,6 +782,7 @@ export async function analyzeBrief(
     // on that verdict, so a delivered job sat in REVISION with an URGENT
     // overdue task and a card reading "Still owed: nothing" (Jordan, Sep 7).
     if (analysis.items.length === 0) await standDownNonRevision(briefId);
+    await routeToCreativeReview(briefId);
     await ingestBriefIssues(briefId);
     return true;
   } catch (e) {
@@ -779,6 +823,9 @@ export type BriefView = {
    *  so a brief page can show only the selected video's asks (Oct 5). */
   outputId?: string | null;
   taskId?: string | null;
+  /** Oct 15 2026: the creative review on this ask, when there is one. The
+   *  office sees who has it and why; an editor sees only that it is held. */
+  creativeReview?: { state: "OPEN" | "RESOLVED"; reviewerName: string; reasons: string[]; resolvedBy: string | null; mode: string | null; note: string | null } | null;
 };
 
 /**
@@ -809,6 +856,19 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
     try {
       if (r.doneJson) done = JSON.parse(r.doneJson) as string[];
     } catch { /* ticks are best-effort */ }
+    // CREATIVE REVIEW (Oct 15 2026). A held item is a feeling the client could
+    // not turn into an instruction: an editor sees that it is with the
+    // reviewer, never the feeling as a task; the office sees all of it. Open
+    // questions are the reviewer's too.
+    const cr = (parsed as { creativeReview?: CreativeReviewState }).creativeReview ?? null;
+    const holding = cr?.state === "OPEN";
+    if (scrub && holding) {
+      parsed = {
+        ...parsed,
+        items: (parsed.items ?? []).map((i) => (i.held ? { ...i, ask: heldPlaceholder(cr!.reviewerName), detail: null, quote: null } : i)),
+        questions: [],
+      };
+    }
     return {
       id: r.id,
       source: r.source,
@@ -837,6 +897,16 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
       requestedByKind: r.requestedByKind ?? null,
       outputId: r.outputId ?? null,
       taskId: r.taskId ?? null,
+      creativeReview: cr
+        ? {
+            state: cr.state,
+            reviewerName: cr.reviewerName,
+            reasons: scrub ? [] : cr.reasons.map((x) => REASON_WORDS[x] ?? x),
+            resolvedBy: cr.resolvedBy ?? null,
+            mode: cr.mode ?? null,
+            note: clean(cr.note ?? null),
+          }
+        : null,
     };
   });
 }
