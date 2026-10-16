@@ -194,7 +194,10 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
   );
 }
 
-export function RevisionIssuesPanel({ issues, canReview, attestations = [] }: { issues: IssueView[]; canReview: boolean; attestations?: AttestationView[] }) {
+// anchorId: the job's issue list answers /edit/<id>#issues (editorQuality,
+// revisionIssues). A second, partial list on the same page (the editor brief's
+// "Fix these") passes null so the page never carries the id twice.
+export function RevisionIssuesPanel({ issues, canReview, attestations = [], anchorId = "issues" }: { issues: IssueView[]; canReview: boolean; attestations?: AttestationView[]; anchorId?: string | null }) {
   if (issues.length === 0 && attestations.length === 0) return null;
   const groups = new Map<string, IssueView[]>();
   for (const i of issues.filter((x) => !x.duplicateOfId)) {
@@ -205,7 +208,7 @@ export function RevisionIssuesPanel({ issues, canReview, attestations = [] }: { 
   const toVerify = issues.filter((i) => i.state === "ADDRESSED").length;
   const unclassified = issues.filter((i) => i.cause === "UNCLASSIFIED" && !i.duplicateOfId && i.state !== "NOT_APPLICABLE").length;
   return (
-    <section id="issues" className="panel-shadow scroll-mt-20 overflow-hidden rounded-2xl border border-border bg-surface">
+    <section id={anchorId ?? undefined} className="panel-shadow scroll-mt-20 overflow-hidden rounded-2xl border border-border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
         <ListChecks className="size-4 text-brand" />
         <h2 className="text-sm font-semibold">{canReview ? "Revision history and classification" : "Review notes"}</h2>

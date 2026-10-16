@@ -712,7 +712,7 @@ export function EditOverridesButton({
             type="button"
             onClick={() => setOpen(true)}
             title={title}
-            className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border bg-surface px-3 py-2 text-sm font-medium text-muted hover:text-foreground"
           >
             <SlidersHorizontal className="size-3.5" /> Override
           </button>
@@ -773,7 +773,7 @@ export function RushButton({ job, ask = null }: { job: EditOverridesJob; ask?: R
         onClick={() => setOpen(true)}
         title={ask ? "A rush on this job is waiting on approval" : "Rush this job: an earlier due date or a higher priority, with what it pushes back"}
         className={cx(
-          "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium",
+          "inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium",
           ask ? "border-warning/50 bg-warning-soft/40 text-foreground" : "bg-surface text-muted hover:text-foreground",
         )}
       >

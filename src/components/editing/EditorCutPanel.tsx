@@ -115,8 +115,8 @@ export function EditorCutPanel({
     if (!body || pending) return;
     start(async () => {
       setErr(null);
-      const r = await addCutNote({ projectId, submissionId, body, lane: "EDITOR", kind: "fix", timeSec: noteAt }).catch(() => ({ ok: false as const, message: "That didn't work — try again." }));
-      if (!r.ok) setErr(r.message ?? "That didn't work — try again.");
+      const r = await addCutNote({ projectId, submissionId, body, lane: "EDITOR", kind: "fix", timeSec: noteAt }).catch(() => ({ ok: false as const, message: "That didn't work. Try again." }));
+      if (!r.ok) setErr(r.message ?? "That didn't work. Try again.");
       else {
         setComposing(false);
         setNoteBody("");
@@ -171,13 +171,13 @@ export function EditorCutPanel({
             href={`/edit/${projectId}?cut=${submissionId}`}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-surface-2"
           >
-            <PlayCircle className="size-3.5" /> Open this cut to play it
+            <PlayCircle className="size-3.5" /> Open this version to play it
           </Link>
           <span className="text-xs text-muted">The notes below are on this version.</span>
         </div>
       ) : (
         <p className="px-4 py-3 text-sm text-muted sm:px-5">
-          No file is attached to this version — it lives in the{" "}
+          No file is attached to this version. It lives in the{" "}
           <a href={finalFolderUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand hover:underline">
             <FolderOpen className="size-3.5" /> Final footage folder <ExternalLink className="size-3" />
           </a>
@@ -207,12 +207,12 @@ export function EditorCutPanel({
                 <button
                   onClick={saveNote}
                   disabled={pending || !noteBody.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
                 >
                   {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />}
                   {noteAt != null ? `Note at ${fmtClock(noteAt)}` : "Add note"}
                 </button>
-                <button onClick={() => setComposing(false)} className="text-xs font-medium text-muted hover:text-foreground">
+                <button onClick={() => setComposing(false)} className="min-h-11 px-2 text-xs font-medium text-muted hover:text-foreground">
                   Cancel
                 </button>
                 {err && <span className="text-xs text-danger">{err}</span>}
@@ -221,7 +221,7 @@ export function EditorCutPanel({
           ) : (
             <button
               onClick={startNote}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
             >
               <MessageSquarePlus className="size-3.5" />
               {assetUrl && player ? "Add a note at the current moment" : "Add a note for the reviewer"}
@@ -237,19 +237,22 @@ export function EditorCutPanel({
       {issues.length > 0 && (
         <div className="border-b border-border px-4 py-3 sm:px-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-2">To fix</p>
-          <ol className="mt-2 space-y-2">
-            {issues.map((i) => {
+          {/* Numbered (Oct 15 2026, the brief audit): "note 2" is how an editor
+              and a reviewer talk about one of them in the messages. */}
+          <ol className="mt-2 space-y-2" data-fix-list>
+            {issues.map((i, n) => {
               const done = i.state === "ADDRESSED";
               return (
                 <li key={i.id} className="flex items-start gap-2.5 text-sm">
+                  <span aria-hidden className={cn("mt-2.5 w-5 shrink-0 text-right text-xs font-semibold tabular-nums", done ? "text-muted-2" : "text-foreground/70")}>{n + 1}.</span>
                   {i.timeSec != null && assetUrl && player ? (
-                    <button type="button" onClick={() => seek(i.timeSec!)} className="mt-0.5 shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand hover:bg-brand-soft" title="Play this moment">
+                    <button type="button" onClick={() => seek(i.timeSec!)} className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg bg-surface-2 px-2 font-mono text-xs font-semibold text-brand hover:bg-brand-soft focus-visible:outline-2 focus-visible:outline-brand" title="Play this moment" aria-label={`Play ${fmtClock(i.timeSec)}`}>
                       {fmtClock(i.timeSec)}
                     </button>
                   ) : i.timeSec != null ? (
-                    <span className="mt-0.5 shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">{fmtClock(i.timeSec)}</span>
+                    <span className="mt-2 shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">{fmtClock(i.timeSec)}</span>
                   ) : null}
-                  <span className="min-w-0 flex-1">
+                  <span className="min-w-0 flex-1 pt-2">
                     <span className={cn("whitespace-pre-wrap", done && "text-muted")}>{i.text}</span>
                     <span className="mt-0.5 block text-[11px] text-muted-2">
                       {i.by ? `${i.by.split(/\s+/)[0]}` : "The reviewer"}{i.round ? ` · on version ${i.round}` : ""} ·{" "}

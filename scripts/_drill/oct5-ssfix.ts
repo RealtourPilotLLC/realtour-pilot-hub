@@ -615,7 +615,8 @@ async function main() {
       const j = await view(uJohn, cine.id);
       c.ok("premium cinematic + a Studio script on file: the Script section shows it — never \"No script on file\"", j.text.includes("Wait until you see the kitchen") && j.text.includes("Welcome to 415 Oak Street") && !j.text.includes("No script on file"), j.text.slice(0, 200));
       c.ok("…the Studio's shot list is there for the EDITOR (it was office-only)", j.html.includes("data-shot-list") && j.text.includes("Kitchen island reveal"));
-      c.ok("…and the music rule is the Studio's song", j.text.includes("Use the song picked with the Studio script: Cinematic strings — slow build"));
+      // Oct 15 2026: one music line, "Music: …".
+      c.ok("…and the music rule is the Studio's song", j.text.includes("Music: use the song picked with the Studio script: Cinematic strings — slow build"));
       c.ok("…one video on the job: no shared-script caveat", !j.html.includes("data-shared-script"));
 
       // (b) A three-video monthly session: Kim has 1 and 3, John has 2.

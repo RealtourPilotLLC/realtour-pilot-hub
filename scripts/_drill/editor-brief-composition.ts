@@ -230,7 +230,11 @@ async function main() {
       JSON.stringify({ selectedOutput, pending: pending.map((p) => p.outputId), others: others.map((o) => o.number) }));
     c.ok("canonical briefs retain exact filmed script words, source links and intentional no-brand choice", safeBriefs.filter((b) => flat.some((e) => e.props.id === `brief-${b.outputId}`)).every((b) => { const article = flat.find((e) => e.props.id === `brief-${b.outputId}`); const nested = elements(article?.props.children); return !!article && words(article.props.children).includes("the office's choice") && (!b.folder || nested.some((e) => e.props.href === b.folder?.url)) && (!b.script?.text || nested.some((e) => e.name === "BriefScript" && e.props.body === b.script?.text)); }));
     c.ok("selected revision instructions and raw files remain available", flat.some((e) => e.props.target === "_blank" && typeof e.props.href === "string" && (e.props.href.includes("grove") || e.props.href.startsWith("/api/dropbox/open/"))) && by("RevisionIssuesPanel").some((e) => e.props.canReview === false));
-    c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && flat.some((e) => typeof e.props.href === "string" && e.props.href.includes(`cut=${cuts[0].id}`) && e.props.href.endsWith(`#cut-${cuts[0].id}`)) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
+    // Oct 15 2026 (the brief audit): the version's own panel sits in Fix these
+    // under the job bar, so the page no longer needs a banner linking down to
+    // it; the exact-version link lives on in the history's revision line.
+    const revisionLink = String(by("EditTracker")[0]?.props.revisionHref ?? "");
+    c.ok("exact current-cut, submit and conversation destinations survive", flat.some((e) => e.props.id === "submit-cut") && revisionLink.includes(`cut=${cuts[0].id}`) && revisionLink.endsWith(`#cut-${cuts[0].id}`) && by("EditorCutPanel").some((e) => e.props.submissionId === cuts[0].id) && by("CutUploader").length === 1 && flat.some((e) => e.props.href === "#messages"));
     // Oct 15 2026: the cut's open notes are listed ONCE, under its player (EditorCutPanel `issues`), not in a second panel.
     const currentIssues = by("EditorCutPanel").find((e) => e.props.submissionId === cuts[0].id)?.props.issues as { id: string }[] | undefined;
     c.ok("linked legacy OPEN notes do not duplicate verified or reopened instructions", (currentIssues ?? []).filter((issue) => issue.id === reopened.id).length === 1 && !(currentIssues ?? []).some((issue) => issue.id === praiseIssue.id) && by("EditorCutPanel").every((e) => !(e.props.notes as { id: string }[]).some((entry) => entry.id === praise.id || entry.id === note.id)));
@@ -272,7 +276,9 @@ async function main() {
     const preview = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
     c.ok("moved receipt and uploader stay read-only in owner preview", !preview.some((e) => e.name === "BriefGotIt") && preview.find((e) => e.name === "CutUploader")?.props.canUpload === false);
     await signIn(kyle);
-    const office = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) }));
+    // Oct 15 2026: the office's tools sit behind one switch (?office=1).
+    c.ok("office tools are off until Kyle switches them on", !elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({}) })).some((e) => e.name === "form" && elements(e.props.children).some((x) => x.props.name === "expectedVersion")));
+    const office = elements(await page({ params: Promise.resolve({ id: mainJob.id }), searchParams: Promise.resolve({ office: "1" }) }));
     c.ok("office brief forms remain mounted inside native disclosures with exact expected versions", outputs.filter((o) => office.some((e) => e.props.id === `brief-${o.id}`)).every((o) => office.some((e) => e.name === "form" && e.ancestors.some((a) => a.name === "details") && elements(e.props.children).some((x) => x.props.name === "outputId" && x.props.value === o.id) && elements(e.props.children).some((x) => x.props.name === "expectedVersion" && x.props.value === 1))));
     c.ok("all providers remained declared fakes and workers/sends stayed off", fence.blocked.length === 0 && await prisma.programAutomation.count({ where: { enabled: true } }) === 0 && await prisma.outboxMessage.count() === 0);
     c.ok("social brief never shows the music chooser and directs trending audio", !office.some((e) => e.name === "MusicCard") && words(office.map((e) => e.props.children)).includes("trending audio"));
@@ -281,7 +287,7 @@ async function main() {
     c.ok("client assets live in the brief's Brand section", office.some((e) => e.name === "section" && e.props.id === "brand-assets" && elements(e.props.children).some((x) => x.name === "ClientAssetsCard" || (typeof x.props.href === "string" && x.props.href.includes("dropbox")))));
     if (!serve) {
       await prisma.deliverable.updateMany({ where: { projectId: single.id }, data: { videoStyle: "standard_cinematic", type: "VIDEO" } });
-      const cinematic = elements(await page({ params: Promise.resolve({ id: single.id }), searchParams: Promise.resolve({}) }));
+      const cinematic = elements(await page({ params: Promise.resolve({ id: single.id }), searchParams: Promise.resolve({ office: "1" }) }));
       c.ok("standard horizontal cinematic brief retains the licensed music chooser", cinematic.some((e) => e.name === "MusicCard"));
       const { videoNavigationFor } = await import("@/lib/videoNavigation");
       const initialNavigation = await videoNavigationFor(mainJob.id);
@@ -330,7 +336,8 @@ export default async function Page() { await requireAdmin(); const board = await
     // repeated --require paths. The ordinary supported CLI owns dev setup.
     server = spawn(process.execPath, [path.join(REPO, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(APP_PORT)], { cwd: copy.checkout, env: { ...process.env, NODE_ENV: "development", AUTH_ENFORCE: "true", NEXT_TELEMETRY_DISABLED: "1", NODE_OPTIONS: `--import ${JSON.stringify(path.join(__dirname, "_normal-role-http-preload.cjs"))}`, RTP_HTTP_FIXTURE: fixtureFile }, stdio: ["ignore", logFd, logFd] });
     let up = false;
-    for (let i = 0; i < 120; i++) {
+    // A cold Next 16 dev compile of /login can outlast a minute (Oct 15 2026).
+    for (let i = 0; i < 480; i++) {
       if (server.exitCode !== null) throw new Error(`Owned visual Next exited ${server.exitCode}; inspect private log.`);
       try { if ((await fetch(`${BASE}/login`, { redirect: "manual" })).status === 200) { up = true; break; } } catch { /* wait only for the owned process */ }
       await wait(500);

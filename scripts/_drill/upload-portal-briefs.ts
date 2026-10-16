@@ -383,7 +383,9 @@ async function main() {
   await establishSession(kyle.id);
   // Oct 5 fixture fix: /edit/<id> shows ONE selected video (?output=<id>,
   // a60424b); each card is read on its own video's page.
-  const card = async (id: string) => words(find(await EditPage({ params: Promise.resolve({ id: two.id }), searchParams: Promise.resolve({ output: id }) }), (e) => e.props?.id === `brief-${id}`)[0]).join(" ");
+  // Oct 15 2026: the brief's version line is the office's bookkeeping, behind
+  // the office's one switch (?office=1).
+  const card = async (id: string) => words(find(await EditPage({ params: Promise.resolve({ id: two.id }), searchParams: Promise.resolve({ output: id, office: "1" }) }), (e) => e.props?.id === `brief-${id}`)[0]).join(" ");
   const reelCard = await card(reel.id);
   const mlsCard = await card(mls.id);
   c.ok("/edit/<id> (the office's page): the reel's card prints v3 by Harrison and both notes", reelCard.includes("Brief v3 · saved by Harrison Drill") && reelCard.includes(LINE1) && reelCard.includes(LINE2), reelCard.slice(0, 240));

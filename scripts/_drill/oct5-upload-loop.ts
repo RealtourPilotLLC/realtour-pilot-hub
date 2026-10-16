@@ -218,8 +218,10 @@ async function main() {
     await asUser(kim);
     const ctxs = await scs.checkContextsForProject(M.id);
     const panel = plain(renderToStaticMarkup(createElement(up.CutUploader, { projectId: M.id, cuts: [row(1)], canUpload: true, checks: ctxs, jobSummary: summary })));
-    c.ok("the panel holding ONE video says \"1 of 3 videos approved\" — not \"0 of 1 approved\"", panel.includes("Send to Review 1 of 3 videos approved") && !/of 1 approved/.test(panel), panel.slice(0, 120));
-    c.ok("…and its footer is plain words (no \"resumable parts\")", panel.includes("Pick your 1080p export, tick the short check") && !panel.includes("resumable"));
+    // Oct 15 2026 (the brief audit): "Send for review", and the export rule is
+    // one plain line above the button (the how-to folded), not a footer.
+    c.ok("the panel holding ONE video says \"1 of 3 videos approved\" — not \"0 of 1 approved\"", panel.includes("Send for review 1 of 3 videos approved") && !/of 1 approved/.test(panel), panel.slice(0, 120));
+    c.ok("…and its export line is plain words (no \"resumable parts\")", panel.includes("Export at 1080p with AAC audio. A short final check opens before it goes to the reviewer.") && panel.includes("How to export") && !panel.includes("resumable"));
 
     // =========================================================================
     c.head("§2 · the one-screen check");

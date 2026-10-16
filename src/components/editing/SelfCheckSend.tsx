@@ -37,8 +37,8 @@ export function FolderSendForReview({ projectId, onBehalfOf = null }: { projectI
       <input
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional note to the reviewer…"
-        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+        placeholder="Note to the reviewer (optional)"
+        className="min-h-11 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-base outline-none focus:border-brand sm:text-sm"
       />
       <button
         type="button"
@@ -46,15 +46,15 @@ export function FolderSendForReview({ projectId, onBehalfOf = null }: { projectI
         onClick={() =>
           start(async () => {
             setErr(null);
-            const r = await submitCutForReview(projectId, note).catch((e: unknown) => ({ ok: false, message: e instanceof Error ? e.message : "Couldn't send — try again." }));
+            const r = await submitCutForReview(projectId, note).catch((e: unknown) => ({ ok: false, message: e instanceof Error ? e.message : "Couldn't send. Try again." }));
             if ("needsSelfCheck" in r && r.needsSelfCheck && "candidate" in r && r.candidate) setCandidate(r.candidate);
             else if (r.ok) setDone(r.message);
-            else setErr(r.message || "Couldn't send — try again.");
+            else setErr(r.message || "Couldn't send. Try again.");
           })
         }
-        className="inline-flex items-center gap-1.5 rounded-lg bg-[#5b53ff] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#4a43e0] disabled:opacity-60"
+        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-[#5b53ff] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4a43e0] disabled:opacity-60"
       >
-        {pending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Done — send to review
+        {pending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send that file for review
       </button>
       {err && <p className="text-xs text-danger">{err}</p>}
       {candidate && (
@@ -102,17 +102,17 @@ export function HeldCutsCard({ held, onBehalfOf = null, canFinish }: { held: Hel
   return (
     <section id="self-check" className="scroll-mt-20 rounded-2xl border border-warning/40 bg-warning-soft/30 p-4 sm:p-5">
       <div className="flex items-center gap-1.5 text-sm font-semibold">
-        <ClipboardCheck className="size-4 text-warning" /> Waiting on the send-for-review check
+        <ClipboardCheck className="size-4 text-warning" /> Waiting on your final check
       </div>
       <p className="mt-0.5 text-xs text-muted">
-        These versions are not in front of the reviewer yet. Watch the file, finish the check, and it goes to review.
+        The reviewer can&apos;t see these yet. Watch the file, finish the check, and it goes to review.
       </p>
       <ul className="mt-3 space-y-2">
         {held.map((h) => (
           <li key={h.submissionId} className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-surface p-3">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium">
-                {h.label} · v{h.round}
+                {h.label} · version {h.round}
                 {h.fileName ? <span className="ml-1.5 text-xs font-normal text-muted-2">{h.fileName}</span> : null}
               </p>
               {h.reason && <p className="mt-0.5 text-xs text-muted">{h.reason}</p>}
@@ -122,7 +122,7 @@ export function HeldCutsCard({ held, onBehalfOf = null, canFinish }: { held: Hel
               <button
                 type="button"
                 onClick={() => setOpen(h)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90"
+                className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95"
               >
                 <ClipboardCheck className="size-4" /> Finish the check
               </button>
@@ -134,7 +134,7 @@ export function HeldCutsCard({ held, onBehalfOf = null, canFinish }: { held: Hel
         <SelfCheckDialog
           context={open.context}
           file={{ name: open.fileName ?? "this version", size: open.sizeBytes }}
-          title={`Before ${open.label} v${open.round} goes to review`}
+          title={`Before ${open.label} version ${open.round} goes to review`}
           onBehalfOf={onBehalfOf}
           onCancel={() => setOpen(null)}
           onSubmit={async (input) => {

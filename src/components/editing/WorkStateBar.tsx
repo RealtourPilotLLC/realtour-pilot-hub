@@ -43,7 +43,34 @@ const newId = () =>
 
 const BUTTON_WORDS = { start: "Start", resume: "Resume", pause: "Pause", switch: "Switch to this job" } as const;
 
-export function WorkStateBar({ bar: served, tz, selectedOutputId = null }: { bar: WorkBar; tz: string; selectedOutputId?: string | null }) {
+// Oct 15 2026 (the editor brief's job bar): variant "job" draws ONLY the
+// press, for the page's one row of buttons — the sentence is the job bar's
+// own (one status sentence for the page), the picker is gone (Start names the
+// video on screen), and the office's corrections are drawn only when the
+// office has switched its tools on. `emphasis` says whether this press is the
+// page's main button (Not started) or a quiet one beside an upload (Pause);
+// `offerStart` false leaves only Pause, for a video that is in review or done.
+export function WorkStateBar({
+  bar: served,
+  tz,
+  selectedOutputId = null,
+  variant = "bar",
+  startLabel = null,
+  emphasis = "main",
+  offerStart = true,
+  corrections = false,
+}: {
+  bar: WorkBar;
+  tz: string;
+  selectedOutputId?: string | null;
+  variant?: "bar" | "job";
+  /** job variant: the words on Start / Resume / Switch ("Start video 2"). */
+  startLabel?: string | null;
+  emphasis?: "main" | "quiet";
+  offerStart?: boolean;
+  /** job variant: draw the office's "Start for Kim" / "Pause for Kim". */
+  corrections?: boolean;
+}) {
   const router = useRouter();
   const params = useSearchParams();
   const [pending, start] = useTransition();
@@ -111,6 +138,59 @@ export function WorkStateBar({ bar: served, tz, selectedOutputId = null }: { bar
   const showPicker = bar.outputs.length > 1 && ((!!button && button !== "pause") || officeStarts);
 
   const btn = "inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50";
+  if (variant === "job") {
+    const press = button && (button === "pause" || offerStart) ? button : null;
+    const main = emphasis === "main" && press !== "pause";
+    const officeRow = corrections && bar.mode === "office" && bar.assignee;
+    if (!press && !officeRow && !msg) return null;
+    return (
+      <>
+        {press && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => (press === "pause" ? doPause() : doStart())}
+            className={cn(
+              btn,
+              "px-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+              main ? "bg-brand-action text-brand-fg hover:brightness-95" : "border border-border-strong bg-surface text-foreground hover:bg-surface-2",
+            )}
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" /> : press === "pause" ? <Pause className="size-4" /> : <Play className="size-4" />}
+            {press === "pause" ? BUTTON_WORDS.pause : startLabel || BUTTON_WORDS[press]}
+          </button>
+        )}
+        {officeRow && (
+          active.some((a) => a.editorKey === bar.assignee!.key) ? (
+            <button type="button" disabled={pending} onClick={() => doPause(bar.assignee!.key)} className={cn(btn, "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground")} title="Recorded as your correction, on their behalf">
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Pause className="size-3.5" />}
+              Pause for {bar.assignee!.name}
+            </button>
+          ) : (
+            <button type="button" disabled={pending || !bar.canStart} onClick={() => doStart(bar.assignee!.key)} className={cn(btn, "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground")} title="Recorded as your correction, on their behalf. It pauses whatever they were on.">
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+              Start for {bar.assignee!.name}
+            </button>
+          )
+        )}
+        {msg && (
+          <p className={cn("order-last basis-full text-xs", msg.ok ? "text-success" : "text-warning")} role="status">
+            {msg.text}
+          </p>
+        )}
+        {press && bar.mode === "editor" && (
+          <details className="order-last basis-full text-[11px] text-muted-2">
+            <summary className="inline-flex min-h-11 cursor-pointer select-none items-center hover:text-foreground">How Start and Pause work</summary>
+            <ul className="list-disc space-y-0.5 pl-4">
+              {HOW_START_WORKS.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </>
+    );
+  }
   return (
     <div
       className={cn(

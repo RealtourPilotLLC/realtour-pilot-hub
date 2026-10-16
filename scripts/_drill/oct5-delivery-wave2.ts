@@ -360,7 +360,8 @@ async function main() {
     c.ok("OLD: the Final-folder send was offered on every job", oldPage.includes("<FolderSendForReview") && !/contentMonthId \? \(\s*<p[^>]*>Monthly videos are sent from here only/.test(oldPage));
     c.ok("NEW: on a monthly job it is replaced by 'upload the file above'", monthlyGate > 0 && folderAt - monthlyGate < 900 && page.slice(monthlyGate, folderAt).includes("Monthly videos are sent from here only: upload the file above") && (page.match(/<FolderSendForReview/g) ?? []).length === 1);
     c.ok("OLD: the Start bar was not told which video is on screen", /<WorkStateBar bar=\{workBar\} tz=\{deskTz\} \/>/.test(oldPage));
-    c.ok("NEW: the page passes its selected video to the Start bar", page.includes("<WorkStateBar bar={workBar} tz={deskTz} selectedOutputId={selectedBrief?.outputId ?? null} />"));
+    // Oct 15 2026: the bar is the job bar's press now (variant="job"), still told the video on screen.
+    c.ok("NEW: the page passes its selected video to the Start bar", /<WorkStateBar\s+bar=\{bar\}\s+tz=\{deskTz\}\s+selectedOutputId=\{selectedBrief\?\.outputId \?\? null\}/.test(page));
     c.ok("…and the Start bar uses it before the URL", src("src/components/editing/WorkStateBar.tsx").includes("selectedOutputId ?? params?.get(\"output\")"));
 
     // =======================================================================

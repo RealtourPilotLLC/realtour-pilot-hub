@@ -275,7 +275,8 @@ async function main() {
   const cardOf = async (u: U, actingAs?: U): Promise<{ n: number; props: CardProps | null; err: string }> => {
     await as(u, actingAs);
     try {
-      const tree = await EditPage({ params: Promise.resolve({ id: job.id }), searchParams: Promise.resolve({}) });
+      // Oct 15 2026: the card is one of the office's tools, behind the switch.
+      const tree = await EditPage({ params: Promise.resolve({ id: job.id }), searchParams: Promise.resolve({ office: "1" }) });
       const cards = find(tree, "AssetDependencyCard");
       return { n: cards.length, props: (cards[0]?.props as CardProps) ?? null, err: "" };
     } catch (e) {

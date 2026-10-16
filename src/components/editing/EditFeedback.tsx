@@ -80,7 +80,7 @@ export function EditFeedback({
     <Wrapper className={embedded ? undefined : "rounded-2xl border border-brand/25 bg-surface"}>
       <div className={cn("flex items-center justify-between px-4 py-3 sm:px-5", !embedded && "border-b border-border")}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
-          <MessageSquare className="size-4 text-brand" /> {embedded ? "Notes on this cut" : "Review feedback"}
+          <MessageSquare className="size-4 text-brand" /> {embedded ? "Notes on this version" : "Review feedback"}
           {openCount > 0 && (
             <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand">
               {openCount} to fix
@@ -99,7 +99,7 @@ export function EditFeedback({
                   <button
                     onClick={() => onSeek(n.timeSec!)}
                     title="Jump the player to this moment"
-                    className="mt-0.5 shrink-0 rounded bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-brand hover:bg-brand/20"
+                    className="-my-2.5 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg bg-brand-soft px-2 text-xs font-semibold tabular-nums text-brand hover:bg-brand/20"
                   >
                     {fmtClock(n.timeSec)}
                   </button>
@@ -148,7 +148,7 @@ export function EditFeedback({
                 <button
                   onClick={() => run(() => setCutNoteStatus(n.id, "FIXED"))}
                   disabled={pending}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-success/10 px-2.5 py-1 text-xs font-medium text-success hover:bg-success/20 disabled:opacity-50"
+                  className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-success/10 px-3 py-2 text-xs font-medium text-success hover:bg-success/20 disabled:opacity-50"
                 >
                   {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Mark fixed
                 </button>
@@ -179,7 +179,7 @@ export function EditFeedback({
                   <button
                     onClick={() => run(() => replyCutNote(n.id, reply), () => setReply(""))}
                     disabled={pending || !reply.trim()}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
+                    className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-3 py-2 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
                   >
                     <Send className="size-3.5" /> Send
                   </button>

@@ -3,13 +3,12 @@ import { notFound, redirect } from "next/navigation";
 import { requestsForEditors } from "@/lib/specialRequests";
 import Link from "next/link";
 import {
-  AlertTriangle, ChevronDown, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
+  ChevronDown, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote, Wrench,
 } from "lucide-react";
 import { VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, makeThisFor, videoStyleByKey, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { BrandUpdatesBanner } from "@/components/editing/BrandUpdatesBanner";
-import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { queueReturnHref } from "@/lib/editingQueueUrl";
 import { Section } from "@/components/ui/Section";
@@ -59,8 +58,13 @@ import { AssetDependencyCard } from "@/components/editing/AssetDependencyCard";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
 import { DEFAULT_EDITOR_TZ, editorKeyForTeamName, editorMeta } from "@/lib/editors";
-import { openSlotKeys as openSlotKeysFor } from "@/lib/editorDesk";
+import { barWords, openSlotKeys as openSlotKeysFor, yourClock } from "@/lib/editorDesk";
+// Oct 15 2026: the job bar's upload buttons open the one upload row's picker,
+// and office links land on the office's tools.
+import { UploadTrigger } from "@/components/editing/UploadTrigger";
+import { OfficeHashOpener } from "@/components/editing/OfficeHashOpener";
 import { RevisionBriefCard } from "@/components/editing/RevisionBriefCard";
+import { ClientStyleMemory } from "@/components/editing/ClientStyleMemory";
 import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
 // Per-CLIENT note (the merged, Aryeo-mirrored one) — distinct from
@@ -107,8 +111,6 @@ const TYPE_TO_STYLE_KEY: Record<string, string> = {
   "Personal Branding Reel": "personal_branding",
   "Premium Social Media Reel": "premium_social_reel",
 };
-// Same-page sections use native fragments so repeated jumps keep one hash.
-const BRIEF_SECTION_LINK = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold leading-snug whitespace-normal focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 // "Standard Reels don't get scripts" (Jordan, Sep 2): the agent-intro reel has
 // an intro script, and every premium and personal-branding cut is scripted; a
 // plain standard reel or cinematic is B-roll to music, so the Script card —
@@ -120,27 +122,24 @@ const SCRIPTED_STYLE_RE = /^(standard_reel_agent_intro|premium_|personal_brandin
 // financials — but a client-approved script is never cut for mentioning a
 // price (a real-estate script talks about prices; see lib/text).
 //
-// Read top to bottom as ONE selected video (Oct 5 2026 — the order and the
-// reasons are spelled out above the render below): header, Make this,
-// Script, Footage, Brand, Client, Music; then Send to Review. Changes to make (when it came
-// back) sits first, right under the header (Oct 14 2026)
-// and the team messages; everything else folded; the office's writing tools
-// last. Earlier orderings (Sep 2: media first, "What to make" above the
-// instructions, the client rail) are folded into it: the footage link is the
-// Footage section's one link, the style guide is folded at the end, and the
-// client's own words now sit in the brief instead of under the chat.
+// Read top to bottom as ONE selected video, in the order the work happens
+// (Oct 15 2026, the brief audit — the five parts are spelled out above the
+// render below): the job bar with one main button, Fix these (only when it
+// came back), What to make, Footage and brand files, then Send for review,
+// the team messages, About the client and the version history. The office's
+// tools sit behind one switch at the end.
 export default async function EditBriefPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ cut?: string; output?: string; slots?: string; notice?: string; queue?: string }>;
+  searchParams: Promise<{ cut?: string; output?: string; slots?: string; notice?: string; queue?: string; office?: string }>;
 }) {
   const { id } = await params;
-  // `slots=all` opens the empty cut slots a big job collapses by default
-  // (Jordan, Sep 16 — see the Send to Review block below).
-  const { cut, output: outputParam, slots: slotsParam, notice, queue } = await searchParams;
-  const showAllSlots = slotsParam === "all";
+  // `office=1` is the office's tools switch (Oct 15 2026), kept in the URL so
+  // it survives a reload; `slots` is carried for links written before the
+  // page showed the selected video's row only.
+  const { cut, output: outputParam, slots: slotsParam, notice, queue, office: officeParam } = await searchParams;
 
   const viewer = await getCurrentUser();
   // Fail CLOSED on a null viewer once enforcement is on (the same line /shoot/<id>
@@ -205,6 +204,13 @@ export default async function EditBriefPage({
     owedSlotKeyOf(s, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) ?? (s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id));
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
+  // THE OFFICE'S ONE SWITCH (Oct 15 2026, the brief audit). Owner/admin are
+  // offered it ("view as" an editor is not — that preview is the editor's
+  // page); it is off by default, so Jordan and Kyle see what the editor sees.
+  // A form of theirs that comes back with a notice (a brief saved, a packet
+  // recorded, a due date moved) turns it on, so its answer is on screen.
+  const officeSwitch = isOwnerAdmin;
+  const officeOn = officeSwitch && (officeParam === "1" || (!!notice && /^(brief-|gap-|packet-|ack-|due-)/.test(notice)));
   // Who may rewrite the customer/shoot notes (saveJobNotes enforces this
   // server-side too). realRole, so a "view as" preview can't write; editors
   // read the brief, they don't rewrite what the customer or photographer said.
@@ -489,7 +495,7 @@ export default async function EditBriefPage({
   // The cut a revision link must land on: the one in front of them if it is
   // the bounced one, else the first cut waiting on changes.
   const revisionCut = (activeSub?.status === "CHANGES_REQUESTED" ? activeSub : null) ?? bouncedCuts[0] ?? null;
-  const revisionHref = revisionCut ? `/edit/${project.id}?cut=${revisionCut.id}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}#cut-${revisionCut.id}` : null;
+  const revisionHref = revisionCut ? `/edit/${project.id}?cut=${revisionCut.id}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}${officeOn ? "&office=1" : ""}#cut-${revisionCut.id}` : null;
   // WHO EACH WAITING CUT IS WITH (unified handoff §8.1, Sep 25). Read here so
   // the tracker's "with …" and the strip below say the same name. A failed
   // read shows no strip; nothing on the page waits on it.
@@ -645,7 +651,7 @@ export default async function EditBriefPage({
     .filter(Boolean);
   const revisionAsks = canSeeRaw
     ? rawAsks
-    : rawAsks.map((a) => stripMoneySentences(a) || "(a note was held back — ask Jordan)");
+    : rawAsks.map((a) => stripMoneySentences(a) || "(a note was held back; ask Jordan in the team messages)");
   const revisionAtISO =
     videoRevisionTasks.length > 0
       ? new Date(Math.max(...videoRevisionTasks.map((t) => t.createdAt.getTime()))).toISOString()
@@ -670,7 +676,7 @@ export default async function EditBriefPage({
     // Name the cut and link to it — sixteen "Round 1" lines are unreadable,
     // and a round the editor can click is one they can act on (Sep 16).
     cutLabel: navigation.get(`${s.deliverableId}:${s.slot ?? 1}`) ? `Video ${navigation.get(`${s.deliverableId}:${s.slot ?? 1}`)!.number} of ${navigation.get(`${s.deliverableId}:${s.slot ?? 1}`)!.total}` : slotLabelOf(s) ?? s.fileName,
-    href: `/edit/${project.id}?cut=${s.id}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}#cut-${s.id}`,
+    href: `/edit/${project.id}?cut=${s.id}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}${officeOn ? "&office=1" : ""}#cut-${s.id}`,
   }));
   // THE REVIEW ROOM'S ASKS, as a work order. A bounce writes no RevisionBrief
   // — it is Jordan's own timestamped notes on a cut — so the revision card
@@ -791,22 +797,15 @@ export default async function EditBriefPage({
     specialRequests: allSpecialRequests.map((a) => ({ id: a.id, body: a.body })),
   };
 
-  // What the editor OWES on the cut in front of them. The cut panel sits below
-  // the brief now, so when work is waiting the page says so at the top and
-  // jumps them straight to it — a review note must never go unseen because it
-  // is four cards down.
   // What is still to fix on the cut in front of them: the reviewer's open notes
   // (issues), plus any fix note no issue was made for. Never the editor's own.
   const openOnActive = activeNotes.filter((n) => n.status === "OPEN").length + (activeSub ? issuesFor(activeSub).filter((i) => i.state === "OPEN" || i.state === "REOPENED").length : 0);
-  const needsWork = activeSub?.status === "CHANGES_REQUESTED" || activeNotes.some((n) => n.status === "OPEN");
 
-  // ---- SEND TO REVIEW: the slots, with the dead ones out of the way -------
-  // 893 S Matlack owes SIXTEEN videos (the office's videosOwedOverride), so
-  // its one bounced cut sat in row 1 of sixteen identical "Not uploaded yet"
-  // rows (Jordan, Sep 16). The job still owes sixteen — nothing here changes
-  // that count, and the line above the panel says it — but the rows the
-  // editor cannot act on fold behind one toggle: every slot holding a cut
-  // stays, plus the next empty one (the slot they would fill next).
+  // ---- SEND FOR REVIEW: the selected video's row --------------------------
+  // 893 S Matlack owes SIXTEEN videos (the office's videosOwedOverride); the
+  // page shows the selected video's row only (Oct 5), so the editor's one
+  // upload is always the video on screen. The job still owes every slot, and
+  // the still-working question below still counts them all.
   const cutRows = slots.map((sl) => {
     const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
     const openNotes = latest ? feedback.filter((n) => n.assetUrl === assetKeyOf(latest) && n.status === "OPEN" && !n.fromEditor).length : 0;
@@ -849,8 +848,6 @@ export default async function EditBriefPage({
       )
     ).filter((k): k is string => k !== null),
   );
-  const hiddenSlots = 0;
-  const collapseSlots = false;
   const shownCutRows = cutRows.filter((row) => `${row.deliverableId}:${row.slot}` === selectedKey).map((row) => ({ ...row, canReplace: replaceableCuts.has(`${row.deliverableId}:${row.slot}`) }));
   // THE EDITOR'S OWN CLOCK (Sep 28): their Start / Pause read in their own
   // timezone (Manila for Kim and John Mark); everyone else reads Eastern.
@@ -889,51 +886,36 @@ export default async function EditBriefPage({
     workBar && workBar.mode === "editor" && workBar.canStart && workBar.mine.state !== "ACTIVE"
       ? { openSlotKeys, elsewhereStreet: workBar.elsewhere?.street ?? null, paused: workBar.mine.state === "PAUSED" }
       : null;
-  // The panel below counts approved against the rows IT was handed, which is
-  // the short list while the empty slots are folded. The real totals are said
-  // out loud above it, so "0 of 2 approved" can't be read as the job's tally
-  // (Sep 16 review).
-  const approvedSlots = cutRows.filter((r) => r.latest?.status === "APPROVED").length;
-  // The toggle keeps whichever cut they were looking at and lands back on the
-  // panel rather than the top of the page.
-  const slotsHref = (all: boolean) => {
-    const q = new URLSearchParams();
-    if (cut) q.set("cut", cut);
-    if (all) q.set("slots", "all");
-    const qs = q.toString();
-    return `/edit/${project.id}${qs ? `?${qs}` : ""}#submit-cut`;
-  };
 
   // =========================================================================
-  // THE SELECTED VIDEO'S BRIEF, IN THE ORDER AN EDITOR WORKS (Oct 5 2026).
-  //
-  // Jordan onboards his first content client: "the editor brief easy for our
-  // editors to read and the process smooth and seamless", no overload. The
-  // audit (rendered as Kim and John) found the same footage link five times,
-  // the brand kit four, the script twice (once inside the photographer's
-  // report), the export spec three times, music four and the deadline four —
-  // two of them different dates — and a client-approved hook deleted by the
-  // money scrub. So the selected video now reads top to bottom, each thing
-  // ONCE:
-  //   1. header — client · "Video 2 of 4 — <topic>" · the ONE deadline (the
-  //      editor's time and ET, both labelled) · where the video stands
-  //   2. Make this — the specs line (the style's default, or the office's own
-  //      for this video), then the office's direction
-  //   3. Script — the approved words, open, with Copy; a badge when the client
-  //      has not approved them; nothing at all for a style that is cut to music
-  //   4. Footage — this topic's clips (or the honest one-line fallback), the
-  //      photographer's note, what changed on site
-  //   5. Brand — the logo / end card for this video, colours, fonts, files
-  //   6. The client — the Agent Profile (collapsed) and their own words, which
-  //      win over the house style
-  //   7. Music — one rule
-  //   8. Changes to make — only when it was sent back
-  // then Send to Review and the team messages, and everything else FOLDED:
-  // other videos, the month, history, the full style guide, export details.
-  // The office's writing tools sit last, under their own heading.
+  // ONE PAGE, IN THE ORDER THE WORK HAPPENS (Oct 15 2026, the brief audit,
+  // approved by Jordan). Kim and John Mark open the brief 300 times a month and
+  // a third of their versions come back, so the page reads top to bottom as
+  // the job goes:
+  //   1. THE JOB BAR — client · street, which video (only when there are
+  //      several), the one deadline in the editor's own clock, ONE status
+  //      sentence and ONE main button for where the video is (Start, Upload,
+  //      Finish the check, Upload version N, or none), the one Got it.
+  //   2. FIX THESE — only when the video came back: the version's player and
+  //      its numbered notes (each time plays its moment, replies stay), what
+  //      the client said, and "Upload version N" at the end.
+  //   3. WHAT TO MAKE — the style, the office's direction, their own words,
+  //      the script with Copy, one music line, the logo or end card. Open while
+  //      the video is being made; one folded line once a version is in.
+  //   4. FOOTAGE AND BRAND FILES — one footage button, one "From the shoot"
+  //      list, the brand kit.
+  //   5. SEND FOR REVIEW AND MESSAGES — this video's upload row (the final
+  //      check, a revised version and the Final-folder route live here, two of
+  //      them folded), the team's messages (every "ask Kyle" lands there),
+  //      then About the client and the version history close the page.
+  // The office's tools (the brief editor, receipts, the reviewer strip, issue
+  // classification, the due-date move, month warnings, the agency packet)
+  // sit behind ONE switch, ?office=1, that only an owner/admin is offered;
+  // Rush, Override and Full details stay in the job bar.
   // =========================================================================
   const ET = "America/New_York";
   const isVideoJob = videoDeliverables.length > 0;
+  const isEditorView = viewer?.role === "EDITOR";
   const selectedBrief = outputBriefs.find((o) => o.key === selectedKey) ?? null;
   const selectedNav = selectedKey ? navigation.get(selectedKey) ?? null : null;
   const videoNumber = selectedNav?.number ?? selectedBrief?.index ?? 1;
@@ -944,21 +926,12 @@ export default async function EditBriefPage({
   const makeThis = makeThisFor(styleKey, sectionText("specs"));
   const videoTitle = selectedBrief?.topicTitle || selectedBrief?.format || selectedSlot?.deliverableLabel || styleType?.name || "Video";
   const fmtDue = (d: Date, tz: string) => d.toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  // ONE deadline, said in both clocks for an editor abroad (Kim and John Mark
-  // are in Manila): "Sat, Oct 17, 5:00 AM your time · Fri, Oct 16, 5:00 PM ET".
-  const dueLine = selectedDue
-    ? deskTz === ET ? `${fmtDue(selectedDue, ET)} ET` : `${fmtDue(selectedDue, deskTz)} your time · ${fmtDue(selectedDue, ET)} ET`
-    : null;
-  const dueWhy = !selectedPromise && reopened ? (reopened.at ? reopened.words : "Reopened — no due date yet; Kyle sets it.") : null;
-  const selectedHeld = !!activeSub && quality.held.some((h) => h.submissionId === activeSub.id);
-  const videoState =
-    activeSub?.status === "CHANGES_REQUESTED" ? { text: "Changes requested", tone: "bg-danger/10 text-danger" }
-    : selectedHeld ? { text: "Waiting on your check before it goes to review", tone: "bg-warning/15 text-warning" }
-    : activeSub?.status === "PENDING" ? { text: `In review${latestReviewer ? ` — with ${latestReviewer.split(/\s+/)[0]}` : ""}`, tone: "bg-warning/15 text-warning" }
-    : activeSub?.status === "APPROVED" ? { text: "Approved", tone: "bg-success/10 text-success" }
-    : { text: "Awaiting edit", tone: "bg-surface-2 text-muted" };
+  // ONE deadline, in the reader's own clock (Kim and John Mark are in Manila):
+  // "Sat, Oct 17, 5:00 AM your time"; the office reads Eastern.
+  const dueLine = selectedDue ? (deskTz === ET ? `${fmtDue(selectedDue, ET)} ET` : `${fmtDue(selectedDue, deskTz)} your time`) : null;
+  const dueWhy = !selectedPromise && reopened ? (reopened.at ? reopened.words : "Reopened. No due date yet: Kyle sets it.") : null;
 
-  // 2 · the office's direction for this video, and for every video on the job.
+  // 3 · the office's direction for this video, and for every video on the job.
   const officeDirection = (["purpose", "direction", "mustShow", "avoid"] as const)
     .map((k) => selectedBrief?.sections.find((x) => x.key === k))
     .filter((x): x is NonNullable<typeof x> => !!x);
@@ -966,13 +939,13 @@ export default async function EditBriefPage({
   const jobSpec = [specText("desiredLength") ? `Length: ${specText("desiredLength")}` : null, specText("colorProfile") ? `Colour profile: ${specText("colorProfile")}` : null].filter((x): x is string => !!x);
   const specialAsks = specialRequests.map((a) => ({ id: a.id, body: canSeeRaw ? a.body : stripMoneySentences(a.body) })).filter((a) => a.body.trim());
 
-  // 3 · the script for THIS video: the topic's approved words, else the
-  // Studio's script WHENEVER one is on file (review, Oct 5 night: a premium
-  // cinematic job with a Studio script read "No script on file", because the
-  // Studio script was only shown for a style named "reel"); a style cut to
-  // music with no script on file gets no section at all. On a job with more
-  // than one video the Studio script is the job's one script, not tied to a
-  // video — said once, in plain words.
+  // The script for THIS video: the topic's approved words, else the Studio's
+  // script WHENEVER one is on file (review, Oct 5 night: a premium cinematic
+  // job with a Studio script read "No script on file", because the Studio
+  // script was only shown for a style named "reel"); a style cut to music with
+  // no script on file gets no script block at all. On a job with more than one
+  // video the Studio script is the job's one script, not tied to a video —
+  // said once, in plain words.
   const topicScript = selectedBrief?.script ?? null;
   const reelScriptOnFile = !!(project.reelHook?.trim() || project.reelScript?.trim());
   const reelStyle = !!styleKey && /reel|personal_branding/.test(styleKey);
@@ -989,19 +962,20 @@ export default async function EditBriefPage({
   // 4 · the footage: this topic's own folder, else the job's raw folder — one link.
   const ownFolder = selectedBrief?.folder ?? null;
   const footageUrl = ownFolder?.url ?? rawUrl;
+  const footageCount = ownFolder ? null : folderCounts.raw > 0 ? `${folderCounts.raw} file${folderCounts.raw === 1 ? "" : "s"} in` : folderCounts.stale ? "not checked lately" : "nothing in yet";
   const shootNotes = [
-    selectedBrief?.note ? { label: "From the shoot", text: selectedBrief.note } : null,
+    selectedBrief?.note ? { label: "This video", text: selectedBrief.note } : null,
     ...(["onSite", "footage", "limitations"] as const).map((k) => {
       const x = selectedBrief?.sections.find((y) => y.key === k);
       return x ? { label: x.label, text: x.text } : null;
     }),
-    project.editorBrief?.trim() ? { label: "Photographer's notes", text: project.editorBrief.trim() } : null,
-    project.videoInstructions?.trim() ? { label: "Video notes from the shoot", text: project.videoInstructions.trim() } : null,
+    project.editorBrief?.trim() ? { label: "Photographer", text: project.editorBrief.trim() } : null,
+    project.videoInstructions?.trim() ? { label: "Video notes", text: project.videoInstructions.trim() } : null,
     ...deliverableNotes.map((d) => ({ label: refinedDeliverableLabel(d.type, d.label), text: canSeeRaw ? d.notes ?? "" : stripMoneySentences(d.notes ?? "") })),
   ].filter((x): x is { label: string; text: string } => !!x && !!x.text.trim());
 
-  // 5 · the brand. The Agent Profile's merged style (portal first, then the
-  // Aryeo note) is the one source of colours and fonts on this page.
+  // The brand. The Agent Profile's merged style (portal first, then the Aryeo
+  // note) is the one source of colours and fonts on this page.
   const agent = await import("@/lib/clientProfile")
     .then((m) => m.agentProfileFor(project.client.id, { brand: brandBrief, links: true }))
     .catch(() => null);
@@ -1011,27 +985,27 @@ export default async function EditBriefPage({
   // name card), so that style always gets a line; a listing video gets one
   // only when there is a logo or the office chose for this video. A logo that
   // is only a file in their Dropbox brand folder is named, not linked — the
-  // folder card below links it, once.
+  // brand kit links it, once.
   const brandingStyle = styleKey === "personal_branding";
   const folderLogo = !logoFile ? assets?.files.find((f) => /logo/i.test(f.name)) ?? null : null;
   const endWord = brandingStyle ? "End card" : "Logo";
-  const endCard: { text: string; file: { name: string; url: string | null } | null; warn: boolean } | null =
+  const endCard: { text: string; file: { name: string; url: string | null } | null; warn: boolean; askKyle?: boolean } | null =
     selectedBrief?.brandAsset && selectedBrief.brandAsset.state !== "current"
-      ? { text: "The logo chosen for this video is no longer their current one — check with Kyle before the end card.", file: null, warn: true }
+      ? { text: "The logo chosen for this video is no longer their current one. Check with Kyle before the end card:", file: null, warn: true, askKyle: true }
       : chosenFile
-        ? { text: `${endWord}: use this file —`, file: { name: chosenFile.fileName ?? chosenFile.name, url: chosenFile.url }, warn: false }
+        ? { text: `${endWord}: use this file:`, file: { name: chosenFile.fileName ?? chosenFile.name, url: chosenFile.url }, warn: false }
         : selectedBrief?.brandChoice === "none"
-          ? { text: `No logo on this video — the office's choice.${brandingStyle ? " End on a name card (name and brokerage)." : ""}`, file: null, warn: false }
+          ? { text: `No logo on this video, the office's choice.${brandingStyle ? " End on a name card (name and brokerage)." : ""}`, file: null, warn: false }
           : logoFile
-            ? { text: `${endWord}: their logo —`, file: { name: logoFile.fileName ?? logoFile.name, url: logoFile.url }, warn: false }
+            ? { text: `${endWord}: their logo,`, file: { name: logoFile.fileName ?? logoFile.name, url: logoFile.url }, warn: false }
             : folderLogo
-              ? { text: `${endWord}: their logo (${folderLogo.name}, in their brand folder below).`, file: null, warn: false }
+              ? { text: `${endWord}: their logo (${folderLogo.name}, in their brand kit below).`, file: null, warn: false }
               // Their notes ask for the logo and there is no file: say so
               // (any style) rather than leave the editor to notice.
               : agent?.style.preferences.some((p) => /\blogo/i.test(p.text))
-                ? { text: `Their notes ask for their logo, and there's no logo file yet — ask Kyle for it.${brandingStyle ? " Until it comes, end on a name card (name and brokerage)." : ""}`, file: null, warn: true }
+                ? { text: `Their notes ask for their logo, and there's no logo file yet.${brandingStyle ? " Until it comes, end on a name card (name and brokerage)." : ""} Ask Kyle for it:`, file: null, warn: true, askKyle: true }
                 : brandingStyle
-                  ? { text: assets?.files.length ? "No logo picked out — check their brand folder below, or end on a name card (name and brokerage)." : "No logo on file — end on a name card (name and brokerage).", file: null, warn: false }
+                  ? { text: assets?.files.length ? "No logo picked out. Check their brand kit below, or end on a name card (name and brokerage)." : "No logo on file. End on a name card (name and brokerage).", file: null, warn: false }
                   : null;
   const linkedBrand = new Set([chosenFile?.versionId, !chosenFile && selectedBrief?.brandChoice !== "none" ? logoFile?.versionId : null].filter(Boolean));
   const seenBrandUrl = new Set<string>();
@@ -1045,7 +1019,7 @@ export default async function EditBriefPage({
   const brandColorsShown = agent?.style.colors.length ? agent.style.colors.map((c) => c.hex) : brandColors.map((c) => c.toLowerCase());
   const brandFonts = agent?.style.fonts?.text ?? brandBrief?.fontNames ?? null;
 
-  // 6 · their own words — they win over the house style where the two differ.
+  // Their own words — they win over the house style where the two differ.
   const confirmedPrefs = [
     ...(brandBrief?.productionDefaults ?? []).map((d) => `${d.name}: ${d.text}`),
     ...(brandBrief?.acceptedPreferences ?? []),
@@ -1056,35 +1030,144 @@ export default async function EditBriefPage({
   const customerNoteLines = (agent?.style.preferences ?? []).filter((p) => p.from === "aryeo").map((p) => p.text);
   const hasTheirWords = !!(showTheirStyle || showTheirPrefs || showOrderNote || confirmedPrefs.length || customerNoteLines.length);
 
-  // 7 · ONE music rule. The office's word for this video wins; a listing reel
-  // with a song picked beside its Studio script uses that song; the cinematic
-  // video gets the licensed chooser; everything social is trending audio.
+  // ONE music line. The office's word for this video wins; a listing reel with
+  // a song picked beside its Studio script uses that song; the cinematic video
+  // gets the licensed chooser; everything social is trending audio.
   const musicForVideo = sectionText("music");
   // The Studio's song travels with the Studio's script, whatever the style.
   const reelSong = useReelScript || (reelStyle && !project.contentMonthId) ? project.reelSong?.trim() || null : null;
   const musicType = specText("musicType");
+  const musicPicker = catalogueMusicAllowed && (musicConnected || officeOn);
 
-  // 8 · what was asked when it came back — for THIS video (review, Oct 5
+  // 2 · what was asked when it came back — for THIS video (review, Oct 5
   // night: a client's ask about video 3 showed under every video). On a job
-  // with more than one video an ask is this video's when its revision task
-  // (or its itemised brief) names this video; an ask that names none is the
-  // whole job's and says so. A one-video job keeps every ask.
+  // with more than one video an ask is this video's when its revision task (or
+  // its itemised brief) names this video; an ask that names none is the whole
+  // job's and says so. A one-video job keeps every ask.
   const selectedIssues = quality.issues.filter((issue) => !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state) && (selectedKey ? issue.cutKey === selectedKey : issue.raisedOnSubmissionId === activeSub?.id));
   const unassignedIssues = quality.issues.filter((issue) => !issue.cutKey && !issue.duplicateOfId && ["OPEN", "REOPENED", "ADDRESSED"].includes(issue.state));
   const selectedOutputId = selectedBrief?.outputId ?? null;
   const scopeAsks = outputBriefs.length > 1 && !!selectedOutputId;
   const asksOf = (tasks: typeof videoRevisionTasks) => {
     const raw = tasks.flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /)).map((x) => x.trim()).filter(Boolean);
-    return canSeeRaw ? raw : raw.map((a) => stripMoneySentences(a) || "(a note was held back — ask Jordan)");
+    return canSeeRaw ? raw : raw.map((a) => stripMoneySentences(a) || "(a note was held back; ask Jordan in the team messages)");
   };
   const thisVideoAsks = scopeAsks ? asksOf(videoRevisionTasks.filter((t) => t.outputId === selectedOutputId)) : revisionAsks;
   const jobWideAsks = scopeAsks ? asksOf(videoRevisionTasks.filter((t) => !t.outputId)) : [];
   const briefsHere = scopeAsks ? briefs.filter((b) => !b.outputId || b.outputId === selectedOutputId) : briefs;
   const revisionOpenHere = scopeAsks ? videoRevisionTasks.some((t) => !t.outputId || t.outputId === selectedOutputId) : revisionOpen;
-  const showChanges = needsWork || selectedIssues.length > 0 || unassignedIssues.length > 0 || (revisionOpenHere && (briefsHere.length > 0 || thisVideoAsks.length > 0 || jobWideAsks.length > 0));
+  // CREATIVE REVIEW (Oct 15 2026): an ask that is only a feeling waits with
+  // the creative reviewer; the editor reads that it is there, never an empty
+  // list and never the feeling as a task.
+  const heldReview = briefsHere.filter((b) => b.creativeReview?.state === "OPEN");
+  const heldItems = heldReview.flatMap((b) => b.items.filter((i) => i.held && !b.done.includes(i.id)));
+  const heldWho = heldReview[0]?.creativeReview?.reviewerName?.split(/\s+/)[0] || "Jordan";
+  const concreteAsks = briefsHere.reduce((n, b) => n + b.items.filter((i) => !i.held && !b.done.includes(i.id)).length, 0);
+
+  // ---- WHERE THE SELECTED VIDEO IS ---------------------------------------
+  // The selected video's own newest version (never an older one opened from
+  // the history with ?cut=, which still plays below as asked).
+  const selLatest = selectedKey ? latestLivePerCut.get(selectedKey) ?? null : liveSubs[liveSubs.length - 1] ?? null;
+  const selStatus = selLatest?.status ?? null;
+  const selHeld = !!selLatest && quality.held.some((h) => h.submissionId === selLatest.id);
+  // Approved, and asked about again since (by name, on this video).
+  const reopenedHere = selStatus === "APPROVED" && !!selectedKey && openSlotKeys.includes(selectedKey);
+  const openHere = (list: typeof quality.issues) => list.filter((i) => i.state === "OPEN" || i.state === "REOPENED");
+  const asksHere = revisionOpenHere && (briefsHere.length > 0 || thisVideoAsks.length > 0 || jobWideAsks.length > 0);
+  // FIX THESE shows only while the video is back with the editor: sent back,
+  // asked about again after approval, or an open ask or note with no newer
+  // version in review.
+  const cameBack =
+    isVideoJob && selStatus !== "PENDING" && (selStatus !== "APPROVED" || reopenedHere) &&
+    (selStatus === "CHANGES_REQUESTED" || reopenedHere || openHere(selectedIssues).length > 0 || openHere(unassignedIssues).length > 0 || asksHere || heldItems.length > 0 || activeNotes.some((n) => n.status === "OPEN"));
+  const bar = showTracker ? workBar : null;
+  const editorBar = bar?.mode === "editor" ? bar : null;
+  type Situation = "none" | "not_started" | "editing" | "check" | "review" | "back" | "done" | "blocked";
+  const situation: Situation =
+    !isVideoJob ? "none"
+    : selStatus === "PENDING" && selHeld ? "check"
+    : selStatus === "PENDING" ? "review"
+    : selStatus === "APPROVED" && !reopenedHere ? "done"
+    : cameBack ? "back"
+    : editorBar ? (editorBar.mine.state === "ACTIVE" ? "editing" : !editorBar.canStart ? "blocked" : "not_started")
+    : bar?.people.active.length ? "editing" : "not_started";
+  // Everything waiting is with the creative reviewer: nothing to upload yet.
+  const heldOnly = situation === "back" && heldItems.length > 0 && concreteAsks === 0 && selStatus !== "CHANGES_REQUESTED" && openHere(selectedIssues).length === 0 && openHere(unassignedIssues).length === 0;
+  const versionSent = situation === "check" || situation === "review" || situation === "back" || situation === "done";
+  const nextRound = selLatest ? (selStatus === "WITHDRAWN" ? selLatest.round : selLatest.round + 1) : 1;
+  const several = videoTotal > 1;
+  const uploadLabel = several ? `Upload video ${videoNumber} for review` : "Upload for review";
+  const startLabel = editorBar?.mine.state === "PAUSED" && !editorBar.elsewhere ? (several ? `Resume video ${videoNumber}` : "Resume") : several ? `Start video ${videoNumber}` : "Start editing";
+  const first = (name: string | null | undefined) => (name ?? "").trim().split(/[\s(]+/)[0] || null;
+  const selVerdict = selLatest ? verdictOf(selLatest) : null;
+  const selReviewer = selLatest && selStatus === "PENDING"
+    ? reviewerStrip?.rows.find((r) => r.submissionId === selLatest.id)?.reviewer?.name ?? (selectedBrief?.reviewer?.from === "cut" ? selectedBrief.reviewer.name : null)
+    : null;
+  const selOpenNotes = selLatest ? notesFor(selLatest).filter((n) => n.status === "OPEN").length + issuesFor(selLatest).filter((i) => i.state === "OPEN" || i.state === "REOPENED").length : 0;
+  const now = new Date();
+  // The bar's sentences come from lib/editorWork in a few places, written with
+  // a dash; the job bar says them as two plain sentences.
+  const plainSentence = (s: string) => s.split(/\s+—\s+/).map((part, i) => (i === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1))).join(". ");
+  const mineOn = editorBar?.mine.outputId ? outputBriefs.find((o) => o.outputId === editorBar.mine.outputId) ?? null : null;
+  const statusSentence: string | null = (() => {
+    switch (situation) {
+      case "none":
+        return null;
+      case "not_started":
+        if (editorBar?.elsewhere) return `You're on ${editorBar.elsewhere.street} now. Starting this pauses it.`;
+        if (editorBar?.mine.state === "PAUSED") return `Paused at ${yourClock(editorBar.mine.sinceISO, deskTz, now)}. Everything is where you left it.`;
+        return `Not started yet. ${rawsLanded ? "The footage is in." : "The footage isn't showing in Dropbox yet."}`;
+      case "editing":
+        if (editorBar) {
+          const since = yourClock(editorBar.mine.sinceISO, deskTz, now);
+          const which = mineOn && mineOn.outputId !== selectedOutputId && several ? `video ${navigation.get(mineOn.key)?.number ?? mineOn.index}` : "this job";
+          return `You're on ${which}${since ? ` since ${since}` : ""}. Upload it when it's ready.`;
+        }
+        return bar ? barWords(bar, ET, now).state + "." : "Being edited.";
+      case "check":
+        return isEditorView
+          ? `Version ${selLatest!.round} is uploaded. Finish your final check and it goes to review.`
+          : `Version ${selLatest!.round} is uploaded and waits on the editor's final check.`;
+      case "review": {
+        const since = yourClock(selLatest!.createdAt.toISOString(), deskTz, now);
+        return selReviewer ? `With ${first(selReviewer)} since ${since}.` : `In review since ${since}.`;
+      }
+      case "back":
+        if (reopenedHere) return officeReopen ? `${first(officeReopen.by) ?? "The office"} reopened it for a new version.` : "Approved, then the client asked for changes.";
+        if (selStatus === "CHANGES_REQUESTED") {
+          if (selVerdict?.source === "client") return `The client asked for changes on version ${selLatest!.round}.`;
+          const by = selVerdict?.by ? ` from ${first(selVerdict.by)}` : "";
+          return selOpenNotes > 0
+            ? `Version ${selLatest!.round} came back${by} with ${selOpenNotes} note${selOpenNotes === 1 ? "" : "s"} to fix.`
+            : `Version ${selLatest!.round} came back${by}.`;
+        }
+        if (heldOnly) return `The client's notes are with ${heldWho} for a creative review.`;
+        return "The client asked for changes.";
+      case "done": {
+        const by = selVerdict?.source === "office" ? first(selVerdict.by) : null;
+        return by ? `Done, approved by ${by}.` : "Done, approved.";
+      }
+      case "blocked":
+        return plainSentence(editorBar?.blocked ?? "Not yours to start.");
+    }
+  })();
+  // The office reads who is on the job in its own line (Eastern).
+  const workLine = bar && bar.mode !== "editor" && situation !== "editing" ? plainSentence(barWords(bar, ET, now).state) : null;
+  const carry = `${queue ? `&queue=${encodeURIComponent(queue)}` : ""}${officeOn ? "&office=1" : ""}`;
+  const officeToggleHref = (() => {
+    const q = new URLSearchParams();
+    if (cut) q.set("cut", cut);
+    if (outputParam) q.set("output", outputParam);
+    if (queue) q.set("queue", queue);
+    if (slotsParam) q.set("slots", slotsParam);
+    if (!officeOn) q.set("office", "1");
+    const qs = q.toString();
+    return `/edit/${project.id}${qs ? `?${qs}` : ""}`;
+  })();
 
   // ONE "Got it" per job (BriefGotIt) — every video assigned to THIS editor
-  // whose current brief they have not received yet.
+  // whose current brief they have not received yet, and (Oct 15 2026) the
+  // client's brand changes they have not said Got it to.
   const myEditorKey = viewer?.role === "EDITOR" && !viewer.impersonating ? viewer.editorKey ?? null : null;
   const myPending = myEditorKey && receiptStates
     ? outputBriefs.flatMap((o) => {
@@ -1095,6 +1178,8 @@ export default async function EditBriefPage({
     : [];
   const mySelectedPending = myPending.filter((p) => p.outputId === selectedBrief?.outputId);
   const myOtherPending = myPending.filter((p) => p.outputId !== selectedBrief?.outputId);
+  const brandPending = (brandBrief?.pending ?? []).map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }));
+  const showGotIt = mySelectedPending.length > 0 || myOtherPending.length > 0 || (canAckBrand && brandPending.length > 0);
   // The office reads the same receipts as one line per editor.
   const receiptLines = isOwnerAdmin && receiptStates
     ? [...outputBriefs.reduce((m, o) => {
@@ -1110,160 +1195,160 @@ export default async function EditBriefPage({
         return r.got === r.total ? `${who} has the current brief.` : `${who} has said Got it on ${r.got} of ${r.total} video${r.total === 1 ? "" : "s"}${r.changed ? ` (${r.changed} changed since)` : ""}.`;
       })
     : [];
-  const otherVideos = outputBriefs.filter((o) => o.key !== selectedKey);
+  // Who may classify the review notes: the review desk, with the office's
+  // tools on (a review seat with no office switch keeps them as before).
+  const classify = quality.canReview && (officeOn || !officeSwitch);
+  // Every note is said ONCE (the audit found them three times): what Fix
+  // these lists stays out of the history's list, and when that leaves the
+  // history nothing, the #issues links land on Fix these instead.
+  const shownInFix = new Set(cameBack ? [...(activeSub ? issuesFor(activeSub) : []), ...selectedIssues, ...unassignedIssues].map((i) => i.id) : []);
+  const historyIssues = classify ? quality.issues : quality.issues.filter((i) => !shownInFix.has(i.id));
+  const issuesAnchorInFix = !classify && cameBack && historyIssues.length === 0;
 
-  const CARD = "min-w-0 rounded-2xl border border-border bg-surface p-4";
+  const CARD = "min-w-0 rounded-2xl border border-border bg-surface p-4 sm:p-5";
+  const H2 = "text-lg font-semibold leading-snug";
   const H3 = "text-base font-semibold";
   const LABEL = "text-[11px] font-semibold uppercase tracking-wide text-muted-2";
+  const MAIN_BTN = "inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold leading-snug text-brand-fg hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  const QUIET_BTN = "inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-medium leading-snug text-foreground/85 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  // Every "ask Kyle" on the page lands on the team's messages (Oct 15 2026).
+  const askKyle = (words = "ask Kyle") => <a href="#messages" className="font-medium text-brand underline-offset-2 hover:underline">{words}</a>;
+
+  // ONE player on the page: the version in front of them.
+  const cutPanel = (s: (typeof submissions)[number]) => (
+    <EditorCutPanel
+      key={s.id}
+      projectId={project.id}
+      submissionId={s.id}
+      round={s.round}
+      status={s.status}
+      cutIndex={cutIndexOf(s)}
+      cutTotal={slots.length || null}
+      cutLabel={slotOf(s)?.deliverableLabel ?? null}
+      assetUrl={s.assetUrl}
+      streamable={!!s.blobUrl}
+      fileName={s.fileName}
+      finalFolderUrl={finalUrl}
+      notes={notesFor(s)}
+      ownNotes={ownNotesFor(s)}
+      issues={issuesFor(s).map((i) => ({ id: i.id, state: i.state, text: i.summary || i.text, timeSec: i.timeSec, by: i.raisedByName, round: i.raisedOnRound }))}
+      canFix={!isOwnerAdmin}
+      viewerName={viewer?.name}
+      player={s.id === playerSubId}
+      verdict={verdictOf(s)}
+    />
+  );
+
+  // The one upload row. It stays in ONE place on the page (section 5) in
+  // every state but an approved video, so its hand-in card and the "still
+  // working?" question survive the refresh that moves the video on; the job
+  // bar and the fix list open its picker (UploadTrigger).
+  const uploader = (
+    <CutUploader
+      projectId={project.id}
+      canUpload={canUploadCuts}
+      checks={quality.checks}
+      onBehalfOf={quality.onBehalfOf}
+      // Only Jordan and Kyle may send an over-spec file anyway, and
+      // only for real: the server checks the role again and puts their
+      // name on it (startCutUpload).
+      canOverrideExport={!viewer?.impersonating && isOwnerAdmin}
+      // Only a named ask raised AFTER this slot's approval reopens its
+      // upload door. Another video's revision is not permission to
+      // treat this approved cut as the client's change request.
+      reopenedSlotKeys={openSlotKeys}
+      officeReopen={officeReopen}
+      cuts={shownCutRows}
+      stillWorking={stillWorking}
+    />
+  );
 
   return (
-    <div className="[&_[id]]:scroll-mt-56 md:[&_[id]]:scroll-mt-44 lg:[&_[id]]:scroll-mt-32">
+    <div className="[&_[id]]:scroll-mt-4">
       {/* Queue links carry their validated filters, including for cold/new-tab
           visits. Other entrances use in-app history or the Editing Room. */}
       <div className="border-b border-border px-4 py-3 sm:px-6">
         <BackLink href={queueReturnHref(queue)} label="Editing Room" preferHref={!!queue} />
       </div>
-      <PageHeader
-        sticky="desktop"
-        eyebrow="Editor brief"
-        title={street}
-        actions={
-          // Wraps at phone width now that Rush sits beside Override (375px).
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {/* §10 rush: the desk only (see rushDesk above). */}
-            {rushDesk && (
-              <RushButton
-                ask={rushAsk}
-                job={{
-                  projectId: project.id,
-                  street,
-                  status: STATUS_LABEL[project.status] ?? project.status,
-                  editorKey,
-                  editorName,
-                  editorAuto: false,
-                  overrides,
-                  computed,
-                }}
-              />
-            )}
-            {/* THE OVERRIDE (Jordan, Sep 13) — office only, and never from a
-                "view as" preview (read-only; the server re-checks). */}
-            {isOwnerAdmin && !viewer?.impersonating && (
-              <EditOverridesButton
-                variant="header"
-                job={{
-                  projectId: project.id,
-                  street,
-                  status: STATUS_LABEL[project.status] ?? project.status,
-                  editorKey,
-                  editorName,
-                  editorAuto: false,
-                  overrides,
-                  computed,
-                }}
-              />
-            )}
-            {isOwnerAdmin && (
-              <Link href={`/projects/${project.id}`} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">
-                Full details <ExternalLink className="size-3.5" />
-              </Link>
-            )}
-          </div>
-        }
-      />
+      {officeSwitch && !officeOn && <OfficeHashOpener />}
 
-      {showTracker && workBar && <div className="px-4 pt-4 sm:px-6"><WorkStateBar bar={workBar} tz={deskTz} selectedOutputId={selectedBrief?.outputId ?? null} /></div>}
-
-      {/* Sent back: the ONE next action, straight to the exact cut. */}
-      {needsWork && <div className="px-4 pt-4 sm:px-6">
-        <a href={revisionHref ?? (activeSub ? `#cut-${activeSub.id}` : "#submit-cut")} className="flex min-h-11 flex-wrap items-center gap-2 rounded-xl border border-danger/30 bg-danger-soft/50 px-4 py-3 text-sm font-medium text-danger hover:bg-danger-soft focus-visible:outline-2 focus-visible:outline-brand">
-          <AlertTriangle className="size-4 shrink-0" />
-          {openOnActive > 0 ? `${openOnActive} note${openOnActive === 1 ? "" : "s"} to fix on this video` : "Changes were requested on this video"}
-          <span className="ml-auto font-semibold">See them under the video →</span>
-        </a>
-      </div>}
-
-      {brandBrief && brandBrief.pending.length > 0 && <div className="px-4 pt-4 sm:px-6">
-        <BrandUpdatesBanner projectId={project.id} items={brandBrief.pending.map((c) => ({ id: c.id, line: c.line, actorLabel: c.actorLabel, createdAtISO: c.createdAtISO }))} canAck={canAckBrand} canOverride={canOverrideBrand} />
-      </div>}
-
-      {/* WHICH VIDEO — each chip names its topic on the chip itself, not only
-          in a hover tooltip (Oct 5). One video on the job: no chooser. */}
-      {outputBriefs.length > 1 && (
-        <section className="px-4 pt-4 sm:px-6" aria-label="Video selector">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-sm font-semibold">Videos on this job</h2>
-            <p className="text-xs text-muted">{approvedSlots} of {slots.length} approved</p>
-          </div>
-          <nav className="mt-2 flex max-w-full gap-2 overflow-x-auto pb-2">
-            {outputBriefs.map((brief) => {
-              const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
-              const selected = brief.key === selectedKey;
-              const tone = latest?.status === "APPROVED" ? "border-success/40 bg-success-soft text-success" : latest?.status === "PENDING" ? "border-warning/40 bg-warning-soft text-warning" : latest?.status === "CHANGES_REQUESTED" ? "border-danger/40 bg-danger-soft/60 text-danger" : "border-border bg-surface text-foreground/80";
-              const state = latest ? (latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? `Changes requested on version ${latest.round}` : `Version ${latest.round} in review`) : "Not started";
-              // WHOSE VIDEO (review, Oct 5 night): a month can be split between
-              // editors, so each chip names the editor it is assigned to — "you"
-              // for the viewer's own.
-              const ownerKey = receiptStates?.get(brief.outputId)?.editorKey ?? null;
-              const owner = ownerKey ? (ownerKey === myEditorKey ? "you" : (editorMeta(ownerKey)?.name ?? ownerKey).split(/\s+/)[0]) : null;
-              return (
-                <Link key={brief.outputId} aria-current={selected ? "page" : undefined} href={`/edit/${project.id}?output=${brief.outputId}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}`} className={`inline-flex min-h-11 max-w-80 shrink-0 items-center rounded-lg border px-3 py-2 text-sm font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-2 ring-offset-background" : ""}`}>
-                  <span className="truncate">{navigation.get(brief.key)?.number ?? brief.index} · {brief.topicTitle || brief.format} · {state}{owner ? <span data-video-editor> · {owner}</span> : null}</span>
-                </Link>
-              );
-            })}
-          </nav>
-        </section>
-      )}
-
-      <div className="grid min-w-0 grid-cols-1 gap-5 p-4 sm:p-6">
+      <div className="mx-auto grid w-full max-w-4xl min-w-0 grid-cols-1 gap-5 p-4 sm:p-6">
         <article id={selectedBrief ? `brief-${selectedBrief.outputId}` : "brief-job"} data-brief="selected-video" className="min-w-0 space-y-5">
-          {/* 1 · WHAT, WHOSE, BY WHEN */}
+          {/* 1 · THE JOB BAR */}
           <header data-brief-section="header" className={CARD}>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted">{project.client.name}</p>
-            <h2 className="mt-0.5 text-lg font-semibold leading-snug">{isVideoJob ? (videoTotal > 1 ? `Video ${videoNumber} of ${videoTotal}: ${videoTitle}` : videoTitle) : street}</h2>
-            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm" data-due>
+            <h1 className="mt-0.5 break-words text-xl font-semibold leading-snug tracking-tight">{street}</h1>
+            {isVideoJob && several && <p className="mt-0.5 break-words text-base font-medium">Video {videoNumber} of {videoTotal}: {videoTitle}</p>}
+            {/* WHICH VIDEO — only when there are several; each chip names its
+                topic, its state and whose it is ("you" for the viewer's own). */}
+            {outputBriefs.length > 1 && (
+              <section className="mt-2" aria-label="Video selector">
+                <nav className="flex max-w-full gap-2 overflow-x-auto pb-1">
+                  {outputBriefs.map((brief) => {
+                    const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
+                    const selected = brief.key === selectedKey;
+                    const tone = latest?.status === "APPROVED" ? "border-success/40 bg-success-soft text-success" : latest?.status === "PENDING" ? "border-warning/40 bg-warning-soft text-warning" : latest?.status === "CHANGES_REQUESTED" ? "border-danger/40 bg-danger-soft/60 text-danger" : "border-border bg-surface text-foreground/80";
+                    const state = latest ? (latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? `Changes requested on version ${latest.round}` : `Version ${latest.round} in review`) : "Not started";
+                    const ownerKey = receiptStates?.get(brief.outputId)?.editorKey ?? null;
+                    const owner = ownerKey ? (ownerKey === myEditorKey ? "you" : (editorMeta(ownerKey)?.name ?? ownerKey).split(/\s+/)[0]) : null;
+                    return (
+                      <Link key={brief.outputId} aria-current={selected ? "page" : undefined} href={`/edit/${project.id}?output=${brief.outputId}${carry}`} className={`inline-flex min-h-11 max-w-72 shrink-0 items-center rounded-lg border px-3 py-1.5 text-xs font-medium ${tone} ${selected ? "ring-2 ring-brand ring-offset-1 ring-offset-background" : ""}`}>
+                        <span className="truncate">{navigation.get(brief.key)?.number ?? brief.index} · {brief.topicTitle || brief.format} · {state}{owner ? <span data-video-editor> · {owner}</span> : null}</span>
+                      </Link>
+                    );
+                  })}
+                </nav>
+              </section>
+            )}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm" data-due>
               {dueLine && selectedDue ? (
                 <>
                   <span><span className="font-semibold">Due</span> {dueLine}</span>
-                  {activeSub?.status !== "APPROVED" && <SlaCountdown dueISO={selectedDue.toISOString()} />}
+                  {situation !== "done" && <SlaCountdown dueISO={selectedDue.toISOString()} />}
                 </>
               ) : (
-                <span className="text-muted">No due date yet — Kyle sets it.</span>
+                <span className="text-muted">No due date yet. Kyle sets it.</span>
               )}
             </div>
             {dueWhy && <p className="mt-0.5 text-xs text-muted">{dueWhy}</p>}
-            {/* Which version of this video's brief is in force — the office's
-                bookkeeping (the printed brief and the shoot screen print the
-                same line), not an editor's: they read the brief itself. */}
-            {isOwnerAdmin && selectedBrief && <p className="mt-0.5 text-xs text-muted" data-office-version>{selectedBrief.directionSource === "own" ? selectedBrief.versionLabel : selectedBrief.version ? `Brief v${selectedBrief.version} · saved by ${selectedBrief.updatedBy ?? "the office"} (logo choice only)` : "No brief written for this video yet."}</p>}
-            {isVideoJob && (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${videoState.tone}`}>{videoState.text}</span>
-                <span className="ml-auto flex flex-wrap gap-2">
-                  {/* Oct 15 2026 (audit): the orange "Upload for review" only while this
-                      video still needs a version from them; once one is in review or
-                      approved it is a quiet link to the video. */}
-                  {(() => {
-                    const st = selectedKey ? latestLivePerCut.get(selectedKey)?.status ?? null : activeSub?.status ?? null;
-                    const owed = canUploadCuts && st !== "APPROVED" && st !== "PENDING";
-                    return (
-                      <a href="#submit-cut" className={`${BRIEF_SECTION_LINK} ${owed ? "border-transparent bg-brand-action text-brand-fg hover:brightness-95" : "border-border-strong bg-surface hover:bg-surface-2"}`}>
-                        {owed ? "Upload for review" : st === "PENDING" ? "In review" : st === "APPROVED" ? "Approved" : "Video and review"}
-                      </a>
-                    );
-                  })()}
-                  <a href="#messages" className={`${BRIEF_SECTION_LINK} border-border bg-surface hover:bg-surface-2`}>
-                    <MessageSquare className="size-4 shrink-0" />
-                    Messages{viewer && !viewer.impersonating && unreadTeamMessages ? ` · ${unreadTeamMessages} new` : ""}
-                  </a>
-                </span>
-              </div>
-            )}
-            {/* "Got it" is for the video ON THIS PAGE (review, Oct 5 night):
-                one press used to acknowledge every pending video, opened or
-                not. The others are named, one tap away. */}
-            {(mySelectedPending.length > 0 || myOtherPending.length > 0) && (
+            {/* Which version of this video's brief is in force: the office's
+                bookkeeping, with its tools on. */}
+            {officeOn && selectedBrief && <p className="mt-0.5 text-xs text-muted" data-office-version>{selectedBrief.directionSource === "own" ? selectedBrief.versionLabel : selectedBrief.version ? `Brief v${selectedBrief.version} · saved by ${selectedBrief.updatedBy ?? "the office"} (logo choice only)` : "No brief written for this video yet."}</p>}
+            {statusSentence && <p className="mt-3 text-base font-medium leading-snug" data-job-status={situation}>{statusSentence}</p>}
+            {/* ONE main button for where the video is (the audit's table). */}
+            <div className="mt-3 flex flex-wrap items-center gap-2" data-job-actions>
+              {situation === "editing" && <UploadTrigger label={uploadLabel} />}
+              {situation === "back" && !heldOnly && <UploadTrigger label={selLatest && selStatus !== "WITHDRAWN" ? `Upload version ${nextRound}` : uploadLabel} redo={!!selLatest} />}
+              {situation === "check" && <a href="#self-check" className={MAIN_BTN}>Finish the check</a>}
+              {bar && (
+                <WorkStateBar
+                  bar={bar}
+                  tz={deskTz}
+                  selectedOutputId={selectedBrief?.outputId ?? null}
+                  variant="job"
+                  startLabel={startLabel}
+                  emphasis={situation === "not_started" ? "main" : "quiet"}
+                  offerStart={situation === "not_started" || situation === "back"}
+                  corrections={officeOn}
+                />
+              )}
+              {situation === "not_started" && (
+                <a href={footageUrl} target="_blank" rel="noopener noreferrer" className={QUIET_BTN}>
+                  <FolderOpen className="size-4 shrink-0" /> Open footage
+                </a>
+              )}
+              {situation === "review" && canUploadCuts && <a href="#submit-cut" className={QUIET_BTN}>Edit the note to the reviewer</a>}
+              {situation === "blocked" && <a href="#messages" className={QUIET_BTN}><MessageSquare className="size-4 shrink-0" /> Message Kyle</a>}
+              {situation !== "blocked" && (
+                <a href="#messages" className={QUIET_BTN}>
+                  <MessageSquare className="size-4 shrink-0" />
+                  Messages{viewer && !viewer.impersonating && unreadTeamMessages ? ` · ${unreadTeamMessages} new` : ""}
+                </a>
+              )}
+            </div>
+            {/* "Got it" is for the video ON THIS PAGE (review, Oct 5 night),
+                and since Oct 15 the client's brand changes ride the same press. */}
+            {showGotIt && (
               <div className="mt-3 border-t border-border pt-3">
                 <BriefGotIt
                   projectId={project.id}
@@ -1271,27 +1356,96 @@ export default async function EditBriefPage({
                   pending={mySelectedPending.map((p) => ({ outputId: p.outputId, digest: p.digest }))}
                   changed={mySelectedPending.some((p) => p.changed)}
                   noLogo={mySelectedPending.some((p) => p.noLogo)}
-                  otherVideos={myOtherPending.map((p) => ({ number: p.number, href: `/edit/${project.id}?output=${p.outputId}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}` }))}
+                  otherVideos={myOtherPending.map((p) => ({ number: p.number, href: `/edit/${project.id}?output=${p.outputId}${carry}` }))}
+                  brandUpdates={canAckBrand ? brandPending : []}
+                  single={!several}
                 />
               </div>
             )}
+            {!canAckBrand && brandPending.length > 0 && (
+              <div className="mt-3">
+                <BrandUpdatesBanner projectId={project.id} items={brandPending} canAck={false} canOverride={officeOn && canOverrideBrand} />
+              </div>
+            )}
+            {/* THE OFFICE'S ROW — Rush, Override and Full details stay here;
+                everything else the office uses is behind the one switch. */}
+            {officeSwitch && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3" data-office-bar>
+                {workLine && <p className="basis-full text-xs text-muted">{workLine}</p>}
+                {/* §10 rush: the desk only (see rushDesk above). */}
+                {rushDesk && (
+                  <RushButton
+                    ask={rushAsk}
+                    job={{
+                      projectId: project.id,
+                      street,
+                      status: STATUS_LABEL[project.status] ?? project.status,
+                      editorKey,
+                      editorName,
+                      editorAuto: false,
+                      overrides,
+                      computed,
+                    }}
+                  />
+                )}
+                {/* THE OVERRIDE (Jordan, Sep 13) — office only, and never from a
+                    "view as" preview (read-only; the server re-checks). */}
+                {isOwnerAdmin && !viewer?.impersonating && (
+                  <EditOverridesButton
+                    variant="header"
+                    job={{
+                      projectId: project.id,
+                      street,
+                      status: STATUS_LABEL[project.status] ?? project.status,
+                      editorKey,
+                      editorName,
+                      editorAuto: false,
+                      overrides,
+                      computed,
+                    }}
+                  />
+                )}
+                <Link href={`/projects/${project.id}`} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-brand">
+                  Full details <ExternalLink className="size-3.5" />
+                </Link>
+                <Link href={officeToggleHref} data-office-switch={officeOn ? "on" : "off"} aria-pressed={officeOn} className={`ml-auto inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand ${officeOn ? "border-brand bg-brand-soft/40 text-brand" : "border-border bg-surface text-muted hover:text-foreground"}`}>
+                  <Wrench className="size-4" /> {officeOn ? "Hide office tools" : "Show office tools"}
+                </Link>
+              </div>
+            )}
           </header>
-          {/* CHANGES TO MAKE — first, right under the header (Oct 14 2026,
-              Jordan: "revision requests should be at the top of the editor
-              brief"). Only when it came back. */}
-          {showChanges && (
-            <section id="video-changes" data-brief-section="changes" className="min-w-0 space-y-3 rounded-2xl border border-danger/30 bg-danger-soft/20 p-4">
-              <h3 className={H3}>Changes to make</h3>
-              {/* The reviewer's timestamped notes are on the video itself
-                  (below, under its player), where a tap on a time plays that
-                  moment: said here once, not copied (Oct 15 2026). */}
-              {activeSub && openOnActive > 0 && (
-                <p className="text-sm" data-cut-notes>
-                  <a href={`#cut-${activeSub.id}`} className="font-medium text-brand hover:underline">
-                    {openOnActive} note{openOnActive === 1 ? "" : "s"} to fix on version {activeSub.round}{verdictOf(activeSub)?.by ? ` from ${verdictOf(activeSub)!.by!.split(/\s+/)[0]}` : ""}, under the video below
-                  </a>
-                  . Tap a time to play that moment.
+
+          {/* 2 · FIX THESE — only when the video came back. */}
+          {cameBack && (
+            <section id="video-changes" data-brief-section="changes" className="min-w-0 space-y-3 rounded-2xl border border-danger/30 bg-danger-soft/20 p-4 sm:p-5">
+              {issuesAnchorInFix && <span id="issues" aria-hidden />}
+              <div>
+                <h2 className={H2}>Fix these</h2>
+                {activeSub && openOnActive > 0 && (
+                  <p className="mt-0.5 text-sm text-foreground/85" data-cut-notes>
+                    {openOnActive} note{openOnActive === 1 ? "" : "s"} to fix on version {activeSub.round}{verdictOf(activeSub)?.by ? `, from ${first(verdictOf(activeSub)!.by)}` : ""}. Tap a time to play that moment.
+                  </p>
+                )}
+              </div>
+              {heldItems.length > 0 && (
+                <p className="rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5 text-sm" data-creative-review>
+                  {heldItems.length === 1
+                    ? `1 note is with ${heldWho} for a creative review. You'll get it here once he's turned it into changes.`
+                    : `${heldItems.length} notes are with ${heldWho} for a creative review. You'll get them here once he's turned them into changes.`}
                 </p>
+              )}
+              {/* The version's player and its numbered notes: each time plays
+                  its moment, each note keeps its replies. */}
+              {activeSub && cutPanel(activeSub)}
+              {(() => {
+                const unplayable = activeSub ? selectedIssues.filter((i) => !issuesFor(activeSub).some((x) => x.id === i.id)) : selectedIssues;
+                return unplayable.length > 0 ? <RevisionIssuesPanel issues={unplayable} canReview={false} anchorId={null} /> : null;
+              })()}
+              {unassignedIssues.length > 0 && (
+                <div className="rounded-xl border border-warning/30 bg-surface p-3 text-sm">
+                  <p className="font-medium">Not tied to a video yet. Kyle will confirm which; {askKyle("ask Kyle")} if you need it sooner.</p>
+                  <div className="mt-2"><RevisionIssuesPanel issues={unassignedIssues} canReview={false} anchorId={null} /></div>
+                </div>
               )}
               {briefsHere.length === 0 && thisVideoAsks.length > 0 && (
                 <div className="space-y-2" data-asks="video">
@@ -1305,258 +1459,290 @@ export default async function EditBriefPage({
                   {jobWideAsks.map((ask, i) => <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{ask}</p>)}
                 </div>
               )}
-              {briefsHere.length > 0 && <details><summary className="flex min-h-11 cursor-pointer items-center text-sm">The client&apos;s original request</summary>
-                <RevisionBriefCard briefs={briefsHere} bounced={[]} canTick={false} canReanalyze={isOwnerAdmin && !viewer?.impersonating} />
-              </details>}
-              {unassignedIssues.length > 0 && <div className="rounded-lg border border-warning/30 p-3 text-sm"><p className="font-medium">Not tied to a video yet — Kyle will confirm which</p><RevisionIssuesPanel issues={unassignedIssues} canReview={false} /></div>}
-              {/* This video's own notes are under its player (EditorCutPanel); a
-                  note with no version to play stays listed here. */}
-              {(() => {
-                const unplayable = activeSub ? selectedIssues.filter((i) => !issuesFor(activeSub).some((x) => x.id === i.id)) : selectedIssues;
-                return unplayable.length > 0 ? <RevisionIssuesPanel issues={unplayable} canReview={false} /> : null;
-              })()}
-            </section>
-          )}
-
-          {/* 2 · MAKE THIS */}
-          {isVideoJob && (
-            <section id="video-make" data-brief-section="make" className={CARD}>
-              <h3 className={H3}>Make this</h3>
-              <p className="mt-1 text-sm font-medium leading-relaxed" data-make-this>{makeThis.line}</p>
-              {makeThis.source === "office" && <p className="mt-0.5 text-xs text-muted">Set by the office for this video.</p>}
-              {(officeDirection.length > 0 || jobSpec.length > 0 || specText("instructions") || showJobNote || specialAsks.length > 0 || !!brandBrief?.scopedInstructions.length) && (
-                <dl className="mt-3 space-y-2.5 border-t border-border pt-3 text-sm leading-relaxed">
-                  {officeDirection.map((x) => (
-                    <div key={x.key}><dt className="font-medium text-muted">{x.label}</dt><dd className="whitespace-pre-wrap text-foreground/90">{x.text}</dd></div>
-                  ))}
-                  {jobSpec.length > 0 && <div><dt className="font-medium text-muted">Every video on this job</dt><dd>{jobSpec.join(" · ")}</dd></div>}
-                  {specText("instructions") && <div><dt className="font-medium text-muted">Instructions</dt><dd className="whitespace-pre-wrap text-foreground/90">{specText("instructions")}</dd></div>}
-                  {showJobNote && <div><dt className="font-medium text-muted">From the office</dt><dd className="whitespace-pre-wrap text-foreground/90">{showJobNote}</dd></div>}
-                  {specialAsks.map((a) => <div key={a.id}><dt className="font-medium text-muted">Special request</dt><dd className="whitespace-pre-wrap text-foreground/90">{a.body}</dd></div>)}
-                  {brandBrief?.scopedInstructions.map((fact) => <div key={fact.id}><dt className="font-medium text-muted">{fact.scope === "MONTH" ? "This month" : "This job"}</dt><dd className="whitespace-pre-wrap text-foreground/90">{fact.body}</dd></div>)}
-                </dl>
+              {briefsHere.length > 0 && (
+                <details className="rounded-xl border border-border bg-surface px-3.5">
+                  <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">The client&apos;s exact words</summary>
+                  <div className="pb-3">
+                    <RevisionBriefCard briefs={briefsHere} bounced={[]} canTick={false} canReanalyze={officeOn && !viewer?.impersonating} />
+                  </div>
+                </details>
+              )}
+              {canUploadCuts && !heldOnly && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-danger/20 pt-3">
+                  <UploadTrigger label={selLatest && selStatus !== "WITHDRAWN" ? `Upload version ${nextRound}` : uploadLabel} redo={!!selLatest} />
+                  <span className="text-xs text-muted">A short final check asks which of these you fixed.</span>
+                </div>
               )}
             </section>
           )}
 
-          {/* Oct 8 2026: the client's own brief for the month (client-planned, or whenever one is on file). */}
-          {clientBrief && <BriefReadOnly brief={clientBrief.view} clientPlanned={clientBrief.clientPlanned} monthName={clientBrief.monthName} className="sm:mx-0" />}
-
-          {/* 3 · THE SCRIPT — open, with Copy; never money-scrubbed. */}
-          {(topicScript || useReelScript || scriptMissing) && (
-            <section id="video-script" data-brief-section="script" className={CARD}>
-              <details open className="group">
-                <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
-                  <h3 className={H3}>Script</h3>
-                  {topicScript && <span className="text-sm text-muted">{topicScript.versionNo ? `v${topicScript.versionNo}` : "draft"}</span>}
-                  {topicScript && (topicScript.clientApproved
-                    ? <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-semibold text-success">Approved by the client</span>
-                    : <span data-not-approved className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning">Not approved by the client yet</span>)}
-                  {useReelScript && <span className="text-sm text-muted">From the Script Studio</span>}
-                  <ChevronDown aria-hidden className="ml-auto size-4 text-muted transition-transform group-open:rotate-180" />
-                </summary>
-                {topicScript && !topicScript.clientApproved && <p className="mb-2 text-xs text-warning">These words are {topicScript.standing.replace(/^a /, "a ")}. Check with Kyle before you burn in the captions.</p>}
-                {topicScript && (topicScript.text ? <BriefScript body={topicScript.text} /> : <p className="text-sm text-muted">No words on file for this script yet — ask Kyle.</p>)}
-                {sharedJobScript && <p className="mb-2 text-xs text-muted" data-shared-script>One script for the whole job — it isn&apos;t tied to one video. Ask Kyle in the messages which video it&apos;s for.</p>}
-                {useReelScript && (
-                  <BriefScript
-                    body={[project.reelHook?.trim() ? `Hook: ${project.reelHook.trim()}` : null, project.reelScript?.trim() ? `Script: ${project.reelScript.trim()}` : null].filter(Boolean).join("\n\n")}
-                    parts={[{ label: "Hook", text: project.reelHook ?? "" }, { label: "Script", text: project.reelScript ?? "" }]}
-                  />
-                )}
-                {studioShotList && (
-                  <div className="mt-3 border-t border-border pt-3 text-sm" data-shot-list>
-                    <p className={LABEL}>Shot list</p>
-                    <p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{studioShotList}</p>
-                  </div>
-                )}
-                {scriptMissing && <p className="text-sm text-muted">{clientBrief?.clientPlanned ? "Client-planned — they wrote their own script. Go by the footage and their brief above." : "No script on file for this video yet — cut the B-roll first, or ask in the messages."}</p>}
-                {topicScript?.direction && (
-                  <dl className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm">
-                    {topicScript.direction.creativeDirection && <div><dt className="font-medium text-muted">Direction</dt><dd className="whitespace-pre-wrap">{topicScript.direction.creativeDirection}</dd></div>}
-                    {topicScript.direction.productionNotes && <div><dt className="font-medium text-muted">Production</dt><dd className="whitespace-pre-wrap">{topicScript.direction.productionNotes}</dd></div>}
-                    {topicScript.direction.filmingNotes && <div><dt className="font-medium text-muted">Filming</dt><dd className="whitespace-pre-wrap">{topicScript.direction.filmingNotes}</dd></div>}
+          {/* 3 · WHAT TO MAKE — open while the video is being made, one folded
+              line once a version is in. */}
+          {isVideoJob && (() => {
+            const scriptWord = topicScript ? (topicScript.clientApproved ? "script approved by the client" : "script not approved by the client yet") : useReelScript ? "script from the Script Studio" : null;
+            const summary = [styleType?.name ?? null, scriptWord, endCard?.file ? `${endWord.toLowerCase()}: ${endCard.file.name}` : null].filter(Boolean).join(" · ");
+            const body = (
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm font-medium leading-relaxed" data-make-this>{makeThis.line}</p>
+                  {makeThis.source === "office" && <p className="mt-0.5 text-xs text-muted">Set by the office for this video.</p>}
+                  {editDeliverables.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 text-sm font-medium text-brand focus-visible:outline-2 focus-visible:outline-brand"><PlayCircle className="size-4" /> See examples</summary>
+                      <div className="mt-2 space-y-3">
+                        {editDeliverables.map((d) => {
+                          const vt = videoTypeOf(d);
+                          const tierMeta = VIDEO_TIER[vt.tier];
+                          const chip = refinedDeliverableLabel(d.type, d.label);
+                          return (
+                            <div key={d.id} className="rounded-xl border border-border bg-surface-2/40 p-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm font-medium" style={{ backgroundColor: `${tierMeta.color}1a`, color: tierMeta.color }}>
+                                  <Film className="size-3.5" /> {chip}
+                                </span>
+                                <span className="text-xs text-muted">{vt.name} · {tierMeta.edit}</span>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {vt.style.map((st) => <span key={st} className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] font-medium text-foreground/80">{st}</span>)}
+                              </div>
+                              {vt.note && <p className="mt-2 text-xs leading-relaxed text-muted">{vt.note}</p>}
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                {vt.examples.map((e) => (
+                                  <a key={e.url} href={e.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-border px-3 text-xs font-medium text-brand hover:border-brand">
+                                    <PlayCircle className="size-3.5" /> {e.label}
+                                  </a>
+                                ))}
+                                <Link href="/resources/video-styles" className="inline-flex min-h-11 items-center text-xs font-medium text-muted hover:text-foreground">Full style guide</Link>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <AocPlaybookCard context="edit" />
+                      </div>
+                    </details>
+                  )}
+                </div>
+                {(officeDirection.length > 0 || jobSpec.length > 0 || specText("instructions") || showJobNote || specialAsks.length > 0 || !!brandBrief?.scopedInstructions.length) && (
+                  <dl className="space-y-2.5 border-t border-border pt-3 text-sm leading-relaxed">
+                    {officeDirection.map((x) => (
+                      <div key={x.key}><dt className="font-medium text-muted">{x.label}</dt><dd className="whitespace-pre-wrap text-foreground/90">{x.text}</dd></div>
+                    ))}
+                    {jobSpec.length > 0 && <div><dt className="font-medium text-muted">Every video on this job</dt><dd>{jobSpec.join(" · ")}</dd></div>}
+                    {specText("instructions") && <div><dt className="font-medium text-muted">Instructions</dt><dd className="whitespace-pre-wrap text-foreground/90">{specText("instructions")}</dd></div>}
+                    {showJobNote && <div><dt className="font-medium text-muted">From the office</dt><dd className="whitespace-pre-wrap text-foreground/90">{showJobNote}</dd></div>}
+                    {specialAsks.map((a) => <div key={a.id}><dt className="font-medium text-muted">Special request</dt><dd className="whitespace-pre-wrap text-foreground/90">{a.body}</dd></div>)}
+                    {brandBrief?.scopedInstructions.map((fact) => <div key={fact.id}><dt className="font-medium text-muted">{fact.scope === "MONTH" ? "This month" : "This job"}</dt><dd className="whitespace-pre-wrap text-foreground/90">{fact.body}</dd></div>)}
                   </dl>
                 )}
-                {project.scriptConfirmNote?.trim() && <p className="mt-2 text-xs text-muted">Confirmed on site: {project.scriptConfirmNote.split("\n").map((x) => x.trim()).filter(Boolean).join(" · ")}</p>}
-              </details>
-            </section>
-          )}
-
-          {/* 4 · FOOTAGE — one link, then what the people who were there said. */}
-          {isVideoJob && (
-            <section id="video-footage" data-brief-section="footage" className={CARD}>
-              <h3 className={H3}>Footage</h3>
-              <a href={footageUrl} target="_blank" rel="noopener noreferrer" data-footage-link className="mt-2 inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
-                <FolderOpen className="size-4 shrink-0" />
-                <span className="truncate">{ownFolder ? `Open this video's clips · ${ownFolder.label}` : "Open the raw footage"}</span>
-                {!ownFolder && <UploadDot n={folderCounts.raw} stale={folderCounts.stale} />}
-              </a>
-              {monthly && !ownFolder && <p className="mt-1.5 text-sm text-muted">This video&apos;s clips aren&apos;t in a folder of their own — they&apos;re in the session&apos;s raw footage. Ask Kyle if you can&apos;t tell which takes are this topic.</p>}
-              {shootNotes.length > 0 && (
-                <dl className="mt-3 space-y-2.5 text-sm leading-relaxed">
-                  {shootNotes.map((n, i) => <div key={i}><dt className="font-medium text-muted">{n.label}</dt><dd className="whitespace-pre-wrap text-foreground/90">{n.text}</dd></div>)}
-                </dl>
-              )}
-              {filming?.pending && filming.pending.topics.length > 0 && (
-                <div className="mt-3 rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
-                  <p className="font-medium">The photographer&apos;s report is still being saved:</p>
-                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                    {filming.pending.topics.map((t, i) => <li key={i}>{t.title}{t.extra ? " (filmed on site)" : ""}{t.note ? ` — ${scrub(t.note) ?? ""}` : ""}</li>)}
-                  </ul>
-                </div>
-              )}
-              {selectedBrief && briefGaps.filter((g) => g.outputId === selectedBrief.outputId).map((g) => (
-                <p key={g.id} className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">
-                  Missing work raised by {g.raisedBy}: {g.what}
-                  {g.state === "PLANNED" && g.ownerKey ? ` · ${g.ownerKey.charAt(0).toUpperCase()}${g.ownerKey.slice(1)} is getting it${g.dueISO ? ` by ${etDate(g.dueISO)}` : ""}` : " · the office is planning how to get it"}
-                </p>
-              ))}
-            </section>
-          )}
-
-          {/* 5 · BRAND — this video's end card, then the kit. */}
-          <section id="brand-assets" data-brief-section="brand" className={CARD}>
-            <h3 className={H3}>Brand</h3>
-            {isVideoJob && endCard && (
-              <p data-end-card className={`mt-1 text-sm ${endCard.warn ? "text-warning" : ""}`}>
-                {endCard.text}{" "}
-                {endCard.file && (endCard.file.url
-                  ? <a href={endCard.file.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{endCard.file.name} ↗</a>
-                  : <span className="font-medium">{endCard.file.name}</span>)}
-              </p>
-            )}
-            {brandColorsShown.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2" data-brand-colors>
-                <Palette className="size-3.5 text-muted" />
-                {brandColorsShown.map((c) => (
-                  <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2 py-1 text-xs font-medium">
-                    <span aria-hidden className="size-4 rounded border border-border" style={{ backgroundColor: c }} /> {c.toUpperCase()}
-                  </span>
-                ))}
-                {agent?.style.colorWords && <span className="text-xs text-muted">{agent.style.colorWords}</span>}
-              </div>
-            )}
-            {brandFonts && <p className="mt-2 text-sm"><span className="text-muted">Fonts:</span> {brandFonts}</p>}
-            {otherBrandFiles.length > 0 && (
-              <ul className="mt-2 flex flex-wrap gap-2">
-                {otherBrandFiles.map((f) => (
-                  <li key={f.versionId} className="inline-flex min-w-0 items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs">
-                    <span className="font-semibold text-muted">{f.typeWord}</span>
-                    {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate text-brand hover:underline">{f.fileName ?? f.name}</a> : <span className="min-w-0 truncate">{f.fileName ?? f.name}</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {brandBrief?.website && <p className="mt-2 text-sm"><span className="text-muted">Website:</span> {brandBrief.website}</p>}
-            {!brandColorsShown.length && !brandFonts && !otherBrandFiles.length && !endCard?.file && <p className="mt-2 text-sm text-muted">No colours or fonts on file — keep it clean and neutral.</p>}
-            {assets ? (
-              <details className="mt-3 border-t border-border pt-2">
-                <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Their brand folder · add a file</summary>
-                <ClientAssetsCard
-                  clientId={assets.clientId}
-                  files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
-                  folderUrl={assets.folderUrl}
-                  canUpload
-                />
-              </details>
-            ) : brandUrl ? (
-              <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-brand hover:underline">Their brand folder <ExternalLink className="size-3.5" /></a>
-            ) : null}
-          </section>
-
-          {/* 6 · THE CLIENT — who they are (collapsed) and their own words. */}
-          <section id="video-client" data-brief-section="client" className="min-w-0 space-y-3">
-            {agent && <AgentProfileCard agent={agent} hidePreferencesFrom={["portal", "aryeo"]} linkLogo={false} hideBrandKit />}
-            {hasTheirWords && (
-              <div className={CARD}>
-                <h3 className={H3}>In their words</h3>
-                <p className="mt-0.5 text-xs text-muted">Where this differs from the house style, theirs wins.</p>
-                <div className="mt-3 space-y-3 text-sm leading-relaxed">
-                  {showTheirStyle && <div><p className={LABEL}>How they like their videos — from their portal</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showTheirStyle}</p></div>}
-                  {showTheirPrefs && <div><p className={LABEL}>How they like to work — from their portal</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showTheirPrefs}</p></div>}
-                  {showOrderNote && <div><p className={LABEL}>On this order</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showOrderNote}</p></div>}
-                  {customerNoteLines.length > 0 && (
-                    <div><p className={LABEL}>From their customer notes</p>
-                      <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-foreground/90">{customerNoteLines.map((t, i) => <li key={i}>{t}</li>)}</ul>
-                    </div>
-                  )}
-                  {confirmedPrefs.length > 0 && (
-                    <div><p className={LABEL}>Confirmed preferences</p>
-                      <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-foreground/90">{confirmedPrefs.map((t, i) => <li key={i}>{t}</li>)}</ul>
+                {/* Their own words: where they differ from the house style, theirs wins. */}
+                {hasTheirWords && (
+                  <div className="space-y-3 border-t border-border pt-3 text-sm leading-relaxed" data-their-words>
+                    <p className="font-medium">In their words <span className="font-normal text-muted">· where this differs from the house style, theirs wins</span></p>
+                    {showTheirStyle && <div><p className={LABEL}>How they like their videos (their portal)</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showTheirStyle}</p></div>}
+                    {showTheirPrefs && <div><p className={LABEL}>How they like to work (their portal)</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showTheirPrefs}</p></div>}
+                    {showOrderNote && <div><p className={LABEL}>On this order</p><p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{showOrderNote}</p></div>}
+                    {customerNoteLines.length > 0 && (
+                      <div><p className={LABEL}>From their customer notes</p>
+                        <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-foreground/90">{customerNoteLines.map((t, i) => <li key={i}>{t}</li>)}</ul>
+                      </div>
+                    )}
+                    {confirmedPrefs.length > 0 && (
+                      <div><p className={LABEL}>Confirmed preferences</p>
+                        <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-foreground/90">{confirmedPrefs.map((t, i) => <li key={i}>{t}</li>)}</ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Oct 8 2026: the client's own brief for the month (client-planned, or whenever one is on file). */}
+                {clientBrief && <BriefReadOnly brief={clientBrief.view} clientPlanned={clientBrief.clientPlanned} monthName={clientBrief.monthName} className="sm:mx-0" />}
+                {/* THE SCRIPT — open, with Copy; never money-scrubbed. */}
+                {(topicScript || useReelScript || scriptMissing) && (
+                  <section id="video-script" data-brief-section="script" className="border-t border-border pt-1">
+                    <details open className="group">
+                      <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+                        <h3 className={H3}>Script</h3>
+                        {topicScript && <span className="text-sm text-muted">{topicScript.versionNo ? `v${topicScript.versionNo}` : "draft"}</span>}
+                        {topicScript && (topicScript.clientApproved
+                          ? <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-semibold text-success">Approved by the client</span>
+                          : <span data-not-approved className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning">Not approved by the client yet</span>)}
+                        {useReelScript && <span className="text-sm text-muted">From the Script Studio</span>}
+                        <ChevronDown aria-hidden className="ml-auto size-4 text-muted transition-transform group-open:rotate-180" />
+                      </summary>
+                      {topicScript && !topicScript.clientApproved && <p className="mb-2 text-xs text-warning">These words are {topicScript.standing}. Check with Kyle before you burn in the captions: {askKyle("message Kyle")}.</p>}
+                      {topicScript && (topicScript.text ? <BriefScript body={topicScript.text} /> : <p className="text-sm text-muted">No words on file for this script yet. {askKyle("Ask Kyle")}.</p>)}
+                      {sharedJobScript && <p className="mb-2 text-xs text-muted" data-shared-script>One script for the whole job. It isn&apos;t tied to one video: {askKyle("ask Kyle")} which video it&apos;s for.</p>}
+                      {useReelScript && (
+                        <BriefScript
+                          body={[project.reelHook?.trim() ? `Hook: ${project.reelHook.trim()}` : null, project.reelScript?.trim() ? `Script: ${project.reelScript.trim()}` : null].filter(Boolean).join("\n\n")}
+                          parts={[{ label: "Hook", text: project.reelHook ?? "" }, { label: "Script", text: project.reelScript ?? "" }]}
+                        />
+                      )}
+                      {studioShotList && (
+                        <div className="mt-3 border-t border-border pt-3 text-sm" data-shot-list>
+                          <p className={LABEL}>Shot list</p>
+                          <p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{studioShotList}</p>
+                        </div>
+                      )}
+                      {scriptMissing && <p className="text-sm text-muted">{clientBrief?.clientPlanned ? "Client-planned: they wrote their own script. Go by the footage and their brief above." : <>No script on file for this video yet. Cut the B-roll first, or {askKyle("ask Kyle")}.</>}</p>}
+                      {topicScript?.direction && (
+                        <dl className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm">
+                          {topicScript.direction.creativeDirection && <div><dt className="font-medium text-muted">Direction</dt><dd className="whitespace-pre-wrap">{topicScript.direction.creativeDirection}</dd></div>}
+                          {topicScript.direction.productionNotes && <div><dt className="font-medium text-muted">Production</dt><dd className="whitespace-pre-wrap">{topicScript.direction.productionNotes}</dd></div>}
+                          {topicScript.direction.filmingNotes && <div><dt className="font-medium text-muted">Filming</dt><dd className="whitespace-pre-wrap">{topicScript.direction.filmingNotes}</dd></div>}
+                        </dl>
+                      )}
+                      {project.scriptConfirmNote?.trim() && <p className="mt-2 text-xs text-muted">Confirmed on site: {project.scriptConfirmNote.split("\n").map((x) => x.trim()).filter(Boolean).join(" · ")}</p>}
+                    </details>
+                  </section>
+                )}
+                {/* ONE music line. */}
+                <div id="video-music" data-brief-section="music" className="border-t border-border pt-3 text-sm">
+                  <p data-music-rule>
+                    <span className="font-medium">Music: </span>
+                    {musicForVideo
+                      ? <>for this video, {musicForVideo}</>
+                      : reelSong
+                        ? <>use the song picked with the Studio script: {/^https?:\/\//i.test(reelSong) ? <a href={reelSong} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">song link ↗</a> : reelSong}</>
+                        // Oct 15 2026 (audit): "below" only when the picker is below, and "under
+                        // the voice" only on a video that has one.
+                        : catalogueMusicAllowed
+                          ? (musicPicker ? "pick a licensed track below." : "use a licensed track that fits the pace of the edit.")
+                          : showScript
+                            ? "use trending audio that fits the script's energy, low under the voice."
+                            : "use trending audio that fits the pace of the edit."}
+                    {brandBrief?.music && <span className="text-muted"> They prefer: {brandBrief.music}.</span>}
+                    {(musicType || musicPick) && <span className="text-muted"> {[musicType ? `Music type: ${musicType}` : null, musicPick ? `Picked: ${musicPickLine(musicPick)}` : null].filter(Boolean).join(" · ")}</span>}
+                  </p>
+                  {musicPicker && (
+                    <div className="mt-3">
+                      <MusicCard
+                        projectId={project.id}
+                        connected={musicConnected}
+                        isOffice={isOwnerAdmin}
+                        canAct={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
+                        pick={musicPick}
+                        pickUrl={musicPickUrl}
+                        musicType={musicType}
+                      />
                     </div>
                   )}
                 </div>
+                {/* The logo or end card for THIS video. */}
+                {endCard && (
+                  <p data-end-card className={`border-t border-border pt-3 text-sm ${endCard.warn ? "text-warning" : ""}`}>
+                    {endCard.text}{" "}
+                    {endCard.file && (endCard.file.url
+                      ? <a href={endCard.file.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{endCard.file.name} ↗</a>
+                      : <span className="font-medium">{endCard.file.name}</span>)}
+                    {endCard.askKyle && askKyle("message Kyle")}
+                  </p>
+                )}
               </div>
-            )}
-          </section>
+            );
+            return (
+              <section id="video-make" data-brief-section="make" className={CARD}>
+                {versionSent ? (
+                  <details className="group">
+                    <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-0.5 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+                      <h2 className={H2}>What to make</h2>
+                      {summary && <span className="min-w-0 text-sm text-muted">{summary}</span>}
+                      <ChevronDown aria-hidden className="ml-auto size-4 text-muted transition-transform group-open:rotate-180" />
+                    </summary>
+                    <div className="mt-3">{body}</div>
+                  </details>
+                ) : (
+                  <>
+                    <h2 className={`${H2} mb-3`}>What to make</h2>
+                    {body}
+                  </>
+                )}
+              </section>
+            );
+          })()}
 
-          {/* 7 · MUSIC — one rule. */}
-          {isVideoJob && (
-            <section id="video-music" data-brief-section="music" className={CARD}>
-              <h3 className={H3}>Music</h3>
-              <p className="mt-1 text-sm" data-music-rule>
-                {musicForVideo
-                  ? <>For this video: {musicForVideo}</>
-                  : reelSong
-                    ? <>Use the song picked with the Studio script: {/^https?:\/\//i.test(reelSong) ? <a href={reelSong} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">song link ↗</a> : reelSong}</>
-                    // Oct 15 2026 (audit): "below" only when the picker is below, and "under
-                    // the voice" only on a video that has one.
-                    : catalogueMusicAllowed
-                      ? (musicConnected || isOwnerAdmin ? "Pick a licensed track below." : "Use a licensed track that fits the pace of the edit.")
-                      : showScript
-                        ? "Use trending audio that fits the script's energy, low under the voice."
-                        : "Use trending audio that fits the pace of the edit."}
-              </p>
-              {brandBrief?.music && <p className="mt-1 text-sm"><span className="text-muted">They prefer:</span> {brandBrief.music}</p>}
-              {(musicType || musicPick) && <p className="mt-1 text-sm text-muted">{[musicType ? `Music type: ${musicType}` : null, musicPick ? `Picked: ${musicPickLine(musicPick)}` : null].filter(Boolean).join(" · ")}</p>}
-              {catalogueMusicAllowed && (musicConnected || isOwnerAdmin) && (
-                <div className="mt-3">
-                  <MusicCard
-                    projectId={project.id}
-                    connected={musicConnected}
-                    isOffice={isOwnerAdmin}
-                    canAct={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
-                    pick={musicPick}
-                    pickUrl={musicPickUrl}
-                    musicType={musicType}
+          {/* 4 · FOOTAGE AND BRAND FILES */}
+          <section id="video-footage" data-brief-section="footage" className={CARD}>
+            <h2 className={H2}>{isVideoJob ? "Footage and brand files" : "Brand files"}</h2>
+            {isVideoJob && (
+              <>
+                <a href={footageUrl} target="_blank" rel="noopener noreferrer" data-footage-link className="mt-3 inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border border-border-strong bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
+                  <FolderOpen className="size-4 shrink-0" />
+                  <span className="truncate">{ownFolder ? `Open this video's clips · ${ownFolder.label}` : `Open the raw footage · ${footageCount}`}</span>
+                </a>
+                {monthly && !ownFolder && <p className="mt-1.5 text-sm text-muted">This video&apos;s clips aren&apos;t in a folder of their own. They&apos;re in the session&apos;s raw footage; {askKyle("ask Kyle")} if you can&apos;t tell which takes are this topic.</p>}
+                {shootNotes.length > 0 && (
+                  <div className="mt-4">
+                    <p className={LABEL}>From the shoot</p>
+                    <ul className="mt-1.5 space-y-2 text-sm leading-relaxed">
+                      {shootNotes.map((n, i) => <li key={i} className="whitespace-pre-wrap text-foreground/90"><span className="font-medium text-muted">{n.label}: </span>{n.text}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {filming?.pending && filming.pending.topics.length > 0 && (
+                  <div className="mt-3 rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                    <p className="font-medium">The photographer&apos;s report is still being saved:</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                      {filming.pending.topics.map((t, i) => <li key={i}>{t.title}{t.extra ? " (filmed on site)" : ""}{t.note ? `: ${scrub(t.note) ?? ""}` : ""}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {selectedBrief && briefGaps.filter((g) => g.outputId === selectedBrief.outputId).map((g) => (
+                  <p key={g.id} className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">
+                    Missing work raised by {g.raisedBy}: {g.what}
+                    {g.state === "PLANNED" && g.ownerKey ? ` · ${g.ownerKey.charAt(0).toUpperCase()}${g.ownerKey.slice(1)} is getting it${g.dueISO ? ` by ${etDate(g.dueISO)}` : ""}` : " · the office is planning how to get it"}
+                  </p>
+                ))}
+              </>
+            )}
+            {/* The brand kit: colours, fonts, logo files, folder. */}
+            <section id="brand-assets" data-brief-section="brand" className={isVideoJob ? "mt-4 border-t border-border pt-4" : "mt-3"}>
+              <h3 className={H3}>Brand kit</h3>
+              {brandColorsShown.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-2" data-brand-colors>
+                  <Palette className="size-3.5 text-muted" />
+                  {brandColorsShown.map((c) => (
+                    <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2 py-1 text-xs font-medium">
+                      <span aria-hidden className="size-4 rounded border border-border" style={{ backgroundColor: c }} /> {c.toUpperCase()}
+                    </span>
+                  ))}
+                  {agent?.style.colorWords && <span className="text-xs text-muted">{agent.style.colorWords}</span>}
+                </div>
+              )}
+              {brandFonts && <p className="mt-2 text-sm"><span className="text-muted">Fonts:</span> {brandFonts}</p>}
+              {otherBrandFiles.length > 0 && (
+                <ul className="mt-2 flex flex-wrap gap-2">
+                  {otherBrandFiles.map((f) => (
+                    <li key={f.versionId} className="inline-flex min-h-11 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs">
+                      <span className="font-semibold text-muted">{f.typeWord}</span>
+                      {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate text-brand hover:underline">{f.fileName ?? f.name}</a> : <span className="min-w-0 truncate">{f.fileName ?? f.name}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {brandBrief?.website && <p className="mt-2 text-sm"><span className="text-muted">Website:</span> {brandBrief.website}</p>}
+              {!brandColorsShown.length && !brandFonts && !otherBrandFiles.length && !endCard?.file && <p className="mt-2 text-sm text-muted">No colours or fonts on file. Keep it clean and neutral.</p>}
+              {assets ? (
+                <details className="mt-3 border-t border-border pt-2">
+                  <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Their brand folder · add a file</summary>
+                  <ClientAssetsCard
+                    clientId={assets.clientId}
+                    files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
+                    folderUrl={assets.folderUrl}
+                    canUpload
                   />
-                </div>
-              )}
+                </details>
+              ) : brandUrl ? (
+                <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-brand hover:underline">Their brand folder <ExternalLink className="size-3.5" /></a>
+              ) : null}
             </section>
-          )}
-
+          </section>
         </article>
 
-        {/* SEND TO REVIEW — upload a version, the cut in front of them, the
-            notes on it. #submit-cut is where every "upload" link lands. */}
-        <div id="submit-cut" className="scroll-mt-20 space-y-4">
-          {selectedBrief?.reviewer && <p className="text-sm text-muted">{selectedBrief.reviewer.from === "cut" ? `${selectedBrief.reviewer.name} is reviewing this video.` : `${selectedBrief.reviewer.name} reviews it first.`}</p>}
-          {slots.length === 0 && currentCuts.length > 1 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {currentCuts.map((c, i) => (
-                <Link
-                  key={c.id}
-                  // A cut with no panel of its own still answers #cut-<id>
-                  // here, so no revision link can point at nothing.
-                  id={panelIds.has(c.id) ? undefined : `cut-${c.id}`}
-                  href={`/edit/${project.id}?cut=${c.id}`}
-                  className={`inline-flex scroll-mt-24 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
-                    activeSub?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
-                  }`}
-                >
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
-                  />
-                  <span className="max-w-48 truncate">{slotLabelOf(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
-                  {c.round > 1 && <span className="text-[10px] text-muted-2">v{c.round}</span>}
-                </Link>
-              ))}
-            </div>
-          )}
-          {/* Versions that exist but wait on the send-for-review check (§8.2).
-              Anchor #self-check is where the "check needed" bell lands. */}
+        {/* 5 · SEND FOR REVIEW — this video's upload row, the version in front
+            of them, the final check; #submit-cut is where every upload link lands. */}
+        <section id="send" data-brief-section="send" className="min-w-0 space-y-4">
+          {/* Versions that exist but wait on the final check (§8.2). Anchor
+              #self-check is where the "check needed" bell lands. */}
           <HeldCutsCard
             held={quality.held.map((h) => ({
               submissionId: h.submissionId, round: h.round, fileName: h.fileName, reason: h.reason, sizeBytes: h.sizeBytes, context: h.context,
@@ -1565,121 +1751,89 @@ export default async function EditBriefPage({
             canFinish={canUploadCuts && !viewer?.impersonating}
             onBehalfOf={quality.onBehalfOf}
           />
-          {panelSubs.map((s) => (
-            <EditorCutPanel
-              key={s.id}
-              projectId={project.id}
-              submissionId={s.id}
-              round={s.round}
-              status={s.status}
-              cutIndex={cutIndexOf(s)}
-              cutTotal={slots.length || null}
-              cutLabel={slotOf(s)?.deliverableLabel ?? null}
-              assetUrl={s.assetUrl}
-              streamable={!!s.blobUrl}
-              fileName={s.fileName}
-              finalFolderUrl={finalUrl}
-              notes={notesFor(s)}
-              ownNotes={ownNotesFor(s)}
-              issues={issuesFor(s).map((i) => ({ id: i.id, state: i.state, text: i.summary || i.text, timeSec: i.timeSec, by: i.raisedByName, round: i.raisedOnRound }))}
-              canFix={!isOwnerAdmin}
-              viewerName={viewer?.name}
-              player={s.id === playerSubId}
-              verdict={verdictOf(s)}
-            />
-          ))}
-          <CutUploader
-            projectId={project.id}
-            canUpload={canUploadCuts}
-            checks={quality.checks}
-            onBehalfOf={quality.onBehalfOf}
-            // Only Jordan and Kyle may send an over-spec file anyway, and
-            // only for real: the server checks the role again and puts their
-            // name on it (startCutUpload).
-            canOverrideExport={!viewer?.impersonating && isOwnerAdmin}
-            // Only a named ask raised AFTER this slot's approval reopens its
-            // upload door. Another video's revision is not permission to
-            // treat this approved cut as the client's change request.
-            reopenedSlotKeys={openSlotKeys}
-            officeReopen={officeReopen}
-            cuts={shownCutRows}
-            stillWorking={stillWorking}
-          />
-          {hiddenSlots >= 3 && (
-            <Link
-              href={slotsHref(!showAllSlots)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-            >
-              {collapseSlots
-                ? `${hiddenSlots} more slots with nothing uploaded yet — show`
-                : `Hide the ${hiddenSlots} slots with nothing uploaded yet`}
-            </Link>
+          {/* The version in front of them, when it isn't already up in Fix these. */}
+          {!cameBack && activeSub && cutPanel(activeSub)}
+          {slots.length === 0 && currentCuts.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {currentCuts.map((c, i) => (
+                <Link
+                  key={c.id}
+                  // A cut with no panel of its own still answers #cut-<id>
+                  // here, so no revision link can point at nothing.
+                  id={panelIds.has(c.id) ? undefined : `cut-${c.id}`}
+                  href={`/edit/${project.id}?cut=${c.id}${carry}`}
+                  className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                    activeSub?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
+                  }`}
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
+                  />
+                  <span className="max-w-48 truncate">{slotLabelOf(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
+                  {c.round > 1 && <span className="text-[10px] text-muted-2">version {c.round}</span>}
+                </Link>
+              ))}
+            </div>
           )}
-          {/* The rescue hatch for the old habit — exporting straight into the
-              Dropbox Final folder (12 of 26 cuts once came this way). The
-              export spec is in the upload panel just above, so it is not
-              repeated here. */}
+          {selectedBrief?.reviewer && situation !== "review" && situation !== "done" && (
+            <p className="text-sm text-muted">{selectedBrief.reviewer.from === "cut" ? `${selectedBrief.reviewer.name} is reviewing this video.` : `${selectedBrief.reviewer.name} reviews it first.`}</p>
+          )}
+          {/* An approved video's row folds: replacing it is a decision, not the
+              next step. Everywhere else the row is the page's one upload. */}
+          {situation === "done" ? (
+            <details id="submit-cut" className="rounded-2xl border border-border bg-surface px-4 sm:px-5">
+              <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Upload a revised version</summary>
+              <span id="upload" aria-hidden />
+              <div className="pb-4">{uploader}</div>
+            </details>
+          ) : (
+            <div id="submit-cut">
+              <span id="upload" aria-hidden />
+              {uploader}
+            </div>
+          )}
+          {/* The rescue hatch for the old habit: exporting straight into the
+              Dropbox Final folder (12 of 26 cuts once came this way). */}
           {/* NOT FOR MONTHLY VIDEOS (Oct 5 2026): their portal only takes the
               checked 1080p file, and the 1080p pass needs the hub's own copy —
               a file sent from the Final folder could never reach the client. */}
           {project.contentMonthId ? (
             <p className="rounded-xl border border-border bg-surface px-4 py-2.5 text-xs text-muted">Monthly videos are sent from here only: upload the file above, even if it&apos;s already in the Final folder. The 1080p finish needs the hub&apos;s own copy.</p>
           ) : (
-            <details className="rounded-xl border border-border bg-surface px-4 py-2.5 text-xs text-muted">
-              <summary className="flex min-h-11 cursor-pointer items-center">Already dropped a file in the Final footage folder instead?</summary>
-              <div className="mt-2"><FolderSendForReview projectId={project.id} onBehalfOf={quality.onBehalfOf} /></div>
+            <details className="rounded-xl border border-border bg-surface px-4 text-xs text-muted">
+              <summary className="flex min-h-11 cursor-pointer items-center">Already put the file in the Final footage folder?</summary>
+              <div className="pb-3"><FolderSendForReview projectId={project.id} onBehalfOf={quality.onBehalfOf} /></div>
             </details>
           )}
-          {viewer?.role === "EDITOR" && (
-            <Link href="/quality?tab=editors" className="inline-flex text-xs font-medium text-brand hover:underline">
-              Your review results →
-            </Link>
-          )}
-        </div>
+        </section>
 
-        {/* THE TEAM'S MESSAGES ON THIS JOB — the board carries its own
-            "Team messages" heading and card (and the #messages anchor). */}
+        {/* THE TEAM'S MESSAGES ON THIS JOB — the board carries its own "Team
+            messages" heading and card (and the #messages anchor every "ask
+            Kyle" on this page links to). */}
         <div className="min-w-0">
-          <div>
-            <ProjectMessages
-              projectId={project.id}
-              readOnly={!!viewer?.impersonating}
-              canRequestRevision={quality.canReview}
-              team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
-              messages={project.messages.map((m) => ({
-                id: m.id,
-                authorId: m.authorId,
-                authorName: m.authorName,
-                body: m.body,
-                createdAt: m.createdAt.toISOString(),
-                ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
-                replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: m.replyTo.body } : null,
-              }))}
-            />
-          </div>
+          <ProjectMessages
+            projectId={project.id}
+            readOnly={!!viewer?.impersonating}
+            canRequestRevision={quality.canReview}
+            team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
+            messages={project.messages.map((m) => ({
+              id: m.id,
+              authorId: m.authorId,
+              authorName: m.authorName,
+              body: m.body,
+              createdAt: m.createdAt.toISOString(),
+              ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
+              replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: m.replyTo.body } : null,
+            }))}
+          />
         </div>
 
-        {/* ---- EVERYTHING ELSE, FOLDED ---- */}
-        <div className="space-y-3" data-brief-more>
-          {otherVideos.length > 0 && (
-            <details className={CARD}>
-              <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">Other videos on this job · {otherVideos.length}</summary>
-              <ul className="mt-2 space-y-2 text-sm">
-                {otherVideos.map((o) => {
-                  const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === o.key)?.latest ?? null;
-                  return (
-                    <li key={o.outputId} className="rounded-xl border border-border bg-surface-2/40 p-3">
-                      <span className="font-medium">{navigation.get(o.key)?.number ?? o.index}. {o.topicTitle || o.format}</span>
-                      <span className="text-muted"> · {latest ? (latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? "Changes requested" : "In review") : "Awaiting edit"}{o.script ? ` · script ${o.script.clientApproved ? "approved by the client" : "not approved by the client yet"}` : ""}</span>
-                      {o.note && <p className="mt-1 text-xs text-foreground/85"><span className="text-muted">From the shoot: </span>{o.note}</p>}
-                    </li>
-                  );
-                })}
-              </ul>
-              {(filming?.slotsWithoutTopic ?? 0) > 0 && <p className="mt-2 text-xs text-muted">{filming!.slotsWithoutTopic} video{filming!.slotsWithoutTopic === 1 ? " has" : "s have"} no topic recorded yet — Kyle will say which.</p>}
-            </details>
-          )}
-
+        {/* ABOUT THE CLIENT — who they are (collapsed), their style, their month. */}
+        <section id="video-client" data-brief-section="client" className="min-w-0 space-y-3">
+          {agent && <AgentProfileCard agent={agent} hidePreferencesFrom={["portal", "aryeo"]} linkLogo={false} hideBrandKit />}
+          {/* Oct 15 2026: their proven format, the series they stopped, their example and last approved videos. */}
+          <ClientStyleMemory memory={brandBrief?.styleMemory} />
           {editorMonth && (
             <details className={CARD}>
               <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">{project.client.name}&apos;s month · {editorMonth.monthKey}</summary>
@@ -1687,13 +1841,13 @@ export default async function EditBriefPage({
                 <>
                   <p className="mt-2 text-sm">{editorMonth.allowance} video{editorMonth.allowance === 1 ? "" : "s"} this month · {editorMonth.counts.filmedConfirmed} filmed · {editorMonth.counts.submitted} sent for review · {editorMonth.counts.approved} approved · {editorMonth.counts.delivered} delivered</p>
                   {/* The scope checks are the office's to act on, not the editor's to read. */}
-                  {isOwnerAdmin && editorMonth.counts.slotsOnJobs !== editorMonth.allowance && <p className="mt-1 text-xs text-warning">These jobs record {editorMonth.counts.slotsOnJobs} video slots against a package of {editorMonth.allowance}. Reconcile the scope; the slots have not been changed.</p>}
-                  {isOwnerAdmin && editorMonth.counts.unpairedCuts > 0 && <p className="mt-1 text-xs text-warning">{editorMonth.counts.unpairedCuts} cut{editorMonth.counts.unpairedCuts === 1 ? " is" : "s are"} not paired with a current video slot.</p>}
-                  {isOwnerAdmin && editorMonth.counts.filmedConfirmed < editorMonth.counts.delivered && <p className="mt-1 text-xs text-warning">Filming confirmation is incomplete in the Hub.</p>}
+                  {officeOn && editorMonth.counts.slotsOnJobs !== editorMonth.allowance && <p className="mt-1 text-xs text-warning">These jobs record {editorMonth.counts.slotsOnJobs} video slots against a package of {editorMonth.allowance}. Reconcile the scope; the slots have not been changed.</p>}
+                  {officeOn && editorMonth.counts.unpairedCuts > 0 && <p className="mt-1 text-xs text-warning">{editorMonth.counts.unpairedCuts} cut{editorMonth.counts.unpairedCuts === 1 ? " is" : "s are"} not paired with a current video slot.</p>}
+                  {officeOn && editorMonth.counts.filmedConfirmed < editorMonth.counts.delivered && <p className="mt-1 text-xs text-warning">Filming confirmation is incomplete in the Hub.</p>}
                 </>
-              ) : <p className="mt-2 text-sm text-muted">Only sessions you can open are shown. Ask Kyle for the full month.</p>}
+              ) : <p className="mt-2 text-sm text-muted">Only sessions you can open are shown. {askKyle("Ask Kyle")} for the full month.</p>}
               <details className="mt-2" id="month-sessions">
-                <summary className="min-h-11 cursor-pointer rounded-lg px-2 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Sessions this month · {editorMonth.sessions.length}</summary>
+                <summary className="flex min-h-11 cursor-pointer items-center rounded-lg px-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Sessions this month · {editorMonth.sessions.length}</summary>
                 <div className="grid gap-2 lg:grid-cols-2">
                   {editorMonth.sessions.map((session) => (
                     <div key={session.key} className={`rounded-xl border p-3 text-xs leading-relaxed ${session.id === project.id ? "border-brand/40 bg-brand/5" : "border-border bg-surface-2/40"}`}>
@@ -1702,113 +1856,76 @@ export default async function EditBriefPage({
                       <p>Topics: {session.topics.length ? session.topics.join("; ") : "none linked to this job"}</p>
                       {session.id !== project.id && (
                         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-medium text-brand">
-                          <Link href={`/edit/${session.id}`} className="hover:underline">Open that job&apos;s brief →</Link>
+                          <Link href={`/edit/${session.id}`} className="inline-flex min-h-11 items-center hover:underline">Open that job&apos;s brief</Link>
                         </div>
                       )}
                     </div>
                   ))}
                 </div>
               </details>
-              {isOwnerAdmin && <p className="mt-2 text-xs text-muted">{editorMonth.unlinkedClientJobs > 0 ? `${editorMonth.unlinkedClientJobs} other client video job${editorMonth.unlinkedClientJobs === 1 ? " has" : "s have"} no month link. ` : ""}Repair a missing or wrong month link in <Link href={`/content/${editorMonth.enrollmentId}?tab=production&view=sessions&month=${editorMonth.monthKey}`} className="font-medium text-brand hover:underline">Content Program → Sessions</Link>.</p>}
+              {officeOn && <p className="mt-2 text-xs text-muted">{editorMonth.unlinkedClientJobs > 0 ? `${editorMonth.unlinkedClientJobs} other client video job${editorMonth.unlinkedClientJobs === 1 ? " has" : "s have"} no month link. ` : ""}Repair a missing or wrong month link in <Link href={`/content/${editorMonth.enrollmentId}?tab=production&view=sessions&month=${editorMonth.monthKey}`} className="font-medium text-brand hover:underline">Content Program → Sessions</Link>.</p>}
             </details>
           )}
           {monthRead.failed && project.contentMonthId && <p role="alert" className="rounded-xl border border-warning/50 bg-warning/10 p-3 text-sm text-warning">This client&apos;s month could not be loaded. The video brief above is complete; reload to try the month again.</p>}
+        </section>
 
-          {/* HISTORY — the tracker, every version sent, the review notes. */}
-          {(showTracker || feedback.length > 0 || quality.issues.length > 0) && (
-            // Open when the office has just moved a reopened job's date, so
-            // the form's own confirmation is on screen (#reopened-due).
-            <details className={CARD} open={!!dueNotice}>
-              <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">History · {rounds.length} version{rounds.length === 1 ? "" : "s"} sent for review</summary>
-              <div className="mt-3 space-y-4">
-                {showTracker && (
-                  <section id="edit-history" className="scroll-mt-24">
-                    <EditTracker
-                      stage={stage}
-                      statusLine={statusLine}
-                      hadRevision={hadRevision}
-                      editType={trackerEditType}
-                      dueISO={selectedDue ? selectedDue.toISOString() : null}
-                      // The deadline is said once, at the top of the brief —
-                      // except where the office moves a reopened job's date,
-                      // which needs the date beside its form.
-                      hideDue={!(!selectedPromise && reopened && strictOwnerAdmin && !viewer?.impersonating)}
-                      hideMusic
-                      overridden={{ due: selectedPromise ? false : reopened ? reopened.office : overrides.dueAt != null, editType: overrides.typeDetail != null }}
-                      dueWords={selectedPromise ? "This video’s promised deadline" : reopened ? (reopened.at ? reopened.words : "Reopened, no due date yet") : null}
-                      moveDue={
-                        !selectedPromise && reopened && strictOwnerAdmin && !viewer?.impersonating
-                          ? { action: moveReopenedDueForm, projectId: id, defaultLocal: etLocalInput(trackerDue ?? new Date()), notice: dueNotice }
-                          : null
-                      }
-                      shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
-                      photographerName={project.photographer?.name ?? null}
-                      song={project.reelSong}
-                      rounds={rounds}
-                      // The client's asks are in "Changes to make" above.
-                      revisionAsks={[]}
-                      revisionAtISO={revisionAtISO}
-                      revisionAskedBy={revisionAskedBy}
-                      revisionHref={revisionHref}
-                      showSubmitAnchor={false}
-                      evidence={footage}
-                    />
-                  </section>
-                )}
-                {/* Who covers the review desk is the office's (Oct 15 2026 audit); the editor reads "James is reviewing this video." above. */}
-                {reviewerStrip && viewer?.role !== "EDITOR" && <ReviewerStrip data={reviewerStrip} />}
-                <EditFeedback notes={feedback} canFix={false} />
-                <RevisionIssuesPanel issues={quality.issues} canReview={quality.canReview} attestations={quality.attestations} />
-              </div>
-            </details>
-          )}
+        {/* VERSION HISTORY — every version sent, and every note, folded. */}
+        {(showTracker || historyIssues.length > 0) && (
+          // Open when the office has just moved a reopened job's date, so
+          // the form's own confirmation is on screen (#reopened-due).
+          <details className={CARD} open={!!dueNotice}>
+            <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">History · {rounds.length} version{rounds.length === 1 ? "" : "s"} sent for review</summary>
+            <div className="mt-3 space-y-4">
+              {showTracker && (
+                <section id="edit-history" className="scroll-mt-4">
+                  <EditTracker
+                    stage={stage}
+                    statusLine={statusLine}
+                    hadRevision={hadRevision}
+                    editType={trackerEditType}
+                    dueISO={selectedDue ? selectedDue.toISOString() : null}
+                    // The deadline is said once, in the job bar — except where
+                    // the office moves a reopened job's date, which needs the
+                    // date beside its form.
+                    hideDue={!(!selectedPromise && reopened && strictOwnerAdmin && !viewer?.impersonating && officeOn)}
+                    hideMusic
+                    overridden={{ due: selectedPromise ? false : reopened ? reopened.office : overrides.dueAt != null, editType: overrides.typeDetail != null }}
+                    dueWords={selectedPromise ? "This video’s promised deadline" : reopened ? (reopened.at ? reopened.words : "Reopened, no due date yet") : null}
+                    moveDue={
+                      !selectedPromise && reopened && strictOwnerAdmin && !viewer?.impersonating && officeOn
+                        ? { action: moveReopenedDueForm, projectId: id, defaultLocal: etLocalInput(trackerDue ?? new Date()), notice: dueNotice }
+                        : null
+                    }
+                    shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
+                    photographerName={project.photographer?.name ?? null}
+                    song={project.reelSong}
+                    rounds={rounds}
+                    // The client's asks are in Fix these.
+                    revisionAsks={[]}
+                    revisionAtISO={revisionAtISO}
+                    revisionAskedBy={revisionAskedBy}
+                    revisionHref={revisionHref}
+                    showSubmitAnchor={false}
+                    evidence={footage}
+                  />
+                </section>
+              )}
+              {/* Every note on the job, by video (#issues). The review desk
+                  classifies them here with its tools on. */}
+              <RevisionIssuesPanel issues={historyIssues} canReview={classify} attestations={classify ? quality.attestations : []} />
+              {viewer?.role === "EDITOR" && (
+                <Link href="/quality?tab=editors" className="inline-flex min-h-11 items-center text-sm font-medium text-brand hover:underline">
+                  Your review results
+                </Link>
+              )}
+            </div>
+          </details>
+        )}
 
-          {/* THE FULL STYLE GUIDE for what is on this job — same data as
-              /resources/video-styles, so the two cannot drift. */}
-          {editDeliverables.length > 0 && (
-            <details className={CARD}>
-              <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">Style guide{styleType ? ` · ${styleType.name}` : ""}</summary>
-              <div className="mt-3 space-y-4">
-                {editDeliverables.map((d) => {
-                  const vt = videoTypeOf(d);
-                  const tierMeta = VIDEO_TIER[vt.tier];
-                  const chip = refinedDeliverableLabel(d.type, d.label);
-                  const orderedAs = d.productTitle?.trim() && d.productTitle.trim() !== chip ? d.productTitle.trim() : null;
-                  return (
-                    <div key={d.id} className="rounded-xl border border-border bg-surface-2/40 p-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm font-medium" style={{ backgroundColor: `${tierMeta.color}1a`, color: tierMeta.color }}>
-                          <Film className="size-3.5" /> {chip}
-                        </span>
-                        <span className="text-xs text-muted">{vt.name} · {tierMeta.edit}</span>
-                        {orderedAs && <span className="text-xs text-muted-2">ordered as “{orderedAs}”</span>}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {vt.style.map((st) => <span key={st} className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] font-medium text-foreground/80">{st}</span>)}
-                      </div>
-                      {vt.note && <p className="mt-2 text-xs leading-relaxed text-muted">{vt.note}</p>}
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        {vt.examples.map((e) => (
-                          <a key={e.url} href={e.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11px] font-medium text-brand hover:border-brand">
-                            <PlayCircle className="size-3" /> {e.label}
-                          </a>
-                        ))}
-                        <Link href="/resources/video-styles" className="text-[11px] font-medium text-muted hover:text-foreground">Full Style Guide →</Link>
-                      </div>
-                    </div>
-                  );
-                })}
-                {isVideoJob && <AocPlaybookCard context="edit" />}
-              </div>
-            </details>
-          )}
-
-        </div>
-
-        {/* ---- FOR THE OFFICE — writing the brief, packets, waiting files ---- */}
-        {isOwnerAdmin && (
+        {/* ---- OFFICE TOOLS (owner/admin, behind the switch) ---- */}
+        {officeOn && (
           <div className="space-y-4" data-office-tools>
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">For the office</h2>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Office tools</h2>
             {pageNotice?.where === "brief" && (
               <p className={`rounded-lg px-3 py-2 text-xs font-medium ${pageNotice.ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{pageNotice.text}</p>
             )}
@@ -1837,7 +1954,7 @@ export default async function EditBriefPage({
                   {brandBrief ? <label className="block text-sm font-medium text-muted">
                     Logo or branding card for this video
                     <select name="brandAssetVersionId" defaultValue={selectedBrief.brandChoice === "none" ? "__none__" : selectedBrief.brandAsset?.versionId ?? ""} className="mt-0.5 min-h-11 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm font-normal text-foreground focus-visible:outline-2 focus-visible:outline-brand">
-                      <option value="">Not chosen — the editor uses their logo if there is one</option>
+                      <option value="">Not chosen: the editor uses their logo if there is one</option>
                       <option value="__none__">No logo or branding card on this video</option>
                       {selectedBrief.brandAsset && !brandBrief.files.some((f) => f.versionId === selectedBrief.brandAsset?.versionId) && <option value={selectedBrief.brandAsset.versionId}>{selectedBrief.brandAsset.name} · previously chosen, check current kit</option>}
                       {brandBrief.files.filter((f) => f.type === "LOGO" || f.type === "BRANDING_CARD").map((f) => <option key={f.versionId} value={f.versionId}>{f.typeWord} · {f.name} · v{f.versionNo}{f.fileName ? ` · ${f.fileName}` : ""}</option>)}
@@ -1903,6 +2020,17 @@ export default async function EditBriefPage({
                 people={assetPeople}
                 readFailed={assetDeps === null}
               />
+            )}
+            {/* The review desk: who each waiting version is with, and every
+                note on the job as the reviewer wrote it. */}
+            {(reviewerStrip || feedback.length > 0) && (
+              <details className={CARD}>
+                <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">Review desk · who has it, every note</summary>
+                <div className="mt-3 space-y-4">
+                  {reviewerStrip && <ReviewerStrip data={reviewerStrip} />}
+                  <EditFeedback notes={feedback} canFix={false} />
+                </div>
+              </details>
             )}
             {/* §7.7 / A33 — THE LUMA VISUALS PACKET. The hub sends nothing. */}
             {agency && (
@@ -1977,27 +2105,6 @@ export default async function EditBriefPage({
         )}
       </div>
     </div>
-  );
-}
-
-// The Editing Room's upload identifier, reused on the brief's Media buttons so
-// the editor sees the same truth in both places: green = the hourly sweep found
-// files in that folder (with the count), hollow = nothing there yet, and a
-// muted dot when the last read was stale (Dropbox couldn't be read this pass).
-function UploadDot({ n, stale }: { n: number; stale: boolean }) {
-  const title = n > 0 ? `${n} file${n === 1 ? "" : "s"} uploaded (checked hourly)` : stale ? "Last Dropbox read failed — count may be behind" : "Nothing uploaded yet (checked hourly)";
-  return (
-    <span
-      title={title}
-      aria-label={title}
-      className={
-        n > 0
-          ? "ml-0.5 inline-block size-2.5 rounded-full bg-success"
-          : stale
-            ? "ml-0.5 inline-block size-2.5 rounded-full bg-muted-2/60"
-            : "ml-0.5 inline-block size-2.5 rounded-full border border-muted-2"
-      }
-    />
   );
 }
 

@@ -242,7 +242,7 @@ function CutMessage({
     }
     start(async () => {
       setErr(null);
-      const r = await saveCutMessage(liveTargetId, text).catch(() => ({ ok: false as const, message: "That didn't save — try again." }));
+      const r = await saveCutMessage(liveTargetId, text).catch(() => ({ ok: false as const, message: "That didn't save. Try again." }));
       if (!r.ok) setErr(r.message);
       else {
         onSaved(text.trim() || null);
@@ -268,15 +268,15 @@ function CutMessage({
             type="button"
             onClick={save}
             disabled={saving}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
           >
             {saving && <Loader2 className="size-3 animate-spin" />}
-            {liveTargetId ? "Save message" : `Send with version ${nextVersion ?? ""}`.trim()}
+            {liveTargetId ? "Save the note" : `Send with version ${nextVersion ?? ""}`.trim()}
           </button>
           <button
             type="button"
             onClick={() => { setOpen(false); setErr(null); }}
-            className="rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium text-muted hover:bg-surface-2"
+            className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2"
           >
             Cancel
           </button>
@@ -307,9 +307,9 @@ function CutMessage({
         <button
           type="button"
           onClick={() => { setText(liveTargetId ? (savedNote ?? "") : draft); setOpen(true); }}
-          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
         >
-          <MessageSquarePlus className="size-2.5" /> {shown ? "Edit message" : "Message for the reviewer"}
+          <MessageSquarePlus className="size-3.5" /> {shown ? "Edit the note to the reviewer" : "Add a note for the reviewer"}
         </button>
       )}
     </div>
@@ -745,8 +745,9 @@ export function CutUploader({
   // the selected video only, and "0 of 1 approved" on a four-video job read as
   // the job's tally. Until the job's own read lands, a multi-row panel can
   // still count what it holds; a one-row panel says nothing rather than "of 1".
+  // Oct 15 2026: no "1 of 1" — a one-video job says nothing here.
   const tally = summary
-    ? `${summary.approved} of ${summary.total} video${summary.total === 1 ? "" : "s"} approved`
+    ? summary.total > 1 ? `${summary.approved} of ${summary.total} videos approved` : null
     : cuts.length > 1 ? `${cuts.filter((c) => c.latest?.status === "APPROVED").length} of ${cuts.length} approved` : null;
   // The hand-in card belongs to the video it was for — drawn while that video
   // is the one on screen, and, until its finish is confirmed, on whichever
@@ -774,7 +775,8 @@ export function CutUploader({
         {/* Named for what the panel DOES — it is how a cut gets in front of
             the reviewer (Jordan, Sep 2: "instead of Cuts to deliver, it
             should say Send to Review"). */}
-        <h2 className="text-sm font-semibold">Send to Review</h2>
+        {/* Oct 15 2026 (the brief audit): plain words, "Send for review". */}
+        <h2 className="text-sm font-semibold">Send for review</h2>
         {tally && <span className="text-xs text-muted">{tally}</span>}
       </div>
       {handIn && (
@@ -815,21 +817,21 @@ export function CutUploader({
           } : null}
         />
       )}
-      {/* THE EXPORT SPEC, right above the Upload buttons. It is also in "What
-          to make" further up the brief — that is where it is read before the
-          edit starts, and this is where it is read at the moment of export,
-          which is the last minute it can still save somebody a re-render.
-          Same words in both places (lib/videoStyles EXPORT_SPEC). */}
-      <div className="border-b border-border bg-surface-2/40 px-4 py-2 sm:px-5">
-        <details className="text-sm leading-relaxed text-foreground/85">
-          <summary className="min-h-11 cursor-pointer py-2 font-medium">Export requirements · {EXPORT_SPEC.headline}</summary>
-        <p className="pb-2">
-          <span className="font-semibold">{EXPORT_SPEC.headline}.</span> {EXPORT_SPEC.finalCut}{" "}
-          <span className="text-muted">{EXPORT_SPEC.edit}</span>{" "}
-          <span className="font-medium">{EXPORT_SPEC.audio}</span>
+      {/* THE EXPORT RULE, right above the Upload button: ONE line, the how-to
+          folded under it (Oct 15 2026: the brief said the 1080p rule in about
+          six places; this is the one place it is read at the moment of export,
+          the last minute it can still save somebody a re-render). Same words
+          as everywhere (lib/videoStyles EXPORT_SPEC). */}
+      <div className="border-b border-border bg-surface-2/40 px-4 py-1 sm:px-5" data-export-rule>
+        <p className="pt-2 text-sm text-foreground/85">
+          <span className="font-semibold">{EXPORT_SPEC.headline}</span> with AAC audio. A short final check opens before it goes to the reviewer.
         </p>
-        {/* Oct 15 2026: the page's own "Export details" fold is gone; its two extra lines live here. */}
-        <p className="pb-2 text-muted">{EXPORT_SPEC.orientation} {EXPORT_SPEC.why}</p>
+        <details className="text-sm leading-relaxed text-foreground/85">
+          <summary className="flex min-h-11 cursor-pointer items-center font-medium text-brand">How to export</summary>
+          <p className="pb-2">{EXPORT_SPEC.finalCut}</p>
+          <p className="pb-2 text-muted">{EXPORT_SPEC.edit}</p>
+          <p className="pb-2 font-medium">{EXPORT_SPEC.audio}</p>
+          <p className="pb-2 text-muted">{EXPORT_SPEC.orientation} {EXPORT_SPEC.why}</p>
         </details>
       </div>
       <ul className="divide-y divide-border">
@@ -993,14 +995,14 @@ export function CutUploader({
                       value={reopenWhy[key] ?? ""}
                       onChange={(e) => setReopenWhy((w) => ({ ...w, [key]: e.target.value }))}
                       placeholder="e.g. the agent's name was spelled wrong in the end card"
-                      className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand"
+                      className="mt-2 min-h-11 w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand sm:text-sm"
                     />
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         disabled={!!b || (reopenWhy[key] ?? "").trim().length < 4}
                         onClick={() => { const r = reopen[key]; void send(c, r.file, r.dim, r.override, (reopenWhy[key] ?? "").trim()); }}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
                       >
                         <CloudUpload className="size-3.5" /> Replace it
                       </button>
@@ -1008,7 +1010,7 @@ export function CutUploader({
                         type="button"
                         disabled={!!b}
                         onClick={() => { clearReopen(key); setErr((e) => ({ ...e, [key]: "" })); }}
-                        className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
+                        className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
                       >
                         Leave it as it is
                       </button>
@@ -1032,13 +1034,16 @@ export function CutUploader({
                         (Sep 16 review). Kyle is the route, and he is an ADMIN,
                         so it is not a polite fiction: the button below is
                         genuinely his to press. */}
-                    <p className="mt-2 text-xs leading-relaxed text-foreground/85">{refusal.stuck}</p>
+                    <p className="mt-2 text-xs leading-relaxed text-foreground/85">
+                      {refusal.stuck}{" "}
+                      <a href="#messages" className="font-semibold text-brand hover:underline">Message Kyle</a>
+                    </p>
                     <div className="mt-2.5 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         disabled={!!b}
                         onClick={() => inputs.current[key]?.click()}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
                       >
                         <CloudUpload className="size-3.5" /> Choose the 1080p export
                       </button>
@@ -1046,7 +1051,7 @@ export function CutUploader({
                         type="button"
                         disabled={!!b}
                         onClick={() => clearBlocked(key)}
-                        className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
+                        className="min-h-11 rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
                       >
                         Cancel
                       </button>
@@ -1060,7 +1065,7 @@ export function CutUploader({
                           // with the same file still in hand.
                           disabled={!!b}
                           onClick={() => { void send(c, blk.file, { width: blk.width, height: blk.height }, true); }}
-                          className="rounded-lg border border-warning/50 px-2.5 py-1.5 text-xs font-medium text-warning hover:bg-warning-soft disabled:opacity-60"
+                          className="min-h-11 rounded-lg border border-warning/50 px-3 py-2 text-xs font-medium text-warning hover:bg-warning-soft disabled:opacity-60"
                         >
                           Send the {resolutionLabel(blk.width, blk.height)} file anyway
                         </button>
@@ -1088,9 +1093,9 @@ export function CutUploader({
                       type="button"
                       disabled={!!b}
                       onClick={() => inputs.current[key]?.click()}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] font-semibold text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-60"
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-foreground hover:bg-surface-2 disabled:opacity-60"
                     >
-                      <RotateCcw className="size-3" /> Upload a revised version
+                      <RotateCcw className="size-3.5" /> Upload a revised version
                     </button>
                     <p className="mt-1 text-[11px] leading-relaxed text-muted-2">
                       Pick the file and say why in a line. It goes back through review as v{approvedRound + 1}, and
@@ -1103,9 +1108,10 @@ export function CutUploader({
                     an approved cut of somebody else's still needs to know where
                     a corrected file goes. One line, and it names the route. */}
                 {canUpload && !next && !c.canReplace && c.latest?.status === "APPROVED" && (
-                  <p className="mt-2 text-[11px] leading-relaxed text-muted-2">
-                    Approved. Someone else has this job&rsquo;s open work right now, so Kyle or Jordan can put a
-                    corrected file through review.
+                  <p className="mt-2 text-xs leading-relaxed text-muted">
+                    Approved. Someone else has this job&rsquo;s open work right now, so Kyle or Jordan puts a
+                    corrected file through review.{" "}
+                    <a href="#messages" className="font-semibold text-brand hover:underline">Message Kyle</a>
                   </p>
                 )}
               </div>
@@ -1117,6 +1123,10 @@ export function CutUploader({
               {canUpload && (next !== null || approvedRound !== null) && (
                 <input
                   ref={(el) => { inputs.current[key] = el; }}
+                  // The page's own "Upload version N" buttons (the job bar, the
+                  // end of the fix list) open THIS picker (UploadTrigger), so
+                  // there is still one upload, with its check and its progress.
+                  data-cut-picker={next !== null && !b && !handed ? key : undefined}
                   type="file"
                   accept="video/mp4,video/quicktime,video/x-m4v,video/webm,.mp4,.mov,.m4v,.webm"
                   className="hidden"
@@ -1129,8 +1139,8 @@ export function CutUploader({
                   disabled={!!b}
                   onClick={() => inputs.current[key]?.click()}
                   className={cn(
-                    "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60",
-                    isRedo ? "bg-danger hover:opacity-90" : "bg-brand hover:opacity-90",
+                    // One look for the page's one main action (Oct 15 2026).
+                    "inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:brightness-95 disabled:opacity-60",
                   )}
                 >
                   {b ? <Loader2 className="size-4 animate-spin" /> : isRedo ? <RotateCcw className="size-4" /> : <CloudUpload className="size-4" />}
@@ -1141,10 +1151,6 @@ export function CutUploader({
           );
         })}
       </ul>
-      <p className="border-t border-border px-4 py-2 text-[11px] text-muted-2 sm:px-5">
-        Pick your 1080p export, tick the short check, and it goes straight to the Review Room with your message. Approved cuts
-        are copied to the job&apos;s Final folder in Dropbox for you.
-      </p>
       {checking && (() => {
         const key = `${checking.cut.deliverableId}:${checking.cut.slot}`;
         const ctx = checking.context ?? checks[key];
