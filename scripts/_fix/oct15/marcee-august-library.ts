@@ -19,6 +19,7 @@
 //   2. The library sync then adds the two missing videos (id-keyed, idempotent).
 //   3. The client video layer (ContentVideo) is rebuilt for her.
 // ---------------------------------------------------------------------------
+export {};
 const ENROLLMENT = "cmt7h6azc00049kcj0b39k6si";
 const CLIENT = "cmqiksjju007v9k9qtuql2n4e";
 const LISTING = "019f6bb4-d910-7314-ab60-0529f726a4d3";

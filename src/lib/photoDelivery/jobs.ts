@@ -91,6 +91,9 @@ export async function listFinals(folder: string): Promise<FinalEntry[] | null> {
 
 type ExpectedDeliverables = {
   minPhotos?: number;
+  /** Oct 15 2026: from the Aryeo listing (room coverage, and the paid QC's P4 "beds | baths"). */
+  bedrooms?: number;
+  bathrooms?: number;
   maxPhotos?: number;
   droneCount?: number;
   twilightReal?: number;
@@ -175,8 +178,11 @@ const PHOTO_TYPES = ["PHOTOS", "DRONE", "TWILIGHT"] as const;
 
 const hashOf = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 40);
 
-/** The Aryeo listing's gallery images, in Aryeo's order. null = the read failed. */
-export async function listingGallery(listingId: string): Promise<{ entries: GalleryEntry[]; deliveryStatus: string | null } | null> {
+/** What the listing says about the home (room coverage). */
+export type ListingFacts = { bedrooms: number | null; bathrooms: number | null; propertyType: string | null };
+
+/** The Aryeo listing's gallery images, in Aryeo's order, and its home facts. null = the read failed. */
+export async function listingGallery(listingId: string): Promise<{ entries: GalleryEntry[]; deliveryStatus: string | null; facts?: ListingFacts } | null> {
   try {
     const l = await Aryeo.listing(listingId);
     const images = (l.images ?? []).filter((i) => i.display_in_gallery !== false && (i.original_url || i.large_url));
@@ -198,7 +204,11 @@ export async function listingGallery(listingId: string): Promise<{ entries: Gall
         };
       })
       .sort((a, b) => a.index - b.index);
-    return { entries, deliveryStatus: (l as { delivery_status?: string | null }).delivery_status ?? null };
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+    const loose = l as { type?: unknown; sub_type?: unknown; property_type?: unknown };
+    const kind = [loose.sub_type, loose.property_type, loose.type].find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? null;
+    const facts: ListingFacts = { bedrooms: num(l.building?.bedrooms), bathrooms: num(l.building?.bathrooms), propertyType: kind ? kind.replace(/_/g, " ").toLowerCase().slice(0, 60) : null };
+    return { entries, deliveryStatus: (l as { delivery_status?: string | null }).delivery_status ?? null, facts };
   } catch (e) {
     console.warn("photo delivery: listing read failed", listingId, (e as Error).message);
     return null;
@@ -343,6 +353,29 @@ async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<"ad
   return "adopted";
 }
 
+/**
+ * Oct 15 2026: the listing's bedrooms, bathrooms and property type go into
+ * the job's expected deliverables (room coverage; the paid QC's P4 read them
+ * as "unavailable" because nothing ever set them). Written only when changed.
+ */
+async function keepListingFacts(jobId: string, expectedJson: string | null, facts: ListingFacts | undefined): Promise<void> {
+  if (!facts || (facts.bedrooms == null && facts.bathrooms == null && !facts.propertyType)) return;
+  let e: Record<string, unknown> = {};
+  try { e = JSON.parse(expectedJson ?? "{}") as Record<string, unknown>; } catch { e = {}; }
+  const next = { ...e };
+  const source = { ...((e.source as Record<string, string> | undefined) ?? {}) };
+  if (facts.bedrooms != null && e.bedrooms !== facts.bedrooms) { next.bedrooms = facts.bedrooms; source.bedrooms = "Aryeo listing"; }
+  if (facts.bathrooms != null && e.bathrooms !== facts.bathrooms) { next.bathrooms = facts.bathrooms; source.bathrooms = "Aryeo listing"; }
+  if (facts.propertyType && e.propertyType !== facts.propertyType) { next.propertyType = facts.propertyType; source.propertyType = "Aryeo listing"; }
+  if (JSON.stringify(next) === JSON.stringify(e)) return;
+  next.source = source;
+  if (!Array.isArray(next.requestedFeatures)) next.requestedFeatures = [];
+  await prisma.photoJob.update({ where: { id: jobId }, data: { expectedJson: JSON.stringify(next) } });
+}
+
+/** Oct 15 2026: findings on a photo no longer in the gallery never count (2236 Gregory Dr's replaced listing). */
+export const GONE_REASON = "The photo is no longer in the gallery";
+
 /** Read one job's gallery and keep its photo rows and stage in step. */
 export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ changed: boolean; count: number | null; stage: string; source: string | null }> {
   const job = await prisma.photoJob.findUnique({ where: { id: jobId } });
@@ -396,6 +429,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     await prisma.photoJob.update({ where: { id: jobId }, data: { nextCheckAt: new Date(now.getTime() + 10 * MIN), lastError: "Couldn't read the Aryeo listing or the finals folder (will retry)." } });
     return { changed: false, count: null, stage: job.stage, source };
   }
+  await keepListingFacts(jobId, job.expectedJson, listing?.facts).catch((e) => console.warn("photo delivery: listing facts", jobId, (e as Error).message));
   const fp = galleryFingerprint(entries);
   const changed = fp !== job.finalsFingerprint;
 
@@ -405,6 +439,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     const byRef = new Map(existing.filter((e) => e.sourceRef).map((e) => [`${e.sourceKind}:${e.sourceRef}`, e]));
     const byName = new Map(existing.map((e) => [e.name, e]));
     const seen = new Set<string>();
+    const revived: string[] = [];
     let added = 0;
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -436,7 +471,10 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
           delete data.autohdrVersionUuid;
           delete data.sourceUrl;
         }
-        if (prev.status === "GONE") data.status = "ACTIVE";
+        if (prev.status === "GONE") {
+          data.status = "ACTIVE";
+          revived.push(prev.id);
+        }
         if (!ownsVersion && prev.contentHash !== e.contentHash) {
           data.contentHash = e.contentHash;
           // Replaced outside the hub's fix flow (an editor's manual fix, a
@@ -452,6 +490,15 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     // in the gallery is GONE.
     const gone = existing.filter((e) => !seen.has(e.name) && e.status === "ACTIVE").map((e) => e.id);
     if (gone.length) await prisma.photoAsset.updateMany({ where: { id: { in: gone } }, data: { status: "GONE" } });
+    // A photo back in the gallery gets back the open findings it had when it left.
+    if (revived.length) await prisma.photoQcFinding.updateMany({ where: { jobId, photoId: { in: revived }, status: "SUPERSEDED", statusReason: GONE_REASON }, data: { status: "OPEN", statusReason: null } });
+    // Oct 15 2026: new photos on a job already linked to its AutoHDR shoot (a
+    // listing replaced after delivery, "<Street> (N of M)") are matched to
+    // AutoHDR's photos (a free read), so the free check can look at them.
+    if (added > 0 && job.autohdrPhotoshootId && (await prisma.photoAsset.count({ where: { jobId, status: "ACTIVE", autohdrImageUuid: null } }))) {
+      const { linkAutohdrShoot } = await import("./autohdrLink");
+      await linkAutohdrShoot(jobId).catch((e) => console.warn("photo delivery: relink failed", jobId, (e as Error).message));
+    }
     await prisma.photoJob.update({
       where: { id: jobId },
       data: { finalsPath: source === "dropbox" ? folder : null, finalsFingerprint: fp, finalsCount: entries.length, finalsChangedAt: now, finalsStableAt: null, lastError: null },
@@ -469,6 +516,14 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     }
   } else if (!job.finalsStableAt && entries.length > 0) {
     await prisma.photoJob.update({ where: { id: jobId }, data: { finalsStableAt: now, lastError: null } });
+  }
+  // Oct 15 2026: a delivered job whose listing was replaced before the match
+  // above existed (2236 Gregory Dr) is matched on its next delivered pass
+  // (every 6 hours, while AutoHDR still has the shoot), so the free check
+  // after delivery can look at the new photos.
+  if (!changed && job.stage === "DELIVERED" && job.autohdrPhotoshootId && job.autohdrCreatedAt && now.getTime() - job.autohdrCreatedAt.getTime() < 7 * 24 * 60 * MIN && (await prisma.photoAsset.count({ where: { jobId, status: "ACTIVE", autohdrImageUuid: null } }))) {
+    const { linkAutohdrShoot } = await import("./autohdrLink");
+    await linkAutohdrShoot(jobId).catch((e) => console.warn("photo delivery: relink failed", jobId, (e as Error).message));
   }
 
   // EDITING → EDITED once the gallery has landed and stopped changing.
@@ -502,6 +557,14 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   if (source === "aryeo" && entries.length > 0 && !changed) {
     const { checkGalleryIntegrity } = await import("./integrity");
     await checkGalleryIntegrity(jobId, fp, { delivered: stage === "DELIVERED" || stage === "DELIVERING" });
+  }
+
+  // Oct 15 2026: an open finding on a photo that left the gallery never counts
+  // or shows (set aside, and given back if the photo returns).
+  const goneIds = (await prisma.photoAsset.findMany({ where: { jobId, status: "GONE" }, select: { id: true } })).map((p) => p.id);
+  if (goneIds.length) {
+    const r = await prisma.photoQcFinding.updateMany({ where: { jobId, status: "OPEN", photoId: { in: goneIds } }, data: { status: "SUPERSEDED", statusReason: GONE_REASON } });
+    if (r.count) await logJobEvent(jobId, "sync", `${r.count} open finding${r.count === 1 ? "" : "s"} set aside: the photo${r.count === 1 ? " is" : "s are"} no longer in the gallery`);
   }
 
   const next = stage === "EDITING" ? 5 * MIN : stage === "DELIVERED" ? 6 * 60 * MIN : 15 * MIN;

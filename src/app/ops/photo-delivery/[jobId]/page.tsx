@@ -15,6 +15,7 @@ import { HistoryPanel } from "@/components/photoDelivery/JobPanels";
 import { HOLD_REASON_LABEL, VERDICT_LABEL, usd } from "@/components/photoDelivery/format";
 import type { TabKey } from "@/components/photoDelivery/JobContext";
 import { CoachingCard } from "@/components/photoDelivery/CoachingCard";
+import { PrepModeControl } from "@/components/photoDelivery/PrepModeControl";
 import { loadJobDetail, loadStrip, loadViewer } from "../data";
 
 export const dynamic = "force-dynamic";
@@ -99,6 +100,9 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
                 {viewer.canSeeMoney && h.lastRunCostUsd != null ? ` · last QC run ${usd(h.lastRunCostUsd)}` : ""}
                 {h.qcRequestedAt ? ` · new check requested ${etDateTime(h.qcRequestedAt)}` : ""}
               </span>
+            </Fact>
+            <Fact label="Home">
+              <PrepModeControl jobId={h.id} prep={data.prep} canSet={viewer.isOwner} />
             </Fact>
           </dl>
           {h.stage === "ON_HOLD" && (

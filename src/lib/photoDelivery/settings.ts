@@ -50,6 +50,23 @@ import { getSetting, putSetting } from "@/lib/settings";
 //                  the same-day photos add-on approves and delivers itself in
 //                  the hub's suggested order, only when every check passes
 //                  (aryeoPush.ts sameDayReady), checked again before delivery.
+//   Oct 15 2026 (Jordan: "the biggest thing I need is making sure images are
+//   not warped or cluttered"), all free, so ON by default:
+//   warpCv         measure the lines of each photo (qc/cv.ts lineGeometry) on
+//                  bytes the hub can read for free (the Aryeo listing, a kept
+//                  version copy, a photo already bought); never a download
+//                  that costs a credit. A warp finding counts in full only
+//                  when the measurement and the free check agree.
+//   warpCompareOriginal  for a cut-off roof or warped walls, ask AutoHDR's
+//                  free describe about the photo's Original (before AutoHDR's
+//                  straightening): the edit did it (EDITOR, Perspective Off)
+//                  or the framing/lens did (PHOTOGRAPHER, coaching).
+//   freeCoverage   the rooms a listing needs (its bedrooms and bathrooms)
+//                  against the delivered photos and AutoHDR's photos of the
+//                  shoot: shot but not delivered, never shot, lost in editing.
+//   afterDeliveryCheck  a delivered job whose listing photos change (within
+//                  7 days) gets the free check on the new photos, and Kyle
+//                  and Jordan hear about it; the stage never moves.
 // ---------------------------------------------------------------------------
 
 export type PhotoDeliverySettings = {
@@ -86,6 +103,14 @@ export type PhotoDeliverySettings = {
   aryeoPush: AryeoPushMode;
   /** Same-day jobs approve and deliver themselves when every check passes. */
   sameDayAutoDeliver: boolean;
+  /** Measured line check (free bytes only). */
+  warpCv: boolean;
+  /** Ask about AutoHDR's Original for a cut-off roof or warped walls (free). */
+  warpCompareOriginal: boolean;
+  /** Free room coverage check. */
+  freeCoverage: boolean;
+  /** Free check on listing photos that change after delivery (7 days). */
+  afterDeliveryCheck: boolean;
 };
 
 export type AryeoPushMode = "off" | "on";
@@ -117,6 +142,10 @@ export const DEFAULT_PHOTO_DELIVERY_SETTINGS: PhotoDeliverySettings = {
   showAutohdrPhotos: false,
   aryeoPush: "off",
   sameDayAutoDeliver: true,
+  warpCv: true,
+  warpCompareOriginal: true,
+  freeCoverage: true,
+  afterDeliveryCheck: true,
 };
 
 const KEY = "photo_delivery:settings";
@@ -154,6 +183,10 @@ export async function photoDeliverySettings(): Promise<PhotoDeliverySettings> {
     // The old stages (upload, approve, auto) all mean "on" now: Kyle approves each job.
     aryeoPush: raw.aryeoPush === "off" ? "off" : ["on", "upload", "approve", "auto"].includes(raw.aryeoPush as string) ? "on" : d.aryeoPush,
     sameDayAutoDeliver: bool(raw.sameDayAutoDeliver, d.sameDayAutoDeliver),
+    warpCv: bool(raw.warpCv, d.warpCv),
+    warpCompareOriginal: bool(raw.warpCompareOriginal, d.warpCompareOriginal),
+    freeCoverage: bool(raw.freeCoverage, d.freeCoverage),
+    afterDeliveryCheck: bool(raw.afterDeliveryCheck, d.afterDeliveryCheck),
   };
 }
 

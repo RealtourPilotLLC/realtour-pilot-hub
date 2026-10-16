@@ -10,6 +10,7 @@ import { houseRules } from "@/lib/photoDelivery/houseRules";
 import { ruleById } from "@/lib/photoDelivery/registry";
 import { SwitchedOffChecks } from "@/components/photoDelivery/SwitchedOffChecks";
 import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
+import { prisma } from "@/lib/prisma";
 import { fixPolicySummary, learnedRules, LEARN_DAYS, STRICT_CONFIDENCE } from "@/lib/photoDelivery/fixPolicy";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
 import { SettingsForm } from "@/components/photoDelivery/SettingsForm";
@@ -34,7 +35,7 @@ export default async function PhotoDeliverySettingsPage() {
   if (!viewer) redirect("/login?next=/ops/photo-delivery/settings");
   if (!viewer.isOwner) redirect(viewer.role === "ADMIN" ? "/ops/photo-delivery" : homeFor(viewer.role));
 
-  const [strip, settings, profiles, off, learned] = await Promise.all([
+  const [strip, settings, profiles, off, learned, asIsClients] = await Promise.all([
     loadStrip(viewer),
     photoDeliverySettings(),
     loadClientProfiles().catch((e) => {
@@ -43,6 +44,8 @@ export default async function PhotoDeliverySettingsPage() {
     }),
     houseRules().catch(() => []),
     learnedRules().catch(() => null),
+    // Oct 15 2026: the as-is clients by name (prep.ts).
+    photoDeliverySettings().then((s) => (s.asIsClientIds.length ? prisma.client.findMany({ where: { id: { in: s.asIsClientIds } }, orderBy: { name: "asc" }, select: { id: true, name: true } }) : [])).catch(() => []),
   ]);
   const policy = fixPolicySummary(settings);
   const lessons = learned ? [...learned.values()].filter((l) => l.notThere + l.notWorth + l.wanted >= 2).sort((a, b) => Number(b.skip || b.strict) - Number(a.skip || a.strict) || b.notThere + b.notWorth - (a.notThere + a.notWorth)) : null;
@@ -77,6 +80,11 @@ export default async function PhotoDeliverySettingsPage() {
               displayConfidenceFloor: Math.round(settings.displayConfidenceFloor * 100),
               minLongEdgePx: settings.minLongEdgePx,
               adminCreditCap: settings.adminCreditCap,
+              warpCv: settings.warpCv,
+              warpCompareOriginal: settings.warpCompareOriginal,
+              freeCoverage: settings.freeCoverage,
+              afterDeliveryCheck: settings.afterDeliveryCheck,
+              asIsClients,
             }}
           />
         </Section>

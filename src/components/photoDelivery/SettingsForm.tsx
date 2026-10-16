@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { ChevronDown, Loader2, Save } from "lucide-react";
+import { useEffect, useId, useState, useTransition } from "react";
+import { ChevronDown, Loader2, Plus, Save, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { saveSettingsAction } from "@/app/ops/photo-delivery/actions";
+import { saveSettingsAction, searchClientsAction } from "@/app/ops/photo-delivery/actions";
 
 // ---------------------------------------------------------------------------
 // Photo Delivery switches and thresholds (plan 14), owner only, every field
@@ -42,6 +42,13 @@ export type SettingsValues = {
   displayConfidenceFloor: number;
   minLongEdgePx: number;
   adminCreditCap: number;
+  /** Oct 15 2026: the free warp, coverage and after-delivery checks. */
+  warpCv: boolean;
+  warpCompareOriginal: boolean;
+  freeCoverage: boolean;
+  afterDeliveryCheck: boolean;
+  /** Clients whose homes are shot as they are: clutter is not checked (prep.ts). */
+  asIsClients: { id: string; name: string }[];
 };
 
 type Option<T extends string> = { value: T; label: string; help: string };
@@ -98,6 +105,67 @@ function Choice<T extends string>({ name, legend, help, options, value, onChange
   );
 }
 
+/** Oct 15 2026: clients whose homes are shot as they are (Nehemiah's shoots): clutter is not checked. */
+function AsIsClients({ value, onChange }: { value: { id: string; name: string }[]; onChange: (v: { id: string; name: string }[]) => void }) {
+  const id = useId();
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<{ id: string; name: string }[]>([]);
+  const [note, setNote] = useState("");
+  const searching = q.trim().length >= 2;
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) return;
+    let live = true;
+    const t = setTimeout(() => {
+      searchClientsAction(term)
+        .then((r) => {
+          if (!live) return;
+          setHits(r.clients);
+          setNote(r.message);
+        })
+        .catch(() => live && setNote("The client search didn't answer. Try again."));
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [q]);
+  const chosen = new Set(value.map((c) => c.id));
+  return (
+    <div className="space-y-2">
+      <label htmlFor={id} className="text-sm font-semibold">As-is clients</label>
+      <p className="text-ui-status text-muted">Homes these clients book are shot as they are: clutter is not checked or fixed on their shoots (camera mistakes, cars, trash cans and warped lines still are). Any other home that looks lived in is found by the photo check.</p>
+      {value.length > 0 ? (
+        <ul className="flex flex-wrap gap-1.5" aria-label="As-is clients">
+          {value.map((c) => (
+            <li key={c.id} className="inline-flex min-h-10 items-center gap-1 rounded-full border border-border bg-surface-2 pl-3 pr-1 text-sm">
+              {c.name}
+              <button type="button" onClick={() => onChange(value.filter((x) => x.id !== c.id))} className="inline-flex size-8 items-center justify-center rounded-full hover:bg-surface" aria-label={`Remove ${c.name}`}>
+                <X aria-hidden className="size-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-ui-status text-muted">No client on the list.</p>
+      )}
+      <input id={id} type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a client by name" className={input} autoComplete="off" onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }} />
+      {searching && hits.length > 0 && (
+        <ul className="space-y-1" aria-label="Clients found">
+          {hits.map((c) => (
+            <li key={c.id}>
+              <button type="button" disabled={chosen.has(c.id)} onClick={() => { onChange([...value, c]); setQ(""); }} className="inline-flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-sm hover:bg-surface-2 disabled:opacity-50">
+                <Plus aria-hidden className="size-4" /> {c.name}{chosen.has(c.id) ? " (on the list)" : ""}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {searching && note && <p role="status" className="text-ui-status text-muted">{note}</p>}
+    </div>
+  );
+}
+
 function NumberField({ id, label, help, value, onChange, min, max, step = 1, suffix }: { id: string; label: string; help: string; value: number; onChange: (n: number) => void; min: number; max: number; step?: number; suffix?: string }) {
   return (
     <div>
@@ -140,6 +208,11 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
           displayConfidenceFloor: Math.round(v.displayConfidenceFloor) / 100,
           minLongEdgePx: v.minLongEdgePx,
           adminCreditCap: v.adminCreditCap,
+          warpCv: v.warpCv,
+          warpCompareOriginal: v.warpCompareOriginal,
+          freeCoverage: v.freeCoverage,
+          afterDeliveryCheck: v.afterDeliveryCheck,
+          asIsClientIds: v.asIsClients.map((c) => c.id),
         });
         setMsg({ ok: r.ok, text: r.message });
       } catch {
@@ -159,7 +232,17 @@ export function SettingsForm({ initial }: { initial: SettingsValues }) {
         <Switch label="Send shoots to AutoHDR" help="The hub sends each finished upload to AutoHDR with your default look; editing is free until the photos are downloaded." checked={v.autoSubmit} onChange={(on) => set("autoSubmit", on)} />
         <Switch label="Bring the edits back into the hub" help="Downloads each finished shoot once (1 credit a photo, the same credit Aryeo charges) so it shows here; needed for the Aryeo upload." checked={v.showAutohdrPhotos} onChange={(on) => set("showAutohdrPhotos", on)} />
         <Switch label="Free photo check" help="AutoHDR's free describe tool checks every edited photo against the checklist, with no credits and no Claude cost." checked={v.freeCheck} onChange={(on) => set("freeCheck", on)} />
+        {v.freeCheck && (
+          <div className="space-y-3 border-l-2 border-border pl-3">
+            <Switch label="Measure the lines" help="Measures each photo's walls, door frames and windows for leaning or bending, from copies the hub can read for free (never a paid download). A warp counts in full only when this and the photo check agree." checked={v.warpCv} onChange={(on) => set("warpCv", on)} />
+            <Switch label="Compare cut-off roofs and warps with AutoHDR's original" help="Asks AutoHDR (free) whether the original photo had the problem too: the editing did it (turn Perspective Off in AutoHDR) or the framing or lens did (photographer coaching)." checked={v.warpCompareOriginal} onChange={(on) => set("warpCompareOriginal", on)} />
+            <Switch label="Room coverage" help="Checks the delivery has the rooms the listing needs (front and rear exterior, kitchen, living area, primary bedroom, primary bathroom with its shower or tub), and whether a missing room was shot but left out, never shot, or lost in editing." checked={v.freeCoverage} onChange={(on) => set("freeCoverage", on)} />
+            <Switch label="Check listing photos that change after delivery" help="For a week after delivery, new or replaced photos on the Aryeo listing get the free check, and Kyle and you hear about it. The job stays delivered." checked={v.afterDeliveryCheck} onChange={(on) => set("afterDeliveryCheck", on)} />
+          </div>
+        )}
       </div>
+
+      <AsIsClients value={v.asIsClients} onChange={(list) => set("asIsClients", list)} />
 
       <div className="space-y-4">
         <Choice name="pd-fixes" legend="Fixes" options={FIXES} value={v.fixes} onChange={(m) => set("fixes", m)} grid="sm:grid-cols-3" />

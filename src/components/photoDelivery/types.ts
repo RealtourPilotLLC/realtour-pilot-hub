@@ -308,8 +308,38 @@ export type JobHeaderView = {
 /** The QC engine's view of each group (qc/verdict.ts groupFindings), keyed `${ruleId}::${groupKey}`. */
 export type GroupMeta = { severity: Severity; escalated: boolean; escalationReason: string | null; holds: boolean };
 
+/** Oct 15 2026: how prepared the home is (prep.ts) and the clutter that is therefore not shown. */
+export type PrepModeKey = "AS_IS" | "PREPARED" | "VACANT";
+export type PrepView = {
+  mode: PrepModeKey | null;
+  /** "auto", or the person who set it. */
+  by: string | null;
+  at: string | null;
+  reason: string | null;
+  rated: number;
+  /** Clutter findings set aside because the home (asIs) or the room (rooms) was not prepared: never shown. */
+  hiddenAsIs: number;
+  hiddenRooms: number;
+};
+
+/** Oct 15 2026: the free room coverage check (coverage.ts). */
+export type RoomCoverageRow = { key: string; label: string; status: "DELIVERED" | "NOT_DELIVERED" | "NOT_CAPTURED" | "UNKNOWN" | "ADVISORY"; severity: Severity | null; photos: string[]; note: string };
+export type RoomCoverageView = {
+  checkedAt: string | null;
+  /** Worked out for the photos in the delivery now. */
+  current: boolean;
+  rooms: RoomCoverageRow[];
+  bedrooms: number | null;
+  bathrooms: number | null;
+  propertyType: string | null;
+  counts: { raw: number | null; expectedPhotos: number | null; autohdr: number | null; delivered: number; leftOut: number };
+  capturedNote: string | null;
+};
+
 export type JobDetail = {
   header: JobHeaderView;
+  prep: PrepView;
+  roomCoverage: RoomCoverageView | null;
   groupMeta: Record<string, GroupMeta>;
   photos: PhotoView[];
   heroPhotoId: string | null;

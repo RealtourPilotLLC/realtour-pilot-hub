@@ -1,12 +1,12 @@
 "use client";
 
-import { CheckCircle2, ChevronDown, CircleHelp, Undo2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, CircleHelp, Undo2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { decideFindingsAction } from "@/app/ops/photo-delivery/actions";
 import { useJob } from "./JobContext";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, UNDOABLE } from "./format";
-import type { FindingView } from "./types";
+import type { FindingView, RoomCoverageRow, RoomCoverageView } from "./types";
 
 // ---------------------------------------------------------------------------
 // THE COVERAGE TAB (plan 9.4): what was ordered (PhotoJob.expectedJson, from
@@ -77,6 +77,59 @@ function Row({ f }: { f: FindingView }) {
   );
 }
 
+// Oct 15 2026: the free room coverage check (coverage.ts), room by room.
+const ROOM_STATUS: Record<RoomCoverageRow["status"], string> = {
+  DELIVERED: "In the delivery",
+  NOT_DELIVERED: "Shot, not in the delivery",
+  NOT_CAPTURED: "Never photographed",
+  UNKNOWN: "Not in the delivery",
+  ADVISORY: "Worth a look",
+};
+
+function RoomsSection({ rc }: { rc: RoomCoverageView }) {
+  const facts = [rc.bedrooms != null ? `${rc.bedrooms} bedroom${rc.bedrooms === 1 ? "" : "s"}` : null, rc.bathrooms != null ? `${rc.bathrooms} bathroom${rc.bathrooms === 1 ? "" : "s"}` : null, rc.propertyType].filter(Boolean).join(", ");
+  const c = rc.counts;
+  const flow = [
+    c.raw != null ? `Uploaded: ${c.raw} raw file${c.raw === 1 ? "" : "s"}${c.expectedPhotos ? ` (about ${c.expectedPhotos} photos)` : ""}` : null,
+    c.autohdr != null ? `AutoHDR: ${c.autohdr} photo${c.autohdr === 1 ? "" : "s"}` : null,
+    `Delivered: ${c.delivered}`,
+    c.leftOut ? `Left out: ${c.leftOut}` : null,
+  ].filter(Boolean).join(" · ");
+  return (
+    <section aria-labelledby="pd-rooms-h" className="space-y-2">
+      <h3 id="pd-rooms-h" className="text-sm font-semibold">Rooms the listing needs</h3>
+      <p className="text-[13px] text-muted">
+        {facts ? `From the listing: ${facts}.` : "The listing has no bedroom or bathroom count, so the hub checks the standard rooms."}
+        {rc.checkedAt ? ` Checked ${etMonthDayTime(rc.checkedAt)}.` : ""}
+        {!rc.current && " The photos changed since; it is checked again within a few minutes."}
+      </p>
+      <ul className="space-y-1.5">
+        {rc.rooms.map((r) => (
+          <li key={r.key} className="flex items-start gap-2 text-sm">
+            {r.status === "DELIVERED" ? (
+              <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" />
+            ) : r.status === "ADVISORY" ? (
+              <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+            ) : r.status === "UNKNOWN" ? (
+              <CircleHelp aria-hidden className="mt-0.5 size-4 shrink-0 text-muted" />
+            ) : (
+              <XCircle aria-hidden className="mt-0.5 size-4 shrink-0 text-danger" />
+            )}
+            <span className="min-w-0">
+              <span className="font-medium">{r.label}</span>
+              <span className="text-muted">: {ROOM_STATUS[r.status]}</span>
+              {r.status === "DELIVERED" && r.photos.length > 0 && <span className="block break-words text-[12px] text-muted">{r.photos.slice(0, 3).join(", ")}{r.photos.length > 3 ? ` and ${r.photos.length - 3} more` : ""}</span>}
+              {r.note && <span className="block break-words text-[13px] text-muted">{r.note}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-[12px] text-muted">{flow}</p>
+      {rc.capturedNote && <p className="text-[12px] text-muted">{rc.capturedNote}</p>}
+    </section>
+  );
+}
+
 export function CoveragePanel() {
   const { data } = useJob();
   const p4 = data.findings.filter((f) => f.pass === "P4_ORDER");
@@ -84,7 +137,7 @@ export function CoveragePanel() {
   const decided = p4.filter((f) => f.status !== "OPEN");
   const c = data.coverageCounts;
   const want = new Map(data.expected.map((e) => [e.label, e.value]));
-  const ran = data.runs.some((r) => r.passes.includes("P4") || r.passes.includes("P4_ORDER"));
+  const ran = data.runs.some((r) => r.passes.includes("P4") || r.passes.includes("P4_ORDER")) || !!data.roomCoverage;
   const counts: { label: string; have: number; ordered: string | null }[] = [
     { label: "Photos in the delivery", have: c.photos, ordered: want.get("Photos ordered (at least)") ?? null },
     { label: "Aerial photos", have: c.aerial, ordered: want.get("Drone photos") ?? null },
@@ -124,6 +177,8 @@ export function CoveragePanel() {
         </ul>
         <p className="mt-1 text-[12px] text-muted">Aerial, twilight and staged counts come from QC&rsquo;s photo labels, so they read zero until QC has run.</p>
       </section>
+
+      {data.roomCoverage && <RoomsSection rc={data.roomCoverage} />}
 
       <section aria-labelledby="pd-p4-h" className="space-y-2">
         <h3 id="pd-p4-h" className="text-sm font-semibold">Coverage check</h3>

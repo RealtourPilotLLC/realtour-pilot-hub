@@ -17,9 +17,13 @@ import seed from "./qc-rules.seed.json";
 // night of the build) that the 425-rule seed did not cover: HDR ghosting,
 // misfires/test shots, a drone in a reflection. Kept in their own file so the
 // seed stays exactly as Jordan's spec generated it.
+// Oct 15 2026 (v1.2): a crooked door mat, an item left in an empty room, warped
+// architecture (walls, doors, windows, cabinets; never furniture) and the
+// three free room-coverage findings (shot but not delivered, never shot,
+// photos lost in editing).
 import addendum from "./qc-rules.autohdr-addendum.json";
 
-export const RULES_REGISTRY_VERSION = "v1.1-2026-10-14";
+export const RULES_REGISTRY_VERSION = "v1.2-2026-10-15";
 
 export const SEVERITIES = ["CRITICAL", "MAJOR", "MINOR"] as const;
 export type Severity = (typeof SEVERITIES)[number];

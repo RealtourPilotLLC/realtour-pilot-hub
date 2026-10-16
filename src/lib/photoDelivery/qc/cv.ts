@@ -783,3 +783,251 @@ export function median(xs: number[]): number | null {
   const m = Math.floor(v.length / 2);
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
+
+// ---- line geometry (Oct 15 2026) ------------------------------------------------------------
+//
+// Jordan: "the biggest thing I need is making sure images are not warped".
+// The registry's cvHints for crooked verticals (Sobel orientation, length-
+// weighted median deviation above 1.0 degree, at least 8 edges) were never
+// built; this is them, plus a bend measure for warped architecture:
+//   · strong near-vertical edges (within 15 degrees) on a ~1024 px luma image,
+//     thinned to one pixel and linked row by row into chains (same polarity);
+//   · each long chain gets a straight fit (its angle: TILT) and a parabola
+//     fit (its bow: BEND). A clean chain (small parabola residual) whose bow
+//     is at least 3 px and 1.2% of its length is bent: real walls, door
+//     frames and window edges are straight, so a bent one is a warp (barrel
+//     distortion, AI straightening that stretched a corner, a wavy edit);
+//   · the same on the transposed image measures near-horizontal lines.
+// Evidence, not a verdict: a warp finding counts in full only when this and
+// the free check agree (geometry.ts). Starting values, calibrate.
+// Pure (no I/O): the drills feed it synthetic images.
+
+export const GEOMETRY_THRESHOLDS = {
+  /** Sobel |gx| (0 to 1020) an edge pixel needs. */
+  edgeMin: 64,
+  /** Within this many degrees of vertical. */
+  maxAngleDeg: 15,
+  /** A chain must span at least this share of the image height (and 40 px). */
+  minSpan: 0.12,
+  /** Straight-fit RMS above this = a texture, not a line. */
+  maxRmsPx: 1.5,
+  /** Crooked: at least this many lines, median deviation above this. */
+  crookedMinLines: 8,
+  crookedDeg: 1.0,
+  /** Bent: bow at least this many px and this share of the chain's length. */
+  bowMinPx: 3,
+  bowMinRatio: 0.012,
+  /** Warped: at least this many bent lines. */
+  warpedMinLines: 2,
+} as const;
+
+export type BentLine = { nx: number; ny: number; bowPx: number; len: number; dir: "v" | "h" };
+export type LineGeometry = {
+  v: 1;
+  width: number;
+  height: number;
+  /** Long, clean near-vertical lines measured. */
+  verticalLines: number;
+  /** Length-weighted median |deviation from vertical|, degrees (null under 3 lines). */
+  tiltDeg: number | null;
+  /** Length-weighted median signed deviation (positive: the top leans right). */
+  leanDeg: number | null;
+  /** Long, clean lines (both directions) bent past the limit. */
+  bentLines: number;
+  maxBowPx: number;
+  maxBowRatio: number;
+  bent: BentLine[];
+  crooked: boolean;
+  warped: boolean;
+  /** Why the tilt could not be judged (too few lines), or null. */
+  skipped: string | null;
+};
+
+type Chain = { sign: number; lastY: number; firstY: number; lastX: number; xs: number[]; ys: number[] };
+
+/** Least squares x = a*u + b (u centred and scaled), and x = c*u^2 + d*u + e; residual stats. */
+function fitChain(xs: number[], ys: number[]): { slope: number; rms: number; bow: number; qRms: number } {
+  const n = xs.length;
+  let ym = 0;
+  for (const y of ys) ym += y;
+  ym /= n;
+  const span = Math.max(1, ys[n - 1] - ys[0]);
+  // Straight fit in pixels (slope in px per row).
+  let sy = 0, sx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const y = ys[i] - ym;
+    sy += y; sx += xs[i]; syy += y * y; sxy += y * xs[i];
+  }
+  const den = n * syy - sy * sy;
+  const slope = den ? (n * sxy - sy * sx) / den : 0;
+  const icpt = (sx - slope * sy) / n;
+  let ss = 0;
+  for (let i = 0; i < n; i++) {
+    const r = xs[i] - (slope * (ys[i] - ym) + icpt);
+    ss += r * r;
+  }
+  const rms = Math.sqrt(ss / n);
+  // Parabola on u in [-1, 1]: normal equations (3x3), solved by Cramer's rule.
+  let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+  for (let i = 0; i < n; i++) {
+    const u = (2 * (ys[i] - ys[0])) / span - 1;
+    const u2 = u * u;
+    s0 += 1; s1 += u; s2 += u2; s3 += u2 * u; s4 += u2 * u2;
+    t0 += xs[i]; t1 += u * xs[i]; t2 += u2 * xs[i];
+  }
+  const det = (a: number[]) => a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) + a[2] * (a[3] * a[7] - a[4] * a[6]);
+  const M = [s4, s3, s2, s3, s2, s1, s2, s1, s0];
+  const D = det(M);
+  if (!D) return { slope, rms, bow: 0, qRms: rms };
+  const c = det([t2, s3, s2, t1, s2, s1, t0, s1, s0]) / D;
+  const d = det([s4, t2, s2, s3, t1, s1, s2, t0, s0]) / D;
+  const e = det([s4, s3, t2, s3, s2, t1, s2, s1, t0]) / D;
+  let qs = 0;
+  for (let i = 0; i < n; i++) {
+    const u = (2 * (ys[i] - ys[0])) / span - 1;
+    const r = xs[i] - (c * u * u + d * u + e);
+    qs += r * r;
+  }
+  // A parabola c*u^2 over u in [-1, 1] departs from its chord by |c| in the middle.
+  return { slope, rms, bow: Math.abs(c), qRms: Math.sqrt(qs / n) };
+}
+
+/** Near-vertical edge chains of a luma image (one pixel wide, same polarity, linked row by row). */
+function verticalChains(l: Uint8Array, w: number, h: number): Chain[] {
+  const T = GEOMETRY_THRESHOLDS;
+  const tan = Math.tan((T.maxAngleDeg * Math.PI) / 180);
+  const gx = new Float32Array(w * h);
+  const ok = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const a = l[i - w - 1], b = l[i - w], c = l[i - w + 1], d = l[i - 1], f = l[i + 1], g = l[i + w - 1], k = l[i + w], m = l[i + w + 1];
+      const sx = c + 2 * f + m - (a + 2 * d + g);
+      const sy = g + 2 * k + m - (a + 2 * b + c);
+      gx[i] = sx;
+      if (Math.abs(sx) >= T.edgeMin && Math.abs(sy) <= tan * Math.abs(sx)) ok[i] = 1;
+    }
+  }
+  const chains: Chain[] = [];
+  let prev = new Int32Array(w).fill(-1);
+  let prev2 = new Int32Array(w).fill(-1);
+  for (let y = 1; y < h - 1; y++) {
+    const cur = new Int32Array(w).fill(-1);
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (!ok[i]) continue;
+      const v = Math.abs(gx[i]);
+      // Thin to the ridge across the edge.
+      if (v < Math.abs(gx[i - 1]) || v <= Math.abs(gx[i + 1])) continue;
+      const sign = gx[i] > 0 ? 1 : -1;
+      let id = -1;
+      for (const rows of [prev, prev2]) {
+        for (const dx of [0, -1, 1, -2, 2]) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const cand = rows[xx];
+          if (cand >= 0 && chains[cand].sign === sign && chains[cand].lastY < y) {
+            id = cand;
+            break;
+          }
+        }
+        if (id >= 0) break;
+      }
+      if (id < 0) {
+        id = chains.length;
+        chains.push({ sign, lastY: y, firstY: y, lastX: x, xs: [x], ys: [y] });
+      } else {
+        const ch = chains[id];
+        ch.lastY = y;
+        ch.lastX = x;
+        ch.xs.push(x);
+        ch.ys.push(y);
+      }
+      cur[x] = id;
+    }
+    prev2 = prev;
+    prev = cur;
+  }
+  return chains;
+}
+
+function weightedMedian(items: { v: number; w: number }[]): number | null {
+  if (!items.length) return null;
+  const s = [...items].sort((a, b) => a.v - b.v);
+  const total = s.reduce((t, x) => t + x.w, 0);
+  let acc = 0;
+  for (const x of s) {
+    acc += x.w;
+    if (acc >= total / 2) return x.v;
+  }
+  return s[s.length - 1].v;
+}
+
+/** Measure one direction: the clean long chains' angles and bends. */
+function measureDirection(l: Uint8Array, w: number, h: number, dir: "v" | "h") {
+  const T = GEOMETRY_THRESHOLDS;
+  const minSpan = Math.max(40, Math.round(T.minSpan * h));
+  const angles: { v: number; w: number }[] = [];
+  const bent: BentLine[] = [];
+  let maxBowPx = 0, maxBowRatio = 0;
+  for (const ch of verticalChains(l, w, h)) {
+    const len = ch.lastY - ch.firstY + 1;
+    if (len < minSpan || ch.xs.length < minSpan * 0.8) continue;
+    const f = fitChain(ch.xs, ch.ys);
+    const clean = f.qRms <= T.maxRmsPx;
+    if (!clean) continue;
+    if (f.rms <= T.maxRmsPx * 2) angles.push({ v: (Math.atan(f.slope) * 180) / Math.PI, w: len });
+    const ratio = f.bow / len;
+    if (f.bow > maxBowPx) maxBowPx = f.bow;
+    if (ratio > maxBowRatio) maxBowRatio = ratio;
+    if (f.bow >= T.bowMinPx && ratio >= T.bowMinRatio) {
+      const mx = ch.xs.reduce((s, x) => s + x, 0) / ch.xs.length;
+      const my = (ch.firstY + ch.lastY) / 2;
+      bent.push(dir === "v" ? { nx: mx / w, ny: my / h, bowPx: Math.round(f.bow * 10) / 10, len, dir } : { nx: my / h, ny: mx / w, bowPx: Math.round(f.bow * 10) / 10, len, dir });
+    }
+  }
+  return { angles, bent, maxBowPx, maxBowRatio };
+}
+
+/** Transpose a luma image (rows become columns). */
+function transpose(l: Uint8Array, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[x * h + y] = l[y * w + x];
+  return out;
+}
+
+/** Crooked verticals and bent architecture from a luma image (about 1024 px wide). Pure. */
+export function lineGeometry(l: Uint8Array, w: number, h: number): LineGeometry {
+  const T = GEOMETRY_THRESHOLDS;
+  const vert = measureDirection(l, w, h, "v");
+  const horiz = measureDirection(transpose(l, w, h), h, w, "h");
+  const lines = vert.angles.length;
+  const tilt = lines >= 3 ? weightedMedian(vert.angles.map((a) => ({ v: Math.abs(a.v), w: a.w }))) : null;
+  const lean = lines >= 3 ? weightedMedian(vert.angles) : null;
+  const bent = [...vert.bent, ...horiz.bent].sort((a, b) => b.bowPx - a.bowPx);
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  return {
+    v: 1,
+    width: w,
+    height: h,
+    verticalLines: lines,
+    tiltDeg: tilt == null ? null : r2(tilt),
+    leanDeg: lean == null ? null : r2(lean),
+    bentLines: bent.length,
+    maxBowPx: r2(Math.max(vert.maxBowPx, horiz.maxBowPx)),
+    maxBowRatio: Math.round(Math.max(vert.maxBowRatio, horiz.maxBowRatio) * 10_000) / 10_000,
+    bent: bent.slice(0, 8),
+    crooked: lines >= T.crookedMinLines && (tilt ?? 0) > T.crookedDeg,
+    warped: bent.length >= T.warpedMinLines,
+    skipped: lines < T.crookedMinLines ? `only ${lines} long straight line${lines === 1 ? "" : "s"} to measure (needs ${T.crookedMinLines})` : null,
+  };
+}
+
+/** The measurement in plain words, for a finding's explanation. */
+export function geometryWords(g: LineGeometry): string {
+  const parts: string[] = [];
+  if (g.tiltDeg != null) parts.push(`${g.verticalLines} vertical line${g.verticalLines === 1 ? "" : "s"} measured, leaning ${g.tiltDeg.toFixed(1)}° on average`);
+  else parts.push(`${g.verticalLines} vertical line${g.verticalLines === 1 ? "" : "s"} measured`);
+  parts.push(g.bentLines ? `${g.bentLines} line${g.bentLines === 1 ? "" : "s"} bent (up to ${Math.round(g.maxBowPx)} px)` : "no bent lines");
+  return parts.join("; ");
+}

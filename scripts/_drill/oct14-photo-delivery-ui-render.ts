@@ -290,6 +290,55 @@ async function main() {
     c.ok("the progress route answers (nothing running here) and refuses a bad ask", rPush.status === 200 && rPush.body.ok && rPush.body.progress === null && rReady.status === 200 && rReady.body.ok && rBad.status === 400 && /await requireAdmin\(\)/.test(src("src/app/api/photo-delivery/progress/[jobId]/route.ts")), JSON.stringify([rPush, rReady, rBad]));
 
     // =======================================================================
+    c.head("3c · Oct 15: the home type, the rooms, the as-is clients");
+    // =======================================================================
+    {
+      const { photoSetKey } = await import("@/lib/photoDelivery/coverage");
+      const { savePhotoDeliverySettings } = await import("@/lib/photoDelivery/settings");
+      const active = await prisma.photoAsset.findMany({ where: { jobId: job.id, status: "ACTIVE" }, select: { id: true } });
+      await prisma.photoJob.update({
+        where: { id: job.id },
+        data: {
+          prepMode: "AS_IS", prepModeBy: "auto", prepModeAt: now,
+          prepStatsJson: JSON.stringify({ rated: 4, reason: "3 of 4 rooms lived in or cluttered" }),
+          coverageCheckedAt: now,
+          coverageJson: JSON.stringify({
+            v: 1, photoSet: photoSetKey(active.map((p) => p.id)), done: true, at: now.toISOString(),
+            expected: { bedrooms: 3, bathrooms: 2, propertyType: "single family" },
+            counts: { raw: 80, expectedPhotos: 16, autohdr: 16, delivered: 2, leftOut: 1 },
+            capturedKnown: true, capturedNote: null, captured: {}, lostInEdit: [],
+            rooms: [
+              { key: "front-exterior", label: "Front exterior", status: "DELIVERED", severity: null, photos: ["A.jpg"], note: "" },
+              { key: "kitchen", label: "Kitchen", status: "DELIVERED", severity: null, photos: ["B.jpg"], note: "" },
+              { key: "living", label: "Living area", status: "NOT_DELIVERED", severity: "MAJOR", photos: ["C.jpg"], note: "It was shot but is not in the delivery: C.jpg (left out of the delivery)." },
+              { key: "primary-shower", label: "Primary shower or tub", status: "ADVISORY", severity: "MINOR", photos: ["B.jpg"], note: "The primary shower has no photo of its own: it only shows in the background of B.jpg." },
+              { key: "primary-bedroom", label: "Primary bedroom", status: "NOT_CAPTURED", severity: "MAJOR", photos: [], note: "Not in AutoHDR's photos of the shoot: it looks like it was never photographed." },
+            ],
+          }),
+        },
+      });
+      await f({ photoId: A.id, ruleId: "EXT_GARDEN_HOSES", groupKey: "GARDEN_HOSE", status: "IGNORED", statusReason: "As-is home: clutter not checked", decidedBy: "hub: as-is home", decidedAt: now, specificIssue: "Hose on the lawn (hidden)" });
+      const freeBefore = (await (await import("@/lib/photoDelivery/settings")).photoDeliverySettings()).freeCheck;
+      await savePhotoDeliverySettings({ asIsClientIds: [client.id], freeCheck: true }, "drill");
+      const prepHtml = await render("the job page with an as-is home", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({}) }));
+      const t = text(prepHtml);
+      c.ok("the Home fact: as-is, what it means, why, and how much clutter is not shown", /As-is home/.test(t) && /Clutter is not checked\./.test(t) && /Read from the photos: 3 of 4 rooms lived in or cluttered\./.test(t) && /1 clutter item not shown/.test(t), (t.match(/Home .{0,240}/) ?? [""])[0]);
+      c.ok("the owner can set it for this job (Automatic, Prepared, As-is, Vacant)", /Set for this job/.test(t) && ["Automatic", "Prepared", "As-is", "Vacant"].every((w) => prepHtml.includes(`>${w}</option>`)));
+      c.ok("the hidden clutter is not listed on the job page", !/Hose on the lawn \(hidden\)/.test(t) && /As-is home: 1 clutter item not shown/.test(t));
+      const kyle = await data.loadJobDetail(job.id, { viewer: admin, now });
+      const { PrepModeControl } = await import("@/components/photoDelivery/PrepModeControl");
+      const kyleChip = text(html(createElement(PrepModeControl, { jobId: job.id, prep: kyle!.prep, canSet: false })));
+      c.ok("Kyle sees the home type, never the setting", /As-is home/.test(kyleChip) && !/Set for this job/.test(kyleChip));
+      const covHtml = await render("the Coverage tab with the room check", () => JobPage({ params: Promise.resolve({ jobId: job.id }), searchParams: Promise.resolve({ tab: "coverage" }) }));
+      const ct = text(covHtml);
+      c.ok("the Coverage tab lists the rooms the listing needs, room by room", /Rooms the listing needs/.test(ct) && /From the listing: 3 bedrooms, 2 bathrooms, single family\./.test(ct) && /Living area : Shot, not in the delivery/.test(ct) && /Primary bedroom : Never photographed/.test(ct) && /Primary shower or tub : Worth a look/.test(ct) && /only shows in the background of B\.jpg/.test(ct) && /Uploaded: 80 raw files \(about 16 photos\) · AutoHDR: 16 photos · Delivered: 2 · Left out: 1/.test(ct), (ct.match(/Rooms the listing needs.{0,400}/) ?? [""])[0]);
+      const setHtml = await render("the settings page with the free checks and the as-is clients", () => SettingsPage());
+      const stt = text(setHtml);
+      c.ok("settings: the four free checks and the as-is clients picker, with the client on the list", ["Measure the lines", "Compare cut-off roofs and warps with AutoHDR's original", "Room coverage", "Check listing photos that change after delivery", "As-is clients"].every((w) => stt.includes(w)) && /Remove Render Client TEST/.test(setHtml), "");
+      await savePhotoDeliverySettings({ asIsClientIds: [], freeCheck: freeBefore }, "drill");
+    }
+
+    // =======================================================================
     c.head("4 · copy");
     // =======================================================================
     const dashed = Object.entries(all).filter(([, h]) => LONG_DASH.test(text(h))).map(([k, h]) => `${k}: ${(text(h).match(/.{30}[\u2013\u2014].{30}/) ?? [""])[0]}`);

@@ -26,6 +26,7 @@
 // Every write goes through lib/clientFacts (acceptFact, markFactConfidential,
 // setFactAiContext, createFact) and can be undone on her Knowledge tab.
 // ---------------------------------------------------------------------------
+export {};
 const MARCEE = "cmqiksjju007v9k9qtuql2n4e";
 const ENROLLMENT = "cmt7h6azc00049kcj0b39k6si";
 const BY = "info@realtourpilot.com (Oct 15 call, filed by Claude)";

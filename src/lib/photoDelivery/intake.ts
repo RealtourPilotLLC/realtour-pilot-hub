@@ -55,7 +55,7 @@ const SLOW_AFTER_MS = 3 * 60 * MIN;
 const PHOTO_TYPES = ["PHOTOS", "DRONE", "TWILIGHT"];
 const IMG_RE = /\.(jpe?g|png|tiff?|heic|dng|arw|cr2|cr3|nef|raf|orf|rw2)$/i;
 const RAW_EXT = /\.(dng|arw|cr2|cr3|nef|raf|orf|rw2)$/i;
-const DRONE_RE = /^dji|dji[_-]|drone|mavic|air ?2|^m3[_-]/i;
+export const DRONE_RE = /^dji|dji[_-]|drone|mavic|air ?2|^m3[_-]/i;
 
 export type IntakeFile = { id: string | null; name: string; path: string; size: number | null; hash: string | null };
 

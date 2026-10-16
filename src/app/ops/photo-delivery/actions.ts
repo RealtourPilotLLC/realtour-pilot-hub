@@ -100,6 +100,44 @@ export async function stopFlaggingAction(input: { jobId?: string | null; ruleId:
   }
 }
 
+/** Oct 15 2026 (owner): this job's home is as-is, prepared or vacant (null: back to automatic). Clutter follows at once (prep.ts). */
+export async function setPrepModeAction(input: { jobId: string; mode: "AS_IS" | "PREPARED" | "VACANT" | null }): Promise<ActionResult> {
+  try {
+    await requireOwner();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!input || typeof input.jobId !== "string" || !ID.test(input.jobId)) return { ok: false, message: "That job id is not valid." };
+  if (input.mode !== null && !["AS_IS", "PREPARED", "VACANT"].includes(String(input.mode))) return { ok: false, message: "That is not a home type the hub knows." };
+  try {
+    const { by } = await actor();
+    const { setPrepMode } = await import("@/lib/photoDelivery/prep");
+    const r = await setPrepMode(input.jobId, input.mode, by);
+    if (r.ok) refresh(input.jobId);
+    return r;
+  } catch (e) {
+    return failed("set the home type", e);
+  }
+}
+
+/** Oct 15 2026 (owner): clients by name, for the as-is list on the settings page. */
+export async function searchClientsAction(query: string): Promise<{ ok: boolean; message: string; clients: { id: string; name: string }[] }> {
+  try {
+    await requireOwner();
+  } catch (e) {
+    return { ...denied(e), clients: [] };
+  }
+  const q = typeof query === "string" ? query.trim().slice(0, 60) : "";
+  if (q.length < 2) return { ok: true, message: "", clients: [] };
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const rows = await prisma.client.findMany({ where: { name: { contains: q, mode: "insensitive" } }, orderBy: { name: "asc" }, select: { id: true, name: true }, take: 10 });
+    return { ok: true, message: rows.length ? "" : "No client by that name.", clients: rows };
+  } catch (e) {
+    return { ...failed("client search", e), clients: [] };
+  }
+}
+
 /** Owner: check a switched-off rule again from the next QC on. */
 export async function resumeCheckAction(ruleId: string): Promise<ActionResult> {
   try {
@@ -575,7 +613,7 @@ export async function saveThresholdsAction(input: { warn: number; critical: numb
 
 type SettingsInput = Partial<Omit<PhotoDeliverySettings, "qcFrom">> & { qcFrom?: string | null };
 
-const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos", "sameDayAutoDeliver"] as const;
+const BOOL_KEYS = ["enabled", "qcEnabled", "qcShadow", "fixRunnerEnabled", "autoSubmit", "freeCheck", "paidQcAuto", "autoFix", "showAutohdrPhotos", "sameDayAutoDeliver", "warpCv", "warpCompareOriginal", "freeCoverage", "afterDeliveryCheck"] as const;
 const NUM_RULES: Record<string, { min: number; max: number; int: boolean; label: string }> = {
   adminCreditCap: { min: 0, max: 10_000, int: true, label: "Kyle's approval limit" },
   autoFixDailyMaxCredits: { min: 0, max: 10_000, int: true, label: "Daily limit on automatic fixes" },
@@ -616,6 +654,16 @@ export async function saveSettingsAction(input: SettingsInput): Promise<ActionRe
   if ("maxBuildPhase" in input) {
     if (input.maxBuildPhase !== 1 && input.maxBuildPhase !== 2 && input.maxBuildPhase !== 3) return { ok: false, message: "Which checks the paid QC runs must be 1, 2 or 3." };
     next.maxBuildPhase = input.maxBuildPhase;
+  }
+  if ("asIsClientIds" in input) {
+    // Oct 15 2026: the as-is clients (prep.ts), picked by name on the settings page.
+    const raw = Array.isArray(input.asIsClientIds) ? input.asIsClientIds : null;
+    if (!raw || raw.length > 500 || !raw.every((x) => typeof x === "string" && ID.test(x))) return { ok: false, message: "The as-is clients could not be read. Reload and pick them again." };
+    const ids = [...new Set(raw)];
+    const { prisma } = await import("@/lib/prisma");
+    const found = ids.length ? await prisma.client.count({ where: { id: { in: ids } } }) : 0;
+    if (found !== ids.length) return { ok: false, message: "One of the as-is clients no longer exists. Reload and pick them again." };
+    next.asIsClientIds = ids;
   }
   if ("qcFrom" in input) {
     if (input.qcFrom === null || input.qcFrom === "") next.qcFrom = null;

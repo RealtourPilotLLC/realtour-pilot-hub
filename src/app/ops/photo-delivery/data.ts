@@ -367,6 +367,7 @@ export function cvSummary(json: string | null): CvMetric[] {
 type Expected = {
   minPhotos?: number; maxPhotos?: number; droneCount?: number; twilightReal?: number; twilightVirtual?: number; virtualStagingCount?: number;
   floorPlan?: boolean; sqft?: number; propertyType?: string; requestedFeatures?: string[]; specialInstructions?: string; source?: Record<string, string>;
+  bedrooms?: number; bathrooms?: number;
 };
 
 function expectedRows(e: Expected | null): ExpectedView {
@@ -385,6 +386,8 @@ function expectedRows(e: Expected | null): ExpectedView {
   add("floorPlan", "Floor plan", e.floorPlan ? "Ordered" : null);
   add("sqft", "Size", typeof e.sqft === "number" ? `${e.sqft.toLocaleString("en-US")} sq ft (top of the ordered band)` : null);
   add("propertyType", "Property type", typeof e.propertyType === "string" && e.propertyType ? e.propertyType : null);
+  add("bedrooms", "Bedrooms", typeof e.bedrooms === "number" ? String(e.bedrooms) : null);
+  add("bathrooms", "Bathrooms", typeof e.bathrooms === "number" ? String(e.bathrooms) : null);
   return rows;
 }
 
@@ -423,7 +426,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       client: { select: { name: true } }, photographer: { select: { name: true } },
     },
   });
-  const [project, profile, photos, findings, p4Raw, versions, runs, events, batches, ops, gateR, stepsR, cartR, creditR, aryeoPush, intake] = await Promise.all([
+  const [project, profile, photos, findingsAll, p4Raw, versions, runs, events, batches, ops, gateR, stepsR, cartR, creditR, aryeoPush, intake] = await Promise.all([
     projectP,
     projectP.then((p) => (p?.clientId ? prisma.clientQcProfile.findUnique({ where: { clientId: p.clientId }, select: { ruleOverridesJson: true } }) : null)).catch(() => null),
     prisma.photoAsset.findMany({ where: { jobId }, orderBy: { sequence: "asc" }, select: PHOTO_FIELDS }),
@@ -453,6 +456,12 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       .catch(() => []),
   ]);
   const p4RawById = new Map(p4Raw.map((f) => [f.id, f.rawJson]));
+  // Oct 15 2026: clutter set aside because the home or the room was not
+  // prepared is never shown (prep.ts); the Issues tab says how many.
+  const { GATE_BY, gatedBy } = await import("@/lib/photoDelivery/prep");
+  const hiddenAsIs = findingsAll.filter((f) => f.status === "IGNORED" && f.decidedBy === GATE_BY.asIs).length;
+  const hiddenRooms = findingsAll.filter((f) => f.status === "IGNORED" && gatedBy(f.decidedBy) && f.decidedBy !== GATE_BY.asIs).length;
+  const findings = findingsAll.filter((f) => !(f.status === "IGNORED" && gatedBy(f.decidedBy)));
 
   // Delivery order: the steps' order (a person's order, else the QC suggestion,
   // else AutoHDR's) for included photos; excluded ones follow, so they can be put back.
@@ -629,8 +638,32 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     ? summary!.coverage.filter((c) => c && c.status === "MET" && typeof c.label === "string").map((c) => ({ label: c.label as string, evidence: typeof c.evidence === "string" ? c.evidence : null })).slice(0, 60)
     : [];
 
+  const prepStats = parse<{ reason?: string; rated?: number }>(job.prepStatsJson);
+  const { parseCoverage, photoSetKey } = await import("@/lib/photoDelivery/coverage");
+  const cov = parseCoverage(job.coverageJson);
   return {
     groupMeta,
+    prep: {
+      mode: job.prepMode === "AS_IS" || job.prepMode === "PREPARED" || job.prepMode === "VACANT" ? job.prepMode : null,
+      by: job.prepModeBy,
+      at: iso(job.prepModeAt),
+      reason: typeof prepStats?.reason === "string" ? prepStats.reason : null,
+      rated: typeof prepStats?.rated === "number" ? prepStats.rated : 0,
+      hiddenAsIs,
+      hiddenRooms,
+    },
+    roomCoverage: cov
+      ? {
+          checkedAt: iso(job.coverageCheckedAt),
+          current: cov.done && cov.photoSet === photoSetKey(photos.filter((p) => p.status === "ACTIVE").map((p) => p.id)),
+          rooms: cov.rooms.map((r) => ({ ...r, photos: [...r.photos] })),
+          bedrooms: cov.expected.bedrooms,
+          bathrooms: cov.expected.bathrooms,
+          propertyType: cov.expected.propertyType,
+          counts: { ...cov.counts },
+          capturedNote: cov.capturedNote,
+        }
+      : null,
     header: {
       id: job.id,
       projectId: job.projectId,

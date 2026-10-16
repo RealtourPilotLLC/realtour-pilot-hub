@@ -108,11 +108,13 @@ export async function draftCoachingNote(jobId: string): Promise<{ drafted: boole
   const shooter = await prisma.teamMember.findUnique({ where: { id: project.photographerId }, select: { id: true, name: true } });
   if (!shooter) return { drafted: false, reason: "photographer not found" };
   const settings = await photoDeliverySettings();
+  const GATED: string[] = Object.values((await import("./prep")).GATE_BY);
 
   const photos = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, orderBy: { sequence: "asc" }, select: { id: true } });
   const position = new Map(photos.map((p, i) => [p.id, i + 1]));
   const findings = await prisma.photoQcFinding.findMany({
-    where: { jobId, qcRunId: job.lastQcRunId, responsibility: "PHOTOGRAPHER", confidence: { gte: settings.displayConfidenceFloor }, status: { notIn: ["FALSE_POSITIVE", "OVERRIDDEN", "SUPERSEDED"] } },
+    // Oct 15 2026: clutter the hub set aside (an as-is home, a room not prepared) is not the photographer's miss.
+    where: { jobId, qcRunId: job.lastQcRunId, responsibility: "PHOTOGRAPHER", confidence: { gte: settings.displayConfidenceFloor }, status: { notIn: ["FALSE_POSITIVE", "OVERRIDDEN", "SUPERSEDED"] }, OR: [{ decidedBy: null }, { decidedBy: { notIn: GATED } }] },
     select: { ruleId: true, severity: true, photoId: true },
   });
   const byRule = new Map<string, { count: number; positions: number[]; worst: string }>();
@@ -129,7 +131,7 @@ export async function draftCoachingNote(jobId: string): Promise<{ drafted: boole
   const theirProjects = await prisma.project.findMany({ where: { photographerId: shooter.id, shootDate: { gte: since } }, select: { id: true } });
   const theirJobs = await prisma.photoJob.findMany({ where: { projectId: { in: theirProjects.map((p) => p.id) } }, select: { id: true } });
   const recent = await prisma.photoQcFinding.findMany({
-    where: { jobId: { in: theirJobs.map((j) => j.id) }, responsibility: "PHOTOGRAPHER", confidence: { gte: settings.displayConfidenceFloor }, status: { notIn: ["FALSE_POSITIVE", "OVERRIDDEN", "SUPERSEDED"] } },
+    where: { jobId: { in: theirJobs.map((j) => j.id) }, responsibility: "PHOTOGRAPHER", confidence: { gte: settings.displayConfidenceFloor }, status: { notIn: ["FALSE_POSITIVE", "OVERRIDDEN", "SUPERSEDED"] }, OR: [{ decidedBy: null }, { decidedBy: { notIn: GATED } }] },
     select: { ruleId: true, jobId: true },
   });
   const shootsByRule = new Map<string, Set<string>>();

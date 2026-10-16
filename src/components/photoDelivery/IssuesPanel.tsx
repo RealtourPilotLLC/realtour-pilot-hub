@@ -128,13 +128,15 @@ function FindingRow({ f }: { f: FindingView }) {
 }
 
 export function IssuesPanel() {
-  const { data, shown, jobId, run, confirm, pending } = useJob();
+  const { data, shown, jobId, run, confirm, pending, setTab } = useJob();
   const visible = useMemo(() => data.findings.filter((f) => f.pass !== "P4_ORDER"), [data.findings]);
   const main = useMemo(() => groupFindings(visible.filter((f) => shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
   const low = useMemo(() => groupFindings(visible.filter((f) => !shown(f)), data.groupMeta), [visible, shown, data.groupMeta]);
   const live = main.filter((g) => g.findings.some((f) => LIVE.has(f.status)));
   const decided = main.filter((g) => !g.findings.some((f) => LIVE.has(f.status)));
   const openCount = visible.filter((f) => f.status === "OPEN" && shown(f)).length;
+  // Oct 15 2026: open room-coverage gaps live on the Coverage tab, but they hold the job too.
+  const coverageGaps = data.findings.filter((f) => f.pass === "P4_ORDER" && f.status === "OPEN" && f.severity !== "MINOR" && shown(f)).length;
   const ranQc = data.runs.length > 0;
   // Oct 14 2026 (Jordan): "a button that can skip all QC findings for a shoot".
   const skippable = visible.filter((f) => f.status === "OPEN" || f.status === "APPROVED_FIX").length;
@@ -176,6 +178,22 @@ export function IssuesPanel() {
             ))}
           </ul>
         </>
+      )}
+      {coverageGaps > 0 && (
+        <p className="text-[13px]">
+          Also {plural(coverageGaps, "coverage gap")} to decide:{" "}
+          <button type="button" onClick={() => setTab("coverage")} className="font-medium text-brand underline-offset-2 hover:underline">
+            open the Coverage tab
+          </button>
+          .
+        </p>
+      )}
+      {(data.prep?.hiddenAsIs ?? 0) + (data.prep?.hiddenRooms ?? 0) > 0 && (
+        // Oct 15 2026 (prep.ts): clutter in a home (or a room) that was not prepared is not shown.
+        <p className="text-[13px] text-muted">
+          {data.prep.hiddenAsIs > 0 && `As-is home: ${plural(data.prep.hiddenAsIs, "clutter item")} not shown. `}
+          {data.prep.hiddenRooms > 0 && `${plural(data.prep.hiddenRooms, "clutter item")} in rooms that were not prepared (or only checked in empty rooms) not shown.`}
+        </p>
       )}
       {decided.length > 0 && (
         <details className="rounded-xl border border-border">

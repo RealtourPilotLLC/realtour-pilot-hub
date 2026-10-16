@@ -116,7 +116,7 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
   if (!job) throw new Error("Photo job not found.");
   const findings = await prisma.photoQcFinding.findMany({
     where: { jobId, status: "OPEN", severity: { in: ["CRITICAL", "MAJOR", "MINOR"] } },
-    select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true, bboxJson: true, reeditPrompt: true, source: true, coercedJson: true },
+    select: { id: true, photoId: true, ruleId: true, specificIssue: true, severity: true, confidence: true, fixStrategy: true, postFixable: true, isPermanentFeature: true, privacySensitive: true, groupKey: true, bboxJson: true, reeditPrompt: true, source: true, coercedJson: true, recommendedAction: true },
   });
   const photos = await prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, name: true, sourceKind: true } });
   const nameOf = new Map(photos.map((p) => [p.id, p.name]));
@@ -147,7 +147,9 @@ export async function buildFixCart(jobId: string): Promise<FixCart> {
     // Verticals, a tilted horizon and a roof the straightening cut off: free in
     // AutoHDR's editor, never a paid re-edit (Jordan, Oct 14 2026).
     if (fixClass(f.ruleId) === "autohdr") {
-      lines.push({ findingIds: [f.id], photoId: f.photoId, photoName: f.photoId ? nameOf.get(f.photoId) ?? null : null, ruleId: f.ruleId, label: rule?.shortLabel ?? f.ruleId, specificIssue: f.specificIssue, severity: f.severity as Severity, confidence: f.confidence, strategy: "EDITOR_MANUAL", transform: null, credits: 0, humanCall: "autohdr-editor", selectedByDefault: false, howTo: AUTOHDR_FREE_FIX[f.ruleId] ?? null });
+      // Oct 15 2026: a roof or warp compared with AutoHDR's original says which it is (geometry.ts).
+      const howTo = (f.recommendedAction && /"original"/.test(f.coercedJson ?? "") ? f.recommendedAction : null) ?? AUTOHDR_FREE_FIX[f.ruleId] ?? null;
+      lines.push({ findingIds: [f.id], photoId: f.photoId, photoName: f.photoId ? nameOf.get(f.photoId) ?? null : null, ruleId: f.ruleId, label: rule?.shortLabel ?? f.ruleId, specificIssue: f.specificIssue, severity: f.severity as Severity, confidence: f.confidence, strategy: "EDITOR_MANUAL", transform: null, credits: 0, humanCall: "autohdr-editor", selectedByDefault: false, howTo });
       continue;
     }
     // A removal or camera issue can always be written as an instruction; the

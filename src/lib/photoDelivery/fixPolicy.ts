@@ -61,9 +61,13 @@ export const AUTOHDR_FREE_FIX: Record<string, string> = {
   PERSP_EXTERIOR_WALLS_LEANING: VERTICALS_HOW,
   PERSP_CROOKED_HORIZON: "Level it in AutoHDR with Crop & Tilt. Free.",
   PERSP_AUTOHDR_ROOF_PEAKS_CROPPED: "AutoHDR's straightening cut off the top of the house. Open this photo in AutoHDR and turn Perspective Off on THIS photo (free; the account's Perspective Correction switch only changes new uploads, never photos already edited), then press Check AutoHDR for changes here: the hub and the Aryeo folder take the new version. Compare it in the photo's Versions. If the original photo has no room above the roof either, only a reshoot fixes it.",
+  // Oct 15 2026: warped architecture. An AI re-edit does not straighten lines
+  // (first live run); AutoHDR's own editor can undo its straightening.
+  PERSP_EDIT_WARP: "If AutoHDR's straightening bent it (the original looks straight), open the photo in AutoHDR and turn Perspective Off on THIS photo (free), then press Check AutoHDR for changes here. If the original is bent too, it is the lens or the camera angle: no edit fixes it; it goes in the photographer's coaching.",
 };
 const VEHICLES = ["EXT_PARKED_CARS_DRIVEWAY", "EXT_VEHICLES_BLOCKING_HOME", "EXT_VEHICLES_THROUGH_WINDOWS"];
-const TRASH = ["PREP_TRASH_CANS", "EXT_TRASH_CANS_PRIMARY", "BATH_TRASH_CANS", "UTIL_GARAGE_TRASH_CANS", "LIV_OFFICE_TRASH_CANS", "PREP_GARBAGE_BAGS_LOOSE_TRASH"];
+// Oct 15 2026: the kitchen trash can too (Jordan: trash cans are always wanted).
+const TRASH = ["PREP_TRASH_CANS", "EXT_TRASH_CANS_PRIMARY", "BATH_TRASH_CANS", "UTIL_GARAGE_TRASH_CANS", "LIV_OFFICE_TRASH_CANS", "PREP_GARBAGE_BAGS_LOOSE_TRASH", "KIT_GARBAGE_CANS"];
 export const ALWAYS_FIX = new Set([...CAMERA, ...DISTORTION, ...VEHICLES, ...TRASH]);
 /** A person decides these, every time. */
 const NEVER_AUTO = new Set(["PREP_PERSONAL_DOCUMENTS", "PREP_PERSONAL_PHOTOS", "BED_PERSONAL_PHOTOS_SENSITIVE", "PREP_VISIBLE_PEOPLE_PETS", "OTHER_DEFECT", "FIX_DAMAGE_AI_EDIT"]);
@@ -101,6 +105,17 @@ const INSTRUCTION: Record<string, string> = {
   BED_UNMADE: "Make the bed neatly with smooth bedding",
   PREP_INCONSISTENT_BLINDS: "Set all the window blinds to the same even height",
   KIT_OPEN_APPLIANCE_DOORS: "Close the open appliance doors",
+  // Oct 15 2026: the removable-distraction checklist.
+  PREP_DOOR_MAT_CROOKED: "Straighten the door mat so it lies flat and square to the door, keeping its size, color and pattern",
+  PREP_LEFTOVER_ITEM_VACANT: "Remove the loose item left behind and fill in only the floor, wall or counter behind it",
+  BATH_TOWELS_UNEVEN: "Straighten the hanging towels so they hang neatly and evenly",
+  PREP_CROOKED_RUGS_FURNITURE_DECOR: "Straighten the area rug so it sits square to the room, keeping its pattern and size",
+  KIT_DISH_SOAP_SPONGES: "Remove the dish soap, sponges and brushes from around the sink",
+  LIV_REMOTE_CONTROLS: "Remove the TV remote controls",
+  PREP_SHOES_FOOTWEAR: "Remove the shoes",
+  PREP_OTHER_PERSONAL_BELONGINGS: "Remove the personal items left out",
+  EXT_LOOSE_GARBAGE_DEBRIS: "Remove the loose trash and debris and fill in only the ground where it was",
+  KIT_GARBAGE_CANS: "Remove the kitchen trash can and fill in only the floor or cabinet behind it",
 };
 
 // ---------------------------------------------------------------------------
@@ -358,7 +373,7 @@ export function fixPolicySummary(s: { fixTargetUsd: number; fixMaxUsd: number; a
   const label = (ids: string[]) => ids.map((id) => ruleById(id)?.shortLabel ?? id).join(", ");
   return [
     { title: "Always fixed (every home, prepared or not)", lines: [`Camera and photographer mistakes: ${label(CAMERA)}.`, `Cars: ${label(VEHICLES)}.`, `Trash cans: ${label(TRASH)}.`, `Lens distortion: ${label(DISTORTION)}.`, `Up to the shoot maximum ($${s.fixMaxUsd}).`] },
-    { title: "Clutter (prepared homes only)", lines: [`Fixed only while the shoot stays inside the target ($${s.fixTargetUsd}).`, "Never on an as-is home: a client on the as-is list, or a shoot where a third or more of the photos show clutter.", 'Not on its own any more once people have marked that kind of clutter "not worth fixing" 3 or more times in 60 days (60% or more of the calls).'] },
+    { title: "Clutter (prepared homes only)", lines: [`Fixed only while the shoot stays inside the target ($${s.fixTargetUsd}).`, "Not even checked on an as-is home: a client on the as-is list, or a home where a third or more of the rooms look lived in or cluttered (or set on the job page). Those findings are set aside and never shown.", "In a prepared home, only rooms that look staged, tidy or empty: a lived-in room's things are its state, not a miss.", "A vacant home: an item left behind in an empty room counts when the check is 70% sure or more.", 'Not on its own any more once people have marked that kind of clutter "not worth fixing" 3 or more times in 60 days (60% or more of the calls).'] },
     { title: "Free in AutoHDR, never a paid fix", lines: Object.entries(AUTOHDR_FREE_FIX).map(([id, how]) => `${ruleById(id)?.shortLabel ?? id}: ${how}`) },
     { title: "Never automatic (a person decides)", lines: ["Privacy: documents, personal photos, people and pets.", "Anything that could change a permanent part of the house.", "Color calls, coverage, and anything an edit cannot fix (blur, a missing room).", "A car or bin that hides part of the house (steps, a porch, a door): removing it means guessing what is behind it, so the original stays.", "A photo an earlier AI fix changed: restore the version before the fix. Skip all never touches it."] },
     { title: "Checks on every automatic fix (free)", lines: ["Before: a second look confirms each finding; for a removal outside, the house is described and checked for anything hidden.", "After: was it fixed, is anything broken, did the house change (steps, railings, doors), and is it noticeably softer. If so, the version before the fix is put back and AutoHDR is checked to have taken it.", `A finding the check was under 60% sure of is not fixed on its own (80% for a kind people often marked "not there").`] },
@@ -393,12 +408,22 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   if (!settings.autoFix) return none("automatic fixes are switched off");
   // Backend audit #12: a plan the runner will never send would park the job in FIXING.
   if (!settings.fixRunnerEnabled) return none("AutoHDR fixes are switched off");
-  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, projectId: true, autohdrPhotoshootId: true, lastQcRunId: true } });
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, projectId: true, autohdrPhotoshootId: true, lastQcRunId: true, prepMode: true, prepModeBy: true, prepStatsJson: true } });
   if (!job || !["QC_REVIEW", "READY"].includes(job.stage)) return none("not waiting on QC review");
-  const run = job.lastQcRunId ? await prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, startedAt: true } }) : null;
+  const run = job.lastQcRunId ? await prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, startedAt: true, trigger: true, checksJson: true } }) : null;
   if (!run || run.status !== "DONE") return none("no finished check yet");
   if (await alreadyPlanned(jobId, run.startedAt)) return none("already planned for this check");
   if (await prisma.photoQcFinding.count({ where: { jobId, status: "OPEN", source: "AHDR", arbitration: "NOT_REQUIRED", photoId: { not: null } } })) return none("the second look is still running");
+  // Oct 15 2026: the measured line check and the Original comparison settle
+  // the warp and roof findings first (a v3 free check only).
+  if (run.trigger === "AUTOHDR_CHECK" && (settings.warpCv || settings.warpCompareOriginal)) {
+    const { readProgress } = await import("./autohdrCheck");
+    const pr = readProgress(run.checksJson);
+    if ((pr.v ?? 0) >= 3 && !pr.geometryDone) return none("the measured line check is still running");
+  }
+  // Clutter where the home (or the room) was not prepared is set aside first,
+  // whichever check found it (prep.ts).
+  await (await import("./prep")).applyPrepGate(jobId).catch(() => null);
 
   const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { clientId: true } });
   const photos: Photo[] = await prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, select: { id: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, sequence: true, status: true } });
@@ -433,11 +458,18 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
     }
     return true;
   });
-  // As-is: on Jordan's list, or a third or more of the photos show clutter.
+  // As-is: on Jordan's list, or the home read as as-is (prep.ts: a third or
+  // more of the rooms lived in or cluttered), or a person set it on the job.
+  // Without room readings (an older check), a third or more of the photos
+  // showing clutter, as before.
   const prepPhotos = new Set(findings.filter((f) => fixClass(f.ruleId) === "prep").map((f) => f.photoId));
   const listed = !!project?.clientId && settings.asIsClientIds.includes(project.clientId);
   const share = photos.length ? prepPhotos.size / photos.length : 0;
-  const asIs = listed || share >= 0.34;
+  const byPerson = !!job.prepModeBy && job.prepModeBy !== "auto";
+  const asIs = byPerson ? job.prepMode === "AS_IS" : listed || (job.prepMode ? job.prepMode === "AS_IS" : share >= 0.34);
+  const prepWhy = (() => {
+    try { return (JSON.parse(job.prepStatsJson ?? "{}") as { reason?: string }).reason ?? null; } catch { return null; }
+  })();
 
   const price = await transformPrice("reedit");
   if (price == null) return none("AutoHDR's price for a re-edit could not be read");
@@ -453,7 +485,7 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
 
   type Cand = { photo: Photo; always: typeof findings; prep: typeof findings; worst: number };
   const cands: Cand[] = [];
-  const asIsWhy = listed ? "the client is on the as-is list" : `${prepPhotos.size} of ${photos.length} photos show clutter`;
+  const asIsWhy = byPerson && job.prepMode === "AS_IS" ? `set by ${job.prepModeBy}` : listed ? "the client is on the as-is list" : job.prepMode === "AS_IS" && prepWhy ? prepWhy : `${prepPhotos.size} of ${photos.length} photos show clutter`;
   for (const f of findings) {
     const c = fixClass(f.ruleId);
     if (c === "never") notes.set(f.id, neverWhy(f.ruleId, false));
@@ -505,7 +537,7 @@ export async function planAutoFix(jobId: string): Promise<PlanResult> {
   // Every open finding says why it was or was not fixed automatically (huddle finding 5).
   await savePlanNotes(notes);
   const usd = (n: number) => `$${(n * usdPerCredit).toFixed(2)}`;
-  const clutterNote = asIs ? ` As-is home (${listed ? "client on the as-is list" : `${prepPhotos.size} of ${photos.length} photos show clutter`}): clutter is not fixed.` : "";
+  const clutterNote = asIs ? ` As-is home (${asIsWhy}): clutter is not fixed.` : "";
   if (!chosen.length) {
     await logJobEvent(jobId, "auto-fix", `automatic fixes: nothing to fix within the rules.${clutterNote}`, { runStartedAt: run.startedAt.toISOString(), asIs, candidates: cands.length });
     return none("nothing to fix within the rules", { asIs });
@@ -547,7 +579,7 @@ async function savePlanNotes(notes: Map<string, string>): Promise<void> {
 }
 
 /** Jobs whose free checks are done: second look, then plan. One bounded slice. */
-export async function driveAutoFixPlanning(opts: { budgetMs: number }): Promise<{ looked: number; planned: { jobId: string; photos: number; credits: number; asIs: boolean }[]; skipped?: string }> {
+export async function driveAutoFixPlanning(opts: { budgetMs: number }): Promise<{ looked: number; planned: { jobId: string; photos: number; credits: number; asIs: boolean }[]; geometry?: unknown; coverage?: unknown; skipped?: string }> {
   const started = Date.now();
   const deadline = started + opts.budgetMs;
   const settings = await photoDeliverySettings();
@@ -561,6 +593,17 @@ export async function driveAutoFixPlanning(opts: { budgetMs: number }): Promise<
     looked++;
   }
   const planned: { jobId: string; photos: number; credits: number; asIs: boolean }[] = [];
+  // Oct 15 2026: the measured line check + the Original comparison (warps and
+  // cut-off roofs), then the room coverage check. Both free, both resumable.
+  let geometry: unknown = null, coverage: unknown = null;
+  if ((settings.warpCv || settings.warpCompareOriginal) && deadline - Date.now() > 25_000) {
+    const { driveGeometry } = await import("./geometry");
+    geometry = await driveGeometry({ deadline: deadline - 15_000 }).catch((e) => ({ error: (e as Error).message.slice(0, 200) }));
+  }
+  if (settings.freeCoverage && deadline - Date.now() > 20_000) {
+    const { driveCoverage } = await import("./coverage");
+    coverage = await driveCoverage({ deadline: deadline - 10_000 }).catch((e) => ({ error: (e as Error).message.slice(0, 200) }));
+  }
   // Ordered add-ons: suggested (and real twilights re-rendered) once the second look is done.
   const checked = await prisma.photoJob.findMany({ where: { stage: { in: ["QC_REVIEW", "READY"] }, stageChangedAt: { gte: new Date(Date.now() - 7 * 86_400_000) }, qcRuns: { some: { trigger: "AUTOHDR_CHECK", status: "DONE" } }, findings: { none: { source: "AHDR", status: "OPEN", arbitration: "NOT_REQUIRED" } } }, select: { id: true }, take: 10 });
   for (const j of checked) {
@@ -575,7 +618,7 @@ export async function driveAutoFixPlanning(opts: { budgetMs: number }): Promise<
       if (r.planned) planned.push({ jobId: j.id, photos: r.photos, credits: r.credits, asIs: r.asIs });
     }
   }
-  return { looked, planned };
+  return { looked, planned, geometry, coverage };
 }
 
 // ---------------------------------------------------------------------------

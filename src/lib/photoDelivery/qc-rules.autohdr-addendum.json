@@ -225,5 +225,181 @@
       "HUMAN_REVIEW"
     ],
     "groupKey": "FIX_DAMAGE_AI_EDIT"
+  },
+  {
+    "id": "PREP_DOOR_MAT_CROOKED",
+    "section": 1,
+    "sectionName": "General Property Preparation",
+    "checklistText": "A door mat left crooked, flipped up or bunched at an entry door, inside or on the porch (Jordan, Oct 15 2026)",
+    "shortLabel": "Crooked door mat",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P1_PHOTO",
+    "detector": "VISION_PHOTO",
+    "defaultSeverity": "MINOR",
+    "escalateTo": {
+      "severity": "MAJOR",
+      "when": "the mat sits at the front door in a primary or hero exterior"
+    },
+    "fixStrategies": [
+      "REEDIT_PROMPT",
+      "EDITOR_MANUAL"
+    ],
+    "autohdrTransform": "reedit",
+    "reeditPromptTemplate": "Straighten the door mat {location} so it lies flat and square to the door, keeping its size, color and pattern. Change nothing else in the photo.",
+    "responsibility": "PHOTOGRAPHER",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": true,
+    "buildPhase": 1,
+    "priorityRank": 20,
+    "groupKey": "DOOR_MAT",
+    "visionHint": "Flag a door mat at an entry door (inside, or on the porch or stoop) that sits visibly crooked to the door, is flipped or folded up at a corner, or is bunched. Do not flag a mat that lies flat and square, or an area rug away from a door."
+  },
+  {
+    "id": "PREP_LEFTOVER_ITEM_VACANT",
+    "section": 1,
+    "sectionName": "General Property Preparation",
+    "checklistText": "An empty (vacant) room with a loose item left behind that a photographer could have moved out of the frame (Jordan, Oct 15 2026)",
+    "shortLabel": "Item left in an empty room",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P1_PHOTO",
+    "detector": "VISION_PHOTO",
+    "defaultSeverity": "MAJOR",
+    "deescalateTo": {
+      "severity": "MINOR",
+      "when": "the item is tiny or far in the background"
+    },
+    "fixStrategies": [
+      "REEDIT_PROMPT",
+      "AUTOREMOVE_MASK",
+      "EDITOR_MANUAL"
+    ],
+    "autohdrTransform": "reedit",
+    "reeditPromptTemplate": "Remove the loose item {location} and fill in only the floor, wall or counter behind it. Change nothing else in the photo.",
+    "responsibility": "PHOTOGRAPHER",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": true,
+    "buildPhase": 1,
+    "priorityRank": 20,
+    "groupKey": "LEFTOVER_ITEM",
+    "visionHint": "Only in an EMPTY room (no furniture): flag any loose item left behind on the floor, counters or sills, such as a bag, a box, a bottle, a tool, a cord, a paper or trash. Do not flag fixtures, built-ins, appliances, window treatments or anything attached to the house."
+  },
+  {
+    "id": "PERSP_EDIT_WARP",
+    "section": 9,
+    "sectionName": "Perspective, Distortion, and Framing",
+    "checklistText": "Walls, door frames, windows or cabinets that look bent, curved or wedge-shaped (architecture only, never furniture) (Jordan, Oct 15 2026)",
+    "shortLabel": "Warped walls / doors / windows",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P1_PHOTO",
+    "detector": "VISION_PHOTO",
+    "secondaryDetector": "CV",
+    "defaultSeverity": "MAJOR",
+    "fixStrategies": [
+      "EDITOR_MANUAL",
+      "RESHOOT"
+    ],
+    "responsibility": "EDITOR",
+    "postFixable": "SOMETIMES",
+    "reshootPossible": true,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 6,
+    "groupKey": "ARCHITECTURE_WARP",
+    "visionHint": "Flag walls, wall corners, door frames, windows or cabinets that look bent, curved, stretched into a wedge, or wavy, usually near the edges of the frame. Architecture only: never furniture, never the normal look of a wide room. Do not flag designed curves (arches, round walls).",
+    "cvHint": "Edge chains on a 1024 px luma image (near-vertical, and near-horizontal on the transposed image): fit a straight line to each long chain; a chain whose bow (max minus min residual) exceeds 3 px and 1.2% of its length is bent; two or more bent chains flag. Starting values, calibrate."
+  },
+  {
+    "id": "COVERAGE_ROOM_NOT_DELIVERED",
+    "section": 16,
+    "sectionName": "Room Coverage and Order Completeness",
+    "checklistText": "A room the listing needs was photographed (it is in AutoHDR's photos) but is not in the delivered set (Oct 15 2026)",
+    "shortLabel": "Room shot but not delivered",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MAJOR",
+    "deescalateTo": {
+      "severity": "MINOR",
+      "when": "nice-to-have coverage"
+    },
+    "fixStrategies": [
+      "ADMIN_ACTION",
+      "HUMAN_REVIEW"
+    ],
+    "responsibility": "ADMIN",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 30,
+    "groupKey": "COVERAGE_NOT_DELIVERED"
+  },
+  {
+    "id": "COVERAGE_ROOM_NOT_CAPTURED",
+    "section": 16,
+    "sectionName": "Room Coverage and Order Completeness",
+    "checklistText": "A room the listing needs was never photographed (not in AutoHDR's photos of the shoot) (Oct 15 2026)",
+    "shortLabel": "Room never photographed",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MAJOR",
+    "deescalateTo": {
+      "severity": "MINOR",
+      "when": "nice-to-have coverage, or a view inside a room that is otherwise covered"
+    },
+    "fixStrategies": [
+      "RESHOOT",
+      "HUMAN_REVIEW"
+    ],
+    "responsibility": "PHOTOGRAPHER",
+    "postFixable": "NO",
+    "reshootPossible": true,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 30,
+    "groupKey": "COVERAGE_NOT_CAPTURED"
+  },
+  {
+    "id": "COVERAGE_PHOTOS_LOST_IN_EDIT",
+    "section": 16,
+    "sectionName": "Room Coverage and Order Completeness",
+    "checklistText": "AutoHDR returned fewer photos than the uploaded bracket sets should make (Oct 15 2026)",
+    "shortLabel": "Photos lost in editing",
+    "rooms": [
+      "ANY"
+    ],
+    "pass": "P4_ORDER",
+    "detector": "WORKFLOW",
+    "defaultSeverity": "MAJOR",
+    "fixStrategies": [
+      "EDITOR_MANUAL",
+      "HUMAN_REVIEW"
+    ],
+    "responsibility": "EDITOR",
+    "postFixable": "YES",
+    "reshootPossible": false,
+    "permanentFeatureRisk": false,
+    "autoFixEligible": false,
+    "buildPhase": 1,
+    "priorityRank": 30,
+    "groupKey": "COVERAGE_LOST_IN_EDIT"
   }
 ]

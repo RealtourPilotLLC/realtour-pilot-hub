@@ -33,7 +33,7 @@ export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boole
 
 export async function deliveryGate(jobId: string): Promise<GateResult> {
   const [job, settings] = await Promise.all([
-    prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, lastQcRunId: true, finalsCount: true } }),
+    prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, lastQcRunId: true, finalsCount: true, coverageJson: true } }),
     photoDeliverySettings(),
   ]);
   if (!job) throw new Error("Photo job not found.");
@@ -43,7 +43,7 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
       select: { id: true, severity: true, confidence: true, arbitration: true, pass: true, ruleId: true, privacySensitive: true },
     }),
     prisma.photoAsset.findMany({ where: { jobId, status: "ACTIVE" }, select: { id: true, contentHash: true, inspectedHash: true, width: true, height: true, format: true } }),
-    job.lastQcRunId ? prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, passesJson: true, trigger: true } }) : Promise.resolve(null),
+    job.lastQcRunId ? prisma.photoQcRun.findUnique({ where: { id: job.lastQcRunId }, select: { status: true, passesJson: true, trigger: true, checksJson: true } }) : Promise.resolve(null),
   ]);
   const floor = settings.displayConfidenceFloor;
   const shown = open.filter((f) => f.confidence >= floor);
@@ -68,6 +68,10 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // The free check looks at each photo, not the gallery as a whole: after
     // it, this paid-QC-only line is left out (backend audit #11).
     ...(lastRun?.trigger === "AUTOHDR_CHECK" ? [] : [{ key: "gallery", label: "Gallery and order checks completed", ok: passes.includes("P4") || passes.includes("P4_ORDER"), detail: passes.length ? undefined : "not run yet" }]),
+    // Oct 15 2026: after a v3 free check, the free room coverage check must
+    // have looked at THIS set of photos (coverage.ts), so the same-day
+    // automatic delivery never goes out before it.
+    ...(await roomsCheck(settings.freeCoverage && settings.freeCheck, lastRun, job.coverageJson, photos.map((p) => p.id))),
   ];
   const passed = checks.every((c) => c.ok);
   // The house setting decides (audit, Oct 15): a job's own qcShadow only records
@@ -82,6 +86,14 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     overrideAllowed: !privacyOrWrong,
     blockedForOverride: privacyOrWrong ? "A privacy or wrong-property issue is open. That one has to be resolved, not overridden." : null,
   };
+}
+
+async function roomsCheck(on: boolean, run: { trigger: string; checksJson: string | null } | null, coverageJson: string | null, activeIds: string[]): Promise<GateCheck[]> {
+  if (!on || run?.trigger !== "AUTOHDR_CHECK" || !/"v":\s*[3-9]/.test(run.checksJson ?? "")) return [];
+  const { parseCoverage, photoSetKey } = await import("./coverage");
+  const c = parseCoverage(coverageJson);
+  const ok = !!c?.done && c.photoSet === photoSetKey(activeIds);
+  return [{ key: "rooms", label: "Rooms checked against the listing", ok, detail: ok ? undefined : c ? "the photos changed since the last room check" : "not checked yet" }];
 }
 
 export type DeliverySteps = {
