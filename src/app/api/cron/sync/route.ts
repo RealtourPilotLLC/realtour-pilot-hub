@@ -117,7 +117,10 @@ export async function GET(req: NextRequest) {
     // Fresh Aryeo deliveries on content jobs reach the client's portal library
     // within the hour (review-room approvals land instantly via the hook).
     const { sweepPortalLibraries } = await import("@/lib/portalLibrary");
-    return sweepPortalLibraries();
+    // Oct 15 2026: once a day (the 4 AM ET run) look 60 days back, so videos
+    // added to a listing after its delivery reach the library too.
+    const etHour = Number(new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
+    return sweepPortalLibraries({ days: etHour === 4 ? 60 : 3 });
   });
   // CP-09: a photographer's filmed-topic report that did not land at submit
   // (ContentFilmingReport FAILED / PENDING / a dead lease) is retried here

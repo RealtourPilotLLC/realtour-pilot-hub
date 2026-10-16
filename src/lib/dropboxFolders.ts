@@ -578,9 +578,12 @@ export async function ensureTopicFolders(projectId: string): Promise<TopicFolder
   const session = await topicsForSession(projectId);
   // The rank is the topic's place on the month's WHOLE list, so the numbers on
   // two sessions' folders agree with each other and with the portal.
+  // Oct 15 2026, bulk plans: only THIS session's topics get folders (a later
+  // session's script gets one once it is ticked here — the filming report
+  // re-runs this); a 48-script plan would otherwise make 48 folders per shoot.
   const wanted = (session?.topics ?? [])
-    .map((t, i) => ({ topicId: t.topicId, title: t.title, rank: i + 1, elsewhere: !!t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId }))
-    .filter((t) => !t.elsewhere);
+    .map((t, i) => ({ topicId: t.topicId, title: t.title, rank: i + 1, elsewhere: !!t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId, later: !!t.laterSession && t.confirmedOnProjectId !== projectId }))
+    .filter((t) => !t.elsewhere && !t.later);
   if (!wanted.length) return { ...out, reason: "no topics on this session" };
 
   const rawVideo = actualFolderPaths(p).rawVideo;

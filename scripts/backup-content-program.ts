@@ -47,6 +47,8 @@ export const MODELS = [
   // Enrollment and the shape of a program.
   "ProgramSignup", "ContentEnrollment", "ProgramOwnerAssignment", "ProgramEnrollmentChange",
   "ProgramOnboarding", "ContentMonth",
+  // Oct 15 2026: bulk plans, what each client is owed beyond the package, and complaints.
+  "ContentBulkPlan", "ProgramEntitlement", "ClientIssue",
   // Strategy, versioned.
   "ContentStrategy", "ContentStrategyVersion", "ContentStrategyProposal",
   "ContentPillar", "ContentPillarAlias",
@@ -93,7 +95,7 @@ export const OPERATIONAL_CORE = [
   "ChecklistItem", "Activity", "OrderItem", "Product", "SmartTask", "ProjectMessage", "ThreadRead",
   // Review, QC, revisions and the editors' work.
   "ImageFlag", "MediaNote", "ReviewSubmission", "MediaVerdict", "QcRecord", "TopazJob",
-  "EditorWorkItem", "EditorWorkEvent", "CutReviewerEvent", "CutSelfCheck", "RevisionIssue", "RevisionIssueEvent",
+  "EditorWorkItem", "EditorWorkEvent", "CutReviewerEvent", "CutSelfCheck", "RevisionIssue", "RevisionIssueEvent", "CutReviewCheck",
   "UploadDraft", "ProductionGap", "EditorDispatch", "CapacityException", "PhotoEditBatch", "ReworkCost",
   // Pay and money.
   "PayrollEntry", "Expense", "CashSnapshot", "StripeTransaction", "JobPayOverride", "PayoutAdjustment",

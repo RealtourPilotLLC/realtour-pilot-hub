@@ -13,6 +13,8 @@ import { ScriptBody } from "@/components/portal/ScriptBody";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
 import { YourMonth, type YourMonthData } from "@/components/portal/YourMonth";
 import { portalMonthHref } from "@/lib/portalScheduling";
+import type { PortalBulkView } from "@/lib/portalBulk";
+import { BulkSessions } from "@/components/portal/BulkSessions";
 
 // ---------------------------------------------------------------------------
 // MY PLAN — the v2 layout (UI-01, Sep 24 2026). What used to be one long
@@ -54,6 +56,8 @@ export type PlanTabData = {
   hrefs: Record<PlanView, string>;
   /** Oct 8 2026: the client plans their own content — no Scripts or Topic bank views, just the month. */
   clientPlanned?: boolean;
+  /** Oct 15 2026: the client is on a bulk plan — Your sessions replaces the month, scripts and bank views. */
+  bulk?: PortalBulkView | null;
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
 };
@@ -63,6 +67,18 @@ export function PlanTab({ d }: { d: PlanTabData }) {
   // The questions sit inside the plan; "All topics" goes back to the month they belong to.
   if (d.interview) return <div className="mt-6"><InterviewFlow iv={d.interview} backHref={portalMonthHref(d.hrefs.month, d.interview.monthKey)} canAct={d.canAct && !d.readOnly} /></div>;
 
+  // Oct 15 2026: a bulk plan is planned by us, session by session — one view.
+  if (d.bulk && d.view !== "strategy") {
+    return (
+      <div className="mt-6 space-y-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">{d.bulk.title || "Your sessions"}</h1>
+          <p className="mt-0.5 text-sm text-muted">Every script, grouped by filming session. Open any session to read ahead, and tick a script once you have filmed it.</p>
+        </div>
+        <BulkSessions d={d.bulk} canAct={d.canAct} readOnly={d.readOnly} />
+      </div>
+    );
+  }
   const plan = d.topics ? planModel(d.topics, d.monthKey) : null;
   const tabs = [
     { key: "month" as const, label: plan?.month ? `${monthLabel(plan.month.monthKey).split(" ")[0]}` : "This month", short: "Month" },

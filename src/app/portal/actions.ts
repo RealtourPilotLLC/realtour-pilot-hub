@@ -1356,6 +1356,25 @@ export async function portalMarkPosted(auth: PortalAuth, videoId: string, posted
   return setPostedByClient(v, videoId, !!posted);
 }
 
+/**
+ * Oct 15 2026, bulk plans: the client ticks a script done (or undoes it).
+ * Advisory only — the upload portal decides what was filmed (bulkPlan.ts).
+ * Same gate as the posted tick: a seat that may suggest, on a live program,
+ * and a script of THEIR plan that is released to them.
+ */
+export async function portalMarkScriptDone(auth: PortalAuth, scriptId: string, done: boolean): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  if (typeof scriptId !== "string" || !(await scriptForEnrollment(v.enrollment.id, scriptId))) return fail("That script isn't on your portal.");
+  try {
+    const { setClientMarkedDone } = await import("@/lib/bulkPlan");
+    await setClientMarkedDone(v.enrollment.id, scriptId, !!done, actorLabel(v));
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
+  }
+  return { ok: true, message: done ? "Marked done." : "Unmarked." };
+}
+
 /** Save an edited caption as a new version (never overwrites the draft it came from). */
 export async function portalSaveCaption(auth: PortalAuth, videoId: string, input: { kind: string; body: string; basedOnId?: string | null }): Promise<RId> {
   const v = await viewerFor(auth, "suggest");

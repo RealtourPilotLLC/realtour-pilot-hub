@@ -270,10 +270,14 @@ export async function ensureCurrentMonths(): Promise<{ created: number }> {
   const key = etMonthKey();
   const active = await prisma.contentEnrollment.findMany({
     where: { status: "ACTIVE" },
-    select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true },
+    select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true, programKind: true },
   });
   let created = 0;
   for (const e of active) {
+    // Oct 15 2026: a client on a bulk plan (bulkPlan.ts) has no calendar
+    // months while the plan runs — minting one would owe a monthly count and
+    // start planning reminders for videos the plan already covers.
+    if (e.programKind === "BULK") continue;
     const exists = await prisma.contentMonth.findUnique({
       where: { enrollmentId_monthKey: { enrollmentId: e.id, monthKey: key } },
       select: { id: true },
@@ -339,8 +343,20 @@ export async function attachMonthlyProjects(): Promise<{ attached: number }> {
     const months = [...new Set(hits.map((h) => h.monthId))];
     return months.length === 1 ? months[0] : null;
   };
+  const { bulkMonthForShoot } = await import("@/lib/bulkPlan");
+  const bulkClients = new Set((await prisma.contentBulkPlan.findMany({ where: { status: "ACTIVE" }, select: { clientId: true } })).map((b) => b.clientId));
   for (const p of candidates) {
     if (!p.deliverables.some((d) => d.label && MONTHLY_PLAN_RE.test(d.label))) continue;
+    // Oct 15 2026: a bulk client's shoot in the plan window is one of the
+    // plan's sessions, whatever calendar month it falls in.
+    if (bulkClients.has(p.clientId)) {
+      const planMonth = await bulkMonthForShoot(p.clientId, p.shootDate);
+      if (planMonth) {
+        const w = await prisma.project.updateMany({ where: { id: p.id, contentMonthId: null }, data: { contentMonthId: planMonth } });
+        attached += w.count;
+        continue;
+      }
+    }
     const late = lateAsks.length ? lateMonthFor(p) : null;
     if (late) {
       const w = await prisma.project.updateMany({ where: { id: p.id, contentMonthId: null }, data: { contentMonthId: late } });

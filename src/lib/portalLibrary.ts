@@ -95,12 +95,17 @@ export async function syncEnrollmentLibrary(enrollmentId: string): Promise<{ vid
  * recently (a fresh Aryeo delivery lands within the hour). The full history
  * is the backfill script's job, not the cron's.
  */
-export async function sweepPortalLibraries(): Promise<{ enrollments: number; videos: number }> {
+export async function sweepPortalLibraries(opts: { days?: number } = {}): Promise<{ enrollments: number; videos: number }> {
+  // Oct 15 2026: the hourly pass looks 3 days back; once a day the cron looks
+  // 60 days back, because a listing gains videos AFTER its delivery (a re-edit
+  // "V2", a late "Why I Love Bow Tree") and the 3-day window never saw Marcee
+  // McMullen's August additions.
+  const days = Math.max(1, Math.min(120, Math.trunc(opts.days ?? 3)));
   const recent = await prisma.project.findMany({
     where: {
       contentMonthId: { not: null },
       status: "DELIVERED",
-      deliveredAt: { gte: new Date(Date.now() - 3 * 86_400_000) },
+      deliveredAt: { gte: new Date(Date.now() - days * 86_400_000) },
     },
     select: { contentMonthId: true },
   });

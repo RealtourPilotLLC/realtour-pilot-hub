@@ -259,6 +259,17 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     orderBy: { monthKey: "desc" },
   });
   const monthKeys = [...new Set(allMonths.map((m) => m.monthKey))].sort().reverse();
+  // Oct 15 2026: a bulk plan (bulkPlan.ts) lives on one anchor month but runs
+  // for weeks past it — its row is the plan's month on every month's view,
+  // and it is due when the plan's last session plus two weeks of editing ends.
+  const bulkPlans = await prisma.contentBulkPlan.findMany({ where: { enrollmentId: { in: enrollmentIds }, status: { not: "CANCELLED" } }, orderBy: { createdAt: "desc" } });
+  const bulkByMonth = new Map(bulkPlans.map((b) => [b.monthId, b]));
+  const bulkByEnrollment = new Map<string, (typeof bulkPlans)[number]>();
+  for (const b of bulkPlans) if (b.status === "ACTIVE" && !bulkByEnrollment.has(b.enrollmentId)) bulkByEnrollment.set(b.enrollmentId, b);
+  const bulkDueAt = (b: (typeof bulkPlans)[number]): Date => {
+    const base = b.endsOn ?? new Date((b.startsOn ?? b.createdAt).getTime() + Math.max(0, b.sessionsPlanned - 1) * b.cadenceDays * 864e5);
+    return new Date(base.getTime() + 14 * 864e5);
+  };
 
   // The months in scope. ALL_OPEN = every non-historical, non-skipped month up
   // to and including this one that is not already COMPLETED — an August
@@ -266,7 +277,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
   // old obligations never vanish).
   const scopedRaw = allOpen
     ? allMonths.filter((m) => !m.historical && m.status !== "SKIPPED" && m.status !== "IMPORTED" && m.monthKey <= thisMonth && m.status !== "COMPLETED")
-    : allMonths.filter((m) => m.monthKey === monthKey);
+    : allMonths.filter((m) => m.monthKey === monthKey || (bulkByMonth.get(m.id)?.status === "ACTIVE" && m.monthKey <= monthKey));
   // FORFEITED MONTHS (Oct 8 2026): a month that ended with nothing done on it
   // owes nothing — "a missed month is a forfeited month". It leaves "all open
   // months" entirely, and on a single month's view it reads as forfeited
@@ -285,7 +296,10 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     }
   } else {
     for (const e of enrollments) {
-      const m = scoped.find((x) => x.enrollmentId === e.id) ?? null;
+      const plan = bulkByEnrollment.get(e.id);
+      const planMonth = plan ? scoped.find((x) => x.id === plan.monthId) ?? null : null;
+      if (planMonth) { rowsSpec.push({ enrollment: e, month: planMonth, key: planMonth.monthKey }); continue; }
+      const m = scoped.find((x) => x.enrollmentId === e.id && !bulkByMonth.has(x.id)) ?? scoped.find((x) => x.enrollmentId === e.id) ?? null;
       // An ENDED client almost never has a workspace for the month on screen —
       // they stopped. They are still listed when the filter asks for them
       // (Jordan: ended clients stay visible, nothing is deleted), with their
@@ -590,8 +604,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     // that month ends, and it is not overdue before then.
     const lateRec = m ? lateSessionOf(e.overridesJson, key) : null;
     const lateIn = lateRec && lateRec.lateMonthId === mid ? lateRec.hostMonthKey : null;
-    const deadline = monthEndISO(lateIn ?? key);
-    const monthOver = (lateIn ?? key) < thisMonth;
+    const bulk = mid ? bulkByMonth.get(mid) ?? null : null;
+    const deadline = bulk ? bulkDueAt(bulk).toISOString() : monthEndISO(lateIn ?? key);
+    const monthOver = bulk ? now.getTime() > bulkDueAt(bulk).getTime() : (lateIn ?? key) < thisMonth;
 
     // ---- THE NEXT ACTION: walk the loop; the first unfinished stage speaks. ---------
     // Every link lands on the tab that holds the work (UI-02's contentHref),

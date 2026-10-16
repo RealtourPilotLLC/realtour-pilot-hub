@@ -1554,6 +1554,8 @@ const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
   ["Video Starter - 2HR Session", ["VIDEO"]],
   ["Video Accelerator - 4HR Session", ["VIDEO"]],
   ["VIDEO PRO - 8HR Session", ["VIDEO", "PHOTOS"]],
+  // Oct 15 2026: a day of content filming (Rick Schultz's bulk plan sessions).
+  ["Full Day Content Shoot", ["VIDEO"]],
   // Reel products
   ["Standard Video Highlight Reel", ["SOCIAL_REEL"]],
   ["Standard Reel with Agent Intro", ["SOCIAL_REEL"]],

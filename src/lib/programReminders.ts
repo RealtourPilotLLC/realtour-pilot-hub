@@ -1997,8 +1997,17 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const enrollments = rawEnrollments.map((e) => ({ ...e, firstMonthKey: firstMonths.get(e.id) ?? null }));
   const clients = new Map((await prisma.client.findMany({ where: { id: { in: enrollments.map((e) => e.clientId) } }, select: { id: true, name: true, email: true } })).map((c) => [c.id, c]));
   const cur = currentMonthKey(now);
+  // Oct 15 2026: a bulk plan's month (bulkPlan.ts) runs for six-plus weeks
+  // across calendar months, so it stays in view after its calendar month ends
+  // — but only its address and video-review lanes run: the office planned it,
+  // so there is no planning cadence and no 48-script approval chase.
+  const { bulkMonthIds } = await import("@/lib/bulkPlan");
+  const bulkMonths = await bulkMonthIds();
   const months = await prisma.contentMonth.findMany({
-    where: { enrollmentId: { in: enrollments.map((e) => e.id) }, historical: false, ...(policy.includePastMonths ? {} : { monthKey: { gte: cur } }) },
+    where: {
+      enrollmentId: { in: enrollments.map((e) => e.id) }, historical: false,
+      ...(policy.includePastMonths ? {} : { OR: [{ monthKey: { gte: cur } }, { id: { in: [...bulkMonths] } }] }),
+    },
     select: { id: true, enrollmentId: true, monthKey: true, status: true, remindersSnoozedUntil: true },
     orderBy: [{ monthKey: "asc" }],
   });
@@ -2035,7 +2044,8 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     // SCRIPTS SECOND (6.5): an approval deadline a day away beats the planning
     // cadence to the one-email-a-day slot, and loses it only to a missing address.
-    const scripts = await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
+    const bulkMonth = bulkMonths.has(m.id);
+    const scripts = bulkMonth ? [] : await evaluateScriptApprovalLane(e, m, now, policy, clientWindowOpen, {}, rollout);
     scriptApprovalLane.push(...scripts);
     if (!opts.dryRun) {
       for (const a of scripts) {
@@ -2047,6 +2057,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       }
     }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
+      if (bulkMonth && lane === "PRIMARY") continue;
       const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane, null, rollout);
       // A forfeited month's internal chasing stops with it (Oct 8 2026).
       if (lane === "PRIMARY" && c.reason === FORFEITED_REASON && !opts.dryRun) {

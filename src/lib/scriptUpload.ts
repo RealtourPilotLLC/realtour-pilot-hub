@@ -630,6 +630,8 @@ export async function applyScriptUpload(input: {
 
     // 2 · each script: its topic on the month (document order first), then the script itself.
     const approvedPillars = pillars.map((p) => ({ id: p.id, name: p.name, status: p.status, aliases: p.aliases }));
+    const { clientScriptFormat } = await import("@/lib/bulkPlan");
+    const clientFormat = await clientScriptFormat(input.enrollmentId);
     // The upload's order is the month's order: its picks rank AHEAD of whatever
     // stays on the month (planningState.allowanceOrder sorts by rank first).
     // Production writes no rank on a selection, so this is plain 1…N there.
@@ -681,7 +683,7 @@ export async function applyScriptUpload(input: {
         : partsFromBody(x.title, x.r.text);
       const pillarName = x.pillarId ? pillars.find((p) => p.id === x.pillarId)?.name ?? null : x.pillarLabel;
       const parts: VersionParts = { ...base, title: x.title, pillarId: x.pillarId, categoryLabel: pillarName ?? base.categoryLabel ?? null };
-      const validation = validateNewScript(canonicalFromParts(parts, month.clientId), { approvedPillars });
+      const validation = validateNewScript(canonicalFromParts(parts, month.clientId), { approvedPillars, clientFormat });
       const v = await createScriptVersion({
         enrollmentId: input.enrollmentId, monthId: month.id, topicId, parts, source: "MANUAL", status: "INTERNAL_REVIEW",
         createdBy: actor.email, importItemId: item.id, sourceFile: fileLabel.slice(0, 200),

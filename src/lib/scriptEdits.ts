@@ -107,7 +107,8 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
   if (same(parts.hook, kept.hook) && same(parts.close, kept.close) && same(parts.captionCta, kept.captionCta) && parts.points.every((p, i) => same(p.text, kept.points[i]?.text))) {
     return { ok: true, unchanged: true, versionId: base.id, versionNo: base.versionNo, message: "No changes to save." };
   }
-  const check = validateNewScript(canonicalFromParts(parts, s.clientId), { approvedPillars: await approvedPillarsFor(s.enrollmentId) });
+  const { clientScriptFormat } = await import("@/lib/bulkPlan");
+  const check = validateNewScript(canonicalFromParts(parts, s.clientId), { approvedPillars: await approvedPillarsFor(s.enrollmentId), clientFormat: await clientScriptFormat(s.enrollmentId) });
   const shapeBreak = check.findings.find((f) => f.severity === "block" && STRUCTURAL_CODES.has(f.code));
   if (shapeBreak) return { ok: false, message: plainRefusal(shapeBreak) };
 

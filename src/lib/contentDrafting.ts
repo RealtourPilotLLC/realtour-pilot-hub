@@ -396,7 +396,7 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   // Open months on live enrollments only. A paused or ended client is not owed
   // new work, and a historical month is a record, not a plan — and a client
   // who plans their own content (Oct 8 2026) is owed no scripts from us.
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true } });
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
   const months = live.length
     ? await prisma.contentMonth.findMany({
         where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },
@@ -474,7 +474,7 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   const max = opts.max ?? 5;
 
   // Oct 8 2026: no questions are planned for a client who plans their own content.
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true } });
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
   if (!live.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
   const months = await prisma.contentMonth.findMany({
     where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },

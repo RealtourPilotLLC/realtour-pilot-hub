@@ -127,6 +127,13 @@ export type SessionTopic = {
    */
   monthId?: string;
   monthKey?: string;
+  /**
+   * Oct 15 2026, bulk plans (bulkPlan.ts): the session this topic is planned
+   * for, and whether that is a LATER session than this shoot — the upload page
+   * lists those folded away, so a videographer who filmed one early can tick it.
+   */
+  sessionNo?: number | null;
+  laterSession?: boolean;
 };
 
 /** A filming report on this project that has not landed yet — the page says so rather than pretending. */
@@ -148,6 +155,8 @@ export type SessionTopics = {
   owed: number;
   topics: SessionTopic[];
   pendingReport: PendingFilmingReport | null;
+  /** Oct 15 2026: this shoot is session `sessionNo` of a bulk plan (null otherwise). */
+  bulk?: { sessionNo: number; perSession: number; sessions: number } | null;
 };
 
 /**
@@ -196,7 +205,7 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
   const [allSelectionsRaw, legacyRaw, pendingRow] = await Promise.all([
     prisma.contentTopicSelection.findMany({
       where: { monthId: { in: monthIds } },
-      select: { id: true, topicId: true, status: true, rank: true, createdAt: true, overflow: true, monthId: true },
+      select: { id: true, topicId: true, status: true, rank: true, createdAt: true, overflow: true, monthId: true, sessionNo: true },
       orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
     }),
     prisma.contentTopic.findMany({
@@ -230,7 +239,13 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
     for (const s of allSelections) if (LIVE_SELECTION.includes(s.status) && !already?.has(s.topicId)) order.push({ topicId: s.topicId, selectionId: s.id, overflow: s.overflow, monthId: mid });
     for (const t of legacyRaw) if (t.monthId === mid && !hasSelectionRow.has(t.id) && !already?.has(t.id)) order.push({ topicId: t.id, selectionId: null, overflow: false, monthId: mid });
   }
-  const base = { monthId: month.id, monthKey: month.monthKey, enrollmentId: month.enrollmentId, clientId: month.clientId, owed: month.videosOwed + (host?.videosOwed ?? 0), pendingReport };
+  // Oct 15 2026: a bulk plan's shoot is one numbered session of the plan.
+  const { bulkPlanForMonth, sessionOfProject } = await import("@/lib/bulkPlan");
+  const bulkPlan = host ? null : await bulkPlanForMonth(month.id);
+  const bulkAt = bulkPlan && bulkPlan.status !== "CANCELLED" ? await sessionOfProject(projectId) : null;
+  const bulk = bulkAt ? { sessionNo: bulkAt.sessionNo, perSession: bulkAt.plan.perSession, sessions: bulkAt.plan.sessionsPlanned } : null;
+  const sessionOfSel = new Map(allSelectionsRaw.map((s) => [s.id, s.sessionNo]));
+  const base = { monthId: month.id, monthKey: month.monthKey, enrollmentId: month.enrollmentId, clientId: month.clientId, owed: month.videosOwed + (host?.videosOwed ?? 0), pendingReport, bulk };
   if (!order.length) return { ...base, topics: [] };
 
   const topicIds = order.map((s) => s.topicId);
@@ -293,9 +308,7 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
     }
   }
 
-  return {
-    ...base,
-    topics: order.map((sel): SessionTopic => {
+  const mapped = order.map((sel): SessionTopic => {
       const sc = scripts.find((x) => x.topicId === sel.topicId && x.monthId === sel.monthId) ?? null;
       // The CONFIRMED row wins when a topic has more than one live video.
       const mine = videos.filter((x) => x.topicId === sel.topicId && x.monthId === sel.monthId);
@@ -319,9 +332,24 @@ export async function topicsForSession(projectId: string, opts: { strictVerdicts
         note: noteOf.get(sel.topicId) ?? null,
         monthId: sel.monthId,
         monthKey: keyOf.get(sel.monthId) ?? month.monthKey,
+        sessionNo: sel.selectionId ? sessionOfSel.get(sel.selectionId) ?? null : null,
+        laterSession: false,
       };
-    }),
-  };
+    });
+  if (!bulk) return { ...base, topics: mapped };
+  // A BULK SESSION'S LIST: what is planned for this session (and anything
+  // planned earlier that is still not filmed) first, in plan order; then every
+  // later session's scripts, flagged so the page folds them away. A script
+  // filmed at ANOTHER shoot is that shoot's video and is left out — a plan of
+  // 48 would otherwise list the whole history at every session.
+  const live = mapped.filter((t) => !(t.confirmedOnProjectId && t.confirmedOnProjectId !== projectId));
+  const rankOf = new Map(order.map((o, i) => [o.topicId, i]));
+  const now = live.filter((t) => (t.sessionNo ?? 0) <= bulk.sessionNo || t.confirmedOnProjectId === projectId);
+  const later = live
+    .filter((t) => !now.includes(t))
+    .map((t) => ({ ...t, laterSession: true }))
+    .sort((a, b) => (a.sessionNo ?? 999) - (b.sessionNo ?? 999) || (rankOf.get(a.topicId) ?? 0) - (rankOf.get(b.topicId) ?? 0));
+  return { ...base, topics: [...now, ...later] };
 }
 
 export type SessionTopicsRead = { ok: true; session: SessionTopics | null } | { ok: false; error: string };
@@ -785,6 +813,14 @@ export async function applyFilmingReport(reportId: string, opts: { now?: Date } 
       data: { state: "APPLIED", appliedAt: now, leaseUntil: null, nextAttemptAt: null, lastError: null, resultJson: JSON.stringify(result) },
     });
     const extras = parseJson<FilmingExtra[]>(report.extrasJson, []).length;
+    // Oct 15 2026, bulk plans: what this session planned and did not film
+    // moves to the next session (bulkPlan.carryForwardAfterFilming — a no-op
+    // for every other shoot). Never fails the report: it is re-derivable.
+    if (landed.count) {
+      await import("@/lib/bulkPlan").then((b) => b.carryForwardAfterFilming(report.projectId)).catch((e: unknown) => {
+        console.warn(`[filming-report] bulk carry-forward for ${report.projectId}: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
     // Fenced out: this run outlived its lease and another took the report over.
     // Everything above is find-or-create, so its work stands; the state is the
     // other run's to write.

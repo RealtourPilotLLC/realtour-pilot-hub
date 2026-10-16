@@ -10,6 +10,7 @@ import { StrategyPanel } from "@/components/content/StrategyPanel";
 import { FactsPanel } from "@/components/content/FactsPanel";
 import { StrategyCallCard, NotesCard, ScriptRequestsPanel } from "@/components/content/Workspace";
 import { ScriptUploadPanel } from "@/components/content/ScriptUploadPanel";
+import { BulkPlanPanel } from "@/components/content/BulkPlanPanel";
 import { loadTopicsTab, loadScriptsTab, loadStrategyTab, loadFactsTab, loadCallsTab, loadScriptRequests, loadLegacyNotes } from "../programData";
 import { loadFieldProposals, loadStrategyTargets } from "../workspaceData";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
@@ -36,6 +37,35 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   const monthName = monthLabel(month?.monthKey ?? ctx.activeKey);
   const monthShort = monthName.split(" ")[0];
   const sub = <SubNav id={id} tab="plan" current={v} views={PLAN_VIEWS} month={month?.monthKey ?? null} badges={badges} />;
+
+  if (v === "bulk") {
+    // Oct 15 2026: the bulk plan board (bulkPlan.ts) — owner/admin only.
+    const lib = await import("@/lib/bulkPlan");
+    const { prisma } = await import("@/lib/prisma");
+    const plan = ctx.staffEyes ? await lib.latestBulkPlanFor(id) : null;
+    const [board, batches, clientFormat] = await Promise.all([
+      plan ? lib.bulkBoard(plan.id) : Promise.resolve(null),
+      plan ? prisma.contentImportBatch.findMany({ where: { kind: lib.BULK_IMPORT_KIND, enrollmentId: id, mode: "APPLIED" }, orderBy: { createdAt: "desc" }, take: 5, select: { id: true, fileName: true, createdAt: true, itemsCreated: true } }) : Promise.resolve([]),
+      lib.clientScriptFormat(id),
+    ]);
+    return (
+      <div className="space-y-5">
+        {sub}
+        {ctx.staffEyes ? (
+          <BulkPlanPanel
+            enrollmentId={id}
+            clientFirst={client.name.split(" ")[0] || client.name}
+            board={board}
+            imports={batches.map((b) => ({ id: b.id, fileName: b.fileName, atISO: b.createdAt.toISOString(), count: b.itemsCreated }))}
+            clientFormat={clientFormat}
+            defaultMonthKey={month?.monthKey ?? ctx.activeKey}
+          />
+        ) : (
+          <p className="text-sm text-muted">Bulk plans are for the owner and admins.</p>
+        )}
+      </div>
+    );
+  }
 
   if (v === "topics") {
     const d = await loadTopicsTab(id, month ? { id: month.id, monthKey: month.monthKey } : null);

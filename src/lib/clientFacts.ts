@@ -82,7 +82,11 @@ export async function createFact(f: NewFact): Promise<{ id: string; existed: boo
     const other = await prisma.clientFact.findFirst({ where: { clientId: f.clientId, fieldKey: f.fieldKey, status: "ACCEPTED" }, select: { id: true, body: true } });
     if (other && normalizeTitle(other.body) !== normalizeTitle(body)) conflictsWithId = other.id;
   }
-  const scope: FactScope = f.scope ?? (f.projectId ? "PROJECT" : f.monthId ? "MONTH" : "PERMANENT");
+  // Oct 15 2026: a PROJECT scope with no project (or MONTH with no month)
+  // surfaced nowhere — six of Marcee McMullen's call facts were filed that
+  // way. A scope without its anchor falls back to the widest true one.
+  const asked: FactScope = f.scope ?? (f.projectId ? "PROJECT" : f.monthId ? "MONTH" : "PERMANENT");
+  const scope: FactScope = asked === "PROJECT" && !f.projectId ? (f.monthId ? "MONTH" : "PERMANENT") : asked === "MONTH" && !f.monthId ? "PERMANENT" : asked;
   let autoAccepted = false;
   if (f.unattended && f.fieldKey && AUTO_ACCEPT_FIELD_KEYS.has(f.fieldKey) && !NEVER_AUTO_RE.test(f.fieldKey) && !confidential && !conflictsWithId && (f.confidence ?? 0) >= 0.8) {
     autoAccepted = await isAutomationEnabled("fact_extraction");

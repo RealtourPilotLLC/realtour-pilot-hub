@@ -274,6 +274,7 @@ export default async function UploadProjectPage({
   const sessionTopics = session && !topicsUnavailable
     ? {
         owed: session.owed,
+        bulk: session.bulk ?? null,
         topics: session.topics.map((t) => {
           const folder = topicFolders.get(t.topicId);
           return {
@@ -284,6 +285,8 @@ export default async function UploadProjectPage({
             overflow: t.overflow,
             note: t.note,
             folder: folder ? { label: folder.label, url: folder.url } : null,
+            sessionNo: t.sessionNo ?? null,
+            laterSession: !!t.laterSession,
           };
         }),
         pending: session.pendingReport

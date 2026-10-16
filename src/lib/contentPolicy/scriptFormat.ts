@@ -1019,6 +1019,13 @@ export type ValidateScriptOptions = {
    * which is a different fact from "not supplied".
    */
   approvedPillars?: readonly ApprovedPillar[];
+  /**
+   * Oct 15 2026: the client writes in THEIR OWN format (bulkPlan.clientScriptFormat,
+   * set by the office and ledgered — Rick Schultz's Hook / Beat / Payoff). The
+   * house shape (exactly three roled talking points) is then reported as info,
+   * not enforced; the hook, greeting, close and pillar checks all stand.
+   */
+  clientFormat?: string | null;
 };
 
 // Greeting shapes. BLOCK = the viewer is being greeted or the agent introduced:
@@ -1191,7 +1198,10 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
 
   // Exactly three roled points, in order.
   const n = script.points.length;
-  if (n !== policy.talkingPoints.count) {
+  const ownFormat = opts.clientFormat?.trim() || null;
+  if (ownFormat) {
+    if (n !== policy.talkingPoints.count) push("talking-points.client-format", "info", `Written in the client's own format (${ownFormat}): ${n} spoken line${n === 1 ? "" : "s"} after the hook.`, "points", { count: n });
+  } else if (n !== policy.talkingPoints.count) {
     push("talking-points.count", "block", `Exactly ${policy.talkingPoints.count} talking points are required; this script has ${n}.`, "points", { count: n, required: policy.talkingPoints.count });
   }
   if (script.extraSpokenBlocks.length) {
@@ -1202,7 +1212,7 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
   const roles = script.points.map((p) => p.role);
   const rolesOk = roles.every((r, i) => r === policy.talkingPoints.roles[i]);
   // Roles can never be right when the count is wrong — one finding, not two.
-  if (n === policy.talkingPoints.count && !rolesOk) {
+  if (!ownFormat && n === policy.talkingPoints.count && !rolesOk) {
     const missing = script.points.filter((p) => !p.role).length;
     push(
       "talking-points.roles",

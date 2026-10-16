@@ -84,7 +84,9 @@ export function planModel(t: PortalTopicsData, monthKey: string, now: Date = new
 
 export type HomeActionKind =
   | "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "READ_REPLY" | "ANSWER_QUESTIONS" | "CHOOSE_ROUTE" | "BOOK_CALL"
-  | "PICK_TOPICS" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "FINISH_SETUP" | "DOWNLOAD" | "ADD_BRIEF";
+  | "PICK_TOPICS" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "FINISH_SETUP" | "DOWNLOAD" | "ADD_BRIEF"
+  // Oct 15 2026: a bulk plan's next session's scripts (bulkPlan.ts).
+  | "READ_SESSION";
 
 /**
  * The order a client should do things in. Reviews first — a video waiting on
@@ -95,7 +97,7 @@ export type HomeActionKind =
  * may be planned either way — the order of every other kind is unchanged.
  */
 export const HOME_PRIORITY: readonly HomeActionKind[] = [
-  "REVIEW_VIDEOS", "APPROVE_SCRIPTS", "READ_REPLY", "ANSWER_QUESTIONS", "CHOOSE_ROUTE", "BOOK_CALL",
+  "REVIEW_VIDEOS", "APPROVE_SCRIPTS", "READ_REPLY", "READ_SESSION", "ANSWER_QUESTIONS", "CHOOSE_ROUTE", "BOOK_CALL",
   "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS", "FINISH_SETUP", "DOWNLOAD", "ADD_BRIEF",
 ];
 
@@ -126,6 +128,8 @@ export type HomeActionsInput = {
   filmingStarted?: boolean;
   /** Oct 8 2026: the client plans their own content — no topics, answers, scripts or route to choose; their brief is optional. */
   clientPlanned?: { briefIn: boolean; monthLabel: string } | null;
+  /** Oct 15 2026: a bulk plan — the office plans and books it; the client reads ahead by session. */
+  bulk?: { focusSessionNo: number | null; scripts: number; dateLabel: string | null } | null;
   /** Staff must connect historical topic rows before the client is asked to select them again. */
   topicHistoryNeedsReview?: boolean;
   /** The planning reader's owed answers (planModel.toAnswer): never an extra, never a topic the call covered. `missing` = its known gaps. */
@@ -185,7 +189,16 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       });
     }
     const cp = i.clientPlanned ?? null;
-    if (i.scripts.length > 0 && i.perms.suggest && !cp) {
+    const bulk = i.bulk ?? null;
+    if (bulk && bulk.focusSessionNo && bulk.scripts > 0) {
+      add({
+        kind: "READ_SESSION", count: bulk.scripts,
+        title: `Read your scripts for session ${bulk.focusSessionNo}`,
+        detail: `${plural(bulk.scripts, "script")}${bulk.dateLabel ? ` · ${bulk.dateLabel}` : ""}. Every later session is there to read ahead too.`,
+        cta: "Read the scripts", dest: "plan", href: `${portalHref(base, "plan")}#session-${bulk.focusSessionNo}`,
+      });
+    }
+    if (i.scripts.length > 0 && i.perms.suggest && !cp && !bulk) {
       add({
         kind: "APPROVE_SCRIPTS", count: i.scripts.length,
         title: i.scripts.length === 1 ? `Read your script for “${i.scripts[0].title}”` : `Read ${plural(i.scripts.length, "script")} before we film`,
@@ -195,7 +208,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     // R01: keyed on what is OWED, on either route — a call-route gap after the
     // call is asked too, and a topic the call covered, a script in review or an
     // extra never is. (It used to need planningMode WRITTEN and counted all three.)
-    if (i.toAnswer.length > 0 && i.perms.suggest && !cp) {
+    if (i.toAnswer.length > 0 && i.perms.suggest && !cp && !bulk) {
       const one = i.toAnswer.length === 1 ? i.toAnswer[0] : null;
       add({
         kind: "ANSWER_QUESTIONS", count: i.toAnswer.length,
@@ -205,15 +218,15 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       });
     }
     const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;
-    if (undecided && !cp && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+    if (undecided && !cp && !bulk && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "CHOOSE_ROUTE", count: 1, title: `How would you like to plan ${i.month?.label ?? "this month"}?`, detail: "Choose your topics here, or talk them through on a call.", cta: "Choose", dest: "plan", step: "route" });
-    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && !cp && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+    } else if (i.planning && i.planning.planningMode !== "WRITTEN" && !cp && !bulk && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       // A3 (Oct 13 2026): a client who plans their own content is never asked to book a strategy call.
       add({ kind: "BOOK_CALL", count: 1, title: "Book your strategy call", detail: "We plan the month on it.", cta: "Book the call", dest: "plan", step: "call" });
     }
     // On the call route the topics are chosen together on the call — browsing
     // first is optional (§6.4), so it is not a to-do for the client.
-    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview && !cp) {
+    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview && !cp && !bulk) {
       const n = i.month.owed - i.month.selected;
       add({ kind: "PICK_TOPICS", count: n, title: `Choose ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Choose topics", dest: "plan", extra: "pv=bank" });
     }
@@ -221,7 +234,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     // booked from ONE card in Your Month, so they are ONE action here — two
     // used to sit side by side (and shared a React key).
     const lateOpen = !!i.lateSession?.open && i.perms.session && !i.lateSession.combined;
-    if (i.session.offerBooking && i.perms.session) {
+    if (i.session.offerBooking && i.perms.session && !bulk) {
       const booked = i.session.required - i.session.missing;
       // "Schedule later" keeps the booking visibly outstanding (§6.7) — the
       // same action, saying the client chose it, never a second one.

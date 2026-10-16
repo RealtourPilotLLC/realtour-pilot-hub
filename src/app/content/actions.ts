@@ -2077,3 +2077,158 @@ export async function holdReviewWindowForm(formData: FormData): Promise<void> {
   const hold = String(formData.get("hold") ?? "") === "1";
   await holdReviewWindowAction(String(formData.get("windowId") ?? ""), hold, String(formData.get("reason") ?? "") || (hold ? "Held from the Content tab" : undefined));
 }
+
+// ===========================================================================
+// BULK PLANS (Oct 15 2026) — Jordan: "I want the system set up for like a bulk
+// option which allows us to turn it on for rick, or other clients in the
+// future ... Make this an easy process for rick and I so I can have all his
+// content planned in bulk." The rules live in src/lib/bulkPlan.ts; these are
+// the owner/admin doors to them. Nothing here messages the client.
+// ===========================================================================
+
+async function bulkActor() {
+  const me = await actor();
+  return { email: me.email, appUserId: me.id, name: me.name };
+}
+
+export async function createBulkPlanAction(input: { enrollmentId: string; totalVideos: number; perSession: number; sessionsPlanned?: number | null; cadenceDays?: number | null; startsOn?: string | null; monthKey?: string | null; title?: string | null; editingNote?: string | null }): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { createBulkPlan } = await import("@/lib/bulkPlan");
+    const startsOn = input.startsOn && /^\d{4}-\d{2}-\d{2}$/.test(input.startsOn) ? new Date(`${input.startsOn}T12:00:00-05:00`) : null;
+    await createBulkPlan({ ...input, startsOn }, await bulkActor());
+    revalidatePath("/content");
+    return { ok: true, message: `Bulk plan on. ${input.totalVideos} videos, ${input.perSession} a session. Add the scripts next.` };
+  } catch (e) { return fail(e); }
+}
+
+export async function updateBulkPlanAction(planId: string, patch: { perSession?: number; sessionsPlanned?: number; cadenceDays?: number; startsOn?: string | null; editingNote?: string | null; title?: string | null; totalVideos?: number; status?: "ACTIVE" | "COMPLETE" | "CANCELLED" }): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { updateBulkPlan } = await import("@/lib/bulkPlan");
+    const { startsOn, ...rest } = patch;
+    await updateBulkPlan(planId, { ...rest, ...(startsOn !== undefined ? { startsOn: startsOn && /^\d{4}-\d{2}-\d{2}$/.test(startsOn) ? new Date(`${startsOn}T12:00:00-05:00`) : null } : {}) }, await bulkActor());
+    revalidatePath("/content");
+    return { ok: true, message: patch.status === "CANCELLED" ? "Plan cancelled." : patch.status === "COMPLETE" ? "Plan marked complete." : "Saved." };
+  } catch (e) { return fail(e); }
+}
+
+/** Read a script bank (uploaded file or pasted text) without saving anything. */
+export async function previewBulkScriptsAction(form: FormData): Promise<Result & { count?: number; titles?: string[]; problems?: string[]; note?: string | null }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const text = await bankText(form);
+    if (!text.ok) return { ok: false, message: text.message };
+    const { parseScriptBank } = await import("@/lib/bulkScriptBank");
+    const r = parseScriptBank(text.text);
+    return { ok: r.scripts.length > 0, message: r.scripts.length ? `Found ${r.scripts.length} script${r.scripts.length === 1 ? "" : "s"}${r.problems.length ? `, ${r.problems.length} thing${r.problems.length === 1 ? "" : "s"} to check` : ""}.` : r.problems[0] ?? "No scripts found.", count: r.scripts.length, titles: r.scripts.map((s) => `${s.n}. ${s.title}`), problems: r.problems, note: r.note };
+  } catch (e) { return fail(e); }
+}
+
+async function bankText(form: FormData): Promise<{ ok: true; text: string; name: string } | { ok: false; message: string }> {
+  const pasted = form.get("text");
+  if (typeof pasted === "string" && pasted.trim()) return { ok: true, text: pasted, name: "Pasted scripts" };
+  return extractUploadText(form);
+}
+
+/** Add the bank's scripts to the plan, in order; `release` puts them on the client's portal (no email). */
+export async function importBulkScriptsAction(planId: string, form: FormData): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const text = await bankText(form);
+    if (!text.ok) return { ok: false, message: text.message };
+    const { parseScriptBank } = await import("@/lib/bulkScriptBank");
+    const parsed = parseScriptBank(text.text);
+    if (!parsed.scripts.length) return { ok: false, message: parsed.problems[0] ?? "No scripts found." };
+    const lib = await import("@/lib/bulkPlan");
+    const plan = await prisma.contentBulkPlan.findUnique({ where: { id: planId }, select: { editingNote: true, enrollmentId: true } });
+    if (!plan) return { ok: false, message: "That plan isn't on file." };
+    // The document's delivery note becomes the plan's editing note when it has none.
+    if (parsed.note && !plan.editingNote) await lib.updateBulkPlan(planId, { editingNote: parsed.note }, await bulkActor());
+    // A bank whose scripts are not the house's three points is the client's own format.
+    if (parsed.scripts.some((s) => s.lines.length !== 3) && !(await lib.clientScriptFormat(plan.enrollmentId))) {
+      await lib.setClientScriptFormat(plan.enrollmentId, "Hook, Beat, Payoff (the client's own script bank)", (await bulkActor()).email);
+    }
+    const release = form.get("release") === "1";
+    const r = await lib.importBulkScripts(planId, parsed.scripts, await bulkActor(), { release, sourceFile: text.name });
+    revalidatePath("/content");
+    return {
+      ok: true,
+      message: [
+        `Added ${r.created} script${r.created === 1 ? "" : "s"} to the plan, in order.`,
+        release ? `${r.released} on the client's portal (no email went out).` : "They're in the review queue; release them when you're ready.",
+        r.problems.length ? `Not released: ${r.problems.slice(0, 3).map((p) => `“${p.title}” (${p.why})`).join("; ")}${r.problems.length > 3 ? "…" : ""}` : "",
+      ].filter(Boolean).join(" "),
+    };
+  } catch (e) { return fail(e); }
+}
+
+export async function releaseBulkScriptsAction(planId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { releaseBulkScripts } = await import("@/lib/bulkPlan");
+    const r = await releaseBulkScripts(planId, null, await bulkActor(), null);
+    revalidatePath("/content");
+    return { ok: r.problems.length === 0, message: `${r.released} script${r.released === 1 ? "" : "s"} put on the client's portal (no email went out).${r.problems.length ? ` Not released: ${r.problems.slice(0, 3).map((p) => `“${p.title}” (${p.why})`).join("; ")}` : ""}` };
+  } catch (e) { return fail(e); }
+}
+
+export async function undoBulkImportAction(batchId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { undoBulkImport } = await import("@/lib/bulkPlan");
+    const r = await undoBulkImport(batchId, await bulkActor());
+    revalidatePath("/content");
+    return { ok: true, message: `Undone: ${r.removed} script${r.removed === 1 ? "" : "s"} taken off the plan.` };
+  } catch (e) { return fail(e); }
+}
+
+export async function moveBulkScriptAction(planId: string, topicId: string, sessionNo: number): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { moveToSession } = await import("@/lib/bulkPlan");
+    await moveToSession(planId, topicId, Math.trunc(Number(sessionNo)), await bulkActor());
+    revalidatePath("/content");
+    return { ok: true, message: `Moved to session ${sessionNo}.` };
+  } catch (e) { return fail(e); }
+}
+
+export async function nudgeBulkScriptAction(planId: string, topicId: string, dir: "up" | "down"): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { nudgeOrder } = await import("@/lib/bulkPlan");
+    await nudgeOrder(planId, topicId, dir === "up" ? "up" : "down");
+    revalidatePath("/content");
+    return { ok: true, message: "Moved." };
+  } catch (e) { return fail(e); }
+}
+
+export async function rebalanceBulkAction(planId: string, perSession?: number | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { rebalanceRemaining } = await import("@/lib/bulkPlan");
+    const r = await rebalanceRemaining(planId, await bulkActor(), { perSession: perSession ?? null });
+    revalidatePath("/content");
+    return { ok: true, message: r.moved ? `Spread the unfilmed scripts from session ${r.fromSession} on (${r.moved} moved).` : "Nothing needed moving." };
+  } catch (e) { return fail(e); }
+}
+
+export async function setBulkShootSessionAction(projectId: string, sessionNo: number | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { setProjectSession } = await import("@/lib/bulkPlan");
+    await setProjectSession(projectId, sessionNo == null ? null : Math.trunc(Number(sessionNo)), (await bulkActor()).email);
+    revalidatePath("/content");
+    return { ok: true, message: sessionNo == null ? "Back to date order." : `That shoot is session ${sessionNo}.` };
+  } catch (e) { return fail(e); }
+}
+
+export async function setClientScriptFormatAction(enrollmentId: string, label: string | null): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { setClientScriptFormat } = await import("@/lib/bulkPlan");
+    await setClientScriptFormat(enrollmentId, label, (await bulkActor()).email);
+    revalidatePath("/content");
+    return { ok: true, message: label ? "Saved: their scripts keep their own format." : "Back to the house format." };
+  } catch (e) { return fail(e); }
+}

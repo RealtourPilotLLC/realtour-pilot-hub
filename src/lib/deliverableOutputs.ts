@@ -1705,7 +1705,9 @@ export async function sessionBriefFor(projectId: string): Promise<SessionBrief |
     const t = (s ?? "").trim();
     return t ? (t.length > SCRIPT_TEXT_CAP ? `${t.slice(0, SCRIPT_TEXT_CAP - 1).trimEnd()}…` : t) : null;
   };
-  const topics = session.topics.map((t): SessionBriefTopic => {
+  // Oct 15 2026, bulk plans: the shoot's brief is TODAY's scripts; a later
+  // session's script is on the upload page (folded) for the one filmed early.
+  const topics = session.topics.filter((t) => !t.laterSession || t.confirmedOnProjectId === projectId).map((t): SessionBriefTopic => {
     const v = t.scriptSharedVersionId ? versionOf.get(t.scriptSharedVersionId) : undefined;
     return {
       topicId: t.topicId,

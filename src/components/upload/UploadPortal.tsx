@@ -481,6 +481,8 @@ export function UploadPortal({
    */
   sessionTopics: {
     owed: number;
+    /** Oct 15 2026: this shoot is session N of a bulk plan (bulkPlan.ts). */
+    bulk?: { sessionNo: number; perSession: number; sessions: number } | null;
     topics: {
       topicId: string; title: string; pillarName: string | null; scriptTitle: string | null; clientApproved: boolean;
       filmedConfirmedAtISO: string | null; filmedConfirmedBy: string | null;
@@ -492,6 +494,9 @@ export function UploadPortal({
       note: string | null;
       /** CP-09: the topic's own raw folder under 02-RAW-Video, once one exists */
       folder: { label: string; url: string } | null;
+      /** Oct 15 2026, bulk plans: the session it is planned for, and whether that is a later one than this shoot. */
+      sessionNo?: number | null;
+      laterSession?: boolean;
     }[];
     /** CP-09: this job's last report, when it has not landed yet — what it said, so a reopened page shows it */
     pending: { state: string; topicIds: string[]; extras: { title: string; note: string }[] } | null;
@@ -1596,9 +1601,10 @@ export function UploadPortal({
                   )}
                   {hasTopics && <span className="basis-full text-xs text-muted">Tick each one you filmed, then name its clips in the box that opens.</span>}
                 </div>
-                {hasTopics && (
-                  <ul className="mt-1.5 space-y-1.5">
-                    {sessionTopics.topics.map((t) => {
+                {hasTopics && (() => {
+                  // Oct 15 2026, bulk plans: this session's scripts first; every
+                  // later session's folded underneath, for the one filmed early.
+                  const item = (t: (typeof sessionTopics.topics)[number]) => {
                       const on = filmedTopicIds.includes(t.topicId);
                       const elsewhere = confirmedElsewhere(t);
                       const recorded = recordedHere(t);
@@ -1663,9 +1669,41 @@ export function UploadPortal({
                           )}
                         </li>
                       );
-                    })}
-                  </ul>
-                )}
+                  };
+                  const nowTopics = sessionTopics.topics.filter((t) => !t.laterSession);
+                  const laterTopics = sessionTopics.topics.filter((t) => t.laterSession);
+                  const laterTicked = laterTopics.filter((t) => filmedTopicIds.includes(t.topicId)).length;
+                  const bySession = new Map<number, typeof laterTopics>();
+                  for (const t of laterTopics) {
+                    const k = t.sessionNo ?? 0;
+                    bySession.set(k, [...(bySession.get(k) ?? []), t]);
+                  }
+                  return (
+                    <>
+                      {sessionTopics.bulk && (
+                        <p className="mt-1 text-xs font-medium text-foreground">
+                          Session {sessionTopics.bulk.sessionNo} of {Math.max(sessionTopics.bulk.sessions, sessionTopics.bulk.sessionNo)} · {nowTopics.length} planned for today
+                        </p>
+                      )}
+                      <ul className="mt-1.5 space-y-1.5">{nowTopics.map(item)}</ul>
+                      {laterTopics.length > 0 && (
+                        <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={laterTicked > 0}>
+                          <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">
+                            Filmed one from a later session? {laterTopics.length} more{laterTicked ? ` · ${laterTicked} ticked` : ""}
+                          </summary>
+                          <div className="space-y-3 px-3 pb-3">
+                            {[...bySession.entries()].map(([no, list]) => (
+                              <div key={no}>
+                                <p className="text-xs font-semibold text-muted">{no ? `Session ${no}` : "Not in a session yet"}</p>
+                                <ul className="mt-1 space-y-1.5">{list.map(item)}</ul>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </>
+                  );
+                })()}
 
                 {/* Filmed on site, not on the list. A title is all it needs;
                     an empty row is simply not sent. */}

@@ -410,7 +410,7 @@ export function videoStyleName(key: string | null | undefined): string | null {
 // more videos off one shoot except as a content package, so a small batch
 // keeps its ordinary clock.
 export const MONTHLY_PLAN_RE =
-  /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day)\b|branding\s+(shoot|session|video|package|content)\b|\b(?:[4-9]|\d{2,})\s+videos?\s+total\b/i;
+  /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day|shoot)\b|branding\s+(shoot|session|video|package|content)\b|\b(?:[4-9]|\d{2,})\s+videos?\s+total\b/i;
 
 // The tier words, as videoTier() / aryeo.ts isPremiumProduct read them, with
 // the same explicit-"standard" veto ("Standard Cinematic Video" is standard;

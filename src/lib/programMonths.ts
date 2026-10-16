@@ -1447,6 +1447,9 @@ export type ProgramDb = Prisma.TransactionClient;
 export async function sessionsRequiredForMonth(monthId: string, db: ProgramDb = prisma): Promise<number> {
   const m = await db.contentMonth.findUnique({ where: { id: monthId }, select: { monthKey: true, enrollmentId: true } });
   if (!m) return 1;
+  // Oct 15 2026: a bulk plan's month owes the plan's sessions (bulkPlan.ts).
+  const plan = await db.contentBulkPlan.findUnique({ where: { monthId }, select: { sessionsPlanned: true, status: true } });
+  if (plan && plan.status !== "CANCELLED") return Math.max(1, plan.sessionsPlanned);
   const e = await db.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { sessionsPerMonth: true, overridesJson: true } });
   return e ? sessionsForMonth(e, m.monthKey) : 1;
 }
@@ -1596,7 +1599,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
     // this month carries (catchUp.sessionsForMonth, the one reading).
     plan: {
       videosPerMonth: month.videosOwed > 0 ? month.videosOwed : enrollment.videosPerMonth,
-      sessionsPerMonth: sessionsForMonth(enrollment, month.monthKey),
+      sessionsPerMonth: await sessionsRequiredForMonth(month.id),
       catchUp: !!catchUpInto(enrollment.overridesJson, month.monthKey),
     },
     booking: await monthSessionCount(month.id, enrollment.clientId, now),

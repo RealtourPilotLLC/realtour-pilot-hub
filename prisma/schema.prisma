@@ -427,6 +427,9 @@ model Project {
   // Content Creator Program: which monthly workspace this shoot belongs to.
   // Plain ref (no FK) — a month record can never cascade into live projects.
   contentMonthId String?
+  // Oct 15 2026, bulk plans: which planned session this shoot is (1-based).
+  // Null = numbered by date among the plan's shoots. Set by the office only.
+  contentSessionNo Int?
 
   // Property / order detail
   addressLine    String?
@@ -2563,6 +2566,18 @@ model ContentEnrollment {
   // §9 A42: the approved-cut → program-library write failed; visible and retried.
   librarySyncFailedAt DateTime?
   librarySyncError    String?
+
+  // Oct 15 2026: null = the monthly program (calendar months drive planning);
+  // "BULK" = a ContentBulkPlan drives sessions instead (Rick Schultz, 48 videos
+  // over ~6 weekly sessions). Every monthly-only sweep skips BULK clients.
+  programKind String?
+
+  // Oct 15 2026, the entitlement ledger (lib/entitlements.ts): the agreement's
+  // first and last month as signed ("YYYY-MM"). Null start = the first live
+  // month; null end = start + billingMonths - 1. Extensions and carried
+  // months are ProgramEntitlement rows ON TOP, never written into these.
+  termStartMonth String?
+  termEndMonth   String?
   @@index([status])
 }
 
@@ -2737,6 +2752,11 @@ model ContentScript {
 
   // CP-07: the month this script was carried forward from, if any.
   carriedFromMonthId String?
+  // Oct 15 2026, bulk plans: the client's own "I've done this one" tick in the
+  // portal. ADVISORY ONLY: filming is proven by the upload portal
+  // (ContentVideo.filmedConfirmedAt), never by this mark.
+  clientMarkedDoneAt DateTime?
+  clientMarkedDoneBy String?
   @@index([clientId])
   @@index([monthId])
   @@index([topicId])
@@ -3386,6 +3406,9 @@ model ContentTopicSelection {
   carriedScriptId    String?
   removedReason      String?
   replacedByTopicId  String?
+  // Oct 15 2026, bulk plans: the session this topic is planned for (1-based);
+  // order inside the session is `rank`. Null on every monthly client.
+  sessionNo          Int?
   @@unique([topicId, monthId])
   @@index([monthId, status])
   @@index([enrollmentId])
@@ -5588,6 +5611,17 @@ model PhotoJob {
   // Oct 14 2026 (huddle finding 12): when the hub last asked Aryeo whether the listing is delivered, and what it found.
   deliveryCheckedAt DateTime?
   deliveryCheckNote String?
+  // Oct 15 2026 (Jordan: "focus on removing things from properties where they
+  // took the time to prepare, not the ones that are dumps"): how prepared the
+  // home is, decided once per shoot from the free check. AS_IS | PREPARED |
+  // VACANT. prepModeBy = "auto" or the person who overrode it.
+  prepMode          String?
+  prepModeBy        String?
+  prepModeAt        DateTime?
+  prepStatsJson     String?
+  // Expected rooms vs captured vs delivered (free coverage check).
+  coverageJson      String?
+  coverageCheckedAt DateTime?
   deliveryDiffJson    String?
   leaseUntil          DateTime?
   leaseOwner          String?
@@ -5650,6 +5684,9 @@ model PhotoAsset {
   autohdrVersionUuid String?
   verdict            String? // PASS | PASS_WITH_MINOR | NEEDS_FIX | HOLD
   inspectedHash      String? // the content hash the last P1 inspected
+  // Oct 15 2026: how ready THIS room looked (free check): staged | tidy |
+  // lived_in | cluttered | empty. Tied to inspectedHash like the other reads.
+  prep               String?
   lastQcAt           DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -5901,4 +5938,147 @@ model PhotoJobEvent {
   dataJson String?
 
   @@index([jobId, at])
+}
+
+// ---------------------------------------------------------------------------
+// BULK CONTENT PLAN (Oct 15 2026). Jordan: "We are going to do 48 videos and
+// shoot for 8 videos per session, and do 1 session a week for the next six
+// weeks ... I want the system set up for like a bulk option which allows us to
+// turn it on for rick, or other clients in the future."
+//
+// One plan per anchor ContentMonth: every selection, script and video of the
+// plan lives on that month, so the upload portal, the editor brief and the
+// library work unchanged; ContentTopicSelection.sessionNo says which session
+// a script is planned for, and Project.contentSessionNo (or the shoot date
+// order) says which session a shoot is.
+// ---------------------------------------------------------------------------
+model ContentBulkPlan {
+  id              String    @id @default(cuid())
+  enrollmentId    String // -> ContentEnrollment (plain ref)
+  clientId        String
+  monthId         String    @unique // -> the anchor ContentMonth
+  title           String?
+  totalVideos     Int
+  perSession      Int
+  sessionsPlanned Int
+  cadenceDays     Int       @default(7)
+  startsOn        DateTime?
+  endsOn          DateTime?
+  status          String    @default("ACTIVE") // ACTIVE | COMPLETE | CANCELLED
+  // The client's standing delivery/editing direction for every video in the
+  // plan (Rick: "Talk fast. Cut every 1-2 seconds ..."). Shown to editors.
+  editingNote     String?
+  sourceFile      String?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([enrollmentId, status])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------------------
+// THE REVIEWER'S TWO-PART CHECK (Oct 15 2026, lib/reviewChecklist.ts).
+// One row per block (TECH | CREATIVE) per exact cut version, saved from the
+// Review Room. A newer save of the same block on the same version supersedes
+// the older one (voidedAt), so the history of who checked what stays.
+// ---------------------------------------------------------------------------
+model CutReviewCheck {
+  id                    String    @id @default(cuid())
+  submissionId          String // -> ReviewSubmission (the exact version)
+  projectId             String
+  block                 String // TECH | CREATIVE
+  checklistKey          String // "tech@v1" — the words the check was given under
+  answersJson           String // [{key, answer: "OK" | "NA", reason}]
+  note                  String?
+  contentHash           String? // the bytes it was checked on
+  sourceRev             String?
+  checkedBy             String
+  checkedByUserId       String?
+  checkedByTeamMemberId String?
+  checkedByRole         String? // OWNER | ADMIN | CREATIVE_APPROVER | REVIEWER
+  checkedAt             DateTime  @default(now())
+  voidedAt              DateTime?
+  voidReason            String?
+
+  @@index([submissionId, block])
+  @@index([projectId])
+}
+
+// ---------------------------------------------------------------------------
+// THE CLIENT ENTITLEMENT LEDGER (Oct 15 2026, lib/entitlements.ts). What the
+// office agreed to give a program client beyond the package: an extension
+// month, months carried to the end of the term, an extra video, a credit, a
+// refund that was asked for and NOT agreed, a postponed session. A row is a
+// record of an agreement, never a charge; undo is VOID (the row stays).
+// ---------------------------------------------------------------------------
+model ProgramEntitlement {
+  id             String    @id @default(cuid())
+  enrollmentId   String // -> ContentEnrollment (plain ref)
+  clientId       String
+  kind           String // EXTENSION_MONTH | CARRY_TO_END | EXTRA_DELIVERABLE | CREDIT | REFUND_DECLINED | SESSION_POSTPONED
+  qty            Int       @default(1)
+  monthKey       String? // the month it is about ("2026-07")
+  targetMonthKey String? // the month it lands in, when known
+  description    String
+  agreedBy       String?
+  agreedAt       DateTime?
+  source         String    @default("staff") // call | text | email | portal | staff
+  sourceRef      String?
+  state          String    @default("OPEN") // OPEN | SCHEDULED | FULFILLED | VOID
+  fulfilledAt    DateTime?
+  fulfilledBy    String?
+  fulfilledRef   String? // "Project:<id>" | "ContentVideo:<id>" | free text
+  voidedAt       DateTime?
+  voidedBy       String?
+  voidReason     String?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([enrollmentId, state])
+  @@index([clientId])
+}
+
+// ---------------------------------------------------------------------------
+// THE CLIENT COMPLAINT RECORD (Oct 15 2026, lib/clientIssues.ts). One row per
+// thing a client was unhappy about: what happened, the impact, the cause, the
+// correction, the process change, who owns it and by when, and whether the
+// client confirmed they are satisfied. Client-level (projects optional), so a
+// call about several months has a home. Never deleted; dismissed is a flag.
+// ---------------------------------------------------------------------------
+model ClientIssue {
+  id               String    @id @default(cuid())
+  clientId         String
+  projectIdsJson   String? // ["<projectId>", ...]
+  source           String // call | text | email | portal | feedback | staff
+  sourceRef        String?
+  title            String
+  whatHappened     String
+  impact           String?
+  cause            String? // issueCauses vocabulary or a delay cause, a person's call
+  correction       String?
+  processChange    String?
+  ownerKey         String? // assignee key (jordan | kyle | james ...)
+  ownerName        String?
+  dueAt            DateTime?
+  linkedJson       String? // {revisionIssueIds, productionGapIds, entitlementIds, feedbackIds, taskIds}
+  state            String    @default("OPEN") // OPEN | CORRECTED | CONFIRMED_SATISFIED | UNRESOLVED
+  correctedAt      DateTime?
+  correctedBy      String?
+  checkInTaskId    String?
+  confirmedAt      DateTime?
+  confirmedBy      String?
+  confirmationNote String?
+  feedbackId       String?   @unique // opened from this Feedback row
+  dismissedAt      DateTime?
+  dismissedBy      String?
+  dismissReason    String?
+  historyJson      String? // [{at, by, what}]
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([clientId, state])
+  @@index([state])
 }

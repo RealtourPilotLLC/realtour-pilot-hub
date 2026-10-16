@@ -23,7 +23,7 @@
 // ---------------------------------------------------------------------------
 
 export type StaffTab = "overview" | "plan" | "production" | "brand" | "messages" | "settings" | "import";
-export type PlanView = "topics" | "scripts" | "strategy" | "calls" | "knowledge";
+export type PlanView = "topics" | "scripts" | "strategy" | "calls" | "knowledge" | "bulk";
 export type ProductionView = "sessions" | "videos" | "revisions";
 
 /** The six primary tabs, in the order they sit on the bar. Import is reached from Tools, not here. */
@@ -42,6 +42,8 @@ export const PLAN_VIEWS: { key: PlanView; label: string }[] = [
   { key: "strategy", label: "Strategy" },
   { key: "calls", label: "Calls" },
   { key: "knowledge", label: "Knowledge" },
+  // Oct 15 2026: a batch of videos over a few weeks instead of month by month (bulkPlan.ts).
+  { key: "bulk", label: "Bulk plan" },
 ];
 
 export const PRODUCTION_VIEWS: { key: ProductionView; label: string }[] = [

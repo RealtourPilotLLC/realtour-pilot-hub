@@ -9,6 +9,7 @@ import {
 } from "@/lib/contentPolicy";
 import { cleanUploadText, looksLikeSkit, readSkitScript } from "@/lib/scriptUploadParse";
 import { judgeFlagged, readJudge } from "@/lib/scriptJudgeRecord";
+import { clientScriptFormat } from "@/lib/bulkPlan";
 
 // ---------------------------------------------------------------------------
 // Script VERSIONS (spec §6/§22/§27, Jordan's rulings). ContentScript is the
@@ -248,7 +249,7 @@ export async function editScriptVersion(scriptId: string, parts: VersionParts, b
     parts.pillarId ? Promise.resolve(parts.pillarId) : parts.categoryLabel ? resolvePillarByLabel(s.enrollmentId, parts.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : Promise.resolve(null),
   ]);
   const linked: VersionParts = resolvedPillarId && !parts.pillarId ? { ...parts, pillarId: resolvedPillarId } : parts;
-  const validation = validateNewScript(canonicalFromParts(linked, s.clientId), { approvedPillars: pillars });
+  const validation = validateNewScript(canonicalFromParts(linked, s.clientId), { approvedPillars: pillars, clientFormat: await clientScriptFormat(s.enrollmentId) });
   const r = await createScriptVersion({
     scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts: linked, source: "MANUAL", basedOnVersionId: baseId, createdBy: by,
     changeSummary: changeSummary ?? (s.sharedVersionId ? "Edited after sharing — the shared version is untouched; this is a new draft." : "Edited by hand"),
@@ -421,7 +422,8 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
     canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, s.clientId),
     // Membership is checked HERE, at the gate, against the pillars the client
     // has today — not against whatever list existed when the draft was written.
-    { approvedPillars: await approvedPillarsFor(v.enrollmentId) },
+    // A client on their OWN format (bulkPlan.clientScriptFormat) keeps it here too.
+    { approvedPillars: await approvedPillarsFor(v.enrollmentId), clientFormat: await clientScriptFormat(v.enrollmentId) },
   );
   const blocking = check.findings.filter((f) => f.severity === "block");
   // A NOTE CANNOT MAKE A FOUR-POINT SCRIPT HAVE THREE (audit finding 6, Sep 17).

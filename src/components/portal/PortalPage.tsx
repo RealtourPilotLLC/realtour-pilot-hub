@@ -399,6 +399,11 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
 
   // ---- Home: the one next step ----
   let actions: { primary: HomeAction | null; more: HomeAction[] } = { primary: null, more: [] };
+  // Oct 15 2026: a bulk plan's sessions (null for every monthly client), read once for Home and Your Month.
+  const bulkView = route.dest === "home" || route.dest === "plan"
+    ? await import("@/lib/portalBulk").then((m) => m.portalBulkView(enrollment.id)).catch(() => null)
+    : null;
+  const bulkFocus = bulkView?.sessions.find((x) => x.no === bulkView.focusSessionNo) ?? null;
   if (home) {
     const pageRows = home.videos?.rows ?? [];
     let waiting = pageRows.filter((r) => r.state === "FOR_REVIEW");
@@ -428,6 +433,11 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       unread: messagesUnread,
       planning: home.planning ? { planningMode: home.planning.planningMode, callStatus: home.planning.callStatus, noCallEligible: home.planning.noCallEligible } : null,
       clientPlanned: home.planning?.clientPlanned ? { briefIn: !!home.brief && (home.brief.files > 0 || home.brief.notes), monthLabel: monthLabel(home.planning.monthKey) } : null,
+      bulk: bulkView ? {
+        focusSessionNo: bulkFocus?.no ?? null,
+        scripts: bulkFocus?.items.filter((x) => x.state === "to_film" || x.state === "marked_done").length ?? 0,
+        dateLabel: bulkFocus?.dateISO ? new Date(bulkFocus.dateISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" }) : null,
+      } : null,
       month: hp?.month ? { monthKey: hp.month.monthKey, label: monthLabel(hp.month.monthKey), owed: hp.month.owed, selected: hp.month.selected } : null,
       filmingStarted: filmedWork, topicHistoryNeedsReview,
       toAnswer: (hp?.toAnswer ?? []).map((t) => ({ title: t.title, missing: t.plan?.missing ?? 0 })),
@@ -535,6 +545,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
           strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
           monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
+          bulk: bulkView,
           clientPlanned: yourMonth?.planning?.clientPlanned ?? (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { clientSuppliesTopics: true } }).catch(() => null))?.clientSuppliesTopics ?? false,
         }} />
       )}

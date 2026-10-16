@@ -843,7 +843,8 @@ export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; m
   let queued = 0, initial = 0, refills = 0;
   let lastError: string | null = null;
   // Oct 8 2026: a client who plans their own content has no bank to keep stocked.
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false }, select: { id: true } });
+  // Oct 15 2026: a bulk-plan client's topics are their script bank — no AI topic bank refresh.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
   for (const e of live) {
     try {
       const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: e.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { approvedAt: true, createdAt: true } });
@@ -1173,6 +1174,9 @@ export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Da
   const currentKey = etMonthKey(now);
   const current = await prisma.contentMonth.findUnique({ where: { enrollmentId_monthKey: { enrollmentId, monthKey: currentKey } }, select: { id: true, monthKey: true, historical: true, status: true } });
   if (!current || !monthIsOpen(current)) return { candidates: [], carried: 0, skipped: [] };
+  // Oct 15 2026: a bulk plan's month is not "this month's" plan — nothing
+  // from earlier months rolls into it (bulkPlan.ts plans its own sessions).
+  if (await prisma.contentBulkPlan.findUnique({ where: { monthId: current.id }, select: { id: true } })) return { candidates: [], carried: 0, skipped: [] };
   const pastAll = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false, monthKey: { lt: currentKey } }, select: { id: true, monthKey: true } });
   // Oct 12 2026: a month whose session is booked late (lateSession.ts) keeps
   // its scripted topics — they are filmed at that session, on that month.
@@ -1209,7 +1213,8 @@ export async function carryUnfilmedTopics(enrollmentId: string, opts: { now?: Da
 /** HOURLY, behind `topic_carryover` (a missing row is OFF). Must run after the month is minted (contentProgram). */
 export async function sweepCarryover(opts: { now?: Date } = {}): Promise<{ skipped: string } | { enrollments: number; carried: number; skippedTopics: number; outOfScope: number }> {
   if (!(await isAutomationEnabled("topic_carryover"))) return { skipped: "topic_carryover is off" };
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } });
+  // Oct 15 2026: bulk-plan clients (programKind BULK) have no calendar carry-over.
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true, clientId: true } });
   // THE ROLLOUT (R03, Sep 28 2026): the switch on carried every client's
   // unfilmed topics; now only the clients the program rollout admits for
   // topic_carryover, one scope read for the whole pass. A client outside it
@@ -1427,7 +1432,7 @@ export async function autoRankMonth(monthId: string, opts: { requestedBy?: strin
 export async function sweepRecommendations(opts: { max?: number; now?: Date } = {}): Promise<{ skipped: string } | { checked: number; ranked: number; unchanged: number; errors: number }> {
   if (!(await isAutomationEnabled("topic_refresh"))) return { skipped: "topic_refresh is off" };
   const cur = (opts.now ?? new Date()).toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
-  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
   const months = live.length ? await prisma.contentMonth.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, monthKey: { gte: cur } }, select: { id: true }, orderBy: { monthKey: "asc" }, take: opts.max ?? 60 }) : [];
   let ranked = 0, unchanged = 0, errors = 0;
   for (const m of months) {
