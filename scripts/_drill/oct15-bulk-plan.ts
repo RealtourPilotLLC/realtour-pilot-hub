@@ -235,6 +235,12 @@ async function main() {
     const kept = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
     c.ok("the filter keeps every monthly client and leaves only the bulk one out", kept.some((e) => e.id === plainMonth.enrollmentId) && !kept.some((e) => e.id === f.enrollmentId));
 
+    c.head("9 · the welcome email for a bulk plan (Oct 16 2026)");
+    const { renderWelcomeEmail } = await import("@/lib/welcomeEmail");
+    const w = renderWelcomeEmail({ firstName: "Rick", signInUrl: "https://hub.example/portal/login", discovery: { state: "not_needed" }, discoveryUrl: null, strategyReady: true, planning: "BULK", strategyCallsOn: false, setupMissing: [], bulk: { videos: 48, sessions: 6, firstSessionISO: "2026-10-20T13:00:00Z" } });
+    c.ok("it names the 48 videos, the sessions and the first date", /your 48 videos live/.test(w) && /Here's how it works:/.test(w) && /Tuesday, October 20/.test(w) && /Tick a script once you've filmed it/.test(w), w.slice(0, 300));
+    c.ok("…and never asks for a strategy call, topics or a booking, and no em dashes", !/strategy call|choose your topics|Book your filming/i.test(w) && !w.includes("—"));
+
     c.head("isolation");
     c.ok("no outbound call escaped", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));
     c.summary();

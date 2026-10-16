@@ -660,7 +660,7 @@ export async function welcomeFactsFor(clientId: string | null, now: Date): Promi
   const { discoveryStateOf } = await import("@/lib/welcomeEmail");
   const enrollment = clientId
     ? await prisma.contentEnrollment
-        .findUnique({ where: { clientId }, select: { id: true, callMode: true, strategyCallRequired: true, noCallEligible: true, clientSuppliesTopics: true, sessionsPerMonth: true } })
+        .findUnique({ where: { clientId }, select: { id: true, callMode: true, strategyCallRequired: true, noCallEligible: true, clientSuppliesTopics: true, sessionsPerMonth: true, programKind: true } })
         .catch(() => null)
     : null;
   const [booking, strategies, released, onboarding, monthlyHeld, mapping] = await Promise.all([
@@ -727,7 +727,19 @@ export async function welcomeFactsFor(clientId: string | null, now: Date): Promi
   const setupMissing = enrollment && clientId
     ? await import("@/lib/portalSetup").then((m) => m.setupMissingWords(enrollment.id, clientId)).catch(() => [] as string[])
     : [];
-  return { discovery, discoveryUrl: mapping?.publicUrl ?? null, strategyReady: released > 0, planning, strategyCallsOn: mode !== "NOT_INCLUDED", setupMissing, sessionsPerMonth: enrollment?.sessionsPerMonth ?? 1 };
+  // Oct 16 2026: a bulk plan has its own welcome (welcomeEmail BULK): no
+  // monthly call, topics or booking; the scripts by session and the first date.
+  let bulk: { videos: number; sessions: number; firstSessionISO: string | null } | null = null;
+  if (enrollment?.programKind === "BULK") {
+    const { latestBulkPlanFor, planShoots } = await import("@/lib/bulkPlan");
+    const plan = await latestBulkPlanFor(enrollment.id).catch(() => null);
+    if (plan) {
+      const shoots = await planShoots(plan.monthId).catch(() => []);
+      const next = shoots.filter((s) => s.shootDateISO && new Date(s.shootDateISO).getTime() > now.getTime()).sort((a, b) => a.shootDateISO!.localeCompare(b.shootDateISO!))[0];
+      bulk = { videos: plan.totalVideos, sessions: plan.sessionsPlanned, firstSessionISO: next?.shootDateISO ?? plan.startsOn?.toISOString() ?? null };
+    }
+  }
+  return { discovery, discoveryUrl: mapping?.publicUrl ?? null, strategyReady: released > 0, planning: bulk ? "BULK" as const : planning, strategyCallsOn: !bulk && mode !== "NOT_INCLUDED", setupMissing, sessionsPerMonth: enrollment?.sessionsPerMonth ?? 1, bulk };
 }
 
 /** Every account we owe but have not opened, oldest debt first. The owner's

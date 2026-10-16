@@ -47,7 +47,10 @@ export type WelcomePlanning =
   /** Strategy calls are switched off: topics and answers in the portal. */
   | "WRITTEN"
   /** They plan their own content ("we show up and shoot"). */
-  | "CLIENT_PLANNED";
+  | "CLIENT_PLANNED"
+  /** Oct 16 2026: a bulk plan (bulkPlan.ts) — every script written and planned by
+   *  session; no monthly call, topics or booking (the office books the sessions). */
+  | "BULK";
 
 export type WelcomeFacts = {
   firstName: string;
@@ -65,6 +68,8 @@ export type WelcomeFacts = {
   setupMissing: string[];
   /** Filming sessions a month on their package (Pro: 2). Absent = 1. */
   sessionsPerMonth?: number;
+  /** BULK only: how many videos, how many sessions, and the first session's day. */
+  bulk?: { videos: number; sessions: number; firstSessionISO: string | null } | null;
 };
 
 /**
@@ -124,6 +129,14 @@ function monthlySteps(f: WelcomeFacts): string[] {
   const scripts = "Read and approve your scripts before filming day.";
   const videos = "Review your videos. Approve them or tell us what to change, then download the finished ones.";
   switch (f.planning) {
+    case "BULK": {
+      const first = f.bulk?.firstSessionISO ? new Date(f.bulk.firstSessionISO) : null;
+      return [
+        `Read the scripts for your next filming session before you film${first ? `. Your first session is ${first.toLocaleDateString("en-US", { timeZone: ET, weekday: "long", month: "long", day: "numeric" })}` : ""}. Every later session's scripts are there too, so you can read ahead.`,
+        "Tick a script once you've filmed it, if you like. It helps you keep your place.",
+        videos,
+      ];
+    }
     case "CALL":
       return [
         "Book your monthly strategy call. That's where we plan the month's videos and choose your topics together.",
@@ -173,7 +186,9 @@ export function renderWelcomeEmail(f: WelcomeFacts): string {
   return [
     `Hi ${f.firstName},`,
     "",
-    f.planning === "CLIENT_PLANNED"
+    f.planning === "BULK"
+      ? `Welcome to your Realtour Pilot content portal. It's where your ${f.bulk?.videos ? `${f.bulk.videos} ` : ""}videos live: every script, grouped by filming session, your filming dates and every finished video.`
+      : f.planning === "CLIENT_PLANNED"
       ? "Welcome to your Realtour Pilot content portal. It's where your content program lives: your plans for each month, your filming dates and every finished video."
       : "Welcome to your Realtour Pilot content portal. It's where your content program lives: your strategy, your video topics, your scripts, your filming dates and every finished video.",
     "",
@@ -181,8 +196,8 @@ export function renderWelcomeEmail(f: WelcomeFacts): string {
     "",
     ...status,
     ...(once.length
-      ? ["Here's what's next:", ...numbered(once), "", "Then, each month in your portal:", ...numbered(monthly)]
-      : ["Here's what you'll do in your portal each month:", ...numbered(monthly)]),
+      ? ["Here's what's next:", ...numbered(once), "", f.planning === "BULK" ? "Then, for each filming session:" : "Then, each month in your portal:", ...numbered(monthly)]
+      : [f.planning === "BULK" ? "Here's how it works:" : "Here's what you'll do in your portal each month:", ...numbered(monthly)]),
     "",
     "Questions? Just reply to this email and it comes straight to us.",
     "",
