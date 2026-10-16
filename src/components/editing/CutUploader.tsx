@@ -157,7 +157,7 @@ function readDimensions(file: File): Promise<{ width: number; height: number } |
 const AUTO_NOTE = /^Cut detected in the Dropbox Final folder/i;
 const editorMessage = (n: string | null | undefined) => (n && !AUTO_NOTE.test(n) ? n : null);
 
-function StatusPill({ latest, reopened, officeReopen }: { latest: CutRow["latest"]; reopened?: boolean; officeReopen?: { by: string | null } | null }) {
+function StatusPill({ latest, reopened, officeReopen, office = false }: { latest: CutRow["latest"]; reopened?: boolean; officeReopen?: { by: string | null } | null; office?: boolean }) {
   if (!latest) return <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted">Not uploaded yet</span>;
   if (latest.status === "APPROVED" && reopened) {
     // The client asked for changes after this version was approved — the
@@ -166,7 +166,7 @@ function StatusPill({ latest, reopened, officeReopen }: { latest: CutRow["latest
     // "client" (review, Sep 28).
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">
-        <Undo2 className="size-3" /> v{latest.round} approved · {officeReopen ? `reopened by ${firstName(officeReopen.by) ?? "the office"}` : "client asked for changes"}
+        <Undo2 className="size-3" /> Version {latest.round} approved · {officeReopen ? `reopened by ${firstName(officeReopen.by) ?? "the office"}` : "client asked for changes"}
       </span>
     );
   }
@@ -177,7 +177,8 @@ function StatusPill({ latest, reopened, officeReopen }: { latest: CutRow["latest
   if (latest.status === "APPROVED") {
     return (
       <span title={verdictLine(v) ?? undefined} className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
-        <CheckCircle2 className="size-3" /> Approved{who ? ` by ${who}` : ""}{latest.completedAt ? " · in Dropbox" : " · copying to Dropbox"}
+        {/* Where the file went is the office's business (Oct 15 2026 audit). */}
+        <CheckCircle2 className="size-3" /> Approved{who ? ` by ${who}` : ""}{office ? (latest.completedAt ? " · in Dropbox" : " · copying to Dropbox") : ""}
       </span>
     );
   }
@@ -185,7 +186,7 @@ function StatusPill({ latest, reopened, officeReopen }: { latest: CutRow["latest
     return (
       <span title={verdictLine(v) ?? undefined} className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">
         <Undo2 className="size-3" />{" "}
-        {v?.source === "client" ? `The client asked for changes on v${latest.round}` : `Changes requested on v${latest.round}${who ? ` by ${who}` : ""}`}
+        {v?.source === "client" ? `The client asked for changes on version ${latest.round}` : `Changes requested on version ${latest.round}${who ? ` by ${who}` : ""}`}
       </span>
     );
   }
@@ -193,12 +194,12 @@ function StatusPill({ latest, reopened, officeReopen }: { latest: CutRow["latest
   // the version now). Nothing is in front of the reviewer, and v{round} is
   // free again for the right file.
   if (latest.status === "WITHDRAWN") {
-    return <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted"><Undo2 className="size-3" /> v{latest.round} withdrawn</span>;
+    return <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted"><Undo2 className="size-3" /> Version {latest.round} withdrawn</span>;
   }
   if (latest.status === "PENDING" && latest.held) {
-    return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">v{latest.round} waiting on your check</span>;
+    return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">Version {latest.round} waiting on your final check</span>;
   }
-  return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">v{latest.round} in review</span>;
+  return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">Version {latest.round} in review</span>;
 }
 
 // The message that rides with one cut. Two shapes, because a message belongs to
@@ -827,6 +828,8 @@ export function CutUploader({
           <span className="text-muted">{EXPORT_SPEC.edit}</span>{" "}
           <span className="font-medium">{EXPORT_SPEC.audio}</span>
         </p>
+        {/* Oct 15 2026: the page's own "Export details" fold is gone; its two extra lines live here. */}
+        <p className="pb-2 text-muted">{EXPORT_SPEC.orientation} {EXPORT_SPEC.why}</p>
         </details>
       </div>
       <ul className="divide-y divide-border">
@@ -912,7 +915,7 @@ export function CutUploader({
                       v{handed.round} {handed.phase === "confirming" ? "going to review…" : "in review"}
                     </span>
                   ) : (
-                    <StatusPill latest={c.latest} reopened={reopened} officeReopen={officeReopen} />
+                    <StatusPill latest={c.latest} reopened={reopened} officeReopen={officeReopen} office={canOverrideExport} />
                   )}
                   {c.openNotes > 0 && (
                     <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">{c.openNotes} note{c.openNotes === 1 ? "" : "s"} to fix</span>

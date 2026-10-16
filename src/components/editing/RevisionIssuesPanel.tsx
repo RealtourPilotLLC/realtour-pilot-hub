@@ -40,6 +40,9 @@ export type AttestationView = {
 const fmtT = (t: number | null) => (t == null ? "" : `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")} `);
 const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
+/** What an editor reads for each state (Oct 15 2026 audit: "Editor says fixed", "Verified" are the reviewer's words). */
+const EDITOR_STATE_LABEL: Record<string, string> = { OPEN: "To fix", REOPENED: "Back to fix", ADDRESSED: "You marked it fixed", VERIFIED: "Checked", NOT_APPLICABLE: "Not needed", DUPLICATE: "Same as another" };
+
 function stateTone(state: string): string {
   if (state === "VERIFIED") return "bg-success/10 text-success";
   if (state === "ADDRESSED") return "bg-brand-soft text-brand";
@@ -65,7 +68,7 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
   return (
     <li className="rounded-xl border border-border p-3">
       <div className="flex flex-wrap items-start gap-2">
-        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", stateTone(issue.state))}>{ISSUE_STATE_LABEL[issue.state] ?? issue.state}</span>
+        <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", stateTone(issue.state))}>{(canReview ? ISSUE_STATE_LABEL : EDITOR_STATE_LABEL)[issue.state] ?? ISSUE_STATE_LABEL[issue.state] ?? issue.state}</span>
         <p className="min-w-0 flex-1 text-sm leading-snug">
           <span className="font-mono text-[11px] text-muted-2">{fmtT(issue.timeSec)}</span>
           {issue.summary ?? issue.text}
@@ -73,13 +76,14 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
       </div>
       {issue.summary && issue.summary !== issue.text && <p className="mt-1 text-xs italic text-muted">&ldquo;{issue.text.slice(0, 400)}&rdquo;</p>}
       <p className="mt-1 text-[11px] text-muted-2">
-        {canReview ? `${issue.category} · ${issue.severity.toLowerCase()} · ` : ""}{issue.sourceKind === "BRIEF_ITEM" ? issue.sourceChannel === "review_room_staff" ? "staff recorded client ask" : `client ask${issue.sourceChannel ? ` (${issue.sourceChannel})` : ""}` : issue.sourceKind === "MANUAL" ? "split out" : issue.raisedByName ?? "review note"}
-        {issue.raisedOnRound ? ` · on v${issue.raisedOnRound}` : ""}
-        {issue.addressedInRound ? ` · editor says fixed in v${issue.addressedInRound}` : ""}
-        {issue.verifiedInRound ? ` · verified on v${issue.verifiedInRound}` : ""}
-        {issue.missedInRound ? ` · still open when v${issue.missedInRound} was sent back` : ""}
-        {issue.foundAfterApproval ? " · found after approval" : ""}
-        {issue.imported ? " · from before the ledger" : ""}
+        {/* Oct 15 2026 (audit): plain words for the editor; the office's bookkeeping words stay on the reviewer's side. */}
+        {canReview ? `${issue.category} · ${issue.severity.toLowerCase()} · ` : ""}{issue.sourceKind === "BRIEF_ITEM" ? (canReview && issue.sourceChannel === "review_room_staff" ? "staff recorded client ask" : canReview ? `client ask${issue.sourceChannel ? ` (${issue.sourceChannel})` : ""}` : "the client asked") : issue.sourceKind === "MANUAL" ? (canReview ? "split out" : "the reviewer") : issue.raisedByName ?? "the reviewer"}
+        {issue.raisedOnRound ? ` · on version ${issue.raisedOnRound}` : ""}
+        {issue.addressedInRound ? ` · ${canReview ? "editor says fixed" : "marked fixed"} in version ${issue.addressedInRound}` : ""}
+        {issue.verifiedInRound ? ` · ${canReview ? "verified" : "checked"} on version ${issue.verifiedInRound}` : ""}
+        {issue.missedInRound ? ` · still open when version ${issue.missedInRound} was sent back` : ""}
+        {canReview && issue.foundAfterApproval ? " · found after approval" : ""}
+        {canReview && issue.imported ? " · from before the ledger" : ""}
       </p>
       {/* The cause is a reviewer's verdict on a version: an editor sees it on
           their own versions only — the server leaves it out otherwise (§8.4,
@@ -204,9 +208,9 @@ export function RevisionIssuesPanel({ issues, canReview, attestations = [] }: { 
     <section id="issues" className="panel-shadow scroll-mt-20 overflow-hidden rounded-2xl border border-border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
         <ListChecks className="size-4 text-brand" />
-        <h2 className="text-sm font-semibold">{canReview ? "Revision history and classification" : "Changes to make"}</h2>
+        <h2 className="text-sm font-semibold">{canReview ? "Revision history and classification" : "Review notes"}</h2>
         <span className="text-xs text-muted">
-          {open} open · {toVerify} waiting on a verify{canReview ? ` · ${unclassified} not classified` : ""}
+          {canReview ? `${open} open · ${toVerify} waiting on a verify · ${unclassified} not classified` : `${open} to fix${toVerify ? ` · ${toVerify} marked fixed, the reviewer checks` : ""}`}
         </span>
       </div>
       <div className="space-y-4 px-4 py-3 sm:px-5">

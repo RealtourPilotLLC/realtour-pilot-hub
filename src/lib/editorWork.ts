@@ -1398,7 +1398,8 @@ export async function workBarFor(
     CANCELLED: "That job is cancelled — there is nothing to edit.",
     ON_HOLD: "On hold — it can't be started until the office takes it off hold.",
     REMOVED: "Taken off the Editing Room by the office — bring it back before starting it.",
-    NOT_HOLDER: card?.assignedKey ? `Assigned to ${nameOf(card.assignedKey)} — not yours to start.` : "Not assigned to you yet — the office hands it over.",
+    // Oct 15 2026 (audit): a delivered job with no open work is done, not "not assigned yet".
+    NOT_HOLDER: card?.assignedKey ? `Assigned to ${nameOf(card.assignedKey)} — not yours to start.` : facts.status === "DELIVERED" ? "Done. This job is delivered. If it needs changes, the office reopens it." : "Not assigned to you yet — the office hands it over.",
     OUTPUT_GONE: "That video isn't on this job any more — refresh the page.",
     WAITING: "Held in Waiting by the office — it can't be started until the footage is in.",
   };

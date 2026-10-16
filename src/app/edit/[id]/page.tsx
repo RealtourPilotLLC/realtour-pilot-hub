@@ -3,9 +3,9 @@ import { notFound, redirect } from "next/navigation";
 import { requestsForEditors } from "@/lib/specialRequests";
 import Link from "next/link";
 import {
-  AlertTriangle, ChevronDown, Film, FileVideo, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
+  AlertTriangle, ChevronDown, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
 } from "lucide-react";
-import { EXPORT_SPEC, VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, makeThisFor, videoStyleByKey, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
+import { VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, makeThisFor, videoStyleByKey, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { BrandUpdatesBanner } from "@/components/editing/BrandUpdatesBanner";
@@ -1200,7 +1200,7 @@ export default async function EditBriefPage({
               const latest = cutRows.find((row) => `${row.deliverableId}:${row.slot}` === brief.key)?.latest;
               const selected = brief.key === selectedKey;
               const tone = latest?.status === "APPROVED" ? "border-success/40 bg-success-soft text-success" : latest?.status === "PENDING" ? "border-warning/40 bg-warning-soft text-warning" : latest?.status === "CHANGES_REQUESTED" ? "border-danger/40 bg-danger-soft/60 text-danger" : "border-border bg-surface text-foreground/80";
-              const state = latest ? (latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? `Changes requested on v${latest.round}` : `In review · v${latest.round}`) : "Awaiting edit";
+              const state = latest ? (latest.status === "APPROVED" ? "Approved" : latest.status === "CHANGES_REQUESTED" ? `Changes requested on version ${latest.round}` : `Version ${latest.round} in review`) : "Not started";
               // WHOSE VIDEO (review, Oct 5 night): a month can be split between
               // editors, so each chip names the editor it is assigned to — "you"
               // for the viewer's own.
@@ -1221,7 +1221,7 @@ export default async function EditBriefPage({
           {/* 1 · WHAT, WHOSE, BY WHEN */}
           <header data-brief-section="header" className={CARD}>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted">{project.client.name}</p>
-            <h2 className="mt-0.5 text-lg font-semibold leading-snug">{isVideoJob ? `Video ${videoNumber} of ${videoTotal} — ${videoTitle}` : street}</h2>
+            <h2 className="mt-0.5 text-lg font-semibold leading-snug">{isVideoJob ? (videoTotal > 1 ? `Video ${videoNumber} of ${videoTotal}: ${videoTitle}` : videoTitle) : street}</h2>
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm" data-due>
               {dueLine && selectedDue ? (
                 <>
@@ -1241,7 +1241,18 @@ export default async function EditBriefPage({
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${videoState.tone}`}>{videoState.text}</span>
                 <span className="ml-auto flex flex-wrap gap-2">
-                  <a href="#submit-cut" className={`${BRIEF_SECTION_LINK} ${canUploadCuts ? "border-transparent bg-brand-action text-brand-fg hover:brightness-95" : "border-border-strong bg-surface hover:bg-surface-2"}`}>{canUploadCuts ? "Upload for review" : "Cuts and review"}</a>
+                  {/* Oct 15 2026 (audit): the orange "Upload for review" only while this
+                      video still needs a version from them; once one is in review or
+                      approved it is a quiet link to the video. */}
+                  {(() => {
+                    const st = selectedKey ? latestLivePerCut.get(selectedKey)?.status ?? null : activeSub?.status ?? null;
+                    const owed = canUploadCuts && st !== "APPROVED" && st !== "PENDING";
+                    return (
+                      <a href="#submit-cut" className={`${BRIEF_SECTION_LINK} ${owed ? "border-transparent bg-brand-action text-brand-fg hover:brightness-95" : "border-border-strong bg-surface hover:bg-surface-2"}`}>
+                        {owed ? "Upload for review" : st === "PENDING" ? "In review" : st === "APPROVED" ? "Approved" : "Video and review"}
+                      </a>
+                    );
+                  })()}
                   <a href="#messages" className={`${BRIEF_SECTION_LINK} border-border bg-surface hover:bg-surface-2`}>
                     <MessageSquare className="size-4 shrink-0" />
                     Messages{viewer && !viewer.impersonating && unreadTeamMessages ? ` · ${unreadTeamMessages} new` : ""}
@@ -1359,7 +1370,7 @@ export default async function EditBriefPage({
                     <p className="mt-0.5 whitespace-pre-wrap text-foreground/90">{studioShotList}</p>
                   </div>
                 )}
-                {scriptMissing && <p className="text-sm text-muted">{clientBrief?.clientPlanned ? "Client-planned — they wrote their own script. Go by the footage and their brief below." : "No script on file for this video yet — cut the B-roll first, or ask in the messages."}</p>}
+                {scriptMissing && <p className="text-sm text-muted">{clientBrief?.clientPlanned ? "Client-planned — they wrote their own script. Go by the footage and their brief above." : "No script on file for this video yet — cut the B-roll first, or ask in the messages."}</p>}
                 {topicScript?.direction && (
                   <dl className="mt-3 space-y-1.5 border-t border-border pt-3 text-sm">
                     {topicScript.direction.creativeDirection && <div><dt className="font-medium text-muted">Direction</dt><dd className="whitespace-pre-wrap">{topicScript.direction.creativeDirection}</dd></div>}
@@ -1456,7 +1467,7 @@ export default async function EditBriefPage({
 
           {/* 6 · THE CLIENT — who they are (collapsed) and their own words. */}
           <section id="video-client" data-brief-section="client" className="min-w-0 space-y-3">
-            {agent && <AgentProfileCard agent={agent} hidePreferencesFrom={["portal", "aryeo"]} linkLogo={false} />}
+            {agent && <AgentProfileCard agent={agent} hidePreferencesFrom={["portal", "aryeo"]} linkLogo={false} hideBrandKit />}
             {hasTheirWords && (
               <div className={CARD}>
                 <h3 className={H3}>In their words</h3>
@@ -1489,9 +1500,13 @@ export default async function EditBriefPage({
                   ? <>For this video: {musicForVideo}</>
                   : reelSong
                     ? <>Use the song picked with the Studio script: {/^https?:\/\//i.test(reelSong) ? <a href={reelSong} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">song link ↗</a> : reelSong}</>
+                    // Oct 15 2026 (audit): "below" only when the picker is below, and "under
+                    // the voice" only on a video that has one.
                     : catalogueMusicAllowed
-                      ? "Pick a licensed track below."
-                      : "Use trending audio that fits the script's energy, low under the voice."}
+                      ? (musicConnected || isOwnerAdmin ? "Pick a licensed track below." : "Use a licensed track that fits the pace of the edit.")
+                      : showScript
+                        ? "Use trending audio that fits the script's energy, low under the voice."
+                        : "Use trending audio that fits the pace of the edit."}
               </p>
               {brandBrief?.music && <p className="mt-1 text-sm"><span className="text-muted">They prefer:</span> {brandBrief.music}</p>}
               {(musicType || musicPick) && <p className="mt-1 text-sm text-muted">{[musicType ? `Music type: ${musicType}` : null, musicPick ? `Picked: ${musicPickLine(musicPick)}` : null].filter(Boolean).join(" · ")}</p>}
@@ -1740,7 +1755,8 @@ export default async function EditBriefPage({
                     />
                   </section>
                 )}
-                {reviewerStrip && <ReviewerStrip data={reviewerStrip} />}
+                {/* Who covers the review desk is the office's (Oct 15 2026 audit); the editor reads "James is reviewing this video." above. */}
+                {reviewerStrip && viewer?.role !== "EDITOR" && <ReviewerStrip data={reviewerStrip} />}
                 <EditFeedback notes={feedback} canFix={false} />
                 <RevisionIssuesPanel issues={quality.issues} canReview={quality.canReview} attestations={quality.attestations} />
               </div>
@@ -1787,20 +1803,6 @@ export default async function EditBriefPage({
             </details>
           )}
 
-          {/* EXPORT DETAILS — the full 1080p guide (lib/videoStyles EXPORT_SPEC). */}
-          {isVideoJob && (
-            <details className={CARD}>
-              <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-brand">Export details · 1080p</summary>
-              <div className="mt-2 space-y-1.5 text-sm leading-relaxed">
-                <p className="flex items-center gap-1.5 font-semibold"><FileVideo className="size-4 text-brand" /> {EXPORT_SPEC.headline}</p>
-                <p className="font-medium">{EXPORT_SPEC.finalCut}</p>
-                <p className="text-foreground/85">{EXPORT_SPEC.edit}</p>
-                <p className="text-muted">{EXPORT_SPEC.orientation}</p>
-                <p className="font-medium">{EXPORT_SPEC.audio}</p>
-                <p className="text-muted">{EXPORT_SPEC.why}</p>
-              </div>
-            </details>
-          )}
         </div>
 
         {/* ---- FOR THE OFFICE — writing the brief, packets, waiting files ---- */}

@@ -629,8 +629,8 @@ async function main() {
   c.ok("Kim (editor) sees the name and no doors", !stripKim.canRule && stripKim.candidates.length === 0 && stripKim.rows[0]?.reviewer?.name === "James Rivera");
   const stage = (reviewerName?: string | null) =>
     deriveEditStage({ projectStatus: "REVIEW", revisionOpen: false, revisionAfterApproval: false, latestRoundStatus: "PENDING", rawsLanded: true, reviewerName }).label;
-  c.ok("tracker: 'Ready for review — with James' when he holds it", stage("James Rivera") === "Ready for review — with James", stage("James Rivera"));
-  c.ok("tracker: unchanged wording when nobody is named", stage(null) === "Ready for review — with Jordan");
+  c.ok("tracker: 'In review with James' when he holds it", stage("James Rivera") === "In review with James", stage("James Rivera"));
+  c.ok("tracker: plain 'In review' when nobody is named (never a guessed reviewer)", stage(null) === "In review", stage(null));
   viewer = V.kyle;
   const seats = await actions.loadCutReviewerSeats();
   const jamesSeat = seats.find((s) => s.id === james.id);

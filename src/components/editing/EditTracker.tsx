@@ -76,7 +76,8 @@ export function deriveEditStage(input: {
   if (latestRoundStatus === "APPROVED" && !revisionAfterApproval)
     return { stage: "done", label: projectStatus === "DELIVERED" ? "Approved & delivered" : "Cut approved" };
   if (projectStatus === "DELIVERED" && !revisionOpen) return { stage: "done", label: "Approved & delivered" };
-  if (latestRoundStatus === "PENDING") return { stage: "review", label: `Ready for review — with ${reviewerFirst ?? "Jordan"}` };
+  // Oct 15 2026 (audit): the reviewer's name when one is known, never a guessed "Jordan".
+  if (latestRoundStatus === "PENDING") return { stage: "review", label: reviewerFirst ? `In review with ${reviewerFirst}` : "In review" };
   if (revisionOpen || latestRoundStatus === "CHANGES_REQUESTED")
     return { stage: "revision", label: "Changes requested — back with the editor" };
   // §7.1 (Sep 25): "In the edit" only while an editor has pressed Start
@@ -190,7 +191,8 @@ export function EvidenceLadder({ rows, className = "" }: { rows: LadderRow[]; cl
 }
 
 const ROUND_CHIP: Record<string, { text: string; cls: string }> = {
-  PENDING: { text: "With Jordan", cls: "bg-warning/10 text-warning" },
+  // Oct 15 2026: it said "With Jordan" on every version, even James's (audit).
+  PENDING: { text: "In review", cls: "bg-warning/10 text-warning" },
   CHANGES_REQUESTED: { text: "Changes requested", cls: "bg-danger/10 text-danger" },
   APPROVED: { text: "Approved", cls: "bg-success/10 text-success" },
   // Pulled back by the editor (Sep 16) — history, not a live round, so the

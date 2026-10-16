@@ -265,7 +265,9 @@ async function main() {
     c.ok("collapsed by default", !!profile1 && !/<details[^>]*data-agent-profile[^>]*\sopen/.test(profile1));
     c.ok("collapsed it shows the name, brokerage, team, segment and a summary", ["Agent Profile", "Dana Maple", "Maple & Co Realty", "Team: The Maple Group", "VIP", "Dana likes calm, confident edits"].every((x) => summary1.includes(x)), summary1);
     const expanded1 = text(profile1.slice(profile1.indexOf("</summary>")));
-    c.ok("expanded: Style & brand with the portal's colours (hex) and the Aryeo note's fonts", expanded1.includes("Style & brand") && expanded1.includes("#0B3D2E") && expanded1.includes("from their portal") && expanded1.includes("Montserrat and Lora") && expanded1.includes("from their Aryeo notes"), expanded1.slice(0, 400));
+    // Oct 15: the brand kit is said once, in the Brand section; the profile no longer repeats it.
+    c.ok("the Brand section carries the portal's colours (hex) and the Aryeo note's fonts", text(brand1).includes("#0B3D2E") && text(brand1).includes("Montserrat and Lora"), text(brand1).slice(0, 400));
+    c.ok("…and the Agent Profile does not repeat them", !expanded1.includes("#0B3D2E") && !expanded1.includes("Montserrat and Lora"), expanded1.slice(0, 400));
     c.ok("the Aryeo note's style line is in the brief's client section, said once", text(client1).includes("Always add her animated logo") && count(kim1Text, "Always add her animated logo") === 1);
     c.ok("…so the end card asks for the logo instead of skipping it", text(brand1).includes("Their notes ask for their logo") && text(brand1).includes("name card"));
     c.ok("…the portal's explicit colours win over the note's, and no money anywhere in the card", !text(profile1).includes("#FF0000") && !text(profile1).includes("$175") && !/lifetime|\$\d/i.test(text(profile1)));
@@ -275,7 +277,7 @@ async function main() {
     // =======================================================================
     const kim2 = await view("Kim", monthly.id, { output: outs[1].id });
     const article2 = block(kim2, new RegExp(`<article[^>]*id="brief-${outs[1].id}"`));
-    c.ok("the header names the topic", text(block(article2, /data-brief-section="header"/)).includes(`Video 2 of 4 — ${titles[1]}`));
+    c.ok("the header names the topic", text(block(article2, /data-brief-section="header"/)).includes(`Video 2 of 4: ${titles[1]}`));
     c.ok("Make this: the office's line for this video replaces the default", text(block(article2, /data-make-this/)).includes("16:9 horizontal for YouTube") && text(article2).includes("Set by the office for this video"));
     c.ok("a script the client has not approved wears the badge", article2.includes("data-not-approved") && text(article2).includes("Not approved by the client yet"));
     c.ok("no topic folder: one raw-footage link and the honest one-line fallback", footageLinks(externalLinks(article2)).length === 1 && text(article2).includes("aren't in a folder of their own"));
@@ -296,7 +298,7 @@ async function main() {
     c.ok("the office's note, the shoot's instruction and the order's words each appear once", count(johnText, "drone was grounded") === 1 && count(johnText, "Agent intro in front of the house") === 1 && count(johnText, "Please feature the new kitchen") === 1);
     c.ok("no money from the order note or the Aryeo note", !/refund|charged twice|\$40/i.test(johnText));
     const profileL = block(john, /<details[^>]*data-agent-profile/);
-    c.ok("John's Agent Profile: Rob, Main Line Realty, the segment, and colours from the Aryeo note", text(block(profileL, /<summary/)).includes("Rob Listing") && text(profileL).includes("Main Line Realty") && text(profileL).includes("One-Timer") && text(profileL).includes("#1B2A4A") && text(profileL).includes("from their Aryeo notes"), text(profileL).slice(0, 400));
+    c.ok("John's Agent Profile: Rob, Main Line Realty and the segment; the Aryeo note's colours are in the Brand section", text(block(profileL, /<summary/)).includes("Rob Listing") && text(profileL).includes("Main Line Realty") && text(profileL).includes("One-Timer") && !text(profileL).includes("#1B2A4A") && text(block(articleL, /data-brief-section="brand"/)).includes("#1B2A4A"), text(profileL).slice(0, 400));
     const jargonL = JARGON.filter((j) => johnText.includes(j) || john.includes(j));
     c.ok("none of the audit's jargon reaches John", jargonL.length === 0, jargonL.join(", "));
     c.ok("one video on the job: no chooser, one footage link", !john.includes('aria-label="Video selector"') && footageLinks(externalLinks(john)).length === 1);

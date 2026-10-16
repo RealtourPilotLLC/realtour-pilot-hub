@@ -103,6 +103,7 @@ export function AgentProfileCard({
   agent,
   hidePreferencesFrom = [],
   linkLogo = true,
+  hideBrandKit = false,
   id,
 }: {
   agent: AgentProfileData;
@@ -110,9 +111,12 @@ export function AgentProfileCard({
   hidePreferencesFrom?: AgentStyleSource[];
   /** False when the page links the logo file elsewhere — one link per file on a screen. */
   linkLogo?: boolean;
+  /** The page shows colours, fonts and logo in its own Brand card (Oct 15 2026: the editor brief said them twice). */
+  hideBrandKit?: boolean;
   id?: string;
 }) {
-  const s = agent.style;
+  const s0 = agent.style;
+  const s = hideBrandKit ? { ...s0, colors: [], colorWords: null, fonts: null, logo: null } : s0;
   const prefs = s.preferences.filter((p) => !hidePreferencesFrom.includes(p.from));
   const hasStyle = s.colors.length > 0 || !!s.colorWords || !!s.fonts || !!s.logo || prefs.length > 0;
   const subline = [agent.brokerage, agent.team ? `Team: ${agent.team}` : null].filter(Boolean).join(" · ");
@@ -132,6 +136,7 @@ export function AgentProfileCard({
         <ChevronDown aria-hidden className="mt-1 size-4 shrink-0 text-muted transition-transform group-open:rotate-180" />
       </summary>
       <div className="space-y-4 border-t border-border px-4 py-3">
+        {(!hideBrandKit || prefs.length > 0) && (
         <div>
           <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Palette className="size-3.5" /> Style &amp; brand</h3>
           {!hasStyle && <p className="text-sm text-muted">Nothing on file yet — no colours, fonts or logo from their portal or their Aryeo notes.</p>}
@@ -165,6 +170,7 @@ export function AgentProfileCard({
             </ul>
           )}
         </div>
+        )}
         {agent.pastAsks.length > 0 && (
           <div>
             <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Repeat className="size-3.5" /> Past Revision Requests</h3>

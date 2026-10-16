@@ -113,7 +113,7 @@ export function EditFeedback({
                 <span className="text-sm text-foreground/90">{n.body}</span>
                 <span className="ml-2 align-middle">
                   <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium", STATUS_CHIP[n.status] ?? "bg-surface-2 text-muted")}>
-                    {n.kind === "coaching" ? "Coaching" : STATUS_LABEL[n.status] ?? n.status}
+                    {n.kind === "coaching" ? "Tip" : STATUS_LABEL[n.status] ?? n.status}
                   </span>
                 </span>
                 {/* WHO WANTS THIS. getEditorFeedback has stamped `ask` on a
