@@ -14,9 +14,36 @@ export function portalReason(reason: string): string {
   return (kept.length ? kept : parts).join(" ");
 }
 
+/** The hub is uploading or delivering this one itself (Oct 19 2026): no alert
+ *  for Kyle until it needs him (on the listing waiting for Deliver now, held,
+ *  or stopped). */
+export function hubIsSending(video: ReadyVideo): boolean {
+  const p = video.deliveryDestination === "aryeo-listing" ? video.push : null;
+  return !!p && p.handledByHub && !p.waitingForKyle;
+}
+
 /** Pure message plan; readiness and exact-version eligibility come from readyToSend. */
 export function deliveryReadyMessage(video: ReadyVideo, base: string) {
   const aryeo = video.deliveryDestination === "aryeo-listing";
+  // The hub's own Aryeo upload needs Kyle (Oct 19 2026): one message per state.
+  const push = aryeo && video.push && video.push.mode !== "off" && video.push.mode !== "shadow" && (video.push.waitingForKyle || video.push.tone === "held" || video.push.tone === "failed") ? video.push : null;
+  if (push) {
+    const title = `${push.waitingForKyle ? "On Aryeo, deliver now" : push.tone === "held" ? "Held" : "Stopped"} · ${video.street}`;
+    const body = push.waitingForKyle
+      ? "The hub put this video on the Aryeo listing. Press Deliver now on Video delivery to send it to the client."
+      : `${push.says} Open Video delivery to ${push.tone === "held" ? "see what it is waiting for" : "press Retry, or upload it by hand"}.`;
+    const fingerprint = createHash("sha256").update(JSON.stringify([video.submissionId, video.uploadFingerprint, push.state, push.says])).digest("hex").slice(0, 32);
+    return {
+      dedupeKey: `delivery-ready-${fingerprint}`,
+      title,
+      body,
+      href: "/ops/video-delivery",
+      slackDm: [title, `${video.clientName} · ${video.cutLabel} · version ${video.round}`, body, `Video delivery: ${base}/ops/video-delivery`,
+        !push.waitingForKyle ? `Download: ${base}${video.file.downloadHref}` : null,
+        video.aryeoUrl ? `Aryeo listing: ${video.aryeoUrl}` : null,
+      ].filter(Boolean).join("\n"),
+    };
+  }
   const uploaded = aryeo && !!video.uploaded;
   // No linked listing: the upload can't be recorded, so the one next step is
   // linking it (Oct 5 2026) — never "upload now" toward a refusal.

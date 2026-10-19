@@ -777,18 +777,16 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
 }
 
 // ---------------------------------------------------------------------------
-// THE ARYEO HALF CANNOT BE BUILT, AND THE SCREEN HAS TO SAY SO.
+// THE ARYEO HALF, AND WHAT THE SCREEN SAYS ABOUT IT.
 //
-// Aryeo's full OpenAPI spec (95 operations) was read on Sep 16 2026. There is
-// NO endpoint that uploads or creates a video: PUT /videos/{video_id} accepts
-// exactly one property, `title`. ListingPutPayload has 16 properties, all of
-// them property metadata, none of them media. There is no delivery or
-// re-delivery endpoint anywhere in the spec. The word "upload" appears only in
-// prose describing videos people uploaded through Aryeo's own website.
-//
-// So the pipeline ends by handing Kyle everything he needs and getting out of
-// the way. This sentence goes on the task and on every screen that shows one,
-// so nobody sits waiting for an automation that cannot exist.
+// Aryeo's public API (95 operations, read Sep 16 2026) still cannot upload a
+// video or deliver a listing. Since Oct 19 2026 the hub does both anyway, the
+// way Kyle's browser does, signed in as its own Aryeo login
+// (lib/videoAryeoPush, the same road the photos took on Oct 14). Whether it
+// does so by itself is the Video delivery switch (off by default): off and
+// the practice run leave the last step to Kyle; upload stops at the listing
+// for Kyle's Deliver now; deliver does it all. This sentence goes on the task
+// and the Topaz settings, so nobody waits for a step that is switched off.
 // ---------------------------------------------------------------------------
 export const ARYEO_MANUAL_NOTE =
-  "Aryeo has no way for another program to upload a video or send a delivery — we checked every option their system offers. This last step is by hand, and it always will be.";
+  "Aryeo's API cannot upload a video or deliver a listing, so the hub does it the way Kyle's browser does, signed in as its own Aryeo login. The Video delivery switch decides whether it runs by itself; while it is off, Kyle uploads and delivers by hand.";

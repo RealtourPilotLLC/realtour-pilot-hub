@@ -354,7 +354,14 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
             <Link href={`/projects/${v.projectId}`} className="underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Link the Aryeo listing first</Link>
             <span className="font-normal text-muted"> — open the job and press Refresh from Aryeo. Then upload this version.</span>
           </p>
-          : <p className="mt-1 text-sm text-foreground/85">
+          : !usesPortal(v) && v.push
+            // THE HUB SENDS IT (Oct 19 2026): where its own Aryeo upload and
+            // delivery stands, instead of "upload it by hand".
+            ? <p className={cn("mt-1 text-sm", v.push.tone === "held" || v.push.tone === "failed" ? "font-medium text-warning" : "text-foreground/85")}>
+              {v.push.says}{" "}
+              <Link href="/ops/video-delivery" className="underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Video delivery</Link>
+            </p>
+            : <p className="mt-1 text-sm text-foreground/85">
           {usesPortal(v)
             ? "Destination: the client's portal, with a backup in the Final Dropbox folder."
             : `Upload this version to Aryeo and deliver the listing. The hub sees the upload and the delivery from Aryeo by itself; if it can't, press Mark as delivered.${v.monthlyProgram ? " Its final Dropbox backup is retained." : ""}`}

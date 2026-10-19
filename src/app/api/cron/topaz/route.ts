@@ -41,12 +41,22 @@ export async function GET(req: NextRequest) {
     const { driveTopazJobs } = await import("@/lib/topazJobs");
     // Four jobs a tick, each one step. An upload step can hold the whole budget
     // for one big file, which is fine: the other three come back next tick.
+    // About 80 s are kept back for the listing videos below.
     return driveTopazJobs({
       max: 4,
-      budgetMs: Math.max(30_000, remaining() - 20_000),
+      budgetMs: Math.max(30_000, remaining() - 80_000),
       leaseBy: `topaz-cron-${new Date(startedAt).toISOString()}`,
     });
   });
+
+  // LISTING VIDEOS INTO ARYEO (Oct 19 2026, lib/videoAryeoPush): right after
+  // the 1080p step, so a file filed this tick starts going up this tick. The
+  // Video delivery switch decides (off: nothing; shadow: one line per video,
+  // nothing called). Resumable: a big file goes up across several ticks.
+  await step("aryeo-video", async () => {
+    const { driveVideoPushes } = await import("@/lib/videoAryeoPush");
+    return driveVideoPushes({ budgetMs: Math.max(20_000, Math.min(65_000, remaining() - 15_000)) });
+  }, { maxMs: 80_000 });
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

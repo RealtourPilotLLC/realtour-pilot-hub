@@ -41,8 +41,13 @@ export const LISTING_CHECK_ACTOR = "Aryeo listing check";
  * video went up on the listing (its Aryeo id), never claims exact bytes
  * (finalContentHash null), and is never written for a version a person has
  * already corrected or undone: their word stands over the machine's.
+ *
+ * `detected.by: "hub-aryeo-push"` (Oct 19 2026, lib/videoAryeoPush): the hub
+ * put this exact 1080p file on the listing itself and Aryeo's public API shows
+ * it there. That is a fact, not an inference, so an earlier correction does not
+ * stop it (the correction was about a different upload).
  */
-export async function recordUploaded(id: string, actor: { id: string | null; name: string }, expectedFingerprint: string, detected?: { uploadedAt: Date; mediaIds: string[] }): Promise<{ ok: boolean; message: string }> {
+export async function recordUploaded(id: string, actor: { id: string | null; name: string }, expectedFingerprint: string, detected?: { uploadedAt: Date; mediaIds: string[]; by?: "aryeo-listing-check" | "hub-aryeo-push" }): Promise<{ ok: boolean; message: string }> {
   // Recording what staff uploaded is entirely local. Provider reads must never
   // delay this save; an authenticated subsequent delivery event settles it.
   return prisma.$transaction(async (tx) => {
@@ -61,9 +66,10 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
     if (fingerprint !== expectedFingerprint) return { ok: false, message: "The finished file or destination changed. Reload and upload the current version before acknowledging it." };
     const previous = (await uploadsFor([id], tx)).get(id);
     if (previous?.sourceFingerprint === fingerprint && previous.listingId === cut.project.aryeoListingId) return { ok: true, message: `Already recorded as uploaded by ${previous.actor}.` };
+    const hubPush = detected?.by === "hub-aryeo-push";
     if (detected) {
-      if (previous) return { ok: false, message: "An upload record already exists for this video." };
-      if (await tx.auditLog.findFirst({ where: { target: id, action: "video_upload_corrected" }, select: { id: true } })) return { ok: false, message: "A person corrected this video's upload record, so the listing check leaves it to them." };
+      if (previous && !hubPush) return { ok: false, message: "An upload record already exists for this video." };
+      if (!hubPush && await tx.auditLog.findFirst({ where: { target: id, action: "video_upload_corrected" }, select: { id: true } })) return { ok: false, message: "A person corrected this video's upload record, so the listing check leaves it to them." };
       if (!Number.isFinite(detected.uploadedAt.getTime()) || detected.uploadedAt.getTime() > Date.now() + 5 * 60_000) return { ok: false, message: "The listing video's time is not believable." };
     }
     const receipt: UploadReceipt & { detectedBy?: string; mediaIds?: string[] } = { id: `video-upload:${crypto.randomUUID()}`, submissionId: id, projectId: cut.projectId,
@@ -71,9 +77,9 @@ export async function recordUploaded(id: string, actor: { id: string | null; nam
       sourceFingerprint: fingerprint, source: { assetPath: cut.assetPath, finalPath: cut.finalPath, blobUrl: cut.blobUrl, contentHash: cut.contentHash, sourceRev: cut.sourceRev, topaz: cut.topazJob },
       finalContentHash: detected || cut.topazJob?.state === "done" ? null : cut.contentHash,
       actorId: actor.id, actor: actor.name.slice(0, 120), uploadedAt: (detected?.uploadedAt ?? new Date()).toISOString(),
-      ...(detected ? { detectedBy: "aryeo-listing-check", mediaIds: detected.mediaIds.slice(0, 20) } : {}) };
+      ...(detected ? { detectedBy: detected.by ?? "aryeo-listing-check", mediaIds: detected.mediaIds.slice(0, 20) } : {}) };
     await tx.auditLog.create({ data: { id: receipt.id, target: id, actor: receipt.actor, action: "video_uploaded", detail: JSON.stringify(receipt) } });
-    return { ok: true, message: detected ? "Upload recorded from the Aryeo listing." : "Uploaded version recorded. Delivery remains outstanding; no provider action or client message was sent." };
+    return { ok: true, message: hubPush ? "Upload recorded: the hub put this file on the Aryeo listing." : detected ? "Upload recorded from the Aryeo listing." : "Uploaded version recorded. Delivery remains outstanding; no provider action or client message was sent." };
   }, { isolationLevel: "Serializable" });
 }
 

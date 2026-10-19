@@ -2698,6 +2698,58 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   // Kyle still has to know which of the two he is after.
   const folderUrl = dropboxWebUrl(folder);
 
+  // THE HUB MAY SEND IT ITSELF (Oct 19 2026, lib/videoAryeoPush). With the
+  // Video delivery switch on, this card says what the hub is doing and what
+  // is left for Kyle; it still closes when the video is delivered.
+  const pushMode = await import("@/lib/videoDeliverySettings").then((m) => m.videoDeliverySettings()).then((x) => x.aryeoPush).catch(() => "off" as const);
+  const screen = `${appBase()}/ops/video-delivery`;
+  if (pushMode === "upload" || pushMode === "deliver") {
+    const auto = pushMode === "deliver";
+    const autoLines = [
+      auto
+        ? `The hub is uploading the 1080p version of ${street} to the Aryeo listing and re-delivering it by itself. Nothing to do unless Video delivery shows it held or stopped.`
+        : `The hub is putting the 1080p version of ${street} on the Aryeo listing. When it is there, press Deliver now on Video delivery.`,
+      ``,
+      `Video delivery: ${screen}`,
+      ``,
+      `If it stops, the file is here: ${downloadUrl}`,
+      `It's also in this job's Final Video folder: ${folderUrl}`,
+      aryeo ? `Aryeo: ${aryeo}` : `This job has no Aryeo listing linked yet, so the hub waits until it is linked.`,
+      ``,
+      ARYEO_MANUAL_NOTE,
+    ];
+    const autoData = {
+      taskType: "internal_instruction",
+      title: (auto ? `Video going to Aryeo by itself: ${street}` : `Deliver the 1080p video in Aryeo: ${street}`).slice(0, 120),
+      summary: (auto
+        ? `The hub uploads ${fileName} to the Aryeo listing and re-delivers it. Video delivery: ${screen}`
+        : `The hub puts ${fileName} on the Aryeo listing; press Deliver now on Video delivery when it is there: ${screen}`).slice(0, 500),
+      description: autoLines.join("\n"),
+      reasonCreated: "The approved cut finished its 1080p pass",
+      source: "system",
+      sourceDetail: aryeo ?? path,
+      priority: auto ? ("LOW" as const) : ("HIGH" as const),
+      assignedKey: "kyle",
+      ownerId: kyle?.id ?? null,
+      projectId: job.projectId,
+      clientId: project.clientId,
+      propertyAddress: project.title,
+      deliverableType: "Video",
+      dedupeKey: `topaz-deliver-${job.id}`,
+    };
+    try {
+      const row = await prisma.smartTask.upsert({
+        where: { dedupeKey: autoData.dedupeKey },
+        create: autoData,
+        update: { title: autoData.title, summary: autoData.summary, description: autoData.description, sourceDetail: autoData.sourceDetail },
+        select: { id: true },
+      });
+      return row.id;
+    } catch {
+      return null;
+    }
+  }
+
   const lines = [
     `The 1080p version of ${street} is ready to upload.`,
     ``,

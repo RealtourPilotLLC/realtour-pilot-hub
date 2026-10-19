@@ -174,6 +174,10 @@ export type PortalStep = {
 export type ReadyVideo = {
   /** Portal rows only (deliveryDestination client-portal on a monthly job). */
   portalStep?: PortalStep | null;
+  /** THE HUB SENDS IT (Oct 19 2026, lib/videoAryeoPush): where the hub's own
+   *  upload and delivery to Aryeo stands, in plain words, while the Video
+   *  delivery switch is on (or a run exists). Null/absent: Kyle by hand. */
+  push?: import("@/lib/videoAryeoPush").VideoPushLine | null;
   destinationFingerprint?: string | null;
   deliveryDestination?: "client-portal" | "aryeo-listing";
   canChooseAryeo?: boolean;
@@ -1081,7 +1085,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
         state: sub.topazJob.state,
         approvedAtISO: approvedAt.toISOString(),
         waitingHours,
-        says: renderingSays(sub.topazJob.state, Boolean(sub.project.contentMonthId)),
+        says: soundHeldSays(sub.topazJob) ?? renderingSays(sub.topazJob.state, Boolean(sub.project.contentMonthId)),
         held: sub.topazJob.state === "held" ? heldLine(sub.topazJob) : null,
         monthlyProgram: Boolean(sub.project.contentMonthId),
       });
@@ -1145,6 +1149,14 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
           )
         : null,
     });
+  }
+
+  // Where the hub's own Aryeo upload and delivery stands (Oct 19 2026). A
+  // failed read leaves the row as it always was: Kyle by hand.
+  const listingRows = ready.filter((v) => v.deliveryDestination === "aryeo-listing" && !v.monthlyProgram);
+  if (listingRows.length) {
+    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId))).catch(() => null);
+    for (const v of listingRows) v.push = lines?.get(v.submissionId) ?? null;
   }
 
   // Late first, then oldest first — the order a person would work them in.
@@ -1316,6 +1328,18 @@ function listingLine(
   };
 }
 
+/** A held file whose sound was read and is wrong (topazJobs verdict "sound"):
+ *  not "couldn't be verified" but what is wrong with it. Null otherwise. */
+function soundHeldSays(j: { state: string; outputCheckJson: string | null }): string | null {
+  if (j.state !== "held") return null;
+  try {
+    const c = j.outputCheckJson ? (JSON.parse(j.outputCheckJson) as { verdict?: string }) : null;
+    return c?.verdict === "sound" ? "The 1080p file is held: its sound is wrong. Listen to it, then use it or ask the editor for a new export." : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Where the 1080p pass has got to, in Kyle's words rather than the lane's. */
 function renderingSays(state: string, monthly = false): string {
   // O02: finished, filed aside, and not trusted — the one rendering row that is
@@ -1342,6 +1366,9 @@ function heldLine(j: { id: string; heldPath: string | null; heldAt: Date | null;
         : `Last check: couldn't be read${c.where === "dropbox" ? " from Topaz or from Dropbox" : ""}.`;
     }
     else if (c?.verdict === "lost") lastCheck = "The last check read it as silent — keep the original.";
+    // Oct 19 2026: a file whose sound was READ and is wrong (no sound anywhere,
+    // or sound and picture out of step) says so, in the check's own words.
+    else if (c?.verdict === "sound") lastCheck = c.reason ? `Last check: ${c.reason}.` : "Last check: its sound is wrong.";
     else if (c?.verdict === "mismatch") lastCheck = `The last check found it ${c.reason ?? "isn't the approved video"} — keep the original.`;
   } catch { /* an unreadable record says nothing rather than something wrong */ }
   return {

@@ -4,7 +4,7 @@ import { readyToSend } from "@/lib/readyToSend";
 import { notifyInApp } from "@/lib/notify";
 import { appBase } from "@/lib/appUrl";
 import { isSyntheticClientRow } from "@/lib/testClients";
-import { deliveryReadyMessage } from "@/lib/deliveryReadyMessage";
+import { deliveryReadyMessage, hubIsSending } from "@/lib/deliveryReadyMessage";
 
 /**
  * WHO GETS THE DELIVERY ALERTS: the person who owns DELIVERY (Oct 5 2026).
@@ -78,6 +78,9 @@ export async function notifyKyleDeliveryReady() {
     // job, not Kyle's: it publishes itself (approval, the finished pass, the
     // hourly repair). He hears about it only once a publication says why not.
     if (video.portalStep?.action === "retry-publication" && !video.portalStep.failed) continue;
+    // The hub is uploading or delivering this one to Aryeo itself (Oct 19
+    // 2026): Kyle hears about it only when it needs him.
+    if (hubIsSending(video)) continue;
     const message = deliveryReadyMessage(video, appBase());
     // Existing bridge dedupes successful delivery, retries failed sends, and honors
     // the recipient's saved channel/quiet-hours preferences. No new retry loop.

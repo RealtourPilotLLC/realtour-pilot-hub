@@ -121,15 +121,21 @@ function pageFromHtml(html: string): { component?: string; version?: string; pro
 }
 
 let uploadcareKeyCache: { key: string; at: number } | null = null;
+let uploadcareVideoKeyCache: { key: string; at: number } | null = null;
 
-async function fetchLoginPage(jar: Jar): Promise<{ version: string | null; uploadcareKey: string | null }> {
+async function fetchLoginPage(jar: Jar): Promise<{ version: string | null; uploadcareKey: string | null; uploadcareVideoKey: string | null }> {
   const res = await fetch(`${APP}/login`, { headers: { "User-Agent": UA, Accept: "text/html", Cookie: cookieHeader(jar) }, redirect: "manual", signal: AbortSignal.timeout(30_000) });
   takeCookies(jar, res);
   const html = await res.text();
   const page = pageFromHtml(html);
   const key = /UPLOADCARE_PUBLIC_KEY\s*=\s*"([a-f0-9]+)"/.exec(html)?.[1] ?? null;
   if (key) uploadcareKeyCache = { key, at: Date.now() };
-  return { version: page?.version ?? null, uploadcareKey: key };
+  // Videos go to a DIFFERENT Uploadcare project (Oct 19 2026): the listing
+  // editor's Add Video window uses window.ARYEO_UPLOADCARE_VIDEO_PUBLIC_KEY.
+  // A public key (it is on Aryeo's login page), not a secret.
+  const videoKey = /UPLOADCARE_VIDEO_PUBLIC_KEY\s*=\s*"([a-f0-9]+)"/.exec(html)?.[1] ?? null;
+  if (videoKey) uploadcareVideoKeyCache = { key: videoKey, at: Date.now() };
+  return { version: page?.version ?? null, uploadcareKey: key, uploadcareVideoKey: videoKey };
 }
 
 /** Sign in fresh. Throws AryeoWebError("sign-in") with Aryeo's own words when it refuses. */
@@ -405,8 +411,12 @@ export async function deleteImages(listingId: string, imageIds: string[]): Promi
  * presses Deliver without changing anything: Aryeo's own subject and body,
  * its cc/bcc, and the listing's customers as recipients (the window lists
  * them by default; an empty list would email nobody).
+ *
+ * `redeliver` (Oct 19 2026, videos): the listing was already delivered (the
+ * photos go first, so every listing video is a Re-deliver), and the browser's
+ * Re-deliver sends fulfill_orders true whatever the company default says.
  */
-export async function deliverListing(listingId: string, opts: { fulfillOrders: boolean; timezone: string | null }): Promise<{ recipients: string[] }> {
+export async function deliverListing(listingId: string, opts: { fulfillOrders: boolean; timezone: string | null; redeliver?: boolean }): Promise<{ recipients: string[] }> {
   const page = await listingPage(listingId);
   const email = await deliveryEmail(listingId, page.component);
   const result = await inertia("POST", `${aryeoAdminOrigin()}/admin/listings/${encodeURIComponent(listingId)}/deliver`, {
@@ -416,7 +426,7 @@ export async function deliverListing(listingId: string, opts: { fulfillOrders: b
     email_body: email.body,
     email_cc_list: email.cc,
     email_subject: email.subject,
-    fulfill_orders: opts.fulfillOrders,
+    fulfill_orders: opts.redeliver ? true : opts.fulfillOrders,
     notify_via_email: true,
     schedule_date: null,
     schedule_time: null,
@@ -425,4 +435,168 @@ export async function deliverListing(listingId: string, opts: { fulfillOrders: b
   const no = refusedBy(result);
   if (no) throw new AryeoWebError(`Aryeo would not deliver the listing: ${no}`, "refused");
   return { recipients: page.recipients.map((r) => r.name) };
+}
+
+// ---- videos (Oct 19 2026) --------------------------------------------------------------------
+//
+// Jordan: "We should be able to send the videos just like we send the photos
+// to Aryeo." Read from the listing editor's Add Video window (Oct 19):
+//   · its uploader is Uploadcare under a SECOND public key
+//     (ARYEO_UPLOADCARE_VIDEO_PUBLIC_KEY), uploading through upload.aryeo.com
+//     (Uploadcare's upload API under Aryeo's name) and naming each file by its
+//     CDN address on aryeo.ucarecd.net; a file of 25 MB or more goes up in
+//     5 MB parts (Uploadcare's multipart upload), which is how the browser
+//     sends a 113 MB listing video;
+//   · "Add" posts admin/listing/{id}/videos with
+//       { video_title: null, display_type: "both", video_url: null,
+//         videos: [{ url: <the CDN address>, video_title, display_type: "both" }] };
+//   · the listing page lists its videos (props.videos.data: uuid, title,
+//     duration, created_at), and a video is removed with DELETE
+//     admin/videos/{uuid}.
+// Aryeo converts the file in the background; the public API is what the hub
+// believes (it lists the video once Aryeo has it, with its length).
+// A file the hub hands over is never a guess at a link: Uploadcare either
+// fetches it from a temporary Dropbox link (from_url), or the hub sends it in
+// parts. The push (lib/videoAryeoPush) picks and resumes these.
+
+const VIDEO_UPLOAD = "https://upload.aryeo.com";
+const VIDEO_CDN = "https://aryeo.ucarecd.net/";
+/** Uploadcare's own part size for a multipart upload (its default, 5 MiB). */
+export const UPLOADCARE_PART_BYTES = 5 * 1024 * 1024;
+
+async function uploadcareVideoKey(): Promise<string> {
+  if (uploadcareVideoKeyCache && Date.now() - uploadcareVideoKeyCache.at < 6 * 3_600_000) return uploadcareVideoKeyCache.key;
+  const { uploadcareVideoKey: key } = await fetchLoginPage({});
+  if (!key) throw new AryeoWebError("Aryeo's page no longer shows its video upload key. Aryeo may have changed how videos are uploaded.", "changed");
+  return key;
+}
+
+/** The address the Add Video window hands Aryeo for an uploaded file. */
+export const videoCdnUrl = (uuid: string) => `${VIDEO_CDN}${uuid}/`;
+
+/** Uploadcare's answer as JSON, or a plain-words error (4xx refused, 5xx a bad minute). */
+async function ucJson<T>(res: Response, what: string): Promise<T> {
+  const text = await res.text();
+  if (!res.ok) throw new AryeoWebError(`Aryeo's upload service refused ${what} (${res.status}: ${text.slice(0, 160)}).`, res.status >= 500 || res.status === 429 ? "transient" : "refused");
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new AryeoWebError(`Aryeo's upload service answered ${what} in a way the hub does not recognise.`, "changed");
+  }
+}
+
+/**
+ * Ask Uploadcare to fetch the file from a link (a temporary Dropbox link):
+ * no bytes pass through the hub. A token to poll, or the file at once (a
+ * duplicate Uploadcare already holds). A project that does not allow it
+ * answers 4xx ("refused"), and the push falls back to the multipart upload.
+ */
+export async function uploadcareVideoFromUrl(sourceUrl: string, filename: string): Promise<{ token: string } | { uuid: string }> {
+  const form = new FormData();
+  form.set("pub_key", await uploadcareVideoKey());
+  form.set("source_url", sourceUrl);
+  form.set("store", "auto");
+  form.set("filename", filename);
+  form.set("check_URL_duplicates", "0");
+  form.set("save_URL_duplicates", "0");
+  const res = await fetch(`${VIDEO_UPLOAD}/from_url/`, { method: "POST", body: form, headers: { "User-Agent": UA }, signal: AbortSignal.timeout(60_000) });
+  const j = await ucJson<{ type?: string; token?: string; uuid?: string; file_id?: string }>(res, `to fetch ${filename}`);
+  if (j.type === "token" && j.token) return { token: j.token };
+  const uuid = j.uuid ?? j.file_id;
+  if (uuid) return { uuid };
+  throw new AryeoWebError("Aryeo's upload service gave no token for the video.", "changed");
+}
+
+export type FromUrlStatus = { status: "waiting" | "progress" | "success" | "error" | "unknown"; uuid: string | null; error: string | null; done: number | null; total: number | null };
+
+/** Where Uploadcare's fetch has got to. */
+export async function uploadcareFromUrlStatus(token: string): Promise<FromUrlStatus> {
+  const res = await fetch(`${VIDEO_UPLOAD}/from_url/status/?token=${encodeURIComponent(token)}`, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(30_000) });
+  const j = await ucJson<{ status?: string; uuid?: string; file_id?: string; error?: string; done?: number; total?: number }>(res, "the fetch's status");
+  const status = (["waiting", "progress", "success", "error"].includes(String(j.status)) ? j.status : "unknown") as FromUrlStatus["status"];
+  return { status, uuid: j.uuid ?? j.file_id ?? null, error: j.error ?? null, done: typeof j.done === "number" ? j.done : null, total: typeof j.total === "number" ? j.total : null };
+}
+
+/** Start a multipart upload: the file's id and one signed address per 5 MiB part. */
+export async function uploadcareMultipartStart(o: { filename: string; size: number; contentType: string }): Promise<{ uuid: string; parts: string[] }> {
+  const form = new FormData();
+  form.set("UPLOADCARE_PUB_KEY", await uploadcareVideoKey());
+  form.set("UPLOADCARE_STORE", "auto");
+  form.set("filename", o.filename);
+  form.set("size", String(o.size));
+  form.set("content_type", o.contentType);
+  const res = await fetch(`${VIDEO_UPLOAD}/multipart/start/`, { method: "POST", body: form, headers: { "User-Agent": UA }, signal: AbortSignal.timeout(60_000) });
+  const j = await ucJson<{ uuid?: string; parts?: unknown[] }>(res, `to start ${o.filename}`);
+  const parts = Array.isArray(j.parts) ? j.parts.filter((p): p is string => typeof p === "string" && /^https:\/\//.test(p)) : [];
+  if (!j.uuid || !parts.length) throw new AryeoWebError("Aryeo's upload service did not hand out the upload's parts.", "changed");
+  return { uuid: j.uuid, parts };
+}
+
+/** One part, to the signed address Uploadcare handed out. */
+export async function uploadcarePutPart(url: string, bytes: Uint8Array): Promise<void> {
+  const res = await fetch(url, { method: "PUT", body: bytes as unknown as BodyInit, headers: { "Content-Type": "application/octet-stream" }, signal: AbortSignal.timeout(120_000) });
+  if (res.ok) return;
+  const text = await res.text().catch(() => "");
+  // 403 on a signed address = it expired: the upload starts again from the first part.
+  throw new AryeoWebError(`Aryeo's upload service refused a part of the video (${res.status}${text ? `: ${text.slice(0, 80)}` : ""}).`, res.status === 403 ? "refused" : res.status >= 500 ? "transient" : "refused");
+}
+
+/** Every part is up: Uploadcare puts the file together. */
+export async function uploadcareMultipartComplete(uuid: string): Promise<{ isReady: boolean }> {
+  const form = new FormData();
+  form.set("UPLOADCARE_PUB_KEY", await uploadcareVideoKey());
+  form.set("uuid", uuid);
+  const res = await fetch(`${VIDEO_UPLOAD}/multipart/complete/`, { method: "POST", body: form, headers: { "User-Agent": UA }, signal: AbortSignal.timeout(120_000) });
+  const j = await ucJson<{ is_ready?: boolean }>(res, "to finish the video");
+  return { isReady: j.is_ready === true };
+}
+
+/** One uploaded file, as Uploadcare sees it. */
+export async function uploadcareVideoInfo(uuid: string): Promise<{ isReady: boolean; size: number | null; mimeType: string | null }> {
+  const key = await uploadcareVideoKey();
+  const res = await fetch(`${VIDEO_UPLOAD}/info/?pub_key=${encodeURIComponent(key)}&file_id=${encodeURIComponent(uuid)}`, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(30_000) });
+  const j = await ucJson<{ is_ready?: boolean; size?: number; mime_type?: string }>(res, "the video's details");
+  return { isReady: j.is_ready === true, size: typeof j.size === "number" ? j.size : null, mimeType: typeof j.mime_type === "string" ? j.mime_type : null };
+}
+
+export type AryeoWebVideo = { uuid: string; title: string | null; durationSec: number | null; createdAt: string | null };
+
+/** The listing editor's own list of the listing's videos; null when the page carries none (Aryeo changed it). */
+export async function listingVideos(listingId: string): Promise<AryeoWebVideo[] | null> {
+  const page = await inertia("GET", editor(listingId));
+  let raw = (page.props.videos ?? deepFind(page.props, "videos")) as { data?: unknown[] } | unknown[] | undefined;
+  if (raw === undefined) {
+    // A lazy prop: the editor's own partial reload asks for it by name.
+    const again = await inertia("GET", editor(listingId), undefined, false, { referer: editor(listingId), partial: { component: page.component, data: ["videos"] } });
+    raw = again.props.videos as { data?: unknown[] } | unknown[] | undefined;
+  }
+  const list = Array.isArray(raw) ? raw : Array.isArray((raw as { data?: unknown[] } | undefined)?.data) ? (raw as { data: unknown[] }).data : null;
+  if (!list) return null;
+  return (list as Record<string, unknown>[])
+    .map((v) => ({
+      uuid: typeof v?.uuid === "string" ? v.uuid : typeof v?.id === "string" ? v.id : "",
+      title: typeof v?.title === "string" ? v.title : null,
+      durationSec: typeof v?.duration === "number" && Number.isFinite(v.duration) ? v.duration : null,
+      createdAt: typeof v?.created_at === "string" ? v.created_at : null,
+    }))
+    .filter((v) => !!v.uuid);
+}
+
+/** Put one uploaded video file on the listing (the Add Video window's own call). Never retried by this function. */
+export async function addListingVideo(listingId: string, o: { cdnUrl: string; title: string }): Promise<void> {
+  const page = await inertia("POST", `${aryeoAdminOrigin()}/admin/listing/${encodeURIComponent(listingId)}/videos`, {
+    video_title: null,
+    display_type: "both",
+    video_url: null,
+    videos: [{ url: o.cdnUrl, video_title: o.title, display_type: "both" }],
+  }, false, { referer: editor(listingId) });
+  const no = refusedBy(page);
+  if (no) throw new AryeoWebError(`Aryeo would not add the video: ${no}`, "refused");
+}
+
+/** Remove one video from the listing (the editor's own delete). The push only ever removes a video it put there itself. */
+export async function deleteListingVideo(listingId: string, videoUuid: string): Promise<void> {
+  const page = await inertia("DELETE", `${aryeoAdminOrigin()}/admin/videos/${encodeURIComponent(videoUuid)}`, undefined, false, { referer: editor(listingId) });
+  const no = refusedBy(page);
+  if (no) throw new AryeoWebError(`Aryeo would not remove the earlier video: ${no}`, "refused");
 }
