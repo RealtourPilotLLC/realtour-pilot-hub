@@ -202,7 +202,9 @@ async function main() {
     await prisma.auditLog.createMany({ data: [1, 2, 3].map(() => ({ actor: "james@oct19.invalid", action: aging.PUSH_ACTION, target: jm1.id, detail: "{}" })) });
     // The brain's shoot notes.
     const brain = (title: string, projectId: string, over: Record<string, unknown> = {}) => task({ source: "openphone", reasonCreated: "Inbound message from client (OpenPhone)", ownerId: kyleTm.id, projectId, clientId: real.id, title, summary: "Client wrote in.", ...over });
-    const n1 = await brain("Note basement to be photographed at 1 Elm St shoot", pShot.id, { dueAt: ago(4 * D) });
+    const n1 = await brain("Note basement to be photographed at 1 Elm St shoot", pShot.id, { dueAt: ago(4 * D), createdAt: ago(20 * D) });
+    // Oct 19 audit: a note written AFTER its shoot is a real ask and stays open.
+    const nAfter = await brain("Note client wants the trash cans removed at 1 Elm St", pShot.id, { dueAt: ago(1 * D) });
     const n2 = await brain("Investigate why Order 1671 payment was not applied", pShot.id, { dueAt: ago(8 * D) });
     const n3 = await brain("Log song request for 2 Pine Rd video", pEdit.id, { source: "gmail", reasonCreated: "Inbound message from client (Gmail)" });
     const n4 = await brain("Note gate code for 1 Elm St shoot", pShot.id, { assignedKey: "kyle", flaggedAt: ago(H), flaggedBy: "Jordan Spackman", dueAt: ahead(D) });
@@ -418,6 +420,7 @@ async function main() {
     // =====================================================================
     const dry = await aging.expireShootNotes(new Date(), { apply: false });
     c.ok("the dry run finds exactly the shoot note whose shoot happened", dry.candidates.map((x) => x.id).join() === n1.id && dry.closed === 0, dry.candidates.map((x) => x.title).join(" | "));
+    c.ok("a note written after the shoot is not a candidate", !dry.candidates.some((x) => x.id === nAfter.id));
     c.ok("…and wrote nothing", (await prisma.smartTask.findUniqueOrThrow({ where: { id: n1.id } })).status === "OPEN");
     const applied = await aging.expireShootNotes(new Date(), { apply: true, actor: "drill" });
     const closed = await prisma.smartTask.findUniqueOrThrow({ where: { id: n1.id } });

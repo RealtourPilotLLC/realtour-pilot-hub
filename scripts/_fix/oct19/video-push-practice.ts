@@ -7,10 +7,12 @@
 // ---------------------------------------------------------------------------
 export {};
 const APPLY = process.argv.includes("--apply");
+// Oct 19 evening: Jordan chose a button (no automatic mode), so --off sets it back to off.
+const MODE = process.argv.includes("--off") ? "off" : "shadow";
 async function main() {
   const { videoDeliverySettings, saveVideoDeliverySettings } = await import("@/lib/videoDeliverySettings");
   console.log("now:", JSON.stringify(await videoDeliverySettings()));
-  if (APPLY) console.log("saved:", JSON.stringify(await saveVideoDeliverySettings({ aryeoPush: "shadow" }, "Claude for Jordan (Oct 19 rollout, step 1)")));
+  if (APPLY) console.log("saved:", JSON.stringify(await saveVideoDeliverySettings({ aryeoPush: MODE }, MODE === "off" ? "Claude for Jordan (Oct 19: button only, no automatic mode)" : "Claude for Jordan (Oct 19 rollout, step 1)")));
   const { prisma } = await import("@/lib/prisma");
   await prisma.$disconnect();
 }

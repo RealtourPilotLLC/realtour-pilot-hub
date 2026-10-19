@@ -1482,7 +1482,7 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   // video publishes on its own and is not held here.
   if (!(program && toPortal)) {
     const holding = await import("@/lib/clientAsks").then((m) => m.openAsksHolding(submission.projectId, "video")).catch(() => []);
-    if (holding.length) return { ok: true, message: `Approved. Delivery waits until Kyle confirms ${holding.length} client ask${holding.length === 1 ? "" : "s"}.` };
+    if (holding.length) return { ok: true, message: `Approved. Before it's sent, check the client's ${holding.length === 1 ? "request" : `${holding.length} requests`} on this job.` };
   }
   return { ok: true, message: nextWords.message };
 }

@@ -33,7 +33,7 @@ export function OpenClientAsksCard({ asks, deliverWhat }: { asks: AskView[]; del
       </p>
       <p className="mt-0.5 text-xs text-muted">
         {holding
-          ? `Delivery of ${thing} waits until Kyle confirms ${holding === 1 ? "the ask that holds it" : `the ${holding} asks that hold it`}. Approving is not blocked.`
+          ? `Check ${holding === 1 ? "this request" : `these ${holding} requests`} on ${thing} before it's sent. Approving is not blocked.`
           : "What the client asked us to get right. Check the work against these."}
       </p>
       <ul className="mt-2 divide-y divide-warning/20">

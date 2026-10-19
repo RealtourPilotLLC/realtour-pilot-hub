@@ -52,7 +52,7 @@ async function main() {
     const h = html(createElement(OpenClientAsksCard, { asks: [lots, video, addon], deliverWhat: "video" }));
     const t = text(h);
     c.ok("titled 'Open client asks on this job' with the count", /Open client asks on this job · 3/.test(t), t.slice(0, 120));
-    c.ok("the delivery line: the video waits for Kyle, approving is not blocked", t.includes("Delivery of the video waits until Kyle confirms the ask that holds it. Approving is not blocked."), t.slice(0, 260));
+    c.ok("the delivery line: check before it's sent, approving is not blocked", t.includes("Check this request on the video before it&#x27;s sent. Approving is not blocked.") || t.includes("Check this request on the video before it's sent. Approving is not blocked."), t.slice(0, 260));
     c.ok("each ask's one line, who, how and when", t.includes("Overlay all 4 lots with their numbers, like the Pennfield output") && t.includes("Heather Barritt · Text · Thu, Oct 15, 2:21 PM"));
     c.ok("what each holds, in words", t.includes("Holds the photos") && t.includes("Holds the video") && t.includes("To check"));
     c.ok("the client's own words, folded under the line", /<details[^>]*>\s*<summary[^>]*>The client’s words<\/summary>\s*<p[^>]*>Just like the pennfield output\. It needs to have all 4 lots overlayed<\/p>/.test(h.replace(/&rsquo;/g, "’")));
@@ -64,7 +64,7 @@ async function main() {
     c.ok("no checklist, no tick boxes", !/type="checkbox"/.test(h));
     c.ok("no em dash", !DASH.test(h));
     const two = text(html(createElement(OpenClientAsksCard, { asks: [lots, ask({ id: "a4", medium: "both" }), ask({ id: "a5", medium: "unclear" })], deliverWhat: "photo" })));
-    c.ok("the photo page: 'the 3 asks that hold it'", two.includes("Delivery of the photos waits until Kyle confirms the 3 asks that hold it."), two.slice(0, 200));
+    c.ok("the photo page: 'these 3 requests'", two.includes("Check these 3 requests on the photos before it") , two.slice(0, 200));
     const none = text(html(createElement(OpenClientAsksCard, { asks: [addon], deliverWhat: "video" })));
     c.ok("nothing holding: what the client asked us to get right", none.includes("What the client asked us to get right. Check the work against these."));
     c.ok("no asks: no card at all", html(createElement(OpenClientAsksCard, { asks: [], deliverWhat: "video" })) === "");

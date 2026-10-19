@@ -4172,8 +4172,19 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     //     neither.
     const card = await prisma.smartTask.findUnique({
       where: { dedupeKey: `edit-video-${projectId}` },
-      select: { status: true, blockedReason: true, followUpAt: true },
+      select: { id: true, status: true, blockedReason: true, followUpAt: true },
     });
+    // A PERSON'S NEW DATE STANDS (Oct 19 2026 audit): "New date" on Kyle's
+    // old items moves followUpAt, and this hourly sweep used to null it or
+    // re-stamp it within the hour, so the item came straight back. A future
+    // date that a person's push wrote is left alone; the sweep still keeps the
+    // blocked reason right.
+    let personDate = false;
+    if (card?.followUpAt && card.followUpAt.getTime() > Date.now()) {
+      const { PUSH_ACTION } = await import("@/lib/taskAging");
+      const last = await prisma.auditLog.findFirst({ where: { action: PUSH_ACTION, target: card.id }, orderBy: { createdAt: "desc" }, select: { detail: true } }).catch(() => null);
+      try { personDate = !!last && (JSON.parse(last.detail ?? "{}") as { to?: string }).to === card.followUpAt.toISOString(); } catch { personDate = false; }
+    }
     const chaseAlreadySet = !!card?.followUpAt && card.blockedReason === r.blockedReason;
     // A CLOSED CARD IS ALREADY RIGHT, whatever it is wearing: the write below
     // excludes COMPLETED and CANCELLED, so comparing a closed row's fields only
@@ -4188,15 +4199,15 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     // updatedAt, and updatedAt is the only thing some of these rows have left
     // to say when they were last genuinely touched.
     const alreadyRight =
-      !card || terminal || (r.ready ? !card.blockedReason && !card.followUpAt : chaseAlreadySet);
+      !card || terminal || (r.ready ? !card.blockedReason && (!card.followUpAt || personDate) : chaseAlreadySet);
     if (!alreadyRight) {
       await prisma.smartTask.updateMany({
         where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
         data: r.ready
-          ? { blockedReason: null, followUpAt: null }
+          ? { blockedReason: null, ...(personDate ? {} : { followUpAt: null }) }
           : {
               blockedReason: r.blockedReason,
-              followUpAt: endOfBusinessDaysET(new Date(), 1, 9),
+              ...(personDate ? {} : { followUpAt: endOfBusinessDaysET(new Date(), 1, 9) }),
             },
       });
     }

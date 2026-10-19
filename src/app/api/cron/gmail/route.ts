@@ -153,15 +153,11 @@ export async function GET(req: NextRequest) {
     const { kyleMorningDigest } = await import("@/lib/notify");
     return kyleMorningDigest();
   });
-  // OLD ITEMS (Oct 19 2026, lib/taskAging): once a day, 8 to 10 AM ET, one bell
-  // and one Slack DM per person with open tasks 3+ days past their date (Kyle's
-  // lines ride the morning digest above instead of a second DM), and Jordan's
-  // list of what is over a week old. Claimed per person per day; idle outside
-  // the window.
-  await step("oldItems", async () => {
-    const { oldItemsMorning } = await import("@/lib/taskAging");
-    return oldItemsMorning();
-  }, { maxMs: 20_000 });
+  // OLD ITEMS (Oct 19 2026): the separate morning bell + DM per person was
+  // switched off the same evening (Jordan: "I just want it simplified"). Kyle's
+  // Home checklist carries "from earlier days, still open", and his morning
+  // message already lists what is overdue. taskAging.oldItemsMorning is kept,
+  // uncalled.
   // Sep 16 (Kyle's call): the 4 o'clock check now leads with the Slack asks —
   // each line carrying the client, the property and its own deep link — and
   // lands on /tasks?tab=slack instead of /today, which redirected to a Comms

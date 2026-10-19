@@ -106,7 +106,10 @@ async function main() {
     c.ok("a delivered job whose card is still open, 3 days: read", why(v({ ageMs: 3 * DAY, jobStatus: "DELIVERED" })) === "read");
     c.ok("a delivered job whose card a person closed, 2 days: not read", why(v({ ageMs: 2 * DAY, jobStatus: "DELIVERED", taskStatus: "COMPLETED" })) === "finished job");
     c.ok("a delivered job, card open but 8 days old: not read", why(v({ ageMs: 8 * DAY, jobStatus: "DELIVERED" })) === "finished job");
-    c.ok("a job still in editing, card closed, a month old: read (the job is open)", why(v({ ageMs: 30 * DAY, jobStatus: "EDITING", taskStatus: "COMPLETED" })) === "read");
+    // Oct 19 audit: a card a person closed is finished work, whatever the job's status.
+    c.ok("a job still in editing, card closed, a month old: not read (the card is closed)", why(v({ ageMs: 30 * DAY, jobStatus: "EDITING", taskStatus: "COMPLETED" })) === "finished job");
+    c.ok("a job in revision with its card closed (671 Northbrook): not read", why(v({ ageMs: 2 * DAY, jobStatus: "REVISION", taskStatus: "COMPLETED" })) === "finished job");
+    c.ok("a test client's brief: never read", why(v({ ageMs: DAY, jobStatus: "EDITING", testClient: true })) === "test client");
     c.ok("an office row, a refusal, three tries, an analysed row: never", why(v({ ageMs: DAY, source: "office" })) === "office" && why(v({ ageMs: DAY, analysisError: "Not re-read: x" })) === "refused" && why(v({ ageMs: DAY, analysisError: "Try 3 of 3 failed: x" })) === "gave up" && why(v({ ageMs: DAY, analyzedAt: now })) === "already read");
 
     // ======================================================================
@@ -143,16 +146,16 @@ async function main() {
     c.ok("its card data: not analysed, no items, the words whole", await rb.getRevisionBriefs(B.projectId, true).then((bs) => bs.some((x) => x.id === b1.id && !x.analyzed && x.items.length === 0 && x.originalText.includes("old one"))));
     const at = (ms: number) => new Date(b1.createdAt.getTime() + ms);
     let callsS = briefCalls;
-    const s0 = await sw.sweepUnanalyzedBriefs({ now: at(5 * MIN) });
+    const s0 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true, now: at(5 * MIN) });
     c.ok("five minutes on, the sweep leaves it alone", briefCalls === callsS && !s0.failedIds.includes(b1.id) && !s0.readIds.includes(b1.id));
-    const s1 = await sw.sweepUnanalyzedBriefs({ now: at(11 * MIN) });
+    const s1 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true, now: at(11 * MIN) });
     const b2 = await prisma.revisionBrief.findUniqueOrThrow({ where: { id: b1.id } });
     c.ok("eleven minutes on it tries again and counts it: Try 2 of 3", s1.failedIds.includes(b1.id) && b2.analysisError?.startsWith("Try 2 of 3 failed: ") === true && /model is down/.test(b2.analysisError), b2.analysisError ?? "");
-    await sw.sweepUnanalyzedBriefs({ now: at(26 * MIN) });
+    await sw.sweepUnanalyzedBriefs({ includeTestClients: true, now: at(26 * MIN) });
     const b3 = await prisma.revisionBrief.findUniqueOrThrow({ where: { id: b1.id } });
     c.ok("the third try: Try 3 of 3", b3.analysisError?.startsWith("Try 3 of 3 failed: ") === true, b3.analysisError ?? "");
     callsS = briefCalls;
-    const s3 = await sw.sweepUnanalyzedBriefs({ now: at(41 * MIN) });
+    const s3 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true, now: at(41 * MIN) });
     c.ok("then it gives up: no fourth model call, counted", briefCalls === callsS && s3.gaveUp >= 1 && !s3.failedIds.includes(b1.id), JSON.stringify(s3));
 
     // A second ask whose first reading failed, and the model comes back.
@@ -162,7 +165,7 @@ async function main() {
     c.ok("(a second failed first reading)", !c1.analyzedAt && !!c1.analysisError);
     mode = "ok";
     nextItems = [item({ area: "On-screen text", ask: "Fix the spelling of Okehocking", quote: "You spelled Okehocking wrong" }), item({ area: "Cuts & content", ask: "Add the hook back at the start", quote: "the hook is missing" })];
-    const s4 = await sw.sweepUnanalyzedBriefs({ now: new Date(c1.createdAt.getTime() + 12 * MIN) });
+    const s4 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true, now: new Date(c1.createdAt.getTime() + 12 * MIN) });
     const c2 = await prisma.revisionBrief.findUniqueOrThrow({ where: { id: c1.id } });
     c.ok("the model is back: read, error cleared, two items", s4.readIds.includes(c1.id) && !!c2.analyzedAt && c2.analysisError === null && JSON.parse(c2.itemsJson!).items.length === 2, JSON.stringify(s4));
     const cIssues = await prisma.revisionIssue.findMany({ where: { sourceId: { startsWith: `${c1.id}:` } }, orderBy: { createdAt: "asc" } });
@@ -174,20 +177,20 @@ async function main() {
     const dTask = await prisma.smartTask.create({ data: { taskType: "revision", title: "Video revision — D", status: "OPEN", projectId: D.projectId, dedupeKey: `drill-rev-${D.projectId}` } });
     const dead = await prisma.revisionBrief.create({ data: { projectId: D.projectId, taskId: dTask.id, source: "openphone", originalText: "Can you make the intro shorter", createdAt: new Date(Date.now() - 30 * MIN) } });
     nextItems = [item({ area: "Pacing & movement", ask: "Shorten the intro", quote: "Can you make the intro shorter" })];
-    const s5 = await sw.sweepUnanalyzedBriefs({});
+    const s5 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true });
     c.ok("a brief whose reading died with its request (no error at all) is read", s5.readIds.includes(dead.id) && !!(await prisma.revisionBrief.findUniqueOrThrow({ where: { id: dead.id } })).analyzedAt, JSON.stringify(s5));
     const F = await job("Finn Finished TEST");
     const fTask = await prisma.smartTask.create({ data: { taskType: "revision", title: "Video revision — F", status: "COMPLETED", projectId: F.projectId, dedupeKey: `drill-rev-${F.projectId}` } });
     const old = await prisma.revisionBrief.create({ data: { projectId: F.projectId, taskId: fTask.id, source: "openphone", originalText: "He doesn't want it published the way it is", createdAt: new Date(Date.now() - 2 * DAY) } });
     const callsF = briefCalls;
-    const s6 = await sw.sweepUnanalyzedBriefs({});
+    const s6 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true });
     c.ok("a finished job whose card a person closed: never read, no model call, counted", briefCalls === callsF && !s6.readIds.includes(old.id) && s6.finishedJob >= 1 && !(await prisma.revisionBrief.findUniqueOrThrow({ where: { id: old.id } })).analyzedAt);
     c.ok("…and no creative review or issue made for it", (await prisma.smartTask.count({ where: { projectId: F.projectId, taskType: "creative_review" } })) === 0 && (await prisma.revisionIssue.count({ where: { projectId: F.projectId } })) === 0);
     const cap = await prisma.revisionBrief.create({ data: { projectId: D.projectId, taskId: dTask.id, source: "openphone", originalText: "Also brighten the kitchen", createdAt: new Date(Date.now() - 20 * MIN) } });
     const cap2 = await prisma.revisionBrief.create({ data: { projectId: D.projectId, taskId: dTask.id, source: "openphone", originalText: "And the music lower", createdAt: new Date(Date.now() - 25 * MIN) } });
-    const s7 = await sw.sweepUnanalyzedBriefs({ max: 1 });
+    const s7 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true, max: 1 });
     c.ok("a run reads at most its share; the rest wait for the next run", s7.read === 1 && s7.leftForNextRun >= 1 && [cap.id, cap2.id].some((id) => s7.readIds.includes(id)), JSON.stringify(s7));
-    const s8 = await sw.sweepUnanalyzedBriefs({ budgetMs: 10_000, minStartMs: 75_000 });
+    const s8 = await sw.sweepUnanalyzedBriefs({ includeTestClients: true, budgetMs: 10_000, minStartMs: 75_000 });
     c.ok("with too little time left, nothing starts", s8.read === 0 && s8.failed === 0 && s8.leftForNextRun >= 1, JSON.stringify(s8));
     const route = read("src/app/api/cron/topics/route.ts");
     c.ok("the topics cron runs it second, after the AI queue, with a start floor", route.indexOf('step("aiQueue"') > 0 && route.indexOf('step("revisionBriefs"') > route.indexOf('step("aiQueue"') && route.indexOf('step("revisionBriefs"') < route.indexOf("const run: Record<AiWorkStep") && /minStartMs: BRIEF_SWEEP_MIN_START_MS/.test(route));

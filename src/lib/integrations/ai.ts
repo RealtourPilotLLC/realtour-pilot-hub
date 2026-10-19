@@ -513,6 +513,23 @@ export function parseBrainAsks(raw: unknown, orderIds: Set<string>): BrainAsk[] 
   return out;
 }
 
+/**
+ * The router's answer as an object. The `asks` field comes LAST and is the
+ * long one, so an answer cut off by the token limit loses only its asks: the
+ * routing in front of it is kept (audit, Oct 19 2026: a long email could
+ * otherwise lose the whole decision). Exported for the drill.
+ */
+export function parseRouterJson(raw: string): Partial<BrainDecision> | null {
+  const whole = raw.match(/\{[\s\S]*\}/);
+  if (whole) {
+    try { return JSON.parse(whole[0]) as Partial<BrainDecision>; } catch { /* fall through to the salvage */ }
+  }
+  const start = raw.indexOf("{");
+  const cut = start >= 0 ? raw.slice(start).search(/,\s*"asks"\s*:/) : -1;
+  if (cut < 0) return null;
+  try { return { ...(JSON.parse(`${raw.slice(start, start + cut)}}`) as Partial<BrainDecision>), asks: [] }; } catch { return null; }
+}
+
 export async function decideCommTask(ctx: BrainContext, key?: string): Promise<BrainDecision | null> {
   const apiKey = key ?? (await getSecret("ai"));
   if (!apiKey) return null;
@@ -567,14 +584,13 @@ Rules:
 - asks: every specific thing IN THIS MESSAGE that the client wants us to make sure of, or to arrange. [] when there is none. Only two kinds:
   SPECIAL_REQUEST: a concrete instruction about what the photos or video must include or how they must look, for work we have NOT delivered yet (for example "all 4 lots overlaid like the Pennfield output", "add the lot numbers", "no blackened surroundings", "use this song", "get a shot of the pond"). NOT a door, gate or lockbox code or how to get in; NOT a general question, a thank-you or a status check; NOT who does the shoot or what time it starts (that is SCHEDULING or nothing); NOT a change to work we already delivered (that is isRevisionRequest).
   SCHEDULING: the client wants a shoot or session booked, moved, rescheduled, postponed or cancelled, or a different time ("we have to cancel tomorrow's appointment", "can we push it to Thursday"). NOT a calendar invitation reply or other automatic notice.
-  text = the client's exact words for that ask; summary = what must be checked or done, plain, max 14 words, no client name, no dashes; medium = which deliverable it is about; projectHint = the order id it is about (one listed above) or null when unclear. If one ask applies to several orders, list it once per order. Our team's replies never answer an ask away: list it even if we already said we would do it.
+  text = the client's exact words for that ask (at most 30 words; cut longer ones); summary = what must be checked or done, plain, max 14 words, no client name, no dashes; medium = which deliverable it is about; projectHint = the order id it is about (one listed above) or null when unclear. If one ask applies to several orders, list it once per order. Our team's replies never answer an ask away: list it even if we already said we would do it.
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
 
   try {
-    const raw = await anthropic({ model: SMART, system, user, maxTokens: 800, key: apiKey });
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    const p = JSON.parse(m[0]) as Partial<BrainDecision>;
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 1200, key: apiKey });
+    const p = parseRouterJson(raw);
+    if (!p) return null;
     const orderIds = new Set(ctx.orders.map((o) => o.id));
     const taskIds = new Set(ctx.openTasks.map((t) => t.id));
     const priority: BrainPriority = ["URGENT", "HIGH", "MEDIUM", "LOW"].includes(String(p.priority))

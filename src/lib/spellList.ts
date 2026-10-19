@@ -325,6 +325,9 @@ export function buildSpellList(input: SpellListInput): SpellList {
   const add = (text: string | null | undefined, from: SpellSource, note: string | null = null) => {
     const t = clean(text);
     if (!t || t.length < 2 || entries.length >= MAX_ENTRIES || covered(t)) return;
+    // The hub's own placeholders are not names (audit, Oct 19: "Unknown
+    // customer (no customer on the Aryeo order)" was listed to spell exactly).
+    if (/^(unknown customer|\[?no address provided\]?|untitled job|tbd)\b/i.test(t)) return;
     keys.add(norm(t));
     entries.push({ text: t, note, from });
   };

@@ -410,6 +410,10 @@ export async function oldItemsMorning(now: Date = new Date()): Promise<MorningRe
 //     about "today's shoot";
 //   · and when the note is about the EDIT (video, edit, song, music, script,
 //     reel, revision), only once the job is DELIVERED.
+// Tightened the same evening (audit): status OPEN only (nobody started it),
+// written on or before the shoot's day (a note written AFTER the shoot is a
+// real ask, not a shoot note), never added to by a later message (a merged
+// "New request:" line), and never given a New date by a person.
 // ---------------------------------------------------------------------------
 
 const NOTE_START = /^\s*(note|log)\b/i;
@@ -442,16 +446,21 @@ export function shootNoteExpires(
     taskType: string; source: string; status: string; reasonCreated: string | null; title: string;
     flaggedAt: Date | null; assignedManually: boolean;
     project: { status: string; shootDate: Date | null } | null;
+    createdAt?: Date | null; description?: string | null; pushed?: boolean;
   },
   now: Date,
 ): boolean {
-  if (t.taskType !== "todo" || CLOSED.includes(t.status)) return false;
+  if (t.taskType !== "todo" || t.status !== "OPEN") return false;
+  if (t.pushed) return false;
+  // Added to by a later message: comms' "New request:" merge, or tasks' "— <time>: <line>" append.
+  if (/\n\n(\[[^\]]*\] )?New request: |\n\n— /.test(t.description ?? "")) return false;
   if (t.source !== "openphone" && t.source !== "gmail") return false;
   if (!(t.reasonCreated ?? "").startsWith("Inbound message from client")) return false;
   if (t.flaggedAt || t.assignedManually) return false;
   const p = t.project;
   if (!p?.shootDate || !SHOT_STATUSES.includes(p.status)) return false;
   if (etDayKey(p.shootDate) >= etDayKey(now)) return false; // the shoot day is not over
+  if (t.createdAt && etDayKey(t.createdAt) > etDayKey(p.shootDate)) return false; // written after the shoot: a real ask
   if (!isShootNoteTitle(t.title)) return false;
   if (EDIT_WORDS.test(t.title) && p.status !== "DELIVERED") return false;
   return true;
@@ -467,7 +476,7 @@ export async function findExpiringShootNotes(now: Date = new Date()): Promise<Sh
       projectId: { not: null },
     },
     select: {
-      id: true, title: true, status: true, taskType: true, source: true, reasonCreated: true,
+      id: true, title: true, status: true, taskType: true, source: true, reasonCreated: true, description: true,
       flaggedAt: true, assignedManually: true, assignedKey: true, dueAt: true, createdAt: true, projectId: true,
       owner: { select: { name: true } },
       project: { select: { title: true, status: true, shootDate: true } },
@@ -475,8 +484,12 @@ export async function findExpiringShootNotes(now: Date = new Date()): Promise<Sh
     orderBy: { createdAt: "asc" },
     take: 500,
   });
+  // A person who gave the row a New date has said it is still live.
+  const pushedIds = rows.length
+    ? new Set((await prisma.auditLog.findMany({ where: { action: PUSH_ACTION, target: { in: rows.map((r) => r.id) } }, select: { target: true } })).map((a) => a.target))
+    : new Set<string | null>();
   return rows
-    .filter((t) => shootNoteExpires(t, now))
+    .filter((t) => shootNoteExpires({ ...t, pushed: pushedIds.has(t.id) }, now))
     .map((t) => ({
       id: t.id,
       title: t.title,

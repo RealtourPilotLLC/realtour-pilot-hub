@@ -34,23 +34,27 @@ export const BRIEF_SWEEP_MIN_START_MS = 75_000;
 const FINISHED_JOB = new Set(["DELIVERED", "CANCELLED"]);
 const CLOSED_TASK = new Set(["COMPLETED", "CANCELLED"]);
 
-export type BriefSweepWhy = "already read" | "office" | "too new" | "refused" | "gave up" | "finished job";
+export type BriefSweepWhy = "already read" | "office" | "too new" | "refused" | "gave up" | "finished job" | "test client";
 export type BriefSweepVerdict = { read: true } | { read: false; why: BriefSweepWhy };
 
 /** Whether the sweep reads this brief now. Pure — the rule the drill pins. */
 export function briefSweepVerdict(
-  b: { source: string; createdAt: Date; analyzedAt: Date | null; analysisError: string | null; jobStatus: string | null; taskStatus: string | null },
+  b: { source: string; createdAt: Date; analyzedAt: Date | null; analysisError: string | null; jobStatus: string | null; taskStatus: string | null; testClient?: boolean },
   now: Date,
 ): BriefSweepVerdict {
   if (b.analyzedAt) return { read: false, why: "already read" };
   if (b.source === "office") return { read: false, why: "office" };
+  if (b.testClient) return { read: false, why: "test client" };
   const age = now.getTime() - b.createdAt.getTime();
   if (age < BRIEF_SWEEP_STALE_MS) return { read: false, why: "too new" };
   if (isAnalysisRefusal(b.analysisError)) return { read: false, why: "refused" };
   if (analysisTriesOf(b.analysisError) >= BRIEF_ANALYSIS_MAX_TRIES) return { read: false, why: "gave up" };
+  // A revision card a person closed is finished work, whatever the job's status
+  // says (audit, Oct 19: 671 Northbrook was in REVISION with its card done, and
+  // the sweep opened two creative reviews on it).
+  if (b.taskStatus && CLOSED_TASK.has(b.taskStatus)) return { read: false, why: "finished job" };
   const jobOpen = !!b.jobStatus && !FINISHED_JOB.has(b.jobStatus);
-  const recentAndOpenCard = age <= BRIEF_SWEEP_RECENT_MS && !(b.taskStatus && CLOSED_TASK.has(b.taskStatus));
-  if (jobOpen || recentAndOpenCard) return { read: true };
+  if (jobOpen || age <= BRIEF_SWEEP_RECENT_MS) return { read: true };
   return { read: false, why: "finished job" };
 }
 
@@ -66,7 +70,7 @@ export type BriefSweepResult = {
   failedIds: string[];
 };
 
-export async function sweepUnanalyzedBriefs(opts: { now?: Date; max?: number; budgetMs?: number; minStartMs?: number } = {}): Promise<BriefSweepResult> {
+export async function sweepUnanalyzedBriefs(opts: { now?: Date; max?: number; budgetMs?: number; minStartMs?: number; /** drills only: their seeded clients are named TEST */ includeTestClients?: boolean } = {}): Promise<BriefSweepResult> {
   const now = opts.now ?? new Date();
   const startedAt = Date.now();
   const max = opts.max ?? 3;
@@ -81,14 +85,19 @@ export async function sweepUnanalyzedBriefs(opts: { now?: Date; max?: number; bu
     // Newest first: the ask a client is waiting on now matters most.
     orderBy: { createdAt: "desc" },
     take: 100,
-    select: { id: true, source: true, createdAt: true, analyzedAt: true, analysisError: true, taskId: true, project: { select: { status: true } } },
+    select: { id: true, source: true, createdAt: true, analyzedAt: true, analysisError: true, taskId: true, project: { select: { status: true, clientId: true } } },
   });
   out.looked = rows.length;
+  const { isSyntheticClientRow } = await import("@/lib/testClients");
+  const clientIds = [...new Set(rows.map((r) => r.project?.clientId).filter((x): x is string => !!x))];
+  const testClientIds = new Set(
+    (clientIds.length ? await prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true } }) : []).filter(isSyntheticClientRow).map((c) => c.id),
+  );
   const taskIds = [...new Set(rows.map((r) => r.taskId).filter((x): x is string => !!x))];
   const tasks = taskIds.length ? await prisma.smartTask.findMany({ where: { id: { in: taskIds } }, select: { id: true, status: true } }) : [];
   const taskStatus = new Map(tasks.map((t) => [t.id, t.status as string]));
   for (const r of rows) {
-    const v = briefSweepVerdict({ ...r, jobStatus: r.project?.status ?? null, taskStatus: r.taskId ? taskStatus.get(r.taskId) ?? null : null }, now);
+    const v = briefSweepVerdict({ ...r, jobStatus: r.project?.status ?? null, taskStatus: r.taskId ? taskStatus.get(r.taskId) ?? null : null, testClient: !opts.includeTestClients && !!r.project?.clientId && testClientIds.has(r.project.clientId) }, now);
     if (!v.read) {
       if (v.why === "gave up") out.gaveUp++;
       else if (v.why === "finished job") out.finishedJob++;
@@ -100,6 +109,12 @@ export async function sweepUnanalyzedBriefs(opts: { now?: Date; max?: number; bu
       continue;
     }
     const tryNo = analysisTriesOf(r.analysisError) + 1;
+    // The try is counted BEFORE the call (audit, Oct 19): a reading killed
+    // with its function never reaches the counting below, and was retried
+    // every 15 minutes for ever.
+    await prisma.revisionBrief
+      .updateMany({ where: { id: r.id, analyzedAt: null }, data: { analysisError: analysisTryError(tryNo, "the reading stopped without an answer") } })
+      .catch(() => {});
     const ok = await analyzeBrief(r.id).catch(() => false);
     if (ok) {
       out.read++;
