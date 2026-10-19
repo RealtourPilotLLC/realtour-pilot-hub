@@ -2,7 +2,7 @@ import { videoNavigationFor } from "@/lib/videoNavigation";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
-import { ExternalLink, Film, History, Images, MessageSquareQuote, Music, PenLine, ScrollText } from "lucide-react";
+import { ClipboardCheck, ExternalLink, Film, History, Images, MessageSquareQuote, Music, PenLine, ScrollText } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -17,12 +17,11 @@ import { CutReviewPanel } from "@/components/review/CutReviewPanel";
 import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { cutTakeBackFlags } from "@/app/review/actions";
 import { BackLink } from "@/components/ui/BackLink";
-// §8.1: the one person each waiting cut is waiting on, and the take / cover /
-// hand-on doors — the same strip /edit/<id> carries, here where review happens.
-import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
+// Every video on the job, its state and next action (folded with the earlier versions).
+import { ProjectVideoStatusList, ProjectVideoStatusUnavailable, readProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
 import { CreativeReviewPanel } from "@/components/review/CreativeReviewPanel";
 import { JudgeAgainst, type JudgeBrand, type JudgeScript } from "@/components/review/JudgeAgainst";
-import { OpenClientAsksCard } from "@/components/asks/OpenClientAsksCard";
+import { BeforeYouSendView, loadBeforeYouSend } from "@/components/jobs/BeforeYouSend";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +38,14 @@ export const maxDuration = 60;
 // everything needed to JUDGE the cut — what was ordered, the editing notes the
 // photographer left, and the reel recipe. Photo review stays in the project
 // gallery; the header links straight to it.
+// Tightened Oct 19 2026 (Jordan: "we can tighten up that as well"), top to
+// bottom on the left: the video tabs (several videos only), the version line
+// with the editor's note under it, the held-for-check warning (why there is
+// no verdict), ONE "Before you approve" box (this round's ask, the shoot
+// flags, the client's open requests, the order and edit notes), the player
+// and the verdict, a creative review when one is open, then one fold: this
+// job's other videos and earlier versions. On the right: Judge against, the
+// brief (folded), the client's notes (folded when there are none).
 // ---------------------------------------------------------------------------
 
 // The client's ask in their own words: the work order's system preamble
@@ -207,11 +214,23 @@ export default async function CutReviewPage({
   const { isCreativeApprover } = await import("@/lib/reviewChecklist");
   const creativeApprover = !shotThis && (await isCreativeApprover(me, { authEnforced: authEnforced() }).catch(() => false));
   const creativeReviews = shotThis ? [] : await import("@/lib/creativeReview").then((m) => m.openCreativeReviews(w.projectId)).catch(() => []);
-  // OPEN CLIENT ASKS (Oct 19 2026, lib/clientAsks): what the client asked us
-  // to get right on this job by text, email or the order ("all 4 lots
-  // overlaid like the Pennfield output"), above the verdict on any cut. The
-  // office only; a failed read shows none.
-  const openAsks = shotThis ? [] : await import("@/lib/clientAsks").then((m) => m.asksForProject(w.projectId, { kind: "SPECIAL_REQUEST" })).then((r) => r.open).catch(() => []);
+  // "BEFORE YOU APPROVE" (Oct 19 2026): ONE box above the player with what
+  // the client asked for this round (the revision ask) and the job's own
+  // checks (components/jobs/BeforeYouSend, lib/jobChecks): what was flagged
+  // at the shoot, the client's open requests for the video (texts, emails,
+  // the order; one Checked for all of them) and the order and edit notes. It
+  // replaced the separate "Open client asks on this job" card and the
+  // separate "What the client asked for" block. Approve is never blocked
+  // here: an open request holds the DELIVERY until it is checked, not the
+  // verdict. The office only; a failed read shows none.
+  // Plus every video's state for the fold under the player (a failed read is
+  // said out loud, never folded away).
+  const [jobBox, videoStatus] = shotThis
+    ? [null, null]
+    : await Promise.all([
+        loadBeforeYouSend(w.projectId, "video").catch(() => null),
+        readProjectVideoStatus(w.projectId),
+      ]);
   let judgeScript: JudgeScript = null;
   let judgeTopic: string | null = null;
   let judgeBrand: JudgeBrand = null;
@@ -234,6 +253,11 @@ export default async function CutReviewPage({
       judgeStyle = brand.styleMemory;
     }
   }
+
+  // The box's parts: this round's ask (until the cut is approved) and the job's own checks.
+  const roundAsk = !!clientAsk && !!active && active.status !== "APPROVED";
+  const boxHasChecks = !!jobBox && (jobBox.data.flags.length > 0 || jobBox.data.requests.length > 0 || jobBox.data.notes.length > 0);
+  const boxTitle = active?.status === "APPROVED" ? "Before you send" : "Before you approve";
 
   // Which cut each client note is on, in the Room's own words.
   const cutNameOf = (submissionId: string) => {
@@ -280,10 +304,13 @@ export default async function CutReviewPage({
       />
 
       <div className="grid min-w-0 grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-3">
-        {/* LEFT — the cut */}
+        {/* LEFT — the cut. Oct 19 2026 (Jordan: "we can tighten up that as
+            well"): the player with its notes and Approve / Request changes
+            leads, with only the version line above it (and the video tabs when
+            the job has several videos), then ONE "Before you approve" box. The
+            rest is folded under the player. */}
         <div className="min-w-0 space-y-4 lg:col-span-2">
-          {creativeReviews.length > 0 && <CreativeReviewPanel reviews={creativeReviews} canResolve={creativeApprover} />}
-          {slots.length > 0 && <nav aria-label="Project videos" className="-mx-1 flex max-w-full snap-x gap-2 overflow-x-auto px-1 py-1">
+          {slots.length > 1 && <nav aria-label="Project videos" className="-mx-1 flex max-w-full snap-x gap-2 overflow-x-auto px-1 py-1">
             {slots.map((slot, index) => {
               const key = `${slot.deliverableId}:${slot.slot}`;
               const current = latestPerCut.get(key);
@@ -293,11 +320,11 @@ export default async function CutReviewPage({
             })}
           </nav>}
           {slots.length === 0 && currentCuts.length > 1 && <nav aria-label="Legacy videos" className="flex flex-wrap gap-2">{currentCuts.map((current) => <Link key={current.id} href={`/review/${w.projectId}?cut=${current.id}`} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm">{current.fileName ?? "Unmapped video"} · V{current.round}</Link>)}</nav>}
-          {openAsks.length > 0 && <OpenClientAsksCard asks={openAsks} deliverWhat="video" />}
           {active ? (
             <>
               {/* Oct 9 2026 (Jordan: "fix the spacing"): what this is on one line,
-                  who/when/file quietly underneath — no more one long wrapping row. */}
+                  who/when/file quietly underneath; the editor's note one quiet
+                  line under that (Oct 19). */}
               <div id={`cut-${active.id}`} className="min-w-0 scroll-mt-24 space-y-0.5">
                 <p className="text-sm">
                   {slotLabel(active) && <span className="font-semibold text-foreground">{slotLabel(active)}</span>}
@@ -308,10 +335,12 @@ export default async function CutReviewPage({
                   <span className="shrink-0">from {editorLabel} · {formatDistanceToNow(new Date(active.createdAt), { addSuffix: true })}</span>
                   {active.fileName && <span className="min-w-0 truncate text-muted-2" title={active.fileName}>· {active.fileName}</span>}
                 </p>
+                {active.note && (
+                  <p className="text-xs text-muted" data-editor-note>
+                    {editorLabel === "the editor" ? "The editor" : editorLabel.split(/\s+/)[0]}&rsquo;s note: <span className="italic text-foreground/80">&ldquo;{active.note}&rdquo;</span>
+                  </p>
+                )}
               </div>
-              {active.note && (
-                <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm italic text-foreground/80">“{active.note}”</p>
-              )}
               {active.heldForCheck && (
                 <div className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm">
                   <p className="font-semibold text-foreground">Waiting on {editorLabel}&rsquo;s send-for-review check</p>
@@ -326,20 +355,34 @@ export default async function CutReviewPage({
                   </p>
                 </div>
               )}
-              {clientAsk && active.status !== "APPROVED" && (
-                <div className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm">
-                  <p className="font-semibold text-foreground">
-                    {/* The office's reopen is not the client's ask (review, Sep 28):
-                        the heading used to say "client" right above "Put back by
-                        Kyle Cabrera (the office)". */}
-                    {officeReopen ? "What the office asked for" : "What the client asked for"}
-                    <span className="font-normal text-muted"> · {officeReopen ? "reopened" : "asked"} {formatDistanceToNow(new Date(clientAsk.createdAt), { addSuffix: true })}</span>
+              {(roundAsk || boxHasChecks) && (
+                <section aria-label={boxTitle} data-before-you-approve className="space-y-3 rounded-xl border border-warning/40 bg-warning/5 px-3 py-3 text-sm">
+                  <p className="flex items-center gap-1.5 font-semibold text-foreground">
+                    <ClipboardCheck aria-hidden className="size-4 text-brand" />
+                    {boxTitle}
                   </p>
-                  {askedByLine && <p className="text-xs text-muted">{askedByLine}</p>}
-                  {(clientAsk.description ?? clientAsk.summary) && (
-                    <p className="mt-1 whitespace-pre-wrap text-foreground/85">{plainAsk(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
+                  {clientAsk && roundAsk && (
+                    <div data-round-ask className="space-y-0.5">
+                      <p className="font-semibold text-foreground">
+                        {/* The office's reopen is not the client's ask (review, Sep 28):
+                            the heading used to say "client" right above "Put back by
+                            Kyle Cabrera (the office)". */}
+                        {officeReopen ? "What the office asked for" : "What the client asked for"}
+                        <span className="font-normal text-muted"> · {officeReopen ? "reopened" : "asked"} {formatDistanceToNow(new Date(clientAsk.createdAt), { addSuffix: true })}</span>
+                      </p>
+                      {askedByLine && <p className="text-xs text-muted">{askedByLine}</p>}
+                      {(clientAsk.description ?? clientAsk.summary) && (
+                        <p className="mt-1 whitespace-pre-wrap text-foreground/85">{plainAsk(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
+                      )}
+                    </div>
                   )}
-                </div>
+                  {/* The job's own box (lib/jobChecks), its title dropped: this box is titled. */}
+                  {jobBox && boxHasChecks && (
+                    <div className="[&>section]:space-y-3 [&>section]:rounded-none [&>section]:border-0 [&>section]:bg-transparent [&>section]:p-0 [&>section>p:first-child]:hidden">
+                      <BeforeYouSendView data={jobBox.data} medium="video" canCheck={jobBox.canCheck} />
+                    </div>
+                  )}
+                </section>
               )}
               <CutReviewPanel
                 key={active.id}
@@ -359,41 +402,67 @@ export default async function CutReviewPage({
 
             </>
           ) : (
-            <Section icon={Film} title="No cut uploaded yet">
-              <p className="text-sm text-muted">
-                When the editor uploads a version from the editor portal, it shows up here with a player and
-                timestamped notes. This job is currently <span className="font-medium text-foreground/80">{w.status.toLowerCase()}</span>.
-              </p>
-            </Section>
+            <>
+              <Section icon={Film} title="No cut uploaded yet">
+                <p className="text-sm text-muted">
+                  When the editor uploads a version from the editor portal, it shows up here with a player and
+                  timestamped notes. This job is currently <span className="font-medium text-foreground/80">{w.status.toLowerCase()}</span>.
+                </p>
+              </Section>
+              {jobBox && boxHasChecks && <BeforeYouSendView data={jobBox.data} medium="video" canCheck={jobBox.canCheck} />}
+            </>
           )}
 
-          {/* Secondary detail, folded (Oct 5): every video's state and next
-              action, then the earlier versions of this cut. */}
-          {!shotThis && <ProjectVideoStatus projectId={w.projectId} selectedKey={active?.deliverableId ? `${active.deliverableId}:${active.slot ?? 1}` : output} />}
-          {earlierRounds.length > 0 && (
-            <details className="rounded-xl border border-border px-4 py-1">
-              <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
-                <History className="size-4 text-muted-2" />
-                <span className="font-semibold">Earlier versions</span>
-                <span className="text-muted">{earlierRounds.length}</span>
+          {/* A client's feeling that could not be turned into an instruction
+              waits here for Jordan or James (only when one is open). */}
+          {creativeReviews.length > 0 && <CreativeReviewPanel reviews={creativeReviews} canResolve={creativeApprover} />}
+
+          {/* Folded under the player (Oct 19): every video on this job with its
+              state and next action, and the earlier versions of this one. A
+              failed status read is said out loud, never folded away. */}
+          {videoStatus === null && !shotThis && <ProjectVideoStatusUnavailable />}
+          {((videoStatus?.length ?? 0) > 0 || earlierRounds.length > 0) && (
+            <details className="rounded-xl border border-border px-4 py-1" data-other-videos>
+              <summary className="flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 text-sm">
+                <History aria-hidden className="size-4 text-muted-2" />
+                <span className="font-semibold">This job&rsquo;s other videos and earlier versions</span>
+                <span className="text-muted">
+                  {[
+                    videoStatus?.length ? `${videoStatus.length} video${videoStatus.length === 1 ? "" : "s"}` : null,
+                    earlierRounds.length ? `${earlierRounds.length} earlier version${earlierRounds.length === 1 ? "" : "s"}` : null,
+                  ].filter(Boolean).join(" · ")}
+                </span>
               </summary>
-              <ul className="divide-y divide-border border-t border-border">
-                {earlierRounds.map((s) => (
-                  <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
-                    <span className="font-medium">Version {s.round}</span>
-                    <span className="text-xs text-muted">
-                      {/* Who ruled on it, and when (Sep 28) — or what became of it. */}
-                      {verdictLine(s.verdict) ??
-                        `${s.status === "WITHDRAWN" ? "withdrawn" : "superseded"}${s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}`}
-                    </span>
-                    {s.assetUrl && (
-                      <a href={s.assetUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand hover:underline">
-                        Watch
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <div className="space-y-3 border-t border-border py-3">
+                {videoStatus && videoStatus.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Every video on this job</h3>
+                    <ProjectVideoStatusList rows={videoStatus} selectedKey={active?.deliverableId ? `${active.deliverableId}:${active.slot ?? 1}` : output} />
+                  </div>
+                )}
+                {earlierRounds.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Earlier versions of this video</h3>
+                    <ul className="divide-y divide-border border-t border-border">
+                      {earlierRounds.map((s) => (
+                        <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                          <span className="font-medium">Version {s.round}</span>
+                          <span className="text-xs text-muted">
+                            {/* Who ruled on it, and when (Sep 28), or what became of it. */}
+                            {verdictLine(s.verdict) ??
+                              `${s.status === "WITHDRAWN" ? "withdrawn" : "superseded"}${s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}`}
+                          </span>
+                          {s.assetUrl && (
+                            <a href={s.assetUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand hover:underline">
+                              Watch
+                            </a>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
             </details>
           )}
         </div>
@@ -481,10 +550,17 @@ export default async function CutReviewPage({
 
           {/* The client's own portal notes on this job's cuts (interactive
               layer, Aug 28) — read-only context while judging the next round;
-              SENT ones already became the revision work order. */}
-          {clientNoteCount > 0 && (
-            <Section icon={MessageSquareQuote} title="Client's notes" count={clientNoteCount}>
-              <div className="space-y-3">
+              SENT ones already became the revision work order. Open when there
+              are any, folded to its title line when there are none (Oct 19). */}
+          {!shotThis && (
+            <details className="rounded-xl border border-border px-4 py-1" open={clientNoteCount > 0} data-client-notes={clientNoteCount}>
+              <summary className="flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 text-sm">
+                <MessageSquareQuote aria-hidden className="size-4 text-muted-2" />
+                <span className="font-semibold">Client&rsquo;s notes</span>
+                <span className="text-muted">{clientNoteCount || "none"}</span>
+              </summary>
+              <div className="space-y-3 border-t border-border py-3">
+                {clientNoteCount === 0 && <p className="text-sm text-muted">The client has not left a note on this job&rsquo;s videos.</p>}
                 {clientNoteGroups.map((g) => (
                   <div key={g.submissionId}>
                     {clientNoteGroups.length > 1 && (
@@ -523,7 +599,7 @@ export default async function CutReviewPage({
                   </div>
                 ))}
               </div>
-            </Section>
+            </details>
           )}
         </div>
       </div>

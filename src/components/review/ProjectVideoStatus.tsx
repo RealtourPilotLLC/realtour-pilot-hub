@@ -9,7 +9,14 @@ import { etDateTime } from "@/lib/datetime";
 import { usesAryeoDelivery } from "@/lib/videoDeliveryDestination";
 import { laneStillOwesWork } from "@/lib/readyToSend";
 
-async function readStatus(projectId: string) {
+export type ProjectVideoStatusRow = { key: string; label: string; state: string; approval: string | null; correction: { id: string; at: string } | null; href: string };
+
+/** Every video on the job, its state and next action; null when the read failed (never an all-clear). */
+export async function readProjectVideoStatus(projectId: string): Promise<ProjectVideoStatusRow[] | null> {
+  return readStatus(projectId);
+}
+
+async function readStatus(projectId: string): Promise<ProjectVideoStatusRow[] | null> {
   try {
     const [slots, cuts, navigation] = await Promise.all([
       cutSlots(projectId),
@@ -47,10 +54,20 @@ async function readStatus(projectId: string) {
 export async function ProjectVideoStatus({ projectId, selectedKey }: { projectId: string; selectedKey?: string | null }) {
   const rows = await readStatus(projectId);
   const selected = rows?.find((row) => row.key === selectedKey);
-  if (!rows) return <section className="rounded-xl border border-border p-4"><h2 className="font-semibold">Project status</h2><p role="alert" className="text-sm">Status unavailable. Refresh before acting on delivery or remaining work.</p></section>;
+  if (!rows) return <ProjectVideoStatusUnavailable />;
   return <details className="rounded-xl border border-border px-4 py-1">
     <summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm"><span className="font-semibold">Project status</span><span className="min-w-0 truncate text-muted">{selected ? selected.state : `${rows.length} video${rows.length === 1 ? "" : "s"}`}</span></summary>
     {selected?.approval && <p className="pb-1 text-sm text-muted">{selected.approval}</p>}
-    <ul className="divide-y divide-border border-t border-border">{rows.map((row) => <li key={row.key} className="space-y-1 py-2 text-sm"><Link className="font-medium text-brand" href={row.href}>{row.label}</Link><p>{row.state}</p>{row.approval && <p className="text-muted">{row.approval}</p>}{row.correction && <CorrectSent submissionId={row.correction.id} sentAt={row.correction.at} />}</li>)}</ul>
+    <ProjectVideoStatusList rows={rows} />
   </details>;
+}
+
+/** A failed status read, said out loud (never folded away). */
+export function ProjectVideoStatusUnavailable() {
+  return <section className="rounded-xl border border-border p-4"><h2 className="font-semibold">Project status</h2><p role="alert" className="text-sm">Status unavailable. Refresh before acting on delivery or remaining work.</p></section>;
+}
+
+/** The list itself (Oct 19 2026: the Review Room folds it with the earlier versions). */
+export function ProjectVideoStatusList({ rows, selectedKey }: { rows: ProjectVideoStatusRow[]; selectedKey?: string | null }) {
+  return <ul className="divide-y divide-border border-t border-border">{rows.map((row) => <li key={row.key} aria-current={row.key === selectedKey ? "true" : undefined} className="space-y-1 py-2 text-sm"><Link className="font-medium text-brand" href={row.href}>{row.label}{row.key === selectedKey ? <span className="font-normal text-muted"> (this one)</span> : null}</Link><p>{row.state}</p>{row.approval && <p className="text-muted">{row.approval}</p>}{row.correction && <CorrectSent submissionId={row.correction.id} sentAt={row.correction.at} />}</li>)}</ul>;
 }

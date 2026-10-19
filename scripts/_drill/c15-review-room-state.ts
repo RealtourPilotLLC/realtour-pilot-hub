@@ -29,16 +29,20 @@ async function main() {
     for (const [label, user] of [["Kyle", kyle], ["James", james]] as const) {
       await as(user);
       const html = renderToStaticMarkup(await page({ searchParams: Promise.resolve({}) }));
-      c.ok(`${label}: no-cut headline still directs attention to revisions and delivery`, html.includes("No cuts awaiting your verdict") && html.includes("check revisions and delivery below"));
-      // Oct 19 2026 (Jordan): the section is "In revision" in the Video Review Room.
-      c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes(">In revision<") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
+      // Oct 19 2026 (tightened): the headline counts the three sections
+      // ("0 to review · … with editors"); the sent-back version sits in
+      // "With the editors", the one list that replaced Late, Due today and
+      // In revision.
+      c.ok(`${label}: no-cut headline still points at the editors' work`, html.includes("0 to review") && /\d+ with editors/.test(html));
+      c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes(">With the editors<") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
       // Oct 19 2026 (Jordan): the room is video only; the media checks moved to
       // Photo Delivery (oct19-video-review-room.ts checks them there).
       c.ok(`${label}: the media checks are not in the Video Review Room, never a photo set`, !html.includes("Delivery checks") && !html.includes("Media checks to finish") && !html.includes("Photo sets") && !html.includes("Hidden fixture media job"));
       // Oct 19 2026: Home no longer shows the delivery card, so its follow-up
       // lanes live in the Video Review Room ("Needs a follow-up"), for the
       // office (Kyle); a seated reviewer on another login does not get them.
-      if (label === "Kyle") c.ok(`${label}: the unknown delivery text is in the room's Needs a follow-up, once`, html.includes(">Needs a follow-up<") && (html.match(/Delivery texts needing a check/g) ?? []).length === 1 && html.includes(`incident=${encodeURIComponent(notice.id)}`) && !html.includes("No delivery action is currently waiting"));
+      // (Since the room was tightened, Oct 19: a fold inside Ready to send.)
+      if (label === "Kyle") c.ok(`${label}: the unknown delivery text is in the room's Needs a follow-up, once`, html.includes(">Needs a follow-up<") && html.indexOf("data-follow-ups=") > html.indexOf(">Ready to send</h2>") && (html.match(/Delivery texts needing a check/g) ?? []).length === 1 && html.includes(`incident=${encodeURIComponent(notice.id)}`) && !html.includes("No delivery action is currently waiting"));
       else c.ok(`${label}: no delivery follow-up for a reviewer-only login`, !html.includes(">Needs a follow-up<") && !html.includes("Delivery text outcome unconfirmed"));
       if (label === "Kyle") {
         // Oct 19 2026 (evening): the ten checklist blocks (and the Video

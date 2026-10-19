@@ -10,7 +10,9 @@
 //   1  /ops/video-delivery redirects to /review; the room renders
 //   2  what it says: Ready to send with each run's three steps and words (a
 //      run uploading, a run stopped with Try again), a held run's reason
-//      under Held, Late with how late, the program section, no switch card
+//      under Held, the late video under With the editors with how late, no
+//      switch card (since the room was tightened, Oct 19: no Monthly content
+//      section; the monthly videos live on the Shoots page and the Dashboard)
 //   3  the delivery card row: a started run's line, a row nobody pressed
 //      (the button's words, never "the hub sends it"), links to the room
 //   4  copy: no em or en dash in the delivery sections, nothing says
@@ -107,13 +109,13 @@ async function main() {
     const t = text(owner);
 
     c.head("2 · what it says");
-    c.ok("the header: Video Review Room, ready to send, late, due today", /Video Review Room/.test(t) && /\d+ ready to send · \d+ late · \d+ due today/.test(t), t.slice(0, 300));
-    c.ok("the late video is in Late, with how late", /Late \d+ 1 Late Lane/.test(t) && /Late by \d+ h/.test(t), (t.match(/Late \d+ .{0,200}/) ?? [""])[0]);
+    c.ok("the header: Video Review Room, to review, ready to send, with editors (late)", /Video Review Room/.test(t) && /\d+ to review · \d+ ready to send · \d+ with editors \(\d+ late\)/.test(t), t.slice(0, 300));
+    c.ok("the late video is under With the editors, first, with how late", /With the editors \d+, \d+ late 1 Late Lane/.test(t) && /Late by \d+ h/.test(t), (t.match(/With the editors .{0,200}/) ?? [""])[0]);
     c.ok("a started run shows its three steps and its own words", /3 Sending St/.test(t) && /Uploading On the listing Sent/.test(t) && /Sending the 1080p file to Aryeo: 10 of 23 parts/.test(t) && /aria-current="step"[^>]*>Uploading</.test(owner));
     c.ok("a held run says why, under Held", /Held \(\d+\).*4 Held Ct/.test(t) && /Sound check held this file: this video has no sound/.test(t));
     c.ok("a run the hub will not send says so, with the hand path open", /5 By Hand Rd/.test(t) && /never checked, so the hub does not send it on its own/.test(t) && /Done it by hand\?/.test(t));
     c.ok("a row nobody pressed offers Upload to Aryeo and send", /6 Fresh St.{0,400}Upload to Aryeo and send/.test(t));
-    c.ok("the content program section (late ones only)", /Monthly content/.test(t) && /client’s portal|client's portal/.test(t));
+    c.ok("no Monthly content section any more (the monthly videos live on the Shoots page and the Dashboard)", !/>Monthly content</.test(owner));
     c.ok("no switch card any more (button only)", !/The hub sends listing videos to Aryeo/.test(t) && !/Practice run/.test(t) && !/Upload and deliver/.test(t));
 
     c.head("3 · the delivery card row");
@@ -129,9 +131,8 @@ async function main() {
     c.ok("a row nobody pressed: the button's words, never that the hub is sending it", /Press Upload to Aryeo and send in the Video Review Room/.test(ct2) && !/hub sends|next pass|is uploading/i.test(ct2), ct2.slice(0, 400));
 
     c.head("4 · copy");
-    // Ready to send, then Late through Monthly content (the sections this build wrote).
-    const folds = t.indexOf(" Approved, last 14 days ");
-    const delivery = t.slice(t.indexOf(" Ready to send "), t.indexOf(" To review ")) + t.slice(t.indexOf(" Late "), folds > 0 ? folds : undefined);
+    // The three sections (To review, Ready to send, With the editors) and the history link.
+    const delivery = t.slice(t.indexOf(" To review "));
     c.ok("no em or en dash in the delivery sections", !LONG_DASH.test(delivery), (delivery.match(/.{40}[–—].{40}/) ?? [""])[0]);
     c.ok("nothing rendered says undefined or NaN", Object.values(all).every((h) => !/\b(undefined|NaN)\b/.test(text(h))));
 

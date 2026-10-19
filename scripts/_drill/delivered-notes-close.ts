@@ -435,7 +435,8 @@ async function main() {
     c.ok("a lane with nothing open has no row (Photos First's closed editor note)", !row(J10, "EDITOR"));
     const ws = await room.getCutWorkspace(J6, j6?.cutId ?? null);
     c.ok("the workspace that link opens is that cut, with its note on it", ws?.active?.id === c6b.id && ws.notes.some((n) => n.id === n14), `${ws?.active?.id === c6b.id ? "cut ok" : "wrong cut"} · ${ws?.notes.length ?? 0} notes`);
-    const pageSrc = fs.readFileSync(path.join(REPO, "src/app/review/page.tsx"), "utf8");
+    // Oct 19 2026: the follow-through rows moved with the room's history to /review/history.
+    const pageSrc = fs.readFileSync(path.join(REPO, "src/app/review/history/page.tsx"), "utf8");
     c.ok("the page renders each row's href from followUpHref (the /projects/<id> literal is gone)", /href=\{followUpHref\(f\)\}/.test(pageSrc) && !pageSrc.includes("href={`/projects/${f.projectId}`}"));
   }
 

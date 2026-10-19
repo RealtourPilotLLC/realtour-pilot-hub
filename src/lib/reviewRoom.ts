@@ -4,6 +4,7 @@ import { videoTier } from "@/lib/projectStatus";
 import { awaitingReviewWhere, isHeldForSelfCheck } from "@/lib/selfCheck";
 import { verdictOf, type Verdict } from "@/lib/reviewAttribution";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { editorMeta } from "@/lib/editors";
 import { photoQcWhere } from "@/lib/taskBoard";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,10 @@ export type QueueSubmission = {
   round: number;
   status: string;
   submittedByName: string | null;
+  /** Who made it, in words: the name the upload recorded, else the roster
+   *  name of the editor's key (Oct 19 2026: the Room's To review row names
+   *  the editor). */
+  editorName?: string | null;
   note: string | null;
   fileName: string | null; // labels the row when a project has several cuts in flight
   hasAsset: boolean;
@@ -293,6 +298,7 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
     round: s.round,
     status: s.status,
     submittedByName: s.submittedByName,
+    editorName: s.submittedByName ?? (s.submittedByKey ? (editorMeta(s.submittedByKey)?.name ?? null) : null),
     note: s.note,
     fileName: s.fileName,
     hasAsset: !!s.assetUrl,
