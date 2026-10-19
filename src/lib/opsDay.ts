@@ -524,6 +524,52 @@ async function shootRow(
   };
 }
 
+// ---- The shoot cards: ONE read for /ops, Home and the Ops Day (Oct 19 2026) ----
+// Jordan: "This should be on the home screen too" (the Today's shoots card).
+// Home cannot call buildOpsDay for it: that build also records the delivery
+// follow-up lanes' health (readyToSend recordFollowUpHealth) and reads every
+// other board. So the shoot cards are their own read, and buildOpsDay calls
+// the same one. It only reads (the projects, one comms pull, weather and
+// airspace).
+async function shootCardsIn(windows: { start: Date; end: Date }[], excludeClientIds: string[], now: Date): Promise<OpsShoot[][]> {
+  const clientScope = excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {};
+  const lists = await Promise.all(
+    windows.map((w) =>
+      prisma.project.findMany({
+        where: { shootDate: { gte: w.start, lt: w.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...clientScope },
+        select: SHOOT_SELECT,
+        orderBy: { shootDate: "asc" },
+      }),
+    ),
+  );
+  // One comms pull for every shoot client (last 72h) — the per-SHOOT filter
+  // (this project or unfiled only) happens in shootRow, so a message about a
+  // client's other job never bleeds onto this card.
+  const shootClientIds = [...new Set(lists.flat().map((p) => p.clientId).filter((x): x is string => !!x))];
+  const commRowsByClient = new Map<string, ShootCommRow[]>();
+  if (shootClientIds.length) {
+    const recent = await prisma.commLog.findMany({
+      where: { clientId: { in: shootClientIds }, occurredAt: { gte: new Date(now.getTime() - 72 * 3_600_000) } },
+      orderBy: { occurredAt: "desc" },
+      select: { clientId: true, projectId: true, projectGuess: true, channel: true, subject: true, body: true, direction: true, occurredAt: true },
+      take: 200,
+    });
+    for (const r of recent) {
+      const cid = r.clientId as string;
+      const list = commRowsByClient.get(cid);
+      if (list) list.push(r);
+      else commRowsByClient.set(cid, [r]);
+    }
+  }
+  return Promise.all(lists.map((ps) => Promise.all(ps.map((p) => shootRow(p, commRowsByClient, now)))));
+}
+
+/** Today's shoot cards, exactly as /ops renders them (Home's "Today's shoots"). Reads only. */
+export async function todayShootCards(opts: { excludeClientIds?: string[] } = {}): Promise<OpsShoot[]> {
+  const [today] = await shootCardsIn([etDayWindow(0)], opts.excludeClientIds ?? [], new Date());
+  return today;
+}
+
 function parseEvidence(json: string | null): { ev: StatusEvidence | null; qc: QcEvidence } {
   try {
     const ev = json ? (JSON.parse(json) as StatusEvidence) : null;
@@ -554,18 +600,10 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
   const readySendPromise = readyToSend({ recordFollowUpHealth: true, includeNoticeIncidents: true, excludeClientIds: excludedClientIds })
     .catch(() => ({ ready: [], rendering: [], needsFinishing: [], notTold: [], boardUnavailable: true }) as ReadyBoard);
 
-  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList, turnarounds, videoReview] =
+  const [[todayShoots, tomorrowShoots], qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList, turnarounds, videoReview] =
     await Promise.all([
-      prisma.project.findMany({
-        where: { shootDate: { gte: today.start, lt: today.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...clientScope },
-        select: SHOOT_SELECT,
-        orderBy: { shootDate: "asc" },
-      }),
-      prisma.project.findMany({
-        where: { shootDate: { gte: tomorrow.start, lt: tomorrow.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...clientScope },
-        select: SHOOT_SELECT,
-        orderBy: { shootDate: "asc" },
-      }),
+      // Today's and tomorrow's shoot cards: the read Home shares (shootCardsIn).
+      shootCardsIn([today, tomorrow], excludedClientIds, now),
       prisma.smartTask.findMany({
         where: {
           taskType: "media_qa",
@@ -652,30 +690,8 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
       videoReviewBoard({ excludeClientIds: excludedClientIds }).catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
     ]);
 
-  // One comms pull for every shoot client (last 72h) — the per-SHOOT filter
-  // (this project or unfiled only) happens in shootRow, so a message about a
-  // client's other job never bleeds onto this card.
-  const shootClientIds = [...new Set([...todayProjects, ...tomorrowProjects].map((p) => p.clientId).filter((x): x is string => !!x))];
-  const commRowsByClient = new Map<string, ShootCommRow[]>();
-  if (shootClientIds.length) {
-    const recent = await prisma.commLog.findMany({
-      where: { clientId: { in: shootClientIds }, occurredAt: { gte: new Date(now.getTime() - 72 * 3_600_000) } },
-      orderBy: { occurredAt: "desc" },
-      select: { clientId: true, projectId: true, projectGuess: true, channel: true, subject: true, body: true, direction: true, occurredAt: true },
-      take: 200,
-    });
-    for (const r of recent) {
-      const cid = r.clientId as string;
-      const list = commRowsByClient.get(cid);
-      if (list) list.push(r);
-      else commRowsByClient.set(cid, [r]);
-    }
-  }
-
   const { workStateFor, workLabel } = await import("@/lib/editorWork");
-  const [todayShoots, tomorrowShoots, videoStates, pipelineWork, readySend] = await Promise.all([
-    Promise.all(todayProjects.map((p) => shootRow(p, commRowsByClient, now))),
-    Promise.all(tomorrowProjects.map((p) => shootRow(p, commRowsByClient, now))),
+  const [videoStates, pipelineWork, readySend] = await Promise.all([
     videoStatesFor(qcTasks.map((t) => t.projectId).filter((x): x is string => !!x)).catch(() => new Map<string, ProjectVideoState>()),
     workStateFor(pipelineProjects.filter((p) => p.status === "EDITING").map((p) => p.id)).catch(() => new Map()),
     readySendPromise,
@@ -1205,7 +1221,8 @@ export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null
 
 const sm = (v: string | null): string | null => (v == null ? v : scrubMoney(v));
 
-function scrubShoot(s: OpsShoot): OpsShoot {
+/** One shoot card with every dollar figure redacted (a non-owner's Home and /ops). */
+export function scrubShoot(s: OpsShoot): OpsShoot {
   return {
     ...s,
     access: {

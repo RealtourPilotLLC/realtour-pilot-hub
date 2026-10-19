@@ -97,7 +97,11 @@ export type OutboxKind =
    *  the dispatch gate re-checks the client's matching toggle and the TEST
    *  floor at the moment of sending (never a global switch — Jordan pressing
    *  send is the decision). Not a CLIENT_KIND: no quiet-hours hold. */
-  | "onboarding";
+  | "onboarding"
+  /** Oct 19 2026: a TEAM text. At a shoot's start time, its creative gets the
+   *  job's special requests (lib/shootDayText). Not a CLIENT_KIND: a shoot on
+   *  a Saturday morning gets its text on Saturday morning. */
+  | "shoot_day";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
 /** CONTENT-PROGRAM kinds (W2-F, Sep 17 2026). Client-facing EMAILS from the
  *  program: a §24 reminder, a §22 "your scripts are ready" notice, a §21
@@ -112,7 +116,7 @@ const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcom
  *  enqueued unless its ProgramAutomation switch (`reminders`,
  *  `script_share_email`) is on — a missing row is off. */
 const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message"];
-const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding"];
+const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding", "shoot_day"];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
 export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
 /** R03 (Sep 28 2026): the kinds the rollout scope governs — the four program
@@ -954,6 +958,10 @@ export const confirmationKey = (projectId: string, shootDate: Date | null) => {
 export const welcomeKey = (clientId: string) => `welcome:${clientId}`;
 export const afterHoursKey = (clientId: string, periodKey: string) => `afterhours:${clientId}:${periodKey}`;
 export const staffKey = (teamMemberId: string, claimStamp: Date) => `staff:${teamMemberId}:${claimStamp.toISOString()}`;
+/** Oct 19 2026: one special-requests text per job, per creative, per ET shoot
+ *  day (lib/shootDayText). A second visit to the same job that day is not a
+ *  second text; a shoot moved to another day earns one on that day. */
+export const shootDayKey = (projectId: string, teamMemberId: string, shootDay: string) => `shoot_day:${projectId}:${teamMemberId}:${shootDay}`;
 /**
  * R4 — THE IDENTITY OF A MESSAGE SOMEBODY TYPED.
  *

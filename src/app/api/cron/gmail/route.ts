@@ -110,6 +110,19 @@ export async function GET(req: NextRequest) {
             }
           }
         }
+        // A shoot-day text (lib/shootDayText) answers to its own switch on the
+        // recovery path too: turned off since it was queued, it is held.
+        if (kind === "shoot_day") {
+          if (!switchOn.has("shootDayText")) {
+            const { internalAlertRules } = await import("@/lib/settings");
+            switchOn.set("shootDayText", await internalAlertRules().then((r) => r.shootDayText.enabled).catch(() => false));
+          }
+          if (!switchOn.get("shootDayText")) {
+            switchedOff.push("shoot_day: Special requests at the shoot is off");
+            return false;
+          }
+          return true;
+        }
         if (!isClientKind(kind)) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
         if (!windowOpen) return false;
@@ -136,7 +149,9 @@ export async function GET(req: NextRequest) {
           ? await recordDrainedSend(row, providerId)
           : kind === "onboarding"
             ? await import("@/lib/clientOnboarding").then(({ recordOnboardingOutboxSend }) => recordOnboardingOutboxSend(row, "recovered"))
-            : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
+            : kind === "shoot_day"
+              ? await import("@/lib/shootDayText").then(({ recordDrainedShootDayText }) => recordDrainedShootDayText(row, providerId))
+              : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
         if (note) recovered.push(note);
       },
     });
@@ -172,6 +187,16 @@ export async function GET(req: NextRequest) {
   // Best-effort by construction — sweepReplySla never throws — and the step()
   // wrapper keeps even a surprise failure from blocking Gmail polling.
   await step("replySla", () => sweepReplySla());
+
+  // THE SPECIAL REQUESTS AT THE SHOOT (Oct 19 2026, lib/shootDayText): at each
+  // appointment's start (and up to 30 minutes after, so a missed tick still
+  // sends), its creative gets one text with the job's special requests. Its
+  // own Settings switch; one per job, creative and shoot day through the
+  // outbox. Idle unless an appointment just started.
+  await step("shootDayText", async () => {
+    const { sweepShootDayTexts } = await import("@/lib/shootDayText");
+    return sweepShootDayTexts();
+  }, { maxMs: 20_000 });
 
   // KYLE'S REMINDERS, AUTOMATED (Oct 14 2026 comms audit). All three are staff
   // messages only, each behind its own Settings switch (Internal alerts), each

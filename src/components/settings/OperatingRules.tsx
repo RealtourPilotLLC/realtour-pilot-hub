@@ -136,6 +136,7 @@ const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; fi
   leadPing: { words: "the new-lead check, every 5 minutes", files: ["src/lib/leadDesk.ts"] },
   eveningPush: { words: "the 6 PM wrap, Monday to Saturday", files: ["src/lib/eveningPush.ts"] },
   photographerBrief: { words: "the 6 PM shoot briefs for tomorrow", files: ["src/lib/eveningPush.ts"] },
+  shootDayText: { words: "the shoot start check, every 5 minutes", files: ["src/lib/shootDayText.ts"] },
   promiseWatch: { words: "the promise check, every 5 minutes", files: ["src/lib/promiseWatch.ts"] },
   coverage: { words: "the client-reply pager, the late-photos alert and the review cover clock", files: ["src/lib/coverage.ts"] },
 };
@@ -348,6 +349,15 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           <ReadBy k="photographerBrief" />
         </div>
         <Toggle on={r.photographerBrief.enabled} onChange={(v) => set({ photographerBrief: { enabled: v } })} label="Night-before shoot brief" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Special requests at the shoot</p>
+          <p className="text-[13px] text-muted">At each shoot&rsquo;s start time, the photographer or videographer on it gets one text from the company line with the job&rsquo;s special requests: the order&rsquo;s special instructions, the client&rsquo;s open requests and the requests the office added. Door codes and who&rsquo;s there are left out (they are on the shoot screen). No special requests, no text.</p>
+          <ReadBy k="shootDayText" />
+        </div>
+        <Toggle on={r.shootDayText.enabled} onChange={(v) => set({ shootDayText: { enabled: v } })} label="Special requests at the shoot" />
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">

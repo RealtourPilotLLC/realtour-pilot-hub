@@ -94,8 +94,9 @@ async function main() {
   const keys = alertKeys(read("src/lib/settings.ts"));
   c.head("1 · the switches");
   // Six until Oct 14 2026, when the four Kyle-reminder switches joined (leadPing,
-  // eveningPush, photographerBrief, promiseWatch).
-  c.ok("InternalAlertRules parses into its ten keys", keys.length === 10, keys.join(", "));
+  // eveningPush, photographerBrief, promiseWatch); eleven since Oct 19 2026
+  // (shootDayText, the special requests texted at the shoot).
+  c.ok("InternalAlertRules parses into its eleven keys", keys.length === 11, keys.join(", "));
 
   const files = walk("src").filter((f) => !NOT_READERS.has(f));
   const texts = new Map(files.map((f) => [f, code(read(f))]));

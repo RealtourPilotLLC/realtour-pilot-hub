@@ -533,6 +533,9 @@ export type InternalAlertRules = {
   eveningPush: { enabled: boolean };
   /** The night-before brief to each photographer for tomorrow's shoots. */
   photographerBrief: { enabled: boolean };
+  /** At a shoot's start time, one text to its creative(s) with the job's
+   *  special requests (Oct 19 2026, lib/shootDayText). Nothing to say, no text. */
+  shootDayText: { enabled: boolean };
   /** Kyle's Slack 3 covered hours before a job's promise, with a drafted client update. */
   promiseWatch: { enabled: boolean };
   /**
@@ -573,6 +576,7 @@ export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
   leadPing: { enabled: true },
   eveningPush: { enabled: true },
   photographerBrief: { enabled: true },
+  shootDayText: { enabled: true },
   promiseWatch: { enabled: true },
   coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null },
 };
@@ -614,6 +618,8 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
     leadPing: { enabled: r.leadPing?.enabled !== false },
     eveningPush: { enabled: r.eveningPush?.enabled !== false },
     photographerBrief: { enabled: r.photographerBrief?.enabled !== false },
+    // A row saved before Oct 19 2026 has no shootDayText: missing reads as ON.
+    shootDayText: { enabled: r.shootDayText?.enabled !== false },
     promiseWatch: { enabled: r.promiseWatch?.enabled !== false },
     coverage,
   };
