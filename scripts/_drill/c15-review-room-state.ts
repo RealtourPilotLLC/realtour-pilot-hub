@@ -35,7 +35,9 @@ async function main() {
       c.ok(`${label}: video-only QC is a media/delivery check, never a photo set`, html.includes("Delivery checks") && html.includes("Media checks to finish") && !html.includes("Photo sets") && !html.includes("Hidden fixture media job"));
       c.ok(`${label}: Review Room does not repeat the delivery queue`, !html.includes("Delivery text outcome unconfirmed") && !html.includes("No delivery action is currently waiting"));
       if (label === "Kyle") {
-        const { default: home } = await import("../../src/app/page");
+        // Oct 19 2026: the daily checklist (and its Video Review block's
+        // delivery data) moved off Kyle's Home onto /ops.
+        const { default: home } = await import("../../src/app/ops/page");
         const homeTree = await home({ searchParams: Promise.resolve({}) });
         const data = (function find(tree: unknown): Record<string, unknown> | null {
           if (Array.isArray(tree)) return tree.map(find).find(Boolean) ?? null;
@@ -44,7 +46,7 @@ async function main() {
           return Object.values(tree.props).map(find).find(Boolean) ?? null;
         })(homeTree);
         const board = data?.readySend as import("../../src/lib/readyToSend").ReadyBoard;
-        c.ok("unknown delivery outcome remains in Kyle's actual Home data with its exact conversation", !!board.noticeIncidents?.some((incident) => incident.outboxId === notice.id && incident.state === "unknown"));
+        c.ok("unknown delivery outcome remains in Kyle's daily checklist data with its exact conversation", !!board.noticeIncidents?.some((incident) => incident.outboxId === notice.id && incident.state === "unknown"));
       }
     }
     await as(kyle);

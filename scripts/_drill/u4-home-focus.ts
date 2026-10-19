@@ -1,4 +1,7 @@
 // U4 Home role orientation, reader parity and preserved delivery/checklist anchors.
+// Oct 19 2026: the daily checklist moved off Home onto /ops (Jordan: "too much
+// on one screen"); the checklist checks below read /ops now, and Kyle's Home
+// is the five job tiles. Expectations changed only where that was the point.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { isValidElement } from "react";
 import { createRequire } from "node:module";
@@ -32,7 +35,7 @@ function textOf(tree: unknown): string {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Record<string, unknown>>(tree)) return tree;
@@ -50,6 +53,7 @@ async function main() {
     const { prisma } = await import("@/lib/prisma");
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { default: home } = await import("@/app/page");
+    const { default: ops } = await import("@/app/ops/page");
     const page = async (props: Parameters<typeof home>[0]) => settleHome(await home(props));
     const { getReviewQueue } = await import("@/lib/reviewRoom");
     const real = await prisma.client.create({ data: { name: "Real Agent" } });
@@ -97,25 +101,25 @@ async function main() {
     c.ok("failed assigned-review read retains known general queue and explicit warning", textOf(failedQueueTree).includes("The review queue could not be loaded") && failedNeeds.some((n) => n.key === "cuts" && n.count === 2));
     await signIn(kyle);
     const opsTree = await page({});
-    c.ok("backup reviewer retains the operations first screen", textOf(opsTree).includes("Deliveries and client follow-through") && !textOf(opsTree).includes("Your creative review desk"));
-    const routine = elements(opsTree, "HomeRoutine")[0];
-    // Oct 5 2026: Kyle's operations Home opens the daily checklist by default;
-    // the owner's and the creative review desk's stay folded.
-    c.ok("operations Home opens the daily checklist by default; owner and review desk keep it folded",
-      routine?.defaultOpen === true && elements(reviewTree, "HomeRoutine").every((r) => r.defaultOpen !== true));
-    const blocks = elements(routine.children, "Block");
+    // Oct 19 2026: Kyle's operations Home is the five job tiles now.
+    c.ok("backup reviewer retains the operations first screen", elements(opsTree, "JobTiles").length === 1 && !textOf(opsTree).includes("Your creative review desk"));
+    // Oct 19 2026: no Home carries the checklist; it is its own screen, /ops.
+    c.ok("the daily checklist left every Home for its own screen (/ops)",
+      [opsTree, reviewTree].every((t) => elements(t, "HomeRoutine").length === 0 && elements(t, "Block").length === 0));
+    const checklist = await settleHome(await ops({}));
+    const blocks = elements(checklist, "Block");
     const keys = blocks.map((b) => (b.def as { key: string }).key);
     // Oct 13 2026 (Jordan's audit): the duplicated comms/prep blocks, Lunch and the fixed admin text came out;
     // every anchor the page links to must still exist.
-    c.ok("optional checklist keeps every block the page links to (duplicates removed Oct 13)", keys.length >= 8 && new Set(keys).size === keys.length && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => keys.includes(id)) && String(routine.attention).includes("urgent work"), keys.join(","));
-    c.ok("urgent work section precedes the optional routine", namesOf(opsTree).indexOf("NeedsToday") < namesOf(opsTree).indexOf("HomeRoutine"));
+    c.ok("the checklist keeps every block the old anchors link to (duplicates removed Oct 13)", keys.length >= 8 && new Set(keys).size === keys.length && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => keys.includes(id)), keys.join(","));
+    c.ok("Kyle's job tiles come before the old items", namesOf(opsTree).indexOf("JobTiles") < namesOf(opsTree).indexOf("OldItemsCard"));
     const videoBlock = (function find(tree: unknown): unknown {
       if (Array.isArray(tree)) return tree.map(find).find(Boolean);
       if (!isValidElement<Record<string, unknown>>(tree)) return null;
       const type = tree.type as { name?: string };
       if (type.name === "Block" && (tree.props.def as { key: string }).key === "video-review") return tree;
       return Object.values(tree.props).map(find).find(Boolean);
-    })(routine.children);
+    })(blocks.length ? checklist : null);
     const renderedBlock = isValidElement<Record<string, unknown>>(videoBlock) ? (videoBlock.type as (props: Record<string, unknown>) => unknown)(videoBlock.props) : null;
     const bodyElement = (function find(tree: unknown): unknown {
       if (Array.isArray(tree)) return tree.map(find).find(Boolean);
@@ -127,8 +131,8 @@ async function main() {
     c.ok("delivery evidence/actions remain reachable in the original video-review block", elements(renderedBody, "VideoReviewCard")[0]?.showReady === true);
     await signIn(owner);
     const ownerTree = await page({});
-    c.ok("owner Home keeps the daily checklist folded", elements(ownerTree, "HomeRoutine").length === 1 && elements(ownerTree, "HomeRoutine")[0].defaultOpen !== true);
-    c.ok("owner decision view preserves lower financial and private-task sections", textOf(ownerTree).includes("Decisions and delivery exceptions") && elements(ownerTree, "QuickAdd").length === 1 && elements(ownerTree, "PulseStrip").length === 1);
+    c.ok("owner Home no longer carries the checklist (it is on /ops)", elements(ownerTree, "HomeRoutine").length === 0 && elements(ownerTree, "Block").length === 0);
+    c.ok("owner view preserves this week, what is behind, his private list and the money", elements(ownerTree, "OwnerWeekCard").length === 1 && elements(ownerTree, "BehindCard").length === 1 && elements(ownerTree, "QuickAdd").length === 1 && elements(ownerTree, "PulseStrip").length === 1);
     c.ok("Home presentation never completes tasks or starts editing", (await prisma.smartTask.findUniqueOrThrow({ where: { id: task.id } })).status === "OPEN" && await prisma.editorWorkEvent.count() === 0);
     c.ok("Home checks reach no providers and send no client communication", fence.blocked.length === 0 && fence.faked.length === 0 && await prisma.outboxMessage.count() === 0);
     c.summary();

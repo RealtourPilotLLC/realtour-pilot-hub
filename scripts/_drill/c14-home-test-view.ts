@@ -1,4 +1,8 @@
 // C14: explicit Home scope reaches the same operational lists and survives delivery return links.
+// Oct 19 2026: the daily checklist (the time blocks and their counts) moved off
+// Home onto /ops, so the block checks read /ops with the same ?test= flag; the
+// two footer links Home used to repeat from the sidebar ("My work", "Client
+// months") went with Jordan's "too much on one screen" and are no longer expected.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { createElement, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -36,7 +40,7 @@ function hrefs(tree: unknown): string[] {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -55,6 +59,7 @@ async function main() {
     const { prisma } = await import("@/lib/prisma");
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { default: home } = await import("@/app/page");
+    const { default: opsPage } = await import("@/app/ops/page");
     const { default: review } = await import("@/app/review/page");
     const { getReviewQueue } = await import("@/lib/reviewRoom");
     const { boardWhere, photoQcWhere } = await import("@/lib/taskBoard");
@@ -91,6 +96,7 @@ async function main() {
     const beforeTasks = await prisma.smartTask.findMany({ orderBy: { id: "asc" } });
     const signIn = (u: { id: string; email: string; role: string }) => setSession({ uid: u.id, email: u.email, role: u.role });
     const render = async (test?: string | string[]) => settleHome(await home({ searchParams: Promise.resolve({ test }) }));
+    const renderOps = async (test?: string | string[]) => settleHome(await opsPage({ searchParams: Promise.resolve({ test }) }));
     await clearSession();
     let anonymous = "";
     try { await render("1"); } catch (error) { if (error instanceof Redirect) anonymous = error.href; else throw error; }
@@ -102,8 +108,10 @@ async function main() {
     await signIn(owner);
     const normal = await render();
     const all = await render("1");
-    const normalBlock = elements(normal, "Block")[0];
-    const allBlock = elements(all, "Block")[0];
+    const normalOps = await renderOps();
+    const allOps = await renderOps("1");
+    const normalBlock = elements(normalOps, "Block")[0];
+    const allBlock = elements(allOps, "Block")[0];
     const normalCounts = normalBlock.counts as { boardOpen: number; qc: number; textsToSend: number; emailsWaiting: number };
     const allCounts = allBlock.counts as typeof normalCounts;
     const normalDay = normalBlock.d as import("../../src/lib/opsDay").OpsDay;
@@ -117,15 +125,17 @@ async function main() {
     c.ok("appointment, review and ready-delivery rows use the explicit Home scope", normalDay.todayShoots.length === 1 && allDay.todayShoots.length === 2 && normalDay.videoReview.waiting.length === 1 && allDay.videoReview.waiting.length === 2 && normalDay.readySend.ready.length === 1 && allDay.readySend.ready.length === 2);
     c.ok("new client card restores only the fixture excluded by normal view", (elements(normal, "NewClientCard")[0].clients as { id: string }[]).length === 1 && (elements(all, "NewClientCard")[0].clients as { id: string }[]).length === 2);
     c.ok("test view names supported queue scopes and unchanged Finance definitions", textOf(all).includes("Showing real and test records in Home workloads") && textOf(all).includes("Editing Room, Schedule and delivery lists keep this view") && textOf(all).includes("Finance’s existing definitions") && !textOf(normal).includes("Showing real and test records"));
-    const normalLinks = hrefs(expand(normal));
-    const allLinks = hrefs(expand(all));
-    c.ok("normal Home links do not silently opt into test scope", !normalLinks.some((href) => /[?&]test=1/.test(href) && href !== "/?test=1"));
-    c.ok("test workload destinations preserve scope through nested Home blocks", ["/review?test=1", "/content?test=1", "/tasks?tab=work&who=me&test=1", "/communications?tab=outbox&test=1", "/tasks?tab=comms&via=email&test=1", "/tasks?tab=other&test=1", "/tasks?tab=slack&test=1"].every((href) => allLinks.includes(href)), allLinks.join("\n"));
-    const fullQc = elements(expand(all), "LoopActions");
+    const normalLinks = [...hrefs(expand(normal)), ...hrefs(expand(normalOps))];
+    const allLinks = [...hrefs(expand(all)), ...hrefs(expand(allOps))];
+    c.ok("normal Home links do not silently opt into test scope", !normalLinks.some((href) => /[?&]test=1/.test(href) && href !== "/?test=1" && href !== "/ops?test=1"));
+    c.ok("test workload destinations preserve scope through the checklist blocks", ["/review?test=1", "/tasks?tab=comms&via=email&test=1", "/tasks?tab=other&test=1", "/tasks?tab=slack&test=1", "/?test=1"].every((href) => allLinks.includes(href)), allLinks.join("\n"));
+    const { ChecklistLinks } = await import("@/components/home/OpsHomeParts");
+    c.ok("Home's line to the checklist keeps the test scope", elements(all, "ChecklistLinks")[0]?.includeTest === true && hrefs(ChecklistLinks({ includeTest: true })).every((h) => h.startsWith("/ops?test=1")) && elements(normal, "ChecklistLinks")[0]?.includeTest === false);
+    const fullQc = elements(expand(allOps), "LoopActions");
     c.ok("synthetic Slack loop deep links retain task ID and scope", fullQc.length === 2 && fullQc.every((p) => String(p.viewHref).includes("tab=slack&task=") && String(p.viewHref).endsWith("&test=1")));
     c.ok("exact-cut links retain recorded version without extra list flags", allLinks.includes(`/review/${jobs[1].project.id}?cut=${jobs[1].cut.id}`));
     c.ok("figures from the books and Finance routes retain their definitions", JSON.stringify(elements(normal, "MoneyStat")) === JSON.stringify(elements(all, "MoneyStat")) && allLinks.includes("/sales") && !allLinks.some((href) => href.startsWith("/sales?")));
-    c.ok("only scalar test=1 enables the scope", (elements(await render("true"), "Block")[0].counts as typeof normalCounts).boardOpen === 1 && (elements(await render(["1", "1"]), "Block")[0].counts as typeof normalCounts).boardOpen === 1);
+    c.ok("only scalar test=1 enables the scope", (elements(await renderOps("true"), "Block")[0].counts as typeof normalCounts).boardOpen === 1 && (elements(await renderOps(["1", "1"]), "Block")[0].counts as typeof normalCounts).boardOpen === 1);
     await signIn(admin);
     const assigned = await render("1");
     const needs = elements(assigned, "NeedsToday")[0].needs as { key: string; count: number; href: string }[];

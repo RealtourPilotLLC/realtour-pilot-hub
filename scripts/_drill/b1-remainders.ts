@@ -511,8 +511,10 @@ async function main() {
         return r.workWord !== "In editing — not confirmed";
       });
       c.ok("new: each EDITING row says who is on it — active, paused, or \"not confirmed\" — from the same work reader", rows.length > 0 && wrong.length === 0 && rows.some((r) => /^In editing — (?!not)/.test(r.workWord ?? "")) && rows.some((r) => r.workWord === "In editing — not confirmed"), `${rows.length} rows; wrong: ${wrong.map((r) => `${r.title}=${r.workWord}`).join(", ")}`);
-      const page = fs.readFileSync(path.join(REPO, "src/app/page.tsx"), "utf8");
-      c.ok("…and the home renders that word, not the stage", /r\.workWord \?\? "In editing — not confirmed"/.test(page) && !/r\.status === "REVIEW" \? "in review" : "editing"/.test(page));
+      // Oct 19 2026: the pipeline rows render on the daily checklist (/ops),
+      // whose body moved from src/app/page.tsx to components/home/DailyChecklist.
+      const page = fs.readFileSync(path.join(REPO, "src/components/home/DailyChecklist.tsx"), "utf8");
+      c.ok("…and the checklist renders that word, not the stage", /r\.workWord \?\? "In editing — not confirmed"/.test(page) && !/r\.status === "REVIEW" \? "in review" : "editing"/.test(page));
     }
   }
 

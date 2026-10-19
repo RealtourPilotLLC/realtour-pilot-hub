@@ -42,10 +42,10 @@ export function ExceptionsCard({
     return (
       <section role="status" className="panel-shadow rounded-2xl border border-warning/30 bg-surface p-4 sm:p-5">
         <h2 className="flex items-center gap-2 text-base font-semibold"><TriangleAlert aria-hidden="true" className="size-4 shrink-0 text-warning" />Exceptions could not be checked</h2>
-        <p className="mt-2 text-sm text-muted">Review, assignment, or delivery exceptions may still be waiting. Retry Home or inspect the work lists.</p>
+        <p className="mt-2 text-sm text-muted">Review, assignment, or delivery exceptions may still be waiting. Retry, or inspect the work lists.</p>
         <div className="mt-3 flex flex-wrap gap-2">
           {/* A full navigation retries this dynamic page even at the same URL. */}
-          <a href={`/${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Retry Home</a>
+          <a href={`/ops${scope}#exceptions`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Retry</a>
           {canReview && <Link href={`/review${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open Review Room</Link>}
           {canEdit && <Link href={`/editing${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open Editing Room</Link>}
         </div>

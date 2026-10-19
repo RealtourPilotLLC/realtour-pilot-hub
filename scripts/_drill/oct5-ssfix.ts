@@ -696,7 +696,7 @@ async function main() {
     // =========================================================================
     await section("§15 · Home: money that couldn't load says so; an untimed shoot; held renders (items 17, 15)", async () => {
       const { default: home } = await import("@/app/page");
-      const STREAMED = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+      const STREAMED = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients"]);
       const settle = async (tree: unknown): Promise<unknown> => {
         if (Array.isArray(tree)) return Promise.all(tree.map(settle));
         if (!isValidElement<Props>(tree)) return tree;
@@ -716,17 +716,26 @@ async function main() {
         return { ...d, todayShoots: shoots, readySend: { ...rs, ready, rendering } };
       }) as never;
       await prisma.project.create({ data: { title: "77 Untimed Way, Media, PA", clientId: client.id, status: "BOOKED", shootDate: new Date(Date.now() - 2 * 3_600_000) } });
-      await as(uJordan);
+      // Oct 19 2026: the owner's Home no longer carries the today line or the
+      // needs list (Jordan: his week and what is behind instead); both still
+      // live on the review seat's Home (James), which reads the same day.
+      const { ShootsTodayLine } = await import("@/components/home/OpsHomeParts");
       let tree: unknown;
+      let reviewTree: unknown;
       try {
+        await as(uJordan);
         tree = await settle(await home({}));
+        await as(uJames);
+        reviewTree = await settle(await home({}));
       } finally {
         delete fakes.ownerPulse; delete fakes.buildOpsDay;
       }
       const all = textOf(tree);
       c.ok("the books read failed: the owner's money strip SAYS it couldn't load (it used to vanish)", named(tree, "p").some((p) => p["data-money-unavailable"] !== undefined && textOf(p.children).includes("The books (profit, bank, owed to you)")), all.slice(0, 200));
-      c.ok("today's shoot has no time: the line says so, not \"all started\"", named(tree, "span").some((p) => p["data-untimed-shoots"] !== undefined && textOf(p.children).includes("77 Untimed Way has no time set")) && !all.includes("all started"));
-      const needs = named(tree, "NeedsToday")[0]?.needs as { key: string; detail?: string }[] | undefined;
+      const lineProps = named(reviewTree, "ShootsTodayLine")[0] as Parameters<typeof ShootsTodayLine>[0] | undefined;
+      const line = lineProps ? ShootsTodayLine(lineProps) : null;
+      c.ok("today's shoot has no time: the line says so, not \"all started\"", named(line, "span").some((p) => p["data-untimed-shoots"] !== undefined && textOf(p.children).includes("77 Untimed Way has no time set")) && !textOf(line).includes("all started"));
+      const needs = named(reviewTree, "NeedsToday")[0]?.needs as { key: string; detail?: string }[] | undefined;
       const toSend = needs?.find((n) => n.key === "tosend");
       c.ok("the to-send row: \"1 more still processing · 1 1080p on hold — Kyle has the next step\" — a held file is never \"processing\"", !!toSend?.detail?.includes("1 more still processing") && toSend.detail.includes("1 1080p on hold — Kyle has the next step"), toSend?.detail);
     });

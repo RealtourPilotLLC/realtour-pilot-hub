@@ -6,7 +6,12 @@ import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import {
   Activity,
+  CalendarClock,
   Clapperboard,
+  ClipboardList,
+  Film,
+  ListChecks,
+  MessagesSquare,
   Images,
   SlidersHorizontal,
   LayoutDashboard,
@@ -75,9 +80,9 @@ const SECTIONS: NavSection[] = [
       // what needs you today, the Ops Day time blocks with their live contents,
       // today's shoots, the owner's own list, then the money. Three nav items
       // retired into it:
-      //   · Ops Day (/ops)          — the whole screen moved here; the route is
-      //                               a redirect stub so every #block link and
-      //                               ADMIN's homeFor("/ops") still land right.
+      //   · Ops Day (/ops)          — moved here Sep 2, and back out Oct 19
+      //                               2026 as the "Daily checklist" (below, in
+      //                               the Operations group), block ids kept.
       //   · My Day (/day)           — the owner's to-dos + business money are
       //                               the "Your list" and money sections here.
       //   · Project Tracker (/pipeline) — the delivery board is the Production
@@ -92,10 +97,19 @@ const SECTIONS: NavSection[] = [
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       // The owner's quality desk — cuts to review, photo QC, feedback loops.
       { label: "Review Room", href: "/review", icon: MonitorPlay, key: "review" },
-      // Listing photos from edit to delivered (Oct 14 2026, docs/photo-delivery):
-      // the queue, AI QC, the AutoHDR Fix Cart and the delivery check. Rides
-      // the `ops` PageKey (owner + office), like Ops Day.
-      { label: "Photo Delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
+      // KYLE'S FIVE JOBS + THE CHECKLIST (Oct 19 2026, Jordan: "It should be
+      // organized into separate screens"). One screen per job, each the
+      // destination of a Home tile, plus the daily checklist that moved off
+      // Home. All ride the `ops` PageKey (owner + office), so no new
+      // permission; sidebarNavigation files them in the "Operations" group.
+      // Photo delivery (Oct 14 2026, docs/photo-delivery): the queue, AI QC,
+      // the AutoHDR Fix Cart and the delivery check.
+      { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
+      { label: "Video delivery", href: "/ops/video-delivery", icon: Film, key: "ops" },
+      { label: "Client messages", href: "/ops/messages", icon: MessagesSquare, key: "ops" },
+      { label: "Special requests", href: "/ops/requests", icon: ClipboardList, key: "ops" },
+      { label: "Scheduling", href: "/ops/scheduling", icon: CalendarClock, key: "ops" },
+      { label: "Daily checklist", href: "/ops", icon: ListChecks, key: "ops" },
       // Feedback about the WORK: what clients said (the delivery-text form +
       // unhappy texts/emails) and how each photographer is shooting. Distinct
       // from "Feedback & requests" in System, which is feedback about the HUB.

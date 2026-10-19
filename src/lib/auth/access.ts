@@ -31,7 +31,7 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "tasks", label: "Tasks", href: "/tasks" },
   // Kyle's guided operating day (Jordan's Daily Operations & Client Experience
   // Structure, Sep 1 2026): time-blocked control tower with live data per block.
-  { key: "ops", label: "Ops Day", href: "/ops" },
+  { key: "ops", label: "Operations", href: "/ops" },
   // The Review Room — the owner's quality desk: cuts editors submitted, photo
   // sets in QC, and open feedback follow-through. Owner/admin see all of that;
   // a PHOTOGRAPHER opening /review gets the same room narrowed to the jobs they

@@ -1,7 +1,10 @@
 /** Presentation groups for destinations that Sidebar has already authorized. */
 const SIDEBAR_GROUPS = [
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/tasks", "/schedule", "/communications"] },
-  { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/ops/photo-delivery", "/upload", "/shoot"] },
+  // Oct 19 2026: Kyle's five jobs, one screen each, and the daily checklist
+  // (the `ops` PageKey: owner and office). Open by default: it is his day.
+  { id: "operations", title: "Operations", frequent: true, paths: ["/ops/photo-delivery", "/ops/video-delivery", "/ops/messages", "/ops/requests", "/ops/scheduling", "/ops"] },
+  { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
   // Content Program this week, and a folded group hid both doors.
   { id: "clients", title: "Clients", frequent: true, paths: ["/content", "/content/activity", "/clients"] },

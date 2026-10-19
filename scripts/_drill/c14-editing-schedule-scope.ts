@@ -27,18 +27,13 @@ function elements(tree: unknown, name: string): Props[] {
   const type = tree.type as string | { name?: string };
   return [...((typeof type === "string" ? type : type.name) === name ? [tree.props] : []), ...Object.values(tree.props).flatMap((part) => elements(part, name))];
 }
-function hrefs(tree: unknown): string[] {
-  if (Array.isArray(tree)) return tree.flatMap(hrefs);
-  if (!isValidElement<Props>(tree)) return [];
-  return [...(typeof tree.props.href === "string" ? [tree.props.href] : []), ...Object.values(tree.props).flatMap(hrefs)];
-}
 function queueRows(tree: unknown, key: "notDone" | "upcoming" | "done") {
   return elements(tree, "SimpleQueue")[0]?.[key] as QueueRow[] | undefined ?? [];
 }
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -183,7 +178,12 @@ async function main() {
     const dialHtml = renderToStaticMarkup(createElement(QualityDials, { dials, includeTest: true }));
     c.ok("SLA dial labels its existing sample definition and links to matching explicit scope", dialHtml.includes("in the SLA sample") && dialHtml.includes('href="/editing?test=1"') && dialHtml.includes("also includes waiting and upcoming projects"));
     const homeTest = await settleHome(await home({ searchParams: Promise.resolve({ test: "1" }) }));
-    c.ok("Home composes explicit record scope through week and SLA presentations", elements(homeTest, "WeekStrip")[0].includeTest === true && elements(homeTest, "QualityDials")[0].includeTest === true && hrefs(homeTest).includes("/schedule?test=1"));
+    // Oct 19 2026: the week strip moved with today's shoot cards onto the daily
+    // checklist (/ops), and Home's footer link to /schedule went with Jordan's
+    // "too much on one screen"; the scope must still carry to both places.
+    const { default: opsPage } = await import("@/app/ops/page");
+    const opsTest = await settleHome(await opsPage({ searchParams: Promise.resolve({ test: "1" }) }));
+    c.ok("Home and the checklist compose explicit record scope through week and SLA presentations", elements(opsTest, "WeekStrip")[0]?.includeTest === true && elements(homeTest, "QualityDials")[0]?.includeTest === true);
     c.ok("scope reads preserve assignments, manual work, source tasks, settings and client-send boundary", before === await sourceSnapshot() && await prisma.outboxMessage.count() === 0 && fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();
   } finally { fence.restore(); await db.stop(); }

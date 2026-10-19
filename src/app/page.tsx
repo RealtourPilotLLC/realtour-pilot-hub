@@ -1,359 +1,81 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import {
-  AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Clapperboard,
-  ClipboardCheck, Clock, CloudSun, ExternalLink, Hourglass, Inbox,
-  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Send, Sunrise, Zap,
-  Flag,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronDown, Inbox } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Avatar } from "@/components/ui/Avatar";
 import { authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess, contentTier, homeFor } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { cn, formatMoney } from "@/lib/utils";
 import { foldNeeds } from "@/lib/homeNeeds";
-import { etDate, etDayKey, etDayStartUtc, etFullDate, etTime , etDateTime } from "@/lib/datetime";
+import { etAddDays, etDate, etDayKey, etFullDate, etTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
-import { DayBlock, DayBlockJumps } from "@/components/ops/DayBlock";
-import { QcComplete, QcCategoryDone } from "@/components/ops/QcComplete";
-import { LoopActions } from "@/components/ops/LoopActions";
-import { ReadyToSendCard, ReadyToSendHeading } from "@/components/ops/ReadyToSendCard";
-import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
+import { DayBlock } from "@/components/ops/DayBlock";
 import { ExceptionsCard } from "@/components/ops/ExceptionsCard";
 import { emptyExceptionBoard, opsExceptionsBoard, type OpsExceptionBoard } from "@/lib/opsExceptions";
-import { StuckJobs } from "@/components/dashboard/StuckJobs";
-import { WeekStrip } from "@/components/dashboard/WeekStrip";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
 import { QualityDials } from "@/components/dashboard/QualityDials";
-import { DeliveryBoardView } from "@/components/tracker/DeliveryBoardView";
 import { QuickAdd } from "@/components/day/QuickAdd";
 import { TodoRow } from "@/components/day/TodoRow";
 import { FinishedList } from "@/components/day/FinishedList";
-import {
-  buildOpsDay, loopsZeroState, tallyLoops, handledByPeopleToday, scrubOpsDayMoney, ownerUnansweredView,
-  type OpsDay, type OpsLoop, type OpsQcRow, type OpsShoot,
-} from "@/lib/opsDay";
+import { buildOpsDay, tallyLoops, scrubOpsDayMoney, type OpsDay } from "@/lib/opsDay";
 import { deliveryBoard, type DeliveryBoard } from "@/lib/deliveryBoard";
 import { ownerTodoLists } from "@/lib/ownerDay";
 import { ownerPulse } from "@/lib/ownerPulse";
-import {
-  getStuckJobs, getShootWindow,
-  getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials,
-  getFlaggedForMe } from "@/lib/queries";
+import { getStuckJobs, getShootWindow, getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials, getFlaggedForMe } from "@/lib/queries";
 import { scrubMoney } from "@/lib/text";
-import { isNeedsAssigning } from "@/lib/triage";
-import { boardWhere, photoQcWhere } from "@/lib/taskBoard";
-import { clientTextWhere } from "@/lib/clientTexts";
-import { unansweredCommsBoard } from "@/lib/commsBoard";
-import type { VideoCutState } from "@/lib/reviewCuts";
-import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
+import { photoQcWhere } from "@/lib/taskBoard";
 import { NewClientCard } from "@/components/clients/NewClientCard";
 import { newClientsForDashboard } from "@/lib/newClients";
-import { listAssignees, slugForName, viewerAssigneeKey } from "@/lib/assignees";
+import { listAssignees, slugForName, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { reviewerChain } from "@/lib/reviewerAssignment";
 import { getReviewQueue, followUpHref } from "@/lib/reviewRoom";
-import { HomeRoutine } from "@/components/dashboard/HomeRoutine";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { openLeadsFor } from "@/lib/leadDesk";
+import { listOldItems, MAX_PUSH_DAYS, OLD_ITEMS_ON_HOME, type OldItemsRead } from "@/lib/taskAging";
+import { opsHomeTiles, ownerWeek, todayShootsLine, unavailableTiles, type OpsTiles, type OwnerWeek } from "@/lib/opsHome";
+import { ageText, deliveryUnavailable, etMinutes, listingQc, offPageNumbers, rushShoots } from "@/components/home/DailyChecklist";
+import { HomeAnchorForward } from "@/components/home/HomeAnchorForward";
+import { opsAnchor } from "@/lib/homeAnchors";
+import {
+  BehindCard, ChecklistLinks, FlaggedBanner, JobTiles, OldItemsCard, OwnerWeekCard, ShootsTodayLine, VideoBehindBanner,
+} from "@/components/home/OpsHomeParts";
 
 export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
-// HOME — one screen per role (Jordan, Sep 2: "I want the ops day screen
-// essentially combined with my dashboard").
+// HOME — one screen per role.
 //
-// This page is the merge of four surfaces that all tried to be the morning
-// screen: the old Dashboard (counts + money), Ops Day (the guided operating
-// day), My Day (the owner's personal list + business money) and the Project
-// Tracker (the delivery board). /ops, /day and /pipeline keep their routes —
-// /ops now redirects here, the other two are simply off the nav.
+// Oct 19 2026 (Jordan): "There's just too much on one screen. It should be
+// organized into separate screens. … His page can just be made simpler." and
+// "I want a way to see on my side how we're doing this week, what we're
+// behind on. My screen is way overloaded too."
 //
-// Action before information: compact role orientation, fixed appointments,
-// urgent delivery and next actions first. Kyle's timed operating checklist is
-// optional below; owner finances remain at the end. Existing anchors survive.
+//   KYLE (operations): flagged-for-you · the video banner when we are behind
+//     · five job tiles (photos, videos, client messages, special requests,
+//     scheduling: due today / behind / oldest, each opening its own screen)
+//     · today's shoots in one line · old items to clear · one line to the
+//     daily checklist. The 10-block checklist moved to /ops (block ids kept;
+//     an old "/#loops" link is forwarded there by HomeAnchorForward), the
+//     delivery board stays at /pipeline, stuck jobs, new clients and the
+//     radar moved to the checklist screen, and the office-wide "running late"
+//     and "to assign" rows (72 of 92 were not his) left his screen.
+//   JORDAN (owner): this week against last · what we're behind on (the same
+//     five jobs, team-wide, plus the team's old items) · his own list · money,
+//     with the 30-day trends folded under it.
+//   JAMES (the review seat): his review desk, unchanged in substance; its
+//     anchors now open the checklist screen.
 //
-// THE RULE FOR EVERY NUMBER (audit fault #9, Sep 2 2026): a count is computed
-// with THE QUERY OF THE LIST IT LINKS TO. Where a number links to a section on
-// this page, it is literally the length of the array that section renders, so
-// the two cannot drift. Where it links off-page, it is the destination's own
-// query, restated here with a comment saying which.
+// THE RULE FOR EVERY NUMBER (audit fault #9, Sep 2 2026) still holds: a count
+// is computed with THE QUERY OF THE LIST IT LINKS TO (lib/opsHome says which
+// function feeds each tile).
 //
-// Deliberately NOT on this page any more:
-//   · Ops Day's six stat tiles — every one of them is now either a row in
-//     "What needs you today" or a badge on its own block. The same number
-//     twice on one screen is how dashboards start lying.
-//   · The old dashboard's "texts unanswered" chip — it counted phone threads
-//     including unmatched numbers while the comms blocks counted CLIENTS, so
-//     the merged page would have carried two different "people waiting"
-//     numbers. The reply queue keeps its own count next to its own name,
-//     inside the comms block.
+// Kyle's Home no longer builds the whole operating day (buildOpsDay), so a
+// Home render no longer writes the delivery follow-up health rows: that write
+// now happens only where the follow-up lanes are shown, on /ops.
 // ---------------------------------------------------------------------------
-
-const ET = "America/New_York";
-
-function etMinutes(d: Date): number {
-  const [h, m] = d
-    .toLocaleTimeString("en-US", { timeZone: ET, hour: "2-digit", minute: "2-digit", hour12: false })
-    .split(":")
-    .map(Number);
-  return h * 60 + m;
-}
-const fmtTime = (iso: string) =>
-  new Date(iso).toLocaleTimeString("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit" });
-const fmtDay = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric" });
-// "Tue 9:00 AM" — a turnaround promise needs the hour, not just the day.
-const fmtDayTime = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", { timeZone: ET, weekday: "short", hour: "numeric", minute: "2-digit" });
-// "3h" / "2 days" — how long something has sat, in the unit a person would use.
-function ageText(iso: string, now: Date): string {
-  const h = Math.floor((now.getTime() - Date.parse(iso)) / 3_600_000);
-  if (h < 1) return "just now";
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  return `${d} day${d === 1 ? "" : "s"}`;
-}
-function loopKind(kind: string): string {
-  return kind === "comms_followup" ? "Follow-up"
-    : kind === "internal_instruction" ? "Instruction"
-    : kind === "callback" ? "Callback"
-    : kind === "client_reply" ? "Reply owed"
-    : "Follow-up";
-}
-
-// How many open loops render before the rest fold into "Show N more". The
-// block's job is what needs a move TODAY (Jordan, Sep 2: "it's also too many
-// things there") — the tail is one tap away in the same card, never dropped.
-const LOOPS_SHOWN = 6;
-
-/** Split the viewer's loops into: act now · not due yet · with someone else. */
-function splitLoops(loops: OpsLoop[]): { act: OpsLoop[]; later: OpsLoop[]; elsewhere: OpsLoop[] } {
-  const mine = loops.filter((l) => l.mine);
-  return {
-    act: mine.filter((l) => l.actNow),
-    later: mine.filter((l) => !l.actNow),
-    elsewhere: loops.filter((l) => !l.mine),
-  };
-}
-
-// Listing QC only. Monthly personal-branding content runs on its own rhythm (a
-// BATCH of videos on a 7-10 business-day window) and has its own card.
-const listingQc = (d: OpsDay) => d.qc.filter((q) => !q.monthly);
-
-// ---------------------------------------------------------------------------
-// The off-page numbers, each one its destination's own query.
-// ---------------------------------------------------------------------------
-
-// Home counts use the destinations' shared queries, including their client
-// scope. Editors are redirected before this non-editor board is rendered.
-async function offPageNumbers(excludeClientIds: string[] = []) {
-  const [board, qc, textsToSend, emailsWaiting] = await Promise.all([
-    // The Other tab's rows themselves (a dozen or so) — "running late" and
-    // "to assign" are then counted off that set with the tab's OWN arithmetic,
-    // so a row can never disagree with the header it lands on.
-    prisma.smartTask.findMany({
-      where: boardWhere(null, { excludeClientIds }),
-      select: { assignedKey: true, taskType: true, dueAt: true },
-    }),
-    prisma.smartTask.count({ where: photoQcWhere({ excludeClientIds }) }),
-    // The comms Outbox lists exactly clientTextWhere() (ClientTextsPanel), and
-    // its tab badge is this same count.
-    prisma.smartTask.count({ where: clientTextWhere(new Date(), { excludeClientIds }) }),
-    // The Comms tab's Email sub-tab renders one card per sender-group; its own
-    // "Email N" pill is this number.
-    unansweredCommsBoard("email", new Date(), { excludeClientIds }).then((g) => g.length).catch(() => 0),
-  ]);
-  // BoardView's overdue rule verbatim: due before the START of today in ET, so
-  // something due later today is not "late".
-  const startToday = etDayStartUtc(new Date()).getTime();
-  return {
-    boardOpen: board.length,
-    late: board.filter((t) => t.dueAt !== null && t.dueAt.getTime() < startToday).length,
-    toAssign: board.filter(isNeedsAssigning).length,
-    qc,
-    textsToSend,
-    emailsWaiting,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// The operating day — Jordan's "Daily Operations & Client Experience Structure"
-// as time blocks with live contents. Lifted here from /ops unchanged except for
-// the Morning Control Tower, whose shoot cards now live in their own section
-// below (they were the one thing this page would otherwise render twice).
-// ---------------------------------------------------------------------------
-
-type BlockDef = { key: string; from: number; to: number; time: string; title: string; short: string; icon: LucideIcon; goal: string };
-const BLOCKS: BlockDef[] = [
-  { key: "tower", from: 9 * 60, to: 9 * 60 + 30, time: "9:00 – 9:30", title: "Morning Control Tower", short: "Tower", icon: Sunrise, goal: "Know what's happening today, what needs attention, and what could go wrong — before the day gets moving." },
-  { key: "qc-am", from: 9 * 60 + 30, to: 10 * 60 + 15, time: "9:30 – 10:15", title: "QC + Morning Deliveries", short: "QC", icon: ClipboardCheck, goal: "Catch mistakes before the client does; get finished work delivered early. Only what's due today lives here — the backlog has its own card." },
-  { key: "overdue", from: 10 * 60 + 15, to: 10 * 60 + 30, time: "10:15 – 10:30", title: "Overdue Check", short: "Overdue", icon: AlarmClock, goal: "Everything past its promised date gets a decision today: chase it, close it, or tell the client. Nothing sits late in silence." },
-  // Oct 13 2026 (Jordan, "as simple as possible"): the day used to carry three
-  // identical comms sweeps, two identical tomorrow-prep blocks, a Lunch block
-  // ("Eat.") and a fixed admin paragraph. One of each list stays; the others
-  // printed the same rows again later in the day.
-  { key: "comms-1", from: 10 * 60 + 30, to: 11 * 60, time: "10:30 – 11:00", title: "Client Communication Sweep", short: "Comms", icon: MessageSquare, goal: "Nobody waits wondering if we got their message." },
-  { key: "prep", from: 11 * 60, to: 11 * 60 + 30, time: "11:00 – 11:30", title: "Tomorrow + Upcoming Prep", short: "Tomorrow", icon: Route, goal: "Tomorrow is operationally ready before today ends — problems get solved the day before, not 30 minutes before the shoot." },
-  { key: "loops", from: 11 * 60 + 30, to: 12 * 60, time: "11:30 – 12:00", title: "Open Loops + Follow-Ups", short: "Loops", icon: RefreshCw, goal: "Nothing stays stuck because someone forgot to follow up. Ask: what am I waiting on that could become a problem?" },
-  // Video Review (Jordan, Sep 1): "a card for videos in revision and videos
-  // waiting on review." Every uploaded cut gets a verdict here; the pipeline
-  // check moves to 1:30 so nothing overlaps.
-  { key: "video-review", from: 13 * 60, to: 13 * 60 + 30, time: "1:00 – 1:30", title: "Video Review", short: "Video", icon: PlayCircle, goal: "Every cut the editors uploaded gets a verdict today — approve it, or send it back with notes. Cuts in revisions stay listed until the next version lands." },
-  { key: "pipeline", from: 13 * 60 + 30, to: 14 * 60, time: "1:30 – 2:00", title: "Production Pipeline Check", short: "Pipeline", icon: ListChecks, goal: "Know what's due today, what's holding each job up, and what's coming — before the client asks." },
-  { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", short: "Monthly", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
-  { key: "closeout", from: 17 * 60 + 30, to: 18 * 60, time: "5:30 – 6:00", title: "Daily Closeout", short: "Closeout", icon: Moon, goal: "Review the whole operation before ending the day — escalate anything that needs Jordan." },
-];
-
-/** The closeout checklist, computed once so the badge and the rows agree. */
-function closeoutRows(d: OpsDay): { ok: boolean; label: string }[] {
-  const c = d.closeout;
-  return [
-    { ok: c.todayShootsDone, label: c.todayShootsDone ? "Today's shoots all happened" : "Some of today's shoots haven't happened yet" },
-    { ok: c.todayDebriefsMissing === 0, label: c.todayDebriefsMissing === 0 ? "Every shot job's upload page is submitted" : `${c.todayDebriefsMissing} upload page${c.todayDebriefsMissing === 1 ? "" : "s"} still not submitted (10 PM text will chase)` },
-    { ok: c.unanswered === 0, label: c.unanswered === 0 ? "No unanswered client messages" : `${c.unanswered} client message${c.unanswered === 1 ? "" : "s"} still waiting` },
-    { ok: c.openQc === 0, label: c.openQc === 0 ? "QC queue is clear" : `${c.openQc} QC card${c.openQc === 1 ? "" : "s"} still open` },
-    { ok: c.tomorrowGaps === 0, label: c.tomorrowGaps === 0 ? "Tomorrow is locked in" : `Tomorrow has ${c.tomorrowGaps} gap${c.tomorrowGaps === 1 ? "" : "s"} to close` },
-    { ok: c.openRevisions === 0, label: c.openRevisions === 0 ? "No revisions outstanding" : `${c.openRevisions} revision${c.openRevisions === 1 ? "" : "s"} in flight — confirm they're assigned` },
-  ];
-}
-
-// ---- Which block is "now", and which blocks open by default -----------------
-// The block whose window holds the ET clock; between windows the NEXT one
-// (before 9:00 that is the Tower); after Daily Closeout, the closeout.
-function blockKeyForNow(nowMin: number): string {
-  const inWindow = BLOCKS.find((b) => nowMin >= b.from && nowMin < b.to);
-  if (inWindow) return inWindow.key;
-  const next = BLOCKS.find((b) => b.from > nowMin);
-  return next?.key ?? BLOCKS[BLOCKS.length - 1].key;
-}
-
-// WHAT OPENS ON ITS OWN. Until Sep 8 every block with anything in it rendered
-// open, so at noon 14 of 15 were expanded and the home was a 1,100-line wall
-// with the same five comms rows printed three times (audit5 kyle-home F19).
-// Jordan, asked how much should open by default: "Not sure what you mean" —
-// so this is Claude's call, kept as one flag so it is easy to flip:
-//   "now-only"         → only the block you're in (or the next one) is open;
-//                        every other block is its header, time and count.
-//   "anything-waiting" → the old behaviour: open whenever the count is > 0.
-// Either way a click opens any block for the session and a jump opens the
-// block it lands on (DayBlock / DayBlockJumps).
-type BlockOpenPolicy = "now-only" | "anything-waiting";
-const BLOCK_OPEN_POLICY = "now-only" as BlockOpenPolicy;
-function blockOpensByDefault(def: BlockDef, current: boolean, n: number | null, d: OpsDay): boolean {
-  if (BLOCK_OPEN_POLICY === "anything-waiting") {
-    // Open Loops is the one block whose badge can read 0 with real work inside
-    // (its badge counts today's; the tail is still in the card).
-    return current || (n != null && n > 0) || (def.key === "loops" && d.openLoops.length > 0);
-  }
-  return current;
-}
-
-// "120+" when a capped list is full — never present a truncated count as exact.
-const plusFor = (key: string, d: OpsDay) => (key === "loops" && d.openLoopsTally.capped ? "+" : "");
-
-// ---- Same-day rush (Jordan, Sep 2: "notify the morning tower about shoots
-// with same-day delivery photos or floor plans") ------------------------------
-// The flag is decided ONCE, in opsDay.ts (OpsShoot.sameDay, off the order's
-// line items, dated by the SLA engine). Everything here is the length of the
-// list it points at, per this page's number rule — the chip on the Tower is
-// the count of flagged cards in "Today's shoots", and nothing else.
-const rushShoots = (shoots: OpsShoot[]) => shoots.filter((s) => s.sameDay);
-/** "photos + floor plan" — the same words on the card, the chip and the tower row. */
-const rushWhat = (s: OpsShoot) =>
-  [s.sameDay?.photos ? "photos" : null, s.sameDay?.floorPlan ? "floor plan" : null].filter(Boolean).join(" + ");
-/** Which blocks carry a rush count beside their badge: the Tower (today's
- *  cards) and the two tomorrow-prep blocks (tomorrow's), so the day before is
- *  warned as loudly as the morning of. */
-function rushFor(key: string, d: OpsDay): number {
-  switch (key) {
-    case "tower": return rushShoots(d.todayShoots).length;
-    case "prep": return rushShoots(d.tomorrowShoots).length;
-    default: return 0;
-  }
-}
-/** The red "⚡ N same-day" chip — one component so the header, the jump bar
- *  and the shoots section can never phrase it three ways. */
-function RushChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?: boolean }) {
-  if (n <= 0) return null;
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full font-bold tabular-nums",
-        small ? "px-1.5 text-[10px]" : "px-2.5 py-0.5 text-xs",
-        onBrand ? "bg-white text-danger" : "bg-danger text-white",
-      )}
-      title={`${n} shoot${n === 1 ? "" : "s"} promised same-day delivery — photos or floor plan due by end of business`}
-    >
-      <Zap className={small ? "size-2.5" : "size-3"} /> {n} same-day
-    </span>
-  );
-}
-
-// ---- Finished videos still to go out (Jordan, Sep 17) ----------------------
-// Same shape as the rush chip above and for the same reason: this is a SECOND
-// kind of work inside the Video Review block, so it gets its own number beside
-// the badge rather than being folded into it. The badge stays what it has
-// always been — the verdicts Kyle owes — and "2 to send" cannot hide inside it.
-function readyFor(key: string, d: OpsDay): number {
-  return key === "video-review" ? d.readySend.ready.length : 0;
-}
-
-function deliveryUnavailable(d: OpsDay): boolean {
-  const b = d.readySend;
-  return !!b.boardUnavailable || b.followUpChecks?.needsFinishing === null || b.followUpChecks?.notTold === null || b.noticeIncidentCheck === null;
-}
-/** The green "📤 N to send" chip — the length of the list the card renders. */
-function ReadyChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?: boolean }) {
-  if (n <= 0) return null;
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full font-bold tabular-nums",
-        small ? "px-1.5 text-[10px]" : "px-2.5 py-0.5 text-xs",
-        onBrand ? "bg-white text-success" : "bg-success text-white",
-      )}
-      // WHERE THE LIST IS, because since Sep 21 it is not in this block: the
-      // card sits at the top of the page for whoever is reading this. The chip
-      // stays because a shut block whose badge says "clear" must not be the
-      // last word on a client still waiting for a video.
-      title={`${n} approved video${n === 1 ? " has" : "s have"} not gone to the client yet — the card at the top of this page has them`}
-    >
-      <Send className={small ? "size-2.5" : "size-3"} /> {n} to send
-    </span>
-  );
-}
-
-// What each block has waiting — the number on its header and jump-bar chip.
-// null = the block is guidance, not a list (lunch, admin).
-function countFor(key: string, d: OpsDay, board: { today: unknown[] }): number | null {
-  switch (key) {
-    // The Tower no longer repeats today's shoots (the today line and the
-    // shoots section carry them, Oct 13 2026); its rush chip still shows.
-    case "tower": return null;
-    case "qc-am": return listingQc(d).filter((q) => q.bucket === "today").length;
-    case "overdue": return listingQc(d).filter((q) => q.bucket === "overdue").length;
-    case "comms-1": return d.unanswered.count;
-    case "prep": return d.tomorrowShoots.length;
-    // The badge counts what the block RENDERS by default: this viewer's loops
-    // that are overdue or promised today. The rest are stated and reachable in
-    // the block itself, so the number never points at a list that hides rows.
-    case "loops": return d.openLoopsTally.actNow;
-    case "video-review": return d.videoReview.waiting.length + d.videoReview.revising.length;
-    // The Tracker's own "Due today" tab, which is the tab this block opens on.
-    case "pipeline": return board.today.length;
-    case "monthly": return d.qc.filter((q) => q.monthly).length;
-    // Not a queue — the number of closeout checks that are NOT yet green. It
-    // makes the block open itself the moment something is off, instead of
-    // waiting for 5:30 PM.
-    case "closeout": return closeoutRows(d).filter((r) => !r.ok).length;
-    default: return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // WHAT NEEDS YOU NOW — the top of the page, and the only thing on it that
@@ -450,8 +172,8 @@ function NeedRow({ n, lead = false }: { n: Need; lead?: boolean }) {
 // Each read starts with the page's own reads (so nothing waits for the main
 // list to finish before it begins), and each section renders behind its own
 // Suspense boundary: the quiet-failures board (~2 s on the live pool), the
-// new-client and risk radar, and the owner's money. A failure inside one says
-// so in its own place and never blanks the rest of Home.
+// owner's week, what is behind, and the money. A failure inside one says so in
+// its own place and never blanks the rest of Home.
 // ---------------------------------------------------------------------------
 
 type RadarRead = Awaited<ReturnType<typeof getProactiveFlags>> | null;
@@ -477,24 +199,6 @@ async function HomeExceptions({ exceptionsP, includeTest, canReview, canEdit }: 
       canReview={canReview}
       canEdit={canEdit}
     />
-  );
-}
-
-async function HomeRadar({ radarP, newClientsP, isOwner, includeTest }: {
-  radarP: Promise<RadarRead>; newClientsP: Promise<Awaited<ReturnType<typeof newClientsForDashboard>>>; isOwner: boolean; includeTest: boolean;
-}) {
-  const [radar, newClients] = await Promise.all([radarP, newClientsP]);
-  // Radar minus money. getProactiveFlags' AR branch composes "X owes $Y" with
-  // a /billing link an ADMIN can't open. Jordan's rule (access.ts): "Kyle
-  // should not have access to any money related info" — so the AR kind never
-  // reaches a non-owner (audit5 F9).
-  const flags = (radar?.flags ?? []).filter((f) => isOwner || f.kind !== "ar").map((f) => ({ ...f, href: homeRecordHref(f.href, includeTest) }));
-  return (
-    <>
-      {/* New clients — say hello. Renders nothing when there are none. */}
-      <NewClientCard clients={newClients} />
-      {flags.length > 0 && <ProactiveFlags flags={flags} />}
-    </>
   );
 }
 
@@ -575,6 +279,19 @@ async function OwnerBusiness({ ownerP, radarP, includeTest }: { ownerP: Promise<
   );
 }
 
+async function OwnerWeekSection({ weekP }: { weekP: Promise<OwnerWeek | null> }) {
+  return <OwnerWeekCard week={await weekP} />;
+}
+
+async function OwnerBehindSection({ tilesP, oldP }: { tilesP: Promise<OpsTiles>; oldP: Promise<OldItemsRead | null> }) {
+  const [tiles, old] = await Promise.all([tilesP, oldP]);
+  return <BehindCard tiles={tiles.tiles} people={old?.people ?? []} oldTotal={old?.items.length ?? 0} unavailableOld={!old} />;
+}
+
+async function OwnerNewClients({ newClientsP }: { newClientsP: Promise<Awaited<ReturnType<typeof newClientsForDashboard>>> }) {
+  return <NewClientCard clients={await newClientsP} />;
+}
+
 // ---------------------------------------------------------------------------
 
 export default async function HomePage(props: { searchParams?: Promise<{ test?: string | string[] }> }) {
@@ -592,102 +309,220 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const isOwner = !me || me.role === "OWNER";
   const canReview = !me || canAccess(me, "review");
   const includeTest = sp?.test === "1";
-  const scopeHref = (href: string) => homeRecordHref(href, includeTest);
+  const scopeHref = (href: string) => homeRecordHref(opsAnchor(href), includeTest);
   const excludedClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
   const scope = { excludeClientIds: excludedClientIds };
+  const roster: Assignee[] = await listAssignees().catch(() => []);
+  const viewerKey = me ? viewerAssigneeKey(me, roster) : null;
 
-  // The streamed sections' reads START here, beside the page's own — each one
-  // carries its own failure answer, so none can reject unobserved.
+  // WHO the flags are for: the viewer's own assignee key, resolved the way
+  // openLoopsList resolves it (roster match by TeamMember → email → first
+  // name, else the first-name slug). An editor's explicit editorKey still
+  // wins when there is one (audit5 F11).
+  const [flaggedRaw, reviewChain] = await Promise.all([
+    getFlaggedForMe({
+      assignedKey: me ? me.editorKey ?? viewerKey ?? (me.name ? slugForName(me.name) : null) : null,
+      memberId: me?.teamMemberId ?? null,
+      role: me?.role ?? "OWNER",
+      excludeClientIds: excludedClientIds,
+    }),
+    canReview && !isOwner ? reviewerChain().catch(() => null) : Promise.resolve(null),
+  ]);
+  // No money on an ADMIN screen (Jordan's standing rule): a flag's title and
+  // note are typed by a person and pass through the figure scrub.
+  const flagged = (isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }))).map((f) => ({ ...f, href: scopeHref(f.href) }));
+  const reviewLead = !isOwner && !!me?.teamMemberId && reviewChain?.primary?.teamMemberId === me.teamMemberId;
+  const homeRole = isOwner ? "owner" : reviewLead ? "review" : "operations";
+  const now = new Date();
+  const nowMin = etMinutes(now);
+  const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
+  const todayKey = etDayKey(now);
+  // A New date is a day after today, at most MAX_PUSH_DAYS out (the action checks too).
+  const minDay = etDayKey(etAddDays(now, 1));
+  const maxDay = etDayKey(etAddDays(now, MAX_PUSH_DAYS));
+  const testToggle = <Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>;
+  const header = (
+    <PageHeader
+      eyebrow="Home"
+      title={`${nowMin < 12 * 60 ? "Good morning" : nowMin < 18 * 60 ? "Good afternoon" : "Good evening"}, ${firstName}`}
+      subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
+      actions={testToggle}
+    />
+  );
+  const testNotice = includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months, Editing Room, Schedule and delivery lists keep this view when opened. Figures from the books keep Finance’s existing definitions.</p></div>;
+  // The Review Room's own count of photo sets still on the older QC cards
+  // (a note under the Photos tile; read only by the two Homes that show it).
+  const photoQcCount = () => prisma.smartTask.count({ where: photoQcWhere(scope) }).catch(() => 0);
+
+  // ===========================================================================
+  // KYLE — operations.
+  // ===========================================================================
+  if (homeRole === "operations") {
+    const viewer = me ? { key: viewerKey, role: me.role, teamMemberId: me.teamMemberId } : null;
+    const [ops, shoots, old] = await Promise.all([
+      photoQcCount().then((photoQcCards) => opsHomeTiles({ now, excludeClientIds: excludedClientIds, viewer, photoQcCards })).catch(() => unavailableTiles()),
+      todayShootsLine(now, scope).catch(() => null),
+      // A viewer we cannot place on the roster sees nobody's list rather
+      // than everybody's.
+      listOldItems(now, { personKey: viewerKey ?? "__unresolved__", excludeClientIds: excludedClientIds, scrub: true, roster }).catch(() => null),
+    ]);
+    return (
+      <div>
+        <AutoRefresh seconds={90} />
+        <HomeAnchorForward />
+        {header}
+        <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
+          {testNotice}
+          <FlaggedBanner flagged={flagged} />
+          <VideoBehindBanner alert={ops.alert} />
+          <JobTiles tiles={ops.tiles.map((t) => ({ ...t, href: scopeHref(t.href) }))} />
+          {shoots
+            ? <ShootsTodayLine count={shoots.count} next={shoots.next} untimed={shoots.untimed} rush={shoots.rush} href={scopeHref("/ops#shoots")} />
+            : <p role="status" className="rounded-xl border border-border bg-surface px-3.5 py-2 text-sm text-muted">Today&rsquo;s shoots couldn&rsquo;t load. <Link href={scopeHref("/ops#shoots")} className="text-brand hover:underline">Open the checklist</Link>.</p>}
+          <OldItemsCard items={old?.items.slice(0, OLD_ITEMS_ON_HOME) ?? []} total={old?.items.length ?? 0} minDay={minDay} maxDay={maxDay} unavailable={!old} />
+          <ChecklistLinks includeTest={includeTest} />
+        </div>
+      </div>
+    );
+  }
+
+  // ===========================================================================
+  // JORDAN — owner.
+  // ===========================================================================
+  if (homeRole === "owner") {
+    // Every read starts here, and each streamed section owns its failure.
+    const weekP = ownerWeek(now, scope).catch((e: unknown) => { console.warn("ownerWeek failed", (e as Error).message); return null; });
+    const tilesP = photoQcCount().then((photoQcCards) => opsHomeTiles({ now, excludeClientIds: excludedClientIds, team: true, photoQcCards })).catch(() => unavailableTiles());
+    const oldP = listOldItems(now, { excludeClientIds: excludedClientIds, roster }).catch(() => null);
+    const radarP: Promise<RadarRead> = getProactiveFlags(scope).catch(() => null);
+    const newClientsP = newClientsForDashboard({ includeTest }).catch(() => []);
+    const ownerP: Promise<OwnerReads> = Promise.all([
+      getOwnerStats(scope).catch(() => null),
+      getOwnerPulse(scope).catch(() => null),
+      getOwnerDials(scope).catch(() => null),
+      ownerPulse(scope).catch(() => null),
+    ]).then(([stats, pulse, dials, money]) => ({ stats, pulse, dials, money }));
+    const todos = await ownerTodoLists().catch(() => null);
+    return (
+      <div>
+        <AutoRefresh seconds={300} />
+        <HomeAnchorForward />
+        {header}
+        <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
+          {testNotice}
+          <FlaggedBanner flagged={flagged} />
+          <Suspense fallback={<SectionLoading label="Counting this week…" />}>
+            <OwnerWeekSection weekP={weekP} />
+          </Suspense>
+          <Suspense fallback={<SectionLoading label="Checking what is behind…" />}>
+            <OwnerBehindSection tilesP={tilesP} oldP={oldP} />
+          </Suspense>
+
+          {/* YOUR LIST — the owner's personal to-dos (the /day page's list).
+              Capture, plan, close and undo ride the /day server actions. */}
+          {todos && (
+            <DayBlock
+              id="my-list"
+              defaultOpen
+              dayKey={todayKey}
+              className="panel-shadow group scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28"
+              summaryClassName="flex min-h-12 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm"
+              summary={
+                <>
+                  <Inbox aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
+                  <span className="font-semibold">Your list</span>
+                  {todos.overdue.length > 0 && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-semibold text-danger">{todos.overdue.length} past date</span>}
+                  <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{todos.open.length}</span>
+                  <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+                </>
+              }
+            >
+              <div className="space-y-3 border-t border-border px-4 py-3.5">
+                <QuickAdd />
+                {todos.overdue.length > 0 && (
+                  <div className="rounded-xl border border-danger/40 bg-danger/[0.04]">
+                    <p className="border-b border-danger/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-danger">
+                      Past their date · {todos.overdue.length}
+                    </p>
+                    <div className="divide-y divide-border/60">
+                      {todos.overdue.map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} overdue />)}
+                    </div>
+                  </div>
+                )}
+                {todos.today.length > 0 && (
+                  <div className="rounded-xl border border-border">
+                    <p className="border-b border-border px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-2">
+                      Planned for today · {todos.today.length}
+                    </p>
+                    <div className="divide-y divide-border/60">
+                      {todos.today.map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} />)}
+                    </div>
+                  </div>
+                )}
+                {todos.unscheduled.length > 0 && (
+                  <details className="group/unsched rounded-xl border border-border">
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-[11px] font-bold uppercase tracking-widest text-muted-2">
+                      <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 -rotate-90 transition-transform group-open/unsched:rotate-0" />
+                      Not scheduled yet · {todos.unscheduled.length}
+                    </summary>
+                    <div className="divide-y divide-border/60 border-t border-border">
+                      {todos.unscheduled.slice(0, 20).map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} />)}
+                    </div>
+                    {todos.unscheduled.length > 20 && (
+                      <p className="border-t border-border px-3 py-1.5 text-[11px] text-muted-2">
+                        {todos.unscheduled.length - 20} more captured. Plan a few onto a day to bring them up.
+                      </p>
+                    )}
+                  </details>
+                )}
+                {todos.open.length === 0 && (
+                  <p className="py-2 text-center text-sm text-muted">Nothing on your list. Capture something above.</p>
+                )}
+                <FinishedList rows={todos.finished} />
+              </div>
+            </DayBlock>
+          )}
+
+          {/* New clients — say hello. Renders nothing when there are none. */}
+          <Suspense fallback={null}>
+            <OwnerNewClients newClientsP={newClientsP} />
+          </Suspense>
+
+          {/* MONEY — owner only, last, streamed; the 30-day trends fold under it. */}
+          <Suspense fallback={<SectionLoading label="Loading the business numbers…" />}>
+            <OwnerBusiness ownerP={ownerP} radarP={radarP} includeTest={includeTest} />
+          </Suspense>
+          <ChecklistLinks includeTest={includeTest} />
+        </div>
+      </div>
+    );
+  }
+
+  // ===========================================================================
+  // JAMES — the creative review seat. His desk as before; the checklist,
+  // today's shoot cards and stuck jobs it used to sit above now live on /ops.
+  // ===========================================================================
   const exceptionsP: Promise<OpsExceptionBoard> = opsExceptionsBoard({ includeTest }).catch((e: unknown): OpsExceptionBoard => {
-    // The quiet failures (R08). Reporting only: the card must say it could
-    // not check the pool. The board's totals still report capped rows.
     console.warn("opsExceptions failed", (e as Error).message);
     return { ...emptyExceptionBoard(), unavailable: true };
   });
-  const radarP: Promise<RadarRead> = getProactiveFlags(scope).catch(() => null);
-  // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
-  const newClientsP = newClientsForDashboard({ includeTest }).catch(() => []);
-  const ownerP: Promise<OwnerReads> | null = isOwner
-    ? Promise.all([
-        getOwnerStats(scope).catch(() => null),
-        getOwnerPulse(scope).catch(() => null),
-        // Owner-only quality dials (video-SLA roll-up + QC health).
-        getOwnerDials(scope).catch(() => null),
-        // My Day's money glance (bank / profit / owed) — cheap indexed reads.
-        ownerPulse(scope).catch(() => null),
-      ]).then(([stats, pulse, dials, money]) => ({ stats, pulse, dials, money }))
-    : null;
-
-  // NEW LEADS ON THE DESK THAT CALLS THEM BACK (Oct 14 2026): leads are filed
-  // to Kyle now (lib/leadDesk), so his Home lists his and the unassigned ones;
-  // the owner sees every open lead.
-  const leadsP = listAssignees()
-    .catch(() => [])
-    .then((roster) => openLeadsFor({ isOwner, key: me ? viewerAssigneeKey(me, roster) : null, teamMemberId: me?.teamMemberId ?? null }))
+  const leadsP = openLeadsFor({ isOwner, key: viewerKey, teamMemberId: me?.teamMemberId ?? null })
     .catch(() => [] as { id: string; title: string; createdAt: Date }[]);
-  const [dRaw, counts, stuck, shoots, handledToday, boardRaw, flaggedRaw, todos, reviewQueue, reviewChain] =
-    await Promise.all([
-      // The operating day: shoots, QC, loops, comms, pipeline, video review,
-      // closeout. It already resolves the viewer's own loop lane, so this page
-      // no longer calls openLoopsList() a second time.
-      buildOpsDay(scope),
-      offPageNumbers(excludedClientIds),
-      getStuckJobs(scope),
-      getShootWindow(scope), // only for the week-ahead strip; today's shoots come from buildOpsDay
-      // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
-      handledByPeopleToday(scope),
-      // The Project Tracker's delivery board, merged into the Pipeline block.
-      // A failed read is NOT a clean board: it is marked unavailable so the
-      // Pipeline block says it could not load and the "0 past due" reassurance
-      // is withheld (audit, Sep 17).
-      deliveryBoard(scope).catch((e: unknown): DeliveryBoard => {
-        console.warn("deliveryBoard failed", (e as Error).message);
-        return { today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, unavailable: true };
-      }),
-      // WHO the flags are for: the viewer's own assignee key, resolved the way
-      // openLoopsList resolves it (roster match by TeamMember → email → first
-      // name, else the first-name slug). An editor's explicit editorKey still
-      // wins when there is one (audit5 F11).
-      listAssignees().catch(() => []).then((roster) =>
-        getFlaggedForMe({
-          assignedKey: me ? me.editorKey ?? viewerAssigneeKey(me, roster) ?? (me.name ? slugForName(me.name) : null) : null,
-          memberId: me?.teamMemberId ?? null,
-          role: me?.role ?? "OWNER",
-          excludeClientIds: excludedClientIds,
-        }),
-      ),
-      // My Day's personal list. Owner-only: it is one person's private list,
-      // exactly as /day was ownerOnly in PAGES.
-      isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
-      canReview ? getReviewQueue({ includeTest }).catch(() => null) : Promise.resolve(null),
-      canReview ? reviewerChain().catch(() => null) : Promise.resolve(null),
-    ]);
-
-  // No money on an ADMIN screen (Jordan's standing rule). Everything the day
-  // renders that a person typed — Slack instructions, revision asks, wrap-up
-  // notes, message previews — passes through the figure scrub for a non-owner
-  // (audit5 kyle-home §5, Sep 8: "$750 credit" on Kyle's loop list).
-  // …and on the owner's Home, the emails Kyle has (his inbox, his follow-up
-  // reminder) leave Jordan's "waiting" for a "Kyle has it" line (Oct 14 2026).
-  const d = isOwner ? ownerUnansweredView(dRaw) : scrubOpsDayMoney(dRaw);
-  const flagged = (isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }))).map((f) => ({ ...f, href: scopeHref(f.href) }));
-  // The Pipeline block prints each job's notes in full (DeliveryBoardView's
-  // JobNote) — and a job's notes can be the whole editor brief, which is where
-  // Andrea's "$750 credit" would sit (audit5 F14; review, Sep 8). Same scrub,
-  // same viewer rule; the rest of a board row is addresses and product names.
-  const scrubJobs = (rows: DeliveryBoard["today"]) => rows.map((j) => (j.notes ? { ...j, notes: scrubMoney(j.notes) } : j));
-  const board: DeliveryBoard = isOwner
-    ? boardRaw
-    : { ...boardRaw, today: scrubJobs(boardRaw.today), tomorrow: scrubJobs(boardRaw.tomorrow), upcoming: scrubJobs(boardRaw.upcoming), delivered: scrubJobs(boardRaw.delivered) };
-
-  const reviewLead = !isOwner && !!me?.teamMemberId && reviewChain?.primary?.teamMemberId === me.teamMemberId;
-  const homeRole = isOwner ? "owner" : reviewLead ? "review" : "operations";
+  const [dRaw, counts, stuck, shoots, boardRaw, reviewQueue] = await Promise.all([
+    buildOpsDay(scope),
+    offPageNumbers(excludedClientIds),
+    getStuckJobs(scope),
+    getShootWindow(scope), // only for "next shoot" in the calm card
+    deliveryBoard(scope).catch((e: unknown): DeliveryBoard => {
+      console.warn("deliveryBoard failed", (e as Error).message);
+      return { today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, unavailable: true };
+    }),
+    getReviewQueue({ includeTest }).catch(() => null),
+  ]);
+  const d: OpsDay = scrubOpsDayMoney(dRaw);
+  const board = boardRaw;
   const assignedReviews = (reviewQueue?.pending.filter((cut) => cut.reviewer?.id === me?.teamMemberId) ?? []).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const revisionChecks = reviewQueue?.followUps.filter((row) => row.awaitingReReview > 0) ?? [];
-  const now = new Date(d.nowISO);
-  const nowMin = etMinutes(now);
-  const currentKey = blockKeyForNow(nowMin);
-
   const qcOverdueRows = listingQc(d).filter((q) => q.bucket === "overdue");
   const qcOverdue = qcOverdueRows.length;
   // OVERDUE QC COUNTED ONCE (Oct 13 2026): a job whose QC card is past due is
@@ -697,29 +532,17 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const pastDueOther = board.unavailable ? 0 : board.today.filter((j) => j.overdue && !qcOverdueJobs.has(j.id)).length;
   const qcToday = listingQc(d).filter((q) => q.bucket === "today").length;
   const loops = tallyLoops(d.openLoops);
-  const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
-  const todayKey = etDayKey(now);
 
   // ---- What needs you now ---------------------------------------------------
-  // Every row's count is the length of the list it opens. Rows only exist while
-  // their pile does, so an empty day produces an empty array and the calm card.
   const needs: Need[] = [];
   const add = (n: Need) => { if (n.count > 0) needs.push(n); };
-
   add({
     key: "cuts", group: "decide", count: d.videoReview.waiting.length,
     label: `cut${d.videoReview.waiting.length === 1 ? "" : "s"} waiting on a review`,
     detail: d.videoReview.waiting[0] ? `oldest: ${d.videoReview.waiting[0].street} · ${ageText(d.videoReview.waiting[0].sinceISO, now)}` : undefined,
     href: "#video-review", tone: "brand",
   });
-  // Approved, finished, and still sitting here: the client's video exists and
-  // they haven't got it (Sep 17, 322 N 62nd St). The BLOCK id, not a card's:
-  // only a block id makes the jump open the <details> the delivery controls
-  // live in, and an anchor inside a shut one scrolls nowhere.
   const ready = d.readySend.ready;
-  // A HELD 1080p file is not "processing" (review, Oct 5 night): the pass is
-  // finished and the file waits for a person to listen to it, so it is said
-  // as what it is — on hold, Kyle's next step — never as a pass running.
   const heldRenders = d.readySend.rendering.filter((r) => r.state === "held").length;
   const processing = d.readySend.rendering.length - heldRenders;
   const toSendExtras = [
@@ -729,19 +552,12 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   add({
     key: "tosend", group: "waiting", count: ready.length,
     label: `video${ready.length === 1 ? "" : "s"} ready to send to the client`,
-    detail: ready[0]
-      ? `oldest: ${ready[0].street} · ready ${ageText(ready[0].approvedAtISO, now)}${toSendExtras ? ` · ${toSendExtras}` : ""}`
-      : undefined,
+    detail: ready[0] ? `oldest: ${ready[0].street} · ready ${ageText(ready[0].approvedAtISO, now)}${toSendExtras ? ` · ${toSendExtras}` : ""}` : undefined,
     href: "#video-review", tone: "warning",
   });
-  // What is left of a delivery once the file went: a send to finish, a client
-  // not told, a notice that failed. Its parts are named only when non-zero.
   const needsFinishing = d.readySend.needsFinishing?.length ?? 0;
   const notTold = d.readySend.notTold?.length ?? 0;
   const incidents = d.readySend.noticeIncidents?.length ?? 0;
-  // Branding videos the portal already has are NOT counted here (Jordan, Oct
-  // 13 2026): they are delivered, so they close by themselves and only show on
-  // the card as an informational list for a week (with the optional Aryeo upload).
   add({
     key: "delivery-steps", group: "waiting", count: needsFinishing + notTold + incidents,
     label: `delivery step${needsFinishing + notTold + incidents === 1 ? "" : "s"} to finish`,
@@ -752,13 +568,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     ].filter(Boolean).join(" · "),
     href: "#video-review", tone: incidents > 0 ? "danger" : "warning",
   });
-  if (isOwner && todos) {
-    add({
-      key: "mytodos", group: "decide", count: todos.overdue.length,
-      label: `of your own to-dos ${todos.overdue.length === 1 ? "is" : "are"} past their date`,
-      href: "#my-list", tone: "danger",
-    });
-  }
   add({
     key: "clients", group: "waiting", count: d.unanswered.count,
     label: `client${d.unanswered.count === 1 ? "" : "s"} waiting on a reply`,
@@ -773,7 +582,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   add({
     key: "leads", group: "waiting", count: leads.length,
     label: `new lead${leads.length === 1 ? "" : "s"} waiting on a call or text back`,
-    detail: leads[0] ? `oldest: ${isOwner ? leads[0].title : scrubMoney(leads[0].title)} · ${ageText(leads[0].createdAt.toISOString(), now)}` : undefined,
+    detail: leads[0] ? `oldest: ${scrubMoney(leads[0].title)} · ${ageText(leads[0].createdAt.toISOString(), now)}` : undefined,
     href: "/tasks?tab=work&type=lead", tone: "warning",
   });
   add({
@@ -787,23 +596,15 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     href: "/tasks?tab=comms&via=email", tone: "muted",
   });
   add({
-    // Withheld while the board is unreadable — a flag that says "0 past due"
-    // off a failed query is worse than no flag.
     key: "past-due", group: "risk", count: pastDueOther,
     label: `job${pastDueOther === 1 ? "" : "s"} past their promised date`,
     detail: qcOverdue > 0 ? `at the top of the tracker's Due-today tab · not counting ${qcOverdue} with QC past due (its own row)` : "at the top of the tracker's Due-today tab",
     href: "#pipeline", tone: "danger",
   });
-  add({
-    key: "qc-overdue", group: "risk", count: qcOverdue,
-    label: `QC card${qcOverdue === 1 ? "" : "s"} past due`,
-    href: "#overdue", tone: "danger",
-  });
+  add({ key: "qc-overdue", group: "risk", count: qcOverdue, label: `QC card${qcOverdue === 1 ? "" : "s"} past due`, href: "#overdue", tone: "danger" });
   add({
     key: "stuck", group: "risk", count: stuck.length,
     label: `job${stuck.length === 1 ? "" : "s"} stuck in production`,
-    // Says why this is a different pile from "past their promised date" above:
-    // that one is the delivery clock, this one is the job not moving at all.
     detail: "late vs promise, a revision going stale, or shot but never delivered",
     href: "#stuck", tone: "danger",
   });
@@ -813,35 +614,18 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     detail: loops.elsewhere > 0 ? `${loops.elsewhere} more sit with someone else` : undefined,
     href: "#loops", tone: "warning",
   });
-  add({
-    key: "qc-today", group: "risk", count: qcToday,
-    label: `QC card${qcToday === 1 ? "" : "s"} due today`,
-    href: "#qc-am", tone: "warning",
-  });
-  add({
-    key: "debriefs", group: "risk", count: d.closeout.todayDebriefsMissing,
-    label: `shot job${d.closeout.todayDebriefsMissing === 1 ? "" : "s"} with no upload page submitted`,
-    href: "#shoots", tone: "warning",
-  });
+  add({ key: "qc-today", group: "risk", count: qcToday, label: `QC card${qcToday === 1 ? "" : "s"} due today`, href: "#qc-am", tone: "warning" });
+  add({ key: "debriefs", group: "risk", count: d.closeout.todayDebriefsMissing, label: `shot job${d.closeout.todayDebriefsMissing === 1 ? "" : "s"} with no upload page submitted`, href: "#shoots", tone: "warning" });
   add({
     key: "tomorrow", group: "risk", count: d.closeout.tomorrowGaps,
     label: `gap${d.closeout.tomorrowGaps === 1 ? "" : "s"} on tomorrow's shoots`,
     detail: "no street address, unassigned, or no access notes on file",
     href: "#prep", tone: "warning",
   });
-  add({
-    key: "late", group: "risk", count: counts.late,
-    label: `task${counts.late === 1 ? "" : "s"} running late on the board`,
-    href: "/tasks?tab=work&who=all", tone: "warning",
-  });
-  add({
-    key: "assign", group: "risk", count: counts.toAssign,
-    label: `to-do${counts.toAssign === 1 ? "" : "s"} with nobody's name on ${counts.toAssign === 1 ? "it" : "them"}`,
-    href: "/tasks?tab=work&who=needs-assigning", tone: "muted",
-  });
-
+  add({ key: "late", group: "risk", count: counts.late, label: `task${counts.late === 1 ? "" : "s"} running late on the board`, href: "/tasks?tab=work&who=all", tone: "warning" });
+  add({ key: "assign", group: "risk", count: counts.toAssign, label: `to-do${counts.toAssign === 1 ? "" : "s"} with nobody's name on ${counts.toAssign === 1 ? "it" : "them"}`, href: "/tasks?tab=work&who=needs-assigning", tone: "muted" });
   // Personal review responsibility comes from the assigned cut, not an ADMIN label.
-  if (reviewLead && reviewQueue) {
+  if (reviewQueue) {
     needs.unshift({ key: "review-mine", group: "decide", count: assignedReviews.length,
       label: assignedReviews.length ? `cut${assignedReviews.length === 1 ? "" : "s"} assigned to you · open the oldest` : "cuts assigned to you for review",
       detail: assignedReviews[0] ? `${assignedReviews[0].street} · waiting ${ageText(assignedReviews[0].createdAt, now)}` : "Your assigned review queue is clear.",
@@ -853,115 +637,40 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
       label: `job${revisionChecks.length === 1 ? "" : "s"} with fixes to verify · open the first`, detail: "Team review queue · confirm the requested changes on the exact cut.",
       href: followUpHref(revisionChecks[0]), tone: "brand" });
   }
-  // WHOSE DAY IT IS decides the lead (Oct 5): Jordan — his own late to-dos,
-  // then the cuts and the clients waiting on videos; James — the cuts assigned
-  // to him; Kyle — finished videos to send, then waiting clients and missing
-  // uploads. Anything not named follows by how urgent it is, then as built.
-  const priority = homeRole === "review" ? ["review-mine", "verify", "cuts", "stuck", "loops"]
-    : homeRole === "owner" ? ["mytodos", "cuts", "tosend", "stuck", "past-due", "assign"]
-      : ["tosend", "delivery-steps", "clients", "leads", "debriefs", "assign", "stuck", "tomorrow", "past-due"];
+  // James's order: the cuts assigned to him lead.
+  const priority = ["review-mine", "verify", "cuts", "stuck", "loops"];
   const rank = (key: string) => priority.includes(key) ? priority.indexOf(key) : priority.length;
   const orderedNeeds = needs
-    .filter((n) => !(reviewLead && reviewQueue && n.key === "cuts"))
+    .filter((n) => !(reviewQueue && n.key === "cuts"))
     .map((n, i) => ({ n, i }))
     .sort((a, b) => rank(a.n.key) - rank(b.n.key) || TONE_RANK[a.n.tone] - TONE_RANK[b.n.tone] || a.i - b.i)
     .map(({ n }) => ({ ...n, href: scopeHref(n.href) }));
-  const currentBlock = BLOCKS.find((b) => b.key === currentKey)!;
-  const criticalQueues = orderedNeeds.filter((n) => n.tone === "danger" || n.tone === "warning").length;
-  const oldestWaitHours = Math.max(d.unanswered.oldestHours ?? 0, ...d.videoReview.waiting.map((cut) => Math.max(0, (now.getTime() - Date.parse(cut.sinceISO)) / 3_600_000)));
-  const routineAttention = `${criticalQueues} urgent work queue${criticalQueues === 1 ? "" : "s"} in What needs you now${oldestWaitHours > 0 ? ` · oldest recorded reply/review wait ${Math.floor(oldestWaitHours)}h` : ""} · ${handledToday} task${handledToday === 1 ? "" : "s"} closed by people today.`;
-
   const nextShoot = shoots.week[0] ?? null;
-  // TODAY, IN ONE LINE (Oct 5): the day's fixed appointments used to be a
-  // three-row box at the top AND the full cards further down. One line here
-  // names the count and the next one; the cards are one tap away (#shoots).
   const upcomingToday = d.todayShoots.find((s) => s.timeISO && Date.parse(s.endISO ?? s.timeISO) >= now.getTime()) ?? null;
-  // A shoot with no time on file has not "started" (review, Oct 5 night: the
-  // line said "all started" while one still had no time) — say it plainly.
-  const untimedToday = d.todayShoots.filter((s) => !s.timeISO);
-  const rushToday = rushShoots(d.todayShoots).length;
-
-  // Things the "What needs you now" card must say even when no row can.
   const notices = [
-    canReview && !reviewQueue ? "The review queue could not be loaded. Open Review Room to retry." : null,
-    deliveryUnavailable(d) ? "Delivery follow-up could not be fully checked. Open delivery work in the daily checklist (Video Review) to see what is known." : null,
+    !reviewQueue ? "The review queue could not be loaded. Open Review Room to retry." : null,
+    deliveryUnavailable(d) ? "Delivery follow-up could not be fully checked. Open Video Review on the daily checklist to see what is known." : null,
   ].filter((x): x is string => !!x);
-  // One line saying whose desk this is — the orientation the old headline and
-  // paragraph gave, in the card it is about.
-  const roleLine = homeRole === "owner" ? "Decisions and delivery exceptions" : homeRole === "review" ? "Your creative review desk" : "Deliveries and client follow-through";
 
   return (
     <div>
-      {/* Kyle keeps this open all day; 90s rather than Ops Day's 45s because the
-          merged page does the work of four screens on every refresh. */}
       <AutoRefresh seconds={90} />
-      {/* One listener for every in-page jump: a "What needs you" row, the
-          today line, a "N overdue →" link opens the folded section it lands on. */}
-      <DayBlockJumps />
-      <PageHeader
-        eyebrow="Home"
-        title={`${nowMin < 12 * 60 ? "Good morning" : nowMin < 18 * 60 ? "Good afternoon" : "Good evening"}, ${firstName}`}
-        subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
-        actions={<Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>}
-      />
+      <HomeAnchorForward />
+      {header}
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
-        {includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months, Editing Room, Schedule and delivery lists keep this view when opened. Figures from the books keep Finance’s existing definitions.</p></div>}
-
-        {/* Flags a PERSON raised for this viewer — above everything. */}
-        {flagged.length > 0 && (
-          <section className="panel-shadow overflow-hidden rounded-2xl border-2 border-danger/45 bg-danger-soft/40">
-            <div className="flex items-center gap-2 border-b border-danger/25 px-5 py-2.5">
-              <Flag className="size-4 text-danger" />
-              <h2 className="text-[15px] font-semibold text-danger">
-                Flagged by {[...new Set(flagged.map((f) => f.flaggedBy.split(" ")[0]))].join(" & ")} — for immediate review
-              </h2>
-              <span className="ml-auto rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-danger">{flagged.length}</span>
-            </div>
-            <ul className="divide-y divide-danger/15">
-              {flagged.map((f) => (
-                <li key={f.taskId}>
-                  <Link href={f.href} className="block px-5 py-3 hover:bg-danger/[0.06]">
-                    <p className="text-sm font-semibold leading-snug">{f.title}</p>
-                    {f.note && <p className="mt-0.5 whitespace-pre-line text-[13px] leading-relaxed text-foreground/80">{f.note}</p>}
-                    <p className="mt-1 text-[11px] text-muted">
-                      {f.flaggedBy} · {etDateTime(f.flaggedAtISO)}
-                      {f.projectTitle ? ` · ${f.projectTitle}` : ""} — open it
-                    </p>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {/* TODAY — one line, one link. */}
-        <a href="#shoots" className="flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-3.5 py-2 text-sm hover:bg-surface-2/60">
-          <Camera aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
-          <span className="min-w-0 flex-1">
-            {d.todayShoots.length === 0 ? (
-              <span className="text-muted">No shoots on today&rsquo;s calendar.</span>
-            ) : (
-              <>
-                <span className="font-semibold">{d.todayShoots.length} shoot{d.todayShoots.length === 1 ? "" : "s"} today</span>
-                {upcomingToday ? (
-                  <span className="text-muted"> · next {upcomingToday.timeISO ? fmtTime(upcomingToday.timeISO) : "time to confirm"} ET, {upcomingToday.title.split(",")[0]} · {upcomingToday.photographer ?? "unassigned"}</span>
-                ) : untimedToday.length > 0 ? (
-                  <span className="text-warning" data-untimed-shoots> · {untimedToday.length === 1 ? `${untimedToday[0].title.split(",")[0]} has no time set` : `${untimedToday.length} have no time set`}</span>
-                ) : (
-                  <span className="text-muted"> · all started</span>
-                )}
-              </>
-            )}
-          </span>
-          <RushChip n={rushToday} small />
-          <ArrowRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-2" />
-        </a>
-
-        {/* WHAT NEEDS YOU NOW — the one list, ordered by whose day it is. */}
+        {testNotice}
+        <FlaggedBanner flagged={flagged} />
+        <ShootsTodayLine
+          count={d.todayShoots.length}
+          next={upcomingToday ? { timeISO: upcomingToday.timeISO, street: upcomingToday.title.split(",")[0], photographer: upcomingToday.photographer } : null}
+          untimed={d.todayShoots.filter((s) => !s.timeISO).map((s) => s.title.split(",")[0])}
+          rush={rushShoots(d.todayShoots).length}
+          href={scopeHref("/ops#shoots")}
+        />
         <section id="needs-you" aria-labelledby="needs-you-title" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface p-4 sm:p-5">
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
             <h2 id="needs-you-title" className="text-base font-semibold">What needs you now</h2>
-            <p className="text-sm text-muted">{roleLine}</p>
+            <p className="text-sm text-muted">Your creative review desk</p>
           </div>
           {notices.length > 0 && (
             <div className="mt-2 space-y-1">
@@ -973,183 +682,18 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
               <CheckCircle2 className="mx-auto size-8 text-success" />
               <p className="mt-2 text-sm font-semibold">Nothing is waiting on you right now.</p>
               <p className="mt-1 text-xs text-muted">
-                Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} ET — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
+                Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} ET · ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
               </p>
             </div>
           ) : (
             <NeedsToday needs={orderedNeeds} />
           )}
         </section>
-
         {/* The quiet failures — streamed (the slowest read on this page). */}
         <Suspense fallback={<SectionLoading label="Checking review, assignment and delivery exceptions…" />}>
           <HomeExceptions exceptionsP={exceptionsP} includeTest={includeTest} canReview={canReview} canEdit={!me || canAccess(me, "editing")} />
         </Suspense>
-
-        {/* TODAY'S SHOOTS — the day's hard commitments in full (access, door
-            code, weather, airspace, the last thing the client said), folded
-            to one line; the jump from the today line or a row opens it. */}
-        <DayBlock
-          id="shoots"
-          defaultOpen={false}
-          dayKey={todayKey}
-          className="panel-shadow group scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28"
-          summaryClassName="flex min-h-12 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm"
-          summary={
-            <>
-              <Camera aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
-              <span className="font-semibold">Today&rsquo;s shoots</span>
-              <span className="hidden text-muted sm:inline">· access, weather and the week ahead</span>
-              <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{d.todayShoots.length}</span>
-              <RushChip n={rushToday} small />
-              <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-            </>
-          }
-        >
-          <div className="border-t border-border px-4 py-3.5">
-            <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
-          </div>
-          <WeekStrip week={shoots.week} includeTest={includeTest} />
-        </DayBlock>
-
-        {/* Stuck jobs — PROJECT-level fires (late vs promise, stale revision,
-            shot-but-undelivered), not overdue admin tasks. Anchored so the
-            "stuck in production" row above lands on it. Three rows, the rest
-            folded in place. */}
-        {stuck.length > 0 && (
-          <div id="stuck" className="scroll-mt-32 md:scroll-mt-28">
-            <StuckJobs jobs={stuck} />
-          </div>
-        )}
-
-        {/* YOUR LIST — My Day's personal to-dos. Owner-only: it is one
-            person's private list (the /day page was ownerOnly). Capture, plan,
-            close and undo all still ride the /day server actions. The
-            not-yet-scheduled pile folds (Oct 5) — it held up to 20 rows. */}
-        {isOwner && todos && (
-          <DayBlock
-            id="my-list"
-            defaultOpen
-            dayKey={todayKey}
-            className="panel-shadow group scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28"
-            summaryClassName="flex min-h-12 cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm"
-            summary={
-              <>
-                <Inbox aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
-                <span className="font-semibold">Your list</span>
-                {todos.overdue.length > 0 && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-semibold text-danger">{todos.overdue.length} past date</span>}
-                <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{todos.open.length}</span>
-                <ChevronDown aria-hidden="true" className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-              </>
-            }
-          >
-            <div className="space-y-3 border-t border-border px-4 py-3.5">
-              <QuickAdd />
-              {todos.overdue.length > 0 && (
-                <div className="rounded-xl border border-danger/40 bg-danger/[0.04]">
-                  <p className="border-b border-danger/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-danger">
-                    Past their date · {todos.overdue.length}
-                  </p>
-                  <div className="divide-y divide-border/60">
-                    {todos.overdue.map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} overdue />)}
-                  </div>
-                </div>
-              )}
-              {todos.today.length > 0 && (
-                <div className="rounded-xl border border-border">
-                  <p className="border-b border-border px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-2">
-                    Planned for today · {todos.today.length}
-                  </p>
-                  <div className="divide-y divide-border/60">
-                    {todos.today.map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} />)}
-                  </div>
-                </div>
-              )}
-              {todos.unscheduled.length > 0 && (
-                <details className="group/unsched rounded-xl border border-border">
-                  <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-[11px] font-bold uppercase tracking-widest text-muted-2">
-                    <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 -rotate-90 transition-transform group-open/unsched:rotate-0" />
-                    Not scheduled yet · {todos.unscheduled.length}
-                  </summary>
-                  <div className="divide-y divide-border/60 border-t border-border">
-                    {/* Twenty, exactly as /day rendered them, with the rest
-                        stated below rather than silently dropped. */}
-                    {todos.unscheduled.slice(0, 20).map((t) => <TodoRow key={t.id} t={t} todayKey={todayKey} />)}
-                  </div>
-                  {todos.unscheduled.length > 20 && (
-                    <p className="border-t border-border px-3 py-1.5 text-[11px] text-muted-2">
-                      {todos.unscheduled.length - 20} more captured — plan a few onto a day to bring them up.
-                    </p>
-                  )}
-                </details>
-              )}
-              {todos.open.length === 0 && (
-                <p className="py-2 text-center text-sm text-muted">Nothing on your list. Capture something above.</p>
-              )}
-              <FinishedList rows={todos.finished} />
-            </div>
-          </DayBlock>
-        )}
-
-        {/* YOUR DAY — the time blocks, folded. The block you're in right now
-            renders open inside it; every block header carries its own count,
-            and a zero says "clear" rather than disappearing. */}
-        {/* Open by default on Kyle's operations Home (Oct 5 2026 — Jordan's Sep
-            21 choice, folded by the Sep 30 home focus); folded for the owner
-            and the creative review desk, where it is secondary. */}
-        <HomeRoutine dayKey={todayKey} current={`${currentBlock.time} · ${currentBlock.title}`} attention={routineAttention} defaultOpen={homeRole === "operations"}>
-          {/* Jump bar — the day at a glance, with what's waiting in each block. */}
-          <nav className="-mx-4 mt-1.5 flex gap-1.5 overflow-x-auto px-4 py-1 sm:-mx-6 sm:flex-wrap sm:px-6 [&::-webkit-scrollbar]:hidden" aria-label="Blocks">
-            {BLOCKS.map((b) => {
-              const n = countFor(b.key, d, board);
-              const cur = b.key === currentKey;
-              return (
-                <a
-                  key={b.key}
-                  href={`#${b.key}`}
-                  className={cn(
-                    "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                    cur ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
-                  )}
-                >
-                  <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
-                  {b.short}
-                  {n != null && n > 0 && (
-                    <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
-                  )}
-                  <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
-                  <ReadyChip n={readyFor(b.key, d)} small onBrand={cur} />
-                </a>
-              );
-            })}
-          </nav>
-          <div className="mt-2 space-y-2.5">
-            {BLOCKS.map((b) => (
-              <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={false} dayKey={todayKey} includeTest={includeTest} />
-            ))}
-          </div>
-        </HomeRoutine>
-
-        {/* New clients + fresh risk (≤3) — streamed. */}
-        <Suspense fallback={null}>
-          <HomeRadar radarP={radarP} newClientsP={newClientsP} isOwner={isOwner} includeTest={includeTest} />
-        </Suspense>
-
-        {/* MONEY — owner only, last, streamed. */}
-        {ownerP && (
-          <Suspense fallback={<SectionLoading label="Loading the business numbers…" />}>
-            <OwnerBusiness ownerP={ownerP} radarP={radarP} includeTest={includeTest} />
-          </Suspense>
-        )}
-
-        {/* Where the work lives — each destination once (the sidebar has them too). */}
-        <nav aria-label="Your work destinations" className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm text-muted">
-          {(!me || canAccess(me, "tasks")) && <Link href={scopeHref("/tasks?tab=work&who=me")} className="inline-flex min-h-11 items-center hover:text-foreground">My work</Link>}
-          {canReview && <Link href={scopeHref("/review")} className="inline-flex min-h-11 items-center hover:text-foreground">Review Room</Link>}
-          {(!me || canAccess(me, "content")) && <Link href={scopeHref("/content")} className="inline-flex min-h-11 items-center hover:text-foreground">Client months</Link>}
-          <Link href={scopeHref("/schedule")} className="inline-flex min-h-11 items-center hover:text-foreground">Schedule</Link>
-          <Link href={scopeHref("/tasks")} className="inline-flex min-h-11 items-center hover:text-foreground">All tasks</Link>
-        </nav>
+        <ChecklistLinks includeTest={includeTest} />
       </div>
     </div>
   );
@@ -1170,1186 +714,6 @@ function MoneyStat({ label, value, sub, tone }: { label: string; value: string; 
         {value}
       </div>
       {sub && <div className="mt-0.5 text-[11px] text-muted">{sub}</div>}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// One time block. Open when you're in it (blockOpensByDefault) — otherwise
-// collapsed to its header, which still carries the count; a click or a jump
-// opens it for the session (DayBlock). A block with nothing in it is not
-// hidden, it is answered.
-// ---------------------------------------------------------------------------
-
-type OffPageCounts = Awaited<ReturnType<typeof offPageNumbers>>;
-
-function Block({ def, current, d, board, counts, needsBelow, dayKey, includeTest = false }: {
-  def: BlockDef; current: boolean; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
-  /** "What needs you" renders UNDER the blocks in Kyle's order (page order
-   *  is by whose day it is) — the tower's jump link has to point that way. */
-  needsBelow: boolean;
-  /** ET day, so a block opened by hand stays open for today's session only */
-  dayKey: string;
-  includeTest?: boolean;
-}) {
-  const Icon = def.icon;
-  const n = countFor(def.key, d, board);
-  // A green "clear" must mean the block is empty. Open Loops counts what needs
-  // a move TODAY, so with a tail still open it says what the tail actually is
-  // instead — the rows are one tap away inside the card and must not look like
-  // zero. (loopsZeroState also covers "14 open, none of them yours".)
-  const loopZero = def.key === "loops" ? loopsZeroState(d.openLoops) : null;
-  // Video Review can owe no verdicts and still hold finished videos nobody has
-  // sent — the exact state 322 N 62nd St was in all morning. Its badge must not
-  // go green and say "clear" over the top of them (same rule as Open Loops).
-  const readyN = readyFor(def.key, d);
-  const followUpFailed = def.key === "video-review" && deliveryUnavailable(d);
-  const zeroLabel = loopZero?.label ?? (followUpFailed ? "check failed" : readyN > 0 ? "to send" : "clear");
-  const zeroTitle = loopZero?.title ?? (followUpFailed ? "Delivery follow-up could not be checked" : readyN > 0 ? `No verdicts owed — but ${readyN} finished video${readyN === 1 ? "" : "s"} still to go out` : "Nothing waiting in this block");
-  // scroll-mt clears the sticky PageHeader (~104px with a one-line subtitle,
-  // ~124px when it wraps on a phone) so a jump never tucks the block's title
-  // under the header.
-  // The page's default for this render (see BLOCK_OPEN_POLICY); DayBlock
-  // layers the person's own opens/closes for the session on top of it.
-  const open = blockOpensByDefault(def, current, n, d);
-  return (
-    <DayBlock
-      id={def.key}
-      defaultOpen={open}
-      dayKey={dayKey}
-      className={cn(
-        "panel-shadow group scroll-mt-32 rounded-2xl border bg-surface md:scroll-mt-28",
-        current ? "border-brand/50 ring-1 ring-brand/30" : "border-border",
-      )}
-      summaryClassName="flex cursor-pointer list-none items-center gap-3 px-5 py-3"
-      summary={
-        <>
-          <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", current ? "bg-brand text-white" : "bg-surface-2 text-muted")}>
-            <Icon className="size-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-baseline gap-2">
-              <h3 className="min-w-0 [overflow-wrap:anywhere] text-[15px] font-semibold">{def.title}</h3>
-              {current && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand">Now</span>}
-            </div>
-            <p className="text-xs text-muted-2"><Clock className="mr-1 inline size-3 -translate-y-px" />{def.time}</p>
-          </div>
-          {n != null && (
-            <span
-              className={cn(
-                "shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
-                n > 0 ? "bg-surface-2 text-foreground" : zeroLabel === "clear" ? "bg-success/10 text-success" : "bg-surface-2 text-muted",
-              )}
-              title={n > 0 ? `${n} in this block` : zeroTitle}
-            >
-              {n > 0 ? `${n}${plusFor(def.key, d)}` : zeroLabel}
-            </span>
-          )}
-          {/* Same-day rush beside the count, not inside it: the badge stays the
-              shoot count (the list it links to), and the rush is its own red
-              number so it cannot hide inside a "3". */}
-          <RushChip n={rushFor(def.key, d)} />
-          <ReadyChip n={readyN} />
-          <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-        </>
-      }
-    >
-      <div className="border-t border-border px-5 py-3.5">
-        <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
-        <div className="mt-3">
-          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} includeTest={includeTest} />
-        </div>
-      </div>
-    </DayBlock>
-  );
-}
-
-// `isOwner` used to be threaded down here for one thing only: whether the Video
-// Review block drew its own copy of the ready-to-send list. That is decided by
-// the list itself now (Jordan, Sep 21 — the top card is OWNER and ADMIN alike),
-// so the prop went with it. `needsBelow` still carries the same bit for the
-// blocks that genuinely lay out differently for the two people.
-function BlockBody({ blockKey, d, board, counts, needsBelow, includeTest = false }: {
-  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean; includeTest?: boolean;
-}) {
-  const scopeHref = (href: string) => homeRecordHref(href, includeTest);
-  switch (blockKey) {
-    case "tower":
-      // The shoot cards live in "Today's shoots" below — rendering them here as
-      // well would put the same list on one screen twice, which is the fault
-      // this page's number rule exists to prevent. What stays is the tower's
-      // real job: the day's opening numbers, each linked to its own list.
-      return (
-        <div className="space-y-3">
-          {/* Today's shoots are NOT repeated here (Oct 13 2026): the today line
-              at the top and the "Today's shoots" section already carry them. */}
-          {/* Same-day rush — the one order detail that changes what today IS
-              for the whole team: those photos / that floor plan ship before
-              close of business, not tomorrow morning. Red, first, unmissable
-              (Jordan, Sep 2). Each address links to its own card below. */}
-          {rushShoots(d.todayShoots).length > 0 && (
-            <a href="#shoots" className="flex items-start gap-2 rounded-xl border border-danger/50 bg-danger/10 px-3.5 py-2.5 text-sm hover:bg-danger/15">
-              <Zap className="mt-0.5 size-4 shrink-0 text-danger" />
-              <span className="min-w-0 flex-1">
-                <span className="font-bold text-danger">
-                  {rushShoots(d.todayShoots).length} same-day deliver{rushShoots(d.todayShoots).length === 1 ? "y" : "ies"} today
-                </span>
-                <span className="text-foreground/80">
-                  {" — "}
-                  {rushShoots(d.todayShoots)
-                    .map((s) => `${s.title} (${rushWhat(s)}${s.sameDay?.dueISO ? `, by ${fmtTime(s.sameDay.dueISO)}` : ""})`)
-                    .join(" · ")}
-                </span>
-              </span>
-              <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-danger" />
-            </a>
-          )}
-          {/* The tower used to carry five pills: unanswered clients, overdue
-              tasks, due today, open revisions, need assigning. Four of them are
-              now rows in "What needs you today" — and two were computed with a
-              DIFFERENT predicate than the row above them while pointing at the
-              SAME tab (11 overdue here vs 7 running late there, both landing on
-              /tasks?tab=other). One page, one number. What's left is the two
-              figures nothing else on this screen states. */}
-          <div className="flex flex-wrap gap-2 text-[13px]">
-            <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} open revision${d.pipeline.revision === 1 ? "" : "s"}`} href={scopeHref("/tasks?tab=revisions")} />
-            <Pill warn={false} label={`${counts.boardOpen} on the task board`} href={scopeHref("/tasks?tab=other")} />
-          </div>
-          {/* The arrow follows the page order: the decisions list is above
-              the blocks for Jordan and below them for Kyle (audit5 F19). */}
-          <a href="#needs-you" className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-2 hover:text-foreground">
-            {needsBelow ? "↓" : "↑"} Everything that needs a decision today
-          </a>
-        </div>
-      );
-
-    case "qc-am":
-      return <QcDueToday d={d} totalInReviewRoom={counts.qc} includeTest={includeTest} />;
-
-    case "overdue":
-      return <OverdueCard d={d} />;
-
-    case "monthly":
-      return <MonthlyCard d={d} />;
-
-    case "comms-1":
-      return (
-        <div className="space-y-2">
-          {d.unanswered.count === 0 ? (
-            <p className="flex items-center gap-1.5 text-sm text-success">
-              <CheckCircle2 className="size-4" /> {d.unanswered.withTeammate?.length ? "Nothing waiting on you." : "Every client message has an answer."}
-            </p>
-          ) : (
-            <>
-              {d.unanswered.preview.map((u, i) => (
-                <div key={i} className="flex items-center gap-3 rounded-xl border border-border px-3.5 py-2 text-sm">
-                  <p className="min-w-0 flex-1">
-                    <span className="font-semibold"><ClientName name={u.name} src={u.avatarUrl} size={16} /></span>
-                    <span className={cn("ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold", u.hours >= 24 ? "bg-danger/15 text-danger" : "bg-surface-2 text-muted")}>waiting {u.hours}h</span>
-                    <span className="block truncate text-[13px] text-muted">&ldquo;{u.snippet}&rdquo;</span>
-                  </p>
-                  {/* By channel. The Replies tab is built from PHONE threads
-                      only (replyQueue → unansweredComms families: ["phone"]),
-                      so an email row sent there landed on a list without it —
-                      five of five rows on Sep 8 (audit5 F3). Email rows open
-                      the Email board, which does hold them. */}
-                  <Link
-                    href={scopeHref(u.family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies")}
-                    className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-                  >
-                    Reply
-                  </Link>
-                </div>
-              ))}
-              {/* The badge counts every waiting client; only the five oldest
-                  are previewed. Say so rather than letting a 9 sit over five
-                  rows (audit fault #9). */}
-              {d.unanswered.count > d.unanswered.preview.length && (
-                <p className="text-[11px] text-muted-2">
-                  Showing the {d.unanswered.preview.length} oldest of {d.unanswered.count}.
-                </p>
-              )}
-              <Link href={scopeHref("/tasks?tab=comms")} className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
-                Clear the queue — {d.unanswered.count} waiting <ArrowRight className="size-4" />
-              </Link>
-            </>
-          )}
-          {/* KYLE HAS IT (Oct 14 2026) — the owner's card only. Emails that
-              landed in Kyle's inbox: he is reminded (task, bell, one Slack
-              message), Jordan is not. Labelled, not hidden; any reply from
-              anyone takes the row away. */}
-          {d.unanswered.withTeammate && d.unanswered.withTeammate.length > 0 && (
-            <div className="rounded-xl border border-dashed border-border px-3.5 py-2 text-[13px] text-muted">
-              {Object.entries(
-                d.unanswered.withTeammate.reduce<Record<string, typeof d.unanswered.withTeammate>>((acc, u) => {
-                  const who = u.heldBy.split(" ")[0] || u.heldBy;
-                  (acc[who] ??= []).push(u);
-                  return acc;
-                }, {}),
-              ).map(([who, rows]) => (
-                <p key={who}>
-                  <span className="font-semibold text-foreground">{who} has it</span>
-                  <span className="text-muted-2"> — </span>
-                  {rows.map((u, i) => (
-                    <span key={u.clientId + i}>
-                      {i > 0 && ", "}
-                      {u.name} <span className="text-muted-2">({u.hours}h)</span>
-                    </span>
-                  ))}
-                  <span className="block text-[11px] text-muted-2">Emailed to {who}&rsquo;s inbox too. {who} is reminded if they go unanswered; they leave here when anyone replies.</span>
-                </p>
-              ))}
-            </div>
-          )}
-          {/* Two neighbouring lists, each next to its OWN name and its OWN
-              count. The reply queue counts TEXT threads (including numbers we
-              never matched to a client, which is why it can exceed the client
-              count above); the email board counts sender groups. */}
-          <p className="flex flex-wrap gap-x-4 gap-y-1 pt-1 text-[11px] text-muted-2">
-            <Link href="/communications?tab=replies" className="hover:text-foreground">Reply queue — every unanswered text, incl. unknown numbers →</Link>
-            {counts.emailsWaiting > 0 && (
-              <Link href={scopeHref("/tasks?tab=comms&via=email")} className="hover:text-foreground">Email board — {counts.emailsWaiting} sender{counts.emailsWaiting === 1 ? "" : "s"} →</Link>
-            )}
-          </p>
-        </div>
-      );
-
-    case "prep":
-      return (
-        <div className="space-y-3">
-          <ShootList shoots={d.tomorrowShoots} empty="Nothing on tomorrow's calendar yet." showGaps />
-          {d.tomorrowShoots.length > 0 && d.closeout.tomorrowGaps === 0 && (
-            <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> Tomorrow looks ready — every shoot has a street address, a photographer and access notes on file.</p>
-          )}
-        </div>
-      );
-
-    case "loops":
-      return <LoopsCard d={d} includeTest={includeTest} />;
-
-    case "video-review":
-      // The first screen has one compact summary; this block holds the existing
-      // delivery controls. Both Home and Review Room links open this block.
-      return <VideoReviewCard d={d} showReady includeTest={includeTest} />;
-
-    case "pipeline":
-      // The Project Tracker, merged in whole (Jordan, Sep 2). Its three tabs
-      // ARE the three questions this block asks — what's due today, what's
-      // holding it up, what's coming — so it replaces the flat list that used
-      // to live here. The per-job editing detail (who has it, what evidence
-      // landed, the revision asks) follows underneath, because the tracker
-      // card doesn't carry it.
-      return (
-        <div className="space-y-4">
-          <DeliveryBoardView board={board} />
-          {d.pipeline.rows.length > 0 && (
-            <div>
-              <h4 className="flex flex-wrap items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-muted-2">
-                In production right now
-                <span className="flex flex-wrap gap-1.5 text-[11px] font-medium normal-case tracking-normal">
-                  <Pill warn={false} label={`${d.pipeline.editing} being edited now`} href={scopeHref("/editing")} />
-                  <Pill warn={d.pipeline.review > 0} label={`${d.pipeline.review} in review`} href={scopeHref("/review")} />
-                  <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} in revision`} href={scopeHref("/tasks?tab=revisions")} />
-                </span>
-              </h4>
-              <div className="mt-2 space-y-2">
-                {d.pipeline.rows.map((r) => (
-                  <Link key={r.projectId} href={`/edit/${r.projectId}`} className="block rounded-xl border border-border px-3.5 py-2.5 transition-colors hover:bg-surface-2/60">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="min-w-0 flex-1 basis-48 [overflow-wrap:anywhere] text-sm font-semibold">{r.title}</span>
-                      <span className={cn(
-                        "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                        r.status === "REVISION" ? "bg-warning/15 text-warning" : r.status === "REVIEW" ? "bg-brand/15 text-brand" : "bg-surface-2 text-muted",
-                      )}>
-                        {/* §7.1: an EDITING row says who is on it, not the stage — the pill above counts active work only. */}
-                        {r.status === "REVISION" ? "revision" : r.status === "REVIEW" ? "in review" : r.workWord ?? "In editing — not confirmed"}
-                      </span>
-                      {r.editor && <span className="min-w-0 max-w-full [overflow-wrap:anywhere] text-xs text-muted">→ {r.editor}</span>}
-                    </div>
-                    {/* Who it's for + what was ordered (Jordan: "more details on
-                        who it is, what it's for"). */}
-                    {(r.clientName || r.services.length > 0) && (
-                      <p className="mt-0.5 text-xs text-muted">
-                        {r.clientName && <ClientName name={r.clientName} src={r.clientAvatarUrl} />}
-                        {r.clientName && r.services.length > 0 && " · "}
-                        {r.services.join(", ")}
-                      </p>
-                    )}
-                    <p className="mt-1 text-[13px]">
-                      {r.sent.length > 0 && <span className="text-success">Sent: {r.sent.join(", ")}</span>}
-                      {r.sent.length > 0 && r.waitingOn.length > 0 && <span className="text-muted-2"> · </span>}
-                      {r.waitingOn.length > 0 && <span className="font-medium text-warning">Still needs: {r.waitingOn.join(", ")}</span>}
-                      {r.sent.length === 0 && r.waitingOn.length === 0 && <span className="text-muted">No delivery evidence yet.</span>}
-                      {r.videoDueISO && (
-                        <span className={cn("ml-1", r.videoOverdue ? "font-semibold text-danger" : "text-muted-2")}>
-                          · video due {fmtDay(r.videoDueISO)}{r.videoOverdue ? " — LATE" : ""}
-                        </span>
-                      )}
-                    </p>
-                    {r.revision && (r.revision.headline || r.revision.items.length > 0) && (
-                      <div className="mt-1.5 rounded-lg bg-warning/[0.07] px-2.5 py-1.5 text-[13px]">
-                        {r.revision.headline && <p className="font-medium text-foreground/85">Revising: {r.revision.headline}</p>}
-                        {r.revision.items.map((it, i) => (
-                          <p key={i} className="text-foreground/75">· {it.slice(0, 110)}</p>
-                        ))}
-                      </div>
-                    )}
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-
-    case "closeout":
-      return (
-        <div className="space-y-1.5">
-          {closeoutRows(d).map((r, i) => (
-            <p key={i} className={cn("flex items-start gap-2 text-sm", r.ok ? "text-success" : "text-warning")}>
-              {r.ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0" /> : <AlertTriangle className="mt-0.5 size-4 shrink-0" />}
-              {r.label}
-            </p>
-          ))}
-        </div>
-      );
-
-    default:
-      return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Shoot cards — parsed and glanceable: bold labels, weather, airspace, comms.
-// ---------------------------------------------------------------------------
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <p className="text-[13px] leading-relaxed">
-      <span className="font-semibold text-foreground/90">{label}: </span>
-      <span className="text-foreground/75">{children}</span>
-    </p>
-  );
-}
-
-// A client's name with their Aryeo headshot in front of it, sized for a
-// one-line row. Jordan (Sep 2): "if the agent has a profile photo in aryeo that
-// should be shown … in other places the clients are mentioned." Inline-flex so
-// it sits inside the existing text runs (" · shot Aug 21 · Harrison") without
-// reflowing them; <Avatar> draws the initials disc when Aryeo has no photo, so
-// callers pass the row's clientAvatarUrl straight through.
-function ClientName({ name, src, size = 18 }: { name: string; src: string | null; size?: number }) {
-  return (
-    <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
-      <Avatar name={name} src={src} size={size} />
-      <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{name}</span>
-    </span>
-  );
-}
-
-function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[]; empty: string; showGaps?: boolean; showDebrief?: boolean }) {
-  if (shoots.length === 0) return <p className="text-sm text-muted">{empty}</p>;
-  return (
-    <div className="space-y-2.5">
-      {shoots.map((s) => (
-        <div key={s.id} className="rounded-xl border border-border px-4 py-3">
-          {/* Header: time · address · quick links */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Camera className="size-4 shrink-0 text-muted-2" />
-            <Link href={`/projects/${s.id}`} className="min-w-0 flex-1 basis-48 [overflow-wrap:anywhere] text-[15px] font-semibold hover:text-brand">{s.title}</Link>
-            {s.timeISO && <span className="shrink-0 text-sm font-semibold tabular-nums text-brand">{fmtTime(s.timeISO)}</span>}
-            {/* The listing editor when the job has a listing, the ORDER
-                editor when it doesn't: a job imported from a ghost order
-                (39 Saratoga Ln) had an Aryeo button on its project page and
-                none here (Kyle call, Sep 16). */}
-            {aryeoJobUrl(s) && (
-              <a
-                href={aryeoJobUrl(s)!}
-                target="_blank" rel="noopener noreferrer"
-                title={aryeoJobTitle(s)}
-                className="shrink-0 rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground"
-              >
-                <ExternalLink className="size-3.5" />
-              </a>
-            )}
-          </div>
-
-          {/* Same-day rush strip — the client paid to have this media TODAY.
-              Full-width, red, above every other field, so nobody reads the
-              door code and misses that the gallery is due by 5. The hour is
-              the SLA engine's (opsDay → tasks.ts sameDayDue), the same one on
-              the QC card. Tomorrow's cards carry it too, with the day. */}
-          {s.sameDay && (
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-1.5 text-[13px] text-danger">
-              <span className="inline-flex items-center gap-1.5 font-bold uppercase tracking-wide">
-                <Zap className="size-4 shrink-0" /> Same-day {rushWhat(s)}
-              </span>
-              {s.sameDay.dueISO && (
-                <span className="ml-auto font-semibold tabular-nums">due {fmtDayTime(s.sameDay.dueISO)}</span>
-              )}
-            </div>
-          )}
-
-          <div className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2">
-            <Field label="Client"><ClientName name={s.clientName} src={s.clientAvatarUrl} size={16} /></Field>
-            <Field label="Creative">{s.photographer ?? <span className="font-semibold text-danger">unassigned</span>}</Field>
-            <Field label="Services">{s.services.join(", ") || "—"}</Field>
-            {s.access.name && <Field label="Contact">{s.access.name}{s.access.phone ? ` · ${s.access.phone}` : ""}</Field>}
-            {/* The door code is the single most operational thing on this card —
-                give it its own emphasised row, not a buried note (audit HIGH). */}
-            {s.access.lockbox && (
-              <div className="sm:col-span-2">
-                <Field label="Lockbox / door code">
-                  <span className="font-semibold text-brand">{s.access.lockbox}</span>
-                </Field>
-              </div>
-            )}
-            {s.access.access && <div className="sm:col-span-2"><Field label="Getting in">{s.access.access}</Field></div>}
-            {s.access.presence && <Field label="Who's there">{s.access.presence}</Field>}
-            {s.access.special && (
-              <div className="sm:col-span-2">
-                <Field label="Special instructions"><span className="text-warning">{s.access.special}</span></Field>
-              </div>
-            )}
-            {s.access.orderNotes && <div className="sm:col-span-2"><Field label="Order notes">{s.access.orderNotes}</Field></div>}
-            {s.access.notes && <div className="sm:col-span-2"><Field label="Client preferences">{s.access.notes}</Field></div>}
-            {s.specialRequests.length > 0 && (
-              <div className="sm:col-span-2">
-                <p className="text-[13px] leading-relaxed">
-                  <span className="font-semibold text-warning">Special requests: </span>
-                  <span className="text-foreground/75">{s.specialRequests.join(" · ").slice(0, 200)}</span>
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Conditions + comms strip */}
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/60 pt-2 text-[13px]">
-            {s.weather && (
-              <span className={cn("inline-flex items-center gap-1", s.weather.precipPct >= 40 || s.weather.windMph >= 20 ? "font-semibold text-warning" : "text-muted")}>
-                <CloudSun className="size-3.5" />
-                {s.weather.tempF}° · {s.weather.precipPct}% rain · wind {s.weather.windMph} mph
-              </span>
-            )}
-            {s.droneOrdered && s.airspace && (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1",
-                  !s.airspace.available ? "text-muted" : s.airspace.warning ? "font-semibold text-warning" : "text-success",
-                )}
-                title={s.airspace.airport ? `Controlling airport: ${s.airspace.airport}` : undefined}
-              >
-                <Plane className="size-3.5" />
-                {!s.airspace.available ? (
-                  <>
-                    Airspace check unavailable —{" "}
-                    <a href="https://b4ufly.aloft.ai/" target="_blank" rel="noopener noreferrer" className="underline">
-                      verify on B4UFLY
-                    </a>
-                  </>
-                ) : s.airspace.status === "clear" ? (
-                  "Airspace clear — OK to 400 ft"
-                ) : s.airspace.status === "restricted" ? (
-                  `No-fly without FAA authorization${s.airspace.airport ? ` (${s.airspace.airport})` : ""} — 0 ft grid`
-                ) : (
-                  `LAANC required — auto-auth to ${s.airspace.ceilingFt} ft${s.airspace.airport ? ` near ${s.airspace.airport}` : ""}`
-                )}
-              </span>
-            )}
-            {s.comms && (
-              <Link href={`/communications`} className={cn("inline-flex items-center gap-1 hover:underline", s.comms.count > 0 && s.comms.latestInbound ? "font-semibold text-brand" : "text-muted")}>
-                <MessageSquare className="size-3.5" />
-                {s.comms.count > 0 && (
-                  <>
-                    {s.comms.count} msg{s.comms.count === 1 ? "" : "s"} (72h)
-                    {s.comms.latestSnippet && <> · {s.comms.latestInbound ? "them" : "us"}: &ldquo;{s.comms.latestSnippet.slice(0, 60)}&rdquo;</>}
-                  </>
-                )}
-                {s.comms.otherCount > 0 && (
-                  <span className="text-muted-2">{s.comms.count > 0 ? "· " : ""}+{s.comms.otherCount} on other job{s.comms.otherCount === 1 ? "" : "s"}</span>
-                )}
-              </Link>
-            )}
-            {/* "Shot" is the appointment's END (OpsShoot.endISO), not its start:
-                at 12:04 PM both cards read "upload page not submitted" for
-                photographers still on site until 1:45 and 2:30 (audit5 F8).
-                While the shoot is running, say that instead — and only print
-                the hour when Aryeo booked one, not the 2h assumption. */}
-            {showDebrief && s.timeISO && s.endISO && !s.debriefSubmitted &&
-              new Date(s.timeISO) < new Date() && new Date(s.endISO) >= new Date() && (
-              <span className="text-muted">On site now{s.endAssumed ? "" : ` — until ${fmtTime(s.endISO)}`}</span>
-            )}
-            {showDebrief && s.endISO && (s.debriefSubmitted || new Date(s.endISO) < new Date()) && (
-              <span className={cn(s.debriefSubmitted ? "text-success" : "font-semibold text-warning")}>
-                {s.debriefSubmitted ? "Upload page submitted ✓" : "Shot — upload page not submitted"}
-              </span>
-            )}
-            {showGaps && s.gaps.length > 0 && (
-              <span className="font-semibold text-danger">Missing: {s.gaps.join(" · ")}</span>
-            )}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// QC — grouped Overdue · Due today · Waiting, with evidence and quick links.
-// ---------------------------------------------------------------------------
-
-// The 9:30 block is for TODAY's work. The backlog (overdue + not-yet-due) was
-// burying it: on Sep 1 the card held 8 stale rows and nothing actually due, so
-// Kyle couldn't tell what this hour was for (Jordan: "too clogged up with
-// overdue and waiting — that should be a separate card to check").
-function QcDueToday({ d, totalInReviewRoom, includeTest = false }: { d: OpsDay; totalInReviewRoom: number; includeTest?: boolean }) {
-  const qc = listingQc(d);
-  const rows = qc.filter((q) => q.bucket === "today");
-  // Each number must match the card it links to — monthly rows are counted
-  // once, under monthly, even when they are also late.
-  const overdue = qc.filter((q) => q.bucket === "overdue").length;
-  const waiting = qc.filter((q) => q.bucket === "waiting").length;
-  const monthly = d.qc.filter((q) => q.monthly).length;
-  return (
-    <div className="space-y-3">
-      {rows.length === 0 ? (
-        <p className="flex items-center gap-1.5 text-sm text-success">
-          <CheckCircle2 className="size-4" /> Nothing due for QC today.
-        </p>
-      ) : (
-        <div className="space-y-2">
-          {/* All rows inline — the Other tab hides media_qa for non-editors,
-              so an "All N →" link there would land on an empty list. */}
-          {rows.map((q) => <QcRow key={q.taskId} q={q} />)}
-        </div>
-      )}
-      {(overdue > 0 || waiting > 0 || monthly > 0) && (
-        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-muted">
-          Not in this block:
-          {overdue > 0 && <a href="#overdue" className="font-semibold text-danger hover:underline">{overdue} overdue →</a>}
-          {waiting > 0 && <a href="#overdue" className="hover:underline">{waiting} not due yet →</a>}
-          {monthly > 0 && <a href="#monthly" className="font-semibold text-brand hover:underline">{monthly} monthly content →</a>}
-        </p>
-      )}
-      {/* The Review Room's own count, next to its own name. It is the only list
-          that also holds orphan QC cards (the job row is gone), so it can read
-          a little higher than the buckets above — which are per-job. */}
-      <p className="text-[11px] text-muted-2">
-        <Link href={homeRecordHref("/review", includeTest)} className="hover:text-foreground">
-          Review Room holds all {totalInReviewRoom} photo set{totalInReviewRoom === 1 ? "" : "s"} in QC →
-        </Link>
-      </p>
-    </div>
-  );
-}
-
-// Everything past its promised date, oldest first, plus what is not due yet.
-// Monthly batches are deliberately absent — they have their own card and their
-// own turnaround (Jordan: monthly content shouldn't sit in the QC pile).
-function OverdueCard({ d }: { d: OpsDay }) {
-  const now = new Date(d.nowISO);
-  const qc = listingQc(d);
-  const byDueAsc = (a: OpsQcRow, b: OpsQcRow) =>
-    (a.dueISO ? Date.parse(a.dueISO) : Infinity) - (b.dueISO ? Date.parse(b.dueISO) : Infinity);
-  const overdue = qc.filter((q) => q.bucket === "overdue").sort(byDueAsc);
-  const waiting = qc.filter((q) => q.bucket === "waiting").sort(byDueAsc);
-  const monthlyLate = d.qc.filter((q) => q.monthly && q.bucket === "overdue").length;
-  return (
-    <div className="space-y-4">
-      {overdue.length === 0 ? (
-        <p className="flex items-center gap-1.5 text-sm text-success">
-          <CheckCircle2 className="size-4" /> Nothing is past its promised date.
-        </p>
-      ) : (
-        <div>
-          <h4 className="mb-1.5 text-xs font-bold uppercase tracking-widest text-danger">Overdue · {overdue.length}</h4>
-          <div className="space-y-2">
-            {overdue.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
-          </div>
-        </div>
-      )}
-      {waiting.length > 0 && (
-        <div>
-          <h4 className="mb-1.5 text-xs font-bold uppercase tracking-widest text-muted-2">Not due yet · {waiting.length}</h4>
-          <p className="mb-2 text-[13px] text-muted">Nothing to do today — listed so none of it creeps up on you.</p>
-          <div className="space-y-2">
-            {waiting.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
-          </div>
-        </div>
-      )}
-      {monthlyLate > 0 && (
-        <p className="text-[13px] text-muted">
-          {monthlyLate} monthly content batch{monthlyLate === 1 ? " is" : "es are"} also past due —{" "}
-          <a href="#monthly" className="font-semibold text-brand hover:underline">Monthly Content Check →</a>
-        </p>
-      )}
-    </div>
-  );
-}
-
-function MonthlyCard({ d }: { d: OpsDay }) {
-  const now = new Date(d.nowISO);
-  const monthly = d.qc.filter((q) => q.monthly);
-  if (monthly.length === 0) {
-    return (
-      <p className="flex items-center gap-1.5 text-sm text-success">
-        <CheckCircle2 className="size-4" /> No monthly batches open right now.
-      </p>
-    );
-  }
-  return (
-    <div className="space-y-2">
-      {monthly.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
-    </div>
-  );
-}
-
-// One open loop — the row Kyle acts on. View + Handled on every row (Jordan,
-// Sep 1) rather than one big link; the Other tab hides comm-type tasks, so the
-// only honest "view" for an unanchored loop is the task deep-link.
-function LoopRow({ l, now, muted, includeTest = false }: { l: OpsLoop; now: Date; muted?: boolean; includeTest?: boolean }) {
-  return (
-    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2", muted && "bg-surface-2/40")}>
-      <div className="min-w-0 flex-1 basis-56">
-        <p className={cn("text-sm font-medium leading-snug", muted && "text-foreground/80")}>{l.title}</p>
-        <p className="mt-0.5 text-[11px] text-muted">
-          {loopKind(l.kind)}
-          {l.projectTitle ? ` · ${l.projectTitle}` : ""}
-          {l.dueISO ? (l.overdue ? ` · ${ageText(l.dueISO, now)} overdue` : ` · due ${fmtDay(l.dueISO)}`) : " · no date"}
-          {l.withWhom ? ` · with ${l.withWhom}` : ""}
-        </p>
-      </div>
-      {l.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
-      {/* A Slack ask's one home is the Slack tab (Sep 16) — the Other tab
-          stopped listing them, so the old deep link landed on a page that did
-          not contain the row. Everything else still opens its job, or the
-          Other tab's deep link. */}
-      <LoopActions
-        taskId={l.taskId}
-        viewHref={homeRecordHref(
-          l.source === "slack"
-            ? `/tasks?tab=slack&task=${l.taskId}`
-            : l.projectId
-              ? `/projects/${l.projectId}`
-              : `/tasks?tab=other&task=${l.taskId}`,
-          includeTest,
-        )}
-      />
-    </div>
-  );
-}
-
-/**
- * Open Loops + Follow-Ups. Two problems Jordan named on Sep 2: the list showed
- * every loop in the business to everyone ("it's showing Kyle things that are
- * for me") and showed all of them at once ("it's also too many things there").
- *
- * Audience is settled in openLoopsList() — this card only ever receives the
- * viewer's own lane plus the shared ops pile. Volume is settled here: overdue
- * and due-today lead, the first {LOOPS_SHOWN} render open, and everything else
- * is COUNTED in the summary and expands in place. Nothing is truncated away —
- * the /tasks board hides these task types (BOARD_HIDDEN_TYPES), so an overflow
- * link there would land on an empty page.
- */
-function LoopsCard({ d, includeTest = false }: { d: OpsDay; includeTest?: boolean }) {
-  const now = new Date(d.nowISO);
-  const { act, later, elsewhere } = splitLoops(d.openLoops);
-  if (act.length + later.length + elsewhere.length === 0) {
-    return (
-      <p className="flex items-center gap-1.5 text-sm text-success">
-        <CheckCircle2 className="size-4" /> No follow-ups waiting on someone else.
-      </p>
-    );
-  }
-  // How many of these came out of Slack. Kyle's call (Sep 16): the Slack
-  // reminders were "hard to find" — they render here AND on the Slack tab, and
-  // the home never said so. One line, one link.
-  const slackCount = [...act, ...later, ...elsewhere].filter((l) => l.source === "slack").length;
-  const shown = act.slice(0, LOOPS_SHOWN);
-  const restOfAct = act.slice(LOOPS_SHOWN);
-  const moreCount = restOfAct.length + later.length + elsewhere.length;
-  // Says what the tail actually IS, so "show N more" is never a mystery pile.
-  // The overdue-with-someone-else figure is called out WITHOUT expanding: on
-  // the owner's screen most loops sit with Kyle, and "12 overdue" is the whole
-  // point of this block ("what am I waiting on that could become a problem?").
-  const elsewhereLate = elsewhere.filter((l) => l.overdue).length;
-  const moreParts = [
-    restOfAct.length > 0 ? `${restOfAct.length} more due now` : null,
-    later.length > 0 ? `${later.length} not due yet` : null,
-    elsewhere.length > 0 ? `${elsewhere.length} with someone else` : null,
-  ].filter(Boolean);
-
-  return (
-    <div className="space-y-2">
-      {act.length === 0 ? (
-        <p className="flex items-center gap-1.5 text-sm text-success">
-          <CheckCircle2 className="size-4" /> Nothing of yours is overdue or promised today.
-        </p>
-      ) : (
-        shown.map((l) => <LoopRow key={l.taskId} l={l} now={now} includeTest={includeTest} />)
-      )}
-
-      {moreCount > 0 && (
-        <details className="group/loops rounded-xl border border-border bg-surface-2/30">
-          <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-[13px] font-medium text-muted hover:text-foreground">
-            <ChevronDown className="size-3.5 shrink-0 -rotate-90 transition-transform group-open/loops:rotate-0" />
-            Show {moreCount} more
-            <span className="text-[11px] font-normal text-muted-2">— {moreParts.join(" · ")}</span>
-            {elsewhereLate > 0 && (
-              <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">{elsewhereLate} overdue</span>
-            )}
-          </summary>
-          <div className="space-y-2 border-t border-border p-2.5">
-            {restOfAct.map((l) => <LoopRow key={l.taskId} l={l} now={now} includeTest={includeTest} />)}
-            {later.length > 0 && (
-              <>
-                <p className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Not due yet</p>
-                {later.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted includeTest={includeTest} />)}
-              </>
-            )}
-            {elsewhere.length > 0 && (
-              <>
-                <p className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
-                  With someone else — chase, don&rsquo;t do
-                </p>
-                {elsewhere.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted includeTest={includeTest} />)}
-              </>
-            )}
-          </div>
-        </details>
-      )}
-
-      {slackCount > 0 && (
-        <Link
-          href={homeRecordHref("/tasks?tab=slack", includeTest)}
-          className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline"
-        >
-          {slackCount} of these came in on Slack — open the Slack asks list
-        </Link>
-      )}
-
-      {d.openLoopsTally.capped && (
-        <p className="text-[11px] text-muted-2">
-          Showing the first {d.openLoops.length} — there are more open than this block can load.
-        </p>
-      )}
-    </div>
-  );
-}
-
-// One labelled line of the QC status grid — the same shape as the shoot
-// card's Field, so both cards read the same way.
-function StatusLine({ label, tone, children }: { label: string; tone: "success" | "warning" | "brand" | "muted" | "danger"; children: React.ReactNode }) {
-  const toneClass =
-    tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : tone === "brand" ? "text-brand" : tone === "danger" ? "text-danger" : "text-foreground/90";
-  return (
-    <p className="text-[13px] leading-relaxed">
-      <span className={cn("font-semibold", toneClass)}>{label}: </span>
-      <span className="text-foreground/80">{children}</span>
-    </p>
-  );
-}
-
-const actionBtn = "inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground";
-
-// Who we are actually waiting on when a category has not landed. "Missing"
-// alone never said whether the editor has it, CubiCasa owes it, or nobody is
-// on it (Kyle call, Sep 16).
-const WAITING_ON: Record<string, string> = {
-  Photos: "waiting on the photo edit",
-  Video: "waiting on the editor",
-  "Floor plan": "waiting on CubiCasa",
-  "3D tour": "waiting on the 3D tour",
-};
-const catNoun = (c: string) => (c === "Photos" ? "photos" : c === "Video" ? "video" : `the ${c.toLowerCase()}`);
-
-/** One ordered category, in the three states Kyle cares about: done, live and
- *  waiting for his pass (with the one-press button), or not landed yet. */
-function QcCategoryLine({ taskId, c }: { taskId: string; c: OpsQcRow["categories"][number] }) {
-  if (c.done) {
-    return <span className="inline-flex items-center gap-1 text-[12px] font-medium text-success">{c.label} ✓ done</span>;
-  }
-  if (c.live) {
-    const left = c.total - c.ticked;
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[12px] text-foreground/80">
-        <span className="font-medium">{c.label}</span> — live{left > 0 ? `, ${left} check${left === 1 ? "" : "s"}` : ""}
-        <QcCategoryDone taskId={taskId} category={c.label} />
-      </span>
-    );
-  }
-  if (c.overdue && c.dueISO) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[12px] font-medium text-danger">
-        {c.label} — late since {fmtDayTime(c.dueISO)}
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 text-[12px] text-muted">
-      {c.label} — {WAITING_ON[c.label] ?? "not on Aryeo yet"}{c.dueISO ? `, due ${fmtDayTime(c.dueISO)}` : ""}
-    </span>
-  );
-}
-
-function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
-  const db = q.evidence.dropbox;
-  // Per-category state — the card's headline and its one-press buttons. Live =
-  // on Aryeo; done = live and every optional check ticked (Photos done).
-  const liveCats = q.categories.filter((c) => c.live);
-  const owedCats = q.categories.filter((c) => !c.live);
-  const liveUnticked = liveCats.filter((c) => !c.done);
-  // Everything that landed has been QC'd and the job is just waiting on the
-  // rest — the state Kyle had no way to say (he closed the whole card instead,
-  // and the video's QC went with it).
-  const handledHeadline =
-    liveCats.length > 0 && liveUnticked.length === 0 && owedCats.length > 0
-      ? `${liveCats.map((c) => c.label).join(" + ")} done ✓ · Waiting on ${catNoun(owedCats[0].label)}${
-          owedCats[0].dueISO ? ` — ${owedCats[0].overdue ? "late since" : "due"} ${fmtDayTime(owedCats[0].dueISO)}` : ""
-        }`
-      : null;
-  // How late, in plain days — "due Aug 21" makes Kyle do the subtraction.
-  const lateDays =
-    now && q.dueISO && Date.parse(q.dueISO) < now.getTime()
-      ? Math.floor((now.getTime() - Date.parse(q.dueISO)) / 86_400_000)
-      : null;
-  const v = q.video;
-  const videoTone =
-    !v ? "muted" :
-    v.stage === "waiting_review" ? "brand" :
-    v.stage === "in_revisions" ? "warning" :
-    v.stage === "approved" || v.stage === "delivered" ? "success" :
-    "muted";
-  const videoHref = !v ? null : v.stage === "waiting_review" ? `/review/${q.projectId}` : `/edit/${q.projectId}`;
-  return (
-    <div className="rounded-xl border border-border">
-      {/* Header: address + who, chips on the right (wrap under on a phone) */}
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5 px-3.5 pt-2.5">
-        <div className="min-w-0 flex-1 basis-52">
-          <Link href={`/projects/${q.projectId}`} className="text-sm font-semibold leading-snug hover:text-brand">{q.title}</Link>
-          <p className="mt-0.5 text-[12px] text-muted">
-            {q.clientName && <ClientName name={q.clientName} src={q.clientAvatarUrl} />}
-            {q.shootISO ? ` · shot ${fmtDay(q.shootISO)}` : ""}
-            {q.photographer ? ` · ${q.photographer}` : ""}
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {lateDays != null && (
-            <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">
-              {lateDays === 0 ? "late today" : `${lateDays} day${lateDays === 1 ? "" : "s"} late`}
-            </span>
-          )}
-          {q.videosOwed != null && (
-            <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand" title="Videos this monthly session owes — the photographer's count, else the plan quota">
-              {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
-            </span>
-          )}
-          {/* The failure-mode checks are OPTIONAL — notes for Kyle, not a gate
-              (Sep 8; tasks.ts qcGateComplete). What still holds the card: every
-              ordered category live, the gallery out, the photographer's upload
-              page in (the debrief rows clear themselves when it is submitted),
-              and — after a revision bounce — the re-QC row, which wants a
-              human tick. The copy names those so it doesn't over-promise
-              (review, Sep 8). The chip says how many optional checks are on
-              media that is already live, so a job with photos up and one with
-              nothing landed don't look alike — and never reads as work owed. */}
-          <span
-            className={cn(
-              "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-              handledHeadline ? "bg-success/15 text-success" : q.actionable > 0 ? "bg-brand/10 text-brand" : "bg-surface-2 text-muted",
-            )}
-            title={
-              handledHeadline
-                ? `Everything live on Aryeo has been QC'd. The card stays open for ${owedCats.map((c) => c.label.toLowerCase()).join(" + ")} and comes back the moment it lands.`
-                : q.itemsLeft === 0
-                  ? "Every check on this card is done."
-                  : q.actionable > 0
-                    ? `${q.actionable} of ${q.itemsLeft} optional checks are on media that is already live on Aryeo — notes for you, not a gate. The card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick) — or sooner with Mark complete.`
-                    : "Optional checks — notes for you, not a gate. Their media isn't live on Aryeo yet; the card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick)."
-            }
-          >
-            {handledHeadline
-              ? `${liveCats.map((c) => c.label).join(" + ").toLowerCase()} done`
-              : q.itemsLeft === 0
-                ? "checks done"
-                : q.actionable > 0
-                  ? `${q.actionable} optional check${q.actionable === 1 ? "" : "s"}`
-                  : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} · optional`}
-          </span>
-        </div>
-      </div>
-
-      {/* WHAT IS LEFT, per category (Kyle call, Sep 16). One "8 optional
-          checks" chip made a job with the photos QC'd and delivered look
-          exactly like one nobody had opened — so each ordered category says
-          its own state, and the live ones carry the one-press button that
-          checks them off without closing the card. */}
-      {q.categories.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5">
-          {handledHeadline ? (
-            <>
-              <span className="text-[12px] font-medium text-success">{handledHeadline}</span>
-              {/* anything else still owed keeps its own line — 358 N Church
-                  owes a floor plan as well as the video */}
-              {owedCats.slice(1).map((c) => <QcCategoryLine key={c.label} taskId={q.taskId} c={c} />)}
-            </>
-          ) : (
-            q.categories.map((c) => <QcCategoryLine key={c.label} taskId={q.taskId} c={c} />)
-          )}
-        </div>
-      )}
-
-      {/* Status grid — what's live, what's owed, where the video is, what
-          Dropbox holds. Labelled lines instead of two run-on sentences. */}
-      <div className="mt-2 grid gap-x-6 gap-y-0.5 px-3.5 sm:grid-cols-2">
-        <StatusLine label="Ordered" tone="muted">{q.services.join(", ") || "—"}</StatusLine>
-        {/* The per-category strip above already answers "what's live" and
-            "what's owed, and when" line by line, so these two said the same
-            thing again in other words (review, Sep 16). They stay for a card
-            with no ordered categories to report — a monthly-content job, or a
-            checklist the status engine has never put a "QC <x>" row on. */}
-        {q.categories.length === 0 && (q.evidence.present.length > 0 ? (
-          <StatusLine label="Live on Aryeo" tone="success">
-            {q.evidence.present.join(", ")}
-            {q.actionable > 0 && <> — <span className="text-muted">{q.actionable} optional check{q.actionable === 1 ? "" : "s"} if you want {q.actionable === 1 ? "it" : "them"}</span></>}
-          </StatusLine>
-        ) : (
-          <StatusLine label="Live on Aryeo" tone="muted">nothing yet</StatusLine>
-        ))}
-        {/* WHY it's still open, in words — "missing: Floor plan" alone didn't
-            say whether we're waiting on the editor, on Aryeo, or on nothing at
-            all (Jordan, Sep 1: 195 Woodhill's floor plan was removed). The
-            "nothing owed" lines below are NOT duplicates of the strip: they
-            answer why a card with everything live is still open at all. */}
-        {q.evidence.missing.length > 0 ? (q.categories.length === 0 && (
-          <StatusLine label="Still owed" tone="warning">
-            {q.evidence.missing.join(", ")}
-            {q.nextDueISO ? ` — ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}
-          </StatusLine>
-        )) : q.itemsLeft > 0 ? (
-          <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live; the card closes itself once the gallery is out and the photographer&rsquo;s upload page is in (a re-QC after a revision still wants your tick; the other checks are optional)</StatusLine>
-        ) : (
-          <StatusLine label="Status" tone="success">Everything is live and checked — safe to close.</StatusLine>
-        )}
-        {/* Video status for shoots that have one (Jordan, Sep 1). */}
-        {v && (
-          <StatusLine label="Video" tone={videoTone}>
-            {v.detail}
-            {videoHref && (v.stage === "waiting_review" || v.stage === "in_revisions") && (
-              <> · <Link href={videoHref} className="font-medium text-brand hover:underline">{v.stage === "waiting_review" ? "review it" : "open edit"}</Link></>
-            )}
-          </StatusLine>
-        )}
-        <StatusLine label="Dropbox" tone="muted">
-          {db ? (
-            <>
-              Raw {db.rawPhotos + db.rawVideo} · Final {db.finalPhotos + db.finalVideo}
-              {db.stale && <span className="text-muted-2"> (last read {db.at ? fmtDay(db.at) : "earlier"})</span>}
-            </>
-          ) : (
-            // Not consulted ≠ empty. Hiding the line read as "no files".
-            <span title="The last status check didn't read Dropbox for this job (Aryeo already accounted for everything ordered, or the read failed with nothing to carry forward).">not read this pass</span>
-          )}
-        </StatusLine>
-      </div>
-
-      {/* Actions — one row, same buttons on every card */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border/60 px-3.5 py-2">
-        <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} liveUnticked={liveUnticked.map((c) => c.label)} />
-        {aryeoJobUrl(q) && (
-          <a href={aryeoJobUrl(q)!} target="_blank" rel="noopener noreferrer" title={aryeoJobTitle(q)} className={actionBtn}>
-            <ExternalLink className="size-3" /> Aryeo
-          </a>
-        )}
-        <Link href={`/projects/${q.projectId}`} className={actionBtn}>Project</Link>
-        {v?.stage === "waiting_review" && (
-          <Link href={`/review/${q.projectId}`} className={cn(actionBtn, "border-brand/40 text-brand hover:text-brand")}>
-            <PlayCircle className="size-3" /> Review video
-          </Link>
-        )}
-        {/* The checks never hold this card: say so where the button is. */}
-        <span className="ml-auto text-[11px] text-muted-2">
-          {q.evidence.missing.length > 0
-            ? liveUnticked.length > 0
-              ? `Done with the ${liveUnticked[0].label.toLowerCase()}? Press ${liveUnticked[0].label} done — the card stays open for the rest.`
-              : "Removed from the order or handled elsewhere? Mark complete."
-            : "Optional checks — notes for you, not a gate. Mark complete whenever you're done."}
-        </span>
-      </div>
-      <ShootNotes q={q} />
-    </div>
-  );
-}
-
-// Everything the photographer wrote on the upload portal, verbatim and in full
-// — except the video editing brief, which belongs to the editor on /edit
-// (Jordan, Sep 1). These notes were previously either missing (shot order,
-// flags, per-item notes, "anything else for the editor") or clipped mid-sentence
-// at 140 characters, which is where the useful half usually was.
-function ShootNotes({ q }: { q: OpsQcRow }) {
-  const b = q.debrief;
-  const has =
-    b.unsubmitted || q.notCompleted.length > 0 || b.flags.length > 0 || !!b.removals ||
-    b.nothingToRemove || !!b.shotOrder || !!b.editorBrief || b.itemNotes.length > 0 ||
-    b.culled || b.videosFilmed != null;
-  if (!has) return null;
-  return (
-    <div className="mx-3.5 mb-3 rounded-lg bg-surface-2/60 px-3 py-2">
-      <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-2">From the shoot</h4>
-      <div className="mt-1 space-y-1 text-[13px]">
-        {b.unsubmitted && (
-          <p className="font-medium text-danger">Upload page never submitted — treat the gallery as unculled.</p>
-        )}
-        {q.notCompleted.map((nc, i) => (
-          <p key={i} className="font-medium text-warning">
-            Couldn&rsquo;t complete {nc.label}: <span className="font-normal text-foreground/80">{nc.reason}</span>
-          </p>
-        ))}
-        {b.flags.map((f, i) => (
-          <p key={i} className="font-medium text-danger">Flagged: <span className="font-normal text-foreground/80">{f}</span></p>
-        ))}
-        {b.shotOrder && <NoteLine label="Shot order" body={b.shotOrder} />}
-        {b.removals && <NoteLine label="Remove in editing" body={b.removals} />}
-        {b.editorBrief && <NoteLine label="Anything else" body={b.editorBrief} />}
-        {b.itemNotes.map((n, i) => <NoteLine key={i} label={n.label} body={n.note} />)}
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-muted">
-          {b.videosFilmed != null && <span>{b.videosFilmed} video{b.videosFilmed === 1 ? "" : "s"} filmed</span>}
-          {b.culled && <span className="text-success">Culled to standard ✓</span>}
-          {b.nothingToRemove && !b.removals && <span>Nothing to remove ✓</span>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// whitespace-pre-wrap: multi-line wrap-up notes keep the photographer's line
-// breaks instead of collapsing into one run-on paragraph.
-function NoteLine({ label, body }: { label: string; body: string }) {
-  return (
-    <p className="whitespace-pre-wrap text-foreground/80">
-      <span className="font-semibold text-foreground/90">{label}:</span> {body}
-    </p>
-  );
-}
-
-function Pill({ warn, label, href }: { warn: boolean; label: string; href: string }) {
-  const classes = cn(
-    "rounded-full border px-3 py-1 font-medium transition-colors hover:bg-surface-2",
-    warn ? "border-warning/40 bg-warning/10 text-warning" : "border-border text-muted",
-  );
-  // In-page anchors must be a plain <a> — next/link would push a route.
-  return href.startsWith("#") ? (
-    <a href={href} className={classes}>{label}</a>
-  ) : (
-    <Link href={href} className={classes}>{label}</Link>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Video Review — every uploaded cut waiting on a verdict, and every cut that
-// went back to an editor (Jordan, Sep 1). Rows are per CUT, not per job: a
-// monthly package with four videos shows four rows, each with its own button.
-// ---------------------------------------------------------------------------
-
-function VideoReviewCard({ d, showReady = true, includeTest = false }: { d: OpsDay; showReady?: boolean; includeTest?: boolean }) {
-  const now = new Date(d.nowISO);
-  const { waiting, revising } = d.videoReview;
-  return (
-    <div className="space-y-4">
-      {/* Ready to send FIRST. A verdict Kyle owes is work that hasn't started;
-          a finished video nobody has sent is a client already waiting — and on
-          Sep 17 it was a client waiting on a re-send that everyone assumed had
-          happened. Delivery before review, in the block where he is already
-          looking at videos. */}
-      {showReady && (
-        <div>
-          <ReadyToSendHeading n={d.readySend.ready.length} />
-          <div className="mt-2">
-            <ReadyToSendCard board={d.readySend} includeTest={includeTest} />
-          </div>
-        </div>
-      )}
-      <VideoGroup
-        icon={PlayCircle}
-        title="Waiting on your review"
-        tone="brand"
-        cuts={waiting}
-        now={now}
-        empty="Nothing waiting — every uploaded cut has a verdict."
-        action="Review"
-        hrefFor={(c) => `/review/${c.projectId}?cut=${c.submissionId}`}
-      />
-      <VideoGroup
-        icon={Hourglass}
-        title="In revisions"
-        tone="warning"
-        cuts={revising}
-        now={now}
-        empty="No cuts are back with an editor."
-        action="Open edit"
-        hrefFor={(c) => `/edit/${c.projectId}?cut=${c.submissionId}`}
-      />
-    </div>
-  );
-}
-
-function VideoGroup({ icon: Icon, title, tone, cuts, now, empty, action, hrefFor }: {
-  icon: LucideIcon;
-  title: string;
-  tone: "brand" | "warning";
-  cuts: VideoCutState[];
-  now: Date;
-  empty: string;
-  action: string;
-  hrefFor: (c: VideoCutState) => string;
-}) {
-  const toneText = tone === "brand" ? "text-brand" : "text-warning";
-  const toneChip = tone === "brand" ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning";
-  return (
-    <div>
-      <h4 className={cn("flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest", toneText)}>
-        <Icon className="size-3.5" /> {title}
-        <span className={cn("rounded-full px-1.5 text-[10px] tabular-nums", toneChip)}>{cuts.length}</span>
-      </h4>
-      {cuts.length === 0 ? (
-        <p className="mt-1.5 flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> {empty}</p>
-      ) : (
-        <div className="mt-2 space-y-2">
-          {cuts.map((c) => {
-            const age = ageText(c.sinceISO, now);
-            const stale = now.getTime() - Date.parse(c.sinceISO) > 48 * 3_600_000;
-            return (
-              <div key={c.submissionId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2">
-                <div className="min-w-0 flex-1 basis-56">
-                  <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm leading-snug">
-                    <Link href={`/projects/${c.projectId}`} className="font-semibold hover:text-brand">{c.street}</Link>
-                    <span className="text-muted">· {c.cutLabel}</span>
-                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">v{c.round}</span>
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-muted">
-                    <ClientName name={c.clientName} src={c.clientAvatarUrl} size={16} />
-                    {c.submittedByName?.startsWith("Auto") ? " · found in the Final folder" : c.submittedByName || c.editorKey ? ` · ${c.submittedByName ?? c.editorKey}` : ""}
-                    {" · "}
-                    <span className={cn(stale && "font-semibold text-danger")}>
-                      {c.status === "PENDING" ? `waiting ${age}` : age === "just now" ? "sent back just now" : `sent back ${age} ago`}
-                    </span>
-                    {c.status === "CHANGES_REQUESTED" && c.openNotes > 0 && ` · ${c.openNotes} note${c.openNotes === 1 ? "" : "s"} to fix`}
-                  </p>
-                </div>
-                <Link
-                  href={hrefFor(c)}
-                  className={cn(
-                    "inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
-                    tone === "brand" ? "border-brand/40 bg-brand/10 text-brand hover:bg-brand/20" : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
-                  )}
-                >
-                  {action} <ArrowRight className="size-3" />
-                </Link>
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

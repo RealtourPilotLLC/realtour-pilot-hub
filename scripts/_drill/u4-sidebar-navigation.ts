@@ -54,7 +54,9 @@ async function main() {
       // Oct 14 2026: "Client activity" (/content/activity) and "Photo Delivery"
       // (/ops/photo-delivery, owner + office via the ops PageKey) are the
       // destinations added since BASE.
-      const ADDED = new Set(["/content/activity", "/ops/photo-delivery"]);
+      // Oct 19 2026: the Operations group (Kyle's five job screens and the
+      // daily checklist, all on the ops PageKey).
+      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/ops/video-delivery", "/ops/messages", "/ops/requests", "/ops/scheduling", "/ops"]);
       check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => !ADDED.has(h))));
       check(`${name}: every destination still appears once`, hrefs(after).length === new Set(hrefs(after)).size);
     }
@@ -62,7 +64,9 @@ async function main() {
     const admin = render(Sidebar, user("ADMIN"));
     const editor = render(Sidebar, user("EDITOR"));
     const photographer = render(Sidebar, user("PHOTOGRAPHER"));
-    check("owner has the six requested groups in order", [...owner.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "daily,production,clients,team,reference,administration");
+    // Oct 19 2026: "operations" (Kyle's five jobs + the daily checklist) after Daily work.
+    check("owner has the requested groups in order", [...owner.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "daily,operations,production,clients,team,reference,administration");
+    check("Operations group: the five job screens and the daily checklist, open, for owner and office only", ["OWNER", "ADMIN"].every((role) => { const g = group(render(Sidebar, user(role)), "operations"); return !g.includes("<details") && ["/ops/photo-delivery", "/ops/video-delivery", "/ops/messages", "/ops/requests", "/ops/scheduling", "/ops"].every((h) => g.includes(`href="${h}"`)); }) && [editor, photographer].every((html) => !hrefs(html).some((h) => h.startsWith("/ops"))));
     check("Daily work and Production remain directly visible", !group(owner, "daily").includes("<details") && !group(owner, "production").includes("<details") && group(owner, "daily").includes('href="/tasks"') && group(owner, "production").includes('href="/review"'));
     check("secondary owner groups start collapsed", ["team", "reference", "administration"].every((id) => group(owner, id).includes("<details") && !/<details[^>]*\sopen(?:[\s=>])/.test(group(owner, id))));
     // Oct 5 2026: Clients (Content Program + Clients) is open by default — the

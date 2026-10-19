@@ -25,6 +25,15 @@ export async function GET(req: NextRequest) {
     const { expireStaleSlackTasks } = await import("@/lib/tasks");
     return expireStaleSlackTasks();
   });
+  // SHOOT NOTES THAT OUTLIVED THEIR SHOOT (Oct 19 2026, lib/taskAging): the
+  // brain's "Note X for Y shoot" to-dos close themselves once the shoot day is
+  // over, as a dismissal that says why, recorded in AuditLog and reversible
+  // (scripts/_fix/oct19/old-items-cleanup.ts --undo). Before the 8 AM digests.
+  await step("expireShootNotes", async () => {
+    const { expireShootNotes } = await import("@/lib/taskAging");
+    const r = await expireShootNotes(new Date(), { apply: true, actor: "cron:daily" });
+    return { found: r.candidates.length, closed: r.closed };
+  });
   // Stripe money-in FIRST — see the note above.
   await step("stripe", async () => {
     const { syncStripe } = await import("@/lib/integrations/stripe");

@@ -2387,7 +2387,13 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     const jordanAsks = await import("@/lib/slackAskEvidence")
       .then((m) => m.jordansOpenAsksToKyle())
       .catch(() => []);
-    if (overdue.length + openToday.length + texts.length + exceptionLines.length + jordanAsks.length === 0) {
+    // OLD ITEMS TO CLEAR (Oct 19 2026): Kyle's open tasks 3+ days past their
+    // date (lib/taskAging), folded into THIS message rather than a second DM.
+    // The bell for them is rung by taskAging.oldItemsMorning.
+    const old = await import("@/lib/taskAging")
+      .then((m) => m.kyleOldItemLines(appBase()))
+      .catch(() => ({ lines: [] as string[], count: 0 }));
+    if (overdue.length + openToday.length + texts.length + exceptionLines.length + jordanAsks.length + old.count === 0) {
       return await send("☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
     }
     const lines: string[] = ["☀️ *Morning check* — today's list:"];
@@ -2404,6 +2410,7 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
       for (const a of jordanAsks.slice(0, 6)) lines.push(`• ${noDashes(scrubMoney(a.title))} (${age(a.ageDays)})`);
       if (jordanAsks.length > 6) lines.push(`  and ${jordanAsks.length - 6} more`);
     }
+    lines.push(...old.lines);
     // Land where the listed rows actually live: Slack asks moved to their own
     // tab on Sep 16 (the Other tab now excludes them), so a digest that lists
     // both must offer both doors rather than one that shows half the list.

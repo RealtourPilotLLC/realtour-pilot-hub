@@ -24,7 +24,7 @@ function elements(tree: unknown, name: string): Props[] {
 // components that await reads started with the page's own). Resolve those
 // named components — inside the injected window — so the checks read the
 // page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -48,6 +48,11 @@ async function main() {
     const { setSession } = await import("@/lib/auth/session");
     const { default: homePage } = await import("@/app/page");
     const home = async (props: Parameters<typeof homePage>[0]) => settleHome(await homePage(props));
+    // Oct 19 2026: the exceptions card moved with the daily checklist from
+    // Kyle's Home onto /ops; its failure and recovery are read there now.
+    const { default: opsPage } = await import("@/app/ops/page");
+    const checklist = async (props: Parameters<typeof opsPage>[0]) => settleHome(await opsPage(props));
+    void home;
     const { default: review } = await import("@/app/review/page");
     const { default: editing } = await import("@/app/editing/page");
     const { default: schedule } = await import("@/app/schedule/page");
@@ -93,25 +98,25 @@ async function main() {
     const homeFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => {
       const select = record(args.select);
       return record(args.where).status === "PENDING" && select.reviewerTeamMemberId === true && select.selfCheckedAt === true && record(args.orderBy).createdAt === "asc";
-    }, () => home(query));
+    }, () => checklist(query));
     const unavailableProps = elements(homeFailed.value, "ExceptionsCard")[0];
     const unavailableHtml = renderToStaticMarkup(createElement(ExceptionsCard, unavailableProps as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("Home named aging-review read failure is caught at its actual page seam", homeFailed.hits === 1 && !homeFailed.error);
-    c.ok("Home failed exception pool is visibly unavailable without zero/clear reassurance", unavailableProps.unavailable === true && unavailableHtml.includes("Exceptions could not be checked") && unavailableHtml.includes('role="status"') && unavailableHtml.includes('href="/"') && !unavailableHtml.includes("0 things") && !unavailableHtml.includes("nothing waiting"));
+    c.ok("Checklist named aging-review read failure is caught at its actual page seam", homeFailed.hits === 1 && !homeFailed.error);
+    c.ok("Checklist failed exception pool is visibly unavailable without zero/clear reassurance", unavailableProps.unavailable === true && unavailableHtml.includes("Exceptions could not be checked") && unavailableHtml.includes('role="status"') && unavailableHtml.includes('href="/ops#exceptions"') && !unavailableHtml.includes("0 things") && !unavailableHtml.includes("nothing waiting"));
     const scopedFailureHtml = renderToStaticMarkup(createElement(ExceptionsCard, { ...unavailableProps, includeTest: true } as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("unavailable retry and work-list links preserve explicit test scope", ["/?test=1", "/review?test=1", "/editing?test=1"].every((href) => scopedFailureHtml.includes(`href="${href}"`)));
+    c.ok("unavailable retry and work-list links preserve explicit test scope", ["/ops?test=1#exceptions", "/review?test=1", "/editing?test=1"].every((href) => scopedFailureHtml.includes(`href="${href}"`)));
     c.ok("healthy empty exception pool still stays hidden", renderToStaticMarkup(createElement(ExceptionsCard, emptyExceptionBoard())) === "");
-    const recoveredHome = elements(await home(query), "ExceptionsCard")[0];
+    const recoveredHome = elements(await checklist(query), "ExceptionsCard")[0];
     const recoveredExceptionHtml = renderToStaticMarkup(createElement(ExceptionsCard, recoveredHome as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("Home read recovery restores the actual aged exact cut, not a guessed zero", recoveredExceptionHtml.includes("48 Grove Lane") && (recoveredHome.rows as { id: string }[]).some((r) => r.id === `review:${cut.id}`));
+    c.ok("Checklist read recovery restores the actual aged exact cut, not a guessed zero", recoveredExceptionHtml.includes("48 Grove Lane") && (recoveredHome.rows as { id: string }[]).some((r) => r.id === `review:${cut.id}`));
     await signIn(restricted);
     const restrictedFailure = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => {
       const select = record(args.select);
       return record(args.where).status === "PENDING" && select.reviewerTeamMemberId === true && select.selfCheckedAt === true && record(args.orderBy).createdAt === "asc";
-    }, () => home(query));
+    }, () => checklist(query));
     const restrictedProps = elements(restrictedFailure.value, "ExceptionsCard")[0];
     const restrictedHtml = renderToStaticMarkup(createElement(ExceptionsCard, restrictedProps as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("signed page overrides hide denied recovery destinations while retaining Retry Home", restrictedFailure.hits === 1 && !restrictedFailure.error && restrictedProps.canReview === false && restrictedProps.canEdit === false && restrictedHtml.includes("Retry Home") && !restrictedHtml.includes('href="/review"') && !restrictedHtml.includes('href="/editing"'));
+    c.ok("signed page overrides hide denied recovery destinations while retaining Retry", restrictedFailure.hits === 1 && !restrictedFailure.error && restrictedProps.canReview === false && restrictedProps.canEdit === false && restrictedHtml.includes(">Retry<") && !restrictedHtml.includes('href="/review"') && !restrictedHtml.includes('href="/editing"'));
 
     await signIn(james);
     const reviewFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => record(record(args.include).project).select !== undefined && record(record(record(args.include).project).select).deliveredAt === true, () => review(query));
