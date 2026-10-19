@@ -59,3 +59,32 @@ export async function relayFile(req: NextRequest, url: string, authorization: st
   if (!out.has("accept-ranges")) out.set("Accept-Ranges", "bytes");
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
+
+/** Aryeo's own video file host (videos.aryeo.com): the only outside address the portal's download door relays. */
+export function isAryeoFileUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && /(^|\.)aryeo\.com$/i.test(u.host);
+  } catch {
+    return false;
+  }
+}
+
+/** "Video 4 - Downtown Media Highlight.mp4": the title, with the file's own extension. */
+export function deliveredFileName(title: string | null | undefined, url: string): string {
+  let ext = "mp4";
+  try { ext = (new URL(url).pathname.match(/\.([a-z0-9]{2,4})$/i)?.[1] ?? "mp4").toLowerCase(); } catch { /* keep mp4 */ }
+  const base = (title ?? "").replace(/[^\w .()-]+/g, " ").replace(/\s+/g, " ").trim() || "video";
+  return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;
+}
+
+/** The file's full size from a one-byte ranged read (content-range "bytes 0-0/<total>"); null when it can't be told quickly. */
+export async function remoteFileSize(url: string, timeoutMs = 3000): Promise<number | null> {
+  const res = await fetch(url, { headers: { Range: "bytes=0-0" }, cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+  void res.body?.cancel().catch(() => {});
+  const total = Number(res.headers.get("content-range")?.split("/")[1]);
+  if (res.status === 206 && Number.isFinite(total) && total > 0) return total;
+  const len = Number(res.headers.get("content-length"));
+  return res.status === 200 && Number.isFinite(len) && len > 0 ? len : null;
+}

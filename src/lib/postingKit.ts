@@ -1,4 +1,5 @@
 import "server-only";
+import { isAryeoFileUrl, deliveredFileName, remoteFileSize } from "@/lib/fileRelay";
 import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { transcriptForCut } from "@/lib/cutTranscripts";
@@ -134,6 +135,16 @@ async function downloadPlanFor(e: Entitlement): Promise<DownloadPlan | null> {
   // door and the browser's own download shows the progress. Never held in the
   // page's memory.
   if (f.kind === "cut" && f.processed) return { mode: "redirect", fileName: f.processed.fileName, sizeBytes: null, ref: e.captionRef };
+  // A video delivered through an Aryeo listing (Oct 19 2026, Rick Schultz on
+  // his phone: "it only shows playback speed, not download"). The door relays
+  // Aryeo's file same-origin with its length, so the page can read it with
+  // progress and hand it to the phone's share sheet (Save Video) like a hub
+  // cut. One ranged byte tells the size; unknown or too big → plain download.
+  if (f.kind === "delivered" && isAryeoFileUrl(f.url)) {
+    const size = await remoteFileSize(f.url).catch(() => null);
+    const mode = size != null && size <= PROXY_MAX_BYTES ? "proxy" : "redirect";
+    return { mode, fileName: deliveredFileName(f.fileName, f.url), sizeBytes: size, ref: e.captionRef };
+  }
   if (f.kind === "cut" && f.submissionId) {
     const sub = await prisma.reviewSubmission.findUnique({ where: { id: f.submissionId }, select: { blobUrl: true, sizeBytes: true, fileName: true } });
     const size = sub?.sizeBytes ?? null;
