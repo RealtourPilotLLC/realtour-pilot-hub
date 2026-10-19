@@ -5,9 +5,9 @@ import { forwardedHref } from "@/lib/homeAnchors";
 
 // Links minted before Oct 19 2026 (Slack lines, bells, delivery receipts,
 // other screens) still carry the old anchors, and the fragment never reaches
-// the server, so the hop happens here (replaced, not pushed): "/#stuck" goes
-// to /ops, where the stuck jobs and exceptions are; "/ops#loops" comes back to
-// Home, where the checklist group that holds that work carries the anchor.
+// the server, so the hop happens here (replaced, not pushed): on the
+// dashboard, "/#loops" goes to Kyle's list (/ops/checklist#loops), "/#comms-1"
+// to Messages, "/#my-list" to My Day (lib/homeAnchors.forwardedHref).
 export function HomeAnchorForward() {
   useEffect(() => {
     const go = () => {

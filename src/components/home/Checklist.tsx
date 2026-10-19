@@ -1,13 +1,13 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, Check, CheckCircle2, ChevronDown, Film, Images, MessageSquare } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, CheckCircle2, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etTime } from "@/lib/datetime";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { GROUP_ALIASES } from "@/lib/homeAnchors";
 import { EARLIER_SHOWN, OLD_AFTER_DAYS, PUSHES_BEFORE_FLAG, WEEK_OLD_DAYS, type OldItem } from "@/lib/taskAging";
 import {
-  SUMMARY_HREF, replyHref, stillOpenWords, waitedWords,
-  type ChecklistGroup, type ChecklistLine, type DoneLine, type HomeSummary, type KyleChecklist,
+  stillOpenWords,
+  type ChecklistGroup, type ChecklistLine, type DoneLine, type KyleChecklist,
 } from "@/lib/opsHome";
 import type { BehindState } from "@/lib/behindAlert";
 import { HandledButton } from "@/components/tasks/ChecklistButtons";
@@ -16,14 +16,12 @@ import { AskQuickActions, ReopenAskButton } from "@/components/home/AskQuickActi
 import { AddAskForm } from "@/components/asks/AddAskForm";
 
 // ---------------------------------------------------------------------------
-// KYLE'S HOME, Oct 19 2026 (evening). Jordan: "The home screen should have the
-// daily checklist, but with a box up top that summarizes the photo delivery,
-// video delivery, and comms needing responses. … keep it simplified. We just
-// need Kyle to be able to keep track of what he got done and what's still
-// outstanding at the end of the day."
-//
+// KYLE'S DAILY CHECKLIST, Oct 19 2026. Jordan (evening): "We just need Kyle to
+// be able to keep track of what he got done and what's still outstanding at
+// the end of the day." Since that night (the dashboard took "/") it is its own
+// page, "Your list" (app/ops/checklist), one tap from the dashboard's "Kyle's
+// day" card:
 //   · the red line when we are behind (behindAlert.behindState)
-//   · the summary box: three numbers, each opening its screen
 //   · the daily checklist: one list for today in five groups, each line one
 //     tap to open the thing and one tap to close it (or the natural move:
 //     Reply, Checked); then the items from earlier days; then Done today
@@ -53,59 +51,6 @@ export function BehindLine({ state, href }: { state: BehindState | null; href: s
   );
 }
 
-/** Photos, videos and messages: three numbers, each its screen's own source. */
-export function SummaryBox({ summary, includeTest = false, title = "Today at a glance" }: { summary: HomeSummary; includeTest?: boolean; title?: string }) {
-  const s = summary;
-  const href = (h: string) => homeRecordHref(h, includeTest);
-  return (
-    <section aria-labelledby="summary-title" data-summary-box className="panel-shadow rounded-2xl border border-border bg-surface p-3 sm:p-4">
-      <h2 id="summary-title" className="px-1 pb-2 text-sm font-semibold text-muted">{title}</h2>
-      <div className="grid grid-cols-3 gap-2 sm:gap-3">
-        <SummaryTile
-          name="photos" icon={Images} label="Photos" href={href(SUMMARY_HREF.photos)}
-          value={s.photos ? s.photos.dueToday + s.photos.late : null} unit="to deliver today"
-          sub={s.photos ? (s.photos.late > 0 ? `${s.photos.late} late` : "none late") : null} bad={!!s.photos && s.photos.late > 0}
-        />
-        <SummaryTile
-          name="videos" icon={Film} label="Videos" href={href(SUMMARY_HREF.videos)}
-          value={s.videos ? s.videos.readyToSend : null} unit="ready to send"
-          sub={s.videos ? (s.videos.late > 0 ? `${s.videos.late} late` : "none late") : null} bad={!!s.videos && s.videos.late > 0}
-        />
-        <SummaryTile
-          name="messages" icon={MessageSquare} label="Messages" href={href(SUMMARY_HREF.messages)}
-          value={s.messages ? s.messages.waiting : null} unit="waiting on a reply"
-          sub={s.messages ? (s.messages.behind > 0 ? `${s.messages.behind} over a day` : s.messages.oldestHours != null ? `oldest ${waitedWords(s.messages.oldestHours)}` : "nobody waiting") : null}
-          bad={!!s.messages && s.messages.behind > 0}
-        />
-      </div>
-      {s.photos && s.photos.olderQc > 0 && (
-        <Link href={href("/review")} className="mt-2 inline-flex min-h-11 items-center gap-1 px-1 text-[13px] text-muted hover:text-foreground">
-          {s.photos.olderQc} photo set{s.photos.olderQc === 1 ? "" : "s"} still on the older QC cards <ArrowRight aria-hidden className="size-3" />
-        </Link>
-      )}
-    </section>
-  );
-}
-
-function SummaryTile({ name, icon: Icon, label, href, value, unit, sub, bad }: {
-  name: string; icon: typeof Images; label: string; href: string; value: number | null; unit: string; sub: string | null; bad: boolean;
-}) {
-  return (
-    <Link href={href} data-summary={name} className="flex min-h-24 flex-col rounded-xl border border-border bg-surface-2/40 p-2.5 hover:bg-surface-2/80 focus-visible:outline-2 focus-visible:outline-brand sm:p-3">
-      <span className="flex items-center gap-1.5 text-[13px] font-semibold"><Icon aria-hidden className="size-3.5 text-muted-2" />{label}</span>
-      {value == null ? (
-        <span className="mt-1 text-[13px] text-muted">Couldn&rsquo;t load. Open to check.</span>
-      ) : (
-        <>
-          <span className={cn("mt-1 text-2xl font-semibold leading-none tabular-nums sm:text-3xl", value > 0 ? "text-foreground" : "text-success")}>{value}</span>
-          <span className="mt-1 text-[11px] leading-tight text-muted sm:text-[12px]">{unit}</span>
-          {sub && <span className={cn("mt-0.5 text-[11px] font-medium sm:text-[12px]", bad ? "text-danger" : "text-muted-2")}>{sub}</span>}
-        </>
-      )}
-    </Link>
-  );
-}
-
 // ---- the checklist ------------------------------------------------------------------
 
 function Aliases({ group }: { group: string }) {
@@ -120,7 +65,7 @@ function LineActions({ line, href, includeTest }: { line: ChecklistLine; href: s
   if (a.kind === "reply") {
     return (
       <>
-        <Link href={homeRecordHref(replyHref(a.family), includeTest)} className={`${BTN} bg-brand-action text-white hover:opacity-90`}>Reply</Link>
+        <Link href={homeRecordHref(a.href, includeTest)} className={`${BTN} bg-brand-action text-white hover:opacity-90`}>Reply</Link>
         <HandledButton clientId={a.clientId} family={a.family} groupKey={a.groupKey} />
       </>
     );
@@ -321,58 +266,6 @@ export function DailyChecklist({ list, includeTest = false, minDay, maxDay }: { 
       <EarlierCard list={list.earlier} minDay={minDay} maxDay={maxDay} includeTest={includeTest} />
       <DoneToday list={list} includeTest={includeTest} />
       <StillOpen list={list} />
-    </section>
-  );
-}
-
-/** Jordan's Home: Kyle's day from the same checklist, read only. Not a message to Jordan. */
-export function KylesDay({ list, name, includeTest = false }: { list: KyleChecklist | null; name: string; includeTest?: boolean }) {
-  if (!list) {
-    return <p role="status" id="kyles-day" className="scroll-mt-32 rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">{name}&rsquo;s day couldn&rsquo;t load. Refresh to try again.</p>;
-  }
-  const open = list.groups.filter((g) => g.lines.length > 0);
-  return (
-    <section id="kyles-day" aria-labelledby="kyles-day-title" data-kyles-day className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface p-4 sm:p-5 md:scroll-mt-28">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-        <h2 id="kyles-day-title" className="text-base font-semibold">{name}&rsquo;s day</h2>
-        <p className="text-sm text-muted">
-          <span className="font-semibold text-success">{list.done.length} done today</span> · <span className={cn("font-semibold", list.stillOpen.total > 0 ? "text-foreground" : "text-success")}>{list.stillOpen.total} still open</span>
-        </p>
-      </div>
-      <details className="group/kd mt-2 border-t border-border">
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold">
-          <ChevronDown aria-hidden className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/kd:rotate-0" />
-          Done today ({list.done.length})
-        </summary>
-        {list.done.length === 0 ? <p className="pb-2 text-sm text-muted">Nothing closed yet today.</p> : (
-          <ul className="divide-y divide-border">{list.done.map((d) => <DoneRow key={d.key} d={d} includeTest={includeTest} undo={false} />)}</ul>
-        )}
-      </details>
-      <details className="group/ko border-t border-border">
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold">
-          <ChevronDown aria-hidden className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/ko:rotate-0" />
-          Still open ({list.stillOpen.total}){list.stillOpen.total > 0 ? <span className="font-normal text-muted">: {stillOpenWords(list.stillOpen.parts)}</span> : null}
-        </summary>
-        {open.map((g) => (
-          <div key={g.key} className="pb-1">
-            <p className="pt-1 text-[12px] font-semibold uppercase tracking-wide text-muted-2">{g.title}</p>
-            <ul className="divide-y divide-border">{g.lines.map((l) => <LineRow key={l.key} line={l} includeTest={includeTest} readOnly />)}</ul>
-          </div>
-        ))}
-        {list.earlier.items.length > 0 && (
-          <div className="pb-2">
-            <p className="pt-1 text-[12px] font-semibold uppercase tracking-wide text-muted-2">From earlier days</p>
-            <ul className="divide-y divide-border">
-              {list.earlier.items.map((i) => (
-                <li key={i.id} className="flex flex-wrap items-baseline gap-x-2 py-2 text-sm">
-                  <Link href={homeRecordHref(i.href, includeTest)} className="min-w-0 font-medium [overflow-wrap:anywhere] hover:text-brand">{i.title}</Link>
-                  <span className="text-[12px] text-muted">{i.kind} · {i.daysPast} day{i.daysPast === 1 ? "" : "s"} past its date{i.pushes > 0 ? ` · pushed ${i.pushes}x` : ""}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </details>
     </section>
   );
 }

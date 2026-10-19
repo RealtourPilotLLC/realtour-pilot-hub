@@ -7,8 +7,8 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   Clapperboard,
-  Siren,
-  MessagesSquare,
+  House,
+  Sun,
   Images,
   SlidersHorizontal,
   LayoutDashboard,
@@ -41,7 +41,7 @@ import { cn } from "@/lib/utils";
 import { canAccess, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { groupSidebarDestinations, opsMenuDestinations } from "@/lib/sidebarNavigation";
+import { groupSidebarDestinations, officeMenuDestinations, usesOfficeMenu } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
   name: string | null;
@@ -72,47 +72,46 @@ const SECTIONS: NavSection[] = [
   {
     title: "Operations",
     items: [
-      // ONE HOME PER ROLE (Jordan, Sep 2: "I want the ops day screen essentially
-      // combined with my dashboard"). "/" is now the merged morning screen —
-      // what needs you today, the Ops Day time blocks with their live contents,
-      // today's shoots, the owner's own list, then the money. Three nav items
-      // retired into it:
-      //   · Ops Day (/ops)          — moved here Sep 2; out for one afternoon
-      //                               on Oct 19 2026, then back on Kyle's Home
-      //                               as one simplified daily checklist. /ops
-      //                               keeps today's shoots, stuck jobs and the
-      //                               exceptions ("Shoots & exceptions").
-      //   · My Day (/day)           — the owner's to-dos + business money are
-      //                               the "Your list" and money sections here.
-      //   · Project Tracker (/pipeline) — the delivery board is the Production
-      //                               Pipeline block here.
-      // The /day and /pipeline ROUTES are untouched and still reachable by URL
-      // (and /projects/[id] still links back to the tracker) — nothing in this
-      // hub is deleted for being off the menu, it just stops competing to be
-      // the home screen.
-      { label: "Home", href: "/", icon: LayoutDashboard, key: "dashboard" },
+      // THE DASHBOARD (Jordan, Oct 19 2026, night: "The home page should
+      // really be a dashboard to oversee everything going on, and then the
+      // other pages are for more in-depth adjustments and changes"). "/" is
+      // one dashboard for the owner and the office; the first of the six
+      // doors (sidebarNavigation OFFICE_MENU, which also sets the six labels:
+      // Dashboard, Shoots, Photos, Videos, Messages, Schedule). Retired into
+      // it over time, routes untouched and reachable by URL:
+      //   · Ops Day (/ops)          — Sep 2 into Home; on Oct 19 "Shoots and
+      //                               exceptions", that night a redirect to the
+      //                               dashboard (Kyle's checklist is its own
+      //                               page, /ops/checklist, behind "Kyle's day").
+      //   · My Day (/day)           — the owner's own list; under More since
+      //                               it left the dashboard (Oct 19 night).
+      //   · Project Tracker (/pipeline) — the delivery board; the Shoots board
+      //                               (/jobs) is its successor.
+      // Nothing in this hub is deleted for being off the menu.
+      { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
+      // SHOOTS (Oct 19 2026, night; Jordan renamed "Jobs" to "Shoots"): every
+      // shoot in progress with its photos and video side by side. Rides the
+      // `ops` PageKey (owner + office), like Photos, so no new permission.
+      { label: "Shoots", href: "/jobs", icon: House, key: "ops" },
       // Today + Daily Tasks + Task History merged into the one Tasks hub
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       // The owner's quality desk — cuts to review, photo QC, feedback loops.
-      // "Video Review Room" (Jordan, Oct 19 2026): the label only, for every
-      // role; the /review route and the `review` PageKey keep their names.
+      // "Video Review Room" (Jordan, Oct 19 2026): the label only; the /review
+      // route and the `review` PageKey keep their names. "Videos" in the
+      // six-door menu (owner and office); photographers keep this label.
       { label: "Video Review Room", href: "/review", icon: MonitorPlay, key: "review" },
-      // KYLE'S SCREENS (Oct 19 2026). All ride the `ops` PageKey (owner +
-      // office), so no new permission; sidebarNavigation files them in the
-      // "Operations" group, and for the office login (ADMIN) puts Photo
-      // delivery and Messages among its six doors (opsMenuDestinations).
-      // Video delivery, Special requests, Scheduling and Old items are no
-      // longer menu entries that evening: Kyle's checklist on Home holds
-      // them, and their old URLs land on the matching checklist group.
-      // Photo delivery (Oct 14 2026, docs/photo-delivery): the queue, AI QC,
-      // the AutoHDR Fix Cart and the delivery check.
+      // PHOTOS (Oct 14 2026, docs/photo-delivery): the queue, AI QC, the
+      // AutoHDR Fix Cart and the delivery check. Rides the `ops` PageKey
+      // (owner + office). Labelled "Photos" in the six-door menu.
+      // Video delivery, Special requests, Scheduling and Old items stopped
+      // being menu entries on Oct 19 2026 (Kyle's checklist holds them), and
+      // so did Messages (/ops/messages, merged into Communications, which is
+      // "Messages" in the six-door menu) and Shoots & exceptions (/ops, now
+      // the dashboard) that night.
       { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
-      // Clients waiting on a reply, and new leads (internal follow-ups are on
-      // the checklist).
-      { label: "Messages", href: "/ops/messages", icon: MessagesSquare, key: "ops" },
-      // Today's shoot cards, stuck jobs and the quiet failures.
-      { label: "Shoots & exceptions", href: "/ops", icon: Siren, key: "ops" },
+      // The owner's own list and day plan (ownerOnly PageKey "day").
+      { label: "My Day", href: "/day", icon: Sun, key: "day" },
       // Feedback about the WORK: what clients said (the delivery-text form +
       // unhappy texts/emails) and how each photographer is shooting. Distinct
       // from "Feedback & requests" in System, which is feedback about the HUB.
@@ -270,10 +269,11 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
 
   // Group only AFTER the existing access rules and role exceptions. These
   // categories are navigation, never new permissions or replacement pages.
-  // The office's operations login (ADMIN) gets Kyle's six doors with the rest
-  // folded under More (Jordan, Oct 19 2026); every other role the groups.
+  // The owner and the office (ADMIN) get the six doors with the rest folded
+  // under More (Jordan, Oct 19 2026, night); editors and photographers keep
+  // the groups.
   const destinations = authorized.flatMap((section) => section.items);
-  const sections = user?.role === "ADMIN" ? opsMenuDestinations(destinations, pathname) : groupSidebarDestinations(destinations, pathname);
+  const sections = usesOfficeMenu(user?.role) ? officeMenuDestinations(destinations, pathname) : groupSidebarDestinations(destinations, pathname);
   const renderItem = (item: NavItem) => {
     const active = sections.some((section) => section.activeHref === item.href);
     const Icon = item.icon;

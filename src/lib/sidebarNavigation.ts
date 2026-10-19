@@ -1,11 +1,9 @@
 /** Presentation groups for destinations that Sidebar has already authorized. */
 const SIDEBAR_GROUPS = [
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/tasks", "/schedule", "/communications"] },
-  // Oct 19 2026: photo delivery, messages, and today's shoots with the stuck
-  // jobs and exceptions (the `ops` PageKey: owner and office). Video delivery,
-  // special requests, scheduling and old items stopped being screens of their
-  // own that evening (Kyle's checklist on Home holds them).
-  { id: "operations", title: "Operations", frequent: true, paths: ["/ops/photo-delivery", "/ops/messages", "/ops"] },
+  // Oct 19 2026: photo delivery and the Shoots board (owner and office). The
+  // office's own logins see these as doors of the six-door menu below.
+  { id: "operations", title: "Operations", frequent: true, paths: ["/jobs", "/ops/photo-delivery", "/day"] },
   { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
   // Content Program this week, and a folded group hid both doors.
@@ -39,20 +37,36 @@ export function groupSidebarDestinations<T extends Destination>(items: readonly 
 }
 
 // ---------------------------------------------------------------------------
-// KYLE'S MENU (Jordan, Oct 19 2026): six doors for the office's operations
-// login (ADMIN), in this order, and everything else that login can open
-// folded under "More". Nothing is removed: More holds every other authorized
-// destination, in the usual group order. Other roles keep the groups above.
+// THE OFFICE MENU (Jordan, Oct 19 2026, night: one dashboard, six doors). The
+// owner and every office login (ADMIN) get six doors, in this order and with
+// these labels, and everything else they can open folded under "More".
+// Nothing is removed: More holds every other authorized destination, in the
+// usual group order. Editors and photographers keep the groups above.
 // ---------------------------------------------------------------------------
 
-export const OPS_MENU = ["/", "/ops/photo-delivery", "/review", "/ops/messages", "/schedule", "/tasks"] as const;
+export const OFFICE_MENU = [
+  { href: "/", label: "Dashboard" },
+  { href: "/jobs", label: "Shoots" },
+  { href: "/ops/photo-delivery", label: "Photos" },
+  { href: "/review", label: "Videos" },
+  { href: "/communications", label: "Messages" },
+  { href: "/schedule", label: "Schedule" },
+] as const;
 
-export function opsMenuDestinations<T extends Destination>(items: readonly T[], pathname: string) {
+/** Who gets the six-door menu: the owner, the office (ADMIN), and open local dev. */
+export const usesOfficeMenu = (role: string | null | undefined) => role == null || role === "OWNER" || role === "ADMIN";
+
+export function officeMenuDestinations<T extends Destination & { label: string }>(items: readonly T[], pathname: string) {
   const activeHref = activeSidebarHref(items, pathname);
-  const primary = OPS_MENU.map((href) => items.find((item) => !item.external && item.href === href)).filter((item): item is T => !!item);
-  const rest = groupSidebarDestinations(items.filter((item) => !primary.includes(item)), pathname).flatMap((group) => group.items);
+  const primary: T[] = [];
+  for (const door of OFFICE_MENU) {
+    const item = items.find((i) => !i.external && i.href === door.href);
+    if (item) primary.push({ ...item, label: door.label as string });
+  }
+  const isPrimary = (item: T) => primary.some((p) => p.href === item.href && !item.external);
+  const rest = groupSidebarDestinations(items.filter((item) => !isPrimary(item)), pathname).flatMap((group) => group.items);
   return [
-    { id: "work", title: "Your work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary },
+    { id: "work", title: "Daily work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary },
     { id: "more", title: "More", frequent: false, current: rest.some((item) => item.href === activeHref), activeHref, items: rest },
   ].filter((group) => group.items.length > 0);
 }

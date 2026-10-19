@@ -1,44 +1,50 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { type JobCounts } from "@/lib/opsCounts";
-import { dueTodayRows, videoDeliveryBoard, videoSummary, type VideoRow } from "@/lib/videoDelivery";
-import { schedulingBoard, specialRequestsBoard, type AskView } from "@/lib/clientAsks";
+import { dueTodayRows, videoDeliveryBoard, videoSummary, type VideoDeliveryBoard, type VideoRow } from "@/lib/videoDelivery";
+import { askBoardCounts, schedulingBoard, specialRequestsBoard, type AskView } from "@/lib/clientAsks";
 import { loadQueue } from "@/app/ops/photo-delivery/data";
 import type { QueueColumnKey, QueueData } from "@/components/photoDelivery/types";
 import { unansweredCommsBoard, type CommsGroup } from "@/lib/commsBoard";
-import { canAccess } from "@/lib/auth/access";
-import { reviewerChain } from "@/lib/reviewerAssignment";
+import { waitingReplyHref } from "@/components/comms/messagesNav";
+import { normalizeSubject } from "@/components/comms/emailThreads";
+import { getReviewQueue, type ReviewQueue } from "@/lib/reviewRoom";
+import { jobsBoard, type JobRow, type JobsBoard } from "@/lib/jobsBoard";
 import { photoQcWhere } from "@/lib/taskBoard";
 import { scrubMoney } from "@/lib/text";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { pinnedPromise } from "@/lib/turnaround";
 import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import type { Assignee } from "@/lib/assignees";
 import {
-  checklistTasks, checklistTasksClosedToday, type ChecklistPerson, type OldItem,
+  checklistTasks, checklistTasksClosedToday, listOldItems, type ChecklistPerson, type OldItem, type OldItemsRead,
 } from "@/lib/taskAging";
 
 // ---------------------------------------------------------------------------
-// HOME, Oct 19 2026 (evening). Jordan: "The home screen should have the daily
-// checklist, but with a box up top that summarizes the photo delivery, video
-// delivery, and comms needing responses. … I think we should just keep it
-// simplified. We just need Kyle to be able to keep track of what he got done
-// and what's still outstanding at the end of the day." and "we need to be able
-// to take quick action, stay organized, efficient, and effective and not miss
-// any deliveries, special requests."
+// THE DASHBOARD AND KYLE'S LIST, Oct 19 2026 (night). Jordan: "The home page
+// should really be a dashboard to oversee everything going on, and then the
+// other pages are for more in-depth adjustments and changes. The biggest
+// things are making sure we are delivering on time, responding to clients
+// quickly, keeping track of special requests, delegating them to the right
+// people/departments, and ensuring QC and reviews are done well and catching
+// issues. I don't want to overload the users of this hub with analysis
+// paralysis."
 //
-// This module builds, from ONE pass of reads:
-//   · the SUMMARY BOX (three numbers, each its screen's own source):
-//       photos   → loadQueue()                 (/ops/photo-delivery's loader)
-//       videos   → videoSummary()              (the video delivery contract)
-//       messages → unansweredCommsBoard()      (/ops/messages lists exactly these)
-//   · KYLE'S DAILY CHECKLIST: one list for today in five groups (Deliveries,
-//     Messages to answer, Special requests to check, Scheduling to handle,
-//     Follow-ups due), then "From earlier days, still open", then what was
-//     done today and what is still open;
+// This module builds:
+//   · THE DASHBOARD ("/", the owner and every office login): four health
+//     tiles, each its screen's own source (buildDashboard says which), the
+//     shoots in progress (lib/jobsBoard, the Shoots page's own rows), and
+//     "Needs attention now": at most five things, each with who owns it and
+//     one action;
+//   · KYLE'S DAILY CHECKLIST, on its own page since that night
+//     (CHECKLIST_PATH, "Your list" / "Kyle's list"): one list for today in
+//     five groups (Deliveries, Messages to answer, Special requests to check,
+//     Scheduling to handle, Follow-ups due), then "From earlier days, still
+//     open", then what was done today and what is still open. The dashboard's
+//     "Kyle's day" card reads its two numbers from the same list, so the two
+//     screens can never disagree;
 //   · the owner's week (this week against last).
-// Jordan's Home reads the same checklist for Kyle ("Kyle's day": done today,
-// still open), so the two screens can never disagree.
 // ---------------------------------------------------------------------------
 
 const HOUR = 3_600_000;
@@ -65,27 +71,15 @@ export function lateWords(hours: number | null): string {
 /** "5h" / "2d 3h": how long a client has waited. */
 export const waitedWords = (h: number) => (h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${Math.max(0, h)}h`);
 
-// ---- WHOSE HOME --------------------------------------------------------------------
-
-export type HomeRole = "owner" | "review" | "operations";
-
-/** One rule for which Home a person gets: the owner's, the creative review
- *  seat's (the saved primary reviewer, James), or operations (Kyle). */
-export async function homeRoleOf(me: { role: string; permissions?: string | null; teamMemberId: string | null } | null): Promise<HomeRole> {
-  if (!me || me.role === "OWNER") return "owner";
-  if (!canAccess(me, "review") || !me.teamMemberId) return "operations";
-  const chain = await reviewerChain().catch(() => null);
-  return chain?.primary?.teamMemberId === me.teamMemberId ? "review" : "operations";
-}
+// ---- WHERE THE RETIRED PAGES SEND A PERSON ------------------------------------------
 
 /** Where a retired page (/ops/requests, /ops/scheduling, /ops/old) sends a
- *  person now: Kyle to the group on his checklist; Jordan to Kyle's day (or,
- *  for old items, What we're behind on); the review seat to the screen that
- *  holds that work on his side. */
-export function checklistDoor(role: HomeRole, group: "requests" | "scheduling" | "earlier"): string {
-  if (role === "operations") return `/#${group}`;
-  if (role === "owner") return group === "earlier" ? "/#behind" : "/#kyles-day";
-  return group === "requests" ? "/review" : group === "scheduling" ? "/schedule" : "/tasks?tab=work";
+ *  person now: the matching group on the daily checklist (CHECKLIST_PATH: an
+ *  office login's own list, Kyle's for the owner). The "pushed 3 times" bell
+ *  (/ops/old?who=all) is about anyone's item, so it opens everyone's tasks. */
+export function checklistDoor(group: "requests" | "scheduling" | "earlier", opts: { everyone?: boolean } = {}): string {
+  if (group === "earlier" && opts.everyone) return "/tasks?tab=work&who=all";
+  return `${CHECKLIST_PATH}#${group}`;
 }
 
 /** Kyle, for the owner's "Kyle's day": the office's ops lead, found the way his
@@ -145,7 +139,7 @@ export type MessagesBoard = {
 };
 
 /** The clients waiting on a reply, text and email together, longest wait first.
- *  The summary box, the checklist's Messages group and /ops/messages all read this. */
+ *  The dashboard, the checklist's Messages group and the Messages screen all read this. */
 async function waitingClients(now: Date, opts: { excludeClientIds?: string[] } = {}): Promise<WaitingClient[]> {
   const scope = { excludeClientIds: opts.excludeClientIds };
   const [phone, email] = await Promise.all([unansweredCommsBoard("phone", now, scope), unansweredCommsBoard("email", now, scope)]);
@@ -155,8 +149,15 @@ async function waitingClients(now: Date, opts: { excludeClientIds?: string[] } =
   ].sort((a, b) => b.group.oldestHours - a.group.oldestHours);
 }
 
-/** Where a waiting client is answered: the email board, or the text reply queue. */
-export const replyHref = (family: "phone" | "email") => (family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies");
+/** Where a waiting client's Reply goes: that exact thread on Messages
+ *  (/communications): a text opens the Texts view with that conversation
+ *  open, an email the Email view with that thread open. The same address as
+ *  Messages' own Waiting on us rows (components/comms/WaitingOnUs
+ *  waitingRowReplyHref; the email key is its emailFocusKey). */
+export function waitingClientReplyHref(w: WaitingClient, includeTest = false): string {
+  const latest = w.group.items[w.group.items.length - 1];
+  return waitingReplyHref(w.family, w.family === "email" ? `${normalizeSubject(latest?.subject)}::${w.group.clientId}` : w.group.groupKey, includeTest);
+}
 
 /** Leads for a viewer: the owner (or the team view) sees every one; anyone
  *  else the leads filed to them plus the ones nobody holds (leadDesk's rule). */
@@ -220,16 +221,16 @@ export async function messagesBoard(opts: {
   return { waiting, leads, outbox, counts: { open, dueToday, behind, oldestHours: open === 0 || oldest == null ? null : Math.round(oldest) } };
 }
 
-// ---- THE SUMMARY BOX ----------------------------------------------------------------
+// ---- THE OLD SUMMARY BOX'S NUMBERS ----------------------------------------------------
 
+/** The three numbers the old summary box showed (photos, videos, messages),
+ *  still read with the checklist so a drill can hold its groups against them. */
 export type HomeSummary = {
-  /** null = the source could not be read; the box says so instead of a 0 */
+  /** null = the source could not be read */
   photos: { dueToday: number; late: number; olderQc: number } | null;
   videos: { readyToSend: number; late: number; dueToday: number } | null;
   messages: { waiting: number; behind: number; oldestHours: number | null } | null;
 };
-
-export const SUMMARY_HREF = { photos: "/ops/photo-delivery", videos: "/review", messages: "/ops/messages" } as const;
 
 // ---- THE DAILY CHECKLIST ----------------------------------------------------------
 
@@ -247,8 +248,8 @@ const CHECKLIST_GROUPS: { key: ChecklistGroupKey; title: string; empty: string }
 export type LineAction =
   /** The screen is the action (a delivery goes out from its own page). */
   | { kind: "open"; label: string }
-  /** Reply opens the reply screen; Handled closes the wait. */
-  | { kind: "reply"; clientId: string; family: "phone" | "email"; groupKey: string }
+  /** Reply opens that client's thread on Messages (`href`); Handled closes the wait. */
+  | { kind: "reply"; clientId: string; family: "phone" | "email"; groupKey: string; href: string }
   /** A client ask: Checked (special request) or Done (scheduling), or Not needed. */
   | { kind: "ask"; id: string; askKind: "SPECIAL_REQUEST" | "SCHEDULING" }
   /** A task: Done or Not needed. */
@@ -483,7 +484,7 @@ const isToday = (iso: string | null | undefined, now: Date) => !!iso && etDayKey
 // ---- the checklist ---------------------------------------------------------------------
 
 /**
- * Kyle's daily checklist, and the summary box above it. `person` is whose
+ * Kyle's daily checklist (and the old summary box's numbers). `person` is whose
  * follow-ups and earlier items these are (the signed-in person on their own
  * Home; Kyle on Jordan's). Deliveries, messages, requests and scheduling are
  * the office's, so everybody's list holds the same ones. Each source fails on
@@ -540,7 +541,7 @@ export async function kyleChecklist(opts: {
     repliesToday(now, ex).catch(warn("replies today")),
   ]);
 
-  // ---- the summary box ----
+  // ---- the old summary box's numbers ----
   const pc = queue ? photoCountsFromQueue(queue, now) : null;
   const summary: HomeSummary = {
     photos: pc ? { dueToday: pc.dueToday, late: pc.behind, olderQc } : null,
@@ -568,8 +569,8 @@ export async function kyleChecklist(opts: {
       detail: latest ? `"${clean(latest.subject ? `${latest.subject}: ${latest.snippet}` : latest.snippet).slice(0, 120)}"` : null,
       when: `Waiting ${waitedWords(w.group.oldestHours)}`,
       late: w.behind,
-      href: replyHref(w.family),
-      action: { kind: "reply", clientId: w.group.clientId, family: w.family, groupKey: w.group.groupKey },
+      href: waitingClientReplyHref(w),
+      action: { kind: "reply", clientId: w.group.clientId, family: w.family, groupKey: w.group.groupKey, href: waitingClientReplyHref(w) },
     };
   });
 
@@ -798,3 +799,347 @@ export async function ownerWeek(now: Date = new Date(), opts: { excludeClientIds
   return { startISO: start.toISOString(), nowISO: now.toISOString(), thisWeek, lastWeek };
 }
 
+
+// ---- THE DASHBOARD ("/", Oct 19 2026, night) ----------------------------------------
+//
+// THE RULE FOR EVERY NUMBER (audit fault #9, Sep 2 2026) still holds: each
+// figure is computed by the function that builds the screen it opens.
+//   On time          → jobsBoard().counts            (/jobs, "Shoots")
+//   Clients waiting  → messagesBoard().waiting       (Messages)
+//   Special requests → askBoardCounts().special      (+ jobsBoard rows' requests)
+//   QC & review      → getReviewQueue().pending      ("To review" on /review)
+//                      videoSummary().readyToSend    ("Ready to send" on /review)
+//                      loadQueue() QC columns        (/ops/photo-delivery)
+// Each source fails on its own: one unreadable source greys its own tile
+// ("Couldn't load"), never the page, and never reads as a reassuring 0.
+
+/** At most this many lines in "Needs attention now" (Jordan: no analysis paralysis). */
+export const ATTENTION_MAX = 5;
+/** Shoots in progress shown on the dashboard; the rest are one tap away on /jobs. */
+export const DASHBOARD_ROWS = 10;
+/** Late jobs: this many, or one this many days late, is red; fewer is amber.
+ *  The same line the team's "very behind" alert draws (lib/behindAlert). */
+export const VERY_LATE_COUNT = 3;
+export const VERY_LATE_DAYS = 2;
+/** Photo delivery columns that are "in QC": landed and checked, a decision
+ *  owed, or checked and waiting for Kyle's review (photo-delivery/data). */
+export const PHOTO_QC_COLUMNS: readonly QueueColumnKey[] = ["qc", "decision", "ready"];
+
+export type Tone = "ok" | "warn" | "bad";
+
+export type DashboardHealth = {
+  /** null = the source could not be read */
+  onTime: (JobsBoard["counts"] & { tone: Tone }) | null;
+  clients: { waiting: number; behind: number; oldestHours: number | null; email: number; text: number; tone: Tone } | null;
+  requests: { open: number; behind: number; shoots: number | null; needOwner: number | null; tone: Tone } | null;
+  qc: {
+    /** cuts waiting on a verdict (the Video Review Room's "To review"); null = could not be read */
+    toReview: number | null;
+    /** listing videos approved and ready to send */
+    readyToSend: number | null;
+    /** photo sets checked or being checked, not yet delivered */
+    photosInQc: number | null;
+    /** of the above, past their promise */
+    late: number;
+    tone: Tone;
+    href: string;
+  } | null;
+};
+
+export type AttentionItem = {
+  key: string;
+  tone: "bad" | "warn";
+  /** the bold start ("Barry Rd video:") */
+  lead: string;
+  text: string;
+  /** who owns it, and a few words ("Kyle · 2 client requests") */
+  owner: string;
+  action: { label: string; href: string };
+};
+
+export type Dashboard = {
+  nowISO: string;
+  health: DashboardHealth;
+  jobs: { rows: JobRow[]; total: number; unavailable: boolean };
+  attention: { items: AttentionItem[]; more: number; unavailable: string[] };
+};
+
+const plural0 = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
+
+/** On time: red when three or more are late or one is two days late; amber
+ *  for one or two; green when nothing is late. */
+export function onTimeTone(c: { late: number; oldestLateDays: number | null }): Tone {
+  if (c.late <= 0) return "ok";
+  return c.late >= VERY_LATE_COUNT || (c.oldestLateDays ?? 0) >= VERY_LATE_DAYS ? "bad" : "warn";
+}
+
+/** "John" from a stage chip like "Changes · John" (the Shoots board names who
+ *  holds a video after the dot); null when the chip names nobody. */
+export function chipPerson(label: string | null | undefined): string | null {
+  const m = (label ?? "").match(/·\s*([A-Z][A-Za-z'’-]{1,20}(?: [A-Z][A-Za-z'’-]{1,20})?)\s*$/);
+  return m ? m[1] : null;
+}
+
+/** Late first, then the nearest promise; a job with no date last. */
+export function jobOrder(a: JobRow, b: JobRow): number {
+  return Number(b.late) - Number(a.late) || (a.dueISO ?? "9999").localeCompare(b.dueISO ?? "9999");
+}
+
+type DashboardOpts = {
+  now?: Date;
+  includeTest?: boolean;
+  excludeClientIds: string[];
+  /** who is reading: their own items and assigned cuts lead with "you" */
+  viewer: { role: string; key: string | null; teamMemberId: string | null };
+  /** the office's ops lead (Kyle), who owns sending, replies and routing */
+  ops: { key: string | null; teamMemberId: string | null; name: string };
+  roster?: Assignee[];
+  /** take figures out of what people typed (everyone but the owner) */
+  scrub?: boolean;
+};
+
+/**
+ * The dashboard, from one pass of reads. Every read starts at once; each one
+ * that fails is listed in `attention.unavailable` and greys its own tile.
+ */
+export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
+  const now = opts.now ?? new Date();
+  const ex = opts.excludeClientIds;
+  const clean = (s: string) => (opts.scrub ? scrubMoney(s) : s);
+  const warn = (what: string) => (e: unknown) => {
+    console.warn(`dashboard: ${what} failed`, (e as Error)?.message);
+    return null;
+  };
+  const current = Math.abs(now.getTime() - Date.now()) < 60_000;
+  // The video board first, so the summary reads the same (memoised) board
+  // instead of building it twice.
+  const boardP: Promise<VideoDeliveryBoard | null> = videoDeliveryBoard(current ? {} : { now }).catch(warn("video board"));
+  const isOwner = opts.viewer.role === "OWNER";
+  const [jobs, messages, asks, review, video, board, queue, old, todos] = await Promise.all([
+    jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
+    messagesBoard({ now, excludeClientIds: ex, team: true }).catch(warn("messages")),
+    askBoardCounts(now).catch(warn("special requests")),
+    getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")) as Promise<ReviewQueue | null>,
+    boardP.then(() => videoSummary(now)).catch(warn("video summary")),
+    boardP,
+    loadQueue({ now }).catch(warn("photo queue")),
+    listOldItems(now, { excludeClientIds: ex, roster: opts.roster }).catch(warn("old items")) as Promise<OldItemsRead | null>,
+    isOwner ? import("@/lib/ownerDay").then((m) => m.ownerTodoLists()).catch(warn("owner list")) : Promise.resolve(null),
+  ]);
+
+  const rows = (jobs?.rows ?? []).map((r) => (opts.scrub ? { ...r, street: clean(r.street), client: r.client ? clean(r.client) : r.client } : r));
+
+  // ---- the four tiles ----
+  const withRequests = rows.filter((r) => r.requests.open > 0);
+  const needOwnerRows = rows.filter((r) => r.requests.needsOwner > 0);
+  const qcCards = queue ? queue.columns.filter((c) => PHOTO_QC_COLUMNS.includes(c.key)).flatMap((c) => c.cards) : null;
+  const photosLate = (qcCards ?? []).filter((c) => c.slaDueAt && Date.parse(c.slaDueAt) < now.getTime()).length;
+  const sendingLate = (board?.lanes.sending ?? []).filter((r) => r.late).length;
+  const toReview = review ? review.pending.length : null;
+  const readyToSend = video ? video.readyToSend : null;
+  const qcLate = photosLate + sendingLate;
+  const waiting = messages?.waiting ?? null;
+  const health: DashboardHealth = {
+    onTime: jobs ? { ...jobs.counts, tone: onTimeTone(jobs.counts) } : null,
+    clients: waiting
+      ? {
+          waiting: waiting.length,
+          behind: waiting.filter((w) => w.behind).length,
+          oldestHours: waiting[0]?.group.oldestHours ?? null,
+          email: waiting.filter((w) => w.family === "email").length,
+          text: waiting.filter((w) => w.family === "phone").length,
+          tone: waiting.some((w) => w.behind) ? "bad" : waiting.length > 0 ? "warn" : "ok",
+        }
+      : null,
+    requests: asks
+      ? {
+          open: asks.special.open,
+          behind: asks.special.behind,
+          shoots: jobs ? withRequests.length : null,
+          needOwner: jobs ? needOwnerRows.reduce((n, r) => n + r.requests.needsOwner, 0) : null,
+          tone: asks.special.behind > 0 ? "bad" : asks.special.open > 0 ? "warn" : "ok",
+        }
+      : null,
+    qc: toReview == null && readyToSend == null && qcCards == null
+      ? null
+      : {
+          toReview,
+          readyToSend,
+          photosInQc: qcCards ? qcCards.length : null,
+          late: qcLate,
+          tone: qcLate > 0 ? "bad" : (toReview ?? 0) + (readyToSend ?? 0) > 0 ? "warn" : "ok",
+          // Videos first while any wait (or could not be checked); else the photos.
+          href: toReview == null || readyToSend == null || toReview + readyToSend > 0 || qcCards == null ? "/review" : "/ops/photo-delivery",
+        },
+  };
+
+  // ---- shoots in progress: late first, the first DASHBOARD_ROWS ----
+  const shown = [...rows].sort(jobOrder).slice(0, DASHBOARD_ROWS);
+
+  // ---- needs attention now ----
+  const viewerIsOps = (!!opts.ops.teamMemberId && opts.ops.teamMemberId === opts.viewer.teamMemberId) || (!!opts.ops.key && opts.ops.key === opts.viewer.key);
+  const opsName = viewerIsOps ? "You" : opts.ops.name;
+  const cand: (AttentionItem & { rank: number })[] = [];
+  const add = (rank: number, item: AttentionItem) => cand.push({ ...item, rank });
+  const lateText = (h: number | null) => (h == null ? "late" : `${lateWords(h)} late`);
+
+  // 1. A video ready to send that has client requests to check, or is late.
+  const sendRows = (board?.lanes.sending ?? [])
+    .filter((r) => r.late || (r.send?.openAsks.length ?? 0) > 0)
+    .sort((a, b) => Number(b.late) - Number(a.late) || (b.lateHours ?? 0) - (a.lateHours ?? 0) || (b.send?.openAsks.length ?? 0) - (a.send?.openAsks.length ?? 0));
+  if (sendRows.length) {
+    const r = sendRows[0];
+    const n = r.send?.openAsks.length ?? 0;
+    const more = sendRows.length - 1;
+    add(0, {
+      key: `send:${r.key}`,
+      tone: r.late ? "bad" : "warn",
+      lead: `${clean(r.street)} video:`,
+      text: [
+        n > 0 ? `check the client's ${n === 1 ? "request" : `${n} requests`}, then send it` : "ready to send",
+        r.late ? lateText(r.lateHours) : null,
+        more > 0 ? `${more} more like it` : null,
+      ].filter(Boolean).join(" · "),
+      owner: [opsName, n > 0 ? `${n} client ${plural0(n, "request")}` : "sending"].join(" · "),
+      action: more > 0 ? { label: "Open Videos", href: "/review" } : { label: "Check & send", href: r.reviewHref ?? `/review/${r.projectId}` },
+    });
+  }
+
+  // 2. The latest video that is late, with who holds it.
+  const late = [...(board?.lanes.late ?? [])].sort((a, b) => (b.lateHours ?? 0) - (a.lateHours ?? 0));
+  if (late.length) {
+    const r = late[0];
+    const more = late.length - 1;
+    const inReview = r.cutStatus === "PENDING";
+    const version = r.round ? `version ${r.round}` : "the video";
+    const editor = chipPerson(rows.find((j) => j.projectId === r.projectId)?.video?.label);
+    add(1, {
+      key: `late:${r.key}`,
+      tone: "bad",
+      lead: `${clean(r.street)}:`,
+      text: [
+        inReview ? `${version} is ${lateText(r.lateHours)} and waiting on review` : `${version} is ${lateText(r.lateHours)}`,
+        more > 0 ? `${more} more late` : null,
+      ].filter(Boolean).join(" · "),
+      owner: inReview ? "Review · the Video Review Room" : `${editor ?? "The editor"} · video editing`,
+      action: inReview
+        ? { label: "Review it", href: r.reviewHref ?? `/review/${r.projectId}` }
+        : { label: editor ? `Remind ${editor}` : "Remind editor", href: "/review" },
+    });
+  }
+
+  // 3. Cuts assigned to the reader to review (the review seat's own work).
+  const mine = review && opts.viewer.teamMemberId
+    ? review.pending.filter((c) => c.reviewer?.id === opts.viewer.teamMemberId).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    : [];
+  if (mine.length) {
+    const c = mine[0];
+    const waitedH = Math.max(0, Math.round((now.getTime() - Date.parse(c.createdAt)) / HOUR));
+    add(2, {
+      key: "review-mine",
+      tone: waitedH >= 24 ? "bad" : "warn",
+      lead: `${mine.length} ${plural0(mine.length, "cut")}`,
+      text: "assigned to you to review",
+      owner: `You · oldest ${waitedWords(waitedH)}`,
+      action: { label: "Review", href: `/review/${c.projectId}?cut=${c.id}` },
+    });
+  }
+
+  // 4. Clients waiting on a reply.
+  if (health.clients && health.clients.waiting > 0) {
+    const c = health.clients;
+    add(3, {
+      key: "clients",
+      tone: c.behind > 0 ? "bad" : "warn",
+      lead: `${c.waiting} ${plural0(c.waiting, "client")}`,
+      text: c.text === 0 ? "waiting on an email reply" : c.email === 0 ? "waiting on a text back" : "waiting on a reply",
+      owner: `${opsName}${c.oldestHours != null ? ` · oldest ${waitedWords(c.oldestHours)}` : ""}`,
+      action: { label: "Open", href: "/communications" },
+    });
+  }
+
+  // 5. Client requests nobody owns yet.
+  if (needOwnerRows.length) {
+    const total = needOwnerRows.reduce((n, r) => n + r.requests.needsOwner, 0);
+    const one = needOwnerRows.length === 1 ? [...needOwnerRows].sort(jobOrder)[0] : null;
+    add(4, {
+      key: "needs-owner",
+      tone: needOwnerRows.some((r) => r.late) ? "bad" : "warn",
+      lead: one ? `${one.street}:` : `${total} client ${plural0(total, "request")}`,
+      text: one ? `${total} client ${plural0(total, "request")} with no owner yet` : `on ${needOwnerRows.length} shoots have no owner yet`,
+      owner: `${opsName} · give each one an owner`,
+      action: one ? { label: "Open shoot", href: one.href || `/projects/${one.projectId}` } : { label: "Open Shoots", href: "/jobs" },
+    });
+  }
+
+  // 6. The reader's own items over a week old; for the owner, Kyle's too
+  //    (and his own to-dos past their date).
+  const person = (key: string | null) => (key ? old?.people.find((p) => p.key === key) ?? null : null);
+  const me = person(opts.viewer.key);
+  if (me && me.weekOld > 0) {
+    add(5, {
+      key: "old-mine",
+      tone: "warn",
+      lead: `${me.weekOld} of your items`,
+      text: "are over a week old",
+      owner: "You · your list",
+      action: { label: "Open", href: isOwner ? "/tasks?tab=work" : `${CHECKLIST_PATH}#earlier` },
+    });
+  }
+  const opsOld = isOwner && !viewerIsOps ? person(opts.ops.key) : null;
+  if (opsOld && opsOld.weekOld > 0) {
+    add(6, {
+      key: "old-ops",
+      tone: "warn",
+      lead: `${opsOld.weekOld} of ${opts.ops.name}'s items`,
+      text: "are over a week old",
+      owner: `${opts.ops.name} · his list`,
+      action: { label: "Open", href: `${CHECKLIST_PATH}#earlier` },
+    });
+  }
+  const pastDate = todos?.overdue.length ?? 0;
+  if (pastDate > 0) {
+    add(7, {
+      key: "todos",
+      tone: "warn",
+      lead: `${pastDate} of your to-dos`,
+      text: "are past their date",
+      owner: "You · My Day",
+      action: { label: "Open", href: "/day" },
+    });
+  }
+
+  const ranked = cand.sort((a, b) => Number(b.tone === "bad") - Number(a.tone === "bad") || a.rank - b.rank);
+  const items: AttentionItem[] = ranked.slice(0, ATTENTION_MAX).map((i) => ({ key: i.key, tone: i.tone, lead: i.lead, text: i.text, owner: i.owner, action: i.action }));
+  const unavailable = [
+    !board ? "videos" : null,
+    !messages ? "client messages" : null,
+    !jobs ? "shoots" : null,
+    !review ? "the review queue" : null,
+    !old ? "old items" : null,
+  ].filter((x): x is string => !!x);
+
+  return {
+    nowISO: now.toISOString(),
+    health,
+    jobs: { rows: shown, total: jobs?.counts.total ?? 0, unavailable: !jobs },
+    attention: { items, more: Math.max(0, ranked.length - ATTENTION_MAX), unavailable },
+  };
+}
+
+export type KyleDay = { name: string; you: boolean; done: number; open: number; href: string };
+
+/** "Kyle's day" on the dashboard (for Kyle himself, "Your list"): done today and
+ *  still open, read from his own checklist, so the card and his list agree. */
+export async function kyleDay(opts: {
+  now?: Date;
+  excludeClientIds: string[];
+  ops: ChecklistPerson & { name: string };
+  viewer: { key: string | null; teamMemberId: string | null };
+  roster?: Assignee[];
+  scrub?: boolean;
+}): Promise<KyleDay> {
+  const you = (!!opts.ops.teamMemberId && opts.ops.teamMemberId === opts.viewer.teamMemberId) || (!!opts.ops.key && opts.ops.key === opts.viewer.key);
+  const list = await kyleChecklist({ now: opts.now, excludeClientIds: opts.excludeClientIds, person: opts.ops, roster: opts.roster, scrub: opts.scrub });
+  return { name: opts.ops.name, you, done: list.done.length, open: list.stillOpen.total, href: you ? CHECKLIST_PATH : `${CHECKLIST_PATH}?who=kyle` };
+}

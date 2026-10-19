@@ -37,13 +37,13 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // a PHOTOGRAPHER opening /review gets the same room narrowed to the jobs they
   // shot (Sep 18), and editors still receive their feedback on /edit.
   { key: "review", label: "Review Room", href: "/review" },
-  { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
+  { key: "pipeline", label: "Shoots", href: "/jobs" },
   // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
   // a redirect stub → /schedule?view=map, so "map" no longer needs its own key.
   { key: "schedule", label: "Schedule", href: "/schedule" },
   { key: "shoot", label: "My Shoots", href: "/shoot" },
   { key: "mypay", label: "My Pay", href: "/my-pay" },
-  { key: "communications", label: "Communications", href: "/communications" },
+  { key: "communications", label: "Messages", href: "/communications" },
   { key: "clients", label: "Clients", href: "/clients" },
   // Content Creator Program — monthly personal-branding clients: enrollment,
   // month workspaces, topics, scripts, agent profiles. Owner/admin.

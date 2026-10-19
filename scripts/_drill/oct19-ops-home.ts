@@ -1,13 +1,18 @@
-// Oct 19 2026 (evening): Kyle's Home = the red line, the summary box and ONE
-// simplified daily checklist (five groups, earlier days, done today, still
-// open); Jordan's Home = this week (on-time % hidden under 3 jobs), what we're
-// behind on, shoot issues, Kyle's day, his list, money; James's review desk
-// unchanged; /ops = shoots, stuck jobs and exceptions; /ops/requests,
-// /ops/scheduling and /ops/old redirect to the matching checklist group;
-// /ops/messages = clients waiting + new leads; Kyle's six-door menu. Plus the
-// old-item rules, the morning digest, New date and the shoot-note expiry.
-// Server-renders the real pages against disposable PGlite; Slack is faked;
-// nothing leaves.
+// Oct 19 2026 (night): ONE DASHBOARD at "/" for the owner and every office
+// login (Jordan: "The home page should really be a dashboard to oversee
+// everything going on … I don't want to overload the users of this hub with
+// analysis paralysis"): the red line, four health tiles (each equal to its
+// source), Today's shoots, Shoots in progress (the Shoots board's rows),
+// Needs attention now (at most five, each with an owner and one action),
+// Kyle's day ("Your list" for Kyle), shoot issues and the week and money for
+// the owner only. Kyle's daily checklist is its own page (/ops/checklist);
+// /ops redirects to the dashboard; /ops/requests, /ops/scheduling and
+// /ops/old open the list's groups; the six-door menu (Dashboard, Shoots,
+// Photos, Videos, Messages, Schedule, then More) for the owner and the
+// office. Plus the old-item rules, the morning digest, New date and the
+// shoot-note expiry (unchanged). Server-renders the real pages against
+// disposable PGlite; the Shoots board, the video board and the behind state
+// are driven through their contracts; Slack is faked; nothing leaves.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { createElement, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -16,7 +21,8 @@ import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker
 import type { VideoRow } from "../../src/lib/videoDelivery";
 import type { BehindState } from "../../src/lib/behindAlert";
 import type { ShootIssue } from "../../src/lib/shootIssues";
-import type { KyleChecklist, HomeSummary } from "../../src/lib/opsHome";
+import type { JobRow, JobsBoard } from "../../src/lib/jobsBoard";
+import type { KyleChecklist, Dashboard, KyleDay, AttentionItem } from "../../src/lib/opsHome";
 
 installNextStubs();
 type Props = Record<string, unknown>;
@@ -36,11 +42,13 @@ const fence = fenceFetch(async (url, init) => {
   return json({ ok: false, error: "not_in_drill" });
 });
 
-// ---- the other lanes' contracts, overridable so the Home can be driven ---------
+// ---- the other lanes' contracts, overridable so the dashboard can be driven ---------
 type Lanes = { late: VideoRow[]; today: VideoRow[]; sending: VideoRow[]; held: VideoRow[]; finishing: VideoRow[]; delivered: VideoRow[] };
 let videoLanes: Lanes | null = null;
 let behindOverride: BehindState | null = null;
 let issuesOverride: { open: ShootIssue[]; byClient: { client: string; count: number }[] } | null = null;
+let jobsOverride: JobsBoard | null = null;
+const jobsCalls: { includeTest?: boolean }[] = [];
 interceptModule((r) => r === "@/lib/videoDelivery" || /src[\\/]lib[\\/]videoDelivery(?:\.ts)?$/.test(r), (loaded) => {
   const m = loaded as typeof import("../../src/lib/videoDelivery");
   const fakeBoard = (l: Lanes) => ({ lanes: { review: [], upcoming: [], ...l }, counts: {} }) as unknown as Awaited<ReturnType<typeof m.videoDeliveryBoard>>;
@@ -59,6 +67,12 @@ interceptModule((r) => r === "@/lib/behindAlert" || /src[\\/]lib[\\/]behindAlert
 interceptModule((r) => r === "@/lib/shootIssues" || /src[\\/]lib[\\/]shootIssues(?:\.ts)?$/.test(r), (loaded) => {
   const m = loaded as typeof import("../../src/lib/shootIssues");
   return { ...m, ownerShootIssues: (now?: Date) => (issuesOverride ? Promise.resolve(issuesOverride) : m.ownerShootIssues(now)) };
+});
+// The Shoots board is J1's lane: driven here so the dashboard's table and
+// tiles can be held against exactly what the board returned.
+interceptModule((r) => r === "@/lib/jobsBoard" || /src[\\/]lib[\\/]jobsBoard(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/jobsBoard");
+  return { ...m, jobsBoard: (now?: Date, o: { limit?: number; includeTest?: boolean } = {}) => { jobsCalls.push(o); return jobsOverride ? Promise.resolve(jobsOverride) : m.jobsBoard(now, o); } };
 });
 
 // ---- tree helpers ---------------------------------------------------------------------
@@ -85,7 +99,7 @@ function propValues(tree: unknown, key: string): unknown[] {
   if (!isValidElement<Props>(tree)) return [];
   return [...(key in tree.props ? [tree.props[key]] : []), ...Object.values(tree.props).flatMap((part) => propValues(part, key))];
 }
-const STREAMED = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
@@ -95,8 +109,9 @@ async function settle(tree: unknown): Promise<unknown> {
 // Expand the server-rendered parts (never a client component) so their text,
 // ids and links can be read.
 const EXPAND = new Set([
-  "SummaryBox", "SummaryTile", "BehindLine", "DailyChecklist", "GroupCard", "LineRow", "LineActions", "Aliases", "EarlierCard", "OldItemRow",
-  "DoneToday", "DoneRow", "StillOpen", "KylesDay", "BehindCard", "ShootIssuesCard", "OwnerWeekCard", "WeekStat", "FlaggedBanner", "ShootsTodayLine",
+  "HealthStrip", "Tile", "ShootsInProgress", "JobLine", "StageChip", "RequestsChip", "NeedsAttention", "AttentionRow", "KylesDayCard",
+  "BehindLine", "DailyChecklist", "GroupCard", "LineRow", "LineActions", "Aliases", "EarlierCard", "OldItemRow",
+  "DoneToday", "DoneRow", "StillOpen", "ShootIssuesCard", "OwnerWeekCard", "WeekStat", "FlaggedBanner",
 ]);
 function expand(tree: unknown): unknown {
   if (Array.isArray(tree)) return tree.map(expand);
@@ -106,11 +121,18 @@ function expand(tree: unknown): unknown {
 }
 class Redirect extends Error { constructor(readonly href: string) { super(href); } }
 const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never; useRouter: () => { refresh: () => void }; usePathname: () => string };
+let pathname = "/";
 navigation.redirect = (href) => { throw new Redirect(href); };
 navigation.useRouter = () => ({ refresh() {} });
-navigation.usePathname = () => "/";
+navigation.usePathname = () => pathname;
 async function redirectOf(run: () => Promise<unknown>): Promise<string | null> {
-  try { await run(); return null; } catch (e) { if (e instanceof Redirect) return e.href; throw e; }
+  try { await run(); return null; } catch (e) {
+    if (e instanceof Redirect) return e.href;
+    // A guard that reaches Next's own redirect (requirePageAccess) throws its digest.
+    const digest = (e as { digest?: unknown })?.digest;
+    if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT;")) return digest.split(";")[2] ?? "";
+    throw e;
+  }
 }
 
 const H = 3_600_000;
@@ -125,8 +147,8 @@ async function main() {
     const { setSession } = await import("@/lib/auth/session");
     const { saveSecret } = await import("@/lib/integrations/connections");
     const { default: home } = await import("@/app/page");
+    const { default: listPage } = await import("@/app/ops/checklist/page");
     const { default: opsPage } = await import("@/app/ops/page");
-    const { default: messagesPage } = await import("@/app/ops/messages/page");
     const { default: oldPage } = await import("@/app/ops/old/page");
     const { default: requestsPage } = await import("@/app/ops/requests/page");
     const { default: schedulingPage } = await import("@/app/ops/scheduling/page");
@@ -134,10 +156,13 @@ async function main() {
     const opsHome = await import("@/lib/opsHome");
     const aging = await import("@/lib/taskAging");
     const { loadQueue } = await import("@/app/ops/photo-delivery/data");
-    // Through require, so the drill reads the same (driven) contract the Home does.
+    // Through require, so the drill reads the same (driven) contract the dashboard does.
     const { videoSummary } = createRequire(__filename)("../../src/lib/videoDelivery") as typeof import("../../src/lib/videoDelivery");
     const { unansweredCommsBoard } = await import("@/lib/commsBoard");
-    const { forwardedHref, blockScreen, GROUP_ALIASES } = await import("@/lib/homeAnchors");
+    const { askBoardCounts } = await import("@/lib/clientAsks");
+    const { getReviewQueue } = await import("@/lib/reviewRoom");
+    const { forwardedHref, blockScreen, GROUP_ALIASES, CHECKLIST_PATH } = await import("@/lib/homeAnchors");
+    const { homeRecordHref } = await import("@/lib/homeRecordScope");
     const { Sidebar } = await import("@/components/Sidebar");
     const { etAt, etDayKey, etDayStartUtc, etAddDays, etEndOfDay } = await import("@/lib/datetime");
     const { saveSchedule } = await import("@/lib/notifySchedule");
@@ -171,13 +196,22 @@ async function main() {
     c.ok("an edit-side note waits for delivery", !note("Log song request for 2645 N 8th St cinematic video", {}, { status: "EDITING", shootDate: ago(3 * D) }) && note("Log USP and lifestyle brief for 99 W Bridge St video", {}, { status: "DELIVERED", shootDate: ago(30 * D) }));
     c.ok("not before the shoot day is over, not while still scheduled, not without a job", !note("Note vacant property for 308 W Upsal St shoot team", {}, { status: "SHOT", shootDate: laterToday }) && !note("Note lockbox for 7 Late Ave", {}, { status: "SCHEDULED", shootDate: ago(3 * D) }) && !note("Note lockbox for 7 Late Ave", {}, null));
     c.ok("only the brain's to-dos from a client message; never one a person flagged or assigned", !note("Note x for y shoot", { source: "manual" }) && !note("Note x for y shoot", { reasonCreated: "Photographer flagged a pay line" }) && !note("Note x for y shoot", { taskType: "client_reply" }) && !note("Note x for y shoot", { flaggedAt: now }) && !note("Note x for y shoot", { assignedManually: true }));
-    // Old links: every old block id is an anchor inside a checklist group on Home.
+    // Old links: every old block id is an anchor inside a checklist group, and the list is its own page now.
     const OLD_BLOCKS = ["tower", "qc-am", "overdue", "comms-1", "prep", "loops", "video-review", "pipeline", "monthly", "closeout", "operating-routine", "old-items"];
     c.ok("every old block id has a home inside a checklist group", OLD_BLOCKS.every((id) => Object.values(GROUP_ALIASES).some((a) => a.includes(id))) && GROUP_ALIASES.followups.includes("loops") && GROUP_ALIASES.deliveries.includes("video-review") && GROUP_ALIASES.messages.includes("comms-1"));
-    c.ok("forwarding: /#stuck, /#exceptions, /#shoots go to /ops; /ops#loops comes back to Home; Home's own anchors stay", forwardedHref("/", "", "#stuck") === "/ops#stuck" && forwardedHref("/", "?test=1", "#shoots") === "/ops?test=1#shoots" && forwardedHref("/ops", "?test=1", "#loops") === "/?test=1#loops" && forwardedHref("/ops", "", "#video-review") === "/#video-review" && forwardedHref("/", "", "#loops") === null && forwardedHref("/", "", "#my-list") === null && forwardedHref("/ops", "", "#stuck") === null && forwardedHref("/", "", "#%E0") === null);
-    c.ok("a Home without the checklist links an old block to the screen that holds its work", blockScreen("#video-review") === "/review" && blockScreen("#comms-1") === "/ops/messages" && blockScreen("#loops") === "/tasks?tab=work" && blockScreen("#stuck") === "/ops#stuck" && blockScreen("#needs-you") === "#needs-you" && blockScreen("/tasks") === "/tasks");
-    c.ok("retired pages' doors: Kyle to his group, Jordan to Kyle's day / behind, the review seat to its screen", opsHome.checklistDoor("operations", "requests") === "/#requests" && opsHome.checklistDoor("operations", "earlier") === "/#earlier" && opsHome.checklistDoor("owner", "scheduling") === "/#kyles-day" && opsHome.checklistDoor("owner", "earlier") === "/#behind" && opsHome.checklistDoor("review", "requests") === "/review");
+    c.ok("the list's own page is /ops/checklist", CHECKLIST_PATH === "/ops/checklist");
+    c.ok("forwarding: an old checklist anchor on the dashboard goes to the list (test scope kept); the dashboard's own anchors stay; the owner's old list goes to My Day",
+      forwardedHref("/", "", "#loops") === "/ops/checklist#loops" && forwardedHref("/", "?test=1", "#requests") === "/ops/checklist?test=1#requests" && forwardedHref("/", "", "#video-review") === "/ops/checklist#video-review"
+      && ["#shoots", "#stuck", "#exceptions", "#kyles-day", "#behind", "#needs-you", "#needs-attention"].every((h) => forwardedHref("/", "", h) === null)
+      && forwardedHref("/", "", "#my-list") === "/day" && forwardedHref("/ops/checklist", "", "#loops") === null && forwardedHref("/", "", "#%E0") === null);
+    c.ok("an old 'answer clients' anchor opens Messages (its Waiting on us view), test scope kept", forwardedHref("/", "", "#comms-1") === "/communications" && forwardedHref("/", "?test=1", "#comms-1") === "/communications?test=1" && forwardedHref("/", "", "#messages") === "/communications");
+    c.ok("a link rendered off the list opens the list's group; the dashboard's anchors open the dashboard", blockScreen("#video-review") === "/ops/checklist#video-review" && blockScreen("#comms-1") === "/communications" && blockScreen("#loops") === "/ops/checklist#loops" && blockScreen("#stuck") === "/#stuck" && blockScreen("#shoots") === "/#shoots" && blockScreen("#nothing-here") === "#nothing-here" && blockScreen("/tasks") === "/tasks");
+    c.ok("retired pages' doors open the list's group (everyone's tasks for the pushed bell)", opsHome.checklistDoor("requests") === "/ops/checklist#requests" && opsHome.checklistDoor("scheduling") === "/ops/checklist#scheduling" && opsHome.checklistDoor("earlier") === "/ops/checklist#earlier" && opsHome.checklistDoor("earlier", { everyone: true }) === "/tasks?tab=work&who=all");
+    c.ok("test scope reaches the list and the Shoots board", homeRecordHref("/ops/checklist#earlier", true) === "/ops/checklist?test=1#earlier" && homeRecordHref("/jobs?f=late", true) === "/jobs?f=late&test=1");
     c.ok("lateness in words", opsHome.lateWords(9.4) === "9 hours" && opsHome.lateWords(24) === "1 day" && opsHome.lateWords(65) === "2.7 days");
+    c.ok("On time is green with nothing late, amber for one or two, red from three or one two days late", opsHome.onTimeTone({ late: 0, oldestLateDays: null }) === "ok" && opsHome.onTimeTone({ late: 2, oldestLateDays: 1 }) === "warn" && opsHome.onTimeTone({ late: 3, oldestLateDays: 1 }) === "bad" && opsHome.onTimeTone({ late: 1, oldestLateDays: 2 }) === "bad");
+    c.ok("who holds a video is read off the Shoots board's chip ('Changes · John'), never invented", opsHome.chipPerson("Changes · John") === "John" && opsHome.chipPerson("Not cut · John Mark") === "John Mark" && opsHome.chipPerson("Editing · outside") === null && opsHome.chipPerson("Editing") === null && opsHome.chipPerson(null) === null);
+    c.ok("at most five lines need attention; ten shoots on the dashboard", opsHome.ATTENTION_MAX === 5 && opsHome.DASHBOARD_ROWS === 10);
 
     // =====================================================================
     c.head("§2 · the world");
@@ -304,6 +338,29 @@ async function main() {
         texts.push(m);
       }
     }
+    const editor = await user("Kim Miguel", "kim@oct19.invalid", "EDITOR");
+    // A cut waiting on James's review (his seat's own line on the dashboard).
+    const cutJob = await project("60 Review Rd, Town", "REVIEW", ago(2 * D), { deliverables: { create: { type: "VIDEO", label: "Property video", quantity: 1 } } });
+    const cutDeliverable = await prisma.deliverable.findFirstOrThrow({ where: { projectId: cutJob.id } });
+    const jamesCut = await prisma.reviewSubmission.create({ data: { projectId: cutJob.id, deliverableId: cutDeliverable.id, slot: 1, source: "folder", kind: "video", status: "PENDING", reviewerTeamMemberId: jamesTm.id, submittedByKey: "kim", assetPath: `/isolated/${cutJob.id}.mp4`, createdAt: ago(3 * H) } });
+
+    // The Shoots board, driven: what J1's board would return.
+    const stage = (label: string, tone: "done" | "active" | "waiting" | "late" | "none") => ({ label, tone });
+    const jobRow = (projectId: string, street: string, over: Partial<JobRow> = {}): JobRow => ({
+      projectId, street, client: "Real Agent", dueISO: ahead(3 * D).toISOString(), dueWords: "Thu 5 PM", late: false, dueToday: false,
+      photos: stage("Editing", "active"), video: null, requests: { open: 0, photo: 0, video: 0, needsOwner: 0 }, monthly: false, href: `/projects/${projectId}`, ...over,
+    });
+    const boardRows: JobRow[] = [
+      jobRow(pEdit.id, "2 Pine Rd", { late: true, dueISO: ago(3 * D).toISOString(), dueWords: "3 days late", photos: stage("Delivered", "done"), video: stage("Changes · John", "late"), requests: { open: 1, photo: 0, video: 1, needsOwner: 0 } }),
+      jobRow(pSoon.id, "50 Soon St", { late: true, dueISO: ago(1 * D).toISOString(), dueWords: "1 day late", photos: stage("In QC", "active"), requests: { open: 2, photo: 2, video: 0, needsOwner: 2 } }),
+      jobRow(pLater.id, "51 Later Ln", { dueISO: ahead(7 * D).toISOString(), dueWords: "Next Mon", video: stage("Editing · Kim", "active"), photos: null, requests: { open: 1, photo: 0, video: 1, needsOwner: 0 } }),
+      jobRow(pToday.id, "9 Today St", { dueISO: laterToday.toISOString(), dueWords: "Today 5 PM", dueToday: true, photos: stage("Not shot yet", "waiting") }),
+      ...Array.from({ length: 8 }, (_, i) => jobRow(`fake-job-${i}`, `${100 + i} Filler Ave`, { dueISO: ahead((4 + i) * D).toISOString(), dueWords: `In ${4 + i} days` })),
+      jobRow("fake-monthly-late", "1033 Preserve Ln", { monthly: true, late: true, dueISO: ago(5 * D).toISOString(), dueWords: "5 days late", photos: null, video: stage("Changes asked", "late") }),
+      jobRow("fake-monthly", "99 Bridge St", { monthly: true, dueISO: ahead(2 * D).toISOString(), dueWords: "Wed", photos: null, video: stage("Editing", "active") }),
+    ];
+    const board: JobsBoard = { rows: boardRows, counts: { total: boardRows.length, late: 3, dueToday: 1, dueTomorrow: 2, oldestLateDays: 5 } };
+    jobsOverride = board;
     c.ok("the world is built", true);
 
     // The video screen's rows, driven (V's board is its own drill's business).
@@ -324,28 +381,19 @@ async function main() {
       delivered: [vrow("v-sent", "delivered", { stage: "Delivered", deliveredAtISO: ago(20 * 60_000).toISOString(), deliveredBy: "Kyle Smith", dueToday: false }), vrow("v-old", "delivered", { stage: "Delivered", deliveredAtISO: ago(3 * D).toISOString(), dueToday: false })],
     };
 
+
     // =====================================================================
-    c.head("§3 · Kyle's Home: the red line, the summary box, the daily checklist");
+    c.head("§3 · Kyle's list (/ops/checklist): the daily checklist, unchanged in content, on its own page");
     // =====================================================================
     await signIn(kyle);
     const tasksBefore = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
     videoLanes = lanes;
-    const kyleTree = await settle(await home({}));
+    const kyleTree = await settle(await listPage({}));
     const tasksAfter = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
     const kyleText = textOf(expand(kyleTree));
-    const order = namesOf(kyleTree);
-    c.ok("Kyle's Home: flagged, then the summary box, then the checklist", order.indexOf("FlaggedBanner") >= 0 && order.indexOf("FlaggedBanner") < order.indexOf("SummaryBox") && order.indexOf("SummaryBox") < order.indexOf("DailyChecklist"), order.filter((n) => ["FlaggedBanner", "BehindLine", "SummaryBox", "DailyChecklist"].includes(n)).join(","));
-    c.ok("flagged-for-you banner stays first", (elements(kyleTree, "FlaggedBanner")[0]?.flagged as { taskId: string }[]).some((f) => f.taskId === n4.id));
-    const summary = elements(kyleTree, "SummaryBox")[0]?.summary as HomeSummary;
-    const photoScreen = opsHome.photoCountsFromQueue(await loadQueue(), now);
-    c.ok("Photos number = the photo delivery queue's own cards (to deliver today, late)", summary.photos?.dueToday === photoScreen.dueToday && summary.photos?.late === photoScreen.behind && photoScreen.behind === 1 && photoScreen.dueToday === 1, JSON.stringify(summary.photos));
-    const vs = await videoSummary(now);
-    c.ok("Videos number = videoSummary (ready to send, late)", summary.videos?.readyToSend === vs.readyToSend && summary.videos?.late === vs.late && vs.readyToSend === 1, `${JSON.stringify(summary.videos)} vs ${JSON.stringify(vs)}`);
+    const kHeader = elements(kyleTree, "PageHeader")[0] as { title?: string; eyebrow?: string } | undefined;
+    c.ok("Kyle's list is 'Your list', the red line slot, then the checklist; no summary box (the dashboard's tiles say it)", kHeader?.title === "Your list" && elements(kyleTree, "DailyChecklist").length === 1 && elements(kyleTree, "SummaryBox").length === 0 && namesOf(kyleTree).indexOf("BehindLine") < namesOf(kyleTree).indexOf("DailyChecklist"), kHeader?.title);
     const waitingNow = [...await unansweredCommsBoard("phone", now, { excludeClientIds: [fixture.id] }), ...await unansweredCommsBoard("email", now, { excludeClientIds: [fixture.id] })];
-    c.ok("Messages number = the clients waiting on a reply (text + email)", summary.messages?.waiting === waitingNow.length && waitingNow.length >= 1, `${summary.messages?.waiting} vs ${waitingNow.length}`);
-    const sHtml = renderToStaticMarkup(createElement(((await import("@/components/home/Checklist")).SummaryBox), { summary }));
-    c.ok("each number opens its screen: photos → photo delivery, videos → Video Review Room, messages → Messages", /data-summary="photos"[^>]*href="\/ops\/photo-delivery"|href="\/ops\/photo-delivery"[^>]*data-summary="photos"/.test(sHtml) && /href="\/review"[^>]*data-summary="videos"|data-summary="videos"[^>]*href="\/review"/.test(sHtml) && /href="\/ops\/messages"[^>]*data-summary="messages"|data-summary="messages"[^>]*href="\/ops\/messages"/.test(sHtml), sHtml.slice(0, 300));
-
     const list = elements(kyleTree, "DailyChecklist")[0]?.list as KyleChecklist;
     const group = (k: string) => list.groups.find((g) => g.key === k)!;
     const keysOf = (k: string) => group(k).lines.map((l) => l.key);
@@ -357,7 +405,12 @@ async function main() {
     c.ok("each delivery says what is needed", line("deliveries", "video:v-send").need === "Ready to send" && line("deliveries", "video:v-send").detail?.includes("1 client request to check first") === true && line("deliveries", "video:v-late").need === "Waiting on editor" && line("deliveries", "video:v-today").need === "Waiting on review" && line("deliveries", "video:v-fin").need === "In the 1080p pass" && line("deliveries", "video:v-held").need === "Held" && line("deliveries", `photo:${photoJobs[1].id}`).need === "Ready to review and send" && line("deliveries", `photo:${photoJobs[0].id}`).need === "Needs your decision");
     c.ok("a delivery opens its own screen (the photo job, the exact cut)", line("deliveries", `photo:${photoJobs[0].id}`).href === `/ops/photo-delivery/${photoJobs[0].id}` && line("deliveries", "video:v-late").href === `/review/${pEdit.id}?cut=v-late` && line("deliveries", "video:v-send").action.kind === "open");
     const msgs = group("messages").lines;
-    c.ok("Messages to answer: one line per waiting client, with Reply (to the board that answers it) and Handled", msgs.length === waitingNow.length && msgs.every((l) => l.action.kind === "reply" && l.href === ((l.action as { family: string }).family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies")));
+    const { waitingRowReplyHref } = await import("@/components/comms/WaitingOnUs");
+    const waitingRows = (await opsHome.messagesBoard({ now, excludeClientIds: [fixture.id], team: true })).waiting;
+    c.ok("Messages to answer: one line per waiting client, with Reply (that exact thread on Messages, as its Waiting on us row) and Handled", msgs.length === waitingNow.length && msgs.every((l) => {
+      const w = waitingRows.find((x) => l.key === `msg:${x.family}:${x.group.groupKey}`);
+      return l.action.kind === "reply" && !!w && l.href === waitingRowReplyHref(w, false) && (l.action as { href: string }).href === l.href && l.href.startsWith("/communications");
+    }), msgs.map((l) => l.href).join(" "));
     const longest = [...waitingNow].sort((a, b) => b.oldestHours - a.oldestHours)[0];
     c.ok("…the longest wait first, over a day is late", msgs[0].key.endsWith(`:${longest.groupKey}`) && msgs[0].late === longest.oldestHours >= 24 && msgs.every((l) => l.when?.startsWith("Waiting ")), `${msgs[0].key} ${msgs[0].when}`);
     const req = group("requests");
@@ -388,36 +441,114 @@ async function main() {
     c.ok("Still open = every line still on today's list plus the earlier items", list.stillOpen.total === openTotal && list.stillOpen.parts.reduce((n, p) => n + p.count, 0) === openTotal , `${list.stillOpen.total} vs ${openTotal}`);
     const ids = propValues(expand(kyleTree), "id").filter((x): x is string => typeof x === "string");
     c.ok("the groups carry anchors, and every old block anchor lands inside one", ["checklist", "deliveries", "messages", "requests", "scheduling", "followups", "earlier", "done-today", "still-open"].every((id) => ids.includes(id)) && OLD_BLOCKS.every((id) => ids.includes(id)), OLD_BLOCKS.filter((id) => !ids.includes(id)).join(","));
-    const gone = ["JobTiles", "OldItemsCard", "VideoBehindBanner", "Block", "NeedsToday", "StuckJobs", "ExceptionsCard", "ProactiveFlags", "NewClientCard", "MoneyStat", "ChecklistLinks", "OwnerWeekCard", "ShootsTodayLine"];
-    c.ok("off Kyle's Home: the tiles, the old-items card, the ten blocks, stuck jobs, exceptions, the radar, money, the links row", gone.every((n) => elements(kyleTree, n).length === 0), gone.filter((n) => elements(kyleTree, n).length > 0).join());
-    c.ok("Kyle's Home render writes nothing", tasksAfter === tasksBefore && await prisma.outboxMessage.count() === 0);
+    const gone = ["JobTiles", "OldItemsCard", "VideoBehindBanner", "Block", "NeedsToday", "StuckJobs", "ExceptionsCard", "ProactiveFlags", "NewClientCard", "MoneyStat", "ChecklistLinks", "OwnerWeekCard", "ShootsTodayLine", "SummaryBox", "HealthStrip"];
+    c.ok("the list page is the list only: no tiles, no old-items card, no blocks, no exceptions, no money", gone.every((n) => elements(kyleTree, n).length === 0), gone.filter((n) => elements(kyleTree, n).length > 0).join());
+    c.ok("Kyle's list render writes nothing", tasksAfter === tasksBefore && await prisma.outboxMessage.count() === 0);
     const lineWords = list.groups.flatMap((g) => [...g.lines, ...g.later].map((l) => `${l.need} ${l.when ?? ""} ${l.detail ?? ""}`)).join(" ");
     c.ok("no em dashes in the checklist's own words", !EM_DASH.test(lineWords) && !EM_DASH.test(textOf(expand(kyleTree)).replace(/In editing — not confirmed/g, "")), lineWords.slice(0, 200));
     const heldLine = line("deliveries", "video:v-held");
-    c.ok("Kyle's screen speaks to him: the hub's 'Kyle has the next step' reads 'you have', figures scrubbed", heldLine.detail?.includes("you have the next step") === true && !/\bKyle\b/.test(lineWords) && !lineWords.includes("$50"), heldLine.detail ?? "");
+    c.ok("Kyle's list speaks to him: the hub's 'Kyle has the next step' reads 'you have', figures scrubbed", heldLine.detail?.includes("you have the next step") === true && !/\bKyle\b/.test(lineWords) && !lineWords.includes("$50"), heldLine.detail ?? "");
+    c.ok("the list is Kyle's own checklist (the dashboard's 'Kyle's day' reads the same one)", JSON.stringify(list.groups.map((g) => g.lines.map((l) => l.key))) === JSON.stringify((await opsHome.kyleChecklist({ now: new Date(), excludeClientIds: [fixture.id], person: { key: "kyle", teamMemberId: kyleTm.id }, scrub: true })).groups.map((g) => g.lines.map((l) => l.key))));
+
+    // Whose list: the owner sees Kyle's (with figures), James his own unless he asks for Kyle's.
+    await signIn(owner);
+    const ownerListTree = await settle(await listPage({}));
+    const ownerList = elements(ownerListTree, "DailyChecklist")[0]?.list as KyleChecklist;
+    c.ok("the owner opens Kyle's list: 'Kyle's list', Kyle's follow-ups and earlier items, figures shown", (elements(ownerListTree, "PageHeader")[0] as { title?: string }).title === "Kyle’s list" && ownerList.earlier.items.map((i) => i.id).join() === list.earlier.items.map((i) => i.id).join() && textOf(expand(ownerListTree)).includes("$750"));
+    await signIn(james);
+    const jamesListTree = await settle(await listPage({}));
+    const jamesList = elements(jamesListTree, "DailyChecklist")[0]?.list as KyleChecklist;
+    const jamesKyleTree = await settle(await listPage({ searchParams: Promise.resolve({ who: "kyle" }) }));
+    const jamesKyleList = elements(jamesKyleTree, "DailyChecklist")[0]?.list as KyleChecklist;
+    c.ok("James's list is his own ('Your list', none of Kyle's follow-ups); ?who=kyle opens Kyle's", (elements(jamesListTree, "PageHeader")[0] as { title?: string }).title === "Your list" && !jamesList.earlier.items.some((i) => i.id === k1.id) && jamesList.earlier.items.some((i) => i.id === jm1.id) && (elements(jamesKyleTree, "PageHeader")[0] as { title?: string }).title === "Kyle’s list" && jamesKyleList.earlier.items.map((i) => i.id).join() === list.earlier.items.map((i) => i.id).join());
+    c.ok("…and no figures for James on either", !textOf(expand(jamesListTree)).includes("$750") && !textOf(expand(jamesKyleTree)).includes("$750"));
+    await signIn(kyle);
 
     // The red line, driven through the behind contract.
     behindOverride = { level: "very_behind", videosLate: 5, photosLate: 1, oldestLateHours: 72, headline: "5 videos late, the oldest 3 days." };
-    const redTree = await settle(await home({}));
+    const redList = await settle(await listPage({}));
+    const redDash = await settle(await home({}));
     behindOverride = { level: "ok", videosLate: 0, photosLate: 0, oldestLateHours: null, headline: null };
-    const calmTree = await settle(await home({}));
+    const calmDash = await settle(await home({}));
     behindOverride = null;
-    const redLine = elements(redTree, "BehindLine")[0];
-    c.ok("the red line shows the behind headline when we are behind, and nothing when we are not", (redLine?.state as BehindState).headline === "5 videos late, the oldest 3 days." && textOf(expand(redTree)).includes("5 videos late, the oldest 3 days.") && !textOf(expand(calmTree)).includes("videos late"));
-    c.ok("…it sits above the summary box", namesOf(redTree).indexOf("BehindLine") < namesOf(redTree).indexOf("SummaryBox"));
+    c.ok("the red line shows the behind headline when we are behind, and nothing when we are not", textOf(expand(redList)).includes("5 videos late, the oldest 3 days.") && textOf(expand(redDash)).includes("5 videos late, the oldest 3 days.") && !textOf(expand(calmDash)).includes("videos late, the oldest"));
+    c.ok("…on the dashboard it sits above the health strip and opens the late shoots", namesOf(redDash).indexOf("BehindLine") >= 0 && namesOf(redDash).indexOf("BehindLine") < namesOf(redDash).indexOf("HealthStrip") && elements(redDash, "BehindLine")[0]?.href === "/jobs?f=late");
 
     // =====================================================================
-    c.head("§4 · Jordan's Home (owner)");
+    c.head("§4 · the dashboard, as Jordan (owner)");
     // =====================================================================
     await signIn(owner);
+    videoLanes = lanes;
     issuesOverride = { open: [{ id: "si1", client: "Real Agent", street: "1 Elm St", text: "Lockbox code didn't work", by: "Harrison", atISO: ago(H).toISOString(), href: `/projects/${pShot.id}` }], byClient: [{ client: "Real Agent", count: 3 }, { client: "Other", count: 1 }] };
+    const dashBefore = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
+    jobsCalls.length = 0;
     const ownerTree = await settle(await home({}));
     issuesOverride = null;
     const ownerText = textOf(expand(ownerTree));
+    const health = elements(ownerTree, "HealthStrip")[0]?.health as Dashboard["health"];
+    c.ok("the dashboard reads the Shoots board without test records by default", jobsCalls.length >= 1 && jobsCalls.every((o) => o.includeTest === false));
+    // ---- the four tiles, each equal to its source ----
+    c.ok("On time = the Shoots board's counts (late, due today, due tomorrow, oldest)", JSON.stringify({ ...health.onTime, tone: undefined }) === JSON.stringify({ ...board.counts, tone: undefined }) && health.onTime?.tone === "bad", JSON.stringify(health.onTime));
+    const emailWaiting = (await unansweredCommsBoard("email", now, { excludeClientIds: [fixture.id] })).length;
+    c.ok("Clients waiting = the clients waiting on a reply (text + email), by channel", health.clients?.waiting === waitingNow.length && waitingNow.length >= 1 && health.clients?.email === emailWaiting && health.clients?.text === waitingNow.length - emailWaiting && health.clients?.oldestHours === Math.max(...waitingNow.map((g) => g.oldestHours)), JSON.stringify(health.clients));
+    c.ok("…its tone is red when anyone has waited a day", health.clients?.tone === (waitingNow.some((g) => g.oldestHours >= opsHome.MESSAGE_BEHIND_HOURS) ? "bad" : "warn"));
+    const asksNow = await askBoardCounts(now);
+    c.ok("Special requests = the open special requests (askBoardCounts), on N shoots and M needing an owner from the board's rows", health.requests?.open === asksNow.special.open && health.requests?.shoots === boardRows.filter((r) => r.requests.open > 0).length && health.requests?.needOwner === boardRows.reduce((n, r) => n + r.requests.needsOwner, 0) && health.requests?.needOwner === 2, JSON.stringify(health.requests));
+    const reviewNow = await getReviewQueue({ includeTest: false });
+    const queueNow = await loadQueue();
+    const inQc = queueNow.columns.filter((col) => ["qc", "decision", "ready"].includes(col.key)).flatMap((col) => col.cards);
+    const vsNow = await videoSummary(now);
+    c.ok("QC & review = cuts to review (Video Review Room), videos ready to send (videoSummary), photo sets in QC (the photo queue)", health.qc?.toReview === reviewNow.pending.length && reviewNow.pending.some((p) => p.id === jamesCut.id) && health.qc?.readyToSend === vsNow.readyToSend && vsNow.readyToSend === 1 && health.qc?.photosInQc === inQc.length && inQc.length === 2, JSON.stringify(health.qc));
+    c.ok("…a photo set past its date in QC makes it red, and it opens the Video Review Room while videos wait", health.qc?.late === 1 && health.qc?.tone === "bad" && health.qc?.href === "/review");
+    const dashHtml = renderToStaticMarkup(expand(ownerTree) as Parameters<typeof renderToStaticMarkup>[0]);
+    const tileHref = (name: string) => dashHtml.match(new RegExp(`<a[^>]*href="([^"]+)"[^>]*data-health="${name}"`))?.[1] ?? dashHtml.match(new RegExp(`<a[^>]*data-health="${name}"[^>]*href="([^"]+)"`))?.[1];
+    c.ok("each tile is a link: On time → late shoots, Clients waiting → Messages, Special requests → Shoots, QC & review → Videos", tileHref("on-time") === "/jobs?f=late" && tileHref("clients") === "/communications" && tileHref("requests") === "/jobs" && tileHref("qc") === "/review", [tileHref("on-time"), tileHref("clients"), tileHref("requests"), tileHref("qc")].join(" "));
+    c.ok("…each with its state colour (red: late shoots and a QC item late; the others by their own rule)", dashHtml.includes('data-health="on-time" data-tone="bad"') && dashHtml.includes(`data-health="clients" data-tone="${health.clients?.tone}"`) && dashHtml.includes(`data-health="requests" data-tone="${health.requests?.tone}"`) && dashHtml.includes('data-health="qc" data-tone="bad"'));
+    c.ok("…and the words: '3 late', due today and tomorrow, oldest 5 days; '2 need an owner'; '1 ready'", ["3 late", "1 due today · 2 due tomorrow · oldest 5 days", "2 need an owner", "1 ready", "1 video ready to send", "2 photo sets in QC"].every((w) => dashHtml.includes(w)), dashHtml.slice(dashHtml.indexOf("data-health-strip"), dashHtml.indexOf("data-health-strip") + 1500));
+
+    // ---- shoots in progress ----
+    const table = elements(ownerTree, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"];
+    const expectRows = [...boardRows].sort(opsHome.jobOrder).slice(0, opsHome.DASHBOARD_ROWS);
+    c.ok("Shoots in progress: the board's first ten rows, late first (the monthly ones included in that order)", table.rows.map((r) => r.projectId).join() === expectRows.map((r) => r.projectId).join() && table.rows.slice(0, 3).every((r) => r.late) && table.total === board.counts.total, table.rows.map((r) => r.street).join(" | "));
+    c.ok("…each row opens its job page; 'All shoots' opens /jobs; the rest are counted", expectRows.every((r) => dashHtml.includes(`href="/projects/${r.projectId}"`)) && dashHtml.includes('href="/jobs"') && dashHtml.includes(`${board.counts.total - opsHome.DASHBOARD_ROWS} more on the Shoots page`));
+    c.ok("…monthly rows sit under a 'Monthly content' divider, after the listing rows", ownerText.includes("Monthly content") && dashHtml.indexOf("Monthly content") > dashHtml.indexOf("2 Pine Rd") && dashHtml.indexOf("Monthly content") < dashHtml.indexOf("1033 Preserve Ln"));
+    c.ok("…with the photos chip, the video chip ('Changes · John') and the requests chip ('2 photo · no owner')", ["Changes · John", "In QC", "2 photo · no owner", "1 video", "Not ordered"].every((w) => dashHtml.includes(w)));
+
+    // ---- needs attention now ----
+    const att = elements(ownerTree, "NeedsAttention")[0]?.attention as Dashboard["attention"];
+    const item = (key: string) => att.items.find((i) => i.key.startsWith(key)) as AttentionItem | undefined;
+    c.ok("Needs attention: at most five, red first, each with an owner and one action", att.items.length === opsHome.ATTENTION_MAX && att.items.every((i) => !!i.owner && !!i.action.label && !!i.action.href) && att.items.every((i, n, a) => n === 0 || !(a[n - 1].tone === "warn" && i.tone === "bad")), att.items.map((i) => `${i.tone}:${i.key}`).join(" "));
+    c.ok("…the late video with its editor (from the board's chip) and Remind", item("late:")?.lead === "v-late Video Ave:" && item("late:")?.text.includes("1.3 days late") === true && item("late:")?.owner.startsWith("John") === true && item("late:")?.action.label === "Remind John" && item("late:")?.action.href === "/review", JSON.stringify(item("late:")));
+    c.ok("…clients waiting, owned by Kyle, oldest first", item("clients")?.lead === `${waitingNow.length} client${waitingNow.length === 1 ? "" : "s"}` && item("clients")?.owner.startsWith("Kyle · oldest") === true && item("clients")?.action.href === "/communications", JSON.stringify(item("clients")));
+    c.ok("…the requests nobody owns, on the one shoot (late, so red), opening that shoot", item("needs-owner")?.lead === "50 Soon St:" && item("needs-owner")?.text === "2 client requests with no owner yet" && item("needs-owner")?.tone === "bad" && item("needs-owner")?.action.href === `/projects/${pSoon.id}`, JSON.stringify(item("needs-owner")));
+    c.ok("…the video ready to send with a client request to check, Kyle's to send", item("send:")?.lead === "v-send Video Ave video:" && item("send:")?.text.startsWith("check the client's request, then send it") === true && item("send:")?.owner === "Kyle · 1 client request" && item("send:")?.action.label === "Check & send" && item("send:")?.action.href === `/review/${pEdit.id}?cut=v-send`, JSON.stringify(item("send:")));
+    const oldTeam = await aging.listOldItems(new Date(), { excludeClientIds: [fixture.id] });
+    const jordanWeekOld = oldTeam.people.find((p) => p.key === "jordan")?.weekOld ?? 0;
+    c.ok("…then Jordan's own week-old items; Kyle's week-old items fold into 'more' past the five", jordanWeekOld === 1 && item("old-mine")?.lead === "1 of your items" && !item("old-ops") && att.more >= 1, `${att.items.map((i) => i.key).join(",")} more=${att.more}`);
+    const kylesWeekOld = oldTeam.people.find((p) => p.key === "kyle")?.weekOld ?? 0;
+    // With the videos, shoots and requests quiet, the owner's list has room for Kyle's old items.
+    const savedJobs = jobsOverride;
+    videoLanes = { late: [], today: [], sending: [], held: [], finishing: [], delivered: [] };
+    jobsOverride = { rows: [], counts: { total: 0, late: 0, dueToday: 0, dueTomorrow: 0, oldestLateDays: null } };
+    const quietDash = await opsHome.buildDashboard({ now: new Date(), excludeClientIds: [fixture.id], viewer: { role: "OWNER", key: "jordan", teamMemberId: jordanTm.id }, ops: { key: "kyle", teamMemberId: kyleTm.id, name: "Kyle" } });
+    jobsOverride = savedJobs;
+    videoLanes = lanes;
+    const quietOps = quietDash.attention.items.find((i) => i.key === "old-ops");
+    c.ok("…with room, Kyle's week-old items are on the owner's list ('N of Kyle's items', his list)", kylesWeekOld > 0 && quietOps?.lead === `${kylesWeekOld} of Kyle's items` && quietOps.owner === "Kyle · his list" && quietOps.action.href === "/ops/checklist#earlier" && quietDash.health.onTime?.tone === "ok" && quietDash.jobs.rows.length === 0, JSON.stringify(quietDash.attention.items.map((i) => i.key)));
+    c.ok("…and a quiet board says so: no shoots in progress, nothing late", quietDash.health.onTime?.late === 0 && quietDash.attention.items.every((i) => !i.key.startsWith("late:") && !i.key.startsWith("send:")));
+
+    // ---- Kyle's day, shoot issues, today's shoots, week, money ----
+    const day = elements(ownerTree, "KylesDayCard")[0]?.day as KyleDay | null;
+    const kylesOwn = await opsHome.kyleChecklist({ now: new Date(), excludeClientIds: [fixture.id], person: { key: "kyle", teamMemberId: kyleTm.id } });
+    c.ok("Kyle's day: done today and still open, from Kyle's own checklist, opening his list", day?.name === "Kyle" && day.you === false && day.done === kylesOwn.done.length && day.open === kylesOwn.stillOpen.total && day.href === "/ops/checklist?who=kyle" && ownerText.includes("Kyle’s day"), JSON.stringify(day));
+    c.ok("…shown as a number and a bar, never sent to Jordan as a message", ownerText.includes("done today") && ownerText.includes("still open") && slack.length === 0 && await prisma.notification.count() === 0);
+    c.ok("Shoot issues (owner only): the open ones and what keeps happening by client (2+)", ownerText.includes("Lockbox code didn't work") && ownerText.includes("Real Agent 3 times") && !ownerText.includes("Other 1 times"));
+    const dashIds = propValues(ownerTree, "id").filter((x): x is string => typeof x === "string");
+    c.ok("Today's shoots is the shoot card (#shoots), with today's shoot on it", dashIds.includes("shoots") && (elements(ownerTree, "ShootList")[0]?.shoots as unknown[] | undefined)?.length === 1, dashIds.join(","));
     const week = elements(ownerTree, "OwnerWeekCard")[0]?.week as import("../../src/lib/opsHome").OwnerWeek | null;
     const inWeek = (d: Date | null) => !!d && d >= weekStart && d < now;
     const expectShoots = projects.filter((p) => !p.synthetic && p.status !== "CANCELLED" && inWeek(p.shootDate)).length;
-    c.ok("This week: shoots done since Monday", week?.thisWeek.shoots === expectShoots, `${week?.thisWeek.shoots} vs ${expectShoots}`);
+    c.ok("This week (owner only): shoots done since Monday", week?.thisWeek.shoots === expectShoots, `${week?.thisWeek.shoots} vs ${expectShoots}`);
     if (weekOk) {
       c.ok("This week: listing videos delivered, % on time against the promise (raw)", week?.thisWeek.listingVideos.delivered === 2 && week?.thisWeek.listingVideos.onTimePct === 50, JSON.stringify(week?.thisWeek.listingVideos));
       c.ok("…but with 2 jobs the card says 'too few to judge', never '50% on time'", ownerText.includes("too few to judge") && !ownerText.includes("50% on time"));
@@ -427,77 +558,99 @@ async function main() {
     } else {
       c.ok("(Monday just after midnight: the week's fixtures are skipped)", true);
     }
-    const behindCard = elements(ownerTree, "BehindCard")[0] as { state: BehindState | null; summary: HomeSummary | null; people: import("../../src/lib/taskAging").OldPerson[] | null } | undefined;
-    c.ok("What we're behind on: the same three numbers as Kyle's box, team-wide", JSON.stringify(behindCard?.summary) === JSON.stringify(summary), JSON.stringify(behindCard?.summary));
-    const team = await aging.listOldItems(new Date(), { excludeClientIds: [fixture.id] });
-    const st = behindCard?.state;
-    c.ok("…the behind state, and everyone's old items (Kyle's week-old count, pushed 3+ times)", !!st && (st.level === "ok" ? ownerText.includes("Nothing is past its promise") : ownerText.includes(st.headline ?? "late.")) && behindCard?.people?.find((p) => p.key === "kyle")?.weekOld === team.people.find((p) => p.key === "kyle")?.weekOld && behindCard!.people!.find((p) => p.key === "james")?.pushedOften === 1);
-    c.ok("Shoot issues: the open ones and what keeps happening by client (2+)", ownerText.includes("Lockbox code didn't work") && ownerText.includes("Real Agent 3 times") && !ownerText.includes("Other 1 times"));
-    const kd = elements(ownerTree, "KylesDay")[0] as { list: KyleChecklist | null; name: string } | undefined;
-    const kylesOwn = await opsHome.kyleChecklist({ now: new Date(), excludeClientIds: [fixture.id], person: { key: "kyle", teamMemberId: kyleTm.id } });
-    c.ok("Kyle's day: done today and still open, from Kyle's own checklist", kd?.name === "Kyle" && kd.list?.done.length === kylesOwn.done.length && kd.list?.stillOpen.total === kylesOwn.stillOpen.total && kd.list?.earlier.items.map((i) => i.id).join() === kylesOwn.earlier.items.map((i) => i.id).join(), `${kd?.list?.done.length}/${kylesOwn.done.length} · ${kd?.list?.stillOpen.total}/${kylesOwn.stillOpen.total}`);
-    c.ok("…Kyle's day is read-only: no hand-add form, no job list read for it", elements(expand(ownerTree), "AddAskForm").length === 0 && kd?.list?.requestJobs === null);
-    c.ok("…shown read-only on Jordan's Home (no buttons), and the owner sees the figures", elements(expand(ownerTree), "OldItemActions").length === 0 && elements(expand(ownerTree), "AskQuickActions").length === 0 && ownerText.includes("$750"));
-    c.ok("…and never sent to Jordan as a message", slack.length === 0 && await prisma.notification.count() === 0);
     const oorder = namesOf(ownerTree);
     const at = (n: string) => oorder.indexOf(n);
-    c.ok("order: this week, what we're behind on, shoot issues, Kyle's day, his list, money", at("OwnerWeekCard") >= 0 && at("OwnerWeekCard") < at("BehindCard") && at("BehindCard") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("KylesDay") && at("KylesDay") < at("QuickAdd") && at("QuickAdd") < at("MoneyStat"), oorder.filter((n) => ["OwnerWeekCard", "BehindCard", "ShootIssuesCard", "KylesDay", "QuickAdd", "MoneyStat"].includes(n)).join(","));
-    c.ok("the repeated checklist links row and the duplicated new-clients card are gone; no tiles, no checklist", ["ChecklistLinks", "NewClientCard", "JobTiles", "DailyChecklist", "Block", "NeedsToday"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
+    c.ok("order: flagged, the red line slot, the tiles, today's shoots and shoots in progress, needs attention, Kyle's day, shoot issues, then this week and money last", at("FlaggedBanner") < at("HealthStrip") && at("BehindLine") < at("HealthStrip") && at("HealthStrip") < at("ShootsInProgress") && at("ShootsInProgress") < at("NeedsAttention") && at("NeedsAttention") < at("KylesDayCard") && at("KylesDayCard") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("OwnerWeekCard") && at("OwnerWeekCard") < at("MoneyStat"), oorder.filter((n) => ["FlaggedBanner", "BehindLine", "HealthStrip", "ShootsInProgress", "NeedsAttention", "KylesDayCard", "ShootIssuesCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
+    c.ok("the old Home's duplicates are gone: no checklist, summary box, behind card, his list, needs wall, exceptions, stuck jobs", ["DailyChecklist", "SummaryBox", "BehindCard", "KylesDay", "QuickAdd", "NeedsToday", "ExceptionsCard", "StuckJobs", "NewClientCard", "ChecklistLinks"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
+    c.ok("the dashboard render writes nothing", dashBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
 
     // =====================================================================
-    c.head("§5 · James's Home (review seat) keeps working");
+    c.head("§5 · the same dashboard, as Kyle (office): 'Your list', no money");
+    // =====================================================================
+    await signIn(kyle);
+    const kDash = await settle(await home({}));
+    const kHtml = renderToStaticMarkup(expand(kDash) as Parameters<typeof renderToStaticMarkup>[0]);
+    const kHealth = elements(kDash, "HealthStrip")[0]?.health as Dashboard["health"];
+    c.ok("Kyle's tiles are the same numbers as Jordan's (team-wide sources)", JSON.stringify(kHealth) === JSON.stringify(health), JSON.stringify(kHealth));
+    c.ok("Kyle sees the same shoots in progress", JSON.stringify((elements(kDash, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"]).rows.map((r) => r.projectId)) === JSON.stringify(table.rows.map((r) => r.projectId)));
+    const kAtt = elements(kDash, "NeedsAttention")[0]?.attention as Dashboard["attention"];
+    const kItem = (key: string) => kAtt.items.find((i) => i.key.startsWith(key));
+    c.ok("Needs attention speaks to Kyle: what he owns reads 'You'", kAtt.items.length <= opsHome.ATTENTION_MAX && kItem("clients")?.owner.startsWith("You · oldest") === true && kItem("send:")?.owner === "You · 1 client request" && kItem("needs-owner")?.owner.startsWith("You") === true, kAtt.items.map((i) => `${i.key}=${i.owner}`).join(" | "));
+    c.ok("…his own week-old items open his list's earlier days", kItem("old-mine")?.lead === `${kylesWeekOld} of your items` && kItem("old-mine")?.action.href === "/ops/checklist#earlier" && !kItem("old-ops"));
+    const kDay = elements(kDash, "KylesDayCard")[0]?.day as KyleDay | null;
+    c.ok("Kyle's day reads 'Your list' for Kyle, the same numbers, and opens his list", kDay?.you === true && kDay.done === day?.done && kDay.open === day?.open && kDay.href === "/ops/checklist" && kHtml.includes("Your list") && kHtml.includes('href="/ops/checklist"') && !kHtml.includes("Kyle’s day"));
+    c.ok("no money for Kyle: no week, no money, no shoot issues, no figure anywhere on the page", ["OwnerWeekCard", "MoneyStat", "ShootIssuesCard", "OwnerBusiness", "PulseStrip"].every((n) => elements(kDash, n).length === 0) && !/\$\d/.test(kHtml), (kHtml.match(/.{40}\$\d.{40}/) ?? [""])[0]);
+    c.ok("the flagged-for-you banner still leads for him", (elements(kDash, "FlaggedBanner")[0]?.flagged as { taskId: string }[]).some((f) => f.taskId === n4.id) && namesOf(kDash).indexOf("FlaggedBanner") < namesOf(kDash).indexOf("HealthStrip"));
+
+    // =====================================================================
+    c.head("§6 · the same dashboard, as James (office, the review seat)");
     // =====================================================================
     await signIn(james);
-    const jamesTree = await settle(await home({}));
-    const needs = elements(jamesTree, "NeedsToday")[0]?.needs as { key: string; href: string }[] | undefined;
-    c.ok("the review desk renders with its own rows", textOf(jamesTree).includes("Your creative review desk") && !!needs && elements(jamesTree, "DailyChecklist").length === 0 && elements(jamesTree, "SummaryBox").length === 0);
-    c.ok("its rows open real screens, never an old block anchor", (needs ?? []).every((n) => !n.href.startsWith("#") && !/^\/ops#(?!shoots|stuck|exceptions)/.test(n.href)), (needs ?? []).map((n) => n.href).join(" "));
-    c.ok("no checklist links row on his Home either", elements(jamesTree, "ChecklistLinks").length === 0);
+    const jDash = await settle(await home({}));
+    const jHtml = renderToStaticMarkup(expand(jDash) as Parameters<typeof renderToStaticMarkup>[0]);
+    const jAtt = elements(jDash, "NeedsAttention")[0]?.attention as Dashboard["attention"];
+    const jItem = (key: string) => jAtt.items.find((i) => i.key.startsWith(key));
+    c.ok("James gets the dashboard, not the old review desk", elements(jDash, "HealthStrip").length === 1 && elements(jDash, "NeedsToday").length === 0 && !textOf(jDash).includes("Your creative review desk"));
+    c.ok("…his assigned cut is a line of its own, opening that exact version", jItem("review-mine")?.lead === "1 cut" && jItem("review-mine")?.text === "assigned to you to review" && jItem("review-mine")?.owner.startsWith("You · oldest 3h") === true && jItem("review-mine")?.action.href === `/review/${cutJob.id}?cut=${jamesCut.id}`, JSON.stringify(jItem("review-mine")));
+    c.ok("…Kyle's work stays Kyle's on James's screen", jItem("clients")?.owner.startsWith("Kyle") === true && jAtt.items.length <= opsHome.ATTENTION_MAX && jAtt.items.every((i) => !!i.owner && !!i.action.href));
+    const jDay = elements(jDash, "KylesDayCard")[0]?.day as KyleDay | null;
+    c.ok("…'Kyle's day' with Kyle's numbers, opening Kyle's list", jDay?.you === false && jDay.done === day?.done && jDay.open === day?.open && jDay.href === "/ops/checklist?who=kyle" && jHtml.includes("Kyle’s day"));
+    c.ok("…and no money for James either", ["OwnerWeekCard", "MoneyStat", "ShootIssuesCard"].every((n) => elements(jDash, n).length === 0) && !/\$\d/.test(jHtml));
 
-    // =====================================================================
-    c.head("§6 · /ops: today's shoots, stuck jobs, exceptions");
-    // =====================================================================
-    videoLanes = null;
-    await signIn(kyle);
-    const opsTree = await settle(await opsPage({}));
-    const opsIds = propValues(opsTree, "id").filter((x): x is string => typeof x === "string");
-    c.ok("/ops keeps #shoots, #stuck and #exceptions", ["shoots", "stuck", "exceptions"].every((id) => opsIds.includes(id)), opsIds.join(","));
-    c.ok("…the ten time blocks are gone from it", elements(opsTree, "Block").length === 0 && elements(opsTree, "ChecklistJumps").length === 0);
-    c.ok("…an old block link that lands there is sent back to Home", elements(opsTree, "HomeAnchorForward").length === 1);
-    c.ok("…today's shoot cards are the operating day's own list", (elements(opsTree, "ShootList")[0]?.shoots as unknown[]).length === 1);
-    c.ok("no money for Kyle there either", !textOf(opsTree).includes("$750"));
-
-    // =====================================================================
-    c.head("§7 · the retired pages redirect; /ops/messages = clients waiting + new leads");
-    // =====================================================================
-    await signIn(kyle);
-    c.ok("Kyle: /ops/requests → his Special requests group, /ops/scheduling → Scheduling, /ops/old → From earlier days", await redirectOf(() => requestsPage({})) === "/#requests" && await redirectOf(() => schedulingPage({})) === "/#scheduling" && await redirectOf(() => oldPage({})) === "/#earlier");
-    c.ok("…test scope rides along", await redirectOf(() => requestsPage({ searchParams: Promise.resolve({ test: "1" }) })) === "/?test=1#requests");
+    // ---- the test-records view ----
     await signIn(owner);
-    c.ok("Jordan: requests and scheduling → Kyle's day; old items (and the pushed bell's ?who=all) → What we're behind on", await redirectOf(() => requestsPage({})) === "/#kyles-day" && await redirectOf(() => schedulingPage({})) === "/#kyles-day" && await redirectOf(() => oldPage({ searchParams: Promise.resolve({ who: "all" } as never) })) === "/#behind");
+    jobsCalls.length = 0;
+    const testDash = await settle(await home({ searchParams: Promise.resolve({ test: "1" }) }));
+    const testHtml = renderToStaticMarkup(expand(testDash) as Parameters<typeof renderToStaticMarkup>[0]);
+    c.ok("Show test records: the Shoots board is read with them, and the doors keep the view", jobsCalls.some((o) => o.includeTest === true) && testHtml.includes('href="/jobs?f=late&amp;test=1"') && testHtml.includes('href="/jobs?test=1"') && testHtml.includes("Showing real and test records on the dashboard") && testHtml.includes(`href="/projects/${pEdit.id}"`));
+    const testClients = (elements(testDash, "HealthStrip")[0]?.health as Dashboard["health"]).clients;
+    const allWaiting = (await unansweredCommsBoard("phone", now)).length + (await unansweredCommsBoard("email", now)).length;
+    c.ok("…the clients-waiting number counts the test clients too", testClients?.waiting === allWaiting, `${testClients?.waiting} vs ${allWaiting}`);
+
+    // =====================================================================
+    c.head("§7 · /ops goes to the dashboard; the retired pages open the list's groups");
+    // =====================================================================
+    await signIn(kyle);
+    c.ok("/ops redirects to the dashboard (test scope kept)", await redirectOf(() => opsPage({})) === "/" && await redirectOf(() => opsPage({ searchParams: Promise.resolve({ test: "1" }) })) === "/?test=1");
+    c.ok("/ops/requests → the list's Special requests, /ops/scheduling → Scheduling, /ops/old → From earlier days", await redirectOf(() => requestsPage({})) === "/ops/checklist#requests" && await redirectOf(() => schedulingPage({})) === "/ops/checklist#scheduling" && await redirectOf(() => oldPage({})) === "/ops/checklist#earlier");
+    c.ok("…test scope rides along", await redirectOf(() => requestsPage({ searchParams: Promise.resolve({ test: "1" }) })) === "/ops/checklist?test=1#requests");
+    await signIn(owner);
+    c.ok("the owner lands on the same groups (Kyle's list); the pushed bell (?who=all) opens everyone's tasks", await redirectOf(() => requestsPage({})) === "/ops/checklist#requests" && await redirectOf(() => schedulingPage({})) === "/ops/checklist#scheduling" && await redirectOf(() => oldPage({ searchParams: Promise.resolve({ who: "all" }) })) === "/tasks?tab=work&who=all");
     await signIn(james);
-    c.ok("James: requests → the Video Review Room, scheduling → the Schedule", await redirectOf(() => requestsPage({})) === "/review" && await redirectOf(() => schedulingPage({})) === "/schedule");
+    c.ok("James lands on his own list's groups", await redirectOf(() => requestsPage({})) === "/ops/checklist#requests" && await redirectOf(() => schedulingPage({})) === "/ops/checklist#scheduling");
+    await signIn(editor);
+    c.ok("an editor opening the list or a door goes to their own home", await redirectOf(() => listPage({})) !== null && await redirectOf(() => home({})) === "/editing");
     await signIn(kyle);
     const msgBoard = await opsHome.messagesBoard({ now, excludeClientIds: [fixture.id], viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
-    const mTree = await messagesPage({ searchParams: Promise.resolve({}) });
-    const sub = String(elements(mTree, "PageHeader")[0]?.subtitle ?? "");
-    c.ok("Messages lists the clients waiting (Reply + Handled) and the new leads, nothing else", elements(mTree, "HandledButton").length === msgBoard.waiting.length && elements(mTree, "LoopActions").length === msgBoard.leads.length && elements(mTree, "LoopRow").length === 0 && msgBoard.waiting.length === waitingNow.length);
-    c.ok("…internal follow-ups are not on it (they are on the checklist)", !textOf(mTree).includes("Follow-ups owed") && !textOf(mTree).includes("Call the stager") && msgBoard.counts.open === msgBoard.waiting.length + msgBoard.leads.length);
-    c.ok("…the leads: the one filed to Kyle and the one nobody holds", msgBoard.leads.some((l) => l.id === k7.id && l.behind) && msgBoard.leads.some((l) => l.id === leadToday.id) && msgBoard.leads.length === 2);
-    c.ok("…its header says who is waiting", sub.startsWith(`${msgBoard.waiting.length} client${msgBoard.waiting.length === 1 ? "" : "s"} waiting on a reply`) && sub.includes(`${msgBoard.leads.length} new lead`), sub);
+    c.ok("messagesBoard (the dashboard's clients waiting and the Messages screen): the clients waiting and the new leads", msgBoard.waiting.length === waitingNow.length && msgBoard.counts.open === msgBoard.waiting.length + msgBoard.leads.length && msgBoard.leads.some((l) => l.id === k7.id && l.behind) && msgBoard.leads.some((l) => l.id === leadToday.id) && msgBoard.leads.length === 2);
 
     // =====================================================================
-    c.head("§8 · Kyle's menu: six doors, everything else under More; 'Video Review Room' for everyone");
+    c.head("§8 · the menu: six doors for the owner and the office, everything else under More");
     // =====================================================================
-    const menu = (u: { name: string; email: string; role: string }) => renderToStaticMarkup(createElement(Sidebar, { user: { name: u.name, email: u.email, role: u.role } }));
+    const menu = (u: { name: string; email: string; role: string; permissions?: string | null }) => renderToStaticMarkup(createElement(Sidebar, { user: { name: u.name, email: u.email, role: u.role, permissions: u.permissions ?? null } }));
     const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((m) => m[1]);
+    const labels = (html: string) => [...html.matchAll(/<a\b[^>]*>[\s\S]*?<span class="flex-1">([^<]+)<\/span>/g)].map((m) => m[1]);
     const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
-    const kyleMenu = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
-    c.ok("Kyle's six doors, in order: Home, Photo delivery, Video Review Room, Messages, Schedule, Tasks", hrefs(section(kyleMenu, "work")).join() === "/,/ops/photo-delivery,/review,/ops/messages,/schedule,/tasks" && section(kyleMenu, "work").includes("Video Review Room") && !section(kyleMenu, "work").includes("<details"), hrefs(section(kyleMenu, "work")).join());
-    c.ok("…everything else folded under More, nothing removed", section(kyleMenu, "more").includes("<details") && ["/communications", "/editing", "/clients", "/content", "/ops", "/upload"].every((h) => hrefs(section(kyleMenu, "more")).includes(h)));
+    const DOORS = "/,/jobs,/ops/photo-delivery,/review,/communications,/schedule";
+    const DOOR_LABELS = "Dashboard,Shoots,Photos,Videos,Messages,Schedule";
+    for (const [who, u] of [["Jordan (owner)", { name: "Jordan", email: owner.email, role: "OWNER" }], ["Kyle (office)", { name: "Kyle Smith", email: kyle.email, role: "ADMIN" }], ["James (office)", { name: "James", email: james.email, role: "ADMIN" }]] as const) {
+      const html = menu(u);
+      c.ok(`${who}: six doors in order, labelled Dashboard, Shoots, Photos, Videos, Messages, Schedule`, hrefs(section(html, "work")).join() === DOORS && labels(section(html, "work")).join() === DOOR_LABELS && !section(html, "work").includes("<details"), `${hrefs(section(html, "work")).join()} / ${labels(section(html, "work")).join()}`);
+      c.ok(`${who}: everything else folded under More, nothing removed (Tasks, Editing Room, Clients, Content Program…)`, section(html, "more").includes("<details") && ["/tasks", "/editing", "/clients", "/content", "/upload", "/settings"].every((h) => hrefs(section(html, "more")).includes(h)) && hrefs(html).length === new Set(hrefs(html)).size);
+      c.ok(`${who}: the retired screens are no menu entry (/ops, /ops/messages, video delivery, requests, scheduling, old items)`, !["/ops", "/ops/messages", "/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].some((h) => hrefs(html).includes(h)));
+    }
     const ownerMenu = menu({ name: "Jordan", email: owner.email, role: "OWNER" });
-    c.ok("video delivery, special requests, scheduling and old items are no menu entry for anyone", [kyleMenu, ownerMenu].every((html) => !["/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].some((h) => hrefs(html).includes(h))));
-    c.ok("the owner keeps his groups, with the rename", ownerMenu.includes("Video Review Room") && !/>Review Room</.test(ownerMenu) && section(ownerMenu, "daily").includes('href="/tasks"'));
+    const kyleMenu = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
+    c.ok("money stays the owner's: Finance and Trends under the owner's More only; My Day too", ["/sales", "/trends", "/day"].every((h) => hrefs(section(ownerMenu, "more")).includes(h)) && !["/sales", "/trends", "/day"].some((h) => hrefs(kyleMenu).includes(h)));
+    c.ok("reporting a hub issue stays one click away outside the fold", section(kyleMenu, "more").indexOf('href="/feedback"') > section(kyleMenu, "more").indexOf("</details>"));
+    const editorMenu = menu({ name: "Kim", email: "kim@oct19.invalid", role: "EDITOR" });
+    const photographerMenu = menu({ name: "Harrison", email: "harrison@oct19.invalid", role: "PHOTOGRAPHER" });
+    c.ok("editors and photographers keep their menus (groups, no dashboard, no six doors, 'Video Review Room' for the photographer)", [editorMenu, photographerMenu].every((html) => !html.includes('data-sidebar-group="work"') && !html.includes('data-sidebar-group="more"') && !hrefs(html).includes("/") && !hrefs(html).includes("/jobs")) && hrefs(editorMenu).includes("/editing") && hrefs(photographerMenu).includes("/shoot") && photographerMenu.includes("Video Review Room"));
+    pathname = "/ops/checklist";
+    c.ok("on Kyle's list no door claims to be lit (it is reached from the dashboard)", (menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" }).match(/aria-current="page"/g) ?? []).length === 0);
+    pathname = "/jobs/abc";
+    c.ok("on a Shoots page the Shoots door is lit", /<a[^>]*href="\/jobs"[^>]*aria-current="page"|<a[^>]*aria-current="page"[^>]*href="\/jobs"/.test(menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" })));
+    pathname = "/";
 
     // =====================================================================
     c.head("§9 · the morning digest (one bell + one DM each, Jordan's quiet time kept)");
@@ -569,24 +722,19 @@ async function main() {
     const ssr = (tree: unknown) => { try { return renderToStaticMarkup(tree as Parameters<typeof renderToStaticMarkup>[0]); } catch (e) { return `RENDER FAILED: ${(e as Error).message}`; } };
     // A link inside a link is invalid HTML and breaks taps on a phone.
     const nestedLink = (html: string) => { let depth = 0; for (const m of html.matchAll(/<(\/?)a\b/g)) { depth += m[1] ? -1 : 1; if (depth > 1) return true; } return false; };
-    await signIn(kyle);
     videoLanes = lanes;
-    const kyleHtml = ssr(await settle(await home({})));
-    const kList = elements(await settle(await home({})), "DailyChecklist")[0]?.list as KyleChecklist;
-    c.ok("Kyle's Home renders (summary box, checklist, done today N, still open M)", !kyleHtml.startsWith("RENDER FAILED") && kyleHtml.includes("Today at a glance") && kyleHtml.includes("s checklist") && kyleHtml.includes(`Done today (${kList.done.length})`) && kyleHtml.includes(`Still open (${kList.stillOpen.total})`) && kyleHtml.includes(`Show ${Math.max(0, kList.earlier.items.length - aging.EARLIER_SHOWN)} more`), kyleHtml.slice(0, 200));
-    c.ok("…with no link nested in a link, and buttons a thumb can hit (min-h-11)", !nestedLink(kyleHtml) && (kyleHtml.match(/min-h-11/g) ?? []).length > 10);
-    await signIn(owner);
-    const ownerHtml = ssr(await settle(await home({})));
-    c.ok("Jordan's Home renders (this week, behind, shoot issues, Kyle's day, list, money)", !ownerHtml.startsWith("RENDER FAILED") && ownerHtml.includes("This week") && ownerHtml.includes("behind on") && ownerHtml.includes("Shoot issues") && /Kyle(&#x27;|’)s day/.test(ownerHtml) && !nestedLink(ownerHtml), ownerHtml.slice(0, 200));
-    videoLanes = null;
-    await signIn(kyle);
-    for (const [label, tree] of [
-      ["/ops", await settle(await opsPage({}))],
-      ["/ops/messages", await messagesPage({ searchParams: Promise.resolve({}) })],
-    ] as const) {
-      const html = ssr(tree);
-      c.ok(`${label} renders, no nested links`, !html.startsWith("RENDER FAILED") && !nestedLink(html), html.slice(0, 200));
+    for (const [who, u] of [["Jordan", owner], ["Kyle", kyle], ["James", james]] as const) {
+      await signIn(u);
+      const html = ssr(await settle(await home({})));
+      c.ok(`${who}'s dashboard renders (tiles, shoots in progress, needs attention, the list card), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && ["On time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"].every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > 8, html.slice(0, 200));
+      c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
     }
+    await signIn(kyle);
+    const kyleHtml = ssr(await settle(await listPage({})));
+    const kList = elements(await settle(await listPage({})), "DailyChecklist")[0]?.list as KyleChecklist;
+    c.ok("Kyle's list renders (checklist, done today N, still open M)", !kyleHtml.startsWith("RENDER FAILED") && kyleHtml.includes("Your list") && kyleHtml.includes("s checklist") && kyleHtml.includes(`Done today (${kList.done.length})`) && kyleHtml.includes(`Still open (${kList.stillOpen.total})`) && kyleHtml.includes(`Show ${Math.max(0, kList.earlier.items.length - aging.EARLIER_SHOWN)} more`), kyleHtml.slice(0, 200));
+    c.ok("…with no link nested in a link, buttons a thumb can hit, no figures", !nestedLink(kyleHtml) && (kyleHtml.match(/min-h-11/g) ?? []).length > 10 && !kyleHtml.includes("$750"));
+    videoLanes = null;
 
     c.ok("nothing left the box but faked Slack posts; no client message queued", fence.blocked.length === 0 && fence.faked.every((u) => u.startsWith("https://slack.com/api/")) && await prisma.outboxMessage.count() === 0, fence.blocked.join(", "));
     c.summary();

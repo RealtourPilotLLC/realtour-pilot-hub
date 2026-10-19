@@ -190,10 +190,13 @@ JSON.stringify(out);`;
       "src/lib/datetime.ts": "helpers that take an explicit date from their callers; the today/year defaults are not used by these client trees",
     };
     // Oct 19 2026 (evening): the old daily checklist's blocks left Home, and
-    // with them its Ready-to-send card and the delivery board. The board is
-    // walked from /pipeline, where it renders; the card is walked as its own
-    // root (the video build decides where it renders now).
-    const files = clientModules(["src/app/layout.tsx", "src/app/page.tsx", "src/app/review/[id]/page.tsx", "src/app/pipeline/page.tsx", "src/components/ops/ReadyToSendCard.tsx"]);
+    // with them its Ready-to-send card and the delivery board. The card is
+    // walked as its own root (the video build decides where it renders now).
+    // Later that evening /pipeline became a redirect to Shoots (/jobs), which
+    // replaced the delivery board's view: Shoots is walked as a page, and the
+    // board's view (no longer on a page, kept, and rendered above) as its own
+    // root.
+    const files = clientModules(["src/app/layout.tsx", "src/app/page.tsx", "src/app/review/[id]/page.tsx", "src/app/jobs/page.tsx", "src/components/tracker/DeliveryBoardView.tsx", "src/components/ops/ReadyToSendCard.tsx"]);
     // Oct 9 follow-up: the other client components that printed a one-call
     // date+time (or no zone). The formatting rules apply to them and their
     // imports; the clock rule stays with the three trees above.

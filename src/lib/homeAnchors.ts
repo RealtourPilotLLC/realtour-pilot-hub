@@ -1,17 +1,21 @@
 // Links into the day's screens that were minted before Oct 19 2026 (Slack
 // lines, bells, delivery receipts, other screens: "/#video-review",
 // "/ops#loops", "/?test=1#comms-1") keep landing somewhere sensible. A plain
-// module (no "use client"), so the Home page (a server component) and the
-// client-side forwarder read the same lists.
+// module (no "use client"), so the server pages and the client-side forwarder
+// read the same lists.
 //
-// Oct 19 2026, evening: the daily checklist came back to Kyle's Home as ONE
-// simplified list in five groups. Every old time-block id is now an anchor
-// inside the group that holds that work (GROUP_ALIASES), so "/#loops" lands on
-// Follow-ups due. /ops keeps today's shoot cards, stuck jobs and the
-// exceptions (OPS_ANCHORS); an old block anchor that arrives at /ops is sent
-// back to Home's group.
+// Oct 19 2026, night (Jordan: "The home page should really be a dashboard to
+// oversee everything going on"): "/" is the dashboard and Kyle's daily
+// checklist is its own page (CHECKLIST_PATH, "Your list"). Every old
+// time-block id is an anchor inside the checklist group that holds that work
+// (GROUP_ALIASES), so "/#loops" is forwarded to the list's Follow-ups due.
+// /ops ("Shoots and exceptions") redirects to the dashboard, which carries
+// #shoots (Today's shoots) and #stuck / #exceptions (Needs attention now).
 
-/** Old block ids, by the checklist group (on Kyle's Home) that holds their work now. */
+/** Kyle's daily checklist ("Your list" for an office login, "Kyle's list" for the owner). */
+export const CHECKLIST_PATH = "/ops/checklist";
+
+/** Old block ids, by the checklist group that holds their work now. */
 export const GROUP_ALIASES: Record<string, readonly string[]> = {
   checklist: ["tower", "operating-routine"],
   deliveries: ["qc-am", "video-review", "pipeline", "monthly"],
@@ -22,46 +26,44 @@ export const GROUP_ALIASES: Record<string, readonly string[]> = {
   "still-open": ["closeout"],
 };
 
-/** Anchors that live on /ops (today's shoot cards, stuck jobs, exceptions). */
-export const OPS_ANCHORS = ["shoots", "stuck", "exceptions"] as const;
+/** Every anchor the checklist page carries: its groups and the old block ids inside them. */
+export const CHECKLIST_ANCHORS: readonly string[] = [
+  ...Object.keys(GROUP_ALIASES), ...Object.values(GROUP_ALIASES).flat(),
+  "requests", "done-today",
+];
 
-const OLD_BLOCKS = Object.values(GROUP_ALIASES).flat();
-const isOldBlock = (id: string) => OLD_BLOCKS.includes(id);
-const isOpsAnchor = (id: string) => (OPS_ANCHORS as readonly string[]).includes(id);
+/** Anchors the dashboard itself carries (Today's shoots, Needs attention now, Kyle's day, the health strip). */
+export const DASHBOARD_ANCHORS = ["shoots", "stuck", "exceptions", "needs-you", "needs-attention", "kyles-day", "behind", "health"] as const;
+
+/** Old anchors about answering clients: Messages (/communications, "Waiting on us") holds that work. */
+export const MESSAGES_ANCHORS = ["comms-1", "messages"] as const;
+
+const isChecklistAnchor = (id: string) => CHECKLIST_ANCHORS.includes(id);
+const isMessagesAnchor = (id: string) => (MESSAGES_ANCHORS as readonly string[]).includes(id);
 
 /** Where a URL with a moved anchor should go, or null when it stays put:
- *  "/#stuck" → "/ops#stuck"; "/ops?test=1#loops" → "/?test=1#loops" (Home's
- *  Follow-ups group carries the "loops" anchor). */
+ *  "/#loops" → "/ops/checklist#loops"; "/?test=1#requests" →
+ *  "/ops/checklist?test=1#requests"; "/#comms-1" → Messages
+ *  ("/communications", its Waiting on us view); "/#my-list" (the owner's
+ *  to-dos, which left Home) → "/day". The dashboard's own anchors stay. */
 export function forwardedHref(pathname: string, search: string, hash: string): string | null {
   let id: string;
   try { id = decodeURIComponent(hash.replace(/^#/, "")); } catch { return null; }
-  if (!id) return null;
-  if (pathname === "/" && isOpsAnchor(id)) return `/ops${search}${hash}`;
-  if (pathname === "/ops" && isOldBlock(id)) return `/${search}${hash}`;
+  if (!id || pathname !== "/") return null;
+  if (isMessagesAnchor(id)) return `/communications${search}`;
+  if (isChecklistAnchor(id)) return `${CHECKLIST_PATH}${search}${hash}`;
+  if (id === "my-list") return "/day";
   return null;
 }
 
-// For a link rendered on a screen WITHOUT the checklist (the review seat's
-// Home): where each old block's work lives now, as a real screen.
-const BLOCK_SCREEN: Record<string, string> = {
-  tower: "/ops#shoots",
-  "operating-routine": "/ops#shoots",
-  shoots: "/ops#shoots",
-  "qc-am": "/review",
-  overdue: "/review",
-  "video-review": "/review",
-  "comms-1": "/ops/messages",
-  prep: "/schedule",
-  loops: "/tasks?tab=work",
-  pipeline: "/pipeline",
-  monthly: "/content",
-  closeout: "/ops#shoots",
-  stuck: "/ops#stuck",
-  exceptions: "/ops#exceptions",
-};
-
-/** "#loops" → "/tasks?tab=work"; anything else unchanged. For links a Home
- *  without the checklist renders. */
+/** "#loops" → "/ops/checklist#loops"; "#comms-1" → "/communications";
+ *  "#shoots" → "/#shoots"; anything else unchanged. For links rendered on a
+ *  screen without the checklist. */
 export function blockScreen(href: string): string {
-  return href.startsWith("#") ? BLOCK_SCREEN[href.slice(1)] ?? href : href;
+  if (!href.startsWith("#")) return href;
+  const id = href.slice(1);
+  if (isMessagesAnchor(id)) return "/communications";
+  if (isChecklistAnchor(id)) return `${CHECKLIST_PATH}${href}`;
+  if ((DASHBOARD_ANCHORS as readonly string[]).includes(id)) return `/${href}`;
+  return href;
 }

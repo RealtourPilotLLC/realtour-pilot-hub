@@ -45,7 +45,7 @@ export function ExceptionsCard({
         <p className="mt-2 text-sm text-muted">Review, assignment, or delivery exceptions may still be waiting. Retry, or inspect the work lists.</p>
         <div className="mt-3 flex flex-wrap gap-2">
           {/* A full navigation retries this dynamic page even at the same URL. */}
-          <a href={`/ops${scope}#exceptions`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Retry</a>
+          <a href={`/${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Retry</a>
           {canReview && <Link href={`/review${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open Review Room</Link>}
           {canEdit && <Link href={`/editing${scope}`} className="inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open Editing Room</Link>}
         </div>

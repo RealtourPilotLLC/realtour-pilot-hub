@@ -1,14 +1,8 @@
 import Link from "next/link";
 import { Camera, CloudSun, ExternalLink, MessageSquare, Plane, Zap } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { etDayStartUtc } from "@/lib/datetime";
-import type { OpsDay, OpsShoot } from "@/lib/opsDay";
-import { isNeedsAssigning } from "@/lib/triage";
-import { boardWhere, photoQcWhere } from "@/lib/taskBoard";
-import { clientTextWhere } from "@/lib/clientTexts";
-import { unansweredCommsBoard } from "@/lib/commsBoard";
+import type { OpsShoot } from "@/lib/opsDay";
 import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
 
 // ---------------------------------------------------------------------------
@@ -19,9 +13,10 @@ import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
 // /ops. Jordan, that evening: the checklist belongs on Kyle's Home, "just
 // keep it simplified" (components/home/Checklist.tsx, lib/opsHome). The
 // blocks are gone. What other screens still use stays here:
-//   · today's shoot cards (ShootList, RushChip): /ops#shoots;
-//   · the review seat's Home helpers (listingQc, offPageNumbers,
-//     deliveryUnavailable, ageText, etMinutes).
+//   · today's shoot cards (ShootList, RushChip): the drop-in card
+//     components/home/TodaysShoots, on the dashboard;
+//   · etMinutes (the dashboard's greeting). The review seat's Home helpers
+//     went with his desk (Oct 19 2026, night: one dashboard for the office).
 // ---------------------------------------------------------------------------
 
 const ET = "America/New_York";
@@ -39,55 +34,6 @@ const fmtTime = (iso: string) =>
 // "Tue 9:00 AM" — a turnaround promise needs the hour, not just the day.
 const fmtDayTime = (iso: string) =>
   new Date(iso).toLocaleString("en-US", { timeZone: ET, weekday: "short", hour: "numeric", minute: "2-digit" });
-// "3h" / "2 days" — how long something has sat, in the unit a person would use.
-export function ageText(iso: string, now: Date): string {
-  const h = Math.floor((now.getTime() - Date.parse(iso)) / 3_600_000);
-  if (h < 1) return "just now";
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  return `${d} day${d === 1 ? "" : "s"}`;
-}
-
-// Listing QC only. Monthly personal-branding content runs on its own rhythm (a
-// BATCH of videos on a 7-10 business-day window) and has its own card.
-export const listingQc = (d: OpsDay) => d.qc.filter((q) => !q.monthly);
-
-// ---------------------------------------------------------------------------
-// The off-page numbers, each one its destination's own query.
-// ---------------------------------------------------------------------------
-
-// The review seat's Home counts use the destinations' shared queries,
-// including their client scope.
-export async function offPageNumbers(excludeClientIds: string[] = []) {
-  const [board, qc, textsToSend, emailsWaiting] = await Promise.all([
-    // The Other tab's rows themselves (a dozen or so) — "running late" and
-    // "to assign" are then counted off that set with the tab's OWN arithmetic,
-    // so a row can never disagree with the header it lands on.
-    prisma.smartTask.findMany({
-      where: boardWhere(null, { excludeClientIds }),
-      select: { assignedKey: true, taskType: true, dueAt: true },
-    }),
-    prisma.smartTask.count({ where: photoQcWhere({ excludeClientIds }) }),
-    // The comms Outbox lists exactly clientTextWhere() (ClientTextsPanel), and
-    // its tab badge is this same count.
-    prisma.smartTask.count({ where: clientTextWhere(new Date(), { excludeClientIds }) }),
-    // The Comms tab's Email sub-tab renders one card per sender-group; its own
-    // "Email N" pill is this number.
-    unansweredCommsBoard("email", new Date(), { excludeClientIds }).then((g) => g.length).catch(() => 0),
-  ]);
-  // BoardView's overdue rule verbatim: due before the START of today in ET, so
-  // something due later today is not "late".
-  const startToday = etDayStartUtc(new Date()).getTime();
-  return {
-    boardOpen: board.length,
-    late: board.filter((t) => t.dueAt !== null && t.dueAt.getTime() < startToday).length,
-    toAssign: board.filter(isNeedsAssigning).length,
-    qc,
-    textsToSend,
-    emailsWaiting,
-  };
-}
-
 // ---- Same-day rush (Jordan, Sep 2: "notify the morning tower about shoots
 // with same-day delivery photos or floor plans") ------------------------------
 // The flag is decided ONCE, in opsDay.ts (OpsShoot.sameDay, off the order's
@@ -115,12 +61,6 @@ export function RushChip({ n, small, onBrand }: { n: number; small?: boolean; on
       <Zap className={small ? "size-2.5" : "size-3"} /> {n} same-day
     </span>
   );
-}
-
-/** The delivery follow-up could not be fully checked (the review seat's notice). */
-export function deliveryUnavailable(d: OpsDay): boolean {
-  const b = d.readySend;
-  return !!b.boardUnavailable || b.followUpChecks?.needsFinishing === null || b.followUpChecks?.notTold === null || b.noticeIncidentCheck === null;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

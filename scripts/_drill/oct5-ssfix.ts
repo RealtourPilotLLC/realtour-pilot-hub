@@ -696,7 +696,7 @@ async function main() {
     // =========================================================================
     await section("§15 · Home: money that couldn't load says so; an untimed shoot; held renders (items 17, 15)", async () => {
       const { default: home } = await import("@/app/page");
-      const STREAMED = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay"]);
+      const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
       const settle = async (tree: unknown): Promise<unknown> => {
         if (Array.isArray(tree)) return Promise.all(tree.map(settle));
         if (!isValidElement<Props>(tree)) return tree;
@@ -716,10 +716,11 @@ async function main() {
         return { ...d, todayShoots: shoots, readySend: { ...rs, ready, rendering } };
       }) as never;
       await prisma.project.create({ data: { title: "77 Untimed Way, Media, PA", clientId: client.id, status: "BOOKED", shootDate: new Date(Date.now() - 2 * 3_600_000) } });
-      // Oct 19 2026: the owner's Home no longer carries the today line or the
-      // needs list (Jordan: his week and what is behind instead); both still
-      // live on the review seat's Home (James), which reads the same day.
-      const { ShootsTodayLine } = await import("@/components/home/OpsHomeParts");
+      // Oct 19 2026 (night): ONE dashboard for the owner and the office. The
+      // review seat's today line and its needs list (with the to-send row's
+      // render wording) went with his desk: today's shoots are the full shoot
+      // card on the dashboard, and the 1080p wording lives with the video in
+      // the Video Review Room. The two checks below were rewritten for that.
       let tree: unknown;
       let reviewTree: unknown;
       try {
@@ -732,12 +733,9 @@ async function main() {
       }
       const all = textOf(tree);
       c.ok("the books read failed: the owner's money strip SAYS it couldn't load (it used to vanish)", named(tree, "p").some((p) => p["data-money-unavailable"] !== undefined && textOf(p.children).includes("The books (profit, bank, owed to you)")), all.slice(0, 200));
-      const lineProps = named(reviewTree, "ShootsTodayLine")[0] as Parameters<typeof ShootsTodayLine>[0] | undefined;
-      const line = lineProps ? ShootsTodayLine(lineProps) : null;
-      c.ok("today's shoot has no time: the line says so, not \"all started\"", named(line, "span").some((p) => p["data-untimed-shoots"] !== undefined && textOf(p.children).includes("77 Untimed Way has no time set")) && !textOf(line).includes("all started"));
-      const needs = named(reviewTree, "NeedsToday")[0]?.needs as { key: string; detail?: string }[] | undefined;
-      const toSend = needs?.find((n) => n.key === "tosend");
-      c.ok("the to-send row: \"1 more still processing · 1 1080p on hold — Kyle has the next step\" — a held file is never \"processing\"", !!toSend?.detail?.includes("1 more still processing") && toSend.detail.includes("1 1080p on hold — Kyle has the next step"), toSend?.detail);
+      const cards = named(reviewTree, "ShootList")[0]?.shoots as { title: string }[] | undefined;
+      c.ok("today's shoot is on James's dashboard as a full shoot card (the today line left with his desk)", !!cards?.some((s) => s.title.startsWith("77 Untimed Way")) && named(reviewTree, "ShootsTodayLine").length === 0, cards?.map((s) => s.title).join(" | "));
+      c.ok("the dashboard never calls a held 1080p file \"processing\" (no to-send row; the wording lives in the Video Review Room)", named(reviewTree, "NeedsToday").length === 0 && !textOf(reviewTree).includes("still processing"));
     });
 
     c.ok("nothing left the machine but the fakes", fence.blocked.length === 0, fence.blocked.join(", "));

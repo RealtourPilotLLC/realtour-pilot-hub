@@ -24,7 +24,7 @@ function elements(tree: unknown, name: string): Props[] {
 // components that await reads started with the page's own). Resolve those
 // named components — inside the injected window — so the checks read the
 // page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
+const STREAMED_HOME = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -48,16 +48,15 @@ async function main() {
     const { setSession } = await import("@/lib/auth/session");
     const { default: homePage } = await import("@/app/page");
     const home = async (props: Parameters<typeof homePage>[0]) => settleHome(await homePage(props));
-    // Oct 19 2026: the exceptions card moved off Kyle's Home onto /ops (now
-    // "Shoots and exceptions"); its failure and recovery are read there.
-    const { default: opsPage } = await import("@/app/ops/page");
-    const checklist = async (props: Parameters<typeof opsPage>[0]) => settleHome(await opsPage(props));
-    void home;
+    // Oct 19 2026 (night): /ops redirects to the dashboard and its exceptions
+    // card left with it. The office page's named critical read is now the
+    // dashboard's review queue (the QC & review tile, the review seat's line):
+    // its failure must say so, never read as "0 to review", and recover.
+    const { HealthStrip, NeedsAttention } = await import("@/components/home/Dashboard");
+    type Dash = import("../../src/lib/opsHome").Dashboard;
     const { default: review } = await import("@/app/review/page");
     const { default: editing } = await import("@/app/editing/page");
     const { default: schedule } = await import("@/app/schedule/page");
-    const { ExceptionsCard } = await import("@/components/ops/ExceptionsCard");
-    const { emptyExceptionBoard } = await import("@/lib/opsExceptions");
     const client = await prisma.client.create({ data: { name: "Grove Acceptance Realty" } });
     const reviewer = await prisma.teamMember.create({ data: { name: "James", role: "MANAGER", email: "c14-read-james@example.test" } });
     const editor = await prisma.teamMember.create({ data: { name: "Kim Miguel", role: "EDITOR", email: "c14-read-kim@example.test" } });
@@ -95,28 +94,25 @@ async function main() {
       } finally { delegate.findMany = original; }
     };
     await signIn(kyle);
-    const homeFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => {
-      const select = record(args.select);
-      return record(args.where).status === "PENDING" && select.reviewerTeamMemberId === true && select.selfCheckedAt === true && record(args.orderBy).createdAt === "asc";
-    }, () => checklist(query));
-    const unavailableProps = elements(homeFailed.value, "ExceptionsCard")[0];
-    const unavailableHtml = renderToStaticMarkup(createElement(ExceptionsCard, unavailableProps as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("Checklist named aging-review read failure is caught at its actual page seam", homeFailed.hits === 1 && !homeFailed.error);
-    c.ok("Checklist failed exception pool is visibly unavailable without zero/clear reassurance", unavailableProps.unavailable === true && unavailableHtml.includes("Exceptions could not be checked") && unavailableHtml.includes('role="status"') && unavailableHtml.includes('href="/ops#exceptions"') && !unavailableHtml.includes("0 things") && !unavailableHtml.includes("nothing waiting"));
-    const scopedFailureHtml = renderToStaticMarkup(createElement(ExceptionsCard, { ...unavailableProps, includeTest: true } as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("unavailable retry and work-list links preserve explicit test scope", ["/ops?test=1#exceptions", "/review?test=1", "/editing?test=1"].every((href) => scopedFailureHtml.includes(`href="${href}"`)));
-    c.ok("healthy empty exception pool still stays hidden", renderToStaticMarkup(createElement(ExceptionsCard, emptyExceptionBoard())) === "");
-    const recoveredHome = elements(await checklist(query), "ExceptionsCard")[0];
-    const recoveredExceptionHtml = renderToStaticMarkup(createElement(ExceptionsCard, recoveredHome as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("Checklist read recovery restores the actual aged exact cut, not a guessed zero", recoveredExceptionHtml.includes("48 Grove Lane") && (recoveredHome.rows as { id: string }[]).some((r) => r.id === `review:${cut.id}`));
+    const queueRead = (args: Props) => record(record(args.include).project).select !== undefined && record(record(record(args.include).project).select).deliveredAt === true;
+    const homeFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, queueRead, () => home(query));
+    const healthProps = (tree: unknown) => elements(tree, "HealthStrip")[0] as Parameters<typeof HealthStrip>[0];
+    const attentionProps = (tree: unknown) => elements(tree, "NeedsAttention")[0] as Parameters<typeof NeedsAttention>[0];
+    const failedHtml = renderToStaticMarkup(createElement(HealthStrip, healthProps(homeFailed.value))) + renderToStaticMarkup(createElement(NeedsAttention, attentionProps(homeFailed.value)));
+    c.ok("Dashboard named review-queue read failure is caught at its actual page seam", homeFailed.hits === 1 && !homeFailed.error);
+    c.ok("Dashboard failed review read is visibly unavailable without zero/clear reassurance", (healthProps(homeFailed.value).health as Dash["health"]).qc?.toReview === null && (attentionProps(homeFailed.value).attention as Dash["attention"]).unavailable.includes("the review queue") && failedHtml.includes("Couldn’t check the review queue") && failedHtml.includes('role="status"') && !failedHtml.includes("0 cuts to review"));
+    const scopedFailureHtml = renderToStaticMarkup(createElement(HealthStrip, { ...healthProps(homeFailed.value), includeTest: true }));
+    c.ok("the failed tile still opens the Video Review Room, keeping explicit test scope", scopedFailureHtml.includes('href="/review?test=1"'));
+    const recoveredHome = await home(query);
+    c.ok("Dashboard read recovery restores the actual aged exact cut, not a guessed zero", (healthProps(recoveredHome).health as Dash["health"]).qc?.toReview === 1 && !(attentionProps(recoveredHome).attention as Dash["attention"]).unavailable.includes("the review queue"));
+    await signIn(james);
+    const jamesHome = await home(query);
+    const mine = (attentionProps(jamesHome).attention as Dash["attention"]).items.find((i) => i.key === "review-mine");
+    c.ok("…and the review seat's own line opens that exact cut", mine?.action.href === `/review/${job.id}?cut=${cut.id}`, JSON.stringify(mine));
     await signIn(restricted);
-    const restrictedFailure = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => {
-      const select = record(args.select);
-      return record(args.where).status === "PENDING" && select.reviewerTeamMemberId === true && select.selfCheckedAt === true && record(args.orderBy).createdAt === "asc";
-    }, () => checklist(query));
-    const restrictedProps = elements(restrictedFailure.value, "ExceptionsCard")[0];
-    const restrictedHtml = renderToStaticMarkup(createElement(ExceptionsCard, restrictedProps as Parameters<typeof ExceptionsCard>[0]));
-    c.ok("signed page overrides hide denied recovery destinations while retaining Retry", restrictedFailure.hits === 1 && !restrictedFailure.error && restrictedProps.canReview === false && restrictedProps.canEdit === false && restrictedHtml.includes(">Retry<") && !restrictedHtml.includes('href="/review"') && !restrictedHtml.includes('href="/editing"'));
+    const restrictedFailure = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, queueRead, () => home(query));
+    const restrictedHtml = renderToStaticMarkup(createElement(HealthStrip, healthProps(restrictedFailure.value))) + renderToStaticMarkup(createElement(NeedsAttention, attentionProps(restrictedFailure.value)));
+    c.ok("signed page overrides hide denied destinations while still saying what could not be checked", restrictedFailure.hits === 1 && !restrictedFailure.error && (healthProps(restrictedFailure.value).doors as { review: boolean }).review === false && !restrictedHtml.includes('href="/review') && !restrictedHtml.includes('href="/editing"') && restrictedHtml.includes("Couldn’t check the review queue"));
 
     await signIn(james);
     const reviewFailed = await inject(prisma.reviewSubmission as unknown as { findMany: unknown }, (args) => record(record(args.include).project).select !== undefined && record(record(record(args.include).project).select).deliveredAt === true, () => review(query));
