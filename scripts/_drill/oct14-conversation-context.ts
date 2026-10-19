@@ -149,7 +149,8 @@ async function main() {
 
     // ======================================================================
     c.head("6 · the hooks");
-    c.ok("every text, either way, re-reads open asks", /reviewAsksAgainstConversation\(clientId\)/.test(fs.readFileSync("src/lib/webhooks/openphone.ts", "utf8")));
+    // CHANGED Oct 19 2026 (audit): the client's INBOUND text starts the re-read, not our outbound one.
+    c.ok("a text from the client re-reads open asks (not our own outbound text)", /isInboundText\) \{\s*const \{ reviewAsksAgainstConversation \} = await import\("@\/lib\/revisionNotNeeded"\);\s*await reviewAsksAgainstConversation\(clientId\)/.test(fs.readFileSync("src/lib/webhooks/openphone.ts", "utf8")));
     c.ok("a team-chat note can be the 'not needed'", /reviewAsksAgainstConversation\(owner\.clientId\)/.test(fs.readFileSync("src/app/projects/messageActions.ts", "utf8")));
     c.ok("only the model was answered; nothing else left the machine", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));
   } finally {

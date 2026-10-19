@@ -662,19 +662,12 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
     ? `${DESK_TITLE.BOOK} ${ordinal} of ${capacity.sessionsPerMonth} — ${client?.name ?? "client"}`
     : `${DESK_TITLE[mode]} — ${client?.name ?? "client"}`;
   const summary = clip(`${mode === "BOOK" ? "Requested" : mode === "CANCEL" ? "Cancel" : mode === "RESCHEDULE" ? "Move" : "Check"}: ${when}${r.locationText ? ` · ${r.locationText}` : ""}`, 200);
-  // KYLE'S SCHEDULING SCREEN (Oct 19 2026, lib/clientAsks): a client's ask
-  // for a session, a move or a cancel is a scheduling ask there too, closed
-  // when Aryeo confirms or cancels it (closeDeskTask). Never throws.
-  const fileAsk = async (taskId: string | null) => {
-    if (mode !== "BOOK" && mode !== "CANCEL" && mode !== "RESCHEDULE") return;
-    const { fileSessionRequestAsk } = await import("@/lib/clientAsks");
-    await fileSessionRequestAsk({ requestId: r.id, clientId: r.clientId, projectId: r.projectId ?? null, mode, when, notes: r.notes, taskId });
-  };
+  // (Oct 19 2026: a portal session request is no longer also filed as a
+  // scheduling ask on Kyle's screen; this desk task is the one place it lives.)
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true } });
   if (existing) {
     await prisma.smartTask.update({ where: { id: existing.id }, data: { title: title.slice(0, 140), summary, description, status: "OPEN", completedAt: null, priority: mode === "BOOK" ? "HIGH" : "URGENT" } });
     if (!r.taskId) await prisma.programSessionRequest.update({ where: { id: r.id }, data: { taskId: existing.id } });
-    await fileAsk(existing.id);
     return;
   }
   const task = await prisma.smartTask.create({
@@ -688,7 +681,6 @@ async function ensureDeskTask(requestId: string, mode: DeskMode = "BOOK", reason
     select: { id: true },
   });
   await prisma.programSessionRequest.update({ where: { id: r.id }, data: { taskId: task.id } });
-  await fileAsk(task.id);
   try {
     const { notifyInApp } = await import("@/lib/notify");
     await notifyInApp({ kind: "portal_session", title: `${DESK_TITLE[mode]} — ${client?.name ?? "a client"}`, body: clip(when, 140), href: "/tasks?tab=board", targets: [{ roles: ["OWNER", "ADMIN"] }], dedupeKey: `session-request-${r.id}-${mode.toLowerCase()}` });
@@ -702,7 +694,7 @@ export async function handToDesk(requestId: string, mode: DeskMode, reason: stri
 
 export async function closeDeskTask(requestId: string, outcome: "COMPLETED" | "CANCELLED"): Promise<void> {
   await prisma.smartTask.updateMany({ where: { dedupeKey: `${TASK_PREFIX}${requestId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: outcome, completedAt: new Date() } });
-  // The request's scheduling asks on Kyle's screen are answered too (Oct 19 2026).
+  // Scheduling asks filed for the request before Oct 19 2026 evening are answered too.
   await import("@/lib/clientAsks").then((m) => m.closeSessionRequestAsks(requestId, outcome)).catch(() => 0);
 }
 

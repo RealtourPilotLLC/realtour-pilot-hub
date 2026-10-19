@@ -188,6 +188,19 @@ export async function GET(req: NextRequest) {
     const { sweepPromiseWatch } = await import("@/lib/promiseWatch");
     return sweepPromiseWatch();
   }, { maxMs: 20_000 });
+  //  · WE'RE BEHIND (Oct 19 2026, lib/behindAlert): when listing videos or
+  //    photo jobs go past their promise, one post in #video-editing and the
+  //    bells (Jordan, Kyle, James, the editors), again each morning while it
+  //    lasts, and "Back on track" when it clears. Before it, the client asks
+  //    on jobs that were delivered close (lib/clientAsks: "the job was
+  //    delivered"). Both cheap; idle most ticks.
+  await step("behindAlert", async () => {
+    const { closeAsksOnDeliveredJobs } = await import("@/lib/clientAsks");
+    const { runBehindAlert } = await import("@/lib/behindAlert");
+    const asks = await closeAsksOnDeliveredJobs();
+    const behind = await runBehindAlert();
+    return { asksClosed: asks.closed, behind };
+  }, { maxMs: 30_000 });
   //  · from 6 PM ET: tomorrow's shoot brief to each photographer, and Jordan's
   //    6 PM wrap (Mon to Sat) with a copy to Kyle. Idle every other tick.
   await step("evening", async () => {

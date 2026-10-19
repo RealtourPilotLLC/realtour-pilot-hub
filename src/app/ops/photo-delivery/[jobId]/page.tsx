@@ -16,7 +16,7 @@ import { HOLD_REASON_LABEL, VERDICT_LABEL, usd } from "@/components/photoDeliver
 import type { TabKey } from "@/components/photoDelivery/JobContext";
 import { CoachingCard } from "@/components/photoDelivery/CoachingCard";
 import { PrepModeControl } from "@/components/photoDelivery/PrepModeControl";
-import { OpenClientAsksCard } from "@/components/asks/OpenClientAsksCard";
+import { BeforeYouSendView, loadBeforeYouSend } from "@/components/jobs/BeforeYouSend";
 import { loadJobDetail, loadStrip, loadViewer } from "../data";
 
 export const dynamic = "force-dynamic";
@@ -53,14 +53,7 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
   ]);
   if (!data) notFound();
   const h = data.header;
-  // OPEN CLIENT ASKS ABOUT THE PHOTOS (Oct 19 2026, lib/clientAsks): shown
-  // with their Confirmed buttons. A same-day job waits for them before the hub
-  // approves it by itself; Kyle's own Approve is never blocked. A failed read
-  // shows none.
-  const photoAsks = await import("@/lib/clientAsks")
-    .then((m) => m.asksForProject(h.projectId, { kind: "SPECIAL_REQUEST" }))
-    .then((r) => r.open.filter((a) => a.medium !== "video"))
-    .catch(() => []);
+  const box = await loadBeforeYouSend(h.projectId, "photo");
   const initialTab = TABS.get(tabRaw ?? "") ?? "issues";
   const initialPhoto = photoRaw && data.photos.some((p) => p.id === photoRaw) ? photoRaw : null;
 
@@ -129,7 +122,12 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
           )}
         </section>
 
-        {photoAsks.length > 0 && <OpenClientAsksCard asks={photoAsks} deliverWhat="photo" />}
+        {/* BEFORE YOU SEND (Oct 19 2026, lib/jobChecks): what was flagged at the
+            shoot about the photos, the client's open requests with one Checked,
+            and the order and edit notes. A same-day job waits for the open
+            requests before the hub approves it by itself; Kyle's own Approve
+            is never blocked. Replaces the open-asks card that stood here. */}
+        <BeforeYouSendView data={box.data} medium="photo" canCheck={box.canCheck} />
 
         {coaching && <CoachingCard jobId={h.id} coaching={{ photographerName: coaching.photographerName, note: coaching.note, preShootReminders: coaching.preShootReminders, status: coaching.status }} />}
 

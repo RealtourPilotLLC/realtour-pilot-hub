@@ -23,11 +23,15 @@
 //      Reopen puts it back; Not needed releases it.
 //   6. The client's "never mind" in the conversation sets an ask aside.
 //   7. Counts for Kyle's tiles: open, due today, behind (job promise passed,
-//      48 h open; scheduling 24 h), Aryeo changes after 48 h drop off, test
-//      clients left out; the boards group by job, oldest first.
-//   8. The order: a note (access and logistics lines dropped) and a Lot Lines
-//      add-on, filed once, never holding; portal session asks open and close
-//      with the request; an Aryeo move files once.
+//      48 h open; scheduling 24 h), test clients left out; the boards group by
+//      job, oldest first. Oct 19 evening (Jordan's audit, "keep it simple"):
+//      an order note and an Aryeo move filed before are no longer asks, so the
+//      boards and tiles leave them out.
+//   8. The order, the portal and Aryeo (CHANGED Oct 19 evening): an order's
+//      note and add-ons are no longer filed as asks; they show on the job's
+//      "Before you send" box as notes (access and logistics lines dropped). A
+//      portal session request and an Aryeo move are no longer filed either
+//      (the desk task and the appointment bell cover them).
 //   9. Same-day photos wait for a holding photo ask; confirmed, they don't.
 //  10. A text is a text: "openphone" is no longer read as a call.
 //
@@ -238,16 +242,17 @@ async function main() {
   await ca.createAsk({ clientId: heather.id, projectId: ok.id, kind: "SCHEDULING", source: "aryeo", text: "Moved in Aryeo", askedAt: new Date(now.getTime() - 3 * HOUR), dedupeKey: "aryeo-change:x:1" });
   await ca.createAsk({ clientId: heather.id, projectId: ok.id, kind: "SCHEDULING", source: "aryeo", text: "Moved in Aryeo long ago", askedAt: new Date(now.getTime() - 60 * HOUR), dedupeKey: "aryeo-change:x:2" });
   const counts = await ca.askBoardCounts(now);
-  c.ok("special: 4 open (test client left out), 2 behind", counts.special.open === 4 && counts.special.behind === 2, JSON.stringify(counts.special));
-  c.ok("…the oldest has waited 9 days (the order note)", counts.special.oldestHours === 9 * 24, String(counts.special.oldestHours));
-  c.ok("scheduling: 3 open (the 60 h old Aryeo move dropped off), 1 behind (30 h), 2 due today", counts.scheduling.open === 3 && counts.scheduling.behind === 1 && counts.scheduling.dueToday === 2, JSON.stringify(counts.scheduling));
+  // CHANGED Oct 19 evening: the order note (9 days old) and the Aryeo moves are not asks any more.
+  c.ok("special: 3 open (the order note and the test client left out), 2 behind", counts.special.open === 3 && counts.special.behind === 2, JSON.stringify(counts.special));
+  c.ok("…the oldest has waited 50 hours (the order note no longer counts)", counts.special.oldestHours === 50, String(counts.special.oldestHours));
+  c.ok("scheduling: 2 open (Aryeo moves are no longer asks), 1 behind (30 h), 1 due today", counts.scheduling.open === 2 && counts.scheduling.behind === 1 && counts.scheduling.dueToday === 1, JSON.stringify(counts.scheduling));
   const board = await ca.specialRequestsBoard(now);
-  c.ok("the board groups by job, the job with the oldest ask first", board.groups.length === 2 && board.groups[0].projectId === ok.id && board.groups[0].asks.length === 3 && board.groups[1].projectId === late.id, JSON.stringify(board.groups.map((g) => [g.street, g.asks.length])));
+  c.ok("the board groups by job, the job with the oldest ask first", board.groups.length === 2 && board.groups[0].projectId === ok.id && board.groups[0].asks.length === 2 && board.groups[1].projectId === late.id, JSON.stringify(board.groups.map((g) => [g.street, g.asks.length])));
   c.ok("…behind is marked on the ask and the job", board.groups[1].behind && board.groups[1].asks[0].behind && board.groups[0].asks.find((a) => a.text === "warmer colors")?.behind === true && board.groups[0].asks.find((a) => a.text === "show the pool")?.behind === false);
   c.ok("…the delivery promise and the test client's job are right", !!board.groups[0].dueWords && !board.groups.some((g) => g.projectId === testJob.id));
   c.ok("…and the jobs a hand-added ask can go on leave the test client out", board.jobs.some((j) => j.id === ok.id) && !board.jobs.some((j) => j.id === testJob.id));
   const sb = await ca.schedulingBoard(now);
-  c.ok("the scheduling board splits client asks from Aryeo changes", sb.asks.length === 2 && sb.aryeo.length === 1 && sb.asks[0].text === "we need to cancel");
+  c.ok("the scheduling board: the client's own asks, no Aryeo changes", sb.asks.length === 2 && sb.aryeo.length === 0 && sb.asks[0].text === "we need to cancel");
   const byHand = await ca.addAskByHand({ projectId: ok.id, text: "Agent wants the sign in every exterior", medium: "photo", holdsDelivery: true, by: "Kyle Smith" });
   const hand = await prisma.clientAsk.findFirst({ where: { source: "staff" } });
   c.ok("an ask added by hand is staff-sourced and holds when asked to", byHand.ok && !!hand && hand.holdsDelivery && hand.projectId === ok.id && hand.clientId === heather.id);
@@ -268,23 +273,20 @@ async function main() {
     select: { id: true },
   });
   const filed = await ca.fileOrderAsks(orderJob.id);
-  const orderAsks = await prisma.clientAsk.findMany({ where: { projectId: orderJob.id }, orderBy: { createdAt: "asc" } });
-  const noteAsk = orderAsks.find((a) => a.dedupeKey?.startsWith("order-note:"));
-  const addon = orderAsks.find((a) => a.dedupeKey?.startsWith("addon:"));
-  c.ok("the note and the Lot Lines add-on are filed, neither holds", filed === 2 && !!noteAsk && !!addon && !noteAsk.holdsDelivery && !addon.holdsDelivery && noteAsk.source === "order_note");
-  c.ok("…the note keeps the instructions, drops the lockbox and who will be there", /vertical for the video/.test(noteAsk?.text ?? "") && /lot size/.test(noteAsk?.text ?? "") && !/lockbox|4417|Agent will be there/i.test(noteAsk?.text ?? ""), noteAsk?.text);
-  c.ok("…its one line is the instruction", /^Order note: Let's use vertical for the video\./.test(noteAsk?.summary ?? ""), noteAsk?.summary ?? "");
-  c.ok("…the add-on says what to check, about both", /^Lot lines ordered: check it is on the finished work and correct$/.test(addon?.summary ?? "") && addon?.medium === "both");
-  c.ok("…filed once: the next import adds nothing", (await ca.fileOrderAsks(orderJob.id)) === 0);
-  c.ok("…and a delivered job files nothing", (await ca.fileOrderAsks(northbrook.id)) === 0);
+  c.ok("the note and the Lot Lines add-on are no longer filed as asks", filed === 0 && (await prisma.clientAsk.count({ where: { projectId: orderJob.id } })) === 0);
+  const { jobChecks } = await import("@/lib/jobChecks");
+  const box = await jobChecks(orderJob.id, "video");
+  const onOrder = box.notes.find((n) => n.label === "On the order")?.text ?? "";
+  c.ok("…the note shows on the job's box instead: the instructions kept, the lockbox and who will be there dropped", /vertical for the video/.test(onOrder) && /lot size/.test(onOrder) && !/lockbox|4417|Agent will be there/i.test(onOrder), onOrder);
+  c.ok("…and the add-on says what to check", box.notes.some((n) => n.label === "Add-on ordered" && /^Lot Lines: check it is on the finished work and correct\.$/.test(n.text)), JSON.stringify(box.notes));
+  c.ok("…a delivered job files nothing either", (await ca.fileOrderAsks(northbrook.id)) === 0);
   const sr = await ca.fileSessionRequestAsk({ requestId: "req-1", clientId: heather.id, projectId: null, mode: "RESCHEDULE", when: "Thu, Oct 22, 2:00 PM" });
-  c.ok("a portal move is a scheduling ask, once", !!sr && (await ca.fileSessionRequestAsk({ requestId: "req-1", clientId: heather.id, projectId: null, mode: "RESCHEDULE", when: "Thu, Oct 22, 2:00 PM" })) === null);
+  c.ok("a portal move is no longer a scheduling ask (its desk task covers it)", sr === null && (await prisma.clientAsk.count({ where: { source: "portal" } })) === 0);
   const { closeDeskTask } = await import("@/lib/sessionRequests");
   await closeDeskTask("req-1", "COMPLETED");
-  c.ok("…closed when Aryeo confirms the session", (await prisma.clientAsk.findUniqueOrThrow({ where: { id: sr! } })).state === "DONE");
+  c.ok("…closing the desk task still works with no ask behind it", true);
   const mv = await ca.fileAryeoChangeAsk({ aryeoAppointmentId: "appt-bridle", projectId: orderJob.id, change: "moved", startAt: new Date("2026-10-22T18:00:00Z"), previousStartAt: new Date("2026-10-21T14:00:00Z"), keyPart: "2026-10-22T18:00:00.000Z" });
-  const mvRow = mv ? await prisma.clientAsk.findUniqueOrThrow({ where: { id: mv } }) : null;
-  c.ok("an Aryeo move is a scheduling follow-up, once, in plain words", !!mvRow && mvRow.source === "aryeo" && /^Shoot moved to Thu, Oct 22, 2:00 PM: tell the photographer/.test(mvRow.summary ?? "") && !DASH.test(`${mvRow.summary} ${mvRow.text}`) && (await ca.fileAryeoChangeAsk({ aryeoAppointmentId: "appt-bridle", projectId: orderJob.id, change: "moved", startAt: new Date("2026-10-22T18:00:00Z"), previousStartAt: null, keyPart: "2026-10-22T18:00:00.000Z" })) === null, mvRow?.summary ?? "");
+  c.ok("an Aryeo move is no longer an ask (the appointment bell covers it)", mv === null && (await prisma.clientAsk.count({ where: { source: "aryeo", projectId: orderJob.id } })) === 0);
 
   // =========================================================================
   c.head("9 · Same-day photos wait for a holding photo ask");

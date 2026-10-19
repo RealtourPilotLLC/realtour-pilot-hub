@@ -566,10 +566,14 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       });
     }
 
-    // "UNLESS SOMEONE SAYS IT'S NOT NEEDED" (Oct 14 2026): any text, either
-    // way, re-reads this client's open asks against the conversation since
+    // "UNLESS SOMEONE SAYS IT'S NOT NEEDED" (Oct 14 2026): a text from the
+    // client re-reads their open asks against the conversation since
     // (lib/revisionNotNeeded). Only clients with an ask from the last 3 days.
-    if (!isCall && text.trim()) {
+    // Oct 19 2026 (audit): INBOUND client texts only. Our own outbound text
+    // no longer starts a re-read (an AI call on every reply we send); what we
+    // said is still read, as part of the conversation, on the client's next
+    // text, and a team note on the job still starts one.
+    if (!isCall && text.trim() && isInboundText) {
       const { reviewAsksAgainstConversation } = await import("@/lib/revisionNotNeeded");
       await reviewAsksAgainstConversation(clientId);
     }

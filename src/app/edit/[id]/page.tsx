@@ -84,6 +84,7 @@ import { officeReopenOf, verdictLine, verdictOf } from "@/lib/reviewAttribution"
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
 import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
+import { BeforeYouSendView, loadBeforeYouSend } from "@/components/jobs/BeforeYouSend";
 
 export const dynamic = "force-dynamic";
 // The Music card's "Download to the job folder" action posts to this segment:
@@ -917,6 +918,8 @@ export default async function EditBriefPage({
   // =========================================================================
   const ET = "America/New_York";
   const isVideoJob = videoDeliverables.length > 0;
+  // BEFORE YOU SEND (Oct 19 2026, lib/jobChecks): read up front, drawn in "What to make".
+  const beforeYouSend = isVideoJob ? await loadBeforeYouSend(project.id, "video") : null;
   const isEditorView = viewer?.role === "EDITOR";
   const selectedBrief = outputBriefs.find((o) => o.key === selectedKey) ?? null;
   const selectedNav = selectedKey ? navigation.get(selectedKey) ?? null : null;
@@ -1617,6 +1620,11 @@ export default async function EditBriefPage({
                     </details>
                   )}
                 </div>
+                {/* BEFORE YOU SEND (Oct 19 2026, lib/jobChecks): what was flagged at
+                    the shoot about the video and the client's open requests. The
+                    order note and the job's notes are already printed below and
+                    in "In their words", so the box leaves its notes out here. */}
+                {beforeYouSend && <BeforeYouSendView data={beforeYouSend.data} medium="video" canCheck={beforeYouSend.canCheck} hideNotes />}
                 {(officeDirection.length > 0 || jobSpec.length > 0 || specText("instructions") || showJobNote || specialAsks.length > 0 || !!brandBrief?.scopedInstructions.length) && (
                   <dl className="space-y-2.5 border-t border-border pt-3 text-sm leading-relaxed">
                     {officeDirection.map((x) => (

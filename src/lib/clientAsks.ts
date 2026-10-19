@@ -3,9 +3,11 @@ import crypto from "crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { EMPTY_COUNTS, type JobCounts } from "@/lib/opsCounts";
-import { clip } from "@/lib/text";
+import { clip, scrubMoney } from "@/lib/text";
 import { etAt, etDateTime, etDayKey } from "@/lib/datetime";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
 
 // ---------------------------------------------------------------------------
 // OPEN CLIENT ASKS (Oct 19 2026). Jordan: "In the review room, before it's
@@ -40,6 +42,21 @@ import { isSyntheticClientRow } from "@/lib/testClients";
 //
 // Asks on a job we already delivered are NOT filed here: those become revision
 // briefs (comms.raiseRevision) and the revision machinery owns them.
+//
+// SIMPLIFIED (Oct 19 2026, evening audit). Only a client's own words (a text,
+// an email, a call) or an ask staff typed for them is an ask:
+//   · an Aryeo order note or an add-on is no longer filed: it shows on the
+//     job's "Before you send" box as a note (lib/jobChecks);
+//   · a portal session request or a move/cancel seen in Aryeo is no longer
+//     filed: the portal desk task and the appointment bell already cover them
+//     (scheduling asks from texts and emails stay);
+//   · every open ask on a job closes when that job is delivered (DONE, "the
+//     job was delivered"; closeAsksOnDeliveredJobs, swept every five minutes),
+//     and Kyle's boards leave delivered jobs out at once;
+//   · a job's open requests are checked with ONE press (confirmAsks), not one
+//     per message: Barry Rd had six rows.
+// Rows filed before this change stay readable; the boards hide the kinds that
+// are no longer asks (scripts/_fix/oct19/asks-simplify.ts closes them).
 // ---------------------------------------------------------------------------
 
 export type AskKind = "SPECIAL_REQUEST" | "SCHEDULING";
@@ -51,6 +68,13 @@ export const ASK_KINDS: readonly AskKind[] = ["SPECIAL_REQUEST", "SCHEDULING"];
 const MEDIA: readonly AskMediumValue[] = ["video", "photo", "both", "unclear"];
 /** Where a client's own words came from: these hold a special request's job. */
 const HOLDING_SOURCES = new Set<string>(["text", "email", "call"]);
+/** What is an ask since Oct 19 2026: the client's own words, or what staff typed for them. */
+export const ASK_SOURCES: readonly string[] = ["text", "email", "call", "staff"];
+const ASK_SOURCE_SET = new Set<string>(ASK_SOURCES);
+/** A row of a kind no longer filed (order notes, add-ons, portal, Aryeo): hidden from the boards. */
+export function isLiveAskSource(source: string | null | undefined): boolean {
+  return ASK_SOURCE_SET.has(String(source ?? ""));
+}
 const HOUR = 3_600_000;
 /** A special request still open this long is behind, whatever the job's promise says. */
 export const SPECIAL_BEHIND_HOURS = 48;
@@ -95,6 +119,22 @@ export function defaultHolds(kind: AskKind, source: string): boolean {
 export function jobInFlight(p: { status: string; deliveredAt: Date | null } | null | undefined): boolean {
   if (!p) return false;
   return p.deliveredAt == null && p.status !== "DELIVERED" && p.status !== "CANCELLED";
+}
+
+/**
+ * Does this ask close because its job was delivered? A special request on a
+ * delivered or cancelled job always does (after delivery a change is a
+ * revision, which the revision machinery owns). A scheduling ask only when it
+ * was asked before the delivery: "book my next shoot", filed on the job the
+ * message landed on after it went out, is still wanted.
+ */
+export function closesOnDelivery(
+  a: { kind: string; askedAt: Date },
+  p: { status: string; deliveredAt: Date | null } | null | undefined,
+): boolean {
+  if (!p || jobInFlight(p)) return false;
+  if (a.kind !== "SCHEDULING") return true;
+  return !!p.deliveredAt && a.askedAt.getTime() < p.deliveredAt.getTime();
 }
 
 /** The job's delivery promise: a person's override, else the promise it was sold under, else Aryeo's due date. */
@@ -171,7 +211,8 @@ export async function openAsksHolding(projectId: string, medium: "video" | "phot
   });
   return rows
     .filter((r) => mediumMatches(r.medium, medium))
-    .map((r) => ({ id: r.id, summary: r.summary?.trim() || clip(r.text, 140), askedBy: r.askedBy, askedAtISO: r.askedAt.toISOString(), medium: r.medium }));
+    // Money-free whoever reads it (Oct 19 2026): this line lands on Kyle's screens and in alerts.
+    .map((r) => ({ id: r.id, summary: scrubMoney(r.summary?.trim() || clip(r.text, 140)), askedBy: r.askedBy, askedAtISO: r.askedAt.toISOString(), medium: r.medium }));
 }
 
 /** Counts for Kyle's Special requests and Scheduling tiles (test clients excluded). */
@@ -296,6 +337,29 @@ export async function markConfirmed(id: string, by: string, note?: string | null
   return r.ok ? { ok: true, message: r.message === "Saved." ? "Confirmed." : r.message } : r;
 }
 
+/**
+ * ONE "Checked" for a job's open requests (Oct 19 2026: one press per job, not
+ * one per message). Each ask is Confirmed with who, when and `what` as its
+ * note; the job's timeline gets one line for the lot. Asks already closed are
+ * left alone. Returns how many this press confirmed.
+ */
+export async function confirmAsks(ids: string[], by: string, what: string): Promise<{ confirmed: number; projectIds: string[] }> {
+  const note = clip(what.trim(), 500) || null;
+  let confirmed = 0;
+  const touched = new Map<string, string[]>();
+  for (const id of [...new Set(ids)]) {
+    const r = await move(id, ["OPEN"], "CONFIRMED", by, { confirmedAt: new Date(), confirmedBy: by, confirmNote: note }, `confirmed${note ? `: ${note}` : ""}`);
+    if (!r.ok || !r.row) continue;
+    confirmed++;
+    if (r.row.projectId) touched.set(r.row.projectId, [...(touched.get(r.row.projectId) ?? []), clip(r.row.summary || r.row.text, 80)]);
+  }
+  for (const [projectId, lines] of touched) {
+    // "3 client requests checked on the photos by Kyle Smith: ..."
+    await timeline(projectId, `${lines.length === 1 ? "Client request" : `${lines.length} client requests`} ${note ?? "checked"} by ${by}: ${lines.join("; ")}`);
+  }
+  return { confirmed, projectIds: [...touched.keys()] };
+}
+
 /** Not needed after all (a person's call, or the client's own words). Releases a delivery hold. */
 export async function markNotNeeded(id: string, by: string, reason?: string | null): Promise<AskResult> {
   const why = reason?.trim() ? clip(reason.trim(), 500) : null;
@@ -362,10 +426,17 @@ export type RoutedAsk = { kind: AskKind; text: string; summary: string; medium: 
  *   · a door code / lockbox / how-to-get-in note is never an ask;
  *   · a special request on a job we already delivered is left to the
  *     revision machinery (it became a revision brief, or is about future work);
+ *   · when a revision was raised for this message, a special request is filed
+ *     only where the brain named a different job in flight for it: with no
+ *     job named it is the revision's (audit #6, Oct 19 2026);
  *   · a special request with no clear job goes on the client's one job in
  *     flight; with several in flight it is filed with no job (Kyle picks it),
  *     and with none it is not filed;
- *   · scheduling asks are filed whatever the job's state.
+ *   · scheduling asks are filed whatever the job's state;
+ *   · the same message read again files nothing, even when the brain puts it
+ *     on a different job the second time (Oct 19 2026): any ask of that kind
+ *     already filed from these words, on any of the client's jobs or none,
+ *     means this message was filed.
  */
 export async function fileAsksFromMessage(input: {
   clientId: string;
@@ -392,14 +463,26 @@ export async function fileAsksFromMessage(input: {
     const byId = new Map(projects.map((p) => [p.id, p]));
     const inFlight = projects.filter((p) => jobInFlight(p));
     const anyInFlight = inFlight.length > 0;
+    // Filed before, on whichever job (or none): every key these words could have had.
+    const kindsFiled = new Set<string>();
+    {
+      const kinds = [...new Set(input.asks.map((a) => (a.kind === "SCHEDULING" ? "SCHEDULING" : "SPECIAL_REQUEST") as AskKind))];
+      const keys = kinds.flatMap((k) => [null, ...projects.map((p) => p.id)].map((pid) => ({ k, key: messageAskKey(input.clientId, pid, k, input.message) })));
+      const found = keys.length ? await prisma.clientAsk.findMany({ where: { dedupeKey: { in: keys.map((x) => x.key) } }, select: { dedupeKey: true } }) : [];
+      const hit = new Set(found.map((f) => f.dedupeKey));
+      for (const x of keys) if (hit.has(x.key)) kindsFiled.add(x.k);
+    }
     const groups = new Map<string, { projectId: string | null; kind: AskKind; texts: string[]; summaries: string[]; media: Set<AskMediumValue> }>();
     for (const a of input.asks) {
       const words = (a.text || "").trim() || clip(input.message, 600);
       if (isAccessNote(words) || isAccessNote(a.summary)) { out.skipped.push(`access note: ${clip(words, 60)}`); continue; }
+      if (kindsFiled.has(a.kind)) { out.skipped.push(`already filed from this message: ${clip(words, 60)}`); continue; }
       const hinted = a.projectHint && byId.has(a.projectHint) ? a.projectHint : null;
       let projectId = hinted ?? (input.defaultProjectId && byId.has(input.defaultProjectId) ? input.defaultProjectId : null);
       if (a.kind === "SPECIAL_REQUEST") {
         if (projectId && input.revisionProjectId && projectId === input.revisionProjectId) { out.skipped.push(`revision brief: ${clip(words, 60)}`); continue; }
+        // A revision was raised for this message: with no job named for this ask, it is the revision's.
+        if (input.revisionProjectId && !hinted) { out.skipped.push(`revision brief (no job named): ${clip(words, 60)}`); continue; }
         if (projectId && !jobInFlight(byId.get(projectId))) {
           // The brain's job is delivered; a hint it did not give may still mean
           // the one job in flight. Only an explicit hint on a delivered job is
@@ -471,7 +554,7 @@ export async function fileSchedulingFallback(input: { clientId: string; clientNa
   }
 }
 
-// ---- filing from the Aryeo order (order notes and add-ons) ----------------------------------
+// ---- what the Aryeo order asks to check (order notes and add-ons): read, no longer filed -----
 
 /** Add-ons a person has to check on the finished work. */
 const ADDON_CHECKS: { re: RegExp; label: string; medium: AskMediumValue }[] = [
@@ -496,9 +579,10 @@ const INSTRUCTION_RE =
 /**
  * What an order asks a person to check, read from the job's Aryeo appointment
  * notes (the customer's Special Instructions and Order Notes) and its order
- * lines. Pure: the backfill prints these without writing. An access line (a
- * code, a lockbox, a key) is dropped from the note; a note that is only access
- * is no ask at all.
+ * lines. Pure. Since Oct 19 2026 these are not filed: the job box
+ * (lib/jobChecks) shows them as notes, and the clean-up script names the rows
+ * filed before. An access line (a code, a lockbox, a key) is dropped from the
+ * note; a note that is only access is nothing at all.
  */
 export function orderAskCandidates(
   p: {
@@ -570,34 +654,24 @@ export function orderAskCandidates(
   return out;
 }
 
-/** File a job's order notes and add-ons (Aryeo import). Only for work in flight. Never throws. */
+/**
+ * RETIRED (Oct 19 2026): an order's notes and add-ons are no longer filed as
+ * asks. They show on the job's "Before you send" box as notes (lib/jobChecks
+ * reads them straight off the order). Kept so an older caller files nothing.
+ */
 export async function fileOrderAsks(projectId: string): Promise<number> {
-  try {
-    const p = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: {
-        id: true, clientId: true, status: true, deliveredAt: true, createdAt: true,
-        client: { select: { name: true } },
-        appointments: { select: { aryeoId: true, description: true, createdAt: true } },
-        orderItems: { select: { title: true, isCanceled: true } },
-        deliverables: { select: { productTitle: true, removedFromOrderAt: true } },
-      },
-    });
-    if (!p || !jobInFlight(p)) return 0;
-    const [{ aryeoCustomerNote }, { isAccessNote }, { askMedium }] = await Promise.all([import("@/lib/shoot"), import("@/lib/specialRequests"), import("@/lib/comms")]);
-    const cands = orderAskCandidates({ ...p, clientName: p.client?.name ?? null }, { customerNote: aryeoCustomerNote, isAccessNote, askMedium });
-    let filed = 0;
-    for (const c of cands) if ((await createAsk({ ...c, by: "Aryeo import" }))?.created) filed++;
-    return filed;
-  } catch (e) {
-    console.error("[client-asks] order asks failed", projectId, e);
-    return 0;
-  }
+  void projectId;
+  return 0;
 }
 
-// ---- filing scheduling follow-ups (Aryeo changes, portal session requests) ------------------
+// ---- scheduling follow-ups (Aryeo changes, portal session requests): RETIRED ----------------
+// Oct 19 2026: a move or cancel seen in Aryeo already rings the appointment
+// bell, and a portal session request already has its desk task on Kyle's list.
+// Neither is filed as an ask any more; scheduling asks come from the client's
+// own texts and emails. The two functions stay, filing nothing, so an older
+// caller is harmless; closeSessionRequestAsks still closes rows filed before.
 
-/** A move, postpone, rebook or cancel the Aryeo sync saw (integrations/aryeo.ts, beside its bell). Never throws. */
+/** RETIRED (Oct 19 2026): files nothing. */
 export async function fileAryeoChangeAsk(input: {
   aryeoAppointmentId: string;
   projectId: string;
@@ -606,38 +680,11 @@ export async function fileAryeoChangeAsk(input: {
   previousStartAt: Date | null;
   keyPart: string;
 }): Promise<string | null> {
-  try {
-    const p = await prisma.project.findUnique({ where: { id: input.projectId }, select: { clientId: true, title: true } });
-    if (!p) return null;
-    const street = streetOf(p.title) ?? "the shoot";
-    const was = input.previousStartAt ? ` (was ${etDateTime(input.previousStartAt)})` : "";
-    const [text, summary] =
-      input.change === "canceled"
-        ? [`Cancelled in Aryeo: ${street}${was}.`, "Shoot cancelled in Aryeo: confirm with the client and the photographer"]
-        : input.change === "postponed"
-          ? [`Postponed in Aryeo, new date to be set: ${street}${was}.`, "Shoot postponed in Aryeo: follow up for a new date"]
-          : input.change === "rebooked"
-            ? [`Booked again in Aryeo: ${street} on ${etDateTime(input.startAt)}.`, `Shoot booked again for ${etDateTime(input.startAt)}: confirm with the photographer`]
-            : [`Moved in Aryeo: ${street} to ${etDateTime(input.startAt)}${was}.`, `Shoot moved to ${etDateTime(input.startAt)}: tell the photographer and confirm with the client`];
-    const r = await createAsk({
-      clientId: p.clientId,
-      projectId: input.projectId,
-      kind: "SCHEDULING",
-      text,
-      summary,
-      source: "aryeo",
-      sourceRef: input.aryeoAppointmentId,
-      askedBy: null,
-      dedupeKey: `aryeo-change:${input.aryeoAppointmentId}:${input.keyPart}`,
-    });
-    return r?.created ? r.id : null;
-  } catch (e) {
-    console.error("[client-asks] Aryeo change ask failed", input.aryeoAppointmentId, e);
-    return null;
-  }
+  void input;
+  return null;
 }
 
-/** A portal session request handed to Kyle's desk (sessionRequests.ensureDeskTask). Never throws. */
+/** RETIRED (Oct 19 2026): files nothing. */
 export async function fileSessionRequestAsk(input: {
   requestId: string;
   clientId: string;
@@ -648,26 +695,8 @@ export async function fileSessionRequestAsk(input: {
   taskId?: string | null;
   askedBy?: string | null;
 }): Promise<string | null> {
-  try {
-    const words = input.mode === "BOOK" ? `Asked on the portal for a content session: ${input.when}.` : input.mode === "CANCEL" ? `Asked on the portal to cancel the session: ${input.when}.` : `Asked on the portal to move the session to ${input.when}.`;
-    const summary = input.mode === "BOOK" ? "Book the content session the client asked for" : input.mode === "CANCEL" ? "Cancel the session in Aryeo and confirm with the client" : "Move the session in Aryeo and confirm with the client";
-    const r = await createAsk({
-      clientId: input.clientId,
-      projectId: input.projectId,
-      kind: "SCHEDULING",
-      text: [words, input.notes?.trim() ? `Their note: ${clip(input.notes.trim(), 400)}` : null].filter(Boolean).join("\n"),
-      summary,
-      source: "portal",
-      sourceRef: input.requestId,
-      askedBy: input.askedBy ?? null,
-      taskId: input.taskId ?? null,
-      dedupeKey: `portal-session:${input.requestId}:${input.mode}`,
-    });
-    return r?.created ? r.id : null;
-  } catch (e) {
-    console.error("[client-asks] session request ask failed", input.requestId, e);
-    return null;
-  }
+  void input;
+  return null;
 }
 
 /** Aryeo confirmed or cancelled the session: its portal asks are done. Never throws. */
@@ -684,6 +713,105 @@ export async function closeSessionRequestAsks(requestId: string, outcome: "COMPL
     console.error("[client-asks] closing session asks failed", requestId, e);
     return 0;
   }
+}
+
+/** Closed by the hub with a reason (DONE; the reason is kept as the note). For a clean-up: no timeline line, no hold check. */
+export async function closeAskWithReason(id: string, by: string, why: string): Promise<AskResult> {
+  const r = await move(id, ["OPEN"], "DONE", by, { doneAt: new Date(), doneBy: by, confirmNote: clip(why, 500) }, why);
+  return r.ok ? { ok: true, message: r.message } : r;
+}
+
+// ---- closing on delivery (Oct 19 2026) ------------------------------------------------------
+
+/** Why an open ask closes now that its work went out, or null (pure). */
+export function deliveryCloseReason(
+  a: { kind: string; medium: string | null; askedAt: Date },
+  p: { status: string; deliveredAt: Date | null } | null | undefined,
+  photosOutAt: Date | null,
+): string | null {
+  if (closesOnDelivery(a, p)) return p?.status === "CANCELLED" ? "the job was cancelled" : "the job was delivered";
+  if (a.kind === "SPECIAL_REQUEST" && asMedium(a.medium) === "photo" && photosOutAt && photosOutAt.getTime() > a.askedAt.getTime()) return "the photos were delivered";
+  return null;
+}
+
+/**
+ * Every open ask on a job that was delivered (or cancelled) is done: DONE,
+ * "the job was delivered" (closesOnDelivery says which). A photo-only request
+ * also closes once the job's photos went out. Run every five minutes from the
+ * comms cron; cheap (open asks only). Never throws.
+ */
+export async function closeAsksOnDeliveredJobs(now: Date = new Date()): Promise<{ closed: number; ids: string[] }> {
+  const out = { closed: 0, ids: [] as string[] };
+  try {
+    const open = await prisma.clientAsk.findMany({
+      where: { state: "OPEN", projectId: { not: null } },
+      select: { id: true, kind: true, medium: true, askedAt: true, projectId: true },
+      take: 1000,
+    });
+    if (!open.length) return out;
+    const pids = [...new Set(open.map((a) => a.projectId!))];
+    const [projects, photoJobs] = await Promise.all([
+      prisma.project.findMany({ where: { id: { in: pids } }, select: { id: true, status: true, deliveredAt: true } }),
+      prisma.photoJob.findMany({ where: { projectId: { in: pids }, stage: "DELIVERED" }, select: { projectId: true, deliveredAt: true, stageChangedAt: true } }),
+    ]);
+    const pById = new Map(projects.map((p) => [p.id, p]));
+    const photosOut = new Map(photoJobs.map((j) => [j.projectId, j.deliveredAt ?? j.stageChangedAt]));
+    for (const a of open) {
+      const why = deliveryCloseReason(a, pById.get(a.projectId!), photosOut.get(a.projectId!) ?? null);
+      if (!why) continue;
+      const r = await move(a.id, ["OPEN"], "DONE", "Hub", { doneAt: now, doneBy: "Hub", confirmNote: why }, why);
+      if (r.ok && r.row) {
+        out.closed++;
+        out.ids.push(a.id);
+      }
+    }
+  } catch (e) {
+    console.error("[client-asks] closing asks on delivered jobs failed", e);
+  }
+  return out;
+}
+
+// ---- the job box (lib/jobChecks) -------------------------------------------------------------
+
+export type JobRequestRow = { id: string; summary: string; text: string; askedBy: string | null; askedAt: Date; medium: string | null; source: string };
+
+/**
+ * A job's open special requests that the "Before you send" box shows for one
+ * medium: the client's own words (text, email, call) or an ask staff typed
+ * for them; both / unclear count for either medium. Oldest first. Nothing on
+ * a job already delivered.
+ */
+export async function jobRequests(projectId: string, medium: "video" | "photo"): Promise<JobRequestRow[]> {
+  if (!projectId) return [];
+  const [rows, p] = await Promise.all([
+    prisma.clientAsk.findMany({
+      where: { projectId, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: [...ASK_SOURCES] } },
+      orderBy: { askedAt: "asc" },
+      select: { id: true, summary: true, text: true, askedBy: true, askedAt: true, medium: true, source: true, kind: true },
+    }),
+    prisma.project.findUnique({ where: { id: projectId }, select: { status: true, deliveredAt: true } }),
+  ]);
+  return rows
+    .filter((r) => mediumMatches(r.medium, medium) && !closesOnDelivery(r, p))
+    .map((r) => ({ id: r.id, summary: r.summary?.trim() || clip(r.text.replace(/\s+/g, " "), 140), text: r.text, askedBy: r.askedBy, askedAt: r.askedAt, medium: r.medium, source: r.source }));
+}
+
+// ---- money (Oct 19 2026) ----------------------------------------------------------------------
+
+/** Does the person looking see money? The owner only (never while previewing someone else). With no login in a local, open hub, yes. */
+export async function viewerSeesMoney(): Promise<boolean> {
+  try {
+    const u = await getCurrentUser();
+    if (u) return u.role === "OWNER";
+    return !authEnforced();
+  } catch {
+    return false;
+  }
+}
+
+/** An ask as a non-owner sees it: no amounts in the line or the client's words ("under $350k" reads "under [amount]"). */
+export function moneyFree<T extends { summary: string; text: string }>(a: T): T {
+  return { ...a, summary: scrubMoney(a.summary), text: scrubMoney(a.text) };
 }
 
 // ---- reading: the views the screens draw ----------------------------------------------------
@@ -789,14 +917,17 @@ async function contextFor(rows: AskRow[]): Promise<{ projects: Map<string, Proje
 /** One job's asks for the Review Room and the photo job page: open first (oldest first), then the last week's closed ones. */
 export async function asksForProject(projectId: string, opts: { kind?: AskKind; now?: Date; closedDays?: number } = {}): Promise<{ open: AskView[]; closed: AskView[] }> {
   const now = opts.now ?? new Date();
-  const rows = await readAsks({ projectId, kind: opts.kind ?? "SPECIAL_REQUEST" }, 100);
+  // Oct 19 2026: only the kinds still filed (the client's words, or staff's),
+  // and nothing open on a job already delivered (the sweep closes those).
+  const rows = (await readAsks({ projectId, kind: opts.kind ?? "SPECIAL_REQUEST" }, 100)).filter((r) => isLiveAskSource(r.source));
   const ctx = await contextFor(rows);
   const views = rows.map((r) => viewOf(r, now, ctx.projects, ctx.clientNames));
   const since = now.getTime() - (opts.closedDays ?? 7) * 86_400_000;
   const closedAt = (r: AskRow) => (r.confirmedAt ?? r.doneAt ?? r.askedAt).getTime();
+  const shown = (await viewerSeesMoney()) ? views : views.map(moneyFree);
   return {
-    open: views.filter((v) => v.state === "OPEN"),
-    closed: views.filter((v, i) => v.state !== "OPEN" && closedAt(rows[i]) >= since).reverse(),
+    open: shown.filter((v, i) => v.state === "OPEN" && !closesOnDelivery(rows[i], ctx.projects.get(rows[i].projectId ?? ""))),
+    closed: shown.filter((v, i) => v.state !== "OPEN" && closedAt(rows[i]) >= since).reverse(),
   };
 }
 
@@ -818,8 +949,11 @@ export type JobChoice = { id: string; clientId: string; label: string };
 export async function specialRequestsBoard(now: Date = new Date(), opts: { countsOnly?: boolean } = {}): Promise<{ groups: RequestGroup[]; counts: JobCounts; closed: AskView[]; jobs: JobChoice[] }> {
   const rows = await readAsks({ kind: "SPECIAL_REQUEST", state: "OPEN" });
   const ctx = await contextFor(rows);
-  const live = rows.filter((r) => !ctx.testClients.has(r.clientId));
-  const views = live.map((r) => viewOf(r, now, ctx.projects, ctx.clientNames));
+  // Test clients, the kinds no longer filed (order notes, add-ons) and jobs already delivered are left out.
+  const live = rows.filter((r) => !ctx.testClients.has(r.clientId) && isLiveAskSource(r.source) && !closesOnDelivery(r, ctx.projects.get(r.projectId ?? "")));
+  const seesMoney = opts.countsOnly ? true : await viewerSeesMoney();
+  const scrub = (v: AskView) => (seesMoney ? v : moneyFree(v));
+  const views = live.map((r) => scrub(viewOf(r, now, ctx.projects, ctx.clientNames)));
   const groups = new Map<string, RequestGroup>();
   for (const v of views) {
     const key = v.projectId ?? `none:${v.clientId}`;
@@ -838,7 +972,7 @@ export async function specialRequestsBoard(now: Date = new Date(), opts: { count
   // The last week's closed ones, newest first, for an undo.
   const closedRows = await readAsks({ kind: "SPECIAL_REQUEST", state: { in: ["DONE", "CONFIRMED", "NOT_NEEDED"] }, updatedAt: { gte: new Date(now.getTime() - 7 * 86_400_000) } }, 60);
   const cctx = await contextFor(closedRows);
-  const closed = closedRows.filter((r) => !cctx.testClients.has(r.clientId)).map((r) => viewOf(r, now, cctx.projects, cctx.clientNames)).reverse();
+  const closed = closedRows.filter((r) => !cctx.testClients.has(r.clientId) && isLiveAskSource(r.source)).map((r) => scrub(viewOf(r, now, cctx.projects, cctx.clientNames))).reverse();
 
   // Jobs a hand-added or job-less ask can go on: work in flight from the last 60 days.
   const jobRows = await prisma.project.findMany({
@@ -857,23 +991,29 @@ export async function specialRequestsBoard(now: Date = new Date(), opts: { count
 export async function schedulingBoard(now: Date = new Date(), opts: { countsOnly?: boolean } = {}): Promise<{ asks: AskView[]; aryeo: AskView[]; counts: JobCounts; closed: AskView[] }> {
   const rows = await readAsks({ kind: "SCHEDULING", state: "OPEN" });
   const ctx = await contextFor(rows);
-  const windowStart = now.getTime() - ARYEO_CHANGE_WINDOW_HOURS * HOUR;
-  const live = rows.filter((r) => !ctx.testClients.has(r.clientId) && (r.source !== "aryeo" || r.askedAt.getTime() >= windowStart));
-  const views = live.map((r) => viewOf(r, now, ctx.projects, ctx.clientNames));
+  // Oct 19 2026: the client's own scheduling asks only. A move or cancel seen
+  // in Aryeo (the appointment bell covers it) and a portal session request
+  // (its desk task covers it) are no longer asks; `aryeo` stays in the shape,
+  // empty. A job delivered after the ask was made is left out too.
+  const live = rows.filter((r) => !ctx.testClients.has(r.clientId) && isLiveAskSource(r.source) && !closesOnDelivery(r, ctx.projects.get(r.projectId ?? "")));
+  const seesMoney = opts.countsOnly ? true : await viewerSeesMoney();
+  const scrub = (v: AskView) => (seesMoney ? v : moneyFree(v));
+  const views = live.map((r) => scrub(viewOf(r, now, ctx.projects, ctx.clientNames)));
   const asks = views.filter((v) => v.source !== "aryeo");
   const aryeo = views.filter((v) => v.source === "aryeo");
   const counts = countsOf(views.map((v) => ({ askedAt: new Date(v.askedAtISO), behind: v.behind, dueToday: v.dueToday })), now);
   if (opts.countsOnly) return { asks, aryeo, counts, closed: [] };
   const closedRows = await readAsks({ kind: "SCHEDULING", state: { in: ["DONE", "CONFIRMED", "NOT_NEEDED"] }, updatedAt: { gte: new Date(now.getTime() - 3 * 86_400_000) } }, 40);
   const cctx = await contextFor(closedRows);
-  const closed = closedRows.filter((r) => !cctx.testClients.has(r.clientId)).map((r) => viewOf(r, now, cctx.projects, cctx.clientNames)).reverse();
+  const closed = closedRows.filter((r) => !cctx.testClients.has(r.clientId) && isLiveAskSource(r.source)).map((r) => scrub(viewOf(r, now, cctx.projects, cctx.clientNames))).reverse();
   return { asks, aryeo, counts, closed };
 }
 
 /** A client's open asks from the last `days`, for the "never mind" re-read (revisionNotNeeded). */
 export async function openAsksForClient(clientId: string, days: number, now: Date = new Date()) {
   return prisma.clientAsk.findMany({
-    where: { clientId, state: "OPEN", source: { not: "aryeo" }, askedAt: { gte: new Date(now.getTime() - days * 86_400_000) } },
+    // The client's own asks only (Oct 19 2026): an order note or a portal or Aryeo row was never said in the conversation.
+    where: { clientId, state: "OPEN", source: { in: [...ASK_SOURCES] }, askedAt: { gte: new Date(now.getTime() - days * 86_400_000) } },
     orderBy: { askedAt: "asc" },
     select: { id: true, kind: true, text: true, summary: true, askedAt: true, askedBy: true, projectId: true },
   });

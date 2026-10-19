@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { ActivityType } from "@prisma/client";
 import { etDateTime } from "@/lib/datetime";
+import { getCurrentUser } from "@/lib/auth/user";
 
 // ---------------------------------------------------------------------------
 // A photographer's field flag routes to the JOB — never to the product board.
@@ -49,6 +50,21 @@ import { etDateTime } from "@/lib/datetime";
 //
 // Best-effort by contract: an alerting or task hiccup must never break the
 // photographer's submit — their words are already on the timeline by then.
+//
+// SORTED (Oct 19 2026). Jordan: a flag "that doesn't relate to photo editing
+// or video editing or delivery ... should just go to me so I can see the
+// issues that keep happening at shoots." Each flag is sorted by its words
+// (shootIssues.sortShootFlag, a plain word rule):
+//   • about the photos, the video, the edit or delivery → as above: Kyle's
+//     loop, the ops ping, the OWNER+ADMIN bell, and the job's "Before you
+//     send" box (lib/jobChecks reads the FLAG row with the same rule);
+//   • about anything else at the shoot (late, house not ready, access,
+//     equipment, scheduling, the client's behaviour) → ONLY Jordan: his own
+//     loop for the job (key shoot-owner-<projectId>, assigned "jordan") and
+//     an owner-only bell. No ops ping (the ops channel is Kyle's DM today),
+//     nothing on Kyle's loop, nothing on the job box;
+//   • both kinds of words → both; neither → Kyle (the safe default).
+// The FLAG row on the timeline is written for every flag, as before.
 // ---------------------------------------------------------------------------
 
 /** The one ops loop a job's field flags share. */
@@ -100,11 +116,22 @@ export async function fileFieldIssue(opts: {
     // WHO flagged it: the session identity (photographers are logged in), with
     // the job's photographer as the sessionless-local-dev fallback.
     let reportedBy: string | null = project?.photographer?.name ?? null;
+    let reporterMemberId: string | null = null;
     try {
-      const { getCurrentUser } = await import("@/lib/auth/user");
       const u = await getCurrentUser();
-      if (u) reportedBy = u.name ?? u.email;
+      if (u) {
+        reportedBy = u.name ?? u.email;
+        // Not while previewing someone else: their name is not the flagger's.
+        if (!u.impersonating) reporterMemberId = u.teamMemberId ?? null;
+      }
     } catch { /* keep the fallback */ }
+
+    // WHAT IT IS ABOUT (Oct 19 2026): the work (Kyle and the job box), the
+    // shoot itself (Jordan only), or both. See the header.
+    const { sortShootFlag, isJobFlag, isOwnerFlag } = await import("@/lib/shootIssues");
+    const sorted = sortShootFlag(note, opts.label);
+    const toKyle = isJobFlag(sorted.route);
+    const toJordan = isOwnerFlag(sorted.route);
 
     // One key per (job, kind of flag, wording) for the BELL only — each new
     // flag rings once, a debrief card re-submitted on the next portal visit in
@@ -129,12 +156,24 @@ export async function fileFieldIssue(opts: {
     });
     if (justFlagged === 0) {
       await prisma.activity.create({
-        data: { projectId: opts.projectId, type: ActivityType.FLAG, body: `${opts.label}: ${note}`.slice(0, 4000) },
+        data: { projectId: opts.projectId, type: ActivityType.FLAG, body: `${opts.label}: ${note}`.slice(0, 4000), authorId: reporterMemberId },
       });
       console.warn("fileFieldIssue wrote the FLAG activity itself — caller didn't", opts.page);
+    } else if (reporterMemberId) {
+      // WHO flagged it, on the row the job box reads (Oct 19 2026). The callers
+      // write the row without an author; best-effort.
+      await prisma.activity
+        .updateMany({
+          where: { projectId: opts.projectId, type: ActivityType.FLAG, authorId: null, createdAt: { gte: new Date(Date.now() - 2 * 60_000) }, body: { contains: note.slice(0, 200) } },
+          data: { authorId: reporterMemberId },
+        })
+        .catch(() => null);
     }
 
-    if (!opts.opsTaskAlreadyFiled) {
+    // Jordan's own loop for a flag about the shoot itself (Oct 19 2026).
+    if (toJordan) await fileOwnerShootIssue({ projectId: opts.projectId, note, page: opts.page, label: opts.label, street, title: project?.title ?? null, reportedBy });
+
+    if (!opts.opsTaskAlreadyFiled && toKyle) {
       const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
       const priority = opts.priority ?? "HIGH";
       // On-site problems need an answer while the photographer is still there.
@@ -251,23 +290,37 @@ export async function fileFieldIssue(opts: {
     }
 
     // Same field-of-view pings as before, pointed at the JOB (best-effort).
-    try {
-      const { opsAlert, notifyInApp } = await import("@/lib/notify");
-      const href = `/projects/${opts.projectId}`;
-      await opsAlert(
-        `🚩 ${opts.label}: “${note.slice(0, 140)}” — ${street}${reportedBy ? ` (from ${reportedBy})` : ""} → ${appBase()}${href}`,
-      );
-      await notifyInApp({
-        kind: "system",
-        title: `${opts.label} — ${street}`.slice(0, 90),
-        href,
-        // Kyle and James run the day; Jordan wants field problems in view too.
-        targets: [{ roles: ["OWNER", "ADMIN"] }],
-        // Keyed on the flag, not on a row id — the old key was the board row's
-        // id, so a re-submitted debrief rang the bell all over again.
-        dedupeKey: `fieldflag-${flagKey}`,
-      });
-    } catch { /* non-fatal */ }
+    // A flag about the shoot itself rings the owner's bell only (Oct 19 2026).
+    if (!toKyle) {
+      try {
+        const { notifyInApp } = await import("@/lib/notify");
+        await notifyInApp({
+          kind: "system",
+          title: `Shoot issue for you: ${street}`.slice(0, 90),
+          href: `/projects/${opts.projectId}`,
+          targets: [{ roles: ["OWNER"] }],
+          dedupeKey: `fieldflag-${flagKey}`,
+        });
+      } catch { /* non-fatal */ }
+    } else {
+      try {
+        const { opsAlert, notifyInApp } = await import("@/lib/notify");
+        const href = `/projects/${opts.projectId}`;
+        await opsAlert(
+          `🚩 ${opts.label}: “${note.slice(0, 140)}” — ${street}${reportedBy ? ` (from ${reportedBy})` : ""} → ${appBase()}${href}`,
+        );
+        await notifyInApp({
+          kind: "system",
+          title: `${opts.label} — ${street}`.slice(0, 90),
+          href,
+          // Kyle and James run the day; Jordan wants field problems in view too.
+          targets: [{ roles: ["OWNER", "ADMIN"] }],
+          // Keyed on the flag, not on a row id — the old key was the board row's
+          // id, so a re-submitted debrief rang the bell all over again.
+          dedupeKey: `fieldflag-${flagKey}`,
+        });
+      } catch { /* non-fatal */ }
+    }
 
     // The job's own pages are revalidated by the callers; these are the screens
     // the ops loop shows up on.
@@ -276,5 +329,68 @@ export async function fileFieldIssue(opts: {
     revalidatePath("/");
   } catch (e) {
     console.warn("fileFieldIssue failed (the flag itself is already on the job)", e);
+  }
+}
+
+/**
+ * Jordan's loop for one job's flags about the shoot itself (Oct 19 2026): one
+ * SmartTask per job (key shoot-owner-<projectId>), assigned "jordan", with
+ * every flag appended in the creative's words. flaggedBy/flaggedAt put it on
+ * his Home's "Flagged by" banner; shootIssues.ownerShootIssues lists it.
+ * sourceDetail starts "owner " so Kyle's loop never mistakes it for one of
+ * its own legacy rows (legacyLoopWhere reads /upload/ and /shoot/).
+ * Best-effort: never throws.
+ */
+async function fileOwnerShootIssue(o: { projectId: string; note: string; page: string; label: string; street: string; title: string | null; reportedBy: string | null }): Promise<void> {
+  try {
+    const { ownerShootLoopKey } = await import("@/lib/shootIssues");
+    const key = ownerShootLoopKey(o.projectId);
+    const now = new Date();
+    const jordan = await prisma.teamMember.findFirst({ where: { name: { startsWith: "Jordan", mode: "insensitive" }, active: true }, select: { id: true } });
+    const entry = `${o.label}, ${o.reportedBy ?? "the photographer"}, ${etDateTime(now)}: ${o.note}`;
+    const shared = {
+      taskType: "internal_instruction",
+      reasonCreated: `A creative flagged something about the shoot itself from ${o.page}.`,
+      source: "manual",
+      sourceDetail: `owner ${o.page}`.slice(0, 200),
+      clientId: null,
+      propertyAddress: o.title,
+      flaggedBy: o.reportedBy,
+      flaggedAt: now,
+      assignedKey: "jordan",
+      ownerId: jordan?.id ?? null,
+      projectId: o.projectId,
+    };
+    const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true, description: true, status: true } });
+    if (!existing) {
+      await prisma.smartTask
+        .create({
+          data: {
+            ...shared,
+            title: `Shoot issue: ${o.street}`.slice(0, 120),
+            summary: `${o.reportedBy ?? "The photographer"} flagged this at the shoot on ${o.street}: "${o.note.slice(0, 200)}". Not about the editing or delivery, so it came to you, not Kyle.`.slice(0, 500),
+            description: `• ${entry}`.slice(0, 2000),
+            priority: "MEDIUM",
+            status: "OPEN",
+            dedupeKey: key,
+          },
+        })
+        .catch(async (e) => {
+          // A twin filed it a moment ago: append instead.
+          if ((e as { code?: string })?.code !== "P2002") throw e;
+          await fileOwnerShootIssue(o);
+        });
+      return;
+    }
+    const prior = (existing.description ?? "").trim();
+    const already = prior.includes(o.note.slice(0, 200));
+    const description = already ? prior : `${prior ? `${prior}\n` : ""}• ${entry}`.slice(-2000);
+    const reopen = existing.status === "COMPLETED" || existing.status === "CANCELLED";
+    await prisma.smartTask.update({
+      where: { id: existing.id },
+      data: { ...shared, description, status: reopen ? "OPEN" : existing.status, completedAt: reopen ? null : undefined },
+    });
+  } catch (e) {
+    console.warn("owner shoot issue not filed (the flag itself is already on the job)", e);
   }
 }
