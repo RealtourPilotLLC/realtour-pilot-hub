@@ -39,11 +39,11 @@ export type FlagAbout = "photo" | "video" | "delivery" | "both";
 export const ownerShootLoopKey = (projectId: string) => `shoot-owner-${projectId}`;
 
 const PHOTO_RE =
-  /\b(photos?|pics?|pictures?|images?|stills?|retouch\w*|hdr|exposure|over-?exposed|under-?exposed|sky|skies|twilight|floor ?plans?|matterport|3d tour|zillow|virtual(?:ly)? stag\w*|lot ?lines?|mirrors?|reflections?|trash ?cans?|photoshop|white balance|headshots?)\b/i;
+  /\b(photos?|pics?|pictures?|images?|stills?|retouch\w*|hdr|exposure|over-?exposed|under-?exposed|sky|skies|twilight|floor ?plans?|matterport|3d tour|zillow|virtual(?:ly)? stag\w*|lot ?lines?|mirrors?|reflections?|trash ?cans?|photoshop|white balance|headshots?|exteriors?|interiors?)\b/i;
 const VIDEO_RE =
   /\b(videos?|footage|clips?|reels?|b-?roll|audio|sound|music|songs?|voice-?over|script|talking head|on camera|teleprompter|gimbal|walk-?through|cinematic|intro|outro|interview)\b/i;
 const EDIT_RE =
-  /\b(shots?|edit(?:s|ed|ing|or|ors)?|remov\w*|angles?|lens|blurr?y|blur|out of focus|colou?rs?|drone|aerials?|re-?shoot|re-?take|coverage|missed shot|cull\w*|rooms?)\b/i;
+  /\b(shots?|edit(?:s|ed|ing|or|ors)?|remov\w*|angles?|lens|blurr?y|blur|out of focus|colou?rs?|drone|aerials?|re-?shoot|re-?take|coverage|missed shot|cull\w*|rooms?|bedrooms?|bathrooms?|basements?|kitchens?|garages?|yards?)\b/i;
 const DELIVERY_RE =
   /\b(deliver\w*|upload\w*|files?|raws?|sd ?cards?|memory cards?|dropbox|aryeo|links?|due|rush|same[- ]day|turnaround|corrupt\w*|backups?)\b/i;
 const OTHER_RE =

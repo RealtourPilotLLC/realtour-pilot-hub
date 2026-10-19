@@ -1,6 +1,7 @@
 import "server-only";
 import { slugForName } from "@/lib/assignees";
 import { getCurrentUser } from "./user";
+import { authEnforcedNow } from "./enforced";
 
 type AppRole = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 
@@ -11,15 +12,9 @@ type AppRole = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 // uses the REAL (non-impersonated) role, and blocks mutations while an owner is
 // previewing someone else ("view as" is read-only).
 //
-// FAIL CLOSED IN PROD: enforcement is ALWAYS on when running in production or
-// on Vercel, regardless of AUTH_ENFORCE — losing/typo-ing the env var on a
-// redeploy or an unscoped preview deployment must never turn every permission
-// check into a no-op against the shared prod database (audit crack #26). The
-// AUTH_ENFORCE flag remains only as a way to turn enforcement ON locally.
-const enforced = () =>
-  process.env.AUTH_ENFORCE === "true" ||
-  process.env.NODE_ENV === "production" ||
-  Boolean(process.env.VERCEL);
+// FAIL CLOSED IN PROD: see lib/auth/enforced (always on in production or on
+// Vercel; AUTH_ENFORCE only turns it ON locally).
+const enforced = authEnforcedNow;
 
 // Exported for callers that need the same on/off signal without a fixed role
 // requirement (e.g. Ask the Hub resolves a content TIER rather than a role, but

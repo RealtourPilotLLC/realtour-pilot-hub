@@ -7,7 +7,8 @@ import { clip, scrubMoney } from "@/lib/text";
 import { etAt, etDateTime, etDayKey } from "@/lib/datetime";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced } from "@/lib/auth/guards";
+// Not lib/auth/guards: that pulls in more than this file needs (and breaks the live scripts that read it).
+import { authEnforcedNow } from "@/lib/auth/enforced";
 
 // ---------------------------------------------------------------------------
 // OPEN CLIENT ASKS (Oct 19 2026). Jordan: "In the review room, before it's
@@ -803,7 +804,7 @@ export async function viewerSeesMoney(): Promise<boolean> {
   try {
     const u = await getCurrentUser();
     if (u) return u.role === "OWNER";
-    return !authEnforced();
+    return !authEnforcedNow();
   } catch {
     return false;
   }
