@@ -78,7 +78,7 @@ export async function PhotographerRoom({ memberId, firstName }: { memberId: stri
     <div>
       <PageHeader
         eyebrow="Your shoots"
-        title="Review Room"
+        title="Video Review Room"
         subtitle={
           waiting
             ? `${waiting} cut${waiting === 1 ? "" : "s"} from your shoots are being reviewed — watch them and say what you'd change`

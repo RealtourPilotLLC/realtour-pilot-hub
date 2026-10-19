@@ -11,17 +11,20 @@ import type { UploadReceipt } from "@/lib/deliveryUploads";
 // LISTING VIDEOS INTO ARYEO, BY THE HUB (Oct 19 2026).
 //
 // Jordan: "We should be able to send the videos just like we send the photos
-// to Aryeo. Any videos that get approved should be uploaded and delivered once
-// approved and back from Topaz. Once it's back from Topaz, it should
-// automatically get uploaded to Aryeo and then delivered, with the login
-// retries and things like that." The Review Room approval IS the person's
-// approval for a video (for video only, it replaces the Oct 15 photo rule
-// "Kyle approves every Aryeo delivery"). Monthly and personal-branding videos
-// go to the client's portal and are never touched here.
+// to Aryeo." Then, the same day: a "ready to send" list at the top of the
+// Video Review Room "with a button that says 'upload to aryeo and send'".
+// BUTTON ONLY (Jordan, Oct 19): the hub uploads a video to Aryeo ONLY when a
+// person presses Upload to Aryeo and send (or Send all, or Try again). Nothing
+// starts by itself: driveVideoPushes moves the runs people started and never
+// picks up a new video. The AppSetting switch (video_delivery:settings
+// aryeoPush) is still read so nothing that reads it breaks, but it no longer
+// starts anything, and a started run always uploads AND delivers. Monthly and
+// personal-branding videos go to the client's portal and are never touched
+// here.
 //
 // ONE RUN PER APPROVED CUT, kept in AppSetting "video_aryeo_push:<cut id>",
-// moved on by the 1080p cron (driveVideoPushes) a step at a time, one driver at
-// a time (compare-and-swap + a 45 s lease), the same shape as the photo push
+// moved on by the press itself and then by the 1080p cron (driveVideoPushes) a
+// step at a time, one driver at a time (compare-and-swap + a 45 s lease), the same shape as the photo push
 // (lib/photoDelivery/aryeoPush.ts) and through the same Aryeo login
 // (integrations/aryeoWeb.ts: one session, signs in again when Aryeo drops it,
 // and a change Aryeo may already have made is NEVER sent twice):
@@ -33,27 +36,38 @@ import type { UploadReceipt } from "@/lib/deliveryUploads";
 //               fetches it from a temporary Dropbox link (from_url), or, when
 //               that is refused, the hub sends it in 5 MB parts across as
 //               many cron passes as it takes (a 345 MB file is 69 parts)
-//   ADDING      the intent is saved FIRST, then the Add Video call goes once.
-//               A pass that died around it, or Aryeo signing the hub out in
-//               the middle, never sends it again: the check decides
+//   ADDING      the intent is saved FIRST, then the Add Video call goes once,
+//               in the same pass (the intent is only saved with 30 s of the
+//               pass left, and the pass never stops between the two). One run
+//               per listing at a time between the add and the check (a lock
+//               in AppSetting "video_aryeo_adding:<listing>"). A pass that
+//               died around it, or Aryeo signing the hub out in the middle,
+//               never sends it again: the check decides
 //   CHECKING    the public API must show a NEW video (not there before, made
-//               after the add), the file's length, playable; Aryeo converts in
-//               the background, so up to an hour. Then the upload receipt is
-//               written (the hub as the uploader, with the video's id)
+//               after the add, not a video another run already claimed), the
+//               file's length, playable; Aryeo converts in the background, so
+//               up to an hour. Then the upload receipt is written (the hub as
+//               the uploader, with the video's id)
 //   REPLACING   a revision: the hub's OWN earlier video of this same video
-//               comes off (never one somebody else put there)
-//   WAITING     upload only: on the listing, Kyle presses Deliver now. Also
-//               the short automatic waits before a delivery (another video of
-//               the job still on its way, photos going up on the listing, a
-//               delivery minutes ago)
+//               comes off (never one somebody else put there), including the
+//               one an earlier try of this same cut put up before its file
+//               changed
+//   WAITING     on the listing, a person presses Deliver now (an earlier
+//               version went up by hand and is still there, or a delivery the
+//               hub could not see finish). Also the short automatic waits
+//               before a delivery (another video of the job still on its way,
+//               photos going up on the listing, a delivery minutes ago)
 //   DELIVERING  the gates again, then Aryeo's own Re-deliver, ONCE per
 //               listing even when a job owes several videos
 //   CONFIRMING  the video is still on the listing; markVideoSent (which closes
 //               the 1080p job and Kyle's upload task) and the client notice
-//   DONE | FAILED (with Aryeo's words; a sign-in failure is retried after 30
-//               minutes) | HELD (why, in plain words) | SHADOW (practice run)
+//   DONE | FAILED (with Aryeo's words; a sign-in failure of a started run is
+//               tried again after 30 minutes, three times at most; a press
+//               that cannot start writes a FAILED run that says why) | HELD
+//               (why, in plain words) | SHADOW (an old practice-run line, from
+//               before Oct 19: never moved, the button replaces it)
 //
-// THE GATES. Before the upload: the switch, the hub's Aryeo login, the listing
+// THE GATES. Before the upload: the hub's Aryeo login, the listing
 // linked, the cut still the current approved version, a checked 1080p file
 // (Topaz done and verified, never held or unchecked), the final file's sound
 // (finalRendition.finalFileSoundCheck: a hold holds, an unread check does
@@ -63,12 +77,19 @@ import type { UploadReceipt } from "@/lib/deliveryUploads";
 // gate runs BEFORE the upload, not only before the delivery. Before the
 // delivery: the same, the file's fingerprint unchanged, every video of the job
 // that is on its way on the listing, no photo push sending or waiting on the
-// same listing, and a few minutes since the listing's last delivery.
+// same listing, and a few minutes since the listing's last delivery. Aryeo
+// signing the hub out (or not answering) during Deliver means the email may
+// have gone: never re-sent by the hub, only a person's Deliver now sends it.
 // ---------------------------------------------------------------------------
 
 const KEY = (submissionId: string) => `video_aryeo_push:${submissionId}`;
 const DELIVER_KEY = (listingId: string) => `video_aryeo_deliver:${listingId}`;
+const ADD_LOCK_KEY = (listingId: string) => `video_aryeo_adding:${listingId}`;
 const PREFIX = "video_aryeo_push:";
+/** Time a pass must still have before it saves an add's intent (the add itself follows at once). */
+const ADD_MARGIN_MS = 30_000;
+/** Automatic tries after a sign-in failure of a run a person started. */
+const LOGIN_RETRIES = 3;
 const LEASE_MS = 45_000;
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -129,6 +150,12 @@ export type VideoPushRun = {
   mediaAt: string | null;
   /** The hub's own earlier videos of this same video, to take off once the new one is up. */
   replace: { mediaId: string; submissionId: string }[];
+  /** Videos an earlier try of THIS cut put on the listing before its file
+   *  changed (a retry after a new export): taken off like an earlier version.
+   *  Absent on runs written before Oct 19 evening. */
+  earlierMediaIds?: string[];
+  /** Automatic tries after a sign-in failure (a person started the run). Absent on older runs: never retried by itself. */
+  loginRetries?: number;
   /** When the delete of those went to Aryeo (never sent twice). */
   replaceSentAt: string | null;
   replacedAt: string | null;
@@ -159,7 +186,8 @@ export type VideoPushRun = {
   /** A Dropbox or network blip: the next pass after this tries again (3 at most). */
   pauseUntil: string | null;
   errors: number;
-  /** The switch when the run started (a practice run says SHADOW). */
+  /** What the run does: "deliver" (upload and deliver) for every run a person
+   *  starts; "shadow" only on the old practice-run lines. */
   mode: VideoPushMode;
 };
 
@@ -220,6 +248,72 @@ export async function runsFor(submissionIds: string[]): Promise<Map<string, Vide
 
 export async function videoPushRun(submissionId: string): Promise<VideoPushRun | null> {
   return (await load(submissionId)).run;
+}
+
+/** Every other run on this listing (one query). */
+async function otherRunsOn(listingId: string, runId: string): Promise<VideoPushRun[]> {
+  if (!listingId) return [];
+  const rows = await prisma.appSetting.findMany({ where: { key: { startsWith: PREFIX }, value: { contains: `"listingId":${JSON.stringify(listingId)}` } }, select: { value: true } });
+  const out: VideoPushRun[] = [];
+  for (const row of rows) {
+    try {
+      const r = JSON.parse(row.value) as VideoPushRun;
+      if (r.listingId === listingId && r.id !== runId) out.push(r);
+    } catch { /* an unreadable record claims nothing */ }
+  }
+  return out;
+}
+
+/** The listing's videos other runs of the hub already claimed (never "the new one" for this run). */
+async function claimedByOthers(r: VideoPushRun): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const o of await otherRunsOn(r.listingId, r.id)) if (o.mediaId) ids.add(o.mediaId);
+  return ids;
+}
+
+/** Between the add and the check: the one stretch where a new video on the listing is told apart by time. */
+const betweenAddAndCheck = (r: Pick<VideoPushRun, "state" | "addSentAt" | "mediaId">) => (r.state === "ADDING" && !!r.addSentAt) || (r.state === "CHECKING" && !r.mediaId);
+
+type AddLock = { runId: string; submissionId: string; at: string };
+
+/**
+ * ONE RUN PER LISTING BETWEEN THE ADD AND THE CHECK (Oct 19 audit). Two
+ * videos of one job added at the same moment would each see the other's new
+ * video as "new"; with this lock the second add waits until the first one's
+ * check has found its video. Compare-and-swap in AppSetting; a lock whose
+ * holder has moved on (found its video, stopped, or was replaced by a newer
+ * run) is taken over.
+ */
+async function takeAddLock(r: VideoPushRun): Promise<boolean> {
+  const key = ADD_LOCK_KEY(r.listingId);
+  const mine: AddLock = { runId: r.id, submissionId: r.submissionId, at: new Date().toISOString() };
+  const row = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+  if (!row) {
+    try {
+      await prisma.appSetting.create({ data: { key, value: JSON.stringify(mine), updatedBy: "video-aryeo-push" } });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  let cur: AddLock | null = null;
+  try {
+    cur = JSON.parse(row.value) as AddLock;
+  } catch {
+    cur = null;
+  }
+  if (cur?.runId === r.id) return true;
+  if (cur) {
+    const holder = (await load(cur.submissionId)).run;
+    if (holder && holder.id === cur.runId && betweenAddAndCheck(holder)) return false;
+  }
+  const u = await prisma.appSetting.updateMany({ where: { key, value: row.value }, data: { value: JSON.stringify(mine), updatedBy: "video-aryeo-push" } });
+  return u.count === 1;
+}
+
+async function releaseAddLock(r: VideoPushRun): Promise<void> {
+  if (!r.listingId) return;
+  await prisma.appSetting.deleteMany({ where: { key: ADD_LOCK_KEY(r.listingId), value: { contains: `"runId":${JSON.stringify(r.id)}` } } }).catch(() => {});
 }
 
 // ---- what the gates read --------------------------------------------------------------------
@@ -292,7 +386,7 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
     }
     if (asks.length) {
       const first = asks[0].summary.replace(/\s+/g, " ").trim();
-      return { ok: false, kind: "hold", gate: "asks", why: `Waiting on Kyle to confirm ${asks.length} client ask${asks.length === 1 ? "" : "s"}${first ? ` ("${first.slice(0, 120)}")` : ""}.` };
+      return { ok: false, kind: "hold", gate: "asks", why: `Waiting for ${asks.length} open client request${asks.length === 1 ? "" : "s"} to be checked${first ? ` ("${first.slice(0, 120)}")` : ""}.` };
     }
   }
   let note: string | null = null;
@@ -468,15 +562,15 @@ async function siblingsOnTheWay(r: VideoPushRun): Promise<string[]> {
 
 // ---- starting one ---------------------------------------------------------------------------
 
-function blank(submissionId: string, by: string, mode: VideoPushMode): VideoPushRun {
+function blank(submissionId: string, by: string): VideoPushRun {
   const now = new Date().toISOString();
   return {
     id: randomBytes(4).toString("hex"), submissionId, projectId: "", listingId: "", topazJobId: null, state: "PREPARING", fingerprint: null,
     file: { path: "", name: "", size: null, durationSec: null, contentType: "video/mp4" }, title: "",
     upload: { method: null, token: null, fromUrlAt: null, fromUrlRefused: null, mpUuid: null, parts: [], partsDone: 0, mpStartedAt: null, fileUuid: null, fileAt: null, tries: 0 },
-    before: null, addSentAt: null, addedAt: null, mediaId: null, mediaAt: null, replace: [], replaceSentAt: null, replacedAt: null, handUploadedBefore: false,
+    before: null, addSentAt: null, addedAt: null, mediaId: null, mediaAt: null, replace: [], earlierMediaIds: [], loginRetries: 0, replaceSentAt: null, replacedAt: null, handUploadedBefore: false,
     deliverNow: false, deliveredAt: null, deliveredBy: null, deliverUncertain: false, soundCheckedFp: null,
-    hold: null, wait: null, recheckAt: null, priorAdd: null, by, startedAt: now, updatedAt: now, finishedAt: null, note: null, logged: null, lease: null, retryAfter: null, pauseUntil: null, errors: 0, mode,
+    hold: null, wait: null, recheckAt: null, priorAdd: null, by, startedAt: now, updatedAt: now, finishedAt: null, note: null, logged: null, lease: null, retryAfter: null, pauseUntil: null, errors: 0, mode: "deliver",
   };
 }
 
@@ -486,25 +580,44 @@ async function log(projectId: string, body: string): Promise<void> {
 }
 
 /**
- * Start (or, in shadow mode, write down) a push for one approved cut. The cron
- * calls this for every approved listing video with a checked 1080p file;
- * Kyle's Retry calls it too. Refusals say why in plain words.
+ * A PERSON PRESSED "Upload to Aryeo and send" (or Send all, or Try again).
+ * The only way a run starts (button only, Oct 19 2026): the cron never calls
+ * this for a video nobody pressed. A press that cannot start (no Aryeo login,
+ * the 1080p file not checked, a newer version) writes a FAILED run that says
+ * why, so the row shows it and offers Try again; a delivered video or one
+ * that never goes to Aryeo (a program video) writes nothing. `auto` is the
+ * cron's own retry of a run a person started that stopped on Aryeo's login.
  */
-export async function requestVideoPush(submissionId: string, opts: { by?: string; mode?: VideoPushMode } = {}): Promise<{ ok: boolean; started: boolean; message: string }> {
-  const settings = await videoDeliverySettings();
-  const mode = opts.mode ?? settings.aryeoPush;
-  if (mode === "off") return { ok: false, started: false, message: "Sending videos to Aryeo is switched off (Video delivery settings)." };
-  const by = opts.by ?? "hub";
+export async function requestVideoPush(submissionId: string, opts: { by: string; auto?: boolean }): Promise<{ ok: boolean; started: boolean; message: string }> {
+  const by = (opts.by || "staff").slice(0, 120);
   const { run: cur, raw } = await load(submissionId);
   if (cur && MOVABLE.includes(cur.state) && cur.state !== "HELD") return { ok: true, started: false, message: "Already sending this video to Aryeo." };
   if (cur?.state === "HELD" && cur.hold?.gate === "manual") return { ok: false, started: false, message: `Held by ${cur.hold.by ?? "a person"}. Release it first.` };
-  if (mode !== "shadow") {
-    const { aryeoWebCredentials } = await import("@/lib/integrations/aryeoWeb");
-    if (!(await aryeoWebCredentials().catch(() => null))) return { ok: false, started: false, message: "The hub's Aryeo login is not set up yet. Jordan adds it on Connections, Aryeo hub login." };
-  }
-  // Shadow reads only the hub's own rows (no Dropbox, no sound read).
+  const next = blank(submissionId, by);
+  const ids = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, project: { select: { aryeoListingId: true } } } });
+  if (!ids) return { ok: false, started: false, message: "That video no longer exists." };
+  next.projectId = ids.projectId;
+  next.listingId = ids.project.aryeoListingId ?? "";
+  // A press that cannot start says why on the row (Oct 19 audit): never a silent refusal.
+  const failNow = async (why: string): Promise<{ ok: boolean; started: boolean; message: string }> => {
+    // What an earlier try already did stays on the record (a video it put up,
+    // an add it never confirmed), so the next press checks before it sends.
+    const failed: VideoPushRun = {
+      ...next, state: "FAILED", note: why, finishedAt: next.startedAt, logged: `stopped. ${why}`, loginRetries: opts.auto ? cur?.loginRetries ?? 0 : 0,
+      fingerprint: cur?.fingerprint ?? null, mediaId: cur?.mediaId ?? null, mediaAt: cur?.mediaAt ?? null, addSentAt: cur?.addSentAt ?? null, addedAt: cur?.addedAt ?? null,
+      before: cur?.before ?? null, priorAdd: cur?.priorAdd ?? null, soundCheckedFp: cur?.soundCheckedFp ?? null,
+    };
+    if (cur?.state === "FAILED" && cur.note === why && !opts.auto) {
+      // The same refusal again: refresh who pressed it, nothing else.
+      await save(submissionId, { ...cur, by, retryAfter: null }, raw);
+      return { ok: false, started: false, message: why };
+    }
+    if (await save(submissionId, { ...failed, earlierMediaIds: cur?.earlierMediaIds ?? [] }, raw)) await log(failed.projectId, `not sent. ${why}`);
+    return { ok: false, started: false, message: why };
+  };
+  const { aryeoWebCredentials } = await import("@/lib/integrations/aryeoWeb");
+  if (!(await aryeoWebCredentials().catch(() => null))) return failNow("The hub's Aryeo login is not set up, so nothing was sent. Jordan adds it on Connections, Aryeo hub login; then press Try again, or upload it by hand.");
   const g = await gates(submissionId, { asks: true, sound: false });
-  const next = blank(submissionId, by, mode);
   // What an earlier run already did is carried, so nothing is sent twice.
   if (cur) {
     if (cur.mediaId && cur.fingerprint && g.ok && cur.fingerprint === g.fingerprint) {
@@ -515,47 +628,36 @@ export async function requestVideoPush(submissionId: string, opts: { by?: string
       next.before = cur.before;
     } else if (cur.addSentAt && !cur.mediaId) next.priorAdd = { sentAt: cur.addSentAt, before: cur.before ?? [] };
     else if (cur.priorAdd && !cur.mediaId) next.priorAdd = cur.priorAdd;
+    // The file changed since an earlier try put a video on the listing: that
+    // video is the hub's own earlier version of this cut, and comes off once
+    // the new one is up (never a second copy left beside it).
+    const earlier = new Set(cur.earlierMediaIds ?? []);
+    if (cur.mediaId && !(g.ok && cur.fingerprint === g.fingerprint)) earlier.add(cur.mediaId);
+    next.earlierMediaIds = [...earlier];
     next.soundCheckedFp = cur.soundCheckedFp;
+    next.loginRetries = opts.auto ? cur.loginRetries ?? 0 : 0;
   }
   if (!g.ok && g.kind !== "hold") {
-    // Delivered, not ready yet, or never the hub's (a program video): nothing is written.
-    if (g.kind === "sent" || g.kind === "not-yet" || g.kind === "never") return { ok: g.kind === "sent", started: false, message: g.why };
-    // Say why on the board; the cron looks again in an hour (a person may fix it meanwhile).
-    const ids = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, project: { select: { aryeoListingId: true } } } });
-    const failed: VideoPushRun = { ...next, state: "FAILED", note: g.why, finishedAt: next.startedAt, retryAfter: g.kind === "stale" ? null : new Date(Date.now() + HOUR).toISOString(), projectId: ids?.projectId ?? "", listingId: ids?.project.aryeoListingId ?? "", logged: `stopped. ${g.why}` };
-    if (await save(submissionId, failed, raw)) {
-      if (cur?.note !== g.why) await log(failed.projectId, `not sent by the hub. ${g.why}`);
-    }
-    return { ok: false, started: false, message: g.why };
+    // Delivered already, or never the hub's (a program video): nothing is written.
+    if (g.kind === "sent" || g.kind === "never") return { ok: g.kind === "sent", started: false, message: g.why };
+    return failNow(g.why);
   }
-  const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: submissionId }, select: { projectId: true, project: { select: { title: true, aryeoListingId: true } }, topazJob: { select: { id: true, finalPath: true, sourceDurationSec: true, sourceSizeBytes: true } } } });
-  next.projectId = cut.projectId;
-  next.listingId = cut.project.aryeoListingId ?? "";
+  const cut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: submissionId }, select: { topazJob: { select: { id: true, finalPath: true, sourceDurationSec: true } } } });
   next.topazJobId = cut.topazJob?.id ?? null;
   next.file = { path: cut.topazJob?.finalPath ?? "", name: cut.topazJob?.finalPath?.split("/").pop() ?? "video.mp4", size: null, durationSec: cut.topazJob?.sourceDurationSec ?? null, contentType: contentTypeOf(cut.topazJob?.finalPath ?? "") };
   next.fingerprint = g.ok ? g.fingerprint : null;
-  if (mode === "shadow") {
-    const then = "then re-deliver the listing (Aryeo's own email to the client)";
-    const size = mb(cut.topazJob?.sourceSizeBytes ?? null);
-    const says = g.ok
-      ? `Practice run: would upload ${size ? `about ${size} MB` : "the 1080p file"} (${next.file.name}) to the Aryeo listing for ${cut.project.title.split(",")[0].trim()}, ${then}. Nothing was sent.`
-      : `Practice run: would hold it. ${g.why}`;
-    const shadow: VideoPushRun = { ...next, state: "SHADOW", note: says, finishedAt: next.startedAt };
-    if (cur?.state === "SHADOW" && cur.note === says && cur.fingerprint === shadow.fingerprint) return { ok: true, started: false, message: says };
-    if (!(await save(submissionId, shadow, raw))) return { ok: false, started: false, message: "That changed a moment ago. Reload the page." };
-    return { ok: true, started: true, message: says };
-  }
   if (!g.ok) {
-    // A hold the push itself re-checks (asks, the job on hold, no listing, the sound).
+    // A hold the run itself re-checks (the client's requests, the job on hold,
+    // no listing, the sound): it carries on by itself once that clears,
+    // because a person asked for it.
     const held: VideoPushRun = { ...next, state: "HELD", hold: { gate: g.gate, why: g.why, by: null, at: next.startedAt, resume: "PREPARING" }, note: g.why, recheckAt: new Date(Date.now() + RECHECK[g.gate]).toISOString() };
-    if (cur?.state === "HELD" && cur.note === g.why) return { ok: false, started: false, message: g.why };
     if (!(await save(submissionId, { ...held, logged: `held. ${g.why}` }, raw))) return { ok: false, started: false, message: "That changed a moment ago. Reload the page." };
-    await log(next.projectId, `held. ${g.why}`);
-    return { ok: false, started: false, message: g.why };
+    await log(next.projectId, `${by} pressed Upload to Aryeo and send; held. ${g.why}`);
+    return { ok: false, started: false, message: `${g.why} It goes by itself once that clears.` };
   }
   if (!(await save(submissionId, next, raw))) return { ok: false, started: false, message: "Someone started it a moment ago." };
-  await log(next.projectId, `${mode === "deliver" ? "uploading and delivering" : "uploading"} ${next.file.name} (approved, back from the 1080p pass).`);
-  return { ok: true, started: true, message: mode === "deliver" ? "Sending it to the Aryeo listing, then re-delivering the listing." : "Sending it to the Aryeo listing. Press Deliver now when it is there." };
+  await log(next.projectId, `${opts.auto ? "trying again after Aryeo's login came back" : `${by} pressed Upload to Aryeo and send`}: uploading ${next.file.name} to the listing, then delivering it.`);
+  return { ok: true, started: true, message: "Uploading it to the Aryeo listing, then sending the listing to the client." };
 }
 
 // ---- moving one on --------------------------------------------------------------------------
@@ -578,15 +680,17 @@ function blocked(r: VideoPushRun, g: Exclude<Verdict, { ok: true }>, resume: Vid
   return fail(r, g.why);
 }
 
-/** After the video is on the listing: deliver, or wait for Kyle (upload only, or an earlier version put up by hand). */
-async function afterUpload(r: VideoPushRun): Promise<VideoPushRun> {
-  const s = await videoDeliverySettings();
+/** After the video is on the listing: deliver (a started run uploads AND
+ *  delivers), or wait for a person when an earlier version went up by hand. */
+function afterUpload(r: VideoPushRun): VideoPushRun {
   if (r.handUploadedBefore && !r.deliverNow) {
     return waitRun(r, "kyle", "On the Aryeo listing. An earlier version of this video went up by hand and is still there: remove it in Aryeo, then press Deliver now.", null);
   }
-  if (s.aryeoPush === "deliver" || r.deliverNow) return { ...r, state: "DELIVERING", note: null, wait: null };
-  return waitRun(r, "kyle", "On the Aryeo listing. Press Deliver now to send it to the client.", null);
+  return { ...r, state: "DELIVERING", note: null, wait: null };
 }
+
+/** A step that changed nothing returns null, so a pass never spins on it (Oct 19 audit). */
+const unlessSame = (n: VideoPushRun, r0: VideoPushRun): VideoPushRun | null => (n.state === r0.state && n.note === r0.note && n.recheckAt === r0.recheckAt ? null : n);
 
 type Ctx = { deadline: number };
 
@@ -635,7 +739,10 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
         return r.note === r0.note ? null : r;
       }
       const own = await ownEarlierVideos(r.submissionId, r.listingId);
-      r.replace = own.replace.filter((x) => listed.some((v) => v.id === x.mediaId));
+      // The hub's own earlier versions: other cuts' runs, and what an earlier
+      // try of THIS cut put up before its file changed (Oct 19 audit).
+      const mine = (r.earlierMediaIds ?? []).filter((id) => !own.replace.some((x) => x.mediaId === id)).map((mediaId) => ({ mediaId, submissionId: r.submissionId }));
+      r.replace = [...own.replace, ...mine].filter((x) => listed.some((v) => v.id === x.mediaId));
       r.handUploadedBefore = own.handUploadedBefore;
       if (receipt && receipt.sourceFingerprint === r.fingerprint && receipt.listingId === r.listingId) {
         const id = receipt.mediaIds?.find((m) => listed.some((v) => v.id === m)) ?? null;
@@ -652,8 +759,10 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
       }
       if (r.priorAdd) {
         const since = Date.parse(r.priorAdd.sentAt) - SKEW_MS;
-        // Any new video counts (Aryeo may not know its length yet), unless its length is known and wrong.
-        const seen = listed.filter((v) => !r.priorAdd!.before.includes(v.id) && (!v.at || v.at.getTime() >= since) && (v.durationSec == null || durationMatches(r.file.durationSec, v.durationSec)));
+        const claimed = await claimedByOthers(r);
+        // Any new video counts (Aryeo may not know its length yet), unless its
+        // length is known and wrong, or another run of the hub already claimed it.
+        const seen = listed.filter((v) => !r.priorAdd!.before.includes(v.id) && !claimed.has(v.id) && (!v.at || v.at.getTime() >= since) && (v.durationSec == null || durationMatches(r.file.durationSec, v.durationSec)));
         if (seen.length) {
           // The earlier add did land: never sent again.
           r.before = r.priorAdd.before;
@@ -785,11 +894,20 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
     if (r.state === "ADDING") {
       // 1. The gates again (cheap ones), just before the client could see it,
       //    then the intent, saved before anything reaches Aryeo.
+      //    THE INTENT AND THE ADD IN ONE PASS (Oct 19 audit): the intent was
+      //    once saved at the very end of a pass, the next pass (minutes later)
+      //    read it as "died around the add" and checked for a video that was
+      //    never sent. Now the intent is only saved with ADD_MARGIN_MS of the
+      //    pass left, and advanceVideoPush never stops between the two.
       if (!r.addSentAt) {
         const g = await gates(r.submissionId, { asks: true, sound: false });
-        if (!g.ok) return blocked(r, g, "ADDING");
-        if (g.fingerprint !== r.fingerprint) return fail(r, "The finished file changed after it was sent to Aryeo's upload service. The new file goes on its own run.");
+        if (!g.ok) return unlessSame(blocked(r, g, "ADDING"), r0);
+        if (g.fingerprint !== r.fingerprint) return fail(r, "The finished file changed after it was sent to Aryeo's upload service. Press Try again to send the new file.");
+        if (ctx.deadline - Date.now() < ADD_MARGIN_MS) return null;
+        // One run per listing between the add and the check.
+        if (!(await takeAddLock(r))) return unlessSame({ ...r, note: "Waiting for another video to finish going up on this listing." }, r0);
         r.addSentAt = new Date().toISOString();
+        r.note = null;
         return r;
       }
       // 2. A pass that died around the add: never sent again; the check decides.
@@ -835,8 +953,11 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
         accepted = !!hit && hit.playable && (hit.durationSec == null || durationMatches(r.file.durationSec, hit.durationSec));
       } else {
         const since = Date.parse(r.addSentAt ?? r.addedAt ?? r.startedAt) - SKEW_MS;
-        // New: not on the listing before the add, and (when Aryeo's id carries its time) made after it.
-        const fresh = listed.filter((v) => !(r.before ?? []).includes(v.id) && (!v.at || v.at.getTime() >= since));
+        const claimed = await claimedByOthers(r);
+        // New: not on the listing before the add, (when Aryeo's id carries its
+        // time) made after it, and not a video another run of the hub already
+        // claimed (Oct 19 audit).
+        const fresh = listed.filter((v) => !(r.before ?? []).includes(v.id) && !claimed.has(v.id) && (!v.at || v.at.getTime() >= since));
         const lengthUnknownFor = Date.now() - Date.parse(r.addedAt ?? r.addSentAt ?? r.startedAt) > 30 * MIN;
         hit = [...fresh].reverse().find((v) => v.playable && (durationMatches(r.file.durationSec, v.durationSec) || (v.durationSec == null && lengthUnknownFor))) ?? null;
         const wrong = fresh.find((v) => v.durationSec != null && !durationMatches(r.file.durationSec, v.durationSec));
@@ -911,11 +1032,12 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
     }
 
     if (r.state === "DELIVERING") {
+      // A started run uploads AND delivers (button only, Oct 19): the switch
+      // is read for the cooldown alone.
       const s = await videoDeliverySettings();
-      if (s.aryeoPush !== "deliver" && !r.deliverNow) return waitRun(r, "kyle", "On the Aryeo listing. Press Deliver now to send it to the client.", null);
       const g = await gates(r.submissionId, { asks: true, sound: false });
-      if (!g.ok) return blocked(r, g, "DELIVERING");
-      if (g.fingerprint !== r.fingerprint) return fail(r, "The finished file changed after it went on the listing. Nothing was delivered; the new file goes on its own run.");
+      if (!g.ok) return unlessSame(blocked(r, g, "DELIVERING"), r0);
+      if (g.fingerprint !== r.fingerprint) return fail(r, "The finished file changed after it went on the listing. Nothing was delivered; press Try again to send the new file.");
       // On the listing from here (the later of Aryeo's id time and the moment the add returned).
       const on = Math.max(Date.parse(r.mediaAt ?? "") || 0, Date.parse(r.addedAt ?? "") || 0) || Date.parse(r.startedAt);
       // Already delivered since the video went up (another video of the job, the photos, Kyle in Aryeo): no second email.
@@ -933,7 +1055,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
       const photos = await photoPushesOn(r.listingId);
       if (photos.busy) {
         return waitRun(r, "photos", photos.waitingForKyle
-          ? "On the listing. Photos on this listing are waiting for Kyle's approval; the video is delivered with them."
+          ? "On the listing. Photos on this listing are waiting for their approval; the video is delivered with them."
           : "On the listing. Photos are going up on this listing right now; the video is delivered after them.", new Date(Date.now() + 5 * MIN));
       }
       if (!r.deliverNow) {
@@ -956,7 +1078,19 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
         await saveListingDelivery(r.listingId, { ...rec, state: "uncertain" }, raw);
         return { ...r, deliveredAt: rec.at, deliveredBy: "hub", deliverUncertain: true, state: "CONFIRMING", wait: null, note: "The hub stopped while delivering; checking whether Aryeo sent it." };
       }
-      if (rec?.state === "sending" && Date.now() - Date.parse(rec.at) < 3 * MIN) return null;
+      if (rec?.state === "sending") {
+        // ANOTHER RUN'S CLAIM IS NEVER TAKEN OVER WHILE THAT RUN LIVES (Oct 19
+        // audit; it used to be after 3 minutes, and a slow Deliver is not a dead
+        // one). The run that claimed it settles its own claim on its next pass.
+        const holder = (await load(rec.submissionId)).run;
+        if (holder && holder.id === rec.runId && (holder.state === "DELIVERING" || holder.state === "CONFIRMING")) {
+          return unlessSame({ ...r, note: "Another video on this listing is being delivered right now; waiting for it." }, r0);
+        }
+        // That run moved on without settling it: the email may have gone. It
+        // counts as a delivery nobody saw finish (never re-sent by the hub).
+        await saveListingDelivery(r.listingId, { ...rec, state: "uncertain" }, raw);
+        return { ...r, note: "Checking an earlier delivery of this listing that did not finish cleanly." };
+      }
       // The listing's page first (its time zone): nothing has been claimed yet if this read fails.
       const page = await W.listingPage(r.listingId);
       const claimed: ListingDelivery = { state: "sending", at: new Date().toISOString(), submissionId: r.submissionId, runId: r.id };
@@ -966,11 +1100,19 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
         await W.deliverListing(r.listingId, { fulfillOrders: true, timezone: page.timezone, redeliver: true });
       } catch (e) {
         const err = e as Error & { kind?: string };
-        if (err.name === "AryeoWebError" && err.kind !== "transient") {
+        // Aryeo's own clear "no", or no login at all: nothing was sent.
+        if (err.name === "AryeoWebError" && (err.kind === "refused" || err.kind === "not-connected")) {
           await saveListingDelivery(r.listingId, { ...claimed, state: "refused" }, claimRaw);
           throw e;
         }
-        // Signed out in the middle, or no answer: the email may have gone. Never re-sent.
+        // Signed out in the middle (Oct 19 audit: this used to stop the run and
+        // try again in 30 minutes, which would have sent a second email), an
+        // answer the hub does not recognise, or no answer: the email may have
+        // gone. Never re-sent by the hub; a person's Deliver now decides.
+        if (err.name === "AryeoWebError" && err.kind === "sign-in") {
+          const { markError } = await import("@/lib/integrations/connections");
+          await markError(W.ARYEO_WEB_PROVIDER, err.message).catch(() => {});
+        }
         await saveListingDelivery(r.listingId, { ...claimed, state: "uncertain" }, claimRaw);
         r.deliveredAt = claimed.at;
         r.deliveredBy = "hub";
@@ -996,7 +1138,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
         const ev = (await deliveryOccurrences(r.listingId).catch(() => [])).find((o) => o.source === "aryeo-event" && o.at.getTime() >= Date.parse(r.deliveredAt!) - MIN);
         if (!ev) {
           if (Date.now() - Date.parse(r.deliveredAt!) < 15 * MIN) return null;
-          return waitRun({ ...r, deliverUncertain: false, deliveredAt: null, deliveredBy: null }, "kyle", "On the listing. Aryeo signed the hub out while it was delivering, so the hub cannot tell whether the email went. Look at the listing in Aryeo; if it was not delivered, press Deliver now.", null);
+          return waitRun({ ...r, deliverUncertain: false, deliveredAt: null, deliveredBy: null }, "kyle", "On the listing. Aryeo signed the hub out or did not answer while it was delivering, so the hub cannot tell whether the email went. Look at the listing in Aryeo; if it was not delivered, press Deliver now.", null);
         }
         r.deliverUncertain = false;
       }
@@ -1023,8 +1165,12 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
     if (err.name === "AryeoWebError" && (err.kind === "sign-in" || err.kind === "not-connected")) {
       const { markError } = await import("@/lib/integrations/connections");
       await markError(W.ARYEO_WEB_PROVIDER, err.message).catch(() => {});
-      // Not this video's fault: tried again once the login works (the photo push's Godfrey lesson).
-      return { ...fail(r, err.message), retryAfter: new Date(Date.now() + 30 * MIN).toISOString() };
+      // Not this video's fault: a run a person started is tried again once the
+      // login works (the photo push's Godfrey lesson), three times at most.
+      // Never past a delivery: a sign-out during Deliver is handled above as
+      // "may have gone", not as a failure.
+      const tries = r.loginRetries ?? 0;
+      return { ...fail(r, `${err.message} The hub tries again in 30 minutes${tries ? "" : " (or press Try again)"}.`), retryAfter: tries < LOGIN_RETRIES ? new Date(Date.now() + 30 * MIN).toISOString() : null, loginRetries: tries };
     }
     // A Dropbox read or a network blip (not Aryeo saying no): twice more, a couple of minutes apart.
     if (err.name !== "AryeoWebError" && ++r.errors < 3) {
@@ -1058,6 +1204,12 @@ function dueNow(r: VideoPushRun): boolean {
   return true;
 }
 
+/** The same run, but for the bookkeeping fields (a step that moved nothing). */
+function sameRun(a: VideoPushRun, b: VideoPushRun): boolean {
+  const strip = (x: VideoPushRun) => JSON.stringify({ ...x, updatedAt: null, lease: null, logged: null });
+  return strip(a) === strip(b);
+}
+
 /** Move one run on, up to `budgetMs`. One driver at a time (lease). */
 export async function advanceVideoPush(submissionId: string, opts: { budgetMs?: number } = {}): Promise<VideoPushRun | null> {
   const t0 = Date.now();
@@ -1073,16 +1225,21 @@ export async function advanceVideoPush(submissionId: string, opts: { budgetMs?: 
   if (!leased) return run;
   raw = leased;
   run = JSON.parse(leased) as VideoPushRun;
-  while (Date.now() < ctx.deadline - 5_000 && MOVABLE.includes(run.state)) {
+  // An add's intent was saved: the add itself follows in this same pass, whatever the clock says (Oct 19 audit).
+  const addOwed = (x: VideoPushRun) => x.state === "ADDING" && !!x.addSentAt && Date.now() - Date.parse(x.addSentAt) <= 90_000;
+  while ((Date.now() < ctx.deadline - 5_000 || addOwed(run)) && MOVABLE.includes(run.state)) {
     const before: VideoPushRun = run;
     let next = await step(run, ctx);
     if (!next) break;
+    // A step that changed nothing ends the pass (never a busy loop that starves the other runs).
+    if (sameRun(before, next)) break;
     next = await logTransition(before, next);
     next.lease = MOVABLE.includes(next.state) ? { token, until: Date.now() + LEASE_MS } : null;
     const saved = await save(submissionId, next, raw);
     if (!saved) break; // someone else took it over
     raw = saved;
     run = JSON.parse(saved) as VideoPushRun;
+    if ((before.state === "ADDING" || before.state === "CHECKING") && !betweenAddAndCheck(run)) await releaseAddLock(run);
     // A wait or a hold ends this pass: the cron looks again when its time comes.
     if (!dueNow(run)) break;
     // Parts of a big file went up and more are left: this pass's time is spent; the next carries on.
@@ -1098,38 +1255,41 @@ export async function advanceVideoPush(submissionId: string, opts: { budgetMs?: 
 // ---- the cron -------------------------------------------------------------------------------
 
 /**
- * Cron (every 5 minutes, from /api/cron/topaz right after the 1080p step, so a
- * file filed this tick starts this tick): start a run for every approved
- * listing video whose checked 1080p file is ready, with no upload recorded and
- * not sent (readyToSend decides which file goes out), then move every live run.
+ * Cron (every 5 minutes, from /api/cron/topaz right after the 1080p step):
+ * moves on the runs PEOPLE STARTED, and nothing else (button only, Oct 19
+ * 2026). It never starts a run for a video nobody pressed, whatever the
+ * AppSetting switch says. The one thing it restarts by itself is a run a
+ * person started that stopped because Aryeo's login failed, three times at
+ * most, 30 minutes apart (the photo push's Godfrey lesson). `mode` is the
+ * stored switch, reported for the cron's log only.
  */
 export async function driveVideoPushes(opts: { budgetMs?: number } = {}): Promise<{ mode: VideoPushMode; started: string[]; moved: string[]; skipped?: string }> {
-  const settings = await videoDeliverySettings();
-  const mode = settings.aryeoPush;
-  if (mode === "off") return { mode, started: [], moved: [], skipped: "sending videos to Aryeo is switched off" };
+  const mode = (await videoDeliverySettings().catch(() => null))?.aryeoPush ?? "off";
   const t0 = Date.now();
   const budget = opts.budgetMs ?? 60_000;
   const started: string[] = [];
-  const { readyToSend } = await import("@/lib/readyToSend");
-  const board = await readyToSend({ recordFollowUpHealth: false, includeNoticeIncidents: false });
-  const rows = board.ready.filter((v) => v.deliveryDestination === "aryeo-listing" && !v.monthlyProgram && v.file.source === "topaz-1080p");
-  const runs = await runsFor(rows.map((v) => v.submissionId));
-  for (const v of rows) {
+  // Login retries: only runs written since Oct 19 carry loginRetries; an older
+  // FAILED record (a practice-era refusal) is never picked up.
+  const retryRows = await prisma.appSetting.findMany({
+    where: { key: { startsWith: PREFIX }, AND: [{ value: { contains: '"state":"FAILED"' } }, { value: { contains: '"loginRetries":' } }] },
+    select: { value: true },
+    take: 20,
+  });
+  for (const row of retryRows) {
     if (started.length >= 3 || Date.now() - t0 > budget / 3) break;
-    const cur = runs.get(v.submissionId);
-    // An upload somebody else recorded (Kyle's Mark as Uploaded, the listing check): theirs to finish.
-    if (v.uploaded && !cur) continue;
-    if (cur) {
-      if (MOVABLE.includes(cur.state) || cur.state === "DONE") continue;
-      // A practice-run line is written once per file; a refusal is looked at again after its wait.
-      if (cur.state === "SHADOW" && mode === "shadow" && cur.fingerprint === v.uploadFingerprint) continue;
-      if (cur.state === "FAILED" && !(cur.retryAfter && Date.parse(cur.retryAfter) < Date.now())) continue;
+    let f: VideoPushRun;
+    try {
+      f = JSON.parse(row.value) as VideoPushRun;
+    } catch {
+      continue;
     }
-    const r = await requestVideoPush(v.submissionId, { by: "hub", mode }).catch(() => null);
-    if (r?.started) started.push(v.submissionId);
+    if (f.state !== "FAILED" || typeof f.loginRetries !== "number" || f.loginRetries >= LOGIN_RETRIES || !f.retryAfter || Date.parse(f.retryAfter) > Date.now()) continue;
+    // Count the try before it is made, so a crash in the middle never loops.
+    const { raw } = await load(f.submissionId);
+    if (!raw || !(await save(f.submissionId, { ...f, loginRetries: f.loginRetries + 1, retryAfter: null }, raw))) continue;
+    const r = await requestVideoPush(f.submissionId, { by: f.by, auto: true }).catch(() => null);
+    if (r?.started) started.push(f.submissionId);
   }
-  // Practice runs call nothing: nothing to move.
-  if (mode === "shadow") return { mode, started, moved: [] };
   const live = await prisma.appSetting.findMany({
     where: { key: { startsWith: PREFIX }, NOT: [{ value: { contains: '"state":"DONE"' } }, { value: { contains: '"state":"FAILED"' } }, { value: { contains: '"state":"SHADOW"' } }] },
     select: { key: true, value: true },
@@ -1144,7 +1304,7 @@ export async function driveVideoPushes(opts: { budgetMs?: number } = {}): Promis
       return [];
     }
   });
-  // Waiting for Kyle's Deliver now: moved only once somebody marked it sent (Kyle delivered in Aryeo by hand).
+  // Waiting for a person's Deliver now: moved only once somebody marked it sent (delivered in Aryeo by hand).
   const forKyle = parsed.filter((r) => r.state === "WAITING" && r.wait?.gate === "kyle").map((r) => r.submissionId);
   const sentNow = new Set(forKyle.length ? (await prisma.reviewSubmission.findMany({ where: { id: { in: forKyle }, sentToClientAt: { not: null } }, select: { id: true } })).map((x) => x.id) : []);
   for (const r of parsed) {
@@ -1159,21 +1319,26 @@ export async function driveVideoPushes(opts: { budgetMs?: number } = {}): Promis
 
 // ---- Kyle's controls ------------------------------------------------------------------------
 
-/** Retry a stopped or held run (the listing is checked before anything is sent again). */
-export async function retryVideoPush(submissionId: string, by: string): Promise<{ ok: boolean; message: string }> {
+/**
+ * THE PRESS: Upload to Aryeo and send, Try again on a stopped or held run (the
+ * listing is checked before anything is sent again). Starts the run, then
+ * moves it as far as `budgetMs` allows; the cron carries on from there.
+ */
+export async function retryVideoPush(submissionId: string, by: string, opts: { budgetMs?: number } = {}): Promise<{ ok: boolean; started?: boolean; message: string }> {
   const { run } = await load(submissionId);
   if (run && ACTIVE.includes(run.state)) return { ok: true, message: "Already sending this video to Aryeo." };
   if (run?.state === "HELD" && run.hold?.gate === "manual") return { ok: false, message: `Held by ${run.hold.by ?? "a person"}. Release it first.` };
   if (run?.state === "DONE") return { ok: true, message: run.note ?? "Already delivered." };
   const r = await requestVideoPush(submissionId, { by });
-  if (r.started) await advanceVideoPush(submissionId, { budgetMs: 20_000 }).catch(() => null);
-  return { ok: r.ok, message: r.message };
+  if (r.started && (opts.budgetMs ?? 20_000) > 0) await advanceVideoPush(submissionId, { budgetMs: opts.budgetMs ?? 20_000 }).catch(() => null);
+  return { ok: r.ok, started: r.started, message: r.message };
 }
 
-/** Deliver now: a video on the listing waiting for Kyle (upload only) or for another video or the cooldown. Never past a hold. */
+/** The press under its own name (the Video Review Room's button). */
+export const startVideoSend = retryVideoPush;
+
+/** Deliver now: a video on the listing waiting for a person (an earlier version up by hand, a delivery nobody saw finish) or for another video or the cooldown. Never past a hold. */
 export async function deliverVideoNow(submissionId: string, by: string): Promise<{ ok: boolean; message: string }> {
-  const settings = await videoDeliverySettings();
-  if (settings.aryeoPush === "off" || settings.aryeoPush === "shadow") return { ok: false, message: "Sending videos to Aryeo is not switched on (Video delivery settings)." };
   for (let attempt = 0; attempt < 2; attempt++) {
     const { run, raw } = await load(submissionId);
     if (!run) return { ok: false, message: "Nothing has been sent to Aryeo for this video yet." };
@@ -1200,7 +1365,7 @@ export async function holdVideoPush(submissionId: string, by: string, reason: st
     if (run?.state === "CONFIRMING" || run?.state === "DELIVERING") return { ok: false, message: "It is being delivered right now and cannot be held." };
     const why = `Held by ${by}${reason ? `: ${reason.trim().slice(0, 200)}` : ""}.`;
     const base = run ?? (await (async () => {
-      const b = blank(submissionId, by, (await videoDeliverySettings()).aryeoPush);
+      const b = blank(submissionId, by);
       const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, project: { select: { aryeoListingId: true } } } });
       return { ...b, projectId: cut?.projectId ?? "", listingId: cut?.project.aryeoListingId ?? "" };
     })());
@@ -1232,15 +1397,20 @@ export async function releaseVideoPush(submissionId: string, by: string): Promis
 // ---- the line on every screen ---------------------------------------------------------------
 
 export type VideoPushLine = {
+  /** "deliver" for a run a person started (it uploads and delivers); "off" when no run exists. */
   mode: VideoPushMode;
   state: VideoPushState | null;
   says: string;
   tone: "progress" | "waiting" | "held" | "failed" | "done" | "info";
-  /** The hub has this one: Kyle is not asked to upload it by hand. */
+  /** A run a person started is moving it: nobody is asked to upload it by hand. */
   handledByHub: boolean;
-  /** On the listing, waiting for Kyle's Deliver now (upload only, or an earlier version up by hand). */
+  /** On the listing, waiting for a person's Deliver now (an earlier version up by hand, a delivery nobody saw finish). */
   waitingForKyle: boolean;
-  /** Kyle's controls that apply now. */
+  /** "Upload to Aryeo and send" (or Try again) may be pressed: no run is moving it and the hub can send this file. */
+  canStart: boolean;
+  /** Where a started run is, for the row's three steps; null when no run went that far. */
+  progress: "uploading" | "on-listing" | "sent" | null;
+  /** The controls that apply now. */
   canRetry: boolean;
   canDeliverNow: boolean;
   canHold: boolean;
@@ -1256,46 +1426,69 @@ const TONE: Record<VideoPushState, VideoPushLine["tone"]> = {
 /** The default words for a state with no note of its own. */
 function stateWords(r: VideoPushRun): string {
   switch (r.state) {
-    case "PREPARING": return "Getting ready to send it to Aryeo.";
-    case "SENDING": return "Sending the 1080p file to Aryeo.";
+    case "PREPARING": return "Getting ready to upload it to Aryeo.";
+    case "SENDING": return "Uploading the 1080p file to Aryeo.";
     case "ADDING": return "Adding the video to the Aryeo listing.";
     case "CHECKING": return "On its way: Aryeo is processing the video.";
     case "REPLACING": return "Taking the earlier version off the listing.";
-    case "DELIVERING": return "Delivering the listing in Aryeo.";
-    case "CONFIRMING": return "Delivered in Aryeo; recording it.";
-    case "DONE": return "Uploaded and delivered.";
+    case "DELIVERING": return "Sending the listing to the client in Aryeo.";
+    case "CONFIRMING": return "Sent in Aryeo; recording it.";
+    case "DONE": return "Uploaded and sent.";
     default: return "";
   }
 }
 
-export function lineFor(run: VideoPushRun | null, mode: VideoPushMode, eligible: boolean): VideoPushLine | null {
-  if (!run) {
-    if (mode === "off") return null;
-    return {
-      mode, state: null, tone: "info", updatedAtISO: null,
-      says: mode === "shadow" ? "Practice run: the hub writes down what it would send at the next pass." : eligible ? "The hub sends it to Aryeo at its next pass (every 5 minutes)." : "Kyle uploads this one by hand.",
-      handledByHub: mode !== "shadow" && eligible, waitingForKyle: false, canRetry: false, canDeliverNow: false, canHold: mode !== "shadow" && eligible, canRelease: false,
-    };
+function progressOf(r: VideoPushRun): VideoPushLine["progress"] {
+  if (r.state === "DONE") return "sent";
+  if (r.state === "SHADOW") return null;
+  if (r.mediaId || ["REPLACING", "WAITING", "DELIVERING", "CONFIRMING"].includes(r.state)) return "on-listing";
+  if (r.state === "FAILED" || r.state === "HELD") return null;
+  return "uploading";
+}
+
+/**
+ * The row's line. No run (or an old practice-run line): never "the hub sends
+ * it" (Oct 19 audit): a person presses the button, or does it by hand, and a
+ * row whose upload was recorded by a person says so and points at the hand
+ * path. `eligible`: the hub can send this file (a checked 1080p file on a
+ * linked listing). `uploadedBy`: who recorded this exact version on the
+ * listing, when somebody did.
+ */
+export function lineFor(run: VideoPushRun | null, ctx: { eligible: boolean; uploadedBy?: string | null }): VideoPushLine | null {
+  const none = { mode: "off" as VideoPushMode, state: null, tone: "info" as const, updatedAtISO: null, handledByHub: false, waitingForKyle: false, progress: null, canRetry: false, canDeliverNow: false, canHold: false, canRelease: false };
+  if (!run || run.state === "SHADOW") {
+    if (ctx.uploadedBy) {
+      return {
+        ...none,
+        canStart: ctx.eligible,
+        says: ctx.eligible
+          ? `On the Aryeo listing already (uploaded by ${ctx.uploadedBy}). Send the listing in Aryeo and press Mark as sent, or press Send in the Video Review Room.`
+          : `On the Aryeo listing already (uploaded by ${ctx.uploadedBy}). Send the listing in Aryeo, then press Mark as sent.`,
+      };
+    }
+    if (!ctx.eligible) return null;
+    return { ...none, canStart: true, says: "Approved and ready. Press Upload to Aryeo and send in the Video Review Room, or upload it by hand." };
   }
-  const live = mode === "upload" || mode === "deliver";
   const says = run.state === "HELD" ? run.hold?.why ?? run.note ?? "Held." : run.note ?? stateWords(run);
+  const retry = run.state === "FAILED" || (run.state === "HELD" && run.hold?.gate !== "manual");
   return {
-    mode, state: run.state, tone: TONE[run.state], says, updatedAtISO: run.updatedAt,
-    handledByHub: live && run.state !== "FAILED" && run.state !== "HELD" && run.state !== "SHADOW",
-    waitingForKyle: live && run.state === "WAITING" && run.wait?.gate === "kyle",
-    canRetry: live && (run.state === "FAILED" || (run.state === "HELD" && run.hold?.gate !== "manual") || run.state === "SHADOW"),
-    canDeliverNow: live && run.state === "WAITING",
-    canHold: live && ((ACTIVE.includes(run.state) && run.state !== "DELIVERING" && run.state !== "CONFIRMING") || run.state === "WAITING" || (run.state === "HELD" && run.hold?.gate !== "manual") || run.state === "FAILED"),
+    mode: "deliver", state: run.state, tone: TONE[run.state], says, updatedAtISO: run.updatedAt,
+    handledByHub: run.state !== "FAILED" && run.state !== "HELD",
+    waitingForKyle: run.state === "WAITING" && run.wait?.gate === "kyle",
+    canStart: retry && ctx.eligible,
+    progress: progressOf(run),
+    canRetry: retry,
+    canDeliverNow: run.state === "WAITING",
+    canHold: (ACTIVE.includes(run.state) && run.state !== "DELIVERING" && run.state !== "CONFIRMING") || run.state === "WAITING",
     canRelease: run.state === "HELD" && run.hold?.gate === "manual",
   };
 }
 
-/** The push line for each cut (readyToSend's rows, the Video delivery screen). One settings read, two queries. */
-export async function pushLinesFor(submissionIds: string[]): Promise<Map<string, VideoPushLine>> {
+/** The push line for each cut (readyToSend's rows, the Video Review Room). Two queries. */
+export async function pushLinesFor(submissionIds: string[], opts: { uploadedBy?: Map<string, string> } = {}): Promise<Map<string, VideoPushLine>> {
   const out = new Map<string, VideoPushLine>();
   if (!submissionIds.length) return out;
-  const [settings, runs, subs] = await Promise.all([
-    videoDeliverySettings(),
+  const [runs, subs] = await Promise.all([
     runsFor(submissionIds),
     prisma.reviewSubmission.findMany({ where: { id: { in: submissionIds } }, select: { id: true, project: { select: { contentMonthId: true, aryeoListingId: true } }, topazJob: { select: { state: true, outputCheck: true, savedAt: true, finalPath: true } } } }),
   ]);
@@ -1303,7 +1496,7 @@ export async function pushLinesFor(submissionIds: string[]): Promise<Map<string,
     if (s.project.contentMonthId) continue;
     const run = runs.get(s.id) ?? null;
     const eligible = !!s.project.aryeoListingId && s.topazJob?.state === "done" && !!s.topazJob.savedAt && !!s.topazJob.finalPath && VERIFIED.has(s.topazJob.outputCheck ?? "");
-    const line = lineFor(run, settings.aryeoPush, eligible);
+    const line = lineFor(run, { eligible, uploadedBy: opts.uploadedBy?.get(s.id) ?? null });
     if (line) out.set(s.id, line);
   }
   return out;

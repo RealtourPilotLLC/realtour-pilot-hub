@@ -1,9 +1,10 @@
 import { requirePageAccess } from "@/lib/auth/guards";
+import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import {
-  Camera, CheckCircle2, Clapperboard, ClipboardCheck, Flag, Hourglass, MessageSquare, Pencil, PlayCircle,
+  AlertTriangle, CalendarClock, Camera, CheckCircle2, Clapperboard, Download, ExternalLink, Eye, Flag, Hourglass, MessageSquare, Pencil, PlayCircle, Send, Sun,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -18,8 +19,20 @@ import { revisionQuality } from "@/lib/revisionQuality";
 import { RevisionQualitySummary } from "@/components/review/RevisionQualitySummary";
 import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { verdictLine } from "@/lib/reviewAttribution";
+import { cn } from "@/lib/utils";
+import { etDateTime } from "@/lib/datetime";
+import { dueTodayRows, type ProgramRow, type VideoDeliveryBoard, type VideoRow } from "@/lib/videoDelivery";
+import type { RemindState } from "@/lib/remindEditor";
+import { BeforeYouSend } from "@/components/jobs/BeforeYouSend";
+import { MarkSent } from "@/components/ops/MarkSent";
+import { MarkDelivered } from "@/components/ops/MarkDelivered";
+import { HeldRender } from "@/components/ops/HeldRender";
+import { DeliveryFollowUps } from "@/components/ops/ReadyToSendCard";
+import { PushControls } from "@/components/videoDelivery/PushControls";
+import { AutoRefresh, RemindButton, SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Video Review Room" };
 // A verdict pressed here answers at once and finishes its follow-ons (the
 // Dropbox copy waits on Dropbox for up to 15 s, the client-library rebuild) in
 // after(), inside this route's function budget (Oct 5) — the same 60 s ceiling
@@ -28,13 +41,29 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
-// The REVIEW ROOM — the owner's quality desk, its own page. Everything that
-// needs (or is waiting on) a quality verdict, across every project:
-//   · cuts editors submitted for review   → /review/<id> workspace
-//   · changes-requested cuts (on the editor)
-//   · photo sets sitting in QC (Kyle's media_qa cards)
-//   · open feedback follow-through by lane (who owes a fix / a re-review)
-// Owner/admin only — creatives get their feedback on their own surfaces
+// THE VIDEO REVIEW ROOM (Jordan, Oct 19 2026: "For the video delivery screen,
+// I want a 'ready to send' at the top with a button that says 'upload to aryeo
+// and send' ... Then the late section ... 'Remind editor' ... Then Due today
+// ... 'in revision', and then coming up. I think all of this could be in the
+// review room, maybe change review room name to video review room").
+// Top to bottom, counts in every heading:
+//   · Ready to send   approved listing videos whose file is ready: Upload to
+//                     Aryeo and send (the ONLY way the hub uploads a video),
+//                     Send all, the job's open requests and shoot flags
+//                     (BeforeYouSend), and the hand path folded under each row
+//   · To review       the cuts editors submitted (unchanged)
+//   · Late            listing videos past their promise, not approved yet,
+//                     with who holds each and Remind editor / Remind reviewer
+//   · Due today       due by tonight, the late ones included and marked
+//   · In revision     sent back to the editor: how long ago, who has it
+//   · Coming up       everything else still owed
+//   · Monthly content only the late program videos (they publish to the
+//                     client's portal by themselves)
+// then the folded history (follow-through, approved, sent, causes). The photo
+// media checks moved to Photo Delivery (/ops/photo-delivery): this room is
+// video only. /ops/video-delivery redirects here. The delivery sections are
+// the office's (owner/admin); a seated reviewer on another login sees the
+// review sections only. Creatives get their feedback on their own surfaces
 // (/shoot for photographers, /edit for editors).
 // ---------------------------------------------------------------------------
 
@@ -72,6 +101,13 @@ function ReviewerChip({ s, viewerTeamMemberId }: { s: QueueSubmission; viewerTea
 function CutRow({ s, decided, viewerTeamMemberId = null }: { s: QueueSubmission; decided?: boolean; viewerTeamMemberId?: string | null }) {
   return (
     <li>
+      <CutCard s={s} decided={decided} viewerTeamMemberId={viewerTeamMemberId} />
+    </li>
+  );
+}
+
+function CutCard({ s, decided, viewerTeamMemberId = null }: { s: QueueSubmission; decided?: boolean; viewerTeamMemberId?: string | null }) {
+  return (
       <Link
         // ?cut= opens THIS submission — a monthly package's videos each get
         // their own row here and are reviewed one by one.
@@ -123,9 +159,172 @@ function CutRow({ s, decided, viewerTeamMemberId = null }: { s: QueueSubmission;
           {s.note && <div className="mt-1 truncate text-xs italic text-muted-2">“{s.note}”</div>}
         </div>
       </Link>
+  );
+}
+
+// ---- the delivery sections (Oct 19 2026) ----------------------------------------------------
+
+const linkCls = "inline-flex min-h-11 items-center gap-1 underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+const quietBtn = "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
+const PUSH_TONE: Record<string, string> = {
+  progress: "text-foreground",
+  waiting: "text-foreground",
+  held: "font-medium text-warning",
+  failed: "font-medium text-danger",
+  done: "text-success",
+  info: "text-muted",
+};
+
+function RowHead({ r }: { r: VideoRow }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+      <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{r.street}</Link>
+      <span className="text-muted">· {r.clientName}</span>
+      <span className="min-w-0 font-medium">· {r.label}{r.round ? `, version ${r.round}` : ""}</span>
+      {r.late && r.lane !== "delivered" && <span className="rounded bg-danger/10 px-1.5 py-0.5 text-ui-status font-bold text-danger">Late</span>}
+    </div>
+  );
+}
+
+/** The three steps of a press: Uploading, On the listing, Sent. */
+function Steps({ progress, stopped }: { progress: "uploading" | "on-listing" | "sent" | null; stopped: boolean }) {
+  const order = ["uploading", "on-listing", "sent"] as const;
+  const words = { uploading: "Uploading", "on-listing": "On the listing", sent: "Sent" };
+  const at = progress ? order.indexOf(progress) : -1;
+  return (
+    <ol className="mt-1.5 flex flex-wrap items-center gap-1.5 text-ui-status" aria-label="Where the upload is">
+      {order.map((k, i) => (
+        <li key={k} aria-current={i === at ? "step" : undefined} className={cn(
+          "rounded-full border px-2 py-0.5 font-medium",
+          i < at || (i === at && k === "sent") ? "border-success/40 bg-success/10 text-success"
+            : i === at ? (stopped ? "border-warning/40 bg-warning/10 text-warning" : "border-brand/40 bg-brand/10 text-brand")
+            : "border-border text-muted",
+        )}>
+          {words[k]}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
+  const s = r.send!;
+  const p = r.push;
+  const run = !!p?.state;
+  const stopped = p?.tone === "failed" || p?.tone === "held";
+  const canPress = !s.byHandWhy && (p ? p.canStart : false);
+  const label = p?.canRetry ? "Try again" : s.uploaded ? "Send" : "Upload to Aryeo and send";
+  return (
+    <li className="min-w-0 px-5 py-3">
+      <RowHead r={r} />
+      <p className="mt-0.5 text-sm text-muted">
+        Approved {r.approvedAtISO ? `${etDateTime(r.approvedAtISO)} ET` : ""}{s.approvedBy ? ` by ${s.approvedBy}` : ""}
+        {" · "}<span className={cn(r.late && "font-semibold text-danger")}>{r.promiseWords}</span>
+      </p>
+      {checks}
+      {run && <Steps progress={p!.progress} stopped={stopped} />}
+      {p && (run || s.uploaded) && <p className={cn("mt-1 text-sm", PUSH_TONE[p.tone])}>{p.says}</p>}
+      {s.byHandWhy && <p className="mt-1 text-sm font-medium text-warning">{s.byHandWhy}</p>}
+      {!s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
+      {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} />}
+      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} street={r.street} canRetry={false} canDeliverNow={p.canDeliverNow} canHold={false} canRelease={p.canRelease} />}
+      <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={!!s.byHandWhy || (!!p?.canRetry && !p.canStart)}>
+        <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Done it by hand?</summary>
+        <div className="space-y-2 px-3 pb-3 text-sm">
+          <p className="text-muted">{s.fileSays} <span className="break-all font-mono text-ui-status">{s.fileName}</span></p>
+          <div className="flex flex-wrap items-center gap-2">
+            <a href={s.downloadHref} className={quietBtn}><Download aria-hidden className="size-3.5" /> Download the file</a>
+            {r.aryeoUrl && <a href={r.aryeoUrl} target="_blank" rel="noreferrer" className={quietBtn}><ExternalLink aria-hidden className="size-3.5" /> Aryeo listing</a>}
+            {r.reviewHref && <Link href={r.reviewHref} prefetch={false} className={quietBtn}><Eye aria-hidden className="size-3.5" /> Watch it</Link>}
+          </div>
+          {s.uploaded
+            ? <><p className="text-muted">Uploaded by {s.uploaded.by} · {etDateTime(s.uploaded.at)} ET. After you send the listing in Aryeo:</p><MarkSent submissionId={r.submissionId!} street={r.street} expectedFingerprint={s.uploadFingerprint ?? undefined} /></>
+            : s.uploadFingerprint && !s.listingMissing
+              ? <><p className="text-muted">Uploaded it and sent the listing in Aryeo yourself? Record it:</p><MarkDelivered submissionId={r.submissionId!} fingerprint={s.uploadFingerprint} /></>
+              : null}
+        </div>
+      </details>
     </li>
   );
 }
+
+function HeldRow({ r }: { r: VideoRow }) {
+  const p = r.push;
+  return (
+    <li className="min-w-0 px-5 py-3">
+      <RowHead r={r} />
+      <p className="mt-0.5 text-sm text-muted"><span className="font-medium text-foreground">{r.stage}</span> · <span className={cn(r.late && "font-semibold text-danger")}>{r.promiseWords}</span></p>
+      {r.heldWhy && <p className="mt-1 text-sm font-medium text-warning">{r.heldWhy}</p>}
+      {r.heldRender && <HeldRender jobId={r.heldRender.jobId} street={r.street} fileName={r.heldRender.fileName} dropboxUrl={r.heldRender.dropboxUrl} lastCheck={r.heldRender.lastCheck} />}
+      {p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
+      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} street={r.street} canRetry={false} canDeliverNow={p.canDeliverNow} canHold={false} canRelease={p.canRelease} />}
+    </li>
+  );
+}
+
+/** Who holds a waiting video, when it was last reminded, and the Remind button. */
+function Holder({ st, rowKey, projectId, submissionId, viewerName, showButton, now }: { st: RemindState | undefined; rowKey: string; projectId: string; submissionId: string | null; viewerName: string | null; showButton: boolean; now: Date }) {
+  if (!st) return null;
+  const t = st.target;
+  const who = t.kind === "editor" ? `With ${t.name}.` : t.kind === "reviewer" ? `Waiting on ${t.name}'s review.` : t.waitsOn;
+  const last = st.last ? `Reminded ${agoText(st.last.at, now)} by ${viewerName && st.last.by === viewerName ? "you" : firstName(st.last.by)}.` : null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <span className="text-muted">{who}{last ? ` ${last}` : ""}</span>
+      {showButton && t.kind !== "none" && st.canRemind && (
+        <RemindButton rowKey={rowKey} projectId={projectId} submissionId={submissionId} label={t.kind === "reviewer" ? "Remind reviewer" : "Remind editor"} name={t.name} />
+      )}
+    </div>
+  );
+}
+
+function agoText(iso: string, now: Date): string {
+  const m = Math.max(0, Math.round((now.getTime() - Date.parse(iso)) / 60_000));
+  if (m < 60) return `${Math.max(1, m)}m ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)} days ago`;
+}
+
+function WaitingRow({ r, children }: { r: VideoRow; children?: React.ReactNode }) {
+  return (
+    <li className="min-w-0 px-5 py-3">
+      <RowHead r={r} />
+      <p className="mt-0.5 text-sm text-muted">
+        <span className="font-medium text-foreground">{r.stage}</span>
+        {" · "}
+        <span className={cn(r.late && "font-semibold text-danger")}>{r.promiseWords}</span>
+      </p>
+      <div className="flex flex-wrap items-center gap-x-3 text-sm">
+        {r.reviewHref && <Link href={r.reviewHref} prefetch={false} className={linkCls}><Clapperboard aria-hidden className="size-3.5" /> Open the cut</Link>}
+        {r.stage !== "Not shot yet" && <Link href={`/edit/${r.projectId}`} prefetch={false} className={linkCls}><Pencil aria-hidden className="size-3.5" /> Edit page</Link>}
+      </div>
+      {children}
+    </li>
+  );
+}
+
+function ProgramList({ rows }: { rows: ProgramRow[] }) {
+  return (
+    <ul className="divide-y divide-border">
+      {rows.map((r) => (
+        <li key={r.outputId} className="min-w-0 px-5 py-3 text-sm">
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">{r.clientName}</Link>
+            <span className="text-muted">· {r.monthWords}</span>
+            <span className="min-w-0 font-medium">· {r.title}</span>
+          </div>
+          <p className="mt-0.5 text-muted">
+            <span className="font-medium text-foreground">{r.stage}</span> · <span className="font-semibold text-danger">{r.promiseWords}</span>
+          </p>
+          {r.why && <p className="mt-0.5 text-muted">{r.why}</p>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const COMING_UP_SHOWN = 15;
 
 export default async function ReviewRoomPage({ searchParams }: { searchParams: Promise<{ test?: string }> }) {
   await requirePageAccess("review");
@@ -162,59 +361,141 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   }
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const [q, patterns, qcStats, causes] = await Promise.all([
+  // THE DELIVERY SECTIONS are the office's (owner/admin); a seated reviewer
+  // on another login gets the review sections only. View-as shows what that
+  // login would see; its buttons are refused by the actions (requireAdmin).
+  const deliveryDesk = !me || me.role === "OWNER" || me.role === "ADMIN";
+  const now = new Date();
+  const [q, patterns, qcStats, causes, board] = await Promise.all([
     getReviewQueue({ includeTest }),
     getFixPatterns(60, { includeTest }),
     getQcStats(30, { includeTest }),
     revisionQuality(30, { includeTest }).catch(() => null),
+    deliveryDesk
+      ? import("@/lib/videoDelivery").then((m) => m.videoDeliveryBoard({ fresh: true, followUps: true })).catch((e) => {
+          console.error("[video-review] delivery board failed", e);
+          return null;
+        })
+      : Promise.resolve(null as VideoDeliveryBoard | null),
   ]);
   // "Waiting on YOUR verdict" counts only the cuts that are yours (§8.1) —
   // Kyle's Room must not tell him James's cuts are his to rule on.
   // A cut nobody holds (no chain configured, or everyone away) is the
   // office's, so it counts as waiting on an owner/admin viewer.
   const viewerTeamMemberId = me && !me.impersonating ? me.teamMemberId : null;
+  const viewerName = me ? (me.impersonating ? null : me.realName || me.name || null) : null;
   const officeViewer = !!me && !me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN");
   const mine = viewerTeamMemberId || officeViewer
     ? q.pending.filter((s) => (s.reviewer ? s.reviewer.id === viewerTeamMemberId : officeViewer)).length
     : 0;
   const withOthers = q.pending.length - mine;
   const laneMeta = {
-    EDIT: { label: "Kyle — delivery fixes", icon: Pencil },
-    PHOTOGRAPHER: { label: "Photographer — capture", icon: Camera },
-    EDITOR: { label: "Editor — cut", icon: Clapperboard },
+    EDIT: { label: "Delivery fixes", icon: Pencil },
+    PHOTOGRAPHER: { label: "Photographer: capture", icon: Camera },
+    EDITOR: { label: "Editor: cut", icon: Clapperboard },
   } as const;
+
+  // ---- the delivery sections' data ----
+  const ready = board?.lanes.sending ?? [];
+  const held = board?.lanes.held ?? [];
+  const finishing = board?.lanes.finishing ?? [];
+  const late = board?.lanes.late ?? [];
+  const due = board ? dueTodayRows(board) : [];
+  const comingUp = (board?.lanes.upcoming ?? []).filter((r) => r.cutStatus !== "CHANGES_REQUESTED");
+  const programLate = board?.program.late ?? [];
+  const revisions = [...q.waitingOnEditor].sort((a, b) => (a.decidedAt ?? a.createdAt).localeCompare(b.decidedAt ?? b.createdAt));
+  const rowByKey = new Map((board ? Object.values(board.lanes).flat() : []).map((r) => [r.key, r]));
+  // The job's open requests and shoot flags, once per job (the job box's own component).
+  const checksFor = new Map<string, React.ReactNode>();
+  for (const pid of [...new Set([...ready, ...held].map((r) => r.projectId))]) {
+    try {
+      checksFor.set(pid, await BeforeYouSend({ projectId: pid, medium: "video", compact: true }));
+    } catch (e) {
+      console.warn("[video-review] job checks unavailable", e);
+    }
+  }
+  // Who holds each late or sent-back video, and when it was last reminded.
+  const remindItems = deliveryDesk
+    ? [
+        ...late.map((r) => ({ key: r.key, projectId: r.projectId, submissionId: r.submissionId, street: r.street, promiseISO: r.promiseISO, late: r.late, dueToday: r.dueToday })),
+        ...revisions.map((s) => {
+          const r = rowByKey.get(s.id);
+          return { key: s.id, projectId: s.projectId, submissionId: s.id, street: s.street, promiseISO: r?.promiseISO ?? null, late: r?.late ?? false, dueToday: r?.dueToday ?? false, revisionSinceISO: s.decidedAt };
+        }),
+      ]
+    : [];
+  const reminds: Map<string, RemindState> = remindItems.length
+    ? await import("@/lib/remindEditor").then((m) => m.remindStatesFor([...new Map(remindItems.map((x) => [x.key, x])).values()], { now, viewerTeamMemberId })).catch((e) => {
+        console.warn("[video-review] remind states unavailable", e);
+        return new Map<string, RemindState>();
+      })
+    : new Map<string, RemindState>();
+  const sendAllIds = ready.filter((r) => r.send && !r.send.byHandWhy && !r.send.openAsks.length && !r.send.asksUnknown && !r.send.listingWarning && r.push?.canStart && !r.push.state).map((r) => r.submissionId!);
+  const moving = [...ready, ...held].some((r) => !!r.push?.state && r.push.handledByHub && !r.push.waitingForKyle && r.push.tone === "progress");
+  const DAY = 24 * 3_600_000;
+  const fu = board?.followUps ?? null;
+  const followUpCount = fu ? (fu.needsFinishing?.length ?? 0) + fu.notTold.length + fu.noticeIncidents.length + fu.portal.length : 0;
+  const followUpUnchecked = !!fu && (!!fu.boardUnavailable || fu.followUpChecks?.needsFinishing === null || fu.followUpChecks?.notTold === null || fu.noticeIncidentCheck === null);
+  const cutsLine = !viewerTeamMemberId && !officeViewer && q.pending.length
+    ? `${q.pending.length} cut${q.pending.length === 1 ? "" : "s"} waiting on a verdict`
+    : mine
+      ? `${mine} cut${mine === 1 ? "" : "s"} waiting on you${withOthers ? ` · ${withOthers} with someone else` : ""}`
+      : withOthers
+        ? `No cuts awaiting your verdict · ${withOthers} cut${withOthers === 1 ? "" : "s"} with someone else`
+        : "No cuts awaiting your verdict · check revisions and delivery below";
+  // The same three numbers as Home's summary (videoSummary): late counts every listing video past its promise, the approved ones too.
+  const lateApproved = board ? [...ready, ...held, ...finishing].filter((r) => r.late) : [];
+  const deliveryLine = board ? `${ready.length} ready to send · ${board.counts.lateListing} late · ${due.length} due today · ` : "";
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Quality desk"
-        title="Review Room"
-        subtitle={
-          !viewerTeamMemberId && !officeViewer && q.pending.length
-            ? `${q.pending.length} cut${q.pending.length === 1 ? "" : "s"} waiting on a verdict`
-            : mine
-              ? `${mine} cut${mine === 1 ? "" : "s"} waiting on you${withOthers ? ` · ${withOthers} with someone else` : ""}`
-              : withOthers
-                ? `No cuts awaiting your verdict · ${withOthers} cut${withOthers === 1 ? "" : "s"} with someone else`
-                : "No cuts awaiting your verdict · check revisions and delivery below"
-        }
-      />
+      <PageHeader eyebrow="Video" title="Video Review Room" subtitle={`${deliveryLine}${cutsLine}`} />
 
       <div className="space-y-6 p-4 sm:p-6">
+        {moving && <AutoRefresh active />}
         <div className="flex justify-end">
           <Link href={includeTest ? "/review" : "/review?test=1"} className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
             {includeTest ? "Hide test records" : "Show test records"}
           </Link>
         </div>
-        {/* ————— VIDEO LANE ————— */}
-        <div className="flex items-center gap-2 px-1 pt-1">
-          <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: "#a78bfa22", color: "#a78bfa" }}>
-            <PlayCircle className="size-3.5" />
-          </span>
-          <h2 className="text-sm font-semibold">Video</h2>
-          <span className="text-[11px] text-muted-2">· a cut arrives once the editor uploads a version and finishes their send-for-review check</span>
-        </div>
-        <Section icon={PlayCircle} title="Cuts to review" count={q.pending.length || null}>
+
+        {deliveryDesk && !board && (
+          <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">Ready to send, Late and Due today could not be read just now. Refresh to try again.</p>
+        )}
+
+        {/* ————— (a) READY TO SEND ————— */}
+        {board && (
+          <Section icon={Send} title="Ready to send" count={ready.length} flush action={sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>
+            {ready.length ? (
+              <ul className="divide-y divide-border">{ready.map((r) => <ReadyRow key={r.key} r={r} checks={checksFor.get(r.projectId) ?? null} />)}</ul>
+            ) : (
+              <p className="px-5 py-4 text-sm text-muted">No approved listing video is waiting to go out.</p>
+            )}
+            {held.length > 0 && (
+              <>
+                <h3 className="border-t border-border px-5 pt-3 text-sm font-semibold text-warning">Held ({held.length})</h3>
+                <ul className="divide-y divide-border">{held.map((r) => <HeldRow key={r.key} r={r} />)}</ul>
+              </>
+            )}
+            {finishing.length > 0 && (
+              <p className="border-t border-border px-5 py-3 text-sm text-muted">
+                <span className="font-medium text-foreground">Finishing the 1080p pass ({finishing.length}):</span>{" "}
+                {finishing.map((r) => `${r.street}${r.late ? " (late)" : ""}`).join(", ")}. They show up above when the file is back.
+              </p>
+            )}
+          </Section>
+        )}
+
+        {/* NEEDS A FOLLOW-UP (Oct 19 2026): the delivery card's follow-up lanes,
+            here since Home stopped showing the card. Only when non-empty. */}
+        {board?.followUps && (followUpCount > 0 || followUpUnchecked) && (
+          <Section icon={MessageSquare} title="Needs a follow-up" count={followUpCount} tone="warning">
+            <DeliveryFollowUps board={board.followUps} includeTest={includeTest} />
+          </Section>
+        )}
+
+        {/* ————— (b) TO REVIEW ————— */}
+        <Section icon={PlayCircle} title="To review" count={q.pending.length}>
           {q.pending.length === 0 ? (
             <p className="text-sm text-muted">
               No cuts waiting. When an editor uploads a version on the edit page and finishes the send-for-review
@@ -231,60 +512,106 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         {q.waitingOnCheck.length > 0 && (
           <Section icon={Hourglass} title="Waiting on the editor's check" count={q.waitingOnCheck.length}>
             <p className="mb-3 text-xs text-muted">
-              These are in, but the editor hasn&rsquo;t finished the send-for-review check on them — they reach the list
+              These are in, but the editor hasn&rsquo;t finished the send-for-review check on them. They reach the list
               above once they do. They can finish it on the job&rsquo;s edit page (or the office can, for them).
             </p>
             <ul className="space-y-2.5">{q.waitingOnCheck.map((s) => <CutRow key={s.id} s={s} />)}</ul>
           </Section>
         )}
 
-        {q.waitingOnEditor.length > 0 && (
-          <Section icon={Hourglass} title="In revisions" count={q.waitingOnEditor.length}>
-            <ul className="space-y-2.5">{q.waitingOnEditor.map((s) => <CutRow key={s.id} s={s} decided />)}</ul>
+        {/* ————— (c) LATE ————— */}
+        {board && (
+          <Section icon={AlertTriangle} title="Late" count={late.length} tone={late.length ? "warning" : "default"} flush>
+            {late.length ? (
+              <ul className="divide-y divide-border">
+                {late.map((r) => (
+                  <WaitingRow key={r.key} r={r}>
+                    <Holder st={reminds.get(r.key)} rowKey={r.key} projectId={r.projectId} submissionId={r.submissionId} viewerName={viewerName} showButton now={now} />
+                  </WaitingRow>
+                ))}
+              </ul>
+            ) : (
+              <p className="px-5 py-4 text-sm text-muted">{lateApproved.length ? "Nothing late waiting on an editor or a review." : "Nothing late."}</p>
+            )}
+            {lateApproved.length > 0 && (
+              <p className="border-t border-border px-5 py-3 text-sm text-muted">
+                Also late, already approved: {lateApproved.map((r) => r.street).join(", ")}. {lateApproved.length === 1 ? "It is" : "They are"} under Ready to send.
+              </p>
+            )}
           </Section>
         )}
 
+        {/* ————— (d) DUE TODAY (the late ones too) ————— */}
+        {board && (
+          <Section icon={Sun} title="Due today" count={due.length} flush>
+            {due.length ? (
+              <>
+                <p className="px-5 pt-3 text-sm text-muted">Everything due by tonight, the late ones first.</p>
+                <ul className="divide-y divide-border">{due.map((r) => <WaitingRow key={r.key} r={r} />)}</ul>
+              </>
+            ) : (
+              <p className="px-5 py-4 text-sm text-muted">Nothing else due today.</p>
+            )}
+          </Section>
+        )}
 
-        {/* media_qa is a mixed-media task type. Do not present a video-only
-            program job as a photo set. */}
-        <div className="flex items-center gap-2 px-1 pt-3">
-          <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: "#34d39922", color: "#34d399" }}>
-            <ClipboardCheck className="size-3.5" />
-          </span>
-          <h2 className="text-sm font-semibold">Delivery checks</h2>
-          <span className="text-[11px] text-muted-2">· photo and video work awaiting a media check</span>
-        </div>
-        {q.photoQc.length > 0 && (
-          <Section icon={ClipboardCheck} title="Media checks to finish" count={q.photoQc.length}>
-            <ul className="divide-y divide-border">
-              {q.photoQc.map((t) => (
-                <li key={t.taskId}>
-                  <Link
-                    href={t.projectId ? `/projects/${t.projectId}` : "/tasks"}
-                    className="flex items-center justify-between gap-3 py-2.5 hover:text-brand"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-sm font-medium">{t.street}</span>
-                      {t.clientName && (
-                        <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted">
-                          <Avatar name={t.clientName} src={t.clientAvatarUrl} size={18} />
-                          <span className="truncate">{t.clientName}</span>
-                        </span>
-                      )}
+        {/* ————— (e) IN REVISION ————— */}
+        <Section icon={Hourglass} title="In revision" count={revisions.length}>
+          {revisions.length ? (
+            <ul className="space-y-2.5">
+              {revisions.map((s) => (
+                <li key={s.id}>
+                  <CutCard s={s} decided />
+                  {deliveryDesk && (
+                    <div className="px-1">
+                      <Holder st={reminds.get(s.id)} rowKey={s.id} projectId={s.projectId} submissionId={s.id} viewerName={viewerName} showButton={!!s.decidedAt && now.getTime() - Date.parse(s.decidedAt) > DAY} now={now} />
                     </div>
-                    <span className="shrink-0 text-xs text-muted">
-                      {t.assignedKey ? `${t.assignedKey} · ` : ""}
-                      {t.dueAt ? `due ${ago(t.dueAt)}` : "no due date"}
-                    </span>
-                  </Link>
+                  )}
                 </li>
               ))}
             </ul>
+          ) : (
+            <p className="text-sm text-muted">Nothing is back with an editor.</p>
+          )}
+        </Section>
+
+        {/* ————— (f) COMING UP ————— */}
+        {board && (
+          <Section icon={CalendarClock} title="Coming up" count={comingUp.length} flush>
+            {comingUp.length ? (
+              <>
+                <ul className="divide-y divide-border">{comingUp.slice(0, COMING_UP_SHOWN).map((r) => <WaitingRow key={r.key} r={r} />)}</ul>
+                {comingUp.length > COMING_UP_SHOWN && (
+                  <details className="border-t border-border">
+                    <summary className="min-h-11 cursor-pointer px-5 py-3 text-sm font-medium">Show {comingUp.length - COMING_UP_SHOWN} more</summary>
+                    <ul className="divide-y divide-border">{comingUp.slice(COMING_UP_SHOWN).map((r) => <WaitingRow key={r.key} r={r} />)}</ul>
+                  </details>
+                )}
+              </>
+            ) : (
+              <p className="px-5 py-4 text-sm text-muted">Nothing else owed.</p>
+            )}
+          </Section>
+        )}
+
+        {/* ————— (g) MONTHLY CONTENT (late only) ————— */}
+        {board && (
+          <Section icon={Clapperboard} title="Monthly content" count={programLate.length} flush>
+            {board.program.unavailable ? (
+              <p role="alert" className="px-5 py-4 text-sm text-warning">The monthly videos could not be read just now.</p>
+            ) : programLate.length ? (
+              <>
+                <p className="px-5 pt-3 text-sm text-muted">Late monthly videos. These publish to the client&rsquo;s portal by themselves once approved.</p>
+                <ProgramList rows={programLate} />
+              </>
+            ) : (
+              <p className="px-5 py-4 text-sm text-muted">No monthly video is late. They publish to the client&rsquo;s portal by themselves once approved.</p>
+            )}
           </Section>
         )}
 
         {q.followUps.length > 0 && (
-          <Section icon={MessageSquare} title="Feedback follow-through" count={q.followUps.length}>
+          <Fold icon={MessageSquare} title="Feedback follow-through" count={q.followUps.length}>
             <p className="mb-3 text-xs text-muted">
               Review notes still moving: <span className="font-medium text-foreground/80">open</span> = someone owes a
               fix · <span className="font-medium text-foreground/80">fixed</span> = they say it&rsquo;s done, you owe a
@@ -321,12 +648,25 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
                 );
               })}
             </ul>
-          </Section>
+          </Fold>
         )}
 
         {q.recentlyApproved.length > 0 && (
-          <Fold icon={CheckCircle2} title="Approved — last 14 days" count={q.recentlyApproved.length}>
+          <Fold icon={CheckCircle2} title="Approved, last 14 days" count={q.recentlyApproved.length}>
             <ul className="space-y-2.5">{q.recentlyApproved.map((s) => <CutRow key={s.id} s={s} decided />)}</ul>
+          </Fold>
+        )}
+
+        {board && board.lanes.delivered.length > 0 && (
+          <Fold icon={CheckCircle2} title="Sent this week" count={board.lanes.delivered.length}>
+            <ul className="divide-y divide-border">
+              {board.lanes.delivered.map((r) => (
+                <li key={r.key} className="py-2.5 text-sm">
+                  <RowHead r={{ ...r, late: false }} />
+                  <p className="text-muted">Sent {r.deliveredAtISO ? `${etDateTime(r.deliveredAtISO)} ET` : ""}{r.deliveredBy ? ` by ${r.deliveredBy}` : ""}{r.late ? " · after its promised date" : ""}</p>
+                </li>
+              ))}
+            </ul>
           </Fold>
         )}
 

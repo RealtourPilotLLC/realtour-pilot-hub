@@ -253,10 +253,10 @@ export default async function CutReviewPage({
             /shoot because the Room's index redirected them away; the index
             answers them with their own cuts today, so "back" means back to the
             list they came from, for everybody. */}
-        <BackLink href="/review" label="Review Room" />
+        <BackLink href="/review" label="Video Review Room" />
       </div>
       <PageHeader
-        eyebrow="Review Room"
+        eyebrow="Video Review Room"
         title={w.street}
         // The agent's Aryeo headshot beside their name (Jordan, Sep 2). An
         // empty name stays hidden, exactly as the bare string used to.

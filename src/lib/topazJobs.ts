@@ -2698,62 +2698,19 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   // Kyle still has to know which of the two he is after.
   const folderUrl = dropboxWebUrl(folder);
 
-  // THE HUB MAY SEND IT ITSELF (Oct 19 2026, lib/videoAryeoPush). With the
-  // Video delivery switch on, this card says what the hub is doing and what
-  // is left for Kyle; it still closes when the video is delivered.
-  const pushMode = await import("@/lib/videoDeliverySettings").then((m) => m.videoDeliverySettings()).then((x) => x.aryeoPush).catch(() => "off" as const);
-  const screen = `${appBase()}/ops/video-delivery`;
-  if (pushMode === "upload" || pushMode === "deliver") {
-    const auto = pushMode === "deliver";
-    const autoLines = [
-      auto
-        ? `The hub is uploading the 1080p version of ${street} to the Aryeo listing and re-delivering it by itself. Nothing to do unless Video delivery shows it held or stopped.`
-        : `The hub is putting the 1080p version of ${street} on the Aryeo listing. When it is there, press Deliver now on Video delivery.`,
-      ``,
-      `Video delivery: ${screen}`,
-      ``,
-      `If it stops, the file is here: ${downloadUrl}`,
-      `It's also in this job's Final Video folder: ${folderUrl}`,
-      aryeo ? `Aryeo: ${aryeo}` : `This job has no Aryeo listing linked yet, so the hub waits until it is linked.`,
-      ``,
-      ARYEO_MANUAL_NOTE,
-    ];
-    const autoData = {
-      taskType: "internal_instruction",
-      title: (auto ? `Video going to Aryeo by itself: ${street}` : `Deliver the 1080p video in Aryeo: ${street}`).slice(0, 120),
-      summary: (auto
-        ? `The hub uploads ${fileName} to the Aryeo listing and re-delivers it. Video delivery: ${screen}`
-        : `The hub puts ${fileName} on the Aryeo listing; press Deliver now on Video delivery when it is there: ${screen}`).slice(0, 500),
-      description: autoLines.join("\n"),
-      reasonCreated: "The approved cut finished its 1080p pass",
-      source: "system",
-      sourceDetail: aryeo ?? path,
-      priority: auto ? ("LOW" as const) : ("HIGH" as const),
-      assignedKey: "kyle",
-      ownerId: kyle?.id ?? null,
-      projectId: job.projectId,
-      clientId: project.clientId,
-      propertyAddress: project.title,
-      deliverableType: "Video",
-      dedupeKey: `topaz-deliver-${job.id}`,
-    };
-    try {
-      const row = await prisma.smartTask.upsert({
-        where: { dedupeKey: autoData.dedupeKey },
-        create: autoData,
-        update: { title: autoData.title, summary: autoData.summary, description: autoData.description, sourceDetail: autoData.sourceDetail },
-        select: { id: true },
-      });
-      return row.id;
-    } catch {
-      return null;
-    }
-  }
+  // UPLOAD TO ARYEO AND SEND (Oct 19 2026, lib/videoAryeoPush): the hub
+  // uploads a listing video ONLY when a person presses the button in the
+  // Video Review Room, so this card never says the hub is sending it. It
+  // offers the button first and keeps the hand path below it.
+  const room = `${appBase()}/review`;
+  const BUTTON_NOTE = "Aryeo's API cannot upload a video or deliver a listing, so the hub does it the way a browser does, signed in as its own Aryeo login, and only when someone presses Upload to Aryeo and send.";
 
   const lines = [
     `The 1080p version of ${street} is ready to upload.`,
     ``,
-    `Download it: ${downloadUrl}`,
+    `Press Upload to Aryeo and send in the Video Review Room: ${room}`,
+    ``,
+    `Or by hand. Download it: ${downloadUrl}`,
     ``,
     `It's also in Dropbox, in this job's Final Video folder:`,
     `  ${fileName}`,
@@ -2766,15 +2723,15 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     `Upload it to Aryeo and deliver (or re-deliver) the listing.`,
     aryeo ? `Aryeo: ${aryeo}` : `This job has no Aryeo listing or order on it, so it has to be found by address in Aryeo.`,
     ``,
-    ARYEO_MANUAL_NOTE,
+    BUTTON_NOTE,
     ``,
-    `Open the Hub delivery queue, confirm Mark as Uploaded, then send in Aryeo and confirm Mark as sent in the Hub.`,
+    `By hand: confirm Mark as Uploaded in the Hub, then send in Aryeo and confirm Mark as sent in the Hub.`,
   ];
 
   const data = {
     taskType: "internal_instruction", // the type Open Loops + /tasks triage read
     title: `Upload the 1080p video to Aryeo — ${street}`.slice(0, 120),
-    summary: `${fileName} is ready to upload to Aryeo. Download it: ${downloadUrl} — it is also in this job's Final Video folder on Dropbox. ${ARYEO_MANUAL_NOTE}`.slice(0, 500),
+    summary: `${fileName} is ready to upload to Aryeo. Press Upload to Aryeo and send in the Video Review Room (${room}), or download it: ${downloadUrl} (it is also in this job's Final Video folder on Dropbox).`.slice(0, 500),
     description: lines.join("\n"),
     reasonCreated: "The approved cut finished its 1080p pass",
     source: "system",

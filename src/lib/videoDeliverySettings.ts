@@ -3,24 +3,18 @@ import "server-only";
 import { getSetting, putSetting } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
-// THE LISTING-VIDEO SWITCH (Oct 19 2026), separate from the photo one.
+// THE LISTING-VIDEO SETTINGS (Oct 19 2026), separate from the photo ones.
 //
-// Jordan: "Any videos that get approved should be uploaded and delivered once
-// approved and back from Topaz ... with the login retries and things like
-// that." The Review Room approval IS the human approval for a listing video,
-// so in `deliver` nobody presses anything else. Stored in AppSetting like the
-// photo delivery settings, changed on the Video delivery screen (owner only).
-//
-//   off      nothing; Kyle uploads and delivers by hand (the default in code)
-//   shadow   a practice run: each video that would go gets one line ("would
-//            upload 113 MB to the listing, then re-deliver it") and nothing is
-//            called: no Aryeo, no Uploadcare, no Dropbox
-//   upload   the hub puts the video on the listing and stops; Kyle presses
-//            Deliver now on the Video delivery screen
-//   deliver  upload, then re-deliver the listing (Aryeo's own email), all by
-//            itself
-// Monthly and personal-branding videos are never touched: they go to the
-// client's portal (lib/monthlyFinal).
+// BUTTON ONLY (Jordan, Oct 19 2026, his words: upload to Aryeo happens ONLY
+// when someone presses the button, "no automatic mode for now"). The hub
+// uploads and delivers a listing video only when a person presses Upload to
+// Aryeo and send in the Video Review Room (lib/videoAryeoPush). The stored
+// switch `aryeoPush` (off / shadow / upload / deliver) is still read, so
+// nothing that reads it breaks, but it starts nothing: "off" is the default
+// and the live value, and no mode makes the cron pick up a video by itself.
+// It is no longer on any screen. `cooldownMin` still spaces two deliveries of
+// one listing. Monthly and personal-branding videos are never touched: they
+// go to the client's portal (lib/monthlyFinal).
 // ---------------------------------------------------------------------------
 
 export type VideoPushMode = "off" | "shadow" | "upload" | "deliver";
@@ -51,7 +45,7 @@ export async function saveVideoDeliverySettings(next: Partial<VideoDeliverySetti
   return videoDeliverySettings();
 }
 
-/** What each mode means, in the screen's words. */
+/** What each stored mode meant (kept for old readers; no screen offers the switch since Oct 19). */
 export const VIDEO_PUSH_MODE_WORDS: Record<VideoPushMode, { label: string; help: string }> = {
   off: { label: "Off", help: "Kyle uploads each approved video to Aryeo and delivers it by hand." },
   shadow: { label: "Practice run", help: "The hub writes down what it would send. Nothing reaches Aryeo." },

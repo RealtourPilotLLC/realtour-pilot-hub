@@ -1,16 +1,20 @@
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 // ---------------------------------------------------------------------------
 // DRILL: THE VIDEO DELIVERY SCREEN, RENDERED (Oct 19 2026). The companion of
-// oct19-video-aryeo-push.ts: the REAL /ops/video-delivery page and the
-// delivery card's row rendered to HTML against seeded jobs, so a render-time
-// crash, a missing lane or a stray dash shows up without a browser and without
-// the production database.
-//   1  the page renders for Jordan (the switch can be changed) and for Kyle
-//      (read-only switch, his buttons on the rows)
-//   2  what it says: the three numbers, the lanes, the hub's progress line
-//      instead of "upload by hand", a held row's reason, the program section
-//   3  the delivery card row shows the push line and links to the screen
-//   4  copy: no em or en dash, nothing says undefined or NaN
+// oct19-video-aryeo-push.ts. Since the Video Review Room build (Oct 19,
+// evening) /ops/video-delivery redirects to /review, where its lanes are
+// sections; this renders the REAL room and the delivery card's row to HTML
+// against seeded jobs with the hub's own runs in every state, so a
+// render-time crash, a missing section or a stray dash shows up without a
+// browser and without the production database.
+//   1  /ops/video-delivery redirects to /review; the room renders
+//   2  what it says: Ready to send with each run's three steps and words (a
+//      run uploading, a run stopped with Try again), a held run's reason
+//      under Held, Late with how late, the program section, no switch card
+//   3  the delivery card row: a started run's line, a row nobody pressed
+//      (the button's words, never "the hub sends it"), links to the room
+//   4  copy: no em or en dash in the delivery sections, nothing says
+//      undefined or NaN
 // ISOLATION: PGlite on 127.0.0.1 via the shared harness (DRILL_PORT, default
 // 7321). Production is never opened; every outbound call is fenced.
 // ---------------------------------------------------------------------------
@@ -32,7 +36,7 @@ for (const nav of [load("next/navigation"), load("./_next-navigation-stub.cjs")]
     throw new Redirect(href);
   };
   nav.useRouter = () => ({ refresh() {}, push() {}, replace() {}, back() {}, prefetch() {} });
-  nav.usePathname = () => "/ops/video-delivery";
+  nav.usePathname = () => "/review";
   nav.useSearchParams = () => new URLSearchParams();
 }
 
@@ -71,8 +75,10 @@ async function main() {
     await run(sending.sub!, { state: "SENDING", note: "Sending the 1080p file to Aryeo: 10 of 23 parts (about 52 of 113 MB)." });
     await run(held.sub!, { state: "HELD", note: "Sound check held this file: this video has no sound. Ask the editor for a new export.", hold: { gate: "sound", why: "Sound check held this file: this video has no sound. Ask the editor for a new export.", by: null, at: new Date().toISOString(), resume: "PREPARING" } });
     await run(hand.sub!, { state: "FAILED", note: "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand." });
-    const S = await import("@/lib/videoDeliverySettings");
-    await S.saveVideoDeliverySettings({ aryeoPush: "deliver" }, "drill");
+    const fresh = await mk("6 Fresh St", { approved: true });
+    // The hub's Aryeo login is set up, so a row nobody pressed offers the button.
+    const { saveSecret } = await import("@/lib/integrations/connections");
+    await saveSecret("aryeo_web", "drill-hub-password", { accountLabel: "hub@drill.test", metadata: { email: "hub@drill.test" } });
 
     const all: Record<string, string> = {};
     const render = async (label: string, fn: () => unknown | Promise<unknown>) => {
@@ -87,20 +93,28 @@ async function main() {
       }
     };
 
-    c.head("1 · the page renders");
-    const { default: Page } = await import("@/app/ops/video-delivery/page");
-    const owner = await render("the Video delivery page (owner, no login in a drill = local owner)", () => Page());
+    c.head("1 · the old screen redirects; the room renders");
+    const { default: Old } = await import("@/app/ops/video-delivery/page");
+    let to = "";
+    try {
+      Old();
+    } catch (e) {
+      to = e instanceof Redirect ? e.href : String(e);
+    }
+    c.ok("/ops/video-delivery redirects to /review", to === "/review", to);
+    const { default: Page } = await import("@/app/review/page");
+    const owner = await render("the Video Review Room (owner, no login in a drill = local owner)", () => Page({ searchParams: Promise.resolve({}) }));
     const t = text(owner);
 
     c.head("2 · what it says");
-    c.ok("the header: due today and behind", /Video delivery/.test(t) && /\d+ due today · \d+ behind/.test(t), t.slice(0, 300));
-    c.ok("the three numbers up top", /Due today/.test(t) && /Late/.test(t) && /Oldest late/.test(t) && /Going out/.test(t));
+    c.ok("the header: Video Review Room, ready to send, late, due today", /Video Review Room/.test(t) && /\d+ ready to send · \d+ late · \d+ due today/.test(t), t.slice(0, 300));
     c.ok("the late video is in Late, with how late", /Late \d+ 1 Late Lane/.test(t) && /Late by \d+ h/.test(t), (t.match(/Late \d+ .{0,200}/) ?? [""])[0]);
-    c.ok("the approved video shows the hub's progress, not 'upload by hand'", /3 Sending St/.test(t) && /Sending the 1080p file to Aryeo: 10 of 23 parts/.test(t));
-    c.ok("a held video says why, in the Held lane", /Held \d+ .*4 Held Ct/.test(t) && /Sound check held this file: this video has no sound/.test(t));
-    c.ok("a video the hub will not send says so (Kyle by hand) with Retry and Hold", /5 By Hand Rd/.test(t) && /Upload it by hand/.test(t) && /Retry/.test(owner) && /Hold/.test(owner));
-    c.ok("the content program section", /Content program/.test(t) && /client’s portal|client's portal/.test(t));
-    c.ok("the switch card, owner can save", /The hub sends listing videos to Aryeo/.test(t) && /Upload and deliver/.test(t) && /Practice run/.test(t) && /Save/.test(t) && !/Jordan changes this/.test(t));
+    c.ok("a started run shows its three steps and its own words", /3 Sending St/.test(t) && /Uploading On the listing Sent/.test(t) && /Sending the 1080p file to Aryeo: 10 of 23 parts/.test(t) && /aria-current="step"[^>]*>Uploading</.test(owner));
+    c.ok("a held run says why, under Held", /Held \(\d+\).*4 Held Ct/.test(t) && /Sound check held this file: this video has no sound/.test(t));
+    c.ok("a run the hub will not send says so, with the hand path open", /5 By Hand Rd/.test(t) && /never checked, so the hub does not send it on its own/.test(t) && /Done it by hand\?/.test(t));
+    c.ok("a row nobody pressed offers Upload to Aryeo and send", /6 Fresh St.{0,400}Upload to Aryeo and send/.test(t));
+    c.ok("the content program section (late ones only)", /Monthly content/.test(t) && /client’s portal|client's portal/.test(t));
+    c.ok("no switch card any more (button only)", !/The hub sends listing videos to Aryeo/.test(t) && !/Practice run/.test(t) && !/Upload and deliver/.test(t));
 
     c.head("3 · the delivery card row");
     const { readyToSend } = await import("@/lib/readyToSend");
@@ -108,12 +122,18 @@ async function main() {
     const { ReadyToSendCard } = await import("@/components/ops/ReadyToSendCard");
     const card = await render("the delivery card", () => createElement(ReadyToSendCard as never, { board } as never));
     const ct = text(card);
-    c.ok("the row carries the hub's line and a link to Video delivery, not 'Upload this version to Aryeo'", /Sending the 1080p file to Aryeo/.test(ct) && /href="\/ops\/video-delivery"/.test(card) && !/Upload this version to Aryeo and deliver the listing/.test(ct), ct.slice(0, 400));
+    c.ok("a started run: the card carries its line and a link to the Video Review Room, not 'Upload this version to Aryeo'", /Sending the 1080p file to Aryeo/.test(ct) && /href="\/review"/.test(card) && /Video Review Room/.test(ct) && !/Upload this version to Aryeo and deliver the listing/.test(ct), ct.slice(0, 400));
+    const freshBoard = await readyToSend({ projectId: fresh.p.id });
+    const card2 = await render("the delivery card (a row nobody pressed)", () => createElement(ReadyToSendCard as never, { board: freshBoard } as never));
+    const ct2 = text(card2);
+    c.ok("a row nobody pressed: the button's words, never that the hub is sending it", /Press Upload to Aryeo and send in the Video Review Room/.test(ct2) && !/hub sends|next pass|is uploading/i.test(ct2), ct2.slice(0, 400));
 
     c.head("4 · copy");
-    const dashed = Object.entries(all).filter(([, h]) => LONG_DASH.test(text(h).replace(/Upload the 1080p video to Aryeo — /g, ""))).map(([k, h]) => `${k}: ${(text(h).match(/.{40}[–—].{40}/) ?? [""])[0]}`);
-    c.ok("no em or en dash on the Video delivery page", !LONG_DASH.test(text(owner)), (text(owner).match(/.{40}[–—].{40}/) ?? [""])[0]);
-    c.ok("nothing rendered says undefined or NaN", Object.values(all).every((h) => !/\b(undefined|NaN)\b/.test(text(h))), dashed.join(" | "));
+    // Ready to send, then Late through Monthly content (the sections this build wrote).
+    const folds = t.indexOf(" Approved, last 14 days ");
+    const delivery = t.slice(t.indexOf(" Ready to send "), t.indexOf(" To review ")) + t.slice(t.indexOf(" Late "), folds > 0 ? folds : undefined);
+    c.ok("no em or en dash in the delivery sections", !LONG_DASH.test(delivery), (delivery.match(/.{40}[–—].{40}/) ?? [""])[0]);
+    c.ok("nothing rendered says undefined or NaN", Object.values(all).every((h) => !/\b(undefined|NaN)\b/.test(text(h))));
 
     c.ok("provider fence stayed closed", fence.blocked.length === 0, fence.blocked.join(", "));
     c.summary();

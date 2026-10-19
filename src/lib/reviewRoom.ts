@@ -165,6 +165,42 @@ const projectsWithLiveReview = (since: Date) => ({
   },
 });
 
+/**
+ * KYLE'S MEDIA CHECKS (media_qa cards). Shown on the Photo Delivery list page
+ * since Oct 19 2026, when the Review Room became the VIDEO Review Room
+ * (Jordan); still returned by getReviewQueue (photoQc) for its older readers.
+ * Test clients are left out unless `includeTest`.
+ */
+export async function photoQcCards(opts: { includeTest?: boolean; excludeClientIds?: string[] } = {}): Promise<QueuePhotoQc[]> {
+  const excludeClientIds = opts.excludeClientIds ?? (opts.includeTest === false
+    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    : []);
+  const tasks = await prisma.smartTask.findMany({
+    where: photoQcWhere({ excludeClientIds }),
+    orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }],
+    select: {
+      id: true,
+      projectId: true,
+      client: { select: { id: true, name: true } },
+      dueAt: true,
+      assignedKey: true,
+      propertyAddress: true,
+      project: { select: { title: true, client: { select: { id: true, name: true, avatarUrl: true } } } },
+    },
+  });
+  return tasks
+    .filter((t) => opts.includeTest !== false || ((!t.project?.client || !isSyntheticClientRow(t.project.client)) && (!t.client || !isSyntheticClientRow(t.client))))
+    .map((t) => ({
+      taskId: t.id,
+      projectId: t.projectId,
+      street: streetOf(t.project?.title ?? t.propertyAddress),
+      clientName: t.project?.client?.name ?? "",
+      clientAvatarUrl: t.project?.client?.avatarUrl ?? null,
+      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+      assignedKey: t.assignedKey,
+    }));
+}
+
 export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Promise<ReviewQueue> {
   const excludeClientIds = opts.includeTest === false
     ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
@@ -174,7 +210,7 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
   // they must not inflate "open notes" badges or the follow-up tallies.
   // (One filter: the rollup and the follow-through rows' cut links read it.)
   const liveNoteWhere = { parentId: null, status: { in: ["OPEN", "FIXED"] }, NOT: { authorKey: { startsWith: "editor:" } } };
-  const [readSubs, readQcTasks, readNoteRollup, readThreadReplies] = await Promise.all([
+  const [readSubs, photoQc, readNoteRollup, readThreadReplies] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: {
         // Every live round of the cut, at any age — see inWindow above for why
@@ -200,19 +236,7 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
         },
       },
     }),
-    prisma.smartTask.findMany({
-      where: photoQcWhere({ excludeClientIds }),
-      orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }],
-      select: {
-        id: true,
-        projectId: true,
-        client: { select: { id: true, name: true } },
-        dueAt: true,
-        assignedKey: true,
-        propertyAddress: true,
-        project: { select: { title: true, client: { select: { name: true, avatarUrl: true } } } },
-      },
-    }),
+    photoQcCards({ includeTest: opts.includeTest, excludeClientIds }),
     prisma.mediaNote.groupBy({
       by: ["projectId", "lane", "status"],
       where: liveNoteWhere,
@@ -235,7 +259,6 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
   ]);
   const projectIdsForScope = [...new Set([
     ...readSubs.map((s) => s.projectId),
-    ...readQcTasks.map((t) => t.projectId).filter((id): id is string => !!id),
     ...readNoteRollup.map((r) => r.projectId),
     ...readThreadReplies.map((r) => r.parent?.projectId).filter((id): id is string => !!id),
   ])];
@@ -245,10 +268,6 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
   const syntheticProjectIds = new Set(scopeProjects.filter((p) => isSyntheticClientRow(p.client)).map((p) => p.id));
   const visibleProject = (id: string) => opts.includeTest !== false || !syntheticProjectIds.has(id);
   const subs = readSubs.filter((s) => visibleProject(s.projectId));
-  const qcTasks = readQcTasks.filter((t) =>
-    (!t.projectId || visibleProject(t.projectId)) &&
-    (opts.includeTest !== false || !t.client || !isSyntheticClientRow(t.client))
-  );
   const noteRollup = readNoteRollup.filter((r) => visibleProject(r.projectId));
   const threadReplies = readThreadReplies.filter((r) => !r.parent || visibleProject(r.parent.projectId));
 
@@ -416,15 +435,7 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
     waitingOnCheck: latest.filter((s) => isHeldForSelfCheck(s)).map(toView),
     waitingOnEditor: latest.filter((s) => s.status === "CHANGES_REQUESTED").map(toView),
     recentlyApproved: latest.filter((s) => s.status === "APPROVED").map(toView),
-    photoQc: qcTasks.map((t) => ({
-      taskId: t.id,
-      projectId: t.projectId,
-      street: streetOf(t.project?.title ?? t.propertyAddress),
-      clientName: t.project?.client?.name ?? "",
-      clientAvatarUrl: t.project?.client?.avatarUrl ?? null,
-      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
-      assignedKey: t.assignedKey,
-    })),
+    photoQc,
     followUps: [...followMap.values()].sort((a, b) => b.open - a.open),
   };
 }

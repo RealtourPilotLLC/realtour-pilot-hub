@@ -174,9 +174,10 @@ export type PortalStep = {
 export type ReadyVideo = {
   /** Portal rows only (deliveryDestination client-portal on a monthly job). */
   portalStep?: PortalStep | null;
-  /** THE HUB SENDS IT (Oct 19 2026, lib/videoAryeoPush): where the hub's own
-   *  upload and delivery to Aryeo stands, in plain words, while the Video
-   *  delivery switch is on (or a run exists). Null/absent: Kyle by hand. */
+  /** UPLOAD TO ARYEO AND SEND (Oct 19 2026, lib/videoAryeoPush): where the
+   *  hub's own upload and delivery to Aryeo stands, in plain words, once a
+   *  person pressed the button (or what the button would do). Null/absent:
+   *  by hand. */
   push?: import("@/lib/videoAryeoPush").VideoPushLine | null;
   destinationFingerprint?: string | null;
   deliveryDestination?: "client-portal" | "aryeo-listing";
@@ -1151,11 +1152,14 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     });
   }
 
-  // Where the hub's own Aryeo upload and delivery stands (Oct 19 2026). A
-  // failed read leaves the row as it always was: Kyle by hand.
+  // Where the hub's own Aryeo upload and delivery stands (Oct 19 2026): only
+  // ever a run somebody started with Upload to Aryeo and send. A row whose
+  // upload a person recorded says so (never "the hub sends it"). A failed
+  // read leaves the row as it always was: by hand.
   const listingRows = ready.filter((v) => v.deliveryDestination === "aryeo-listing" && !v.monthlyProgram);
   if (listingRows.length) {
-    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId))).catch(() => null);
+    const uploadedBy = new Map(listingRows.filter((v) => v.uploaded).map((v) => [v.submissionId, v.uploaded!.by]));
+    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId), { uploadedBy })).catch(() => null);
     for (const v of listingRows) v.push = lines?.get(v.submissionId) ?? null;
   }
 

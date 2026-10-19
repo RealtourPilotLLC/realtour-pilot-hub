@@ -1,6 +1,5 @@
 // C15: actual signed Review Room render with no first-cut queue and other work.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
-import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
 
@@ -31,27 +30,30 @@ async function main() {
       await as(user);
       const html = renderToStaticMarkup(await page({ searchParams: Promise.resolve({}) }));
       c.ok(`${label}: no-cut headline still directs attention to revisions and delivery`, html.includes("No cuts awaiting your verdict") && html.includes("check revisions and delivery below"));
-      c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes("In revisions") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
-      c.ok(`${label}: video-only QC is a media/delivery check, never a photo set`, html.includes("Delivery checks") && html.includes("Media checks to finish") && !html.includes("Photo sets") && !html.includes("Hidden fixture media job"));
-      c.ok(`${label}: Review Room does not repeat the delivery queue`, !html.includes("Delivery text outcome unconfirmed") && !html.includes("No delivery action is currently waiting"));
+      // Oct 19 2026 (Jordan): the section is "In revision" in the Video Review Room.
+      c.ok(`${label}: exact revision remains visible with no first-cut approval pending`, html.includes(">In revision<") && html.includes(`cut=${revision.id}`) && html.includes("exact-version-two.mp4"));
+      // Oct 19 2026 (Jordan): the room is video only; the media checks moved to
+      // Photo Delivery (oct19-video-review-room.ts checks them there).
+      c.ok(`${label}: the media checks are not in the Video Review Room, never a photo set`, !html.includes("Delivery checks") && !html.includes("Media checks to finish") && !html.includes("Photo sets") && !html.includes("Hidden fixture media job"));
+      // Oct 19 2026: Home no longer shows the delivery card, so its follow-up
+      // lanes live in the Video Review Room ("Needs a follow-up"), for the
+      // office (Kyle); a seated reviewer on another login does not get them.
+      if (label === "Kyle") c.ok(`${label}: the unknown delivery text is in the room's Needs a follow-up, once`, html.includes(">Needs a follow-up<") && (html.match(/Delivery texts needing a check/g) ?? []).length === 1 && html.includes(`incident=${encodeURIComponent(notice.id)}`) && !html.includes("No delivery action is currently waiting"));
+      else c.ok(`${label}: no delivery follow-up for a reviewer-only login`, !html.includes(">Needs a follow-up<") && !html.includes("Delivery text outcome unconfirmed"));
       if (label === "Kyle") {
-        // Oct 19 2026: the daily checklist (and its Video Review block's
-        // delivery data) moved off Kyle's Home onto /ops.
-        const { default: home } = await import("../../src/app/ops/page");
-        const homeTree = await home({ searchParams: Promise.resolve({}) });
-        const data = (function find(tree: unknown): Record<string, unknown> | null {
-          if (Array.isArray(tree)) return tree.map(find).find(Boolean) ?? null;
-          if (!isValidElement<Record<string, unknown>>(tree)) return null;
-          if ((tree.type as { name?: string }).name === "Block") return tree.props.d as Record<string, unknown>;
-          return Object.values(tree.props).map(find).find(Boolean) ?? null;
-        })(homeTree);
-        const board = data?.readySend as import("../../src/lib/readyToSend").ReadyBoard;
-        c.ok("unknown delivery outcome remains in Kyle's daily checklist data with its exact conversation", !!board.noticeIncidents?.some((incident) => incident.outboxId === notice.id && incident.state === "unknown"));
+        // Oct 19 2026 (evening): the ten checklist blocks (and the Video
+        // Review block that rendered this incident) are gone from /ops and
+        // Home. The operating day still reads it, exact conversation and all.
+        const { buildOpsDay } = await import("../../src/lib/opsDay");
+        const board = (await buildOpsDay()).readySend;
+        c.ok("unknown delivery outcome remains in the operating day's data with its exact conversation", !!board.noticeIncidents?.some((incident) => incident.outboxId === notice.id && incident.state === "unknown"));
       }
     }
     await as(kyle);
     const testHtml = renderToStaticMarkup(await page({ searchParams: Promise.resolve({ test: "1" }) }));
-    c.ok("explicit test view retains synthetic media work", testHtml.includes("Hidden fixture media job") && testHtml.includes("Hide test records"));
+    c.ok("explicit test view keeps its toggle (the synthetic media check moved to Photo Delivery with the rest)", testHtml.includes("Hide test records") && !testHtml.includes("Media checks to finish"));
+    const { photoQcCards } = await import("@/lib/reviewRoom");
+    c.ok("the media checks reader still keeps synthetic work for an explicit test view", (await photoQcCards({ includeTest: true })).some((t) => t.street === "Hidden fixture media job") && !(await photoQcCards({ includeTest: false })).some((t) => t.street === "Hidden fixture media job"));
     await clearSession();
     let refused = false;
     try { await page({ searchParams: Promise.resolve({}) }); } catch (e) { refused = /NEXT_REDIRECT|redirect|login/i.test(String(e)); }

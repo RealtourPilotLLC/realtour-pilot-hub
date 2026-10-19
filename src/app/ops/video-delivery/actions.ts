@@ -1,23 +1,25 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, requireOwner, authEnforced } from "@/lib/auth/guards";
+import { requireAdmin, authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { VIDEO_PUSH_MODES, type VideoPushMode } from "@/lib/videoDeliverySettings";
 
 // ---------------------------------------------------------------------------
-// VIDEO DELIVERY SERVER ACTIONS (Oct 19 2026, lib/videoAryeoPush).
+// VIDEO DELIVERY SERVER ACTIONS (Oct 19 2026, lib/videoAryeoPush). The
+// screen moved into the Video Review Room (/review); its buttons call these
+// and src/app/review/videoSendActions.ts. The off/shadow/upload/deliver
+// switch is gone from the screens (button only, Oct 19), so its save action
+// is gone too.
 //
 // A server action is a public POST, so every export checks its guard first:
-//   · requireAdmin (Jordan or Kyle): Retry, Deliver now, Hold, Release;
-//   · requireOwner (Jordan): the switch.
-// The guards read the REAL role and refuse "view as" previews. Every answer
-// is { ok, message } in plain words; nothing throws to the page.
+// requireAdmin (Jordan or Kyle): Try again, Deliver now, Hold, Release. The
+// guard reads the REAL role and refuses "view as" previews. Every answer is
+// { ok, message } in plain words; nothing throws to the page.
 // ---------------------------------------------------------------------------
 
 export type ActionResult = { ok: boolean; message: string };
 
-const PATH = "/ops/video-delivery";
+const PATH = "/review";
 const ID = /^[A-Za-z0-9_-]{6,64}$/;
 
 function denied(e: unknown): ActionResult {
@@ -106,22 +108,5 @@ export async function releaseVideoPushAction(submissionId: string): Promise<Acti
     return r;
   } catch (e) {
     return failed("release", e);
-  }
-}
-
-export async function saveVideoPushModeAction(mode: VideoPushMode): Promise<ActionResult> {
-  try {
-    await requireOwner();
-  } catch (e) {
-    return denied(e);
-  }
-  if (!(VIDEO_PUSH_MODES as readonly string[]).includes(String(mode))) return { ok: false, message: "That is not a setting the hub knows." };
-  try {
-    const { saveVideoDeliverySettings, VIDEO_PUSH_MODE_WORDS } = await import("@/lib/videoDeliverySettings");
-    const s = await saveVideoDeliverySettings({ aryeoPush: mode }, await actorName());
-    refresh();
-    return { ok: true, message: `Saved: ${VIDEO_PUSH_MODE_WORDS[s.aryeoPush].label}. ${VIDEO_PUSH_MODE_WORDS[s.aryeoPush].help}` };
-  } catch (e) {
-    return failed("save the setting", e);
   }
 }

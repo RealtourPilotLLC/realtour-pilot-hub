@@ -49,10 +49,11 @@ export async function GET(req: NextRequest) {
     });
   });
 
-  // LISTING VIDEOS INTO ARYEO (Oct 19 2026, lib/videoAryeoPush): right after
-  // the 1080p step, so a file filed this tick starts going up this tick. The
-  // Video delivery switch decides (off: nothing; shadow: one line per video,
-  // nothing called). Resumable: a big file goes up across several ticks.
+  // LISTING VIDEOS INTO ARYEO (Oct 19 2026, lib/videoAryeoPush): moves on
+  // the uploads PEOPLE STARTED with Upload to Aryeo and send in the Video
+  // Review Room. Button only: it never starts a video nobody pressed,
+  // whatever the stored switch says. Resumable: a big file goes up across
+  // several ticks.
   await step("aryeo-video", async () => {
     const { driveVideoPushes } = await import("@/lib/videoAryeoPush");
     return driveVideoPushes({ budgetMs: Math.max(20_000, Math.min(65_000, remaining() - 15_000)) });

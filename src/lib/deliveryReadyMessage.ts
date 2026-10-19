@@ -14,36 +14,39 @@ export function portalReason(reason: string): string {
   return (kept.length ? kept : parts).join(" ");
 }
 
-/** The hub is uploading or delivering this one itself (Oct 19 2026): no alert
- *  for Kyle until it needs him (on the listing waiting for Deliver now, held,
- *  or stopped). */
+/** The hub is uploading or delivering this one itself, because somebody
+ *  pressed Upload to Aryeo and send (Oct 19 2026): no alert until it needs a
+ *  person (on the listing waiting for Deliver now, held, or stopped). */
 export function hubIsSending(video: ReadyVideo): boolean {
   const p = video.deliveryDestination === "aryeo-listing" ? video.push : null;
-  return !!p && p.handledByHub && !p.waitingForKyle;
+  return !!p && !!p.state && p.handledByHub && !p.waitingForKyle;
 }
 
 /** Pure message plan; readiness and exact-version eligibility come from readyToSend. */
 export function deliveryReadyMessage(video: ReadyVideo, base: string) {
   const aryeo = video.deliveryDestination === "aryeo-listing";
-  // The hub's own Aryeo upload needs Kyle (Oct 19 2026): one message per state.
-  const push = aryeo && video.push && video.push.mode !== "off" && video.push.mode !== "shadow" && (video.push.waitingForKyle || video.push.tone === "held" || video.push.tone === "failed") ? video.push : null;
+  // A run somebody started needs a person (Oct 19 2026): one message per state.
+  const push = aryeo && video.push && video.push.state && (video.push.waitingForKyle || video.push.tone === "held" || video.push.tone === "failed") ? video.push : null;
   if (push) {
-    const title = `${push.waitingForKyle ? "On Aryeo, deliver now" : push.tone === "held" ? "Held" : "Stopped"} · ${video.street}`;
+    const title = `${push.waitingForKyle ? "On Aryeo, send it now" : push.tone === "held" ? "Held" : "Stopped"} · ${video.street}`;
     const body = push.waitingForKyle
-      ? "The hub put this video on the Aryeo listing. Press Deliver now on Video delivery to send it to the client."
-      : `${push.says} Open Video delivery to ${push.tone === "held" ? "see what it is waiting for" : "press Retry, or upload it by hand"}.`;
+      ? `${push.says} Open the Video Review Room and press Deliver now to send it to the client.`
+      : `${push.says} Open the Video Review Room to ${push.tone === "held" ? "see what it is waiting for" : "press Try again, or upload it by hand"}.`;
     const fingerprint = createHash("sha256").update(JSON.stringify([video.submissionId, video.uploadFingerprint, push.state, push.says])).digest("hex").slice(0, 32);
     return {
       dedupeKey: `delivery-ready-${fingerprint}`,
       title,
       body,
-      href: "/ops/video-delivery",
-      slackDm: [title, `${video.clientName} · ${video.cutLabel} · version ${video.round}`, body, `Video delivery: ${base}/ops/video-delivery`,
+      href: "/review",
+      slackDm: [title, `${video.clientName} · ${video.cutLabel} · version ${video.round}`, body, `Video Review Room: ${base}/review`,
         !push.waitingForKyle ? `Download: ${base}${video.file.downloadHref}` : null,
         video.aryeoUrl ? `Aryeo listing: ${video.aryeoUrl}` : null,
       ].filter(Boolean).join("\n"),
     };
   }
+  // The button applies (a checked 1080p file on a linked listing, nothing
+  // recorded yet): say so, never that the hub is sending it.
+  const pressable = aryeo && !!video.push?.canStart && !video.uploaded;
   const uploaded = aryeo && !!video.uploaded;
   // No linked listing: the upload can't be recorded, so the one next step is
   // linking it (Oct 5 2026) — never "upload now" toward a refusal.
@@ -60,7 +63,7 @@ export function deliveryReadyMessage(video: ReadyVideo, base: string) {
     : step.action === "run-1080p" || step.action === "retry-1080p" ? "1080p file needed"
         : step.action === "retry-publication" ? "Portal publication"
           : "Needs a new upload";
-  const title = `${uploaded ? "Uploaded — send now" : unlinked ? "Link the Aryeo listing" : aryeo ? "Ready — upload now" : portalTitle} · ${video.street}`;
+  const title = `${uploaded ? "Uploaded — send now" : unlinked ? "Link the Aryeo listing" : pressable ? "Ready to send" : aryeo ? "Ready — upload now" : portalTitle} · ${video.street}`;
   // Every portal sentence says what is true and what to press. Nothing here
   // promises a check, a notice or a release the hub does not do.
   const portalSteps = !step
@@ -78,7 +81,9 @@ export function deliveryReadyMessage(video: ReadyVideo, base: string) {
     ? "This video is uploaded but not sent. Send the listing in Aryeo now, then confirm Mark as sent in the Hub. When Aryeo confirms the delivery, the Hub closes it by itself."
     : unlinked
       ? "This job has no Aryeo listing linked, so the upload can't be recorded yet. Open the job and press Refresh from Aryeo to link it, then upload this video."
-      : aryeo
+      : pressable
+        ? "Approved and ready to send. Press Upload to Aryeo and send in the Video Review Room. Or upload it by hand: confirm Mark as Uploaded in the Hub, send the listing in Aryeo, then confirm Mark as sent."
+        : aryeo
         ? "Upload this video to Aryeo now. Confirm Mark as Uploaded in the Hub, send the listing in Aryeo, then confirm Mark as sent in the Hub. When Aryeo confirms the delivery, the Hub closes it by itself."
         : portalSteps;
   // A blocked portal video has no file to hand over yet: no Download line.
@@ -87,9 +92,9 @@ export function deliveryReadyMessage(video: ReadyVideo, base: string) {
     dedupeKey: `delivery-ready-${fingerprint}`,
     title,
     body: steps,
-    href: unlinked ? `/projects/${video.projectId}` : "/#video-review",
+    href: unlinked ? `/projects/${video.projectId}` : pressable ? "/review" : "/#video-review",
     slackDm: [title, `${video.clientName} · ${video.cutLabel} · version ${video.round}`,
-      steps, unlinked ? `Open the job: ${base}/projects/${video.projectId}` : `Open delivery queue: ${base}/#video-review`,
+      steps, unlinked ? `Open the job: ${base}/projects/${video.projectId}` : pressable ? `Video Review Room: ${base}/review` : `Open delivery queue: ${base}/#video-review`,
       download ? `Download: ${base}${video.file.downloadHref}` : null,
       aryeo && video.aryeoUrl ? `Aryeo listing: ${video.aryeoUrl}` : null,
     ].filter(Boolean).join("\n"),

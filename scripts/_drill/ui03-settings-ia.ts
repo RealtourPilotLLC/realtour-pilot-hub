@@ -363,7 +363,8 @@ async function parent() {
         return gs.length !== 1 || gs[0].attrs["data-settings-group"] !== groupOf.get(e.attrs["data-settings-card"]);
       });
       c.ok(`${role}: every card sits inside exactly one group — the one SETTINGS_LAYOUT names`, misplaced.length === 0, misplaced.map((e) => e.attrs["data-settings-card"]).join(","));
-      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, cardTitle[k]) === 1));
+      // Oct 19 2026: the Review Room card is titled "Video Review Room" now (the OLD page keeps its old title).
+      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, k === "review-room" ? "Video Review Room" : cardTitle[k]) === 1));
       const groups = all(root, (e) => "data-settings-group" in e.attrs);
       c.ok(`${role}: every group states its effect in a sentence under its heading`, groups.length > 0 && groups.every((g) => {
         const def = SETTINGS_GROUPS.find((d) => d.id === g.attrs["data-settings-group"]);

@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Images } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { ClipboardCheck, Images } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { Section } from "@/components/ui/Section";
+import { Avatar } from "@/components/ui/Avatar";
+import { photoQcCards, type QueuePhotoQc } from "@/lib/reviewRoom";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
@@ -18,7 +22,37 @@ export const dynamic = "force-dynamic";
 // when it is due. Jobs open by themselves (lib/photoDelivery/jobs.ts): one
 // per photo shoot since the feature started, followed until the edited
 // gallery lands on the Aryeo listing, then QC, decisions, fixes, delivery.
+// MEDIA CHECKS (Oct 19 2026): Kyle's media_qa cards moved here from the
+// Review Room, which became the VIDEO Review Room (Jordan), so photo work
+// lives on the photo screen. Same cards, same links (lib/reviewRoom
+// photoQcCards).
 // ---------------------------------------------------------------------------
+
+function MediaChecks({ cards }: { cards: QueuePhotoQc[] }) {
+  if (!cards.length) return null;
+  return (
+    <Section icon={ClipboardCheck} title="Media checks to finish" count={cards.length}>
+      <ul className="divide-y divide-border">
+        {cards.map((t) => (
+          <li key={t.taskId}>
+            <Link href={t.projectId ? `/projects/${t.projectId}` : "/tasks"} className="flex min-h-11 items-center justify-between gap-3 py-2.5 hover:text-brand">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm font-medium">{t.street}</span>
+                {t.clientName && (
+                  <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                    <Avatar name={t.clientName} src={t.clientAvatarUrl} size={18} />
+                    <span className="truncate">{t.clientName}</span>
+                  </span>
+                )}
+              </div>
+              <span className="shrink-0 text-xs text-muted">{t.dueAt ? `due ${formatDistanceToNow(new Date(t.dueAt), { addSuffix: true })}` : "no due date"}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
 
 type SP = { client?: string | string[]; photographer?: string | string[]; risk?: string | string[]; view?: string | string[] };
 const ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
@@ -40,11 +74,15 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
   };
   const view = one(sp.view) === "table" ? "table" : "board";
 
-  const [strip, queue] = await Promise.all([
+  const [strip, queue, mediaChecks] = await Promise.all([
     loadStrip(viewer),
     loadQueue({ filters }).catch((e) => {
       console.error("[photo-delivery] queue failed", e);
       return null;
+    }),
+    photoQcCards({ includeTest: false }).catch((e) => {
+      console.error("[photo-delivery] media checks failed", e);
+      return [] as QueuePhotoQc[];
     }),
   ]);
 
@@ -60,6 +98,7 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
       <PageHeader eyebrow="Operations" title="Photo Delivery" subtitle={subtitle} />
       <div className="mx-auto max-w-[120rem] space-y-4 p-4 pb-16 sm:p-6">
         <GlobalStrip strip={strip} current="queue" />
+        <MediaChecks cards={mediaChecks} />
         {!queue ? (
           <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">The queue could not be read. Refresh to try again.</p>
         ) : queue.total === 0 ? (

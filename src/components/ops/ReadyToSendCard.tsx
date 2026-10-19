@@ -194,6 +194,49 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
   );
 }
 
+/**
+ * THE DELIVERY FOLLOW-UPS, ON THEIR OWN (Oct 19 2026). Home stopped showing
+ * this card, so the Video Review Room shows its follow-up lanes under Ready
+ * to send ("Needs a follow-up"): a send whose records did not finish, a
+ * client not told yet, a delivery text whose outcome is failed or unknown,
+ * and a portal video whose next step needs a person. The same rows and
+ * buttons as the card; nothing here uploads or sends anything.
+ */
+export function DeliveryFollowUps({ board, includeTest = false }: { board: Pick<ReadyBoard, "needsFinishing" | "notTold" | "noticeIncidents" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidentCheck" | "boardUnavailable"> & { portal: ReadyVideo[] }; includeTest?: boolean }) {
+  const unavailable = board.boardUnavailable || board.followUpChecks?.needsFinishing === null || board.followUpChecks?.notTold === null || board.noticeIncidentCheck === null;
+  return (
+    <div className="space-y-2">
+      {unavailable && (
+        <div role="alert" className="rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-3 text-sm text-foreground">
+          <p className="flex items-center gap-2 font-semibold"><AlertTriangle className="size-4" /> Could not check all delivery follow-up.</p>
+          <p className="mt-1 text-muted">
+            {board.boardUnavailable ? "The delivery board is unavailable." : [
+              board.followUpChecks?.needsFinishing === null ? "Delivery records" : null,
+              board.followUpChecks?.notTold === null ? "Client notification" : null,
+              board.noticeIncidentCheck === null ? "Delivery-text outcomes" : null,
+            ].filter(Boolean).join(" and ") + " could not be checked."} Work may still be waiting.
+          </p>
+          <CheckAgain />
+        </div>
+      )}
+      <NeedsFinishing rows={board.needsFinishing ?? []} />
+      <NotTold rows={board.notTold ?? []} />
+      <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
+      {board.portal.length > 0 && (
+        <section className="space-y-2" aria-label="Portal delivery needs attention">
+          <h4 className="font-semibold">Portal delivery needs attention <span className="text-muted">({board.portal.length})</span></h4>
+          {board.portal.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function CheckAgain() {
+  const router = useRouter();
+  return <button type="button" onClick={() => router.refresh()} className="mt-2 min-h-11 rounded-lg border border-border-strong bg-surface px-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Check again</button>;
+}
+
 function UploadedRow({ group, onSent, onUndo, undoErrors }: { group: ReturnType<typeof uploadedDeliveryGroups>[number]; onSent: (cuts: UploadedTarget[]) => void; onUndo: (v: ReadyVideo) => void; undoErrors: Map<string, string> }) {
   // Only today's own presses can be undone (ET); older receipts are history.
   const undoable = group.videos.filter((v) => v.uploaded?.undoable && v.uploadFingerprint);
@@ -224,7 +267,7 @@ function DeliveryTextIncidents({ rows, includeTest = false }: { rows: DeliveryNo
         {rows.map((r) => (
           <li key={r.projectId} className="text-ui-status leading-relaxed">
             <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.street}</Link>
-            <span className="text-muted"> · {r.state === "unknown" ? "provider outcome unknown — check OpenPhone before retrying" : r.state === "failed" ? "send failed — review the task and client thread" : "send queued or in progress — no acceptance recorded"} · queued {etDateTime(new Date(r.queuedAtISO))}</span>
+            <span className="text-muted"> · {r.state === "unknown" ? "provider outcome unknown: check OpenPhone before retrying" : r.state === "failed" ? "send failed: review the task and client thread" : "send queued or in progress: no acceptance recorded"} · queued {etDateTime(new Date(r.queuedAtISO))}</span>
             <Link href={`/communications?incident=${encodeURIComponent(r.outboxId)}`} className="ml-2 inline-flex min-h-11 items-center rounded-lg font-medium text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Check conversation</Link>
             {r.taskId && <Link href={homeRecordHref(`/tasks?tab=other&task=${r.taskId}`, includeTest)} className="ml-2 inline-flex min-h-11 items-center rounded-lg font-medium text-brand underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open task</Link>}
           </li>
@@ -355,11 +398,14 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
             <span className="font-normal text-muted"> — open the job and press Refresh from Aryeo. Then upload this version.</span>
           </p>
           : !usesPortal(v) && v.push
-            // THE HUB SENDS IT (Oct 19 2026): where its own Aryeo upload and
-            // delivery stands, instead of "upload it by hand".
+            // UPLOAD TO ARYEO AND SEND (Oct 19 2026): what the button in the
+            // Video Review Room would do, or where a press already is. It
+            // never says the hub is sending one nobody pressed (the line
+            // comes from lib/videoAryeoPush lineFor, which only says that
+            // for a run a person started).
             ? <p className={cn("mt-1 text-sm", v.push.tone === "held" || v.push.tone === "failed" ? "font-medium text-warning" : "text-foreground/85")}>
               {v.push.says}{" "}
-              <Link href="/ops/video-delivery" className="underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Video delivery</Link>
+              <Link href="/review" className="underline underline-offset-2 hover:text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Video Review Room</Link>
             </p>
             : <p className="mt-1 text-sm text-foreground/85">
           {usesPortal(v)
@@ -649,7 +695,7 @@ function NeedsFinishing({ rows }: { rows: { submissionId: string; street: string
       <ul className="mt-1 space-y-0.5">
         {rows.map((r) => (
           <li key={r.submissionId} className="text-ui-status text-muted">
-            <span className="font-medium text-foreground/85">{r.street}</span> — {r.why}.{" "}
+            <span className="font-medium text-foreground/85">{r.street}</span>: {r.why}.{" "}
             {r.sentBy ? `Marked sent by ${r.sentBy}.` : "Marked sent."}
           </li>
         ))}

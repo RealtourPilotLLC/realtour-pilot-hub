@@ -782,11 +782,10 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
 // Aryeo's public API (95 operations, read Sep 16 2026) still cannot upload a
 // video or deliver a listing. Since Oct 19 2026 the hub does both anyway, the
 // way Kyle's browser does, signed in as its own Aryeo login
-// (lib/videoAryeoPush, the same road the photos took on Oct 14). Whether it
-// does so by itself is the Video delivery switch (off by default): off and
-// the practice run leave the last step to Kyle; upload stops at the listing
-// for Kyle's Deliver now; deliver does it all. This sentence goes on the task
-// and the Topaz settings, so nobody waits for a step that is switched off.
+// (lib/videoAryeoPush, the same road the photos took on Oct 14). Since the
+// evening of Oct 19 it runs ONLY when a person presses "Upload to Aryeo and
+// send" in the Video Review Room (Jordan: no automatic mode for now). This
+// sentence goes on the task and the Topaz settings.
 // ---------------------------------------------------------------------------
 export const ARYEO_MANUAL_NOTE =
-  "Aryeo's API cannot upload a video or deliver a listing, so the hub does it the way Kyle's browser does, signed in as its own Aryeo login. The Video delivery switch decides whether it runs by itself; while it is off, Kyle uploads and delivers by hand.";
+  "Aryeo's API cannot upload a video or deliver a listing, so the hub does it the way Kyle's browser does, signed in as its own Aryeo login. It runs only when someone presses \"Upload to Aryeo and send\" in the Video Review Room; otherwise the video is uploaded and delivered by hand.";

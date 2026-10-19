@@ -275,7 +275,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </Section>),
 
     "review-room": card("review-room",
-      <Section icon={Clapperboard} title="Review Room">
+      <Section icon={Clapperboard} title="Video Review Room">
         <ReviewRoomSettings initial={reviewRoom} />
       </Section>),
 

@@ -4,34 +4,48 @@ import { prisma } from "@/lib/prisma";
 import { EMPTY_COUNTS, type JobCounts } from "@/lib/opsCounts";
 import { etDateTime, etDayKey, etAt } from "@/lib/datetime";
 import type { VideoPushLine } from "@/lib/videoAryeoPush";
+import type { ReadyBoard, ReadyVideo } from "@/lib/readyToSend";
 import type { VideoPushMode } from "@/lib/videoDeliverySettings";
 
 // ---------------------------------------------------------------------------
-// VIDEO DELIVERY, KYLE'S SCREEN (Oct 19 2026).
+// THE VIDEO REVIEW ROOM'S DELIVERY BOARD (Oct 19 2026; /review, which
+// /ops/video-delivery now redirects to).
 //
-// Jordan: a video delivery section like the photo one, "how many videos are
-// going out today or need to go out today or are due today, and how many
-// we're behind on." One read builds the screen (/ops/video-delivery) and the
-// four numbers on Kyle's Home tile (videoDeliveryCounts), so the tile never
+// Jordan: "how many videos are going out today or need to go out today or are
+// due today, and how many we're behind on", then (Oct 19): Ready to send at
+// the top with "Upload to Aryeo and send", Late with "Remind editor", Due
+// today "due on the current day's date, but also the ones that are late", In
+// revision, Coming up. One read builds the room's delivery sections and the
+// numbers on Kyle's Home (videoDeliveryCounts, videoSummary), so a number never
 // disagrees with the page it opens. Test clients are left out.
 //
 // LISTING VIDEOS, one row per video where the hub can tell them apart (each
 // cut the Review Room knows; a video not cut yet is a row of its own), dated
 // by the same promise Kyle's delivery board uses (deliveryBoard: the job's
 // video item, capped by the promise it was sold under; the office's date or a
-// reopened job's clock when there is one), in lanes:
-//   Late          past its promise, not approved yet
-//   Due today     due by the end of today (ET), not approved yet
-//   In review     a cut waiting for a verdict
-//   Coming up     everything else still owed (not shot, editing, no date)
-//   Sending       approved: the 1080p pass, then the hub's upload and delivery
-//                 to Aryeo (or Kyle by hand while the switch is off)
-//   Held          approved but held: the client's open asks, the sound check,
-//                 the job on hold, a person's hold
-//   Delivered     this week
-// Approved and held rows count as late too when they are past their promise.
-// CONTENT-PROGRAM videos (monthly, the client's portal) are a smaller section:
-// late and due today, from the program watch (lib/programWatch).
+// reopened job's clock when there is one). Each row lives in ONE lane:
+//   late       past its promise, not approved yet
+//   today      due by the end of today (ET), not approved yet
+//   review     a cut waiting for a verdict (not late, not due today)
+//   upcoming   everything else still owed (not shot, editing, changes asked,
+//              no date)
+//   sending    approved and READY TO SEND: the file is ready (the 1080p pass
+//              back, or not needed), nothing but a press (or a run a person
+//              started) between it and the client. The client's open
+//              requests do not move it out: the press shows them first.
+//   held       approved but held: the 1080p file held by the sound check, a
+//              run a person started that is held, a person's hold
+//   finishing  approved, the 1080p pass still running (Oct 19: no longer in
+//              "sending", which now means ready to send)
+//   delivered  this week
+// THE COUNTS, each video once per number (Oct 19 audit): lateListing = listing
+// videos past their promise (any lane but delivered); dueToday = listing videos
+// due by tonight, the late ones included (Jordan's rule); behind = lateListing;
+// open = the listing videos ready to send or due today (late included);
+// readyToSend = the sending lane. CONTENT-PROGRAM videos (monthly, the
+// client's portal) are counted apart (lateMonthly) and never mixed into the
+// listing numbers; the room shows only the late ones (they publish to the
+// portal by themselves).
 // ---------------------------------------------------------------------------
 
 export type VideoDeliveryCounts = JobCounts & {
@@ -39,12 +53,36 @@ export type VideoDeliveryCounts = JobCounts & {
   lateListing: number;
   /** Hours the most-late listing video is past its promise; null when none. */
   oldestLateHours: number | null;
-  /** Content-program (monthly) videos past their date. */
+  /** Content-program (monthly) videos past their date (never in the listing numbers). */
   lateMonthly: number;
+  /** Listing videos approved and ready to send (the room's top section). */
+  readyToSend?: number;
 };
 
-export type VideoLane = "late" | "today" | "review" | "upcoming" | "sending" | "held" | "delivered";
-export const VIDEO_LANES: VideoLane[] = ["late", "today", "sending", "held", "review", "upcoming", "delivered"];
+export type VideoLane = "late" | "today" | "review" | "upcoming" | "sending" | "held" | "finishing" | "delivered";
+export const VIDEO_LANES: VideoLane[] = ["late", "today", "sending", "held", "finishing", "review", "upcoming", "delivered"];
+
+/** What the Ready to send row needs beyond the lane (approved rows only). */
+export type VideoSend = {
+  approvedBy: string | null;
+  /** "1080p" or the editor's own file (the 1080p pass was not needed or did not finish). */
+  fileSource: "topaz-1080p" | "editor-hub-copy" | "editor-dropbox";
+  fileName: string;
+  fileSays: string;
+  downloadHref: string;
+  uploadFingerprint: string | null;
+  /** A person (or the listing check) recorded this exact version on the listing. */
+  uploaded: { by: string; at: string } | null;
+  listingMissing: boolean;
+  /** The listing already shows a video that could be this one (or the client says it is wrong): play it first. */
+  listingWarning: string | null;
+  /** The client's open requests that must be checked before it goes. */
+  openAsks: { summary: string; askedBy: string | null }[];
+  /** The requests could not be read just now (the press is refused until they can). */
+  asksUnknown: boolean;
+  /** Why the button is not offered (the hub cannot send this file itself); null when it is. */
+  byHandWhy: string | null;
+};
 
 export type VideoRow = {
   key: string;
@@ -57,6 +95,10 @@ export type VideoRow = {
   lane: VideoLane;
   /** Where it stands, in a few words ("In review, version 2", "In the 1080p pass"). */
   stage: string;
+  /** The cut's own state (null: no cut yet). */
+  cutStatus: "PENDING" | "CHANGES_REQUESTED" | "APPROVED" | null;
+  /** When the cut's state began (uploaded, sent back, approved). */
+  sinceISO: string | null;
   promiseISO: string | null;
   promiseWords: string;
   late: boolean;
@@ -71,6 +113,10 @@ export type VideoRow = {
   aryeoUrl: string | null;
   /** Since when this one has been waiting to go out (counts' oldest). */
   waitingSinceISO: string | null;
+  /** Approved rows that are ready (sending, held): what the Ready to send row shows. */
+  send: VideoSend | null;
+  /** A 1080p file the sound check held (the held lane): the file to listen to and decide on. */
+  heldRender: { jobId: string; fileName: string; dropboxUrl: string | null; lastCheck: string | null } | null;
 };
 
 export type ProgramRow = {
@@ -91,10 +137,20 @@ export type VideoDeliveryBoard = {
   lanes: Record<VideoLane, VideoRow[]>;
   program: { late: ProgramRow[]; dueToday: ProgramRow[]; atRisk: number; unavailable: boolean };
   counts: VideoDeliveryCounts;
+  /** The stored switch (read only; button only since Oct 19, it starts nothing). */
   mode: VideoPushMode;
   /** The hub's Aryeo login is set up (Connections). */
   connected: boolean;
   unavailable?: boolean;
+  /** Only on the room's read ({ followUps: true }). */
+  followUps?: VideoFollowUps | null;
+};
+
+/** The delivery follow-up lanes (readyToSend's), shown in the room under Ready to send since Home stopped showing the delivery card (Oct 19). */
+export type VideoFollowUps = Pick<ReadyBoard, "needsFinishing" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidentCheck" | "boardUnavailable"> & {
+  notTold: NonNullable<ReadyBoard["notTold"]>;
+  noticeIncidents: NonNullable<ReadyBoard["noticeIncidents"]>;
+  portal: ReadyVideo[];
 };
 
 const HOUR = 3_600_000;
@@ -130,21 +186,21 @@ function videoPromise(
   return job.dueAt ?? pin;
 }
 
-const EMPTY_LANES = (): Record<VideoLane, VideoRow[]> => ({ late: [], today: [], review: [], upcoming: [], sending: [], held: [], delivered: [] });
+const EMPTY_LANES = (): Record<VideoLane, VideoRow[]> => ({ late: [], today: [], review: [], upcoming: [], sending: [], held: [], finishing: [], delivered: [] });
 
 let memo: { at: number; value: VideoDeliveryBoard } | null = null;
 
-/** The whole screen. `now` is for drills. Home's tile may reuse a read up to
+/** The whole board. `now` is for drills. Home's tile may reuse a read up to
  *  15 seconds old; the screen itself (`fresh`) always reads anew, so a press
  *  shows at once. */
-export async function videoDeliveryBoard(opts: { now?: Date; fresh?: boolean } = {}): Promise<VideoDeliveryBoard> {
-  if (!opts.now && !opts.fresh && memo && Date.now() - memo.at < 15_000) return memo.value;
-  const value = await buildBoard(opts.now ?? new Date());
+export async function videoDeliveryBoard(opts: { now?: Date; fresh?: boolean; followUps?: boolean } = {}): Promise<VideoDeliveryBoard> {
+  if (!opts.now && !opts.fresh && !opts.followUps && memo && Date.now() - memo.at < 15_000) return memo.value;
+  const value = await buildBoard(opts.now ?? new Date(), !!opts.followUps);
   if (!opts.now) memo = { at: Date.now(), value };
   return value;
 }
 
-async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
+async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliveryBoard> {
   const todayKey = etDayKey(now);
   const endOfToday = etAt(todayKey, 23, 59);
   const { isSyntheticClientRow } = await import("@/lib/testClients");
@@ -166,7 +222,8 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
 
   const [board, ready, deliveredRecently] = await Promise.all([
     deliveryBoard({ excludeClientIds }),
-    readyToSend({ excludeClientIds, recordFollowUpHealth: false, includeNoticeIncidents: false }),
+    // The room's read (followUps) also records the follow-up lanes' health and reads the delivery-text outcomes, as Kyle's Home did.
+    readyToSend({ excludeClientIds, recordFollowUpHealth: withFollowUps, includeNoticeIncidents: withFollowUps }),
     prisma.reviewSubmission.findMany({
       where: { status: "APPROVED", sentToClientAt: { gte: new Date(now.getTime() - 7 * DAY) }, project: { contentMonthId: null, ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) } },
       select: { id: true, projectId: true, round: true, sentToClientAt: true, sentToClientBy: true, decidedAt: true },
@@ -194,18 +251,20 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
   const states = await videoStatesFor(videoJobIds);
   const { aryeoJobUrl } = await import("@/lib/aryeoUrl");
 
-  // What holds an approved video: the hub's own push line, a held 1080p file, the client's open asks.
+  // What stands between an approved video and the client: a run a person
+  // started (its line), a held 1080p file, the client's open requests (shown
+  // on the row and checked by the press, never a hold by themselves).
   const readyBySub = new Map(readyRows.map((v) => [v.submissionId, v]));
   const renderingBySub = new Map(renderingRows.map((v) => [v.submissionId, v]));
-  const approvedProjects = [...new Set([...readyRows, ...renderingRows].map((v) => v.projectId))];
-  const asks = new Map<string, string | null>();
-  await Promise.all(approvedProjects.map(async (pid) => {
+  const askProjects = [...new Set(readyRows.map((v) => v.projectId))];
+  const asks = new Map<string, { list: { summary: string; askedBy: string | null }[]; unknown: boolean }>();
+  await Promise.all(askProjects.map(async (pid) => {
     try {
       const { openAsksHolding } = await import("@/lib/clientAsks");
       const a = await openAsksHolding(pid, "video");
-      asks.set(pid, a.length ? `Waiting on Kyle to confirm ${a.length} client ask${a.length === 1 ? "" : "s"}${a[0]?.summary ? ` ("${a[0].summary.slice(0, 100)}")` : ""}.` : null);
+      asks.set(pid, { list: a.map((x) => ({ summary: x.summary, askedBy: x.askedBy })), unknown: false });
     } catch {
-      asks.set(pid, "The client's open asks could not be read just now.");
+      asks.set(pid, { list: [], unknown: true });
     }
   }));
   const deliveredBySub = new Map(deliveredRecently.map((d) => [d.id, d]));
@@ -217,6 +276,17 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
       : []
     ).map((s) => [s.id, s.topazJob]),
   );
+
+  // A recorded 1080p reason is free text (a skip note, a service's error): money scrubbed, as on Kyle's Home.
+  const { scrubMoney: scrubWhy } = await import("@/lib/text");
+  /** Why the hub cannot send this ready file itself (the row shows the hand path instead of the button). */
+  const byHandWhy = (r: ReadyVideo): string | null => {
+    if (r.listingMissing) return "This job has no Aryeo listing linked yet. Open the job and press Refresh from Aryeo, then send it.";
+    if (r.file.source !== "topaz-1080p") return `This is the editor's own file (the 1080p pass did not produce one${r.file.why ? `: ${scrubWhy(r.file.why).replace(/[.\s]+$/, "")}` : ""}), so it goes up by hand.`;
+    if (!connected) return "The hub's Aryeo login is not set up yet, so this one goes up by hand. Jordan adds it on Connections, Aryeo hub login.";
+    if (!r.push) return "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand.";
+    return null;
+  };
 
   const lanes = EMPTY_LANES();
   const nowMs = now.getTime();
@@ -237,7 +307,7 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
     const settledJob = !!job?.settled || p.status === "DELIVERED";
     const cuts = st?.cuts ?? [];
     for (const c of cuts) {
-      const common = { ...base, key: c.submissionId, submissionId: c.submissionId, label: c.cutLabel, round: c.round, reviewHref: `/review/${pid}?cut=${c.submissionId}` };
+      const common = { ...base, key: c.submissionId, submissionId: c.submissionId, label: c.cutLabel, round: c.round, reviewHref: `/review/${pid}?cut=${c.submissionId}`, cutStatus: c.status, sinceISO: c.sinceISO, heldRender: null, send: null };
       if (c.status === "APPROVED") {
         const r = readyBySub.get(c.submissionId);
         const rend = renderingBySub.get(c.submissionId);
@@ -245,15 +315,27 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
         if (r || rend) {
           const pushLine = r?.push ?? null;
           const heldWhy = rend?.held ? `${rend.says}${rend.held.lastCheck ? ` ${rend.held.lastCheck}` : ""}`
-            : pushLine && (pushLine.tone === "held") ? pushLine.says
-            : asks.get(pid) ?? null;
+            : pushLine && pushLine.tone === "held" ? pushLine.says
+            : null;
           const approvedAt = r?.approvedAtISO ?? rend?.approvedAtISO ?? c.sinceISO;
+          const a = asks.get(pid);
+          const lane: VideoLane = heldWhy ? "held" : rend ? "finishing" : "sending";
           push({
-            ...common, lane: heldWhy ? "held" : "sending",
-            stage: rend ? (rend.held ? "1080p file held" : "In the 1080p pass") : pushLine?.state === "WAITING" && pushLine.waitingForKyle ? "On Aryeo, not delivered" : r?.uploaded ? "On Aryeo, not delivered" : "Approved, ready to send",
+            ...common, lane,
+            stage: rend ? (rend.held ? "1080p file held" : "In the 1080p pass") : pushLine?.progress === "on-listing" || r?.uploaded ? "On Aryeo, not sent yet" : pushLine?.progress === "uploading" ? "Uploading to Aryeo" : "Approved, ready to send",
             promiseWords: promiseWords(promise, now), late, dueToday, lateHours: late ? hoursBetween(promise!.getTime(), nowMs) : null,
             approvedAtISO: approvedAt, deliveredAtISO: null, deliveredBy: null, push: pushLine, heldWhy,
             waitingSinceISO: rend ? null : approvedAt,
+            heldRender: rend?.held ? { jobId: rend.held.jobId, fileName: rend.held.fileName, dropboxUrl: rend.held.dropboxUrl, lastCheck: rend.held.lastCheck } : null,
+            send: r ? {
+              approvedBy: r.approvedBy, fileSource: r.file.source, fileName: r.file.fileName, fileSays: r.file.says.replace(/\s*[\u2014\u2013]\s*/g, ": "), downloadHref: r.file.downloadHref,
+              uploadFingerprint: r.uploadFingerprint ?? null,
+              uploaded: r.uploaded ? { by: r.uploaded.by, at: r.uploaded.at } : null,
+              listingMissing: !!r.listingMissing,
+              listingWarning: r.listing && (r.listing.contested || r.listing.couldBeThisCut) && !r.uploaded ? r.listing.says : null,
+              openAsks: a?.list ?? [], asksUnknown: a?.unknown ?? false,
+              byHandWhy: byHandWhy(r),
+            } : null,
           });
           continue;
         }
@@ -294,7 +376,7 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
       for (let i = 0; i < missing; i++) {
         const lane: VideoLane = late ? "late" : dueToday ? "today" : "upcoming";
         push({
-          ...base, key: `${pid}:uncut:${i}`, submissionId: null, label: st.owed > 1 ? `Video ${cuts.length + i + 1} of ${st.owed}` : "Listing video", round: null,
+          ...base, key: `${pid}:uncut:${i}`, submissionId: null, label: st.owed > 1 ? `Video ${cuts.length + i + 1} of ${st.owed}` : "Listing video", round: null, cutStatus: null, sinceISO: null, heldRender: null, send: null,
           lane, stage, promiseWords: promiseWords(promise, now), late, dueToday, lateHours: late ? hoursBetween(promise!.getTime(), nowMs) : null,
           approvedAtISO: null, deliveredAtISO: null, deliveredBy: null, push: null, heldWhy: null, reviewHref: null, waitingSinceISO: late ? promise!.toISOString() : null,
         });
@@ -331,24 +413,39 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
     program.unavailable = true;
   }
 
-  // ---- the counts (Kyle's Home tile reads these, nothing else) ----
+  // ---- the counts (Kyle's Home reads these): each video once per number ----
   const owedRows = VIDEO_LANES.filter((l) => l !== "delivered").flatMap((l) => lanes[l]);
   const lateRows = owedRows.filter((r) => r.late);
-  const openRows = [...lanes.late, ...lanes.today, ...lanes.sending, ...lanes.held];
-  const waits = [
-    ...openRows.map((r) => r.waitingSinceISO),
-    ...program.late.map((r) => r.promiseISO),
-  ].filter((x): x is string => !!x).map((x) => hoursBetween(Date.parse(x), nowMs));
+  const dueRows = owedRows.filter((r) => r.dueToday); // the late ones are due by tonight too
+  const openRows = new Map<string, VideoRow>();
+  for (const r of [...lanes.sending, ...lanes.held, ...dueRows]) openRows.set(r.key, r);
+  const waits = [...openRows.values()].map((r) => r.waitingSinceISO ?? (r.late ? r.promiseISO : null)).filter((x): x is string => !!x).map((x) => hoursBetween(Date.parse(x), nowMs));
   const counts: VideoDeliveryCounts = {
-    open: openRows.length + program.late.length + program.dueToday.length,
-    dueToday: owedRows.filter((r) => r.dueToday).length + program.late.length + program.dueToday.length,
-    behind: lateRows.length + program.late.length,
+    open: openRows.size,
+    dueToday: dueRows.length,
+    behind: lateRows.length,
     oldestHours: waits.length ? Math.max(...waits) : null,
     lateListing: lateRows.length,
     oldestLateHours: lateRows.length ? Math.max(...lateRows.map((r) => r.lateHours ?? 0)) : null,
     lateMonthly: program.late.length,
+    readyToSend: lanes.sending.length,
   };
-  return { asOf: now.toISOString(), lanes, program, counts, mode: settings.aryeoPush, connected };
+  // ---- the follow-ups (the room only): what the delivery card used to carry ----
+  const { scrubMoney } = await import("@/lib/text");
+  const followUps: VideoFollowUps | null = withFollowUps
+    ? {
+        needsFinishing: ready.needsFinishing,
+        notTold: ready.notTold ?? [],
+        noticeIncidents: ready.noticeIncidents ?? [],
+        followUpChecks: ready.followUpChecks,
+        followUpLastSuccess: ready.followUpLastSuccess,
+        noticeIncidentCheck: ready.noticeIncidentCheck,
+        boardUnavailable: ready.boardUnavailable,
+        // Monthly / branding videos whose portal step needs a person (the delivery card's "Portal delivery needs attention").
+        portal: ready.ready.filter((v) => v.deliveryDestination === "client-portal").map((v) => ({ ...v, file: { ...v.file, why: v.file.why ? scrubMoney(v.file.why) : null } })),
+      }
+    : null;
+  return { asOf: now.toISOString(), lanes, program, counts, mode: settings.aryeoPush, connected, followUps };
 }
 
 /** Counts for Kyle's Video tile (test clients excluded). A read that fails
@@ -356,4 +453,18 @@ async function buildBoard(now: Date): Promise<VideoDeliveryBoard> {
 export async function videoDeliveryCounts(now: Date = new Date()): Promise<VideoDeliveryCounts> {
   const b = await videoDeliveryBoard(Math.abs(now.getTime() - Date.now()) < 60_000 ? {} : { now });
   return { ...EMPTY_COUNTS, ...b.counts };
+}
+
+/** Home's summary box (Oct 19 2026): listing videos ready to send, late, and
+ *  due today (the late ones included, Jordan's rule), each video once, the
+ *  same numbers as the Video Review Room's headings. */
+export async function videoSummary(now: Date = new Date()): Promise<{ readyToSend: number; late: number; dueToday: number }> {
+  const b = await videoDeliveryBoard(Math.abs(now.getTime() - Date.now()) < 60_000 ? {} : { now });
+  return { readyToSend: b.counts.readyToSend ?? b.lanes.sending.length, late: b.counts.lateListing, dueToday: b.counts.dueToday };
+}
+
+/** The Due today section: every listing video due by tonight, the late ones first (Jordan, Oct 19). */
+export function dueTodayRows(b: VideoDeliveryBoard): VideoRow[] {
+  const rows = VIDEO_LANES.filter((l) => l !== "delivered").flatMap((l) => b.lanes[l]).filter((r) => r.dueToday);
+  return rows.sort((a, c) => Number(c.late) - Number(a.late) || (a.promiseISO ?? "9999").localeCompare(c.promiseISO ?? "9999"));
 }
