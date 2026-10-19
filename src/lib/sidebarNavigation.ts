@@ -64,9 +64,19 @@ export function officeMenuDestinations<T extends Destination & { label: string }
     if (item) primary.push({ ...item, label: door.label as string });
   }
   const isPrimary = (item: T) => primary.some((p) => p.href === item.href && !item.external);
-  const rest = groupSidebarDestinations(items.filter((item) => !isPrimary(item)), pathname).flatMap((group) => group.items);
+  // More keeps the usual groups (Jordan: "the menu should be organized still
+  // when you click more"): the same headings, in the same order, inside the fold.
+  // What is left of "Daily work" and "Operations" once the six doors are out
+  // (Tasks, My Day) reads as one "Lists" heading, first.
+  const grouped = groupSidebarDestinations(items.filter((item) => !isPrimary(item)), pathname);
+  const lists = grouped.filter((g) => g.id === "daily" || g.id === "operations").flatMap((g) => g.items);
+  const restGroups = [
+    ...(lists.length ? [{ id: "lists", title: "Lists", items: lists }] : []),
+    ...grouped.filter((g) => g.id !== "daily" && g.id !== "operations").map((group) => ({ id: group.id, title: group.title, items: group.items })),
+  ];
+  const rest = restGroups.flatMap((group) => group.items);
   return [
-    { id: "work", title: "Daily work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary },
-    { id: "more", title: "More", frequent: false, current: rest.some((item) => item.href === activeHref), activeHref, items: rest },
+    { id: "work", title: "Daily work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary, subgroups: null },
+    { id: "more", title: "More", frequent: false, current: rest.some((item) => item.href === activeHref), activeHref, items: rest, subgroups: restGroups },
   ].filter((group) => group.items.length > 0);
 }
