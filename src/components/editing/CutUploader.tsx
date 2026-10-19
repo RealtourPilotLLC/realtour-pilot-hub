@@ -21,6 +21,8 @@ import { firstName, verdictLine, type Verdict } from "@/lib/reviewAttribution";
 import { StillWorkingPrompt } from "@/components/editing/StillWorkingPrompt";
 import { stillWorkingRemaining } from "@/lib/editorDesk";
 import { uploadPanelSummary, type UploadPanelSummary, type UploadPanelVideo } from "@/app/review/selfCheckActions";
+// The sound check on the picked file (Oct 16 2026) — pure, browser-side, warn-only.
+import { checkCutSound, soundReviewerNote, soundWarningLine, withSoundNote, type SoundReport } from "@/lib/cutSoundCheck";
 
 // ---------------------------------------------------------------------------
 // "Upload version N" — the editor's way into the Review Room (Jordan, Sep 1:
@@ -147,6 +149,37 @@ function readDimensions(file: File): Promise<{ width: number; height: number } |
     el.onerror = () => finish(null);
     el.src = url;
   });
+}
+
+// ---------------------------------------------------------------------------
+// THE SOUND CHECK (Oct 16 2026). About eighteen videos since June reached
+// review or a client with a sound problem — none at all, a muted stretch, the
+// voice cut off at the end, the sound half a second behind the picture — while
+// sound was only ever a tick box. The picked file is read where it sits, like
+// the export check above: its header for the sound track and where sound and
+// picture start and stop (a few small Blob.slice reads, whatever the size), and
+// a few seconds of its sound decoded for the ending, silences and levels
+// (lib/cutSoundCheck). It WARNS and never blocks: one line under the row (and
+// in the final-check dialog while that is open), and, only when it found
+// something, one automatic line on the version's note for the reviewer. A check
+// that can't run says nothing at all.
+// ---------------------------------------------------------------------------
+
+/** How long the hand-in waits for an unfinished sound check before sending the
+ *  version without its note (the check normally finished minutes earlier). */
+const SOUND_NOTE_WAIT_MS = 5_000;
+
+/** The one warning line under the upload. Nothing when the check found nothing
+ *  or couldn't run. */
+export function SoundCheckLine({ report }: { report: SoundReport | null | undefined }) {
+  const line = report ? soundWarningLine(report.findings) : null;
+  if (!line) return null;
+  return (
+    <p data-sound-check className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-foreground/85">
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+      <span>{line}</span>
+    </p>
+  );
 }
 
 // The hourly folder sweep parks its OWN provenance line in the same column
@@ -431,6 +464,8 @@ type HandIn = {
   /** the page's URL once pinned to this video — a later re-pin never pulls an
    *  editor back who has moved on to another video meanwhile */
   pinnedHref: string | null;
+  /** the sound check on THIS file, if one was started for it */
+  sound: Promise<SoundReport> | null;
 };
 
 // reopenedSlotKeys: approved videos whose own slot has a newer named ask.
@@ -523,6 +558,29 @@ export function CutUploader({
   // not something to throw away because they changed which export they are
   // sending. It survives here until the upload the reason belongs to lands.
   const [reopenWhy, setReopenWhy] = useState<Record<string, string>>({});
+  // The sound check per row: the last file picked there and what its check
+  // found (drawn), and the running check itself (awaited by the hand-in, so
+  // the reviewer's note belongs to the file that was actually sent).
+  const [sound, setSound] = useState<Record<string, { file: File; report: SoundReport }>>({});
+  const soundRuns = useRef<Record<string, { file: File; done: Promise<SoundReport> }>>({});
+  function startSoundCheck(key: string, file: File) {
+    if (soundRuns.current[key]?.file === file) return; // same pick, already running
+    setSound((s) => { const n = { ...s }; delete n[key]; return n; });
+    const done = checkCutSound(file).catch((): SoundReport => ({ findings: [], ran: { header: false, levels: false } }));
+    soundRuns.current[key] = { file, done };
+    void done.then((report) => {
+      if (soundRuns.current[key]?.file !== file) return; // a newer pick replaced it
+      setSound((s) => ({ ...s, [key]: { file, report } }));
+    });
+  }
+  // Only when it found something, and never longer than a few seconds.
+  async function soundNoteOf(h: HandIn): Promise<string | null> {
+    if (!h.sound) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const report = await Promise.race([h.sound, new Promise<null>((r) => { timer = setTimeout(() => r(null), SOUND_NOTE_WAIT_MS); })]);
+    if (timer) clearTimeout(timer);
+    return report ? soundReviewerNote(report.findings) : null;
+  }
   // Remove / move state per version (Sep 16). The /edit page hands this panel
   // the cut rows, not these columns, so the panel asks for them itself — one
   // read per job, re-read whenever a version changes here or a control fires.
@@ -570,6 +628,8 @@ export function CutUploader({
     // review). Only the words survive a re-pick; the override does not, because
     // the check below is about to decide it again for the file actually chosen.
     clearReopen(key);
+    // The sound check runs beside everything below and holds nothing up.
+    startSoundCheck(key, file);
     setBusy((b) => ({ ...b, [key]: { pct: 0, label: "Checking the export…" } }));
     const dim = await readDimensions(file);
     if (dim && isOverExportSpec(dim.width, dim.height)) {
@@ -674,9 +734,11 @@ export function CutUploader({
     setChecked((s) => { const n = { ...s }; delete n[key]; return n; });
     setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
     setSaved((s) => { const n = { ...s }; delete n[key]; return n; });
+    const run = soundRuns.current[key];
     const handIn: HandIn = {
       key, round: started.round, submissionId: started.submissionId, url: blob.url, pathname: blob.pathname,
       phase: "confirming", problem: null, sentTo: null, answered: false, message: (draft[key] ?? "").trim(), pinnedHref: null,
+      sound: run && run.file === file ? run.done : null,
     };
     // Pinned BEFORE the finish is sent, so the refresh it triggers re-renders
     // this video and not the next un-uploaded one. The native replaceState is
@@ -722,10 +784,15 @@ export function CutUploader({
     // The message the editor typed BEFORE the file existed now has a version
     // to belong to. Best-effort: the cut is already in review, so a failure
     // keeps the draft and says so rather than losing the words.
-    if (h.message) {
-      const m = await saveCutMessage(h.submissionId, h.message).catch(() => ({ ok: false as const, message: "" }));
+    // The sound check's line rides after the editor's words, and only when it
+    // found something — a clean or un-run check adds nothing for the reviewer.
+    const note = withSoundNote(h.message, await soundNoteOf(h));
+    if (note) {
+      const m = await saveCutMessage(h.submissionId, note).catch(() => ({ ok: false as const, message: "" }));
       if (m.ok) setDraft((d) => ({ ...d, [h.key]: "" }));
-      else setErr((e) => ({ ...e, [h.key]: "The cut went to review, but your message didn't save — add it again below." }));
+      // Only the EDITOR'S words are worth a red line: a lost automatic note
+      // is not something they have to retype.
+      else if (h.message) setErr((e) => ({ ...e, [h.key]: "The cut went to review, but your message didn't save — add it again below." }));
     }
     setSent((s) => (s && s.submissionId === h.submissionId ? { ...s, phase: "done", problem: null } : s));
     // Who actually has it now (the hub assigned the reviewer as it entered).
@@ -962,6 +1029,7 @@ export function CutUploader({
                   </div>
                 )}
                 {err[key] && <p className="mt-1 text-xs text-danger">{err[key]}</p>}
+                <SoundCheckLine report={sound[key]?.report} />
                 {/* THE REFUSAL. Whoever is reading this has just finished an
                     edit and been told "no" by a dialog, so the first line is
                     the only one that has to land: the work is fine. Then what
@@ -1167,7 +1235,9 @@ export function CutUploader({
             file={{ name: checking.file.name, size: checking.file.size, lastModified: checking.file.lastModified }}
             title={`Before ${(() => { const v = summary?.videos.find((x) => x.key === key); return v ? `Video ${v.number}` : checking.cut.label; })()} goes to review`}
             onBehalfOf={onBehalfOf}
-            notice={checking.notice ?? null}
+            // The server's refusal first; otherwise the sound check's line, so
+            // it is in front of the editor before the bytes go, not after.
+            notice={checking.notice ?? (sound[key]?.file === checking.file ? soundWarningLine(sound[key].report.findings) : null)}
             onCancel={() => setChecking(null)}
             onSubmit={async (input) => {
               const p = checking;

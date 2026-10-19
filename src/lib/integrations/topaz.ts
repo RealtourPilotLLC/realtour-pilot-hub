@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getConnection, getSecret } from "./connections";
+import { avTimingFromMoov, type AvTiming } from "@/lib/mp4Probe";
 
 // ---------------------------------------------------------------------------
 // Topaz Video AI — the HTTP side (Sep 16 2026).
@@ -546,6 +547,11 @@ export type VideoMeta = {
    *  24-bit PCM. A caller that knows the source codec can ask for a conversion
    *  instead, and can check afterwards that the audio actually survived. */
   audio: { present: boolean; codec: string | null };
+  /** Where the sound and the picture start and stop on the movie's timeline
+   *  (Oct 16 2026), parsed by lib/mp4Probe from the SAME moov bytes read
+   *  below — no further request. Absent/null = it couldn't be read, and every
+   *  check built on it then simply doesn't run. */
+  timing?: AvTiming | null;
 };
 
 type Box = { type: string; start: number; headerSize: number; size: number };
@@ -696,6 +702,7 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
   const m = await rangeBytes(url, moov.start, moov.start + moov.size - 1);
 
   const audio = audioTrackOf(m, moov);
+  const timing = avTimingFromMoov(m);
 
   for (const trak of children(m, moov.headerSize, moov.size)) {
     if (trak.type !== "trak") continue;
@@ -763,6 +770,7 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
       codec: entry.type,
       sizeBytes: total,
       audio,
+      timing,
     };
   }
   throw new TopazError("Couldn't find a video track in that file — it may not be a video, or it may have been cut short on upload.", 0, false);

@@ -16,6 +16,8 @@ import { createHash } from "crypto";
 // read below goes through them: the header probes get a URL that carries its
 // own permission, and the one direct fetch carries the store's token.
 import { blobFetchDecision, probeableUrl } from "@/lib/reviewCuts";
+// Sound against picture, from the header the probe already read (Oct 16 2026).
+import { AV_HOLD_SEC, avOffBy, avSyncOf, avSyncWords, type AvSync } from "@/lib/mp4Probe";
 import {
   ARYEO_MANUAL_NOTE,
   TopazError,
@@ -38,6 +40,7 @@ import {
   type TopazFilter,
   type TopazUploadResult,
   type TopazUploadTarget,
+  type VideoMeta,
 } from "@/lib/integrations/topaz";
 
 // ===========================================================================
@@ -1502,6 +1505,15 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
 //               is saved to Dropbox under unverified/ and read AGAIN from there
 //               (a different host from Topaz's link). Readable there → judged
 //               like any other. Still unreadable → HELD for a person.
+//   sound       (Oct 16 2026) read, the right video, but its SOUND is wrong in
+//               a way the editor's export shares or that nobody could compare:
+//               no sound at all, or sound and picture more than 0.3 s apart
+//               (where they start or stop on the timeline — the header's own
+//               edit lists, no decoding). The original is no better, so neither
+//               goes out on the hub's word: filed under unverified/ and HELD for
+//               a person, with the reason in plain words. Sound out of step in
+//               the render but NOT in the approved cut is a mismatch instead —
+//               the pass broke it, and the editor's file is the one to send.
 //
 // The source's side comes off the row (sourceHasAudio / sourceDurationSec /
 // the planned output size, all measured when the job was set up), so the check
@@ -1509,7 +1521,7 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
 // before those facts were kept falls back to re-reading, as it always did.
 // ---------------------------------------------------------------------------
 
-type OutputVerdict = "ok" | "lost" | "mismatch" | "unreadable";
+type OutputVerdict = "ok" | "lost" | "mismatch" | "unreadable" | "sound";
 type OutputCheck = { verdict: OutputVerdict; reason: string | null; json: string };
 
 /** The source's audio, from the row when it was measured there, else read
@@ -1524,6 +1536,49 @@ async function sourceAudioOf(job: NonNullable<JobRow>): Promise<{ present: boole
     .then((readable) => (readable ? probeVideoMetadata(readable, job.sourceSizeBytes ?? sub.sizeBytes ?? null) : null))
     .then((p) => p?.audio ?? null)
     .catch(() => null);
+}
+
+/** Where the approved cut's own sound sits against its picture, read again from
+ *  its header — asked only when the render's is out of step, to tell "the pass
+ *  broke it" from "it was always like that". null = not known. */
+async function sourceSyncOf(job: NonNullable<JobRow>): Promise<AvSync | null> {
+  const sub = job.submission;
+  if (!sub?.blobUrl) return null;
+  return probeableUrl(sub.blobUrl)
+    .then((readable) => (readable ? probeVideoMetadata(readable, job.sourceSizeBytes ?? sub.sizeBytes ?? null) : null))
+    .then((p) => avSyncOf(p?.timing))
+    .catch(() => null);
+}
+
+/**
+ * THE SOUND, AGAINST THE PICTURE (Oct 16 2026). After the older checks pass:
+ * a finished file with no sound at all (the editor's export had none either —
+ * a source WITH sound is "lost" above), or with its sound and picture starting
+ * or stopping more than AV_HOLD_SEC apart. A file whose header can't say
+ * (no timing read, a fragmented file) is judged exactly as before.
+ */
+export async function judgeOutputSound(
+  out: Pick<VideoMeta, "audio" | "timing">,
+  src: { present: boolean; codec: string | null } | null,
+  sourceSync: () => Promise<AvSync | null>,
+): Promise<{ verdict: OutputVerdict; reason: string; av: AvSync | null; sourceAv: AvSync | null } | null> {
+  if (!out.audio.present) {
+    if (src && !src.present) return { verdict: "sound", reason: "it has no sound at all, and neither has the editor's export", av: null, sourceAv: null };
+    return null; // lost / unreadable are decided above
+  }
+  const av = avSyncOf(out.timing);
+  const words = avSyncWords(av, AV_HOLD_SEC);
+  if (!words) return null;
+  const sourceAv = await sourceSync();
+  if (sourceAv?.hasAudio && avOffBy(sourceAv) <= AV_HOLD_SEC) {
+    return { verdict: "mismatch", reason: `with its sound out of step with the picture (${words}; the approved cut's lines up)`, av, sourceAv };
+  }
+  return {
+    verdict: "sound",
+    reason: `${words}${sourceAv?.hasAudio ? ", in the editor's export too" : ""}`,
+    av,
+    sourceAv,
+  };
 }
 
 /**
@@ -1565,6 +1620,15 @@ async function verifyProcessedOutput(job: NonNullable<JobRow>, url: string | nul
       }
     }
   }
+  let soundAv: { av: AvSync | null; sourceAv: AvSync | null } | null = null;
+  if (verdict === "ok" && out) {
+    const sound = await judgeOutputSound(out, src, () => sourceSyncOf(job)).catch(() => null);
+    if (sound) {
+      verdict = sound.verdict;
+      reason = sound.reason;
+      soundAv = { av: sound.av, sourceAv: sound.sourceAv };
+    }
+  }
 
   const json = JSON.stringify({
     verdict,
@@ -1578,8 +1642,13 @@ async function verifyProcessedOutput(job: NonNullable<JobRow>, url: string | nul
       plannedOutput: job.outputWidth && job.outputHeight ? `${job.outputWidth}x${job.outputHeight}` : null,
     },
     output: out
-      ? { hasAudio: out.audio.present, audioCodec: out.audio.codec, durationSec: out.durationSec, size: `${out.width}x${out.height}` }
+      ? {
+          hasAudio: out.audio.present, audioCodec: out.audio.codec, durationSec: out.durationSec, size: `${out.width}x${out.height}`,
+          // Sound against picture, when the header could say (Oct 16 2026).
+          ...(avSyncOf(out.timing) ? { av: avSyncOf(out.timing) } : {}),
+        }
       : null,
+    ...(soundAv?.sourceAv ? { sourceAv: soundAv.sourceAv } : {}),
   });
   // The same line the audio-only check wrote, so a search for it still finds
   // every check the pass has ever made — now with which copy was read.
@@ -1631,6 +1700,9 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
     // reads it once more from there (O02). The bell that used to fire here
     // ("being filed … worth playing it once") is gone with the behaviour it
     // described: a person hears about this file only if it ends up HELD.
+    // A "sound" verdict (no sound anywhere, or sound out of step in the editor's
+    // export too) takes the same road with no retries — it is a measurement,
+    // not a bad read — and ends HELD with its reason (settleUncheckedCopy).
     await release(job, {
       outputCheck: check.verdict === "ok" ? "verified" : "unverified",
       ...checked,
@@ -2170,11 +2242,25 @@ export function heldFileBellTargets(approverId: string | null, kyleId: string | 
   ];
 }
 
+/** A held file whose sound was READ and found wrong (verdict "sound"), in plain
+ *  words: `clause` fits "1080p file HELD — …", `sentence` stands alone. null =
+ *  the ordinary hold (nobody could read it). */
+export function heldWhy(check: { verdict: string; reason: string | null } | null): { clause: string; sentence: string; bell: string } | null {
+  if (!check || check.verdict !== "sound" || !check.reason) return null;
+  const clause = `its sound is wrong: ${check.reason}`;
+  const said = check.reason.charAt(0).toUpperCase() + check.reason.slice(1);
+  // The bell keeps 140 characters: the reason and the way out, nothing else.
+  return { clause, sentence: `Its sound is wrong: ${check.reason}.`, bell: `${said}. Listen, then use it or ask for a new export.` };
+}
+
 /** Park the job as HELD and tell the person whose call it is. The bytes are
  *  in Dropbox, so Topaz's copy goes; the editor's original is not touched and
  *  Kyle is not asked to deliver anything. */
 async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: OutputCheck): Promise<"held" | "saving"> {
   const now = new Date();
+  // WHY it is held, in the words every message below uses: a file nobody could
+  // read, or one whose sound was read and is wrong (Oct 16 2026).
+  const why = heldWhy(check);
   const won = await prisma.topazJob
     .updateMany({
       where: { id: job.id, state: "saving" },
@@ -2214,7 +2300,9 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
     await notifyInApp({
       kind: "topaz_problem",
       title: `1080p file held, not sent — ${street}`,
-      body: job.project.contentMonthId ? "Its sound couldn't be verified. Listen to it, then use it." : "Its sound couldn't be verified. Listen to it, then use it or keep the approved original.",
+      body: why
+        ? why.bell
+        : job.project.contentMonthId ? "Its sound couldn't be verified. Listen to it, then use it." : "Its sound couldn't be verified. Listen to it, then use it or keep the approved original.",
       href: "/#video-review",
       targets: heldFileBellTargets(approver?.id ?? null, kyle),
       dedupeKey: `topaz-held-${job.id}`,
@@ -2226,12 +2314,14 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
   await noticeForKyle({
     kind: "topaz_problem",
     title: `1080p file held — ${street}`,
-    body: "Its sound couldn't be checked automatically. Listen to it on the delivery queue.",
+    body: why ? `${why.sentence} Listen to it on the delivery queue.` : "Its sound couldn't be checked automatically. Listen to it on the delivery queue.",
     href: "/#video-review",
     dedupeKey: `topaz-held-kyle-${job.id}-${etDayKey(now)}`,
     slack: [
       `1080p file held, not sent — ${street} · ${job.project.client?.name ?? "Client"}`,
-      monthly
+      why
+        ? `${why.sentence} Listen to it on the delivery queue, then use it or ask the editor for a new export.`
+        : monthly
         ? "Its sound couldn't be checked automatically. Listen to it on the delivery queue, then press \"I listened — use this file\". The client's portal only gets this checked file."
         : "Its sound couldn't be checked automatically. Listen to it on the delivery queue, then use it or keep the approved original.",
       `Delivery queue: ${appBase()}/#video-review`,
@@ -2242,7 +2332,9 @@ async function holdForReview(job: NonNullable<JobRow>, heldPath: string, check: 
       data: {
         projectId: job.projectId,
         type: "SYSTEM",
-        body: `1080p file HELD — its sound couldn't be checked, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides: use it after listening, or keep the original.`.slice(0, 500),
+        body: (why
+          ? `1080p file HELD — ${why.clause}, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides after listening: use it, or ask the editor for a new export.`
+          : `1080p file HELD — its sound couldn't be checked, so it has not been filed or handed to Kyle. It is in Final Video/${UNVERIFIED_DIR}/; the editor's approved original is untouched. A reviewer decides: use it after listening, or keep the original.`).slice(0, 500),
       },
     })
     .catch(() => {});
@@ -2439,6 +2531,10 @@ export async function recheckHeldTopazJob(jobId: string, by: string | null): Pro
     message:
       check.verdict === "unreadable"
         ? "Still couldn't read it. Play it in Dropbox, then use it or keep the approved original."
+        : check.verdict === "sound"
+        ? `It reads, and its sound is still wrong: ${check.reason}. Listen to it, then use it or ask the editor for a new export.`
+        : check.verdict === "mismatch" && check.reason?.startsWith("with ")
+        ? `It reads now, and it came back ${check.reason} — keep the approved original.`
         : `It reads now, and it's ${check.verdict === "lost" ? "silent" : check.reason} — keep the approved original.`,
   };
 }
@@ -2996,6 +3092,8 @@ export function topazSays(j: {
   skipReason?: string | null;
   deliveredAt?: Date | null;
   estimateCredits?: number | null;
+  /** O02: the last check's record — a held file says WHY it is held. */
+  outputCheckJson?: string | null;
 }): string {
   switch (j.state) {
     case "queued":
@@ -3020,8 +3118,14 @@ export function topazSays(j: {
       return j.skipReason ?? "This one was left out.";
     case "cancelled":
       return j.error ?? "Stopped by hand.";
-    case "held":
-      return "Finished, but its sound couldn't be checked — held until someone listens and uses it or keeps the approved original.";
+    case "held": {
+      let last: { verdict: string; reason: string | null } | null = null;
+      try { last = j.outputCheckJson ? (JSON.parse(j.outputCheckJson) as { verdict: string; reason: string | null }) : null; } catch { last = null; }
+      const why = heldWhy(last);
+      return why
+        ? `Finished, but ${why.clause} — held until someone listens and uses it or asks the editor for a new export.`
+        : "Finished, but its sound couldn't be checked — held until someone listens and uses it or keeps the approved original.";
+    }
     default:
       return j.state;
   }

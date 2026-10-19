@@ -7,6 +7,10 @@ import { getListingMedia, type MediaVideo } from "@/lib/integrations/aryeo";
 import { aryeoIdTime } from "@/lib/readyToSend";
 import { currentMonthlyCut, loadMonthlyCut, monthlyCutStamp, monthlyFinalSnapshot, monthlyOwnerAccess, lockMonthlyFinalAccess } from "@/lib/monthlyFinal";
 import { backupReceiptData, digest } from "@/lib/finalDropbox";
+import { AV_HOLD_SEC, avSyncOf, avSyncWords, type AvSync, type AvTiming } from "@/lib/mp4Probe";
+import { dbx } from "@/lib/integrations/dropbox";
+import { probeVideoMetadata } from "@/lib/integrations/topaz";
+import { probeableUrl } from "@/lib/reviewCuts";
 
 export const FINAL_CHECK_KEYS = ["identity", "playback", "audio", "frames", "title", "access"] as const;
 export type FinalCheckKey = (typeof FINAL_CHECK_KEYS)[number];
@@ -223,4 +227,100 @@ export async function manualFinalCheckReady(submissionId: string): Promise<{ ok:
   if (!s.ok) return s;
   const check = await prisma.finalRenditionCheck.findFirst({ where: { submissionId, destination: "client-portal", sourceFingerprint: s.fingerprint, destinationMediaId: s.mediaId }, orderBy: { checkedAt: "desc" } });
   return check ? { ok: true, message: "The exact portal final file, final Dropbox backup and the client's program are confirmed." } : { ok: false, message: "Check the exact portal file and final Dropbox backup before recording monthly delivery." };
+}
+
+// ---------------------------------------------------------------------------
+// THE FINISHED FILE'S SOUND, FROM ITS HEADER (Oct 16 2026).
+//
+// About eighteen videos since June reached review or a client with a sound
+// problem; one went out SILENT (Sep 17) and one client heard the sound "about
+// half a second behind the picture after posting" (Oct 12). Both are facts the
+// file's own header states exactly — is there a sound track, and where do sound
+// and picture start and stop on the timeline (lib/mp4Probe, via the header read
+// integrations/topaz probeVideoMetadata already makes: a few small range reads
+// and the moov box, never the file).
+//
+// finalFileSoundCheck(submissionId) reads the SAME file the client would get
+// (sourceFingerprint's order: the 1080p render once filed, else the hub's copy
+// of the editor's upload, else the Dropbox original) and answers:
+//   ok         has sound, and sound and picture line up within AV_HOLD_SEC;
+//   hold       no sound, or more than AV_HOLD_SEC apart — with the reason in
+//              plain words. Anything that sends this file to a client on its
+//              own (the automatic Aryeo upload/deliver) stops here and leaves
+//              it to a person, the same way a held 1080p render waits;
+//   unchecked  nothing honest to say (unreadable, no file yet, a header with
+//              no timing). NOT a hold: a check that couldn't run never raises
+//              an alarm, and the caller decides what "unread" means for it.
+// A 1080p render a PERSON already listened to and chose (resolved-processed)
+// is theirs: it answers ok without re-judging what they accepted.
+//
+// Exported for the delivery steps to call; it changes nothing by itself.
+// ---------------------------------------------------------------------------
+
+export type FinalSoundCheck =
+  | { verdict: "ok"; message: string; av: AvSync | null }
+  | { verdict: "hold"; message: string; reason: string; av: AvSync | null }
+  | { verdict: "unchecked"; message: string };
+
+/** What a header read hands the judge (VideoMeta's audio + timing). */
+export type FinalSoundFacts = { audio: { present: boolean; codec: string | null }; timing?: AvTiming | null } | null;
+
+/** The rule, pure: the header's facts → ok / hold / unchecked. */
+export function judgeFinalSound(facts: FinalSoundFacts): FinalSoundCheck {
+  if (!facts) return { verdict: "unchecked", message: "The finished file's header couldn't be read, so its sound wasn't checked." };
+  if (!facts.audio.present) {
+    const reason = "this video has no sound";
+    return { verdict: "hold", reason, av: null, message: `Held: ${reason}. Ask the editor for a new export with the sound on before it goes to the client.` };
+  }
+  const av = avSyncOf(facts.timing);
+  if (!av) return { verdict: "unchecked", message: "The finished file has sound; where it sits against the picture couldn't be read." };
+  if (!av.hasAudio) {
+    const reason = "this video's sound track is empty";
+    return { verdict: "hold", reason, av, message: `Held: ${reason}. Ask the editor for a new export with the sound on before it goes to the client.` };
+  }
+  const words = avSyncWords(av, AV_HOLD_SEC);
+  if (words) {
+    return { verdict: "hold", reason: words, av, message: `Held: ${words}. Ask the editor for a new export before it goes to the client.` };
+  }
+  return { verdict: "ok", av, message: "The finished file has sound, and it lines up with the picture." };
+}
+
+type HeaderProbe = (url: string, knownSize?: number | null) => Promise<FinalSoundFacts>;
+
+/** The finished file's sound — see the block above. `probe` is the header
+ *  reader (probeVideoMetadata by default); drills pass their own. */
+export async function finalFileSoundCheck(submissionId: string, opts: { probe?: HeaderProbe } = {}): Promise<FinalSoundCheck> {
+  const unchecked = (message: string): FinalSoundCheck => ({ verdict: "unchecked", message });
+  try {
+    const cut = await loadCut(submissionId);
+    if (!cut) return unchecked("That cut no longer exists.");
+    const job = cut.topazJob;
+    if (job && !["done", "failed", "cancelled", "skipped"].includes(job.state)) return unchecked("The 1080p pass hasn't finished, so there is no final file to check yet.");
+    const processed = job?.state === "done" && !!job.finalPath && !!job.savedAt;
+    if (processed) {
+      const row = await prisma.topazJob.findUnique({ where: { id: job!.id }, select: { outputCheck: true, resolvedBy: true } });
+      if (row?.outputCheck === "resolved-processed") {
+        return { verdict: "ok", av: null, message: `${row.resolvedBy ?? "A reviewer"} listened to this 1080p file and chose it.` };
+      }
+    }
+    let url: string | null = null;
+    if (processed) url = await dropboxLink(job!.finalPath!);
+    else if (cut.blobUrl) url = await probeableUrl(cut.blobUrl).catch(() => null);
+    else if (cut.assetPath ?? cut.finalPath) url = await dropboxLink((cut.assetPath ?? cut.finalPath)!);
+    if (!url) return unchecked("The finished file couldn't be opened, so its sound wasn't checked.");
+    const probe: HeaderProbe = opts.probe ?? probeVideoMetadata;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const facts = await Promise.race([
+      probe(url, null).catch(() => null),
+      new Promise<null>((r) => { timer = setTimeout(() => r(null), 30_000); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return judgeFinalSound(facts);
+  } catch {
+    return unchecked("The finished file's sound couldn't be checked just now.");
+  }
+}
+
+async function dropboxLink(path: string): Promise<string | null> {
+  return dbx<{ link?: string }>("files/get_temporary_link", { path }).then((r) => r.link ?? null).catch(() => null);
 }
