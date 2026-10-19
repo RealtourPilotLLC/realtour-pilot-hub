@@ -258,6 +258,9 @@ async function main() {
     c.ok("About the client comes after the brief, the team messages and the upload", !article1.includes('data-brief-section="client"') && kim1.indexOf('data-brief-section="client"') > kim1.indexOf('id="submit-cut"'));
     c.ok("the office's fee sentence is withheld, its real-estate instruction kept", text(block(article1, /data-brief-section="make"/)).includes("Show the pricing chart") && !kim1Text.includes("$150"));
     c.ok("Music: trending audio for a monthly reel, once", text(block(article1, /data-brief-section="music"/)).includes("trending audio") && count(kim1Text, "trending audio") === 1);
+    // Oct 16 2026 (the repeating video problems): a monthly video has no
+    // listing flow; it does get the names to spell, beside its script.
+    c.ok("Oct 16: no Listing flow line on a monthly video; Spell these exactly names her, her brokerage and her team", !article1.includes("data-listing-flow") && ["Dana Maple", "Maple & Co Realty", "The Maple Group"].every((x) => text(block(article1, /data-spell-list/)).includes(x)), text(block(article1, /data-spell-list/)));
 
     // =======================================================================
     c.head("§3 · the chips, the jargon, the one Got it");
@@ -295,6 +298,7 @@ async function main() {
     const article2 = block(kim2, new RegExp(`<article[^>]*id="brief-${outs[1].id}"`));
     c.ok("the header names the topic", text(block(article2, /data-brief-section="header"/)).includes(`Video 2 of 4: ${titles[1]}`));
     c.ok("Make this: the office's line for this video replaces the default", text(block(article2, /data-make-this/)).includes("16:9 horizontal for YouTube") && text(article2).includes("Set by the office for this video"));
+    c.ok("Oct 16: a video the office made for YouTube (90 s) is licensed music only, never trending audio", text(block(article2, /data-brief-section="music"/)).includes("licensed music only (it's for YouTube or the MLS)") && !/use trending audio/.test(text(article2)), text(block(article2, /data-brief-section="music"/)));
     c.ok("a script the client has not approved wears the badge", article2.includes("data-not-approved") && text(article2).includes("Not approved by the client yet"));
     c.ok("no topic folder: one raw-footage link and the honest one-line fallback", footageLinks(briefLinks(article2)).length === 1 && text(article2).includes("aren't in a folder of their own"));
 
@@ -307,6 +311,7 @@ async function main() {
     const orderL = sectionsInOrder(articleL);
     c.ok("the same order on a listing reel", JSON.stringify(orderL) === JSON.stringify(["header", "make", "script", "music", "footage", "brand"]), orderL.join(" > "));
     c.ok("Make this: the listing style's own spec, not the monthly one", text(block(articleL, /data-make-this/)).includes(defaultMakeThis("standard_reel_agent_intro")) && !text(articleL).includes("30–60 s"));
+    c.ok("Oct 16: the listing reel carries the Listing flow line and spells Rob, his brokerage, the street and the town", text(block(articleL, /data-listing-flow/)).includes("inside within 5 seconds") && ["Rob Listing", "Main Line Realty", "415 Oak Street", "Wayne"].every((x) => text(block(articleL, /data-spell-list/)).includes(x)), text(block(articleL, /data-spell-list/)));
     const scriptL = text(block(articleL, /data-brief-section="script"/));
     c.ok("the shared reel script IS this video's script — and no 'No script linked' above it", scriptL.includes("Wait until you see the kitchen") && scriptL.includes("Welcome to 415 Oak Street") && !johnText.includes("No script linked") && count(johnText, "Wait until you see the kitchen") === 1);
     const musicL = text(block(articleL, /data-brief-section="music"/));

@@ -34,8 +34,11 @@ const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
 // just the product name. Keyed by DeliverableType.
 const CAPTURE_GUIDE: Record<string, string> = {
   PHOTOS: "Full set — every room, both exteriors, and the key selling features (kitchen, primary suite, baths, yard).",
-  VIDEO: "Cinematic walkthrough — exterior establishing shot, smooth room-to-room flow, highlight the best features.",
-  SOCIAL_REEL: "Vertical clips for the reel — hook shot, walking transitions, feature close-ups (agent on camera if it’s booked).",
+  // Oct 16 2026: the orientation leads each video row. Vertical-only footage
+  // on a horizontal package happened four times; editors asked "horizontal or
+  // vertical?" eight.
+  VIDEO: "Horizontal 16:9 only, never vertical. Cinematic walkthrough: exterior establishing shot, smooth room-to-room flow, the best features.",
+  SOCIAL_REEL: "Vertical 9:16. Clips for the reel: hook shot, walking transitions, feature close-ups (agent on camera if it’s booked).",
   DRONE: "Aerials — front, rear, roofline, lot lines, and a little neighborhood context.",
   TWILIGHT: "Twilight exterior at dusk with the interior lights on (schedule a dusk return if you’re there in daylight).",
   FLOORPLAN: "CubiCasa scan — walk every room and level slowly with the app so the floor plan is complete.",
@@ -51,6 +54,26 @@ const CONTENT_CAPTURE_GUIDE: Partial<Record<string, string>> = {
   VIDEO: "Every topic on the session card above — clean takes of each script, then B-roll for each topic.",
   SOCIAL_REEL: "Every topic on the session card above — clean takes of each script, then B-roll for each topic.",
 };
+
+// Oct 16 2026: drone booked with a video, and the video came back with no
+// drone clips (three times). Said on the drone row while it is up.
+const DRONE_WITH_VIDEO = "Grab 2–3 drone video clips while it’s up.";
+
+/** The capture line for one checklist row. A video row follows its own shape
+ *  (a reel sold as a "VIDEO" is still vertical); the drone row asks for clips
+ *  when a video is booked too. A content session keeps its topic words. */
+export function captureGuideFor(
+  d: { type: string; shape?: "horizontal" | "vertical" | null },
+  ctx: { contentSession?: boolean; videoBooked?: boolean },
+): string {
+  if (ctx.contentSession && CONTENT_CAPTURE_GUIDE[d.type]) return CONTENT_CAPTURE_GUIDE[d.type]!;
+  if (d.type === "VIDEO" || d.type === "SOCIAL_REEL") {
+    const shape = d.shape ?? (d.type === "VIDEO" ? "horizontal" : "vertical");
+    return shape === "horizontal" ? CAPTURE_GUIDE.VIDEO : CAPTURE_GUIDE.SOCIAL_REEL;
+  }
+  if (d.type === "DRONE" && ctx.videoBooked && !ctx.contentSession) return `${CAPTURE_GUIDE.DRONE} ${DRONE_WITH_VIDEO}`;
+  return CAPTURE_GUIDE[d.type] ?? CAPTURE_GUIDE.OTHER;
+}
 
 // Deliverables produced in EDITING, not captured on-site — they don't belong on
 // the capture checklist (ticking "captured virtual staging" makes no sense). We
@@ -783,6 +806,7 @@ function Checklist({
 }) {
   const total = deliverables.length;
   const done = Object.values(captured).filter(Boolean).length;
+  const videoBooked = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
 
   if (total === 0 && mustGets.length === 0 && agentNotes.length === 0 && !staging) return null;
 
@@ -819,7 +843,7 @@ function Checklist({
       {deliverables.map((d) => {
         const on = captured[d.id];
         const meta = DELIVERABLE_META[d.type];
-        const guide = (contentSession ? CONTENT_CAPTURE_GUIDE[d.type] : undefined) ?? CAPTURE_GUIDE[d.type] ?? CAPTURE_GUIDE.OTHER;
+        const guide = captureGuideFor(d, { contentSession, videoBooked });
         return (
           <button
             key={d.id}

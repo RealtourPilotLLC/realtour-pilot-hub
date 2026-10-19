@@ -6,6 +6,7 @@ import { Check, ClipboardCheck, Loader2, Send } from "lucide-react";
 import { submitCutForReview, type SelfCheckCandidate } from "@/app/review/actions";
 import { submitSelfCheck } from "@/app/review/selfCheckActions";
 import { SelfCheckDialog, type SelfCheckContextView } from "@/components/editing/SelfCheckDialog";
+import { withVideoFacts, type SelfCheckVideoFacts } from "@/lib/selfCheck";
 
 // ---------------------------------------------------------------------------
 // The two non-upload ways a cut reaches the reviewer, both behind the editor's
@@ -17,7 +18,18 @@ import { SelfCheckDialog, type SelfCheckContextView } from "@/components/editing
 //     sweep, an upload whose bytes were not the checked file, a moved cut.
 // ---------------------------------------------------------------------------
 
-export function FolderSendForReview({ projectId, onBehalfOf = null }: { projectId: string; onBehalfOf?: string | null }) {
+export function FolderSendForReview({
+  projectId,
+  onBehalfOf = null,
+  videoFacts = {},
+}: {
+  projectId: string;
+  onBehalfOf?: string | null;
+  /** Oct 16 2026: each video's own words for its final check (the names to
+   *  spell, the end card), keyed by slot. The server names the file and its
+   *  list; this only fills in the captions and brand lines' help. */
+  videoFacts?: Record<string, SelfCheckVideoFacts>;
+}) {
   const router = useRouter();
   const [note, setNote] = useState("");
   const [pending, start] = useTransition();
@@ -61,7 +73,11 @@ export function FolderSendForReview({ projectId, onBehalfOf = null }: { projectI
         <SelfCheckDialog
           // A different file is a different check — the answers start over.
           key={`${candidate.submissionId ?? "new"}:${candidate.fileName}`}
-          context={candidate.context as SelfCheckContextView}
+          context={(() => {
+            const ctx = candidate.context as SelfCheckContextView & { key?: string };
+            const facts = ctx.key ? videoFacts[ctx.key] : undefined;
+            return facts ? { ...ctx, profile: withVideoFacts(ctx.profile, facts) } : ctx;
+          })()}
           file={{ name: candidate.fileName }}
           title={`Before ${candidate.fileName} goes to review`}
           onBehalfOf={onBehalfOf}

@@ -10,6 +10,7 @@ import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
+import { captureShape } from "@/lib/videoStyles";
 import type { SessionBrief, OutputBrief, ScriptDirection } from "@/lib/deliverableOutputs";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
@@ -120,6 +121,10 @@ export type ShootDeliverable = {
   status: DeliverableStatus;
   capturedAt: string | null;
   uploadCount: number;
+  /** Oct 16 2026: which way to film a video product (the pinned style's shape,
+   *  else the type). Vertical-only footage on a horizontal package happened
+   *  four times, and editors asked "horizontal or vertical?" eight. */
+  shape?: "horizontal" | "vertical" | null;
 };
 
 export type ShootView = {
@@ -386,6 +391,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       status: d.status,
       capturedAt: d.capturedAt?.toISOString() ?? null,
       uploadCount: d.uploads.length,
+      shape: captureShape(d),
     })),
     specialRequests: p.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST).map((a) => a.body),
     // Anything asked for after the job left the field is for the EDIT — the

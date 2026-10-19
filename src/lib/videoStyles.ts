@@ -361,6 +361,72 @@ export function makeThisFor(key: string | null | undefined, office: string | nul
   return own ? { line: own, source: "office" } : { line: defaultMakeThis(key), source: "default" };
 }
 
+// ---------------------------------------------------------------------------
+// THE LISTING FLOW (Oct 16 2026). How a listing video walks the house was
+// never written down, and about eleven came back for it: opening in the
+// basement or the backyard or on the roof, ending on dead grass or an
+// unfinished space, a room the order named missing, a speed ramp that stops in
+// a corner. Jordan: "It should also not take more than 5 seconds to get
+// inside." One line under Make this, on every listing video (standard and
+// premium, reel or horizontal), never on a monthly content video.
+// ---------------------------------------------------------------------------
+export const LISTING_FLOW =
+  "Listing flow: open on the front exterior and be inside within 5 seconds. Then the main living areas, kitchen, primary suite and the other rooms, with the basement last. Never end on an unfinished or unflattering space. Show every room named in the order notes. Speed ramps land on the whole room, never in a corner.";
+
+const LISTING_KEYS = new Set<string>(["standard_reel", "standard_reel_agent_intro", "standard_cinematic", "premium_social_reel", "premium_cinematic"]);
+
+/** The listing flow line for a listing video, null for anything else (a monthly or personal-branding video). */
+export function listingFlowFor(key: string | null | undefined, opts: { monthly?: boolean } = {}): string | null {
+  return !opts.monthly && !!key && LISTING_KEYS.has(key) ? LISTING_FLOW : null;
+}
+
+// ---------------------------------------------------------------------------
+// MUSIC: LICENSED OR TRENDING (Oct 16 2026). A video over 60 seconds with
+// trending audio drew a YouTube copyright claim, and a competitor had the same
+// song. Licensed music only for any video over 60 seconds or meant for YouTube
+// or the MLS (the horizontal listing videos); trending audio stays for short
+// social reels only. Pure, so the brief and the drill read one rule.
+// ---------------------------------------------------------------------------
+
+/** The longest duration a spec names, in seconds: "90 s", "30–60 s", "45-50 seconds", "2 min", "1:30". Null when it names none. */
+export function longestSecondsIn(text: string | null | undefined): number | null {
+  const t = text ?? "";
+  let max: number | null = null;
+  const take = (n: number) => { if (Number.isFinite(n) && n > 0) max = Math.max(max ?? 0, n); };
+  for (const m of t.matchAll(/(\d+(?:\.\d+)?)(?:\s*(?:-|–|to)\s*(\d+(?:\.\d+)?))?\s*(s|secs?|seconds?|mins?|minutes?)\b/gi)) {
+    const unit = /^m/i.test(m[3]) ? 60 : 1;
+    take(Number(m[1]) * unit);
+    if (m[2]) take(Number(m[2]) * unit);
+  }
+  for (const m of t.matchAll(/\b(\d{1,2}):([0-5]\d)\b(?!\s*(?:am|pm))/gi)) {
+    if (m[1] === "9" && m[2] === "16") continue; // an aspect ratio, not a length
+    take(Number(m[1]) * 60 + Number(m[2]));
+  }
+  return max;
+}
+
+export type MusicRule = { licensed: boolean; why: string | null };
+
+/** Licensed music, or trending audio, for one video. */
+export function musicRuleFor(input: { styleKey: string | null | undefined; monthly?: boolean; specs?: readonly (string | null | undefined)[] }): MusicRule {
+  const specs = (input.specs ?? []).filter((s): s is string => !!s && !!s.trim());
+  if (specs.some((s) => /\b(?:youtube|mls)\b/i.test(s))) return { licensed: true, why: "it's for YouTube or the MLS" };
+  const longest = specs.reduce<number | null>((m, s) => { const n = longestSecondsIn(s); return n == null ? m : Math.max(m ?? 0, n); }, null);
+  if (longest != null && longest > 60) return { licensed: true, why: "it runs over 60 seconds" };
+  if (!input.monthly && (input.styleKey === "standard_cinematic" || input.styleKey === "premium_cinematic")) {
+    return { licensed: true, why: "it's a listing video for YouTube and the MLS" };
+  }
+  return { licensed: false, why: null };
+}
+
+/** Which way the photographer films a video product: the pinned style's shape, else the product type (VIDEO horizontal, SOCIAL_REEL vertical). Null for anything that is not video. */
+export function captureShape(d: { type: string; videoStyle?: string | null }): "horizontal" | "vertical" | null {
+  if (d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") return null;
+  const pinned = videoStyleByKey(d.videoStyle);
+  if (pinned) return SHAPE[pinned.key].startsWith("16:9") ? "horizontal" : "vertical";
+  return d.type === "VIDEO" ? "horizontal" : "vertical";
+}
+
 /** The style behind a stored key — null for anything that is not a key
  *  (a legacy label someone typed into the column, an empty string). */
 export function videoStyleByKey(key: string | null | undefined): VideoStyleType | null {

@@ -217,6 +217,35 @@ export function resolveSelfCheckProfile(
   return { styleKey: key, styleName: def.name, version, checklistKey: `${key}@v${version}`, items: withWatch };
 }
 
+/** What THIS video's final check names (Oct 16 2026): the brief's "Spell these
+ *  exactly" list on the captions line, and the actual end card or logo on the
+ *  brand line (or, plainly, that none is on file and Kyle has been asked). */
+export type SelfCheckVideoFacts = {
+  /** spellList.spellLine: "Erika Walker (not Erica), Keller Williams, West Chester (two words)" */
+  spell?: string | null;
+  /** one sentence: "End card: walker-logo.png." */
+  endCard?: string | null;
+};
+
+/** The same list with this video's own words in the captions and brand lines'
+ *  help. Only the help changes, never a label, so the checklist key, what the
+ *  server validates and what an attestation records are all unchanged. */
+export function withVideoFacts(profile: SelfCheckProfile, facts: SelfCheckVideoFacts | null | undefined): SelfCheckProfile {
+  const spell = facts?.spell?.trim();
+  const endCard = facts?.endCard?.trim();
+  if (!spell && !endCard) return profile;
+  return {
+    ...profile,
+    items: profile.items.map((i) =>
+      i.key === "captions_text" && spell
+        ? { ...i, help: `Spell these exactly, as on the brief: ${spell}. The captions come from auto-transcription, so read every word against this list, the address and any phone number.` }
+        : i.key === "brand_assets" && endCard
+          ? { ...i, help: `${endCard} Fonts and colors from the brand kit on this page, never an old download.` }
+          : i,
+    ),
+  };
+}
+
 /** The items THIS submission is asked. The revision line is only asked when
  *  there is something to have revised. */
 export function itemsFor(profile: SelfCheckProfile, ctx: { isRevision: boolean; openIssueIds: readonly string[] }): SelfCheckItem[] {

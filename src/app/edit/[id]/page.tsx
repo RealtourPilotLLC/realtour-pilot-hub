@@ -5,7 +5,12 @@ import Link from "next/link";
 import {
   ChevronDown, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote, Wrench,
 } from "lucide-react";
-import { VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, makeThisFor, videoStyleByKey, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
+import { VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, listingFlowFor, makeThisFor, musicRuleFor, videoStyleByKey, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
+// Oct 16 2026: the names to spell exactly, and this video's own words on the final check.
+import { buildSpellList, spellLine, streetOf, townOf, type SpellList } from "@/lib/spellList";
+import { withVideoFacts, type SelfCheckProfile, type SelfCheckVideoFacts } from "@/lib/selfCheck";
+import { notesAskForLogo, type LogoAsk } from "@/lib/logoAsk";
+import type { SlotCheckContext } from "@/lib/selfCheckStore";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { BrandUpdatesBanner } from "@/components/editing/BrandUpdatesBanner";
@@ -733,9 +738,6 @@ export default async function EditBriefPage({
   const trackerDue = reopened ? reopened.at : effectiveDue(project, sla?.due ?? null);
   const selectedDeliverable = videoDeliverables.find((item) => item.id === selectedSlot?.deliverableId);
   const selectedVideoStyle = selectedDeliverable ? videoStyleFor(selectedDeliverable, { monthly: !!project.contentMonthId }) : null;
-  // Social exports never use the licensed catalogue chooser. Existing picks
-  // stay saved; this UI rule does not delete a project's music history.
-  const catalogueMusicAllowed = selectedVideoStyle?.key === "standard_cinematic";
   const selectedPromise = outputBriefs.find((brief) => brief.key === selectedKey)?.promisedAtISO;
   const selectedDue = selectedPromise ? new Date(selectedPromise) : trackerDue;
 
@@ -924,6 +926,8 @@ export default async function EditBriefPage({
   const styleType = styleKey ? videoStyleByKey(styleKey) : null;
   const sectionText = (key: string) => selectedBrief?.sections.find((x) => x.key === key)?.text ?? null;
   const makeThis = makeThisFor(styleKey, sectionText("specs"));
+  // Oct 16 2026: how a listing video walks the house (one line under Make this).
+  const listingFlow = isVideoJob ? listingFlowFor(styleKey, { monthly: !!project.contentMonthId }) : null;
   const videoTitle = selectedBrief?.topicTitle || selectedBrief?.format || selectedSlot?.deliverableLabel || styleType?.name || "Video";
   const fmtDue = (d: Date, tz: string) => d.toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   // ONE deadline, in the reader's own clock (Kim and John Mark are in Manila):
@@ -989,24 +993,105 @@ export default async function EditBriefPage({
   const brandingStyle = styleKey === "personal_branding";
   const folderLogo = !logoFile ? assets?.files.find((f) => /logo/i.test(f.name)) ?? null : null;
   const endWord = brandingStyle ? "End card" : "Logo";
-  const endCard: { text: string; file: { name: string; url: string | null } | null; warn: boolean; askKyle?: boolean } | null =
-    selectedBrief?.brandAsset && selectedBrief.brandAsset.state !== "current"
-      ? { text: "The logo chosen for this video is no longer their current one. Check with Kyle before the end card:", file: null, warn: true, askKyle: true }
-      : chosenFile
-        ? { text: `${endWord}: use this file:`, file: { name: chosenFile.fileName ?? chosenFile.name, url: chosenFile.url }, warn: false }
-        : selectedBrief?.brandChoice === "none"
-          ? { text: `No logo on this video, the office's choice.${brandingStyle ? " End on a name card (name and brokerage)." : ""}`, file: null, warn: false }
-          : logoFile
-            ? { text: `${endWord}: their logo,`, file: { name: logoFile.fileName ?? logoFile.name, url: logoFile.url }, warn: false }
-            : folderLogo
-              ? { text: `${endWord}: their logo (${folderLogo.name}, in their brand kit below).`, file: null, warn: false }
-              // Their notes ask for the logo and there is no file: say so
-              // (any style) rather than leave the editor to notice.
-              : agent?.style.preferences.some((p) => /\blogo/i.test(p.text))
-                ? { text: `Their notes ask for their logo, and there's no logo file yet.${brandingStyle ? " Until it comes, end on a name card (name and brokerage)." : ""} Ask Kyle for it:`, file: null, warn: true, askKyle: true }
-                : brandingStyle
-                  ? { text: assets?.files.length ? "No logo picked out. Check their brand kit below, or end on a name card (name and brokerage)." : "No logo on file. End on a name card (name and brokerage).", file: null, warn: false }
-                  : null;
+  // Their own words — they win over the house style where the two differ.
+  const confirmedPrefs = [
+    ...(brandBrief?.productionDefaults ?? []).map((d) => `${d.name}: ${d.text}`),
+    ...(brandBrief?.acceptedPreferences ?? []),
+  ];
+  // THE LOGO THEIR NOTES ASK FOR (Oct 16 2026, ~15 videos back over the end
+  // card). When their notes ask for it and no file is on record, Kyle is asked
+  // for it the first time the brief is opened (lib/logoAsk: one task per job,
+  // through the "file the work needs" door), never at review. A "view as"
+  // preview only reads; a failed Dropbox or brand read asks nothing (the logo
+  // may well be there).
+  const logoAsked = notesAskForLogo([...(agent?.style.preferences ?? []).map((p) => p.text), ...confirmedPrefs, orderNote, project.client.portalVideoStyle, project.client.portalPreferences]);
+  const logoMissing =
+    // A brand folder on record that could not be read is not "no logo" (listClientAssets answers empty on a hiccup).
+    isVideoJob && logoAsked && !logoFile && !folderLogo && brandBrief !== null && assets !== null && (assets.folderExists || !project.client.brandAssetsPath) &&
+    (outputBriefs.length === 0 || outputBriefs.some((b) => b.brandChoice !== "none" && !b.brandAsset));
+  const mayAskKyle = !!viewer && !viewer.impersonating && project.status !== "CANCELLED" && !(project.deliveredAt && !revisionOpen);
+  const logoAsk: LogoAsk | null = logoMissing
+    ? await import("@/lib/logoAsk").then((m) => m.ensureLogoAsk(project.id, { create: mayAskKyle })).catch(() => null)
+    : null;
+  type EndCard = { text: string; file: { name: string; url: string | null } | null; warn: boolean; askKyle?: boolean; askWords?: string; tail?: string };
+  /** One video's end card on the brief, and the sentence its final check names. */
+  const endCardOf = (b: typeof selectedBrief): { card: EndCard | null; check: string | null } => {
+    const chosen = b?.brandAsset?.state === "current" ? brandBrief?.files.find((f) => f.versionId === b.brandAsset?.versionId) ?? null : null;
+    const nameCard = brandingStyle ? " Until it comes, end on a name card (name and brokerage)." : "";
+    if (b?.brandAsset && b.brandAsset.state !== "current") {
+      return { card: { text: "The logo chosen for this video is no longer their current one. Check with Kyle before the end card:", file: null, warn: true, askKyle: true }, check: "The logo chosen for this video is no longer their current one. Check with Kyle before the end card." };
+    }
+    if (chosen) {
+      const name = chosen.fileName ?? chosen.name;
+      return { card: { text: `${endWord}: use this file:`, file: { name, url: chosen.url }, warn: false }, check: `${endWord}: ${name}.` };
+    }
+    if (b?.brandChoice === "none") {
+      const t = `No logo on this video, the office's choice.${brandingStyle ? " End on a name card (name and brokerage)." : ""}`;
+      return { card: { text: t, file: null, warn: false }, check: t };
+    }
+    if (logoFile) {
+      const name = logoFile.fileName ?? logoFile.name;
+      return { card: { text: `${endWord}: their logo,`, file: { name, url: logoFile.url }, warn: false }, check: `${endWord}: their logo, ${name}.` };
+    }
+    if (folderLogo) return { card: { text: `${endWord}: their logo (${folderLogo.name}, in their brand kit below).`, file: null, warn: false }, check: `${endWord}: their logo, ${folderLogo.name}, in their brand kit.` };
+    // Their notes ask for the logo and there is no file: say so (any style),
+    // and say what has been done about it.
+    if (logoAsked) {
+      if (logoAsk?.state === "attached" && logoAsk.ref) {
+        const url = /^https?:\/\//i.test(logoAsk.ref) ? logoAsk.ref : null;
+        return { card: { text: `${endWord}: their logo. Kyle found it:`, file: { name: url ? "the file Kyle attached" : logoAsk.ref, url }, warn: false }, check: `${endWord}: their logo, the file Kyle attached (${logoAsk.ref}).` };
+      }
+      if (logoAsk?.state === "asked") {
+        return {
+          card: { text: `Their notes ask for their logo, and there's no logo file yet. Kyle has been asked for it.${nameCard}`, file: null, warn: true, askKyle: true, askWords: "Message Kyle", tail: " if you need it sooner." },
+          check: `No logo or end card on file yet. Kyle has been asked for it.${nameCard}`,
+        };
+      }
+      return { card: { text: `Their notes ask for their logo, and there's no logo file yet.${nameCard} Ask Kyle for it:`, file: null, warn: true, askKyle: true }, check: `No logo or end card on file. Ask Kyle for it in the team messages.${nameCard}` };
+    }
+    if (brandingStyle) {
+      const t = assets?.files.length ? "No logo picked out. Check their brand kit below, or end on a name card (name and brokerage)." : "No logo on file. End on a name card (name and brokerage).";
+      return { card: { text: t, file: null, warn: false }, check: t };
+    }
+    return { card: null, check: null };
+  };
+  const endCard = endCardOf(selectedBrief).card;
+
+  // SPELL THESE EXACTLY (Oct 16 2026: caption and name spelling is the number
+  // one repeat, about a third of the review notes). One list per video, built
+  // on its own (lib/spellList): the client, their brokerage and team, a
+  // listing's street and town, the proper nouns in this video's words, what
+  // came back on their earlier videos, and the house list of local names.
+  const pastCorrections = await import("@/lib/spellList").then((m) => m.spellCorrectionTextsFor(project.client.id)).catch(() => [] as string[]);
+  const listingJob = !project.contentMonthId;
+  const studioWords = reelScriptOnFile ? [project.reelHook, project.reelScript].filter((x) => x?.trim()).join("\n") : null;
+  const spellFor = (b: typeof selectedBrief): SpellList =>
+    buildSpellList({
+      clientName: agent?.name ?? project.client.name,
+      brokerage: agent?.brokerage ?? project.client.company,
+      team: agent?.team ?? null,
+      street: listingJob ? streetOf(project.title) ?? streetOf(project.addressLine) : null,
+      town: listingJob ? project.city?.trim() || townOf(project.title) || townOf(project.addressLine) : null,
+      script: b?.script?.text ?? studioWords,
+      corrections: pastCorrections,
+      context: [orderNote, project.notes, project.videoInstructions, project.editorBrief, ...specialRequests.map((a) => a.body)],
+    });
+  const spell = spellFor(selectedBrief);
+  // THE FINAL CHECK NAMES THIS VIDEO'S OWN WORDS (Oct 16 2026): the captions
+  // line lists the names above, the brand line the actual end card (or that
+  // none is on file and Kyle has been asked). Only the lines' help changes
+  // (selfCheck.withVideoFacts), so what the server checks is unchanged.
+  const factsByKey: Record<string, SelfCheckVideoFacts> = {};
+  for (const sl of slots) {
+    const key = `${sl.deliverableId}:${sl.slot}`;
+    const b = key === selectedKey ? selectedBrief : outputBriefs.find((o) => o.key === key) ?? null;
+    factsByKey[key] = { spell: spellLine(key === selectedKey ? spell : spellFor(b)), endCard: endCardOf(b).check };
+  }
+  const withFacts = <T extends { profile: SelfCheckProfile }>(key: string | null | undefined, ctx: T): T =>
+    key && factsByKey[key] ? { ...ctx, profile: withVideoFacts(ctx.profile, factsByKey[key]) } : ctx;
+  const checksWithFacts = Object.fromEntries(
+    Object.entries(quality.checks as Record<string, SlotCheckContext>).map(([k, ctx]) => [k, withFacts(k, ctx)]),
+  );
   const linkedBrand = new Set([chosenFile?.versionId, !chosenFile && selectedBrief?.brandChoice !== "none" ? logoFile?.versionId : null].filter(Boolean));
   const seenBrandUrl = new Set<string>();
   const otherBrandFiles = (brandBrief?.files ?? []).filter((f) => {
@@ -1019,11 +1104,6 @@ export default async function EditBriefPage({
   const brandColorsShown = agent?.style.colors.length ? agent.style.colors.map((c) => c.hex) : brandColors.map((c) => c.toLowerCase());
   const brandFonts = agent?.style.fonts?.text ?? brandBrief?.fontNames ?? null;
 
-  // Their own words — they win over the house style where the two differ.
-  const confirmedPrefs = [
-    ...(brandBrief?.productionDefaults ?? []).map((d) => `${d.name}: ${d.text}`),
-    ...(brandBrief?.acceptedPreferences ?? []),
-  ];
   // The look-and-brand lines of the Aryeo customer note (the office's standing
   // note on the client) — said here, in the brief, not only inside the folded
   // Agent Profile: "Use his logo on every video" is an instruction.
@@ -1031,13 +1111,23 @@ export default async function EditBriefPage({
   const hasTheirWords = !!(showTheirStyle || showTheirPrefs || showOrderNote || confirmedPrefs.length || customerNoteLines.length);
 
   // ONE music line. The office's word for this video wins; a listing reel with
-  // a song picked beside its Studio script uses that song; the cinematic video
-  // gets the licensed chooser; everything social is trending audio.
+  // a song picked beside its Studio script uses that song. LICENSED MUSIC
+  // ONLY (Oct 16 2026: a YouTube copyright claim on a video over 60 seconds,
+  // and a competitor had the same trending song) for any video over 60
+  // seconds or meant for YouTube or the MLS, with the licensed chooser;
+  // trending audio for short social reels only. Existing picks stay saved;
+  // this rule never deletes a project's music history.
   const musicForVideo = sectionText("music");
   // The Studio's song travels with the Studio's script, whatever the style.
   const reelSong = useReelScript || (reelStyle && !project.contentMonthId) ? project.reelSong?.trim() || null : null;
   const musicType = specText("musicType");
-  const musicPicker = catalogueMusicAllowed && (musicConnected || officeOn);
+  const musicRule = musicRuleFor({
+    styleKey: selectedVideoStyle?.key ?? styleKey,
+    monthly: !!project.contentMonthId,
+    specs: [makeThis.line, specText("desiredLength"), sectionText("purpose")],
+  });
+  const licensedMusic = musicRule.licensed;
+  const musicPicker = licensedMusic && (musicConnected || officeOn);
 
   // 2 · what was asked when it came back — for THIS video (review, Oct 5
   // night: a client's ask about video 3 showed under every video). On a job
@@ -1062,7 +1152,10 @@ export default async function EditBriefPage({
   const heldReview = briefsHere.filter((b) => b.creativeReview?.state === "OPEN");
   const heldItems = heldReview.flatMap((b) => b.items.filter((i) => i.held && !b.done.includes(i.id)));
   const heldWho = heldReview[0]?.creativeReview?.reviewerName?.split(/\s+/)[0] || "Jordan";
-  const concreteAsks = briefsHere.reduce((n, b) => n + b.items.filter((i) => !i.held && !b.done.includes(i.id)).length, 0);
+  // A brief not split into items yet is still one ask (its card shows the
+  // client's words as item 1), so it is counted and its card opens.
+  const unsplitBriefs = briefsHere.filter((b) => !b.analyzed && b.items.length === 0);
+  const concreteAsks = briefsHere.reduce((n, b) => n + b.items.filter((i) => !i.held && !b.done.includes(i.id)).length, 0) + unsplitBriefs.length;
 
   // ---- WHERE THE SELECTED VIDEO IS ---------------------------------------
   // The selected video's own newest version (never an older one opened from
@@ -1247,7 +1340,7 @@ export default async function EditBriefPage({
     <CutUploader
       projectId={project.id}
       canUpload={canUploadCuts}
-      checks={quality.checks}
+      checks={checksWithFacts}
       onBehalfOf={quality.onBehalfOf}
       // Only Jordan and Kyle may send an over-spec file anyway, and
       // only for real: the server checks the role again and puts their
@@ -1460,7 +1553,7 @@ export default async function EditBriefPage({
                 </div>
               )}
               {briefsHere.length > 0 && (
-                <details className="rounded-xl border border-border bg-surface px-3.5">
+                <details open={unsplitBriefs.length > 0} className="rounded-xl border border-border bg-surface px-3.5">
                   <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">The client&apos;s exact words</summary>
                   <div className="pb-3">
                     <RevisionBriefCard briefs={briefsHere} bounced={[]} canTick={false} canReanalyze={officeOn && !viewer?.impersonating} />
@@ -1486,6 +1579,7 @@ export default async function EditBriefPage({
                 <div>
                   <p className="text-sm font-medium leading-relaxed" data-make-this>{makeThis.line}</p>
                   {makeThis.source === "office" && <p className="mt-0.5 text-xs text-muted">Set by the office for this video.</p>}
+                  {listingFlow && <p className="mt-1.5 text-sm leading-relaxed text-foreground/90" data-listing-flow>{listingFlow}</p>}
                   {editDeliverables.length > 0 && (
                     <details className="mt-1">
                       <summary className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 text-sm font-medium text-brand focus-visible:outline-2 focus-visible:outline-brand"><PlayCircle className="size-4" /> See examples</summary>
@@ -1595,6 +1689,22 @@ export default async function EditBriefPage({
                     </details>
                   </section>
                 )}
+                {/* SPELL THESE EXACTLY (Oct 16 2026): the names in this video,
+                    beside its script. The final check names the same list. */}
+                {spell.entries.length > 0 && (
+                  <div id="video-spelling" data-spell-list className="border-t border-border pt-3 text-sm">
+                    <p><span className="font-medium">Spell these exactly.</span> <span className="text-muted">Captions come from auto-transcription, so check each of these on screen.</span></p>
+                    <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                      {spell.entries.map((e) => (
+                        <li key={e.text} data-spell-from={e.from} className="min-w-0 max-w-full break-words rounded-lg border border-border bg-surface-2/40 px-2.5 py-1">
+                          <span className="font-medium">{e.text}</span>
+                          {e.note && <span className="text-muted"> ({e.note})</span>}
+                        </li>
+                      ))}
+                    </ul>
+                    {spell.house.length > 0 && <p className="mt-1.5 text-xs text-muted" data-spell-house>Local names: {spell.house.map((h) => (h.note ? `${h.name} (${h.note})` : h.name)).join(" · ")}</p>}
+                  </div>
+                )}
                 {/* ONE music line. */}
                 <div id="video-music" data-brief-section="music" className="border-t border-border pt-3 text-sm">
                   <p data-music-rule>
@@ -1605,11 +1715,13 @@ export default async function EditBriefPage({
                         ? <>use the song picked with the Studio script: {/^https?:\/\//i.test(reelSong) ? <a href={reelSong} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">song link ↗</a> : reelSong}</>
                         // Oct 15 2026 (audit): "below" only when the picker is below, and "under
                         // the voice" only on a video that has one.
-                        : catalogueMusicAllowed
-                          ? (musicPicker ? "pick a licensed track below." : "use a licensed track that fits the pace of the edit.")
+                        : licensedMusic
+                          ? <>licensed music only ({musicRule.why}). {musicPicker ? "Pick a track below." : "Use a licensed track that fits the pace of the edit."} No trending audio: it gets copyright claims.</>
                           : showScript
                             ? "use trending audio that fits the script's energy, low under the voice."
                             : "use trending audio that fits the pace of the edit."}
+                    {/* The office's own word for this video wins outright; a Studio song on a long video is said to be licensed. */}
+                    {licensedMusic && !musicForVideo && reelSong && <> Licensed music only ({musicRule.why}), never trending audio.</>}
                     {brandBrief?.music && <span className="text-muted"> They prefer: {brandBrief.music}.</span>}
                     {(musicType || musicPick) && <span className="text-muted"> {[musicType ? `Music type: ${musicType}` : null, musicPick ? `Picked: ${musicPickLine(musicPick)}` : null].filter(Boolean).join(" · ")}</span>}
                   </p>
@@ -1634,7 +1746,8 @@ export default async function EditBriefPage({
                     {endCard.file && (endCard.file.url
                       ? <a href={endCard.file.url} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">{endCard.file.name} ↗</a>
                       : <span className="font-medium">{endCard.file.name}</span>)}
-                    {endCard.askKyle && askKyle("message Kyle")}
+                    {endCard.askKyle && askKyle(endCard.askWords ?? "message Kyle")}
+                    {endCard.tail}
                   </p>
                 )}
               </div>
@@ -1745,7 +1858,7 @@ export default async function EditBriefPage({
               #self-check is where the "check needed" bell lands. */}
           <HeldCutsCard
             held={quality.held.map((h) => ({
-              submissionId: h.submissionId, round: h.round, fileName: h.fileName, reason: h.reason, sizeBytes: h.sizeBytes, context: h.context,
+              submissionId: h.submissionId, round: h.round, fileName: h.fileName, reason: h.reason, sizeBytes: h.sizeBytes, context: withFacts(h.context.key, h.context),
               label: slots.find((sl) => sl.deliverableId === h.deliverableId && sl.slot === h.slot)?.label ?? h.fileName ?? "Video",
             }))}
             canFinish={canUploadCuts && !viewer?.impersonating}
@@ -1793,6 +1906,8 @@ export default async function EditBriefPage({
               {uploader}
             </div>
           )}
+          {/* Oct 16 2026: an editor deleted the raws before a revision came back. */}
+          {isVideoJob && <p className="px-1 text-xs text-muted" data-keep-raws>Keep the raw footage and your project file for 30 days after delivery. Revisions come back.</p>}
           {/* The rescue hatch for the old habit: exporting straight into the
               Dropbox Final folder (12 of 26 cuts once came this way). */}
           {/* NOT FOR MONTHLY VIDEOS (Oct 5 2026): their portal only takes the
@@ -1803,7 +1918,7 @@ export default async function EditBriefPage({
           ) : (
             <details className="rounded-xl border border-border bg-surface px-4 text-xs text-muted">
               <summary className="flex min-h-11 cursor-pointer items-center">Already put the file in the Final footage folder?</summary>
-              <div className="pb-3"><FolderSendForReview projectId={project.id} onBehalfOf={quality.onBehalfOf} /></div>
+              <div className="pb-3"><FolderSendForReview projectId={project.id} onBehalfOf={quality.onBehalfOf} videoFacts={factsByKey} /></div>
             </details>
           )}
         </section>
