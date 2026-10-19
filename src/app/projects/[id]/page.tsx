@@ -72,6 +72,7 @@ import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { PhotoBatchPanel } from "@/components/project/PhotoBatchPanel";
 import { ReworkCostPanel } from "@/components/project/ReworkCostPanel";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
+import { JobDeliverablesSection } from "@/components/jobs/JobDeliverables";
 
 export const dynamic = "force-dynamic";
 
@@ -297,6 +298,20 @@ export default async function ProjectPage({
           )}
           <StageSelector projectId={project.id} status={project.status} />
         </div>
+      </div>
+
+      {/* PHOTOS AND VIDEO, FIRST (Oct 19 2026, the Shoots build). Jordan: "I
+          need to be able to track each job and where they are at, and special
+          requests for either photo or video, and individual photos and
+          videos." Where each stands, the individual photos and videos, and
+          that medium's client requests with who owns each one; the shoot's
+          flags and notes come from the job's "Before you send" read. Every
+          section below is unchanged. A failed read shows no cards, never the
+          page's loss. */}
+      <div className="mt-6">
+        <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl bg-surface-2 motion-reduce:animate-none" aria-hidden />}>
+          <JobDeliverablesSection projectId={project.id} />
+        </Suspense>
       </div>
 
       {/* Client — who the project is for, surfaced at the top (was buried in the

@@ -2,6 +2,7 @@ import "server-only";
 import { ActivityType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
+import type { RequestOwner } from "@/lib/clientAsks";
 
 // ---------------------------------------------------------------------------
 // "BEFORE YOU SEND" (Oct 19 2026). Jordan: "Flagged by 'Creative' should be on
@@ -33,7 +34,13 @@ import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
 export type JobMedium = "photo" | "video";
 
 export type JobCheckFlag = { id: string; text: string; by: string | null; atISO: string; about: "photo" | "video" | "delivery" | "both" };
-export type JobCheckRequest = { id: string; summary: string; text: string; askedBy: string | null; askedAtISO: string; medium: string | null };
+export type JobCheckRequest = {
+  id: string; summary: string; text: string; askedBy: string | null; askedAtISO: string; medium: string | null;
+  /** Who has it (clientAsks.requestOwner, for this box's medium): "Harrison · at the shoot", "Kyle · photo editing", "John · video editing", "Needs an owner". */
+  owner?: RequestOwner;
+};
+/** What the owners were worked out from (the job page prints them). */
+export type JobOwners = { shootOver: boolean; creative: string | null; editor: string | null };
 export type JobChecks = {
   projectId: string;
   /** Flagged at the shoot, about the photos, the video or delivery. */
@@ -46,9 +53,22 @@ export type JobChecks = {
   openRequests: number;
   /** The last "Checked" on this job's requests for this medium, in the last week (who, when, how many). */
   checked?: { by: string; atISO: string; count: number } | null;
+  /** Who owns this job's requests (Oct 19 2026, the Shoots build): the creative until the shoot is over, then Kyle (photos) or the job's editor (video). */
+  owners?: JobOwners;
 };
 
 const empty = (projectId: string): JobChecks => ({ projectId, flags: [], requests: [], notes: [], openRequests: 0, checked: null });
+
+/** The job's video editor, by name: the open edit card's person, else the newest edit card's, else the job's editor on the Team panel. */
+async function editorNameOf(tasks: { assignedKey: string | null; status: string }[], teamEditor: string | null): Promise<string | null> {
+  const open = tasks.find((t) => t.assignedKey && t.status !== "COMPLETED" && t.status !== "CANCELLED");
+  const key = (open ?? tasks.find((t) => t.assignedKey))?.assignedKey ?? null;
+  if (key) {
+    const { editorMeta } = await import("@/lib/editors");
+    return editorMeta(key)?.name ?? (/^[a-z_]+$/.test(key) ? key.replace(/_/g, " ").replace(/^[a-z]/, (c) => c.toUpperCase()) : key);
+  }
+  return teamEditor;
+}
 
 /** A note's sentences without a code, a lockbox or a key. */
 function withoutAccess(text: string, isAccessNote: (s: string) => boolean): string {
@@ -70,16 +90,19 @@ function flagLine(body: string): string {
 export async function jobChecks(projectId: string, medium: JobMedium): Promise<JobChecks> {
   if (!projectId) return empty(projectId);
   try {
-    const { jobRequests, orderAskCandidates, mediumMatches, viewerSeesMoney, ASK_SOURCES } = await import("@/lib/clientAsks");
+    const { jobRequests, orderAskCandidates, mediumMatches, viewerSeesMoney, ASK_SOURCES, requestOwner, shootIsOver } = await import("@/lib/clientAsks");
     const [seesMoney, p, requests, lastChecked] = await Promise.all([
       viewerSeesMoney(),
       prisma.project.findUnique({
         where: { id: projectId },
         select: {
           id: true, clientId: true, notes: true, editorBrief: true, videoInstructions: true, removalNotes: true, createdAt: true,
+          status: true, shootDate: true,
           photographer: { select: { name: true } },
+          editor: { select: { name: true } },
           client: { select: { name: true } },
-          appointments: { orderBy: { startAt: "asc" }, select: { aryeoId: true, description: true, createdAt: true } },
+          appointments: { orderBy: { startAt: "asc" }, select: { aryeoId: true, description: true, createdAt: true, startAt: true, endAt: true, durationMin: true, assignedTo: { select: { name: true } } } },
+          smartTasks: { where: { taskType: "edit_video" }, orderBy: { createdAt: "desc" }, take: 10, select: { assignedKey: true, status: true } },
           orderItems: { select: { title: true, isCanceled: true } },
           deliverables: { select: { productTitle: true, removedFromOrderAt: true } },
           activities: { where: { type: ActivityType.FLAG }, orderBy: { createdAt: "asc" }, take: 60, select: { id: true, body: true, createdAt: true, author: { select: { name: true } } } },
@@ -112,7 +135,15 @@ export async function jobChecks(projectId: string, medium: JobMedium): Promise<J
       flags.push({ id: a.id, text: clip(money(text), 400), by: a.author?.name ?? p.photographer?.name ?? null, atISO: a.createdAt.toISOString(), about: sorted.about });
     }
 
-    // ---- client requests ----
+    // ---- client requests, each with its owner ----
+    // The shoot's end: the last booked visit's end (or start + its length), else the shoot date (+2 hours, in shootIsOver).
+    const last = [...p.appointments].reverse().find((a) => a.startAt);
+    const endAt = last?.endAt ?? (last?.startAt && last.durationMin ? new Date(last.startAt.getTime() + last.durationMin * 60_000) : null);
+    const owners: JobOwners = {
+      shootOver: shootIsOver({ status: p.status, shootDate: p.shootDate ?? last?.startAt ?? null, endAt }),
+      creative: p.appointments.find((a) => a.assignedTo?.name)?.assignedTo?.name ?? p.photographer?.name ?? null,
+      editor: await editorNameOf(p.smartTasks, p.editor?.name ?? null),
+    };
     const reqs: JobCheckRequest[] = requests.map((r) => ({
       id: r.id,
       summary: money(r.summary),
@@ -120,6 +151,7 @@ export async function jobChecks(projectId: string, medium: JobMedium): Promise<J
       askedBy: r.askedBy,
       askedAtISO: r.askedAt.toISOString(),
       medium: r.medium,
+      owner: requestOwner({ kind: "SPECIAL_REQUEST", medium: r.medium }, { ...owners, card: medium }),
     }));
 
     // ---- notes ----
@@ -156,7 +188,7 @@ export async function jobChecks(projectId: string, medium: JobMedium): Promise<J
         })()
       : null;
 
-    return { projectId, flags, requests: reqs, notes, openRequests: reqs.length, checked };
+    return { projectId, flags, requests: reqs, notes, openRequests: reqs.length, checked, owners };
   } catch (e) {
     console.error("[job-checks] read failed", projectId, e);
     return empty(projectId);

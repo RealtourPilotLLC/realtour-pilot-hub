@@ -55,3 +55,39 @@ export async function confirmJobRequests(projectId: string, medium: JobMedium): 
     return { ok: false, message: "That didn't go through. Reload the page to see what is saved, then try again." };
   }
 }
+
+// ---------------------------------------------------------------------------
+// "NEEDS AN OWNER" (Oct 19 2026, the Shoots build). A request whose medium is
+// unclear after the shoot has nobody; the job page's small picker says what
+// it is about (photos → Kyle, video → the job's editor, both → each on their
+// own card). Guarded like Checked above; who and when go on the request's
+// history and the job's timeline (clientAsks.setAskMedium).
+// ---------------------------------------------------------------------------
+
+export async function setJobRequestMedium(askId: string, medium: "photo" | "video" | "both"): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireCutReviewer();
+  } catch (e) {
+    return { ok: false, message: (e as Error)?.message || "You don't have access to do that." };
+  }
+  if (typeof askId !== "string" || !ID.test(askId)) return { ok: false, message: "That request is no longer here. Reload the page." };
+  if (medium !== "photo" && medium !== "video" && medium !== "both") return { ok: false, message: "Pick photos, video or both." };
+  try {
+    const { setAskMedium } = await import("@/lib/clientAsks");
+    const r = await setAskMedium(askId, medium, await who());
+    const { prisma } = await import("@/lib/prisma");
+    const row = await prisma.clientAsk.findUnique({ where: { id: askId }, select: { projectId: true } }).catch(() => null);
+    if (row?.projectId) {
+      revalidatePath(`/projects/${row.projectId}`);
+      revalidatePath(`/review/${row.projectId}`);
+      revalidatePath(`/edit/${row.projectId}`);
+    }
+    revalidatePath("/ops/photo-delivery", "layout");
+    revalidatePath("/jobs");
+    revalidatePath("/");
+    return r;
+  } catch (e) {
+    console.error("[job-checks] set request medium failed", askId, e);
+    return { ok: false, message: "That didn't go through. Reload the page to see what is saved, then try again." };
+  }
+}

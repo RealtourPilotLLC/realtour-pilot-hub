@@ -415,6 +415,75 @@ export async function addAskByHand(input: { projectId: string; text: string; med
   return { ok: true, message: `Added to ${streetOf(p.title) ?? "the job"}.` };
 }
 
+// ---- who owns a request (Oct 19 2026, the Shoots build) --------------------------------------
+//
+// Jordan approved one owner per request: at the shoot → the creative (texted
+// at the appointment start); photo editing → Kyle; video editing → the job's
+// editor; scheduling or the office → Kyle; anything unclear shows as "needs
+// an owner" until someone picks photos or video (setAskMedium). Before the
+// shoot is over every request is the creative's, whatever it is about: they
+// are the one who can get it right at the house.
+
+/** The shoot is over: a stage past the shoot, or the appointment's end (start + 2 hours when no end is known) has passed. */
+export function shootIsOver(p: { status: string; shootDate: Date | null; endAt?: Date | null }, now: Date = new Date()): boolean {
+  if (["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"].includes(p.status)) return true;
+  const end = p.endAt ?? (p.shootDate ? new Date(p.shootDate.getTime() + 2 * HOUR) : null);
+  return !!end && end.getTime() <= now.getTime();
+}
+
+const firstWord = (name: string | null | undefined) => (name ?? "").trim().split(/\s+/)[0] || null;
+
+export type RequestOwner = {
+  /** "Harrison · at the shoot", "Kyle · photo editing", "John · video editing", "Needs an owner". */
+  label: string;
+  role: "creative" | "photo" | "video" | "office" | "none";
+  /** Nobody has it yet: the medium is unclear after the shoot (pick photos or video). */
+  needsOwner: boolean;
+};
+
+/**
+ * Who owns one request (pure). `card` is the medium being looked at: a request
+ * about both is Kyle's on the photos and the editor's on the video. `creative`
+ * and `editor` are names (first names are used); a missing one says so.
+ */
+export function requestOwner(
+  a: { kind?: string | null; medium: string | null | undefined },
+  ctx: { shootOver: boolean; creative: string | null; editor: string | null; card?: "photo" | "video" | null },
+): RequestOwner {
+  if (a.kind === "SCHEDULING") return { label: "Kyle · scheduling", role: "office", needsOwner: false };
+  if (!ctx.shootOver) {
+    const who = firstWord(ctx.creative);
+    return { label: who ? `${who} · at the shoot` : "Creative not assigned · at the shoot", role: "creative", needsOwner: false };
+  }
+  const m = asMedium(a.medium);
+  const on: "photo" | "video" | null = m === "photo" || m === "video" ? m : m === "both" ? ctx.card ?? "photo" : null;
+  if (on === "photo") return { label: "Kyle · photo editing", role: "photo", needsOwner: false };
+  if (on === "video") {
+    const who = firstWord(ctx.editor);
+    return { label: who ? `${who} · video editing` : "Video editor not assigned", role: "video", needsOwner: false };
+  }
+  return { label: "Needs an owner", role: "none", needsOwner: true };
+}
+
+const MEDIUM_SET_WORDS: Record<AskMediumValue, string> = { photo: "the photos", video: "the video", both: "the photos and the video", unclear: "unclear" };
+
+/** Say what an open request is about (the "needs an owner" picker): photos, video or both. Who and when go on its history and the job's timeline. */
+export async function setAskMedium(id: string, medium: string, by: string): Promise<AskResult> {
+  const m = asMedium(medium);
+  if (m === "unclear") return { ok: false, message: "Pick photos, video or both." };
+  const row = await prisma.clientAsk.findUnique({ where: { id }, select: { id: true, state: true, kind: true, medium: true, historyJson: true, projectId: true, summary: true, text: true } });
+  if (!row || row.kind !== "SPECIAL_REQUEST") return { ok: false, message: "That request is no longer here. Reload the page." };
+  if (row.state !== "OPEN") return { ok: true, message: "That request is already closed. Nothing changed." };
+  if (row.medium != null && asMedium(row.medium) === m) return { ok: true, message: `Already on ${MEDIUM_SET_WORDS[m]}. Nothing changed.` };
+  const r = await prisma.clientAsk.updateMany({
+    where: { id, state: "OPEN", medium: row.medium },
+    data: { medium: m, historyJson: pushHistory(row.historyJson, { at: new Date().toISOString(), by, what: `set to ${MEDIUM_SET_WORDS[m]}` }) },
+  });
+  if (!r.count) return { ok: false, message: "Someone changed that request a moment ago. Reload the page." };
+  await timeline(row.projectId, `Client request put on ${MEDIUM_SET_WORDS[m]} by ${by}: ${clip(row.summary || row.text, 200)}`);
+  return { ok: true, message: `Saved: it is about ${MEDIUM_SET_WORDS[m]}.` };
+}
+
 // ---- filing from a client's message (comms.recordClientCommunication) ------------------------
 
 /** One ask the Smart Brain read out of a message (ai.decideCommTask). */
