@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { blobFetchDecision as decideBlobFetch } from "@/lib/reviewCuts";
 
+import { relayFile } from "@/lib/fileRelay";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 // A Dropbox-held cut still leaves through a 302 and returns in milliseconds,
@@ -369,7 +370,6 @@ async function voidCheckOnDrift(
 // faithful 206. Everything else (the store's own public cache-control, its
 // CORS allow-origin) is dropped: this response is private to the person the
 // gate just admitted.
-const PASS_THROUGH = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"];
 
 // WHO MAY FETCH THE OBJECT, and with what, now lives in src/lib/reviewCuts.ts
 // (Sep 18). It moved because the workers that also need it — the Topaz upload,
@@ -406,54 +406,6 @@ async function dropboxLinkFor(id: string, path: string): Promise<string> {
   return r.link;
 }
 
-/**
- * Stream an upstream file back through this route: Range and If-Range passed
- * up, a faithful 206 passed down, the name and disposition ours. Shared by the
- * hub's own store (proxyBlob) and a client's 1080p download (9.6b).
- */
-async function relay(req: NextRequest, url: string, authorization: string | null, fileName: string | null, asAttachment: boolean): Promise<Response> {
-  const range = req.headers.get("range");
-  const headers: Record<string, string> = {};
-  if (range) headers.Range = range;
-  const ifRange = req.headers.get("if-range");
-  if (ifRange) headers["If-Range"] = ifRange;
-  if (authorization) headers.authorization = authorization;
-
-  let upstream: Response;
-  try {
-    // cache: "no-store" — a 368 MB video must never enter Next's fetch cache.
-    upstream = await fetch(url, { headers, cache: "no-store", redirect: "follow" });
-  } catch {
-    return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
-  }
-  if (upstream.status === 404) return NextResponse.json({ error: "That cut's file is no longer in the store" }, { status: 404 });
-  if (!upstream.ok && upstream.status !== 206) {
-    return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
-  }
-  const out = new Headers();
-  // fetch() hands us a DECOMPRESSED body when upstream compressed it, while
-  // upstream's content-length still describes the compressed bytes — copying
-  // it verbatim would advertise the wrong length and the client would truncate
-  // the file at that count. Latent today (the store serves video/quicktime
-  // uncompressed) and it would bite the day a non-video cut or a different
-  // store appears: drop the length and let the response be chunked (review,
-  // Sep 16).
-  const decompressed = !!upstream.headers.get("content-encoding");
-  for (const h of PASS_THROUGH) {
-    if (decompressed && h === "content-length") continue;
-    const v = upstream.headers.get(h);
-    if (v) out.set(h, v);
-  }
-  out.set("Cache-Control", "private, no-store");
-  // The content type on this response is whatever the store said, and the
-  // filename below is whatever the editor called the export — neither is the
-  // hub's word. nosniff keeps a browser from deciding for itself that a cut is
-  // something it should execute rather than play.
-  out.set("X-Content-Type-Options", "nosniff");
-  // Inline so it plays in the tab; the name is the editor's file name, which
-  // is already the one the review surfaces show.
-  const safe = (fileName ?? "cut").replace(/["\\\r\n]/g, "");
-  out.set("Content-Disposition", `${asAttachment ? "attachment" : "inline"}; filename="${safe}"`);
-  if (!out.has("accept-ranges")) out.set("Accept-Ranges", "bytes");
-  return new Response(upstream.body, { status: upstream.status, headers: out });
-}
+// relay(): moved to lib/fileRelay (Oct 19 2026) so the portal's download door
+// can hand a client an Aryeo-delivered file as an attachment too.
+const relay = relayFile;

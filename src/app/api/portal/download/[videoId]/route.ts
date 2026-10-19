@@ -3,9 +3,23 @@ import { prisma } from "@/lib/prisma";
 import { verifyMediaToken, mediaScopeLive, mediaToken } from "@/lib/portalMedia";
 import { resolveFinalFile, recordDownload } from "@/lib/postingKit";
 import { streamUrlFor } from "@/lib/reviewCuts";
+import { relayFile } from "@/lib/fileRelay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// An Aryeo-delivered file is relayed through here (below), so a slow phone
+// gets the whole five minutes; Range lets a browser resume past that.
+export const maxDuration = 300;
+
+/** Aryeo's own video file host: the only outside address this door relays. */
+const ARYEO_FILE_HOST = /(^|\.)aryeo\.com$/i;
+
+/** "Video 4 - Downtown Media Highlight.mp4": the title, with the file's own extension. */
+function deliveredFileName(title: string | null, url: string): string {
+  const ext = (new URL(url).pathname.match(/\.([a-z0-9]{2,4})$/i)?.[1] ?? "mp4").toLowerCase();
+  const base = (title ?? "").replace(/[^\w .()-]+/g, " ").replace(/\s+/g, " ").trim() || "video";
+  return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;
+}
 
 // ---------------------------------------------------------------------------
 // THE DOWNLOAD DOOR for a logical video (spec §8/§10). The page links here
@@ -79,6 +93,16 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ videoId: st
   }
 
   await recordDownload({ enrollmentId: video.enrollmentId, clientUserId, staffUserId, via }, video.id, final.submissionId);
+  // A VIDEO DELIVERED THROUGH AN ARYEO LISTING (Oct 19 2026, Rick Schultz:
+  // "When I click download, it just takes me to the video"). Aryeo serves its
+  // files `inline` and a browser ignores the download attribute on another
+  // site's link, so the redirect below only played it. Relayed here instead,
+  // as an attachment under the video's own title.
+  if (final.kind === "delivered" && final.url) {
+    let host = "";
+    try { host = new URL(final.url).host; } catch { /* not a URL: falls through to the redirect */ }
+    if (ARYEO_FILE_HOST.test(host)) return relayFile(req, final.url, null, deliveredFileName(final.fileName, final.url), true);
+  }
   const target = final.kind === "cut" && final.submissionId
     ? `${streamUrlFor(final.submissionId)}?m=${encodeURIComponent(mediaToken(final.submissionId, v.scope))}&dl=1`
     : final.url;

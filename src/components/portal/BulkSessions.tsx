@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarCheck, Check, ScrollText } from "lucide-react";
+import { CalendarCheck, Check, FileDown, ScrollText } from "lucide-react";
 import type { PortalBulkView, PortalBulkItem } from "@/lib/portalBulk";
 import type { Word } from "@/lib/portalWords";
 import { portalMarkScriptDone } from "@/app/portal/actions";
@@ -36,9 +36,20 @@ export function BulkSessions({ d, canAct, readOnly }: { d: PortalBulkView; canAc
   }
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted">
-        {d.totals.planned} videos across {d.sessions.length} filming session{d.sessions.length === 1 ? "" : "s"} · {d.totals.filmed} filmed · {d.totals.delivered} ready
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted">
+          {d.totals.planned} videos across {d.sessions.length} filming session{d.sessions.length === 1 ? "" : "s"} · {d.totals.filmed} filmed · {d.totals.delivered} ready
+        </p>
+        {d.pdfHref && (
+          <a
+            href={d.pdfHref}
+            download
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:border-brand/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"
+          >
+            <FileDown aria-hidden className="size-4 text-brand" /> Download all scripts (PDF)
+          </a>
+        )}
+      </div>
       <nav aria-label="Sessions" className="flex flex-wrap gap-2">
         {d.sessions.map((s) => (
           <a

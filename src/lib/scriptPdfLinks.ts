@@ -104,3 +104,54 @@ export async function approvedScriptForPdf(enrollmentId: string, scriptId: strin
     fileName: pdfFileName(v.title),
   };
 }
+
+/**
+ * EVERY SCRIPT ON A BULK PLAN, IN ONE PDF (Oct 19 2026, Jordan: "Rick needs
+ * to be able to download all scripts in one PDF"). In plan order, each page
+ * saying its filming session; only the words RELEASED to the client (the same
+ * rule as the page he reads them on, portalBulk), never a draft. Null when the
+ * enrollment has no bulk plan.
+ */
+export async function bulkScriptsForPdf(enrollmentId: string): Promise<{ heading: string; subheading: string | null; scripts: PdfScript[]; fileName: string } | null> {
+  const { portalBulkView } = await import("@/lib/portalBulk");
+  const view = await portalBulkView(enrollmentId);
+  if (!view) return null;
+  const items = view.sessions.flatMap((s) => s.items.map((x) => ({ s, x })));
+  const ids = items.map(({ x }) => x.scriptId).filter((x): x is string => !!x);
+  const scripts = ids.length ? await prisma.contentScript.findMany({ where: { id: { in: ids }, enrollmentId }, select: { id: true, sharedVersionId: true } }) : [];
+  const versionIdOf = new Map(scripts.filter((s) => s.sharedVersionId).map((s) => [s.id, s.sharedVersionId!]));
+  const versions = versionIdOf.size
+    ? await prisma.contentScriptVersion.findMany({ where: { id: { in: [...versionIdOf.values()] } }, select: { id: true, title: true, pillarId: true, categoryLabel: true, hook: true, pointsJson: true, close: true, captionCta: true, body: true } })
+    : [];
+  const versionOf = new Map(versions.map((v) => [v.id, v]));
+  const pillarIds = [...new Set(versions.map((v) => v.pillarId).filter((x): x is string => !!x))];
+  const pillars = pillarIds.length ? await prisma.contentPillar.findMany({ where: { id: { in: pillarIds }, enrollmentId }, select: { id: true, name: true } }) : [];
+  const pillarName = new Map(pillars.map((p) => [p.id, p.name]));
+  const { sessionPartsOf } = await import("@/lib/deliverableOutputs");
+  const sessionDay = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : null);
+  const out: PdfScript[] = [];
+  for (const { s, x } of items) {
+    const v = x.scriptId ? versionOf.get(versionIdOf.get(x.scriptId) ?? "") : undefined;
+    if (!v) continue; // not released to the client yet: not in the PDF either
+    const parts = sessionPartsOf(v);
+    const day = sessionDay(s.dateISO);
+    const label = v.categoryLabel && !/^\(?\s*no\s+pillar/i.test(v.categoryLabel) ? v.categoryLabel : null;
+    out.push({
+      title: `Video ${x.no}: ${v.title}`,
+      pillarName: (v.pillarId ? pillarName.get(v.pillarId) : null) ?? label,
+      parts: parts ? { title: v.title, ...parts } : null,
+      body: v.body,
+      // The caption prints in the script itself (its own section), not here.
+      note: `Session ${s.no}${day ? `, ${s.booked ? "" : "planned for "}${day}` : ""}`,
+    });
+  }
+  const en = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+  const who = en ? (await prisma.client.findUnique({ where: { id: en.clientId }, select: { name: true } }))?.name?.trim() || null : null;
+  const heading = view.title || (who ? `${who}: all scripts` : "All scripts");
+  return {
+    heading,
+    subheading: `${out.length} script${out.length === 1 ? "" : "s"} across ${view.sessions.length} filming session${view.sessions.length === 1 ? "" : "s"}, in the order we plan to film them.`,
+    scripts: out,
+    fileName: pdfFileName(`${who ?? "Your"} scripts`),
+  };
+}

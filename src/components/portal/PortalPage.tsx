@@ -403,6 +403,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   const bulkView = route.dest === "home" || route.dest === "plan"
     ? await import("@/lib/portalBulk").then((m) => m.portalBulkView(enrollment.id)).catch(() => null)
     : null;
+  // Every script in one PDF (Oct 19 2026): the viewer's own media token over the enrollment.
+  if (bulkView) bulkView.pdfHref = `/api/portal/scripts/all/${enrollment.id}?m=${encodeURIComponent(mediaToken(enrollment.id, scope))}`;
   const bulkFocus = bulkView?.sessions.find((x) => x.no === bulkView.focusSessionNo) ?? null;
   if (home) {
     const pageRows = home.videos?.rows ?? [];

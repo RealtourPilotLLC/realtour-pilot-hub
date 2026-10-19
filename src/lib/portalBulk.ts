@@ -35,6 +35,8 @@ export type PortalBulkView = {
   /** The session to open first: the next one with scripts still to film. */
   focusSessionNo: number | null;
   totals: { planned: number; filmed: number; delivered: number; markedDone: number };
+  /** Every script in one PDF (Oct 19 2026): set by the portal page, which mints the viewer's own link. */
+  pdfHref?: string | null;
 };
 
 const STATE: Record<string, PortalBulkItem["state"]> = {
