@@ -1569,8 +1569,9 @@ export default async function EditBriefPage({
             </section>
           )}
 
-          {/* 3 · WHAT TO MAKE — open while the video is being made, one folded
-              line once a version is in. */}
+          {/* 3 · WHAT TO MAKE — always open (Jordan, Oct 19: "What to make
+              should be open on the editor brief"). Once a version is in, the
+              heading also carries the one-line summary and it can be folded. */}
           {isVideoJob && (() => {
             const scriptWord = topicScript ? (topicScript.clientApproved ? "script approved by the client" : "script not approved by the client yet") : useReelScript ? "script from the Script Studio" : null;
             const summary = [styleType?.name ?? null, scriptWord, endCard?.file ? `${endWord.toLowerCase()}: ${endCard.file.name}` : null].filter(Boolean).join(" · ");
@@ -1755,7 +1756,7 @@ export default async function EditBriefPage({
             return (
               <section id="video-make" data-brief-section="make" className={CARD}>
                 {versionSent ? (
-                  <details className="group">
+                  <details className="group" open>
                     <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-0.5 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
                       <h2 className={H2}>What to make</h2>
                       {summary && <span className="min-w-0 text-sm text-muted">{summary}</span>}
