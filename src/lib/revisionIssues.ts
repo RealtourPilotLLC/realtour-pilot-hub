@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { stripMoneySentences } from "@/lib/text";
 import { cutSlots, owedSlotKeyOf, slotKeyOf, videoLaneRevisionWhere } from "@/lib/reviewCuts";
-import { CAUSE_LABEL, hasConfirmedIssueCause, isIssueCause, ISSUE_CATEGORIES, ISSUE_SEVERITIES, type IssueCause } from "@/lib/issueCauses";
+import { CAUSE_LABEL, hasConfirmedIssueCause, isIssueCause, isIssueCategory, ISSUE_CATEGORIES, ISSUE_SEVERITIES, suggestIssueCategory, type IssueCause } from "@/lib/issueCauses";
 import { parseDeclarations, SELF_CHECK_REQUIRED_SINCE } from "@/lib/selfCheck";
 import { causeSuggestionFor } from "@/lib/creativeReviewCore";
 import type { TaskClientScope } from "@/lib/taskClientScope";
@@ -66,6 +66,46 @@ async function event(
 }
 
 const SYSTEM: IssueActor = { name: "Hub" };
+
+// ---------------------------------------------------------------------------
+// THE SUGGESTED CATEGORY (Oct 16 2026). issueCauses.suggestIssueCategory reads
+// the note's words; the suggestion is kept BESIDE the category, never in it —
+// `category` is a person's pick (classifyIssue) or the work order's own area.
+// It is stored as one CATEGORY_SUGGESTED event on the issue (from "Other" to
+// the suggestion), so no column had to be added and the issue's history says
+// where it came from. Only an issue still in "Other" gets one, once.
+// ---------------------------------------------------------------------------
+export const CATEGORY_SUGGESTED = "CATEGORY_SUGGESTED";
+
+/** Suggest a category for an issue from these words. Idempotent (one
+ *  suggestion per issue), a no-op on an issue that already has a category
+ *  other than "Other", never throws. Returns what was suggested, if anything. */
+export async function recordCategorySuggestion(issueId: string, text: string | null | undefined): Promise<string | null> {
+  try {
+    const suggested = suggestIssueCategory(text);
+    if (!suggested || suggested === "Other") return null;
+    const cur = await prisma.revisionIssue.findUnique({ where: { id: issueId }, select: { category: true } });
+    if (!cur || cur.category !== "Other") return null;
+    const had = await prisma.revisionIssueEvent.count({ where: { issueId, kind: CATEGORY_SUGGESTED } });
+    if (had > 0) return null;
+    await event(prisma, issueId, CATEGORY_SUGGESTED, SYSTEM, { from: "Other", to: suggested, note: "suggested from the note's words; a person's pick always wins" });
+    return suggested;
+  } catch {
+    return null;
+  }
+}
+
+/** The hub's category suggestion per issue (the latest one), for issues whose
+ *  category is still "Other". */
+export async function categorySuggestionsFor(issueIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (issueIds.length === 0) return out;
+  const rows = await prisma.revisionIssueEvent
+    .findMany({ where: { issueId: { in: issueIds }, kind: CATEGORY_SUGGESTED }, orderBy: { at: "asc" }, select: { issueId: true, toValue: true } })
+    .catch(() => []);
+  for (const r of rows) if (isIssueCategory(r.toValue) && r.toValue !== "Other") out.set(r.issueId, r.toValue);
+  return out;
+}
 
 /** A cut note's key names its submission (reviewCuts.cutNoteKey). */
 function submissionIdFromNoteKey(assetUrl: string | null | undefined): string | null {
@@ -146,6 +186,8 @@ export async function ingestReviewNote(noteId: string, opts: { imported?: boolea
         select: { id: true },
       });
       await event(prisma, row.id, "RAISED", { name: n.authorName ?? "Reviewer" }, { submissionId: sub?.id ?? null });
+      // A note carries no area: suggest one from its words (Oct 16 2026).
+      await recordCategorySuggestion(row.id, n.body);
       return row.id;
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {
@@ -286,6 +328,10 @@ export async function ingestBriefItems(briefId: string): Promise<number> {
         });
         made++;
         await event(prisma, row.id, "RAISED", { name: raisedBy }, { submissionId: latest?.id ?? null, note: brief.source });
+        // The work order's area is the category when it has one; an item it
+        // could only file as "Other" (or a brief never split) gets a
+        // suggestion from its words (Oct 16 2026).
+        await recordCategorySuggestion(row.id, [w.item.ask, w.item.quote, w.item.detail].filter(Boolean).join("\n"));
       } catch (e) {
         if ((e as { code?: string })?.code !== "P2002") throw e;
       }
@@ -840,6 +886,7 @@ export async function splitIssue(id: string, parts: string[], actor: IssueActor)
       });
       ids.push(row.id);
       await event(prisma, row.id, "SPLIT_FROM", actor, { note: `split from ${src.id}` });
+      await recordCategorySuggestion(row.id, clean[n]);
     } catch (e) {
       if ((e as { code?: string })?.code !== "P2002") throw e;
     }
@@ -862,6 +909,9 @@ export type IssueView = {
   causeSuggested: string | null;
   causeConfirmedBy: string | null;
   category: string;
+  /** Oct 16 2026: the hub's reading of the words, while `category` is still
+   *  "Other" — a suggestion beside the pick, never the pick (null otherwise). */
+  categorySuggested: string | null;
   severity: string;
   text: string;
   summary: string | null;
@@ -910,6 +960,10 @@ export async function issuesForProject(projectId: string, opts: { scrub: boolean
   const evs = await prisma.revisionIssueEvent.findMany({ where: { issueId: { in: rows.map((r) => r.id) } }, orderBy: { at: "asc" } });
   const byIssue = new Map<string, typeof evs>();
   for (const e of evs) byIssue.set(e.issueId, [...(byIssue.get(e.issueId) ?? []), e]);
+  const suggestedOf = (id: string): string | null => {
+    const hit = (byIssue.get(id) ?? []).filter((e) => e.kind === CATEGORY_SUGGESTED && isIssueCategory(e.toValue) && e.toValue !== "Other").at(-1);
+    return hit?.toValue ?? null;
+  };
   const roundOf = (id: string | null) => (id ? k.byId.get(id)?.round ?? null : null);
   const clean = (s: string | null) => (s == null ? null : opts.scrub ? stripMoneySentences(s) || "(this mentioned pricing — ask Jordan)" : s);
   const redact = opts.viewer ?? null;
@@ -927,6 +981,7 @@ export async function issuesForProject(projectId: string, opts: { scrub: boolean
       causeSuggested: redact ? null : r.causeSuggested,
       causeConfirmedBy: hideCause ? null : r.causeConfirmedBy,
       category: r.category,
+      categorySuggested: r.category === "Other" ? suggestedOf(r.id) : null,
       severity: r.severity,
       text: clean(r.originalText) ?? "",
       summary: clean(r.summary),
@@ -955,7 +1010,7 @@ export async function issuesForProject(projectId: string, opts: { scrub: boolean
 
 /** Issues waiting on a reviewer's classification, across the business (the
  *  /quality Editors tab). Newest first, capped. */
-export async function unclassifiedIssues(limit = 40, opts: TaskClientScope = {}): Promise<{ id: string; projectId: string; street: string; text: string; category: string; state: string; raisedByName: string | null; versionEditorKey: string | null; causeSuggested: string | null; createdAtISO: string }[]> {
+export async function unclassifiedIssues(limit = 40, opts: TaskClientScope = {}): Promise<{ id: string; projectId: string; street: string; text: string; category: string; categorySuggested: string | null; state: string; raisedByName: string | null; versionEditorKey: string | null; causeSuggested: string | null; createdAtISO: string }[]> {
   const excludedProjects = opts.excludeClientIds?.length
     ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
     : [];
@@ -973,9 +1028,10 @@ export async function unclassifiedIssues(limit = 40, opts: TaskClientScope = {})
   const rows = await prisma.revisionIssue.findMany({ where: { id: { in: ids } }, orderBy: { createdAt: "desc" } });
   const projects = await prisma.project.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.projectId))] } }, select: { id: true, title: true } });
   const street = new Map(projects.map((p) => [p.id, (p.title ?? "Job").split(",")[0].trim()]));
+  const suggested = await categorySuggestionsFor(rows.filter((r) => r.category === "Other").map((r) => r.id));
   return rows.map((r) => ({
     id: r.id, projectId: r.projectId, street: street.get(r.projectId) ?? "Job",
-    text: (r.summary || r.originalText).slice(0, 300), category: r.category, state: r.state,
+    text: (r.summary || r.originalText).slice(0, 300), category: r.category, categorySuggested: suggested.get(r.id) ?? null, state: r.state,
     raisedByName: r.raisedByName, versionEditorKey: r.versionEditorKey, causeSuggested: r.causeSuggested,
     createdAtISO: r.createdAt.toISOString(),
   }));

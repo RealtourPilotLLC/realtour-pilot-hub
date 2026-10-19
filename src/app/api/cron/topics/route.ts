@@ -32,6 +32,10 @@ export const maxDuration = 300;
 //     three take turns going first, so a long backlog in one cannot starve
 //     the others four ticks an hour.
 // Every step keeps its own switch (`ai_runs` under each): off = `skipped`.
+//
+// Oct 16 2026: second in every run, after the AI queue, the net under the
+// revision work order (revisionBriefs): a client's change request whose
+// reading failed is read again here.
 // ---------------------------------------------------------------------------
 
 /** The run stops starting steps here (300 s ceiling): 20 s for finish() and the response. */
@@ -72,6 +76,17 @@ export async function GET(req: NextRequest) {
   await step("aiQueue", async () => {
     const { drainAiQueueInParallel } = await import("@/lib/aiQueue");
     return drainAiQueueInParallel({ origin: "cron", budgetMs: budget(), minStartMs: AI_QUEUE_MIN_START_MS, maxPerWorker: 2 });
+  });
+
+  // A CLIENT'S CHANGE REQUEST NOBODY SPLIT (Oct 16 2026): a brief whose first
+  // reading failed or died with its request is read here once it is ten
+  // minutes old, up to three tries in all, the failure kept on the row
+  // (lib/revisionBriefSweep). Client work, so it goes before the program's
+  // sweeps; three at most a run, each started only with time to finish. Not
+  // behind `ai_runs`: the first reading of the same words is not either.
+  await step("revisionBriefs", async () => {
+    const { sweepUnanalyzedBriefs, BRIEF_SWEEP_MIN_START_MS } = await import("@/lib/revisionBriefSweep");
+    return sweepUnanalyzedBriefs({ max: 3, budgetMs: budget(), minStartMs: BRIEF_SWEEP_MIN_START_MS });
   });
 
   const run: Record<AiWorkStep, () => Promise<unknown>> = {

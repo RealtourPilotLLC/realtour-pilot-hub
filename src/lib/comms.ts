@@ -523,16 +523,25 @@ export async function recordClientCommunication(opts: {
           kind: opts.kind === "email" ? "EMAIL" : opts.kind === "text" ? "TEXT" : "PHONE",
         },
       });
-    } else if (!(shootNoteFiled && anchorProjectId === effProjectId)) {
-      // In-flight job: capture the ask as a special request, no status churn.
-      // (Same job the brain chose — the re-anchor above only ever swaps in a
-      // delivered-ish job, which takes the branch above.) Skipped when the
-      // shoot-note step above already put these words on this job's brief.
-      // Once (Oct 15 2026): the same email read twice (two inboxes, a rescan)
-      // put the same ask on 811 Little Shiloh Rd's brief twice, 9 s apart.
-      const body = `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`;
-      const already = await prisma.activity.findFirst({ where: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body, createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) } }, select: { id: true } });
-      if (!already) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
+    } else {
+      if (!(shootNoteFiled && anchorProjectId === effProjectId)) {
+        // In-flight job: capture the ask as a special request, no status churn.
+        // (Same job the brain chose — the re-anchor above only ever swaps in a
+        // delivered-ish job, which takes the branch above.) Skipped when the
+        // shoot-note step above already put these words on this job's brief.
+        // Once (Oct 15 2026): the same email read twice (two inboxes, a rescan)
+        // put the same ask on 811 Little Shiloh Rd's brief twice, 9 s apart.
+        const body = `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`;
+        const already = await prisma.activity.findFirst({ where: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body, createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) } }, select: { id: true } });
+        if (!already) await prisma.activity.create({ data: { projectId: anchorProjectId, type: "SPECIAL_REQUEST", body } });
+      }
+      // A SONG FOR A VIDEO STILL BEING MADE (Oct 16 2026): Georgiana's
+      // SoundCloud link "for the 2625 Wassergass rd listing" reached nobody's
+      // brief. A song or music link in the ask goes on the video's music note
+      // (lib/songRequests; a delivered job's ask does this through its brief).
+      // Never throws.
+      const { noteSongRequestFromMessage } = await import("@/lib/songRequests");
+      await noteSongRequestFromMessage({ projectId: anchorProjectId, text: opts.text, source: opts.source ?? "comms", who: opts.contactName?.trim() || opts.clientName || null });
     }
   }
 

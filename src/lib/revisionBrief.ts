@@ -474,6 +474,55 @@ export function pinnedItems(text: string, cutKey: string): RevisionItem[] {
   return lines.map((ask, i) => ({ id: `i${i + 1}`, area: "Other", ask: ask.slice(0, 1000), detail: null, quote: null, scope: "named" as const, cuts: [cutKey], kind: kindOf({ ask }) }));
 }
 
+/** The same split with no cut to pin it to (a portal addendum on a legacy
+ *  folder cut, which buys no model call): every line an item nobody has placed
+ *  on a video yet. Pure. Oct 16 2026: such a brief used to be born with no
+ *  items and no reading at all. */
+export function unplacedItems(text: string): RevisionItem[] {
+  return pinnedItems(text, "").map((i) => ({ ...i, scope: "unknown" as const, cuts: null }));
+}
+
+// ---------------------------------------------------------------------------
+// A BRIEF THAT WAS NEVER READ (Oct 16 2026).
+//
+// 24 of the 32 client texts filed as revisions since Sep 4 were saved with a
+// task and NEVER split into items: analyzedAt null, no error. The cause was a
+// rule, not a crash. From the first work order (Aug 28) until Oct 14 a brief
+// was only read when the client's words ran to 240 characters ("a short ask is
+// already a work order"); every text under that ("There's no music on the
+// video", "don't start on my face") was saved whole, unread, with nothing to
+// say so. Oct 14 made every text, email and team ask read; what remained was
+// the rest of the silence — a reading that dies with its request (a timeout)
+// leaves the same blank row, and nothing ever came back for it.
+//
+// So: every client ask is born with items or read at once; a failure is on
+// the row; and sweepUnanalyzedBriefs (lib/revisionBriefSweep) reads any brief
+// still unread ten minutes on, up to three tries in all, the try count kept in
+// the error it records ("Try 2 of 3 failed: …").
+// ---------------------------------------------------------------------------
+export const BRIEF_ANALYSIS_MAX_TRIES = 3;
+const TRY_PREFIX = /^Try (\d+) of \d+ failed: /;
+
+/** How many readings of this brief have failed so far, from its recorded
+ *  error: the sweep's "Try n of 3 failed: …", or 1 for the first reading's
+ *  own error. Pure. */
+export function analysisTriesOf(analysisError: string | null | undefined): number {
+  if (!analysisError) return 0;
+  const m = TRY_PREFIX.exec(analysisError);
+  return m ? Number(m[1]) || 1 : 1;
+}
+
+/** The error the sweep records for try `n`. Pure. */
+export function analysisTryError(n: number, message: string): string {
+  return `Try ${n} of ${BRIEF_ANALYSIS_MAX_TRIES} failed: ${message.replace(TRY_PREFIX, "")}`.slice(0, 300);
+}
+
+/** A refusal (a person already acted on the items, or a creative review
+ *  resolved it) is an answer, not a failure: it is never retried. */
+export function isAnalysisRefusal(analysisError: string | null | undefined): boolean {
+  return /^(?:Try \d+ of \d+ failed: )?Not re-read:/.test(analysisError ?? "");
+}
+
 export async function createRevisionBrief(opts: {
   projectId: string;
   taskId?: string | null;
@@ -505,8 +554,6 @@ export async function createRevisionBrief(opts: {
   // Keep its whitespace too; the work items may trim for display separately.
   const text = opts.source === "review_room_staff" ? (opts.text ?? "") : (opts.text ?? "").trim();
   if (!text.trim()) return null;
-  // Don't spend a model call on "can you brighten the kitchen photo" — a short
-  // ask is already a work order. The card renders it as one item.
   const pinEarly = opts.pin;
   // Oct 14 2026 (Jordan: texts are analyzed with the conversation "any time a
   // decision is being made"): an ask that came out of a conversation (a text,
@@ -514,9 +561,14 @@ export async function createRevisionBrief(opts: {
   // not, so "that frame" and "the other version" mean what the conversation
   // says. A portal Submit (its own notes) and a staff receipt stay as written.
   const conversational = !opts.skipAnalysis && !pinEarly?.decisionId && opts.source !== "review_room_staff" && opts.source !== "portal";
-  const worthAnalyzing = !opts.skipAnalysis && (conversational || (text.length >= 240 && !opts.pin));
   const pin = opts.pin;
-  const items = pin?.cutKey ? pinnedItems(text, pin.cutKey) : null;
+  // Born with items: a pinned ask's own lines; an addendum with no cut (no
+  // model call by contract) its lines, unplaced.
+  const items = pin?.cutKey ? pinnedItems(text, pin.cutKey) : pin && opts.skipAnalysis ? unplacedItems(text) : null;
+  // Oct 16 2026: NO ASK IS BORN UNREAD. The 240-character floor ("a short ask
+  // is already a work order") is gone: an ask with no items of its own is
+  // read, whatever its length. Only an addendum (items above) skips it.
+  const worthAnalyzing = !opts.skipAnalysis && (conversational || !items);
   // THE ROUND'S CLOCK (A52, §3): written once, here, and never by a re-read.
   // The row's createdAt is the same instant the clock starts from, so the
   // reader's "created since the last settle" and the clock agree to the ms.
@@ -568,16 +620,32 @@ export async function createRevisionBrief(opts: {
   if (clock) await mirrorClockToTasks(opts.projectId);
 
   if (!worthAnalyzing) {
-    // Already a work order (a short ask, or a portal pin) — its items are the
+    // Already a work order (a portal pin, an addendum) — its items are the
     // editor's issues now (§8.3). A model run ingests at its own end. A
     // feeling with no instruction in it goes to creative review FIRST, so it
     // never becomes an editor issue (Oct 15 2026).
     await routeToCreativeReview(brief.id);
     await ingestBriefIssues(brief.id);
-    return brief.id;
+  } else {
+    // Never throws, and a failure is on the row (analysisError) for the card
+    // and the sweep. Logged too, so a reading that fails is never silent.
+    const ok = await analyzeBrief(brief.id, { ...opts, pin });
+    if (!ok) console.error("[revision brief] the first reading did not complete; the sweep will retry it", brief.id);
   }
-  await analyzeBrief(brief.id, { ...opts, pin });
+  // A song the client named, or a music link, goes on the video's music note
+  // (Oct 16 2026, lib/songRequests). Never throws.
+  await noteSongRequests(brief.id);
   return brief.id;
+}
+
+/** Song requests onto the music note — dynamic, best-effort. */
+async function noteSongRequests(briefId: string): Promise<void> {
+  try {
+    const { noteSongRequestsFromBrief } = await import("@/lib/songRequests");
+    await noteSongRequestsFromBrief(briefId);
+  } catch (e) {
+    console.error("[revision brief] song request note failed", briefId, e);
+  }
 }
 
 /** The three requester columns, from a Requester (or nothing on a row written
@@ -639,11 +707,26 @@ async function pinnedKeyOf(outputId: string): Promise<string | null> {
   return o ? slotKeyOf(o.deliverableId, o.slot) : null;
 }
 
-/** Run (or re-run) the analysis for one brief. Never throws. */
-export async function analyzeBrief(
-  briefId: string,
-  ctx?: { clientName?: string | null; propertyAddress?: string | null; deliverables?: string[]; pin?: BriefPin },
-): Promise<boolean> {
+type AnalyzeCtx = { clientName?: string | null; propertyAddress?: string | null; deliverables?: string[]; pin?: BriefPin };
+
+/** A failure's words, for the row. */
+const failureWords = (e: unknown): string => ((e instanceof Error ? e.message : String(e ?? "")).trim() || "The reading failed for no stated reason.").slice(0, 300);
+
+/** Run (or re-run) the analysis for one brief. Never throws: anything that
+ *  goes wrong, before the model call or after it, is recorded on the row
+ *  (Oct 16 2026 — the reads ahead of the old try could throw past it and
+ *  leave a brief unread with no error at all). */
+export async function analyzeBrief(briefId: string, ctx?: AnalyzeCtx): Promise<boolean> {
+  try {
+    return await analyzeBriefOnce(briefId, ctx);
+  } catch (e) {
+    console.error("[revision brief] reading failed", briefId, e);
+    await prisma.revisionBrief.update({ where: { id: briefId }, data: { analysisError: failureWords(e) } }).catch(() => {});
+    return false;
+  }
+}
+
+async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<boolean> {
   const brief = await prisma.revisionBrief.findUnique({
     where: { id: briefId },
     select: {
@@ -786,10 +869,11 @@ export async function analyzeBrief(
     await ingestBriefIssues(briefId);
     return true;
   } catch (e) {
+    console.error("[revision brief] reading failed", briefId, e);
     await prisma.revisionBrief
       .update({
         where: { id: briefId },
-        data: { analysisError: (e as Error).message.slice(0, 300) },
+        data: { analysisError: failureWords(e) },
       })
       .catch(() => {});
     // The model failed; the client's whole text is still one ask to act on.

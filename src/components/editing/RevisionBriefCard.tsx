@@ -424,9 +424,17 @@ function OneBrief({
     setSeenKey(doneKey);
     setDone(brief.done);
   }
+  // NOT SPLIT YET (Oct 16 2026). A request the hub has not read into items
+  // (its reading failed, or is still on its way) used to open on a bare
+  // paragraph with nothing to count, inside a card that starts shut, and the
+  // editor had to dig for it (Kim, Oct 14: "it didn't appear on my end and
+  // needed to go deeper in the notes"). Until the split lands, the client's
+  // own words ARE item 1, and the card opens on them.
+  const unsplit = brief.items.length === 0 && !brief.analyzed;
   // Shut on arrival — Jordan, Sep 7: "Its way too big when you first open the
   // page." The header carries the ask and the score; opening is one click.
-  const [open, setOpen] = useState(false);
+  // An unsplit ask opens: its words are the whole work order.
+  const [open, setOpen] = useState(unsplit);
   const [showRaw, setShowRaw] = useState(false);
   // Which items have their detail + the client's own words showing. Per item,
   // so opening one receipt doesn't unfurl the whole card again.
@@ -551,6 +559,7 @@ function OneBrief({
             {ticked}/{total} complete
           </span>
         )}
+        {unsplit && <span className="shrink-0 whitespace-nowrap text-[11px] font-semibold text-muted">1 ask</span>}
       </button>
       {/* One flat bar of progress — reads at a glance from across the room. */}
       {total > 0 && (
@@ -619,17 +628,29 @@ function OneBrief({
                 </div>
               )}
             </div>
+          ) : unsplit ? (
+            // NOT SPLIT YET: the client's words as item 1 of the work order,
+            // so the editor reads exactly what was asked while the split is
+            // on its way (Oct 16 2026).
+            <ol className="space-y-1" data-unsplit-ask>
+              <li className="flex gap-2 rounded-lg px-1.5 py-1">
+                <span className="mt-px grid size-4 shrink-0 place-items-center rounded bg-surface-2 text-[10px] font-semibold tabular-nums text-muted">1</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold text-muted">Not split into items yet. The client&rsquo;s words:</p>
+                  <p className="mt-0.5 max-h-80 overflow-y-auto whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{brief.originalText}</p>
+                  {brief.analysisError && (
+                    <p className="mt-1 text-[11px] text-muted-2">
+                      The hub couldn&rsquo;t split this one yet and will try again by itself.{canReanalyze ? " Or press Re-read below." : ""}
+                    </p>
+                  )}
+                </div>
+              </li>
+            </ol>
           ) : (
-            // No split available (AI unreachable, or a short ask that didn't
-            // need one) — the client's words ARE the work order, so show them
-            // plainly rather than an empty checklist.
+            // Read, and nothing in it to change (it was a question): the
+            // client's words, plainly, rather than an empty checklist.
             <div className="text-[13px] leading-relaxed text-foreground/85">
               <p className="whitespace-pre-wrap">{brief.originalText}</p>
-              {brief.analysisError && (
-                <p className="mt-2 text-[11px] text-muted-2">
-                  We couldn&rsquo;t break this into steps automatically{canReanalyze ? " — try “Re-read” below." : "."}
-                </p>
-              )}
             </div>
           )}
 

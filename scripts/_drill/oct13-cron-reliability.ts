@@ -16,9 +16,10 @@
 //      relabel route and the "sync calls" action are gone.
 //   2  GET /api/cron/aryeo: 200, its five steps in order, one CronRun "aryeo",
 //      Aryeo only ever READ (every non-GET is refused and counted).
-//   3  GET /api/cron/topics: 200, the AI queue first, the three sweeps after
-//      it in a rotation that is a permutation, one CronRun "topics", no step
-//      skipped for budget.
+//   3  GET /api/cron/topics: 200, the AI queue first, then the unread-brief
+//      net (Oct 16 2026, revisionBriefs), the three sweeps after them in a
+//      rotation that is a permutation, one CronRun "topics", no step skipped
+//      for budget.
 //   4  START ONLY WITH TIME TO FINISH: with less time left than one call
 //      needs, the transcript queue, the AI queue, the drafting sweep and a
 //      month's own draft loop START NOTHING (the work stays queued / owed);
@@ -177,8 +178,8 @@ async function main() {
     const body = (await res.json()) as Record<string, unknown> & { ms?: Record<string, number>; skipped?: string[]; order?: string[] };
     const steps = Object.keys(body.ms ?? {});
     c.ok("200", res.status === 200);
-    c.ok("the AI queue ran first, then the three sweeps", steps[0] === "aiQueue" && steps.length === 4 && ["transcriptJobs", "scriptDrafting", "topicBanks"].every((s) => steps.includes(s)), steps.join());
-    c.ok("in this tick's rotation (a permutation of the three)", JSON.stringify(body.order) === JSON.stringify(steps.slice(1)) && new Set(body.order).size === 3, JSON.stringify(body.order));
+    c.ok("the AI queue ran first, the unread-brief net second (Oct 16), then the three sweeps", steps[0] === "aiQueue" && steps[1] === "revisionBriefs" && steps.length === 5 && ["transcriptJobs", "scriptDrafting", "topicBanks"].every((s) => steps.includes(s)), steps.join());
+    c.ok("in this tick's rotation (a permutation of the three)", JSON.stringify(body.order) === JSON.stringify(steps.slice(2)) && new Set(body.order).size === 3, JSON.stringify(body.order));
     c.ok("with every switch off (no rows) the sweeps report skipped", /transcript_jobs is off/.test(JSON.stringify(body.transcriptJobs)) && /script_drafting is off/.test(JSON.stringify(body.scriptDrafting)) && /topic_refresh is off/.test(JSON.stringify(body.topicBanks)));
     c.ok("nothing skipped for budget", (body.skipped ?? []).length === 0);
     const run = await prisma.cronRun.findFirst({ where: { job: "topics" }, orderBy: { startedAt: "desc" } });
