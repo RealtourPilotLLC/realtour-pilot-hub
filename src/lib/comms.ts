@@ -545,6 +545,40 @@ export async function recordClientCommunication(opts: {
     }
   }
 
+  // OPEN CLIENT ASKS (Oct 19 2026, lib/clientAsks.ts). The brain's read of
+  // this message also lists what the client asked us to get right or to
+  // arrange (same call, no extra cost). A special request on a job not yet
+  // delivered becomes a ClientAsk that holds that job's delivery until Kyle
+  // confirms it; a scheduling ask goes on Kyle's Scheduling screen. The reply
+  // task above still closes when we answer; these do not. A special request
+  // on a job the revision step just took is the revision's, not filed twice.
+  // Never throws.
+  if (opts.clientId) {
+    const channel = opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call";
+    try {
+      if (decision && Array.isArray(decision.asks) && decision.asks.length) {
+        const { fileAsksFromMessage } = await import("@/lib/clientAsks");
+        await fileAsksFromMessage({
+          clientId: opts.clientId,
+          clientName: opts.clientName,
+          contactName: opts.contactName ?? null,
+          message: opts.text,
+          channel,
+          sourceRef: opts.commLogId ?? (await findSourceCommLog({ clientId: opts.clientId, text: opts.text })),
+          asks: decision.asks,
+          defaultProjectId: checked.issue ? null : effProjectId,
+          revisionProjectId: revision ? anchorProjectId : null,
+        });
+      } else if (!decision) {
+        // The brain was unavailable: a plain "we have to cancel" still reaches Kyle.
+        const { fileSchedulingFallback } = await import("@/lib/clientAsks");
+        await fileSchedulingFallback({ clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null, message: opts.text, channel, projectId: checked.issue ? null : effProjectId, sourceRef: opts.commLogId ?? null });
+      }
+    } catch (e) {
+      console.error("[client-asks] filing from a message failed", opts.clientId, e);
+    }
+  }
+
   return { replyTask, revision };
 }
 
@@ -614,13 +648,27 @@ export type RaiseRevisionOpts = {
   staffReceipt?: { timeSec: number | null };
 };
 
+/**
+ * How a message reached us, from the source string its caller passed. Oct 19
+ * 2026: "openphone" (an OpenPhone TEXT) contains "phone", so the old
+ * `includes("phone")` test called every text "a client call" on the reopen
+ * timeline and named the asker's channel PHONE. Only a call or voicemail
+ * source ("openphone-call", "call", "voicemail") is a call now.
+ */
+export function channelOfSource(source: string | null | undefined): "email" | "call" | "text" {
+  const s = (source || "").toLowerCase();
+  // Calls first: "voicemail" contains "email".
+  if (s === "phone" || /\bcall\b|-call\b|voicemail|missed_call/.test(s)) return "call";
+  if (s.includes("gmail") || s.includes("email")) return "email";
+  return "text"; // openphone / comms: the scans that call without a sender read texts
+}
+
 /** The channel a revision's source implies, for a caller that did not say. */
 function requesterKindOfSource(source: string): RequesterKind {
   const s = (source || "").toLowerCase();
   if (s === "portal") return "CLIENT";
-  if (s.includes("gmail") || s.includes("email")) return "EMAIL";
-  if (s.includes("call") || s.includes("voicemail") || s.includes("phone")) return "PHONE";
-  return "TEXT"; // openphone / comms: the scans that call without a sender read texts
+  const ch = channelOfSource(s);
+  return ch === "email" ? "EMAIL" : ch === "call" ? "PHONE" : "TEXT";
 }
 
 /** THE EXACT CUT a portal ask is about (CP-03). The portal knows it, so the
@@ -1117,8 +1165,7 @@ export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
       const { soleApprovedVideo, reopenApprovedCut } = await import("@/lib/cutReopen");
       const target = await soleApprovedVideo(opts.projectId);
       if (target) {
-        const src = (opts.source || "").toLowerCase();
-        const how = src.includes("gmail") || src.includes("email") ? "email" : src.includes("call") || src.includes("voicemail") || src.includes("phone") ? "call" : "text";
+        const how = channelOfSource(opts.source);
         const who = opts.requestedBy?.name?.trim() || opts.clientName?.trim() || "The client";
         const r = await reopenApprovedCut(target.submissionId, { by: who, why: `They asked: “${clip(opts.note, 300)}”`, source: how });
         return (await raiseRevisionDetailed({ ...opts, reopened: r.reopened, pin: { submissionId: target.submissionId, outputId: target.outputId, cutKey: target.cutKey, decisionId: null, roundId: null, videoLabel: target.videoLabel } })).ok;

@@ -6091,3 +6091,49 @@ model ClientIssue {
   @@index([clientId, state])
   @@index([state])
 }
+
+// ---------------------------------------------------------------------------
+// OPEN CLIENT ASKS (Oct 19 2026, lib/clientAsks.ts). One row per thing a
+// client asked us to get right before a job goes out (a SPECIAL_REQUEST: "all
+// 4 lots overlaid like the Pennfield output") or to arrange (SCHEDULING: "we
+// have to cancel tomorrow"). Until now an ask lived only in a reply task, and
+// a reply task closes the moment we answer ANYTHING, so "Got it, we'll start
+// on those now" closed Heather's lot lines one second later. Our reply never
+// closes one of these: a person marks it Done, Confirmed (checked on the
+// finished work, with who and an optional note) or Not needed, or the client
+// withdraws it in the conversation (revisionNotNeeded). A text or email ask
+// holds that job's delivery (holdsDelivery) until it is Confirmed or Not
+// needed; order notes and add-ons show to the reviewer and Kyle but never
+// hold. Plain ids on purpose: no relation touches another model.
+// ---------------------------------------------------------------------------
+model ClientAsk {
+  id              String    @id @default(cuid())
+  clientId        String
+  projectId       String? // null = which job is unclear
+  outputId        String? // one video (DeliverableOutput), when the ask names it
+  kind            String // SPECIAL_REQUEST | SCHEDULING
+  medium          String? // video | photo | both | unclear
+  text            String // the client's own words
+  summary         String? // one plain line
+  source          String // text | email | call | order_note | portal | staff | aryeo
+  sourceRef       String? // CommLog id, Aryeo appointment id, session request id ...
+  askedBy         String?
+  askedAt         DateTime
+  state           String    @default("OPEN") // OPEN | DONE | CONFIRMED | NOT_NEEDED
+  holdsDelivery   Boolean   @default(false)
+  doneAt          DateTime?
+  doneBy          String?
+  confirmedAt     DateTime?
+  confirmedBy     String?
+  confirmNote     String? // the confirm note, or why it was not needed
+  revisionIssueId String?
+  taskId          String?
+  historyJson     String? // [{at, by, what}]
+  dedupeKey       String?   @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([projectId, state])
+  @@index([clientId, state])
+  @@index([kind, state])
+}

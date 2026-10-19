@@ -312,7 +312,7 @@ export async function approveJob(jobId: string, by: string, opts: { deliver: boo
  * null when every check passes, else why not. Checked before the upload and
  * the checklist again before the delivery (the DELIVERING step).
  */
-async function sameDayBlocker(jobId: string): Promise<string | null> {
+export async function sameDayBlocker(jobId: string): Promise<string | null> {
   const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, projectId: true } });
   if (!job || job.stage !== "READY") return "not ready to review";
   const project = await prisma.project.findUnique({
@@ -321,6 +321,14 @@ async function sameDayBlocker(jobId: string): Promise<string | null> {
   });
   const { sameDayAddOns } = await import("@/lib/tasks");
   if (!project || !sameDayAddOns(project.deliverables, project.orderItems).photos) return "not a same-day order";
+  // A CLIENT'S OPEN ASK HOLDS IT (Oct 19 2026, lib/clientAsks). Jordan: "I
+  // don't want it to deliver before Kyle was able to confirm that the lot
+  // lines look correct." A text or email ask about the photos waits for Kyle's
+  // Confirmed; his own Approve is never blocked (the job page shows the asks).
+  // A read that fails holds too: Kyle can always approve it himself.
+  const holding = await import("@/lib/clientAsks").then((m) => m.openAsksHolding(job.projectId, "photo")).catch(() => null);
+  if (holding === null) return "the client's open asks could not be read";
+  if (holding.length) return `${holding.length} client ask${holding.length === 1 ? "" : "s"} to confirm first`;
   const busy = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
   if (busy) return "fixes still running";
   const { deliveryGate } = await import("./delivery");

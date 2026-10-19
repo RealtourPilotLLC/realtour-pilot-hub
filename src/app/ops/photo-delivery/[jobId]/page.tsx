@@ -16,6 +16,7 @@ import { HOLD_REASON_LABEL, VERDICT_LABEL, usd } from "@/components/photoDeliver
 import type { TabKey } from "@/components/photoDelivery/JobContext";
 import { CoachingCard } from "@/components/photoDelivery/CoachingCard";
 import { PrepModeControl } from "@/components/photoDelivery/PrepModeControl";
+import { OpenClientAsksCard } from "@/components/asks/OpenClientAsksCard";
 import { loadJobDetail, loadStrip, loadViewer } from "../data";
 
 export const dynamic = "force-dynamic";
@@ -52,6 +53,14 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
   ]);
   if (!data) notFound();
   const h = data.header;
+  // OPEN CLIENT ASKS ABOUT THE PHOTOS (Oct 19 2026, lib/clientAsks): shown
+  // with their Confirmed buttons. A same-day job waits for them before the hub
+  // approves it by itself; Kyle's own Approve is never blocked. A failed read
+  // shows none.
+  const photoAsks = await import("@/lib/clientAsks")
+    .then((m) => m.asksForProject(h.projectId, { kind: "SPECIAL_REQUEST" }))
+    .then((r) => r.open.filter((a) => a.medium !== "video"))
+    .catch(() => []);
   const initialTab = TABS.get(tabRaw ?? "") ?? "issues";
   const initialPhoto = photoRaw && data.photos.some((p) => p.id === photoRaw) ? photoRaw : null;
 
@@ -119,6 +128,8 @@ export default async function PhotoJobPage({ params, searchParams }: { params: P
             </p>
           )}
         </section>
+
+        {photoAsks.length > 0 && <OpenClientAsksCard asks={photoAsks} deliverWhat="photo" />}
 
         {coaching && <CoachingCard jobId={h.id} coaching={{ photographerName: coaching.photographerName, note: coaching.note, preShootReminders: coaching.preShootReminders, status: coaching.status }} />}
 

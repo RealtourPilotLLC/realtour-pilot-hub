@@ -474,7 +474,44 @@ export type BrainDecision = {
   isRevisionRequest: boolean; // client wants ALREADY-DELIVERED work changed/redone
   flags: string[];
   reason: string;
+  /** Oct 19 2026 (lib/clientAsks): what the client asked us to get right or
+   *  to arrange, read in this SAME call so it costs no extra model call.
+   *  Always an array (empty when none, or when the answer had none). */
+  asks: BrainAsk[];
 };
+
+/** One ask in a client message: a special request on work not yet delivered, or a scheduling ask. */
+export type BrainAsk = {
+  kind: "SPECIAL_REQUEST" | "SCHEDULING";
+  /** The client's own words for this ask (a short quote). */
+  text: string;
+  /** One plain line of what must be checked or done. */
+  summary: string;
+  medium: "video" | "photo" | "both" | "unclear";
+  /** The order it is about (one of the listed ids), or null. */
+  projectHint: string | null;
+};
+
+/** The router's `asks` field, read defensively: anything malformed is dropped, never thrown. Exported for the drill. */
+export function parseBrainAsks(raw: unknown, orderIds: Set<string>): BrainAsk[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BrainAsk[] = [];
+  for (const a of raw.slice(0, 8)) {
+    if (!a || typeof a !== "object") continue;
+    const o = a as Record<string, unknown>;
+    const kindRaw = String(o.kind ?? "").toUpperCase().replace(/[\s-]+/g, "_");
+    const kind = kindRaw === "SCHEDULING" ? "SCHEDULING" : kindRaw === "SPECIAL_REQUEST" ? "SPECIAL_REQUEST" : null;
+    if (!kind) continue;
+    const text = typeof o.text === "string" ? o.text.trim().slice(0, 1200) : "";
+    const summary = typeof o.summary === "string" ? o.summary.trim().replace(/[\u2013\u2014]/g, ",").slice(0, 200) : "";
+    if (!text && !summary) continue;
+    const m = String(o.medium ?? "").toLowerCase().trim();
+    const medium = m === "video" || m === "photo" || m === "both" ? m : "unclear";
+    const hint = typeof o.projectHint === "string" && orderIds.has(o.projectHint) ? o.projectHint : null;
+    out.push({ kind, text: text || summary, summary: summary || text.slice(0, 140), medium, projectHint: hint });
+  }
+  return out;
+}
 
 export async function decideCommTask(ctx: BrainContext, key?: string): Promise<BrainDecision | null> {
   const apiKey = key ?? (await getSecret("ai"));
@@ -516,7 +553,7 @@ Existing OPEN to-dos for this client (id | type | order | title):
 ${tasksBlock}
 
 Decide how we should handle this message and respond as STRICT JSON only:
-{"actionable": <bool>, "projectId": <"order id" or null>, "title": "<short imperative to-do, max 12 words, what WE must do, no client name>", "detail": "<one sentence of context>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "mergeIntoTaskId": <"task id" or null>, "isRevisionRequest": <bool>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
+{"actionable": <bool>, "projectId": <"order id" or null>, "title": "<short imperative to-do, max 12 words, what WE must do, no client name>", "detail": "<one sentence of context>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "mergeIntoTaskId": <"task id" or null>, "isRevisionRequest": <bool>, "flags": ["<short note>", ...], "reason": "<one sentence>", "asks": [{"kind": "<SPECIAL_REQUEST|SCHEDULING>", "text": "<the client's exact words for this ask>", "summary": "<one plain line, max 14 words>", "medium": "<video|photo|both|unclear>", "projectHint": <"order id" or null>}]}
 
 Team roster (get roles right): photographers Harrison Wells + James Livingston shoot on site; Kim + Remar are EDITORS (edit only, never shoot/film); Luma/AutoHDR/CubiCasa/ReadyPost are editing vendors.
 
@@ -527,10 +564,14 @@ Rules:
 - mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null. NEVER merge a NEW topic into a revision to-do: merging overwrites that to-do's title and summary, and a revision task must keep describing the revision. If the message is a different subject than the open to-do (a new email thread, new ideas, a different deliverable), return null and let it be its own task.
 - isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. It is also FALSE when the client is sharing IDEAS, reference videos, style examples, scripts, or creative direction for their NEXT or future content (common for monthly social-content clients: "check out this video", "I like this style", "ideas for the next one") — that is a normal reply/instruction, not a revision. When in doubt, false. Read the conversation (with its times) before deciding: if our team or the client has ALREADY said this change is not needed (for example we explained it is not an issue and the client agreed or did not ask again), and the client is not asking for it again AFTER that, it is FALSE. A client repeating the same ask after our answer is still asking: TRUE.
 - flags: 0 to 4 short notes worth surfacing (e.g. "delivery 2 days overdue", "we already promised Tuesday", "asking a second time", "client sounds frustrated"). Only include real, grounded notes.
+- asks: every specific thing IN THIS MESSAGE that the client wants us to make sure of, or to arrange. [] when there is none. Only two kinds:
+  SPECIAL_REQUEST: a concrete instruction about what the photos or video must include or how they must look, for work we have NOT delivered yet (for example "all 4 lots overlaid like the Pennfield output", "add the lot numbers", "no blackened surroundings", "use this song", "get a shot of the pond"). NOT a door, gate or lockbox code or how to get in; NOT a general question, a thank-you or a status check; NOT who does the shoot or what time it starts (that is SCHEDULING or nothing); NOT a change to work we already delivered (that is isRevisionRequest).
+  SCHEDULING: the client wants a shoot or session booked, moved, rescheduled, postponed or cancelled, or a different time ("we have to cancel tomorrow's appointment", "can we push it to Thursday"). NOT a calendar invitation reply or other automatic notice.
+  text = the client's exact words for that ask; summary = what must be checked or done, plain, max 14 words, no client name, no dashes; medium = which deliverable it is about; projectHint = the order id it is about (one listed above) or null when unclear. If one ask applies to several orders, list it once per order. Our team's replies never answer an ask away: list it even if we already said we would do it.
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
 
   try {
-    const raw = await anthropic({ model: SMART, system, user, maxTokens: 450, key: apiKey });
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 800, key: apiKey });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
     const p = JSON.parse(m[0]) as Partial<BrainDecision>;
@@ -550,6 +591,7 @@ Rules:
       isRevisionRequest: p.isRevisionRequest === true,
       flags: Array.isArray(p.flags) ? p.flags.filter((f): f is string => typeof f === "string").slice(0, 4) : [],
       reason: typeof p.reason === "string" ? p.reason.slice(0, 300) : "",
+      asks: parseBrainAsks((p as { asks?: unknown }).asks, orderIds),
     };
   } catch {
     return null;

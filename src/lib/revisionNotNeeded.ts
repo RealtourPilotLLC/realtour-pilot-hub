@@ -47,9 +47,15 @@ async function judge(prompt: string): Promise<{ asks: Verdict[] }> {
   });
 }
 
+// Oct 19 2026: the client's open special requests and scheduling asks
+// (lib/clientAsks) are re-read in the same call, over a week: "never mind,
+// the lot lines are fine" or "keep the original time" sets them aside too.
+const CLIENT_ASK_DAYS = 7;
+const ASK_ID = "ask:";
+
 /** Re-read a client's open asks against the conversation since. Never throws. */
-export async function reviewAsksAgainstConversation(clientId: string | null | undefined, opts: { now?: Date } = {}): Promise<{ checked: number; withdrawn: string[] }> {
-  const out = { checked: 0, withdrawn: [] as string[] };
+export async function reviewAsksAgainstConversation(clientId: string | null | undefined, opts: { now?: Date } = {}): Promise<{ checked: number; withdrawn: string[]; asksWithdrawn?: string[] }> {
+  const out = { checked: 0, withdrawn: [] as string[], asksWithdrawn: [] as string[] };
   if (!clientId) return out;
   try {
     const now = opts.now ?? new Date();
@@ -58,23 +64,28 @@ export async function reviewAsksAgainstConversation(clientId: string | null | un
       orderBy: { createdAt: "asc" },
       select: { id: true, projectId: true, createdAt: true, originalText: true, taskId: true, requestedBy: true, project: { select: { title: true } } },
     });
-    if (!briefs.length) return out;
+    // The open ClientAsks. A read that fails (the table not there yet) leaves
+    // the revision re-read exactly as it was.
+    const clientAsks = await import("@/lib/clientAsks").then((m) => m.openAsksForClient(clientId, CLIENT_ASK_DAYS, now)).catch(() => []);
+    if (!briefs.length && !clientAsks.length) return out;
     const open = new Map<string, { id: string; originalText: string }[]>();
     for (const b of briefs) {
       const items = await prisma.revisionIssue.findMany({ where: { sourceKind: "BRIEF_ITEM", sourceId: { startsWith: `${b.id}:` }, state: { in: LIVE }, duplicateOfId: null }, select: { id: true, originalText: true } });
       if (items.length) open.set(b.id, items);
     }
     const asks = briefs.filter((b) => open.has(b.id));
-    if (!asks.length) return out;
+    if (!asks.length && !clientAsks.length) return out;
     const { recentConversation, convoBlock, etStamp } = await import("@/lib/conversationContext");
-    const first = asks[0].createdAt;
-    const lines = await recentConversation(clientId, { since: new Date(first.getTime() - 2 * 3600_000), limit: 30, teamChatProjectIds: [...new Set(asks.map((a) => a.projectId))] });
+    const first = new Date(Math.min(...[...asks.map((a) => a.createdAt.getTime()), ...clientAsks.map((a) => a.askedAt.getTime())]));
+    const projectIds = [...new Set([...asks.map((a) => a.projectId), ...clientAsks.map((a) => a.projectId).filter((x): x is string => !!x)])];
+    const lines = await recentConversation(clientId, { since: new Date(first.getTime() - 2 * 3600_000), limit: 30, teamChatProjectIds: projectIds });
     // Nothing said since the first ask: nothing to re-read.
     if (!lines.some((l) => l.at.getTime() > first.getTime() + 1000)) return out;
-    out.checked = asks.length;
+    out.checked = asks.length + clientAsks.length;
     const prompt = [
       "THE CLIENT'S OPEN ASKS (each has an id):",
       ...asks.map((a) => `- id ${a.id} · asked ${etStamp(a.createdAt)}${a.requestedBy ? ` by ${a.requestedBy}` : ""}: "${clip(a.originalText, 400)}"`),
+      ...clientAsks.map((a) => `- id ${ASK_ID}${a.id} · asked ${etStamp(a.askedAt)}${a.askedBy ? ` by ${a.askedBy}` : ""}${a.kind === "SCHEDULING" ? " (a scheduling request)" : ""}: "${clip(a.text, 400)}"`),
       "",
       "THE CONVERSATION (oldest first; 'us' and 'team chat' lines are our team):",
       convoBlock(lines),
@@ -87,6 +98,17 @@ export async function reviewAsksAgainstConversation(clientId: string | null | un
     const touched = new Set<string>();
     for (const v of verdicts) {
       if (v.needed !== "no") continue;
+      // A ClientAsk the conversation withdrew: Not needed, with who said so.
+      if (typeof v.id === "string" && v.id.startsWith(ASK_ID)) {
+        const ask = clientAsks.find((a) => a.id === v.id.slice(ASK_ID.length));
+        if (!ask) continue;
+        const who = (v.saidBy ?? "Someone").trim().slice(0, 60);
+        const quote = clip((v.quote ?? "").trim(), 200);
+        const { markNotNeeded } = await import("@/lib/clientAsks");
+        const r = await markNotNeeded(ask.id, "Hub (from the conversation)", `${who} said${quote ? ` “${quote}”` : " so"}.`).catch(() => null);
+        if (r?.ok) out.asksWithdrawn.push(ask.id);
+        continue;
+      }
       const brief = asks.find((a) => a.id === v.id);
       if (!brief) continue;
       const who = (v.saidBy ?? "Someone").trim().slice(0, 60);

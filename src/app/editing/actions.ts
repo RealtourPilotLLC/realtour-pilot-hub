@@ -2645,6 +2645,7 @@ export async function mergeProjectWork(
     await tx.smartTask.updateMany({ where: { id: { in: moved.taskIds } }, data: { projectId: intoId } });
     await tx.revisionBrief.updateMany({ where: { id: { in: moved.briefIds } }, data: { projectId: intoId } });
     await tx.topazJob.updateMany({ where: { id: { in: moved.topazIds } }, data: { projectId: intoId } });
+    await tx.clientAsk.updateMany({ where: { id: { in: moved.askIds } }, data: { projectId: intoId } });
     await tx.appSetting.upsert({
       where: { key: mergeKey(fromId) },
       create: { key: mergeKey(fromId), value: serializeMerge({ intoId, at: new Date(), by: actor, note: (note ?? "").trim().slice(0, 300) || null, moved, undoneAt: null, undoneBy: null }) },
@@ -2737,6 +2738,12 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
     // A JOB-LEVEL ask (outputId null) stays where it was raised, same as a card.
     await tx.revisionBrief.updateMany({
       where: { OR: [{ id: { in: moved.briefIds } }, { output: { deliverableId: { in: moved.deliverableIds } } }] },
+      data: { projectId: fromId },
+    });
+    // Client asks the same way (a plain outputId, no relation to filter through).
+    const homeOutputs = await tx.deliverableOutput.findMany({ where: { deliverableId: { in: moved.deliverableIds } }, select: { id: true } });
+    await tx.clientAsk.updateMany({
+      where: { OR: [{ id: { in: moved.askIds } }, { outputId: { in: homeOutputs.map((o) => o.id) } }] },
       data: { projectId: fromId },
     });
     // A TopazJob carries no deliverable of its own — it hangs off the cut, one

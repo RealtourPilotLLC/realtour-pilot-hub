@@ -3186,6 +3186,9 @@ export async function reconcileDeliverablesToOrder(
         prisma.orderItem.createMany({ data: nextItems.map((r) => ({ ...r, projectId })) }),
       ]);
       out.changed = true;
+      // An add-on bought later (Lot Lines, Virtual Twilight...) goes on Kyle's
+      // Special requests (Oct 19 2026, lib/clientAsks). Best-effort.
+      await import("@/lib/clientAsks").then((m) => m.fileOrderAsks(projectId)).catch(() => 0);
     }
   }
 
@@ -4638,6 +4641,9 @@ export async function syncAryeoAppointments(
   const resumable = windowAgoTs === null && !opts.orderId && !!(opts.maxPages || opts.budgetMs);
   const apptCursor = resumable ? await readApptCursor() : null;
   const t0 = Date.now();
+  // Jobs whose appointment is new or whose notes changed this pass: their
+  // order notes and add-ons go on Kyle's Special requests (lib/clientAsks).
+  const orderAskProjects = new Set<string>();
   let pagesThisRun = 0;
   let reachedEnd = false;
 
@@ -4720,7 +4726,7 @@ export async function syncAryeoAppointments(
     // canceled) from a routine re-sync — those changes ring the bell below.
     const priorRows = await prisma.appointment.findMany({
       where: { aryeoId: { in: batch.map((a) => a.id).filter((id): id is string => !!id) } },
-      select: { aryeoId: true, startAt: true, status: true, assignedToId: true },
+      select: { aryeoId: true, startAt: true, status: true, assignedToId: true, description: true },
     });
     const priorByAryeoId = new Map(priorRows.map((r) => [r.aryeoId, r]));
 
@@ -4764,6 +4770,10 @@ export async function syncAryeoAppointments(
         update: fields,
       });
       appointmentCount++;
+      {
+        const before = priorByAryeoId.get(appt.id);
+        if (!before || (before.description ?? null) !== (appt.description ?? null)) orderAskProjects.add(projectId);
+      }
 
       // Bell: a KNOWN appointment that moved or got canceled — admin broadcast +
       // the assigned photographer (routed to /shoot). New appointments stay quiet
@@ -4790,6 +4800,16 @@ export async function syncAryeoAppointments(
         // spurious "No longer yours" — worse than silence on the rare true
         // unassignment.
         const reassigned = !nowCanceled && !!prior.assignedToId && !!assignedToId && prior.assignedToId !== assignedToId;
+        // KYLE'S SCHEDULING SCREEN (Oct 19 2026, lib/clientAsks): the same
+        // move, postpone, rebook or cancel is a follow-up there for 48 hours,
+        // keyed like the bell below so a re-sync files nothing new.
+        if (canceled || moved || postponed || rebooked) {
+          const change = canceled ? "canceled" : postponed ? "postponed" : rebooked ? "rebooked" : "moved";
+          const keyPart = canceled ? "canceled" : postponed ? `tbd-${prior.startAt!.toISOString()}` : rebooked ? `rebooked-${startAt!.toISOString()}` : startAt!.toISOString();
+          await import("@/lib/clientAsks")
+            .then((m) => m.fileAryeoChangeAsk({ aryeoAppointmentId: appt.id!, projectId, change, startAt, previousStartAt: prior.startAt ?? null, keyPart }))
+            .catch(() => null);
+        }
         // Shared by both bell blocks below — hoisted so neither duplicates the
         // imports / street derivation. Best-effort like the bells themselves.
         const bellDeps =
@@ -4898,6 +4918,17 @@ export async function syncAryeoAppointments(
   if (resumable) {
     if (reachedEnd) await writeApptCursor({ page: 1, perPage, startedAt: null, lastCompletedAt: new Date().toISOString() });
     else await writeApptCursor({ page, perPage, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
+  }
+
+  // ORDER NOTES AND ADD-ONS TO CHECK (Oct 19 2026, lib/clientAsks): a new
+  // appointment, or one whose notes changed, files its job's customer note
+  // (Special Instructions / Order Notes, access lines left out) and add-ons a
+  // person must check (Lot Lines, Virtual Twilight, Virtual Staging...) on
+  // Kyle's Special requests. They show to the reviewer too, and never hold
+  // delivery. Work in flight only; once each (dedupe keys); best-effort.
+  if (orderAskProjects.size) {
+    const { fileOrderAsks } = await import("@/lib/clientAsks");
+    for (const pid of [...orderAskProjects].slice(0, 60)) await fileOrderAsks(pid).catch(() => 0);
   }
 
   // A resumable SLICE saw only some of each project's visits — Aryeo lists

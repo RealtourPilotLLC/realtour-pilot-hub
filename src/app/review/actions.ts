@@ -1476,6 +1476,14 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   refresh(submission.projectId);
   revalidatePath("/tasks");
   revalidatePath(`/projects/${submission.projectId}`);
+  // A CLIENT'S OPEN ASK HOLDS THE DELIVERY (Oct 19 2026, lib/clientAsks).
+  // Approve stays one click; the reviewer is told, in plain words, that the
+  // video waits for Kyle's Confirmed on what the client asked for. A portal
+  // video publishes on its own and is not held here.
+  if (!(program && toPortal)) {
+    const holding = await import("@/lib/clientAsks").then((m) => m.openAsksHolding(submission.projectId, "video")).catch(() => []);
+    if (holding.length) return { ok: true, message: `Approved. Delivery waits until Kyle confirms ${holding.length} client ask${holding.length === 1 ? "" : "s"}.` };
+  }
   return { ok: true, message: nextWords.message };
 }
 

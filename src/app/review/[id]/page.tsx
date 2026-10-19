@@ -22,6 +22,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { ProjectVideoStatus } from "@/components/review/ProjectVideoStatus";
 import { CreativeReviewPanel } from "@/components/review/CreativeReviewPanel";
 import { JudgeAgainst, type JudgeBrand, type JudgeScript } from "@/components/review/JudgeAgainst";
+import { OpenClientAsksCard } from "@/components/asks/OpenClientAsksCard";
 import { byLine, clientNoteStatusWords, officeReopenLine, officeReopenOf, requesterLine, verdictLine, whenET } from "@/lib/reviewAttribution";
 
 export const dynamic = "force-dynamic";
@@ -206,6 +207,11 @@ export default async function CutReviewPage({
   const { isCreativeApprover } = await import("@/lib/reviewChecklist");
   const creativeApprover = !shotThis && (await isCreativeApprover(me, { authEnforced: authEnforced() }).catch(() => false));
   const creativeReviews = shotThis ? [] : await import("@/lib/creativeReview").then((m) => m.openCreativeReviews(w.projectId)).catch(() => []);
+  // OPEN CLIENT ASKS (Oct 19 2026, lib/clientAsks): what the client asked us
+  // to get right on this job by text, email or the order ("all 4 lots
+  // overlaid like the Pennfield output"), above the verdict on any cut. The
+  // office only; a failed read shows none.
+  const openAsks = shotThis ? [] : await import("@/lib/clientAsks").then((m) => m.asksForProject(w.projectId, { kind: "SPECIAL_REQUEST" })).then((r) => r.open).catch(() => []);
   let judgeScript: JudgeScript = null;
   let judgeTopic: string | null = null;
   let judgeBrand: JudgeBrand = null;
@@ -287,6 +293,7 @@ export default async function CutReviewPage({
             })}
           </nav>}
           {slots.length === 0 && currentCuts.length > 1 && <nav aria-label="Legacy videos" className="flex flex-wrap gap-2">{currentCuts.map((current) => <Link key={current.id} href={`/review/${w.projectId}?cut=${current.id}`} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm">{current.fileName ?? "Unmapped video"} · V{current.round}</Link>)}</nav>}
+          {openAsks.length > 0 && <OpenClientAsksCard asks={openAsks} deliverWhat="video" />}
           {active ? (
             <>
               {/* Oct 9 2026 (Jordan: "fix the spacing"): what this is on one line,

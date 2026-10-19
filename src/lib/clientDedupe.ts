@@ -499,6 +499,7 @@ export async function mergeClientsById(
     await tx.agentProfile.updateMany(to);
     await tx.programSignup.updateMany(to);
     await tx.ownerTodo.updateMany(to);
+    await tx.clientAsk.updateMany(to);
     await tx.client.updateMany({ where: { parentClientId: { in: loserIds } }, data: { parentClientId: survivor.id } });
     // Delete the duplicates first so their unique aryeoCustomerId frees up.
     await tx.client.deleteMany({ where: { id: { in: loserIds } } });

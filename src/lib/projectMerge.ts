@@ -54,6 +54,8 @@ export type MergedRows = {
   taskIds: string[];
   briefIds: string[];
   topazIds: string[];
+  /** Client asks (Oct 19 2026): a job-level ask, or one about a video that moves, goes with the work. */
+  askIds: string[];
 };
 
 export type ProjectMerge = {
@@ -69,7 +71,7 @@ export type ProjectMerge = {
   undoneBy: string | null;
 };
 
-const EMPTY: MergedRows = { deliverableIds: [], outputIds: [], submissionIds: [], taskIds: [], briefIds: [], topazIds: [] };
+const EMPTY: MergedRows = { deliverableIds: [], outputIds: [], submissionIds: [], taskIds: [], briefIds: [], topazIds: [], askIds: [] };
 
 export function serializeMerge(m: Omit<ProjectMerge, "fromId">): string {
   return JSON.stringify({
@@ -274,7 +276,7 @@ export async function previewMerge(fromId: string): Promise<MergedRows & { video
   ]);
   const submissionIds = subs.map((s) => s.id);
   const outputIds = outputs.map((o) => o.id);
-  const [briefs, topaz] = await Promise.all([
+  const [briefs, topaz, asks] = await Promise.all([
     // A job-level ask (outputId null) is about the job, so it goes with the
     // work; an ask about one video goes only if that video is going.
     prisma.revisionBrief.findMany({
@@ -284,6 +286,12 @@ export async function previewMerge(fromId: string): Promise<MergedRows & { video
     // One render per cut, so a render follows its cut — a render whose cut is
     // staying behind would otherwise land on a job holding none of its work.
     prisma.topazJob.findMany({ where: { projectId: fromId, submissionId: { in: submissionIds } }, select: { id: true } }),
+    // A client ask follows the same rule as a brief: job-level, or about a
+    // video that is moving.
+    prisma.clientAsk.findMany({
+      where: { projectId: fromId, OR: [{ outputId: null }, { outputId: { in: outputIds } }] },
+      select: { id: true },
+    }),
   ]);
   return {
     deliverableIds: ids,
@@ -292,6 +300,7 @@ export async function previewMerge(fromId: string): Promise<MergedRows & { video
     taskIds: tasks.map((t) => t.id),
     briefIds: briefs.map((b) => b.id),
     topazIds: topaz.map((t) => t.id),
+    askIds: asks.map((a) => a.id),
     videos: deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL").length,
   };
 }
