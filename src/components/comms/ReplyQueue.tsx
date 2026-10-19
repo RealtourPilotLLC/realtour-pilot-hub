@@ -61,9 +61,11 @@ type CardProps = {
   onSend: () => void;
   /** the card cleared itself — drop it from the list without a round trip */
   onDismiss: () => void;
+  /** opened from a Reply on Messages · Waiting on us: shown first, marked */
+  focused?: boolean;
 };
 
-function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss }: CardProps) {
+function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focused = false }: CardProps) {
   const wait = waitLabel(card.hoursWaiting);
   const vague = s.draft ? VAGUE.exec(s.draft) : null;
   const sent = s.status === "sent";
@@ -71,9 +73,12 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss }: Ca
 
   return (
     <div
+      data-reply-card={card.key}
+      aria-current={focused ? "true" : undefined}
       className={cn(
         "rounded-2xl border bg-surface transition",
         sent ? "border-success opacity-60" : wait.tone === "bad" && !card.likelyHandled ? "border-danger/40" : "border-border",
+        focused && !sent && "ring-2 ring-brand",
       )}
     >
       {/* Who, and how long they've been waiting */}
@@ -282,13 +287,17 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss }: Ca
 export function ReplyQueue({
   cards: initial,
   handled: initialHandled = [],
+  focusKey = null,
 }: {
   cards: ReplyCard[];
   handled?: ReplyCard[];
+  /** the conversation a Reply on Messages · Waiting on us opened: the page
+   *  puts it first; here it is marked and its conversation starts open */
+  focusKey?: string | null;
 }) {
   const [cards, setCards] = useState(initial);
   const [handled, setHandled] = useState(initialHandled);
-  const [state, setState] = useState<Record<string, CardState>>({});
+  const [state, setState] = useState<Record<string, CardState>>(() => (focusKey ? { [focusKey]: { ...blank(), showThread: true } } : {}));
   const [filter, setFilter] = useState<"all" | "clients">("all");
   const [showHandled, setShowHandled] = useState(false);
   const [bulk, startBulk] = useTransition();
@@ -371,6 +380,7 @@ export function ReplyQueue({
     // Dismissing leaves the confirmation on screen for a beat, same as a send,
     // so nothing blinks out from under the click.
     onDismiss: () => setTimeout(() => drop(card.key), 1400),
+    focused: !!focusKey && card.key === focusKey,
   });
 
   if (cards.length === 0 && handled.length === 0) {
@@ -415,7 +425,8 @@ export function ReplyQueue({
                   filter === f ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground",
                 )}
               >
-                {f === "all" ? `Everyone (${cards.length})` : `Clients only (${cards.filter((c) => c.isClient).length})`}
+                {/* "Everyone" carries no number: the Texts tab already shows it. */}
+                {f === "all" ? "Everyone" : `Clients only (${cards.filter((c) => c.isClient).length})`}
               </button>
             ))}
           </div>

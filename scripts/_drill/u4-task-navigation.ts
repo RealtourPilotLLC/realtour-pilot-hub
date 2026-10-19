@@ -92,7 +92,12 @@ async function main() {
     c.ok("bare task deep link does not disappear behind new My work default", linked.props.sp.who === "all" && linked.rows.some((r) => r.id === james.id));
     const slackLink = await open({ tab: "other", task: slack.id });
     c.ok("old Slack task link still opens exact specialist row", elements(slackLink, "SlackView")[0]?.focusTaskId === slack.id);
-    c.ok("legacy today and explicit specialist/completed tabs retain their actual views", elements(await open({ tab: "today", via: "email" }), "CommsView")[0]?.channel === "email" && elements(await open({ tab: "revisions" }), "RevisionsView").length === 1 && elements(await open({ tab: "done" }), "DoneView").length === 1);
+    // Oct 19 2026: the Replies tab (and legacy ?tab=today, which maps to it) is
+    // Messages now, the one inbox; the waiting list, what they sent and the
+    // promises at risk are on Messages · Waiting on us (oct19-messages-inbox).
+    let legacyToday = "";
+    try { await open({ tab: "today", via: "email" }); } catch (e) { if (e instanceof Redirect) legacyToday = e.href; else throw e; }
+    c.ok("legacy today opens Messages; explicit specialist/completed tabs retain their actual views", legacyToday === "/communications" && elements(await open({ tab: "revisions" }), "RevisionsView").length === 1 && elements(await open({ tab: "done" }), "DoneView").length === 1);
     const tabs = elements(defaultView.tree, "TasksTabs")[0] as Parameters<typeof TasksTabs>[0];
     const nav = TasksTabs(tabs);
     c.ok("navigation leads with ownership and exposes named specialist queues", textOf(nav).indexOf("My work") < textOf(nav).indexOf("Replies") && ["Needs assignment", "All work", "Completed", "Replies", "Revisions", "Slack"].every((label) => textOf(nav).includes(label)) && elements(nav, "nav").length === 2);

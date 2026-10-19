@@ -1,12 +1,12 @@
+import type { Metadata } from "next";
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
-import { Mail, MessageCircle, Phone, Reply, Send, User, Users } from "lucide-react";
+import { MessageCircle, Phone, User, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
 import { OpenPhone, phoneKey, recentOpenPhoneConversations, type OpConversation } from "@/lib/integrations/openphone";
-import { getClientTextTasks } from "@/lib/queries";
 import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
 import { SendAllTexts } from "@/components/tasks/SendAllTexts";
 import { getEmailThreads } from "@/components/comms/emailThreads";
@@ -14,176 +14,226 @@ import { EmailThreadList } from "@/components/comms/EmailThreadList";
 import { TeamMessagesPanel, loadTeamChat } from "@/components/comms/TeamMessagesPanel";
 import { getCurrentUser } from "@/lib/auth/user";
 import { ReplyQueue } from "@/components/comms/ReplyQueue";
-import { replyQueue, replyWaitingSummary } from "@/lib/replyQueue";
+import { MessagesTabs, type TabCount } from "@/components/comms/MessagesTabs";
+import { WaitingOnUs } from "@/components/comms/WaitingOnUs";
+import { messagesHref, resolveMessagesTab, TEST_SCOPED_TABS, type MessagesTab } from "@/components/comms/messagesNav";
+import { replyQueue } from "@/lib/replyQueue";
+import { messagesBoard, MESSAGE_BEHIND_HOURS } from "@/lib/opsHome";
+import { listAssignees, viewerAssigneeKey } from "@/lib/assignees";
+import { scrubMoney } from "@/lib/text";
 import { formatDistanceToNow } from "date-fns";
 import { deliveryNoticeFocus } from "@/lib/deliveryNoticeIncidents";
 import { isSyntheticClientRow } from "@/lib/testClients";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Messages" };
 
 function fmtPhone(p: string) {
   const d = p.replace(/\D/g, "").slice(-10);
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p;
 }
 
-// One comms surface, five tabs (Jordan: "keep comms all in one tab" → "sick
-// messaging and comms hub"): the live OpenPhone inbox, Replies (inbound texts
-// still owed an answer, each pre-drafted), client email threads, internal team
-// messaging, and the Outbox — today's drafted confirmation + delivery texts
-// waiting for a human to review and send. Every tab is shareable via ?tab= and
-// loads ONLY its own data (the heavy OpenPhone pull never runs for the others).
-type CommsTab = "inbox" | "replies" | "email" | "team" | "outbox";
+// ---------------------------------------------------------------------------
+// MESSAGES: ONE INBOX (Oct 19 2026). Jordan approved the menu as Dashboard,
+// Shoots, Photos, Videos, Messages, Schedule, and "Messages merges
+// Communications and Client messages into one inbox"; the priority is
+// "responding to clients quickly". Before this there were three doors to the
+// same people: this page, /ops/messages (clients waiting + new leads) and the
+// Tasks page's Replies tab (/tasks?tab=comms). The last two now open here.
+//
+// The views, in order (components/comms/messagesNav.ts):
+//   Waiting on us  every client waiting on a reply, texts and email together,
+//                  oldest first, with Reply and Handled; new leads; promises
+//                  at risk. The same read as the Home summary box.
+//   Texts          every unanswered text, each with a reply ready to write
+//                  (was "Replies"; ?tab=replies still opens it)
+//   Email          client email threads from Gmail (read here, reply in Gmail)
+//   Team           internal messages by property
+//   Outbox         today's drafted confirmation and delivery texts
+//   All            every OpenPhone conversation (was the page's "Inbox")
+// Each view's number is on its tab and nowhere else on the page. Every view
+// is shareable by ?tab= and loads only its own list; the counts on the tabs
+// come from the two reads below, which every view shares.
+// ---------------------------------------------------------------------------
 
-function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0, showTest = false }: { tab: CommsTab; pending: number; emailFresh?: number; waiting?: number; showTest?: boolean }) {
-  const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
-  const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
-  return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <Link href="/communications" className={tab === "inbox" ? active : idle}>
-        <MessageCircle className="mr-1.5 inline size-3.5" />
-        Inbox
-      </Link>
-      {/* Replies: every inbound text still waiting on an answer, each with a
-          draft already written. The one tab that's a to-do list, not an archive. */}
-      <Link href="/communications?tab=replies" className={tab === "replies" ? active : idle}>
-        <Reply className="mr-1.5 inline size-3.5" />
-        Replies
-        {waiting > 0 && (
-          <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "replies" ? "bg-white/20" : "bg-danger-soft text-danger"}`}>
-            {waiting}
-          </span>
-        )}
-      </Link>
-      <Link href={showTest && tab === "email" ? "/communications?tab=email&test=1" : "/communications?tab=email"} className={tab === "email" ? active : idle}>
-        <Mail className="mr-1.5 inline size-3.5" />
-        Email
-        {/* "Unread-ish": threads where the client wrote last, in the past 48h.
-            Computed by the email tab's own query, so it shows there (no extra
-            CommLog scan is spent on the other tabs). */}
-        {emailFresh > 0 && (
-          <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "email" ? "bg-white/20" : "bg-brand/15 text-brand"}`}>
-            {emailFresh}
-          </span>
-        )}
-      </Link>
-      <Link href="/communications?tab=team" className={tab === "team" ? active : idle}>
-        <Users className="mr-1.5 inline size-3.5" />
-        Team
-      </Link>
-      <Link href={showTest && tab === "outbox" ? "/communications?tab=outbox&test=1" : "/communications?tab=outbox"} className={tab === "outbox" ? active : idle}>
-        <Send className="mr-1.5 inline size-3.5" />
-        Outbox
-        {pending > 0 && (
-          <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "outbox" ? "bg-white/20" : "bg-brand/15 text-brand"}`}>
-            {pending}
-          </span>
-        )}
-      </Link>
-    </div>
-  );
-}
+type SP = { tab?: string; t?: string; q?: string; view?: string; incident?: string; test?: string; focus?: string };
 
-export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string; view?: string; incident?: string; test?: string }> }) {
+export default async function MessagesPage({ searchParams }: { searchParams: Promise<SP> }) {
   await requirePageAccess("communications");
   const sp = await searchParams;
-  const tab: CommsTab =
-    sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" || sp.tab === "replies" ? sp.tab : "inbox";
-  const showTest = (tab === "outbox" || tab === "email") && sp.test === "1";
+  const tab = resolveMessagesTab(sp);
+  // Only a scalar "1" turns the test view on, and only where a view reads it.
+  const includeTest = TEST_SCOPED_TABS.has(tab) && sp.test === "1";
+  const me = await getCurrentUser().catch(() => null);
+  const isOwner = !me || me.role === "OWNER";
   const syntheticClientIds = (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
-  const excludedOutboxClientIds = tab === "outbox" && showTest ? [] : syntheticClientIds;
-  const [pendingTexts, waiting] = await Promise.all([
-    getClientTextTasks({ excludeClientIds: excludedOutboxClientIds }).then((t) => t.length),
-    replyWaitingSummary().then((s) => s.count),
-  ]);
+  const excludeClientIds = includeTest ? [] : syntheticClientIds;
+  const roster = me ? await listAssignees().catch(() => []) : [];
+  const viewer = me ? { key: viewerAssigneeKey(me, roster), role: me.role, teamMemberId: me.teamMemberId } : null;
+  const now = new Date();
 
-  // REPLIES — every inbound text still waiting on an answer, each with a draft
+  // The two reads every view shares, for the tab numbers: who is waiting on
+  // us (lib/opsHome.messagesBoard: waiting clients, new leads, the Outbox
+  // count) and the text reply queue (the Texts list itself).
+  const [board, texts] = await Promise.all([
+    messagesBoard({ now, excludeClientIds, viewer }),
+    replyQueue(),
+  ]);
+  const counts: Partial<Record<MessagesTab, TabCount>> = {
+    waiting: { n: board.waiting.length + board.leads.length, tone: board.counts.behind > 0 ? "danger" : "brand" },
+    texts: { n: texts.cards.length, tone: "danger" },
+    outbox: { n: board.outbox },
+  };
+  const tabBar = (extra: Partial<Record<MessagesTab, TabCount>> = {}) => <MessagesTabs tab={tab} counts={{ ...counts, ...extra }} test={includeTest} />;
+  // A repeated ?focus= arrives as an array; only a single value is a focus.
+  const focus = (typeof sp.focus === "string" ? sp.focus : "").trim();
+
+  // WAITING ON US: the first view. What /ops/messages showed, from the same
+  // read, plus the promises at risk that lived on the Tasks page's Replies tab.
+  if (tab === "waiting") {
+    const behind = board.waiting.filter((w) => w.behind).length;
+    return (
+      <div>
+        <PageHeader
+          title="Messages"
+          subtitle={`Clients waiting on a reply (texts and email, oldest first) and new leads.${behind ? ` ${behind} ${behind === 1 ? "client has" : "clients have"} waited over ${MESSAGE_BEHIND_HOURS} hours.` : ""}`}
+        />
+        <div className="mx-auto max-w-3xl p-4 pb-16 sm:p-6">
+          {tabBar()}
+          <WaitingOnUs
+            board={board}
+            now={now}
+            clean={isOwner ? (s: string) => s : scrubMoney}
+            includeTest={includeTest}
+            excludeClientIds={excludeClientIds}
+            showFollowupsLink={!isOwner}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // TEXTS: every inbound text still waiting on an answer, each with a draft
   // ready to read. Jordan: "a generate response engine for Kyle so he can have
   // responses generated to all inbound text messages, and then give him the
   // ability to explain what he wants to say to be able to tailor the message."
   //
   // The 30-day comms review found the two habits that cost us: messages that go
   // unanswered, and answers with no real time in them ("should be" was the most
-  // used phrase). This tab attacks both — the queue can't hide a message, and
+  // used phrase). This view attacks both: the queue can't hide a message, and
   // every draft is written under a rule that bans vague timing.
-  if (tab === "replies") {
-    const { cards, handled } = await replyQueue();
-    const oldest = cards[0];
+  //
+  // ?focus= is a Reply pressed on Waiting on us: that conversation goes first,
+  // marked, with its messages open.
+  if (tab === "texts") {
+    const all = [...texts.cards, ...texts.handled];
+    const match = focus ? all.find((c) => c.key === focus || c.key.slice(2) === focus) ?? null : null;
+    const cards = match ? [match, ...texts.cards.filter((c) => c !== match)] : texts.cards;
+    const handled = match ? texts.handled.filter((c) => c !== match) : texts.handled;
+    const oldestDays = Math.floor(texts.oldestHours / 24);
     return (
       <div>
         <PageHeader
-          eyebrow="Eastern time"
-          title="Replies"
-          subtitle={
-            cards.length === 0
-              ? "Nothing is waiting on an answer."
-              : `${cards.length} waiting${oldest && oldest.hoursWaiting >= 24 ? ` · oldest has been ${Math.round(oldest.hoursWaiting / 24)} day(s)` : ""}`
-          }
+          title="Messages"
+          subtitle={`Every unanswered text, with a reply ready to write.${oldestDays >= 1 ? ` The oldest has waited ${oldestDays} day${oldestDays === 1 ? "" : "s"}.` : ""}`}
         />
         <div className="mx-auto max-w-3xl p-4 pb-16 sm:p-6">
-          <CommsTabs tab="replies" pending={pendingTexts} waiting={waiting} />
-          <ReplyQueue cards={cards} handled={handled} />
+          {tabBar()}
+          {focus && (
+            <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+              <span>{match ? `Answering ${match.displayName}. Their conversation is first.` : "That conversation is not waiting on a text reply any more."}</span>
+              <Link href={messagesHref("waiting")} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
+            </p>
+          )}
+          <ReplyQueue key={match?.key ?? "all"} cards={cards} handled={handled} focusKey={match?.key ?? null} />
         </div>
       </div>
     );
   }
 
-  // The Outbox renders without the (slow) OpenPhone conversation pull — drafts
+  // The Outbox renders without the (slow) OpenPhone conversation pull: drafts
   // come from SmartTasks; OpenPhone is only involved when a human hits Send.
   if (tab === "outbox") {
     return (
       <div>
         <PageHeader
-          eyebrow="Eastern time"
-          title="Communications"
-          subtitle="Today's confirmation and delivery texts — review each draft, then send."
+          title="Messages"
+          subtitle="Today's confirmation and delivery texts. Check each draft, then send."
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="outbox" pending={pendingTexts} waiting={waiting} showTest={showTest} />
+          {tabBar()}
           <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-            <span>{showTest ? "Showing real and test records" : "Showing real client drafts"}</span>
-            <Link href={showTest ? "/communications?tab=outbox" : "/communications?tab=outbox&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{showTest ? "Hide test records" : "Show test records"}</Link>
+            <span>{includeTest ? "Showing real and test records" : "Showing real client drafts"}</span>
+            <Link href={messagesHref("outbox", { test: !includeTest })} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
           </div>
-          {/* The batch send-all lives HERE now — the Outbox is the one home for
+          {/* The batch send-all lives HERE: the Outbox is the one home for
               drafted texts (it was also a panel on /tasks + a rollup card, three
-              surfaces for the same rows — audit). */}
-          <div className="mb-3"><SendAllTexts key={showTest ? "test" : "real"} count={pendingTexts} includeTest={showTest} /></div>
-          <ClientTextsPanel excludeClientIds={excludedOutboxClientIds} />
+              surfaces for the same rows, audit). */}
+          <div className="mb-3"><SendAllTexts key={includeTest ? "test" : "real"} count={board.outbox} includeTest={includeTest} /></div>
+          <ClientTextsPanel excludeClientIds={excludeClientIds} />
         </div>
       </div>
     );
   }
 
-  // Email: read-only client/lead threads from the Gmail sync (CommLog rows) —
+  // Email: read-only client/lead threads from the Gmail sync (CommLog rows),
   // no OpenPhone involved. Replies happen in Gmail (no send scope connected).
+  // ?focus= is a Reply pressed on Waiting on us: that thread goes first, open.
   if (tab === "email") {
-    const { threads, fresh } = await getEmailThreads({ excludeClientIds: showTest ? [] : syntheticClientIds });
+    const { threads, fresh } = await getEmailThreads({ excludeClientIds });
+    // The thread key is "<subject>::<client>". Exact first, then the same
+    // subject where the client wrote last, then (a request the hub wrote down
+    // with no subject on it) that client's newest thread.
+    const cut = focus.lastIndexOf("::");
+    const focusSubject = cut > 0 ? focus.slice(0, cut) : focus;
+    const focusClient = cut > 0 ? focus.slice(cut + 2) : "";
+    const exact = focus ? threads.find((t) => t.key === focus) ?? threads.find((t) => t.lastDirection === "in" && t.key.startsWith(`${focusSubject}::`)) ?? null : null;
+    const ofClient = !exact && focusClient ? threads.find((t) => t.lastDirection === "in" && t.key.endsWith(`::${focusClient}`)) ?? threads.find((t) => t.key.endsWith(`::${focusClient}`)) ?? null : null;
+    const match = exact ?? ofClient;
+    const ordered = match ? [match, ...threads.filter((t) => t !== match)] : threads;
     return (
       <div>
         <PageHeader
-          title="Communications"
+          title="Messages"
           subtitle="Client email from the last 60 days, grouped into threads. Reply from Gmail."
           actions={<Badge soft="var(--surface-2)">Synced from Gmail</Badge>}
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="email" pending={pendingTexts} emailFresh={fresh} waiting={waiting} showTest={showTest} />
+          {/* "Unread-ish": threads where the client wrote last, in the past 48h.
+              Computed by this view's own query, so it shows here only. */}
+          {tabBar({ email: { n: fresh, tone: "brand" } })}
+          {focus && (
+            <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+              {match ? (
+                <span>{exact ? "Their thread is first and open." : "Their latest thread is first and open."} Use Open in Gmail to answer.</span>
+              ) : (
+                <span>
+                  That email is not in the last 60 days shown here.{" "}
+                  {focusSubject && focusSubject !== "(no subject)" && (
+                    <a href={`https://mail.google.com/mail/u/0/#search/${encodeURIComponent(focusSubject)}`} target="_blank" rel="noopener noreferrer" className="font-medium text-brand underline">Search Gmail for it</a>
+                  )}
+                </span>
+              )}
+              <Link href={messagesHref("waiting", { test: includeTest })} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
+            </p>
+          )}
           <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-            <span>{showTest ? "Showing real and test records" : "Test records hidden"}</span>
-            <Link href={showTest ? "/communications?tab=email" : "/communications?tab=email&test=1"} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{showTest ? "Hide test records" : "Show test records"}</Link>
+            <span>{includeTest ? "Showing real and test records" : "Test records hidden"}</span>
+            <Link href={messagesHref("email", { test: !includeTest })} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
           </div>
-          <EmailThreadList threads={threads} />
+          <EmailThreadList key={match?.key ?? "all"} threads={ordered} focusKey={match?.key ?? null} />
         </div>
       </div>
     );
   }
 
-  // Team: internal project-message threads across every job — one stream, no
+  // Team: internal project-message threads across every job, one stream, no
   // external providers touched. Rows deep-link to the project's composer.
   if (tab === "team") {
     // The two-pane chat by property (Kyle call, Sep 16): the office sees every
-    // job that has a thread plus the active ones — the same center the Editing
+    // job that has a thread plus the active ones, the same center the Editing
     // Room opens, scoped differently. Selecting a thread stamps the read
     // watermark inside loadTeamChat; a "view as" preview reads only.
-    const me = await getCurrentUser().catch(() => null);
     const chat = await loadTeamChat({
       scope: { kind: "office" },
       viewer: me ? { id: me.id, teamMemberId: me.teamMemberId, impersonating: !!me.impersonating } : null,
@@ -194,15 +244,15 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
     return (
       <div>
         <PageHeader
-          title="Communications"
+          title="Messages"
           subtitle={
             chat.unreadTotal > 0
-              ? `Team messages by property — ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? "" : "s"} with something new.`
-              : "Team messages by property — pick a job to read and reply."
+              ? `Team messages by property. ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? " has" : "s have"} something new.`
+              : "Team messages by property. Pick a job to read and reply."
           }
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="team" pending={pendingTexts} waiting={waiting} />
+          {tabBar()}
           <TeamMessagesPanel
             data={chat}
             base={{ pathname: "/communications", params: { tab: "team" } }}
@@ -214,6 +264,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
     );
   }
 
+  // ALL: every OpenPhone conversation, newest first (was the page's "Inbox").
   // A delivery exception links here by opaque outbox id. Resolve its phone
   // server-side, never in the URL, and refuse unrelated outbox identities.
   const incident = await deliveryNoticeFocus(sp.incident);
@@ -246,7 +297,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
       <blockquote className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-surface p-3 text-sm">{incident.body}</blockquote>
       <div className="mt-2 flex flex-wrap gap-3 text-sm">
         <Link href={`/projects/${incident.projectId}`} className="font-medium text-brand underline">Open job</Link>
-        <Link href="/communications" className="font-medium text-muted underline">All conversations</Link>
+        <Link href={messagesHref("all")} className="font-medium text-muted underline">All conversations</Link>
       </div>
     </section>
   ) : sp.incident ? (
@@ -257,8 +308,9 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
   if (!connected) {
     return (
       <div>
-        <PageHeader title="Communications" subtitle="Calls & texts from OpenPhone" />
+        <PageHeader title="Messages" subtitle="Calls and texts from OpenPhone" />
         <div className="p-6">
+          {tabBar()}
           {incidentCard}
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <Phone className="mx-auto mb-2 size-6 text-muted-2" />
@@ -359,12 +411,12 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
   return (
     <div>
       <PageHeader
-        title="Communications"
+        title="Messages"
         subtitle={incident ? `${rows.length} matching conversation${rows.length === 1 ? "" : "s"}` : totalConversations > rows.length ? `${rows.length} most recent of ${totalConversations} conversations` : `${rows.length} conversations`}
         actions={<Badge soft="var(--surface-2)">Live from OpenPhone</Badge>}
       />
       <div className="p-6">
-        <CommsTabs tab="inbox" pending={pendingTexts} waiting={waiting} />
+        {tabBar()}
         {incidentCard}
         {error && <div className="mb-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         {rows.length === 0 && !error ? (

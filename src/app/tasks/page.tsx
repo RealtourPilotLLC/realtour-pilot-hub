@@ -54,6 +54,17 @@ export default async function TasksHubPage({ searchParams }: {
     if (t?.source === "slack") tab = "slack";
   }
 
+  // THE REPLIES TAB IS MESSAGES NOW (Oct 19 2026: "Messages merges
+  // Communications and Client messages into one inbox"). Everything it showed
+  // (every client waiting on a text or email reply with Reply and Handled, what
+  // they sent, and the promises at risk) is on Messages · Waiting on us, from
+  // the same read. Old links (?tab=comms, ?tab=today via /today, the Slack
+  // digest's "Unanswered" line, ?via=email) land there; the test view rides
+  // along. A login without Messages keeps this tab.
+  if (tab === "comms" && (!me || canAccess(me, "communications"))) {
+    redirect(sp.test === "1" ? "/communications?test=1" : "/communications");
+  }
+
   const showTestRevisions = tab === "revisions" && sp.test === "1";
   const showTestOther = tab === "work" && sp.test === "1";
   const showTestComms = tab === "comms" && sp.test === "1";

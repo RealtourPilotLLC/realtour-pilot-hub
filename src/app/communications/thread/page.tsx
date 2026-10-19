@@ -41,7 +41,8 @@ export default async function ThreadPage({
   return (
     <div>
       <div className="border-b border-border px-4 py-3 sm:px-6">
-        <BackLink href="/communications" label="All communications" />
+        {/* Back to Messages · All, the list this conversation opens from. */}
+        <BackLink href="/communications?tab=all" label="All conversations" />
       </div>
       {error ? (
         <div className="p-6"><div className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div></div>

@@ -8,8 +8,10 @@ import type { EmailThread } from "@/components/comms/emailThreads";
 // Expandable email-thread list for the Communications hub. Read-only by design
 // (no gmail.send scope) — clicking a row unfolds the messages inline; the
 // "Open in Gmail" link is the reply path.
-export function EmailThreadList({ threads }: { threads: EmailThread[] }) {
-  const [open, setOpen] = useState<Set<string>>(new Set());
+// `focusKey` (Oct 19 2026): the thread a Reply on Messages · Waiting on us
+// opened. The page puts it first; here it starts unfolded and is marked.
+export function EmailThreadList({ threads, focusKey = null }: { threads: EmailThread[]; focusKey?: string | null }) {
+  const [open, setOpen] = useState<Set<string>>(() => new Set(focusKey ? [focusKey] : []));
 
   if (threads.length === 0) {
     return (
@@ -34,8 +36,9 @@ export function EmailThreadList({ threads }: { threads: EmailThread[] }) {
     <div className="overflow-hidden rounded-2xl border bg-surface">
       {threads.map((t) => {
         const expanded = open.has(t.key);
+        const focused = !!focusKey && t.key === focusKey;
         return (
-          <div key={t.key} className="border-b last:border-0">
+          <div key={t.key} data-email-thread={t.key} aria-current={focused ? "true" : undefined} className={cn("border-b last:border-0", focused && "ring-2 ring-inset ring-brand")}>
             {/* Row header — whole row toggles; the Gmail link stops propagation */}
             <button
               type="button"
