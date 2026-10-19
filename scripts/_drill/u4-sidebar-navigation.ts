@@ -54,9 +54,11 @@ async function main() {
       // Oct 14 2026: "Client activity" (/content/activity) and "Photo Delivery"
       // (/ops/photo-delivery, owner + office via the ops PageKey) are the
       // destinations added since BASE.
-      // Oct 19 2026: the Operations group (Kyle's five job screens and the
-      // daily checklist, all on the ops PageKey).
-      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/ops/video-delivery", "/ops/messages", "/ops/requests", "/ops/scheduling", "/ops"]);
+      // Oct 19 2026: the Operations screens on the ops PageKey (photo
+      // delivery, messages, today's shoots with stuck jobs and exceptions).
+      // Video delivery, special requests and scheduling were menu entries for
+      // one afternoon and are not destinations any more (Jordan, that evening).
+      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/ops/messages", "/ops"]);
       check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => !ADDED.has(h))));
       check(`${name}: every destination still appears once`, hrefs(after).length === new Set(hrefs(after)).size);
     }
@@ -64,15 +66,22 @@ async function main() {
     const admin = render(Sidebar, user("ADMIN"));
     const editor = render(Sidebar, user("EDITOR"));
     const photographer = render(Sidebar, user("PHOTOGRAPHER"));
-    // Oct 19 2026: "operations" (Kyle's five jobs + the daily checklist) after Daily work.
+    // Oct 19 2026: "operations" after Daily work, for the owner.
     check("owner has the requested groups in order", [...owner.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "daily,operations,production,clients,team,reference,administration");
-    check("Operations group: the five job screens and the daily checklist, open, for owner and office only", ["OWNER", "ADMIN"].every((role) => { const g = group(render(Sidebar, user(role)), "operations"); return !g.includes("<details") && ["/ops/photo-delivery", "/ops/video-delivery", "/ops/messages", "/ops/requests", "/ops/scheduling", "/ops"].every((h) => g.includes(`href="${h}"`)); }) && [editor, photographer].every((html) => !hrefs(html).some((h) => h.startsWith("/ops"))));
+    check("Operations group (owner): photo delivery, messages, shoots & exceptions, open; office-only screens stay off creatives' menus", ["/ops/photo-delivery", "/ops/messages", "/ops"].every((h) => group(owner, "operations").includes(`href="${h}"`)) && !group(owner, "operations").includes("<details") && [editor, photographer].every((html) => !hrefs(html).some((h) => h.startsWith("/ops"))));
+    // Oct 19 2026 (Jordan): Kyle's menu. The office login (ADMIN) gets six
+    // doors, in order, and everything else folded under More.
+    check("ADMIN (Kyle): six doors in order (Home, Photo delivery, Video Review Room, Messages, Schedule, Tasks), then More", [...admin.matchAll(/data-sidebar-group="([^"]+)"/g)].map((match) => match[1]).join() === "work,more" && [...group(admin, "work").matchAll(/href="([^"]+)"/g)].map((m) => m[1]).join() === "/,/ops/photo-delivery,/review,/ops/messages,/schedule,/tasks" && !group(admin, "work").includes("<details"));
+    check("ADMIN: More is folded and holds everything else the login can open (nothing removed)", group(admin, "more").includes("<details") && ["/communications", "/editing", "/upload", "/content", "/content/activity", "/clients", "/users", "/ops", "/quality", "/coaching", "/resources", "/training", "/assistant", "/settings"].every((h) => hrefs(group(admin, "more")).includes(h)));
+    check("ADMIN: reporting a hub issue stays one click away outside the fold", group(admin, "more").indexOf('href="/feedback"') > group(admin, "more").indexOf("</details>"));
+    check("'Video Review Room' for every role that has the room; the retired screens are no menu entry for anyone", [owner, admin, photographer].every((html) => html.includes("Video Review Room") && !/>Review Room</.test(html)) && cases.every(([, who]) => !hrefs(render(Sidebar, who)).some((h) => ["/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].includes(h))));
     check("Daily work and Production remain directly visible", !group(owner, "daily").includes("<details") && !group(owner, "production").includes("<details") && group(owner, "daily").includes('href="/tasks"') && group(owner, "production").includes('href="/review"'));
     check("secondary owner groups start collapsed", ["team", "reference", "administration"].every((id) => group(owner, id).includes("<details") && !/<details[^>]*\sopen(?:[\s=>])/.test(group(owner, id))));
     // Oct 5 2026: Clients (Content Program + Clients) is open by default — the
-    // office is onboarding clients this week. For every role that has it.
-    check("Clients group is open by default with both doors visible", ["OWNER", "ADMIN"].every((role) => { const html = render(Sidebar, user(role)); return !group(html, "clients").includes("<details") && group(html, "clients").includes('href="/content"') && group(html, "clients").includes('href="/clients"'); }));
-    check("Client activity sits in Clients for owner and admin, and nobody else", ["OWNER", "ADMIN"].every((role) => group(render(Sidebar, user(role)), "clients").includes('href="/content/activity"')) && [editor, photographer].every((html) => !hrefs(html).includes("/content/activity")) && !hrefs(render(Sidebar, user("EDITOR", { content: true }))).includes("/content/activity"));
+    // office is onboarding clients this week. Since Oct 19 the office login's
+    // copies sit under More (Kyle's six-door menu); the owner's group is open.
+    check("Clients group is open by default with both doors visible (owner); the office finds both under More", !group(owner, "clients").includes("<details") && group(owner, "clients").includes('href="/content"') && group(owner, "clients").includes('href="/clients"') && ["/content", "/clients"].every((h) => hrefs(group(admin, "more")).includes(h)));
+    check("Client activity sits in Clients for the owner, under More for the office, and nobody else", group(owner, "clients").includes('href="/content/activity"') && hrefs(group(admin, "more")).includes("/content/activity") && [editor, photographer].every((html) => !hrefs(html).includes("/content/activity")) && !hrefs(render(Sidebar, user("EDITOR", { content: true }))).includes("/content/activity"));
     check("disclosure summaries participate in the existing drawer focus selector", [...owner.matchAll(/<summary\b([^>]*)>/g)].every((match) => match[1].includes('tabindex="0"')));
     const both = renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(Sidebar, { user: user("OWNER") }), React.createElement(Sidebar, { user: user("OWNER") })));
     const ids = [...both.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
@@ -89,7 +98,7 @@ async function main() {
     const noWorkGrant = render(Sidebar, user("EDITOR", { editing: false }));
     check("revoked work access still leaves the first authorized drawer link visible", !group(noWorkGrant, "team").includes("<details") && !hrefs(noWorkGrant).includes("/editing"));
     pathname = "/content/client/month";
-    check("current client work opens Clients automatically", !group(render(Sidebar, user("ADMIN")), "clients").includes("<details"));
+    check("current client work opens its group automatically (Clients for the owner, More for the office)", !group(render(Sidebar, user("OWNER")), "clients").includes("<details") && !group(render(Sidebar, user("ADMIN")), "more").includes("<details"));
     const destinations = [{ href: "/resources" }, { href: "/resources/video-styles" }, { href: "https://scripts.example.invalid", external: true }];
     check("longest path respects boundaries and external destinations", activeSidebarHref(destinations, "/resources/video-styles/premium") === "/resources/video-styles" && activeSidebarHref(destinations, "/resources-old") === null && activeSidebarHref(destinations, "https://scripts.example.invalid") === null);
     check("grouping retains authorized future destinations without mutating inputs", groupSidebarDestinations([{ href: "/future" }], "/future")[0]?.items[0].href === "/future" && destinations[0].href === "/resources");

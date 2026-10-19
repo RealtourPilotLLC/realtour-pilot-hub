@@ -24,7 +24,7 @@ function elements(tree: unknown, name: string): Props[] {
 // components that await reads started with the page's own). Resolve those
 // named components — inside the injected window — so the checks read the
 // page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -48,8 +48,8 @@ async function main() {
     const { setSession } = await import("@/lib/auth/session");
     const { default: homePage } = await import("@/app/page");
     const home = async (props: Parameters<typeof homePage>[0]) => settleHome(await homePage(props));
-    // Oct 19 2026: the exceptions card moved with the daily checklist from
-    // Kyle's Home onto /ops; its failure and recovery are read there now.
+    // Oct 19 2026: the exceptions card moved off Kyle's Home onto /ops (now
+    // "Shoots and exceptions"); its failure and recovery are read there.
     const { default: opsPage } = await import("@/app/ops/page");
     const checklist = async (props: Parameters<typeof opsPage>[0]) => settleHome(await opsPage(props));
     void home;

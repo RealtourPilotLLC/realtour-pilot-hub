@@ -1,13 +1,22 @@
-// Oct 19 2026: Kyle's simplified Home (five job tiles, the video banner, old
-// items), Jordan's week, the daily checklist on /ops, client messages, old-item
-// aging, the morning digest and the shoot-note auto-expire. Server-renders the
-// real pages against disposable PGlite; Slack is faked; nothing leaves.
+// Oct 19 2026 (evening): Kyle's Home = the red line, the summary box and ONE
+// simplified daily checklist (five groups, earlier days, done today, still
+// open); Jordan's Home = this week (on-time % hidden under 3 jobs), what we're
+// behind on, shoot issues, Kyle's day, his list, money; James's review desk
+// unchanged; /ops = shoots, stuck jobs and exceptions; /ops/requests,
+// /ops/scheduling and /ops/old redirect to the matching checklist group;
+// /ops/messages = clients waiting + new leads; Kyle's six-door menu. Plus the
+// old-item rules, the morning digest, New date and the shoot-note expiry.
+// Server-renders the real pages against disposable PGlite; Slack is faked;
+// nothing leaves.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
-import { isValidElement } from "react";
+import { createElement, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker } from "./_harness";
-import type { VideoDeliveryCounts } from "../../src/lib/videoDelivery";
+import type { VideoRow } from "../../src/lib/videoDelivery";
+import type { BehindState } from "../../src/lib/behindAlert";
+import type { ShootIssue } from "../../src/lib/shootIssues";
+import type { KyleChecklist, HomeSummary } from "../../src/lib/opsHome";
 
 installNextStubs();
 type Props = Record<string, unknown>;
@@ -27,14 +36,32 @@ const fence = fenceFetch(async (url, init) => {
   return json({ ok: false, error: "not_in_drill" });
 });
 
-// ---- the video contract, overridable so the banner thresholds can be driven ---
-let videoOverride: VideoDeliveryCounts | null = null;
+// ---- the other lanes' contracts, overridable so the Home can be driven ---------
+type Lanes = { late: VideoRow[]; today: VideoRow[]; sending: VideoRow[]; held: VideoRow[]; finishing: VideoRow[]; delivered: VideoRow[] };
+let videoLanes: Lanes | null = null;
+let behindOverride: BehindState | null = null;
+let issuesOverride: { open: ShootIssue[]; byClient: { client: string; count: number }[] } | null = null;
 interceptModule((r) => r === "@/lib/videoDelivery" || /src[\\/]lib[\\/]videoDelivery(?:\.ts)?$/.test(r), (loaded) => {
   const m = loaded as typeof import("../../src/lib/videoDelivery");
-  return { ...m, videoDeliveryCounts: (now?: Date) => (videoOverride ? Promise.resolve(videoOverride) : m.videoDeliveryCounts(now)) };
+  const fakeBoard = (l: Lanes) => ({ lanes: { review: [], upcoming: [], ...l }, counts: {} }) as unknown as Awaited<ReturnType<typeof m.videoDeliveryBoard>>;
+  return {
+    ...m,
+    videoDeliveryBoard: (o?: Parameters<typeof m.videoDeliveryBoard>[0]) => (videoLanes ? Promise.resolve(fakeBoard(videoLanes)) : m.videoDeliveryBoard(o)),
+    videoSummary: (now?: Date) => videoLanes
+      ? Promise.resolve({ readyToSend: videoLanes.sending.length, late: [...videoLanes.late, ...videoLanes.held, ...videoLanes.finishing, ...videoLanes.sending].filter((r) => r.late).length, dueToday: m.dueTodayRows(fakeBoard(videoLanes)).length })
+      : m.videoSummary(now),
+  };
+});
+interceptModule((r) => r === "@/lib/behindAlert" || /src[\\/]lib[\\/]behindAlert(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/behindAlert");
+  return { ...m, behindState: (now?: Date) => (behindOverride ? Promise.resolve(behindOverride) : m.behindState(now)) };
+});
+interceptModule((r) => r === "@/lib/shootIssues" || /src[\\/]lib[\\/]shootIssues(?:\.ts)?$/.test(r), (loaded) => {
+  const m = loaded as typeof import("../../src/lib/shootIssues");
+  return { ...m, ownerShootIssues: (now?: Date) => (issuesOverride ? Promise.resolve(issuesOverride) : m.ownerShootIssues(now)) };
 });
 
-// ---- tree helpers (the u4/c14 Home drills' own) ---------------------------------
+// ---- tree helpers ---------------------------------------------------------------------
 function elements(tree: unknown, name: string): Props[] {
   if (Array.isArray(tree)) return tree.flatMap((part) => elements(part, name));
   if (!isValidElement<Props>(tree)) return [];
@@ -53,27 +80,24 @@ function namesOf(tree: unknown): string[] {
   const type = tree.type as string | { name?: string };
   return [typeof type === "string" ? type : type.name ?? "", ...Object.values(tree.props).flatMap(namesOf)];
 }
-function findEl(tree: unknown, name: string): unknown {
-  if (Array.isArray(tree)) return tree.map((t) => findEl(t, name)).find(Boolean) ?? null;
-  if (!isValidElement<Props>(tree)) return null;
-  const type = tree.type as string | { name?: string };
-  if ((typeof type === "string" ? type : type.name) === name) return tree;
-  return Object.values(tree.props).map((v) => findEl(v, name)).find(Boolean) ?? null;
-}
 function propValues(tree: unknown, key: string): unknown[] {
   if (Array.isArray(tree)) return tree.flatMap((part) => propValues(part, key));
   if (!isValidElement<Props>(tree)) return [];
   return [...(key in tree.props ? [tree.props[key]] : []), ...Object.values(tree.props).flatMap((part) => propValues(part, key))];
 }
-const STREAMED = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
+const STREAMED = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
   if (typeof tree.type === "function" && STREAMED.has(tree.type.name)) return settle(await (tree.type as (p: Props) => Promise<unknown>)(tree.props));
   return { ...tree, props: Object.fromEntries(await Promise.all(Object.entries(tree.props).map(async ([k, v]) => [k, await settle(v)] as const))) };
 }
-// Expand the presentational parts so their text and links can be read.
-const EXPAND = new Set(["JobTiles", "VideoBehindBanner", "OldItemsCard", "OldItemRow", "BehindCard", "OwnerWeekCard", "ShootsTodayLine", "FlaggedBanner", "ChecklistLinks", "LoopRow"]);
+// Expand the server-rendered parts (never a client component) so their text,
+// ids and links can be read.
+const EXPAND = new Set([
+  "SummaryBox", "SummaryTile", "BehindLine", "DailyChecklist", "GroupCard", "LineRow", "LineActions", "Aliases", "EarlierCard", "OldItemRow",
+  "DoneToday", "DoneRow", "StillOpen", "KylesDay", "BehindCard", "ShootIssuesCard", "OwnerWeekCard", "WeekStat", "FlaggedBanner", "ShootsTodayLine",
+]);
 function expand(tree: unknown): unknown {
   if (Array.isArray(tree)) return tree.map(expand);
   if (!isValidElement<Props>(tree)) return tree;
@@ -81,9 +105,13 @@ function expand(tree: unknown): unknown {
   return { ...tree, props: Object.fromEntries(Object.entries(tree.props).map(([k, v]) => [k, expand(v)])) };
 }
 class Redirect extends Error { constructor(readonly href: string) { super(href); } }
-const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never; useRouter: () => { refresh: () => void } };
+const navigation = createRequire(__filename)("next/navigation") as { redirect: (href: string) => never; useRouter: () => { refresh: () => void }; usePathname: () => string };
 navigation.redirect = (href) => { throw new Redirect(href); };
 navigation.useRouter = () => ({ refresh() {} });
+navigation.usePathname = () => "/";
+async function redirectOf(run: () => Promise<unknown>): Promise<string | null> {
+  try { await run(); return null; } catch (e) { if (e instanceof Redirect) return e.href; throw e; }
+}
 
 const H = 3_600_000;
 const D = 24 * H;
@@ -100,14 +128,17 @@ async function main() {
     const { default: opsPage } = await import("@/app/ops/page");
     const { default: messagesPage } = await import("@/app/ops/messages/page");
     const { default: oldPage } = await import("@/app/ops/old/page");
+    const { default: requestsPage } = await import("@/app/ops/requests/page");
+    const { default: schedulingPage } = await import("@/app/ops/scheduling/page");
     const { pushOldItem } = await import("@/app/ops/old/actions");
     const opsHome = await import("@/lib/opsHome");
     const aging = await import("@/lib/taskAging");
     const { loadQueue } = await import("@/app/ops/photo-delivery/data");
-    const { askBoardCounts } = await import("@/lib/clientAsks");
-    const { videoDeliveryCounts } = await import("@/lib/videoDelivery");
-    const { buildOpsDay } = await import("@/lib/opsDay");
-    const { forwardedHref, opsAnchor } = await import("@/lib/homeAnchors");
+    // Through require, so the drill reads the same (driven) contract the Home does.
+    const { videoSummary } = createRequire(__filename)("../../src/lib/videoDelivery") as typeof import("../../src/lib/videoDelivery");
+    const { unansweredCommsBoard } = await import("@/lib/commsBoard");
+    const { forwardedHref, blockScreen, GROUP_ALIASES } = await import("@/lib/homeAnchors");
+    const { Sidebar } = await import("@/components/Sidebar");
     const { etAt, etDayKey, etDayStartUtc, etAddDays, etEndOfDay } = await import("@/lib/datetime");
     const { saveSchedule } = await import("@/lib/notifySchedule");
     const { DISMISSED_PREFIX } = await import("@/lib/triage");
@@ -115,20 +146,17 @@ async function main() {
     const now = new Date();
     const ago = (ms: number) => new Date(now.getTime() - ms);
     const ahead = (ms: number) => new Date(now.getTime() + ms);
-    const endToday = new Date(etDayStartUtc(etAddDays(new Date(etDayStartUtc(now).getTime() + 12 * H), 1)).getTime());
+    const startToday = etDayStartUtc(now);
+    const endToday = etDayStartUtc(new Date(startToday.getTime() + 36 * H));
+    const startTomorrow = endToday;
     const laterToday = new Date(Math.min(now.getTime() + H, endToday.getTime() - 60_000));
+    const isToday = (d: Date) => etDayKey(d) === etDayKey(now);
 
     // =====================================================================
     c.head("§1 · the rules, as pure functions");
     // =====================================================================
-    const vc = (late: number, oldest: number | null): VideoDeliveryCounts => ({ open: late + 2, dueToday: 1, behind: late, oldestHours: 30, lateListing: late, oldestLateHours: oldest, lateMonthly: 0 });
-    c.ok("no late listing video, no banner", opsHome.videoAlert(vc(0, null)) === null && opsHome.videoAlert(null) === null);
-    c.ok("one or two late (under 48 h) is amber", opsHome.videoAlert(vc(1, 10))?.level === "amber" && opsHome.videoAlert(vc(2, 47.9))?.level === "amber");
-    c.ok("three late is red even when each is only hours late", opsHome.videoAlert(vc(3, 5))?.level === "red");
-    c.ok("one video 48 h past its promise is red", opsHome.videoAlert(vc(1, 48))?.level === "red" && opsHome.videoAlert(vc(2, 65))?.level === "red");
-    const red = opsHome.videoAlert(vc(3, 2.7 * 24))!;
-    c.ok("red wording: count, oldest in days, deliver first, vendor editor", red.headline === "We're behind on videos: 3 late, the oldest 2.7 days." && red.detail === "Deliver these first. If this keeps up, bring in a vendor editor to take the load off." && red.href === "/ops/video-delivery", `${red.headline} / ${red.detail}`);
-    c.ok("thresholds live in one place", opsHome.VIDEO_VERY_BEHIND_COUNT === 3 && opsHome.VIDEO_VERY_BEHIND_HOURS === 48 && aging.OLD_AFTER_DAYS === 3 && aging.WEEK_OLD_DAYS === 7 && aging.PUSHES_BEFORE_FLAG === 3);
+    c.ok("thresholds live in one place", opsHome.ON_TIME_MIN_JOBS === 3 && opsHome.MESSAGE_BEHIND_HOURS === 24 && aging.OLD_AFTER_DAYS === 3 && aging.WEEK_OLD_DAYS === 7 && aging.PUSHES_BEFORE_FLAG === 3);
+    c.ok("on-time % is hidden under 3 jobs judged ('too few to judge'), shown from 3", opsHome.onTimeWords({ judged: 2, onTimePct: 50 }) === "too few to judge" && opsHome.onTimeWords({ judged: 0, onTimePct: null }) === "too few to judge" && opsHome.onTimeWords({ judged: 3, onTimePct: 67 }) === "67% on time");
     const t = (over: Partial<{ status: string; dueAt: Date | null; followUpAt: Date | null; assignedKey: string | null; ownerId: string | null }>) =>
       ({ status: "OPEN", dueAt: null, followUpAt: null, assignedKey: "kyle", ownerId: null, ...over });
     c.ok("old = open, names a person, 3+ days past its date", aging.isOldTask(t({ dueAt: ago(3 * D) }), now) && !aging.isOldTask(t({ dueAt: ago(2.9 * D) }), now));
@@ -143,8 +171,12 @@ async function main() {
     c.ok("an edit-side note waits for delivery", !note("Log song request for 2645 N 8th St cinematic video", {}, { status: "EDITING", shootDate: ago(3 * D) }) && note("Log USP and lifestyle brief for 99 W Bridge St video", {}, { status: "DELIVERED", shootDate: ago(30 * D) }));
     c.ok("not before the shoot day is over, not while still scheduled, not without a job", !note("Note vacant property for 308 W Upsal St shoot team", {}, { status: "SHOT", shootDate: laterToday }) && !note("Note lockbox for 7 Late Ave", {}, { status: "SCHEDULED", shootDate: ago(3 * D) }) && !note("Note lockbox for 7 Late Ave", {}, null));
     c.ok("only the brain's to-dos from a client message; never one a person flagged or assigned", !note("Note x for y shoot", { source: "manual" }) && !note("Note x for y shoot", { reasonCreated: "Photographer flagged a pay line" }) && !note("Note x for y shoot", { taskType: "client_reply" }) && !note("Note x for y shoot", { flaggedAt: now }) && !note("Note x for y shoot", { assignedManually: true }));
-    c.ok("old Home anchors forward to the checklist; Home's own stay", forwardedHref("/", "", "#video-review") === "/ops#video-review" && forwardedHref("/", "?test=1", "#loops") === "/ops?test=1#loops" && forwardedHref("/", "", "#my-list") === null && forwardedHref("/ops", "", "#loops") === null && forwardedHref("/", "", "#%E0") === null && forwardedHref("/", "", "#shoots") === "/ops#shoots");
-    c.ok("in-page links Home renders point at the checklist", opsAnchor("#comms-1") === "/ops#comms-1" && opsAnchor("#needs-you") === "#needs-you" && opsAnchor("/tasks") === "/tasks");
+    // Old links: every old block id is an anchor inside a checklist group on Home.
+    const OLD_BLOCKS = ["tower", "qc-am", "overdue", "comms-1", "prep", "loops", "video-review", "pipeline", "monthly", "closeout", "operating-routine", "old-items"];
+    c.ok("every old block id has a home inside a checklist group", OLD_BLOCKS.every((id) => Object.values(GROUP_ALIASES).some((a) => a.includes(id))) && GROUP_ALIASES.followups.includes("loops") && GROUP_ALIASES.deliveries.includes("video-review") && GROUP_ALIASES.messages.includes("comms-1"));
+    c.ok("forwarding: /#stuck, /#exceptions, /#shoots go to /ops; /ops#loops comes back to Home; Home's own anchors stay", forwardedHref("/", "", "#stuck") === "/ops#stuck" && forwardedHref("/", "?test=1", "#shoots") === "/ops?test=1#shoots" && forwardedHref("/ops", "?test=1", "#loops") === "/?test=1#loops" && forwardedHref("/ops", "", "#video-review") === "/#video-review" && forwardedHref("/", "", "#loops") === null && forwardedHref("/", "", "#my-list") === null && forwardedHref("/ops", "", "#stuck") === null && forwardedHref("/", "", "#%E0") === null);
+    c.ok("a Home without the checklist links an old block to the screen that holds its work", blockScreen("#video-review") === "/review" && blockScreen("#comms-1") === "/ops/messages" && blockScreen("#loops") === "/tasks?tab=work" && blockScreen("#stuck") === "/ops#stuck" && blockScreen("#needs-you") === "#needs-you" && blockScreen("/tasks") === "/tasks");
+    c.ok("retired pages' doors: Kyle to his group, Jordan to Kyle's day / behind, the review seat to its screen", opsHome.checklistDoor("operations", "requests") === "/#requests" && opsHome.checklistDoor("operations", "earlier") === "/#earlier" && opsHome.checklistDoor("owner", "scheduling") === "/#kyles-day" && opsHome.checklistDoor("owner", "earlier") === "/#behind" && opsHome.checklistDoor("review", "requests") === "/review");
     c.ok("lateness in words", opsHome.lateWords(9.4) === "9 hours" && opsHome.lateWords(24) === "1 day" && opsHome.lateWords(65) === "2.7 days");
 
     // =====================================================================
@@ -160,12 +192,9 @@ async function main() {
     const kyle = await user("Kyle Smith", kyleTm.email!, "ADMIN", kyleTm.id);
     const owner = await user("Jordan Spackman", jordanTm.email!, "OWNER", jordanTm.id);
     const james = await user("James Livingston", jamesTm.email!, "ADMIN", jamesTm.id);
-    const revoked = await user("No Home", "nohome@oct19.invalid", "ADMIN", undefined, JSON.stringify({ dashboard: false }));
     await prisma.appSetting.create({ data: { key: "review_room", value: JSON.stringify({ creativeApproverTeamMemberId: jamesTm.id, backupReviewerTeamMemberId: kyleTm.id }) } });
     const signIn = (u: { id: string; email: string; role: string }) => setSession({ uid: u.id, email: u.email, role: u.role });
 
-    // Projects, with a registry so the week's expected numbers are computed
-    // from the fixtures themselves, not from the code under test.
     const projects: { id: string; shootDate: Date | null; status: string; synthetic: boolean }[] = [];
     const project = async (title: string, status: string, shootDate: Date | null, extra: Record<string, unknown> = {}, clientId = real.id) => {
       const p = await prisma.project.create({ data: { clientId, title, status: status as never, shootDate, ...extra } });
@@ -178,28 +207,41 @@ async function main() {
     const pSched = await project("7 Late Ave, Town", "SCHEDULED", ago(3 * D));
     // Photo jobs: one behind, one due later today, one later, one delivered.
     const pp = [] as { id: string }[];
+    const photoJobs = [] as { id: string }[];
     for (const [i, stage, sla, delivered] of [[1, "QC_REVIEW", ago(2 * H), null], [2, "READY", laterToday, null], [3, "EDITING", ahead(2 * D), null], [4, "DELIVERED", ahead(H), ago(H)]] as const) {
       const p = await project(`${20 + i} Photo Ln, Town`, i === 4 ? "DELIVERED" : "SHOT", ago(D + i * 60_000));
-      await prisma.photoJob.create({ data: { projectId: p.id, stage, slaDueAt: sla, deliveredAt: delivered } });
+      photoJobs.push(await prisma.photoJob.create({ data: { projectId: p.id, stage, slaDueAt: sla, deliveredAt: delivered } }));
       pp.push(p);
     }
+    // Tomorrow's shoots: one never confirmed, one confirmed.
+    const tomorrowAt = new Date(startTomorrow.getTime() + 15 * H);
+    const pTomorrow = await project("40 Tomorrow Way, Town", "SCHEDULED", tomorrowAt);
+    const pTomorrowOk = await project("41 Confirmed Ct, Town", "SCHEDULED", tomorrowAt);
+    await prisma.smartTask.create({ data: { taskType: "confirmation_text", source: "system", status: "COMPLETED", completedAt: ago(H), title: "Confirm 41 Confirmed Ct", projectId: pTomorrowOk.id, clientId: real.id } });
 
     // Kyle's tasks.
     const task = (data: Record<string, unknown>) => prisma.smartTask.create({ data: { taskType: "todo", source: "manual", status: "OPEN", ...data } as never });
     const k1 = await task({ title: "Apply $750 credit for 12 Oak St", assignedKey: "kyle", dueAt: ago(10 * D), clientId: real.id });
     const k2 = await task({ taskType: "internal_instruction", source: "slack", title: "Call the stager about 5 Birch Ln", ownerId: kyleTm.id, dueAt: ago(12 * D), followUpAt: ago(4 * D) });
     await prisma.auditLog.createMany({ data: [1, 2].map(() => ({ actor: "kyle@oct19.invalid", action: aging.PUSH_ACTION, target: k2.id, detail: "{}" })) });
-    await task({ title: "Not old yet", assignedKey: "kyle", dueAt: ago(2 * D) });
+    const kYoung = await task({ title: "Not old yet", assignedKey: "kyle", dueAt: ago(2 * D) });
     await task({ title: "Pushed to later", assignedKey: "kyle", dueAt: ago(9 * D), followUpAt: ahead(2 * D) });
     await task({ title: "Nobody's", dueAt: ago(8 * D) });
     await task({ title: "Synthetic client chore", assignedKey: "kyle", dueAt: ago(8 * D), clientId: fixture.id });
     await task({ title: "Long done", assignedKey: "kyle", dueAt: ago(20 * D), status: "COMPLETED", completedAt: ago(19 * D) });
     const k7 = await task({ taskType: "lead", source: "openphone", title: "New lead: Pat Doe wants a listing shoot", ownerId: kyleTm.id, dueAt: ago(5 * D), createdAt: ago(5 * D) });
-    await task({ taskType: "lead", source: "website", title: "New lead: Sam Roe", dueAt: laterToday, createdAt: ago(H) });
+    const leadToday = await task({ taskType: "lead", source: "website", title: "New lead: Sam Roe", dueAt: laterToday, createdAt: ago(H) });
     const fu = await task({ taskType: "comms_followup", source: "system", title: "Chase Real Agent about the floor plan", assignedKey: "kyle", followUpAt: ago(4 * D) });
     const j1 = await task({ title: "Sign the vendor agreement", assignedKey: "jordan", dueAt: ago(8 * D) });
     const jm1 = await task({ title: "Reshoot plan for 3 Bay St", assignedKey: "james", dueAt: ago(3.5 * D) });
     await prisma.auditLog.createMany({ data: [1, 2, 3].map(() => ({ actor: "james@oct19.invalid", action: aging.PUSH_ACTION, target: jm1.id, detail: "{}" })) });
+    // Due today: Kyle's instruction, a to-do moved to today, Jordan's (not Kyle's), a drafted text (the Outbox's).
+    const kToday = await task({ taskType: "internal_instruction", source: "slack", title: "Send Real Agent the $200 invoice note", assignedKey: "kyle", dueAt: laterToday });
+    const kMoved = await task({ title: "Order lockbox keys", assignedKey: "kyle", dueAt: ago(6 * D), followUpAt: laterToday });
+    const jToday = await task({ title: "Jordan's own call", assignedKey: "jordan", dueAt: laterToday });
+    const draft = await task({ taskType: "confirmation_text", source: "system", title: "Confirm 9 Today St", assignedKey: "kyle", dueAt: laterToday, projectId: pToday.id, clientId: real.id });
+    // The shared ops pile: an unnamed instruction from yesterday.
+    const pile = await task({ taskType: "internal_instruction", source: "slack", title: "Someone check the drone batteries", dueAt: ago(1.2 * D) });
     // The brain's shoot notes.
     const brain = (title: string, projectId: string, over: Record<string, unknown> = {}) => task({ source: "openphone", reasonCreated: "Inbound message from client (OpenPhone)", ownerId: kyleTm.id, projectId, clientId: real.id, title, summary: "Client wrote in.", ...over });
     const n1 = await brain("Note basement to be photographed at 1 Elm St shoot", pShot.id, { dueAt: ago(4 * D), createdAt: ago(20 * D) });
@@ -210,6 +252,24 @@ async function main() {
     const n4 = await brain("Note gate code for 1 Elm St shoot", pShot.id, { assignedKey: "kyle", flaggedAt: ago(H), flaggedBy: "Jordan Spackman", dueAt: ahead(D) });
     const n5 = await brain("Log access codes for 9 Today St shoot today", pToday.id);
     const n6 = await brain("Note lockbox 4321 for 7 Late Ave", pSched.id);
+    // Closed today: done by Kyle, dismissed by Kyle, answered a client, and one the hub closed itself.
+    const doneTask = await task({ title: "Called the stager", assignedKey: "kyle", dueAt: ago(D), status: "COMPLETED", completedAt: ago(60_000) });
+    const dismissed = await task({ title: "Duplicate floor plan ask", assignedKey: "kyle", dueAt: ago(D), status: "CANCELLED", summary: `${DISMISSED_PREFIX}Kyle Smith — not needed.` });
+    const hubClosed = await task({ title: "Note lockbox for 3 Old Rd", assignedKey: "kyle", status: "CANCELLED", summary: `${DISMISSED_PREFIX}the hub — shoot note, the shoot happened Mon.` });
+    const replied = await task({ taskType: "client_reply", source: "openphone", title: "Reply to Real Agent", clientId: real.id, status: "COMPLETED", completedAt: ago(30_000) });
+
+    // Client asks: a request on a job going out today, one on a job a week out,
+    // a test client's, one checked today; a scheduling ask; a move seen in Aryeo.
+    const pSoon = await project("50 Soon St, Town", "EDITING", ago(D), { promisedDueAt: laterToday });
+    const pLater = await project("51 Later Ln, Town", "EDITING", ago(D), { promisedDueAt: ahead(7 * D) });
+    const pTest = await project("52 Test Rd, Town", "EDITING", ago(D), { promisedDueAt: laterToday }, fixture.id);
+    const ask = (data: Record<string, unknown>) => prisma.clientAsk.create({ data: { clientId: real.id, kind: "SPECIAL_REQUEST", medium: "photo", source: "text", askedAt: ago(H), ...data } as never });
+    const askSoon = await ask({ projectId: pSoon.id, text: "Please show the lot lines", summary: "Show the lot lines on the aerial", holdsDelivery: true });
+    const askLater = await ask({ projectId: pLater.id, text: "Use the upbeat song", summary: "Upbeat song on the video", medium: "video" });
+    await ask({ clientId: fixture.id, projectId: pTest.id, text: "Test client ask", summary: "Test client ask" });
+    const askChecked = await ask({ projectId: pSoon.id, text: "Remove the trash cans", summary: "Trash cans out of the front shot", state: "CONFIRMED", confirmedAt: ago(10 * 60_000), confirmedBy: "Kyle Smith" });
+    const schedAsk = await ask({ kind: "SCHEDULING", medium: null, text: "Can we move Thursday to Friday?", summary: "Move Thursday's shoot to Friday", projectId: pTomorrow.id });
+    const aryeoAsk = await ask({ kind: "SCHEDULING", medium: null, source: "aryeo", text: "Appointment moved in Aryeo", summary: "Shoot moved to 3 PM in Aryeo", projectId: pSched.id });
 
     // Comms: a text waiting 30 h, an email waiting 2 h.
     await prisma.commLog.create({ data: { clientId: real.id, clientName: real.name, contactName: real.name, channel: "text", source: "openphone", direction: "in", body: "Any update on 12 Oak St?", occurredAt: ago(30 * H) } });
@@ -246,92 +306,143 @@ async function main() {
     }
     c.ok("the world is built", true);
 
+    // The video screen's rows, driven (V's board is its own drill's business).
+    const vrow = (key: string, lane: VideoRow["lane"], over: Partial<VideoRow> = {}): VideoRow => ({
+      key, submissionId: null, projectId: pEdit.id, street: `${key} Video Ave`, clientName: "Real Agent", label: "Listing video", round: 1, lane, stage: "Editing", cutStatus: null, sinceISO: null, send: null, heldRender: null,
+      promiseISO: laterToday.toISOString(), promiseWords: "Due today", late: false, dueToday: true, lateHours: null, approvedAtISO: null, deliveredAtISO: null,
+      deliveredBy: null, push: null, heldWhy: null, reviewHref: `/review/${pEdit.id}?cut=${key}`, aryeoUrl: null, waitingSinceISO: null, ...over,
+    } as VideoRow);
+    // The board's lanes as of Oct 19 evening: sending = approved and ready to
+    // send (open client requests ride on send.openAsks), finishing = the 1080p
+    // pass, held = the sound check, a held run or a person's hold.
+    const lanes: Lanes = {
+      late: [vrow("v-late", "late", { stage: "Changes asked, version 2", cutStatus: "CHANGES_REQUESTED", late: true, dueToday: true, lateHours: 30, promiseISO: ago(30 * H).toISOString() })],
+      today: [vrow("v-today", "today", { stage: "In review, version 1", cutStatus: "PENDING" })],
+      sending: [vrow("v-send", "sending", { stage: "Approved, ready to send", cutStatus: "APPROVED", dueToday: false, promiseISO: ahead(2 * D).toISOString(), send: { openAsks: [{ summary: "Upbeat song", askedBy: "Real Agent" }] } as unknown as VideoRow["send"] })],
+      held: [vrow("v-held", "held", { stage: "1080p file held", cutStatus: "APPROVED", heldWhy: "The sound check held the 1080p file: Kyle has the next step ($50 credit).", late: true, lateHours: 5, dueToday: true, promiseISO: ago(5 * H).toISOString() }), vrow("v-held-later", "held", { cutStatus: "APPROVED", dueToday: false, promiseISO: ahead(3 * D).toISOString() })],
+      finishing: [vrow("v-fin", "finishing", { stage: "In the 1080p pass", cutStatus: "APPROVED" })],
+      delivered: [vrow("v-sent", "delivered", { stage: "Delivered", deliveredAtISO: ago(20 * 60_000).toISOString(), deliveredBy: "Kyle Smith", dueToday: false }), vrow("v-old", "delivered", { stage: "Delivered", deliveredAtISO: ago(3 * D).toISOString(), dueToday: false })],
+    };
+
     // =====================================================================
-    c.head("§3 · Kyle's Home (operations)");
+    c.head("§3 · Kyle's Home: the red line, the summary box, the daily checklist");
     // =====================================================================
     await signIn(kyle);
-    const healthBefore = await prisma.deliveryFollowUpHealth.count();
     const tasksBefore = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
+    videoLanes = lanes;
     const kyleTree = await settle(await home({}));
-    // Measured straight after the render: the drill's own buildOpsDay call
-    // below (for the shoots comparison) records the health rows itself.
-    const healthAfter = await prisma.deliveryFollowUpHealth.count();
     const tasksAfter = JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } }));
     const kyleText = textOf(expand(kyleTree));
-    const tiles = elements(kyleTree, "JobTiles")[0]?.tiles as import("../../src/lib/opsHome").JobTile[] | undefined;
-    c.ok("five job tiles, in Jordan's order, each opening its own screen", tiles?.map((x) => `${x.key}:${x.href}`).join() === "photos:/ops/photo-delivery,videos:/ops/video-delivery,messages:/ops/messages,requests:/ops/requests,scheduling:/ops/scheduling", tiles?.map((x) => x.key).join());
-    const tile = (k: string) => tiles!.find((x) => x.key === k)!;
-    const same = (a: unknown, b: { open: number; dueToday: number; behind: number } | null | undefined) => !!a && !!b && (["open", "dueToday", "behind"] as const).every((f) => (a as Record<string, number>)[f] === b[f]);
-    const photoScreen = opsHome.photoCountsFromQueue(await loadQueue(), now);
-    c.ok("Photos tile = the photo delivery queue's own cards", same(tile("photos").counts, photoScreen) && photoScreen.open === 3 && photoScreen.behind === 1 && (laterToday.getTime() <= now.getTime() + 2 * H ? photoScreen.dueToday === 1 : true) && photoScreen.readyForReview === 1, JSON.stringify(photoScreen));
-    c.ok("Photos tile says what to do", /past due\. Deliver these first\./.test(tile("photos").status) && /ready for you to approve/.test(tile("photos").status), tile("photos").status);
-    const videoScreen = await videoDeliveryCounts(now).catch(() => null);
-    c.ok("Videos tile = videoDeliveryCounts (the video delivery screen's contract)", videoScreen ? same(tile("videos").counts, videoScreen) : tile("videos").counts === null, JSON.stringify(videoScreen));
-    const kyleViewer = { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id };
-    const msgScreen = await opsHome.messagesBoard({ now, excludeClientIds: [fixture.id], viewer: kyleViewer });
-    c.ok("Messages tile = messagesBoard (the /ops/messages screen's own read)", same(tile("messages").counts, msgScreen.counts) && msgScreen.counts.open === msgScreen.waiting.length + msgScreen.loops.length + msgScreen.leads.length, JSON.stringify(msgScreen.counts));
-    c.ok("messages: the 2-day-old lead and the Slack instruction are follow-ups owed; the unassigned lead is Kyle's to call too", msgScreen.leads.some((l) => l.id === k7.id && l.behind) && msgScreen.loops.some((l) => l.taskId === k2.id) && msgScreen.leads.length === 2);
-    c.ok("messages: a lead or reply already on the waiting list is not counted twice", new Set([...msgScreen.loops.map((l) => l.taskId), ...msgScreen.leads.map((l) => l.id), ...msgScreen.waiting.map((w) => w.group.openTaskId).filter(Boolean)]).size === msgScreen.loops.length + msgScreen.leads.length + msgScreen.waiting.filter((w) => w.group.openTaskId).length);
-    const asks = await askBoardCounts(now).catch(() => null);
-    c.ok("Requests and Scheduling tiles = askBoardCounts (their screens' contract)", asks ? same(tile("requests").counts, asks.special) && same(tile("scheduling").counts, asks.scheduling) : tile("requests").counts === null && tile("scheduling").counts === null, JSON.stringify(asks));
-    const oldKyle = await aging.listOldItems(new Date(), { personKey: "kyle", excludeClientIds: [fixture.id], scrub: true });
-    const card = elements(kyleTree, "OldItemsCard")[0] as { items: import("../../src/lib/taskAging").OldItem[]; total: number } | undefined;
-    c.ok("Old items: the count is Kyle's own list (assigned or filed to him, 3+ days, test clients out)", card?.total === oldKyle.items.length && oldKyle.items.length === 6 && [k1.id, k2.id, k7.id, n1.id, n2.id, fu.id].every((id) => oldKyle.items.some((i) => i.id === id)), `${card?.total} / ${oldKyle.items.map((i) => i.title).join(" | ")}`);
-    c.ok("Old items: the oldest four, oldest first, figures scrubbed", card!.items.length === aging.OLD_ITEMS_ON_HOME && card!.items[0].id === k1.id && card!.items.every((i, n, a) => n === 0 || Date.parse(a[n - 1].chaseISO) <= Date.parse(i.chaseISO)) && !kyleText.includes("$750") && kyleText.includes("[amount]"));
-    c.ok("Old items: pushes show, and the next push warns that Jordan is told", oldKyle.items.find((i) => i.id === k2.id)?.pushes === 2 && kyleText.includes("pushed 2 times") && kyleText.includes("one more tells Jordan"));
-    const shootsLine = elements(kyleTree, "ShootsTodayLine")[0];
-    const day = await buildOpsDay({ excludeClientIds: [fixture.id] });
-    c.ok("today's shoots line = the checklist's own today list, linking to it", shootsLine?.count === day.todayShoots.length && shootsLine?.count === 1 && shootsLine?.href === "/ops#shoots" && shootsLine?.rush === 1, JSON.stringify({ line: shootsLine?.count, day: day.todayShoots.length, rush: shootsLine?.rush }));
+    const order = namesOf(kyleTree);
+    c.ok("Kyle's Home: flagged, then the summary box, then the checklist", order.indexOf("FlaggedBanner") >= 0 && order.indexOf("FlaggedBanner") < order.indexOf("SummaryBox") && order.indexOf("SummaryBox") < order.indexOf("DailyChecklist"), order.filter((n) => ["FlaggedBanner", "BehindLine", "SummaryBox", "DailyChecklist"].includes(n)).join(","));
     c.ok("flagged-for-you banner stays first", (elements(kyleTree, "FlaggedBanner")[0]?.flagged as { taskId: string }[]).some((f) => f.taskId === n4.id));
-    const gone = ["Block", "HomeRoutine", "NeedsToday", "StuckJobs", "NewClientCard", "ProactiveFlags", "MoneyStat", "DeliveryBoardView", "OwnerWeekCard"];
-    c.ok("everything else moved off Kyle's Home (checklist, needs list, stuck jobs, radar, money)", gone.every((n) => elements(kyleTree, n).length === 0), gone.filter((n) => elements(kyleTree, n).length > 0).join());
-    c.ok("office-wide 'running late' and 'to assign' rows and the footer links are gone", !kyleText.includes("running late on the board") && !kyleText.includes("with nobody's name") && !kyleText.includes("All tasks") && !kyleText.includes("Client months"));
-    const { ChecklistLinks } = await import("@/components/home/OpsHomeParts");
-    c.ok("one line to the checklist, exceptions and stuck jobs", elements(kyleTree, "ChecklistLinks").length === 1 && (propValues(ChecklistLinks({ includeTest: false }), "href") as string[]).join() === "/ops,/ops#exceptions,/ops#stuck");
-    c.ok("old '/#block' links are forwarded from Home", elements(kyleTree, "HomeAnchorForward").length === 1);
-    c.ok("Kyle's Home render writes nothing (follow-up health moved off Home)", healthAfter === healthBefore && tasksAfter === tasksBefore && await prisma.outboxMessage.count() === 0, `health ${healthBefore}→${healthAfter} · tasks ${tasksAfter === tasksBefore ? "same" : "changed"}`);
-    c.ok("no em dashes in the new Home copy Kyle reads", !EM_DASH.test(tiles!.map((x) => x.status).join(" ")) && !EM_DASH.test(textOf(expand(findEl(kyleTree, "OldItemsCard")))) && !EM_DASH.test(textOf(expand(findEl(kyleTree, "JobTiles")))));
+    const summary = elements(kyleTree, "SummaryBox")[0]?.summary as HomeSummary;
+    const photoScreen = opsHome.photoCountsFromQueue(await loadQueue(), now);
+    c.ok("Photos number = the photo delivery queue's own cards (to deliver today, late)", summary.photos?.dueToday === photoScreen.dueToday && summary.photos?.late === photoScreen.behind && photoScreen.behind === 1 && photoScreen.dueToday === 1, JSON.stringify(summary.photos));
+    const vs = await videoSummary(now);
+    c.ok("Videos number = videoSummary (ready to send, late)", summary.videos?.readyToSend === vs.readyToSend && summary.videos?.late === vs.late && vs.readyToSend === 1, `${JSON.stringify(summary.videos)} vs ${JSON.stringify(vs)}`);
+    const waitingNow = [...await unansweredCommsBoard("phone", now, { excludeClientIds: [fixture.id] }), ...await unansweredCommsBoard("email", now, { excludeClientIds: [fixture.id] })];
+    c.ok("Messages number = the clients waiting on a reply (text + email)", summary.messages?.waiting === waitingNow.length && waitingNow.length >= 1, `${summary.messages?.waiting} vs ${waitingNow.length}`);
+    const sHtml = renderToStaticMarkup(createElement(((await import("@/components/home/Checklist")).SummaryBox), { summary }));
+    c.ok("each number opens its screen: photos → photo delivery, videos → Video Review Room, messages → Messages", /data-summary="photos"[^>]*href="\/ops\/photo-delivery"|href="\/ops\/photo-delivery"[^>]*data-summary="photos"/.test(sHtml) && /href="\/review"[^>]*data-summary="videos"|data-summary="videos"[^>]*href="\/review"/.test(sHtml) && /href="\/ops\/messages"[^>]*data-summary="messages"|data-summary="messages"[^>]*href="\/ops\/messages"/.test(sHtml), sHtml.slice(0, 300));
 
-    // The banner, driven through the video contract.
-    const banner = async (v: VideoDeliveryCounts | null) => { videoOverride = v; const tree = await settle(await home({})); videoOverride = null; return elements(tree, "VideoBehindBanner")[0]?.alert as import("../../src/lib/opsHome").VideoAlert | null; };
-    const r1 = await banner(vc(3, 20));
-    const r2 = await banner(vc(1, 50));
-    const a1 = await banner(vc(2, 30));
-    const none = await banner(vc(0, null));
-    c.ok("Home banner: red at 3+ late or 48 h+, amber at 1 to 2, none when on time", r1?.level === "red" && r2?.level === "red" && a1?.level === "amber" && none === null);
-    c.ok("the red banner says it in Jordan's words and opens video delivery", r1?.headline.startsWith("We're behind on videos: 3 late") === true && r1?.detail.includes("bring in a vendor editor") === true && r1?.href === "/ops/video-delivery");
+    const list = elements(kyleTree, "DailyChecklist")[0]?.list as KyleChecklist;
+    const group = (k: string) => list.groups.find((g) => g.key === k)!;
+    const keysOf = (k: string) => group(k).lines.map((l) => l.key);
+    c.ok("one list in five groups, in Jordan's order", list.groups.map((g) => g.key).join() === "deliveries,messages,requests,scheduling,followups" && list.groups.map((g) => g.title).join(" | ") === "Deliveries | Messages to answer | Special requests to check | Scheduling to handle | Follow-ups due");
+    const del = keysOf("deliveries");
+    c.ok("Deliveries: the late and due-today photo jobs, not the one due later", del.includes(`photo:${photoJobs[0].id}`) && del.includes(`photo:${photoJobs[1].id}`) && !del.includes(`photo:${photoJobs[2].id}`) && !del.includes(`photo:${photoJobs[3].id}`), del.join(","));
+    c.ok("Deliveries: every listing video due today or late (any lane), and every one ready to send; a held one not due waits; late first", ["video:v-late", "video:v-today", "video:v-fin", "video:v-held", "video:v-send"].every((k) => del.includes(k)) && !del.includes("video:v-held-later") && group("deliveries").lines.slice(0, 3).every((l) => l.late), del.join(","));
+    const line = (g: string, k: string) => group(g).lines.find((l) => l.key === k)!;
+    c.ok("each delivery says what is needed", line("deliveries", "video:v-send").need === "Ready to send" && line("deliveries", "video:v-send").detail?.includes("1 client request to check first") === true && line("deliveries", "video:v-late").need === "Waiting on editor" && line("deliveries", "video:v-today").need === "Waiting on review" && line("deliveries", "video:v-fin").need === "In the 1080p pass" && line("deliveries", "video:v-held").need === "Held" && line("deliveries", `photo:${photoJobs[1].id}`).need === "Ready to review and send" && line("deliveries", `photo:${photoJobs[0].id}`).need === "Needs your decision");
+    c.ok("a delivery opens its own screen (the photo job, the exact cut)", line("deliveries", `photo:${photoJobs[0].id}`).href === `/ops/photo-delivery/${photoJobs[0].id}` && line("deliveries", "video:v-late").href === `/review/${pEdit.id}?cut=v-late` && line("deliveries", "video:v-send").action.kind === "open");
+    const msgs = group("messages").lines;
+    c.ok("Messages to answer: one line per waiting client, with Reply (to the board that answers it) and Handled", msgs.length === waitingNow.length && msgs.every((l) => l.action.kind === "reply" && l.href === ((l.action as { family: string }).family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies")));
+    const longest = [...waitingNow].sort((a, b) => b.oldestHours - a.oldestHours)[0];
+    c.ok("…the longest wait first, over a day is late", msgs[0].key.endsWith(`:${longest.groupKey}`) && msgs[0].late === longest.oldestHours >= 24 && msgs.every((l) => l.when?.startsWith("Waiting ")), `${msgs[0].key} ${msgs[0].when}`);
+    const req = group("requests");
+    c.ok("Special requests: the open request on a job going out soon, with Checked; a later job's folds; a test client's never shows", req.lines.map((l) => l.key).join() === `ask:${askSoon.id}` && req.later.map((l) => l.key).join() === `ask:${askLater.id}` && req.lines[0].action.kind === "ask" && (req.lines[0].action as { askKind: string }).askKind === "SPECIAL_REQUEST" && req.lines[0].detail?.includes("holds delivery") === true);
+    const addForms = elements(expand(kyleTree), "AddAskForm");
+    const addJobs = (addForms[0]?.jobs ?? []) as { id: string; label: string }[];
+    c.ok("…and a request can be added by hand right under the group (the form /ops/requests had), on jobs in flight, never a test client's", addForms.length === 1 && list.requestJobs?.length === addJobs.length && [pSoon.id, pLater.id].every((id) => addJobs.some((j) => j.id === id)) && !addJobs.some((j) => j.id === pTest.id), addJobs.map((j) => j.label).join(" | "));
+    const sch = keysOf("scheduling");
+    c.ok("Scheduling: the client's ask (with Done) and tomorrow's shoot with no confirmation sent (not the confirmed one; an Aryeo move is no ask any more)", sch.includes(`ask:${schedAsk.id}`) && (line("scheduling", `ask:${schedAsk.id}`).action as { askKind?: string }).askKind === "SCHEDULING" && sch.includes(`confirm:${pTomorrow.id}`) && !sch.includes(`confirm:${pTomorrowOk.id}`) && !sch.includes(`ask:${aryeoAsk.id}`) && line("scheduling", `confirm:${pTomorrow.id}`).need === "Confirmation text not sent", sch.join(","));
+    const fol = keysOf("followups");
+    c.ok("Follow-ups due: Kyle's tasks dated today (a moved date counts), the unassigned lead due today", [kToday.id, kMoved.id, leadToday.id].every((id) => fol.includes(`task:${id}`)), fol.join(","));
+    c.ok("…never Jordan's own, never a drafted client text (the Outbox sends those)", !fol.includes(`task:${jToday.id}`) && !fol.includes(`task:${draft.id}`));
+    c.ok("…each with Done / Not needed", group("followups").lines.every((l) => l.action.kind === "task"));
+    const earlier = list.earlier.items;
+    const expectEarlier = [k1, n2, k7, k2, fu, kYoung, nAfter, pile].map((x) => x.id);
+    c.ok("From earlier days: Kyle's past-due tasks (and the shared pile), any age, oldest first", earlier.length === expectEarlier.length && expectEarlier.every((id) => earlier.some((i) => i.id === id)) && earlier.every((i, n, a) => n === 0 || Date.parse(a[n - 1].chaseISO) <= Date.parse(i.chaseISO)) && earlier[0].id === k1.id, earlier.map((i) => i.title).join(" | "));
+    c.ok("…leaves out the shoot note that closes itself, a date moved ahead, a test client's, and other people's", !earlier.some((i) => [n1.id, j1.id, jm1.id].includes(i.id)) && !earlier.some((i) => i.title === "Pushed to later" || i.title === "Synthetic client chore" || i.title === "Nobody's"));
+    c.ok("…with the age and the push count (one more tells Jordan), figures scrubbed", kyleText.includes("10 days past its date") && kyleText.includes("pushed 2 times") && kyleText.includes("one more tells Jordan") && !kyleText.includes("$750") && kyleText.includes("[amount]") && !kyleText.includes("$200"));
+    const oldRows = elements(expand(kyleTree), "OldItemActions");
+    c.ok("…each earlier item has Done / Not needed / New date; follow-ups have no New date", oldRows.filter((p) => p.allowNewDate === false).length === group("followups").lines.length && oldRows.filter((p) => p.allowNewDate !== false).length === earlier.length && oldRows.filter((p) => p.allowNewDate !== false).every((p) => !!p.minDay && !!p.maxDay));
+    c.ok(`…the oldest ${aging.EARLIER_SHOWN} show, the rest fold under "Show N more"`, Number(kyleText.match(/Show\s+(\d+)\s+more/)?.[1]) === earlier.length - aging.EARLIER_SHOWN);
+    const done = list.done.map((d) => d.key);
+    const expectDone = [`task:${doneTask.id}`, `task:${dismissed.id}`, `reply:${replied.id}`, `ask:${askChecked.id}`, "video:v-sent", ...(isToday(ago(H)) ? [`photo:${photoJobs[3].id}`] : [])];
+    c.ok("Done today: what anyone closed today on these lists (a task done, one not needed, a client answered, a request checked, a video sent, photos delivered)", expectDone.every((k) => done.includes(k)) && done.length === expectDone.length, done.join(","));
+    c.ok("…but not what the hub closed by itself, nor what was done another day", !done.includes(`task:${hubClosed.id}`) && !done.includes("video:v-old") && !done.some((k) => k.includes("Long done")));
+    c.ok("…a request checked today can be undone from there", list.done.find((d) => d.key === `ask:${askChecked.id}`)?.reopenAskId === askChecked.id && elements(expand(kyleTree), "ReopenAskButton").length === 1);
+    const openTotal = list.groups.reduce((n, g) => n + g.lines.length, 0) + earlier.length;
+    c.ok("Still open = every line still on today's list plus the earlier items", list.stillOpen.total === openTotal && list.stillOpen.parts.reduce((n, p) => n + p.count, 0) === openTotal , `${list.stillOpen.total} vs ${openTotal}`);
+    const ids = propValues(expand(kyleTree), "id").filter((x): x is string => typeof x === "string");
+    c.ok("the groups carry anchors, and every old block anchor lands inside one", ["checklist", "deliveries", "messages", "requests", "scheduling", "followups", "earlier", "done-today", "still-open"].every((id) => ids.includes(id)) && OLD_BLOCKS.every((id) => ids.includes(id)), OLD_BLOCKS.filter((id) => !ids.includes(id)).join(","));
+    const gone = ["JobTiles", "OldItemsCard", "VideoBehindBanner", "Block", "NeedsToday", "StuckJobs", "ExceptionsCard", "ProactiveFlags", "NewClientCard", "MoneyStat", "ChecklistLinks", "OwnerWeekCard", "ShootsTodayLine"];
+    c.ok("off Kyle's Home: the tiles, the old-items card, the ten blocks, stuck jobs, exceptions, the radar, money, the links row", gone.every((n) => elements(kyleTree, n).length === 0), gone.filter((n) => elements(kyleTree, n).length > 0).join());
+    c.ok("Kyle's Home render writes nothing", tasksAfter === tasksBefore && await prisma.outboxMessage.count() === 0);
+    const lineWords = list.groups.flatMap((g) => [...g.lines, ...g.later].map((l) => `${l.need} ${l.when ?? ""} ${l.detail ?? ""}`)).join(" ");
+    c.ok("no em dashes in the checklist's own words", !EM_DASH.test(lineWords) && !EM_DASH.test(textOf(expand(kyleTree)).replace(/In editing — not confirmed/g, "")), lineWords.slice(0, 200));
+    const heldLine = line("deliveries", "video:v-held");
+    c.ok("Kyle's screen speaks to him: the hub's 'Kyle has the next step' reads 'you have', figures scrubbed", heldLine.detail?.includes("you have the next step") === true && !/\bKyle\b/.test(lineWords) && !lineWords.includes("$50"), heldLine.detail ?? "");
+
+    // The red line, driven through the behind contract.
+    behindOverride = { level: "very_behind", videosLate: 5, photosLate: 1, oldestLateHours: 72, headline: "5 videos late, the oldest 3 days." };
+    const redTree = await settle(await home({}));
+    behindOverride = { level: "ok", videosLate: 0, photosLate: 0, oldestLateHours: null, headline: null };
+    const calmTree = await settle(await home({}));
+    behindOverride = null;
+    const redLine = elements(redTree, "BehindLine")[0];
+    c.ok("the red line shows the behind headline when we are behind, and nothing when we are not", (redLine?.state as BehindState).headline === "5 videos late, the oldest 3 days." && textOf(expand(redTree)).includes("5 videos late, the oldest 3 days.") && !textOf(expand(calmTree)).includes("videos late"));
+    c.ok("…it sits above the summary box", namesOf(redTree).indexOf("BehindLine") < namesOf(redTree).indexOf("SummaryBox"));
 
     // =====================================================================
     c.head("§4 · Jordan's Home (owner)");
     // =====================================================================
     await signIn(owner);
+    issuesOverride = { open: [{ id: "si1", client: "Real Agent", street: "1 Elm St", text: "Lockbox code didn't work", by: "Harrison", atISO: ago(H).toISOString(), href: `/projects/${pShot.id}` }], byClient: [{ client: "Real Agent", count: 3 }, { client: "Other", count: 1 }] };
     const ownerTree = await settle(await home({}));
+    issuesOverride = null;
+    const ownerText = textOf(expand(ownerTree));
     const week = elements(ownerTree, "OwnerWeekCard")[0]?.week as import("../../src/lib/opsHome").OwnerWeek | null;
     const inWeek = (d: Date | null) => !!d && d >= weekStart && d < now;
     const expectShoots = projects.filter((p) => !p.synthetic && p.status !== "CANCELLED" && inWeek(p.shootDate)).length;
     c.ok("This week: shoots done since Monday", week?.thisWeek.shoots === expectShoots, `${week?.thisWeek.shoots} vs ${expectShoots}`);
-    c.ok("This week: photo jobs delivered and on time", week?.thisWeek.photos.delivered === (inWeek(ago(H)) ? 1 : 0) && (inWeek(ago(H)) ? week?.thisWeek.photos.onTimePct === 100 : true), JSON.stringify(week?.thisWeek.photos));
     if (weekOk) {
-      c.ok("This week: listing videos delivered, % on time against the promise", week?.thisWeek.listingVideos.delivered === 2 && week?.thisWeek.listingVideos.onTimePct === 50, JSON.stringify(week?.thisWeek.listingVideos));
-      c.ok("This week: monthly videos counted apart", week?.thisWeek.monthlyVideos === 1);
+      c.ok("This week: listing videos delivered, % on time against the promise (raw)", week?.thisWeek.listingVideos.delivered === 2 && week?.thisWeek.listingVideos.onTimePct === 50, JSON.stringify(week?.thisWeek.listingVideos));
+      c.ok("…but with 2 jobs the card says 'too few to judge', never '50% on time'", ownerText.includes("too few to judge") && !ownerText.includes("50% on time"));
+      c.ok("This week: monthly videos counted apart; revisions asked for", week?.thisWeek.monthlyVideos === 1 && week?.thisWeek.revisions === 1);
       const inbound = texts.filter((m) => m.dir === "in" && inWeek(m.at)).length;
       c.ok("This week: client texts answered within an hour", week?.thisWeek.replies.inbound === inbound && week?.thisWeek.replies.fast === 1, JSON.stringify(week?.thisWeek.replies));
-      c.ok("This week: revisions asked for (client asks, not office notes)", week?.thisWeek.revisions === 1);
-      c.ok("Last week to the same point, for the small text", week?.lastWeek.listingVideos.delivered === 1 && week?.lastWeek.listingVideos.onTimePct === 0, JSON.stringify(week?.lastWeek.listingVideos));
     } else {
       c.ok("(Monday just after midnight: the week's fixtures are skipped)", true);
     }
-    const behind = elements(ownerTree, "BehindCard")[0] as { tiles: import("../../src/lib/opsHome").JobTile[]; people: import("../../src/lib/taskAging").OldPerson[]; oldTotal: number } | undefined;
-    const teamMsgs = await opsHome.messagesBoard({ now, excludeClientIds: [fixture.id], team: true });
-    c.ok("What we're behind on: the same five jobs, team-wide", behind?.tiles.map((x) => x.key).join() === "photos,videos,messages,requests,scheduling" && same(behind!.tiles[2].counts, teamMsgs.counts) && same(behind!.tiles[0].counts, photoScreen));
+    const behindCard = elements(ownerTree, "BehindCard")[0] as { state: BehindState | null; summary: HomeSummary | null; people: import("../../src/lib/taskAging").OldPerson[] | null } | undefined;
+    c.ok("What we're behind on: the same three numbers as Kyle's box, team-wide", JSON.stringify(behindCard?.summary) === JSON.stringify(summary), JSON.stringify(behindCard?.summary));
     const team = await aging.listOldItems(new Date(), { excludeClientIds: [fixture.id] });
-    const kylePerson = behind?.people.find((p) => p.key === "kyle");
-    c.ok("What we're behind on: everyone's old items, Kyle's week-old count, pushed 3+ times", behind?.oldTotal === team.items.length && kylePerson?.total === 6 && kylePerson?.weekOld === 2 && behind!.people.find((p) => p.key === "james")?.pushedOften === 1, JSON.stringify(behind?.people));
-    const ownerText = textOf(expand(ownerTree));
-    c.ok("owner Home keeps his own list and the money; trends fold under it", elements(ownerTree, "QuickAdd").length === 1 && elements(ownerTree, "MoneyStat").length > 0 && elements(ownerTree, "PulseStrip").length <= 1);
-    c.ok("owner Home no longer carries the checklist, the needs wall or stuck jobs", ["Block", "HomeRoutine", "NeedsToday", "StuckJobs", "JobTiles"].every((n) => elements(ownerTree, n).length === 0));
-    const order = namesOf(ownerTree);
-    c.ok("This week comes first, then what is behind, then his list, then money", order.indexOf("OwnerWeekCard") >= 0 && order.indexOf("OwnerWeekCard") < order.indexOf("BehindCard") && order.indexOf("BehindCard") < order.indexOf("QuickAdd") && order.indexOf("QuickAdd") < order.indexOf("MoneyStat") && ownerText.includes("This week"), order.filter((n) => ["OwnerWeekCard", "BehindCard", "QuickAdd", "MoneyStat"].includes(n)).join(","));
+    const st = behindCard?.state;
+    c.ok("…the behind state, and everyone's old items (Kyle's week-old count, pushed 3+ times)", !!st && (st.level === "ok" ? ownerText.includes("Nothing is past its promise") : ownerText.includes(st.headline ?? "late.")) && behindCard?.people?.find((p) => p.key === "kyle")?.weekOld === team.people.find((p) => p.key === "kyle")?.weekOld && behindCard!.people!.find((p) => p.key === "james")?.pushedOften === 1);
+    c.ok("Shoot issues: the open ones and what keeps happening by client (2+)", ownerText.includes("Lockbox code didn't work") && ownerText.includes("Real Agent 3 times") && !ownerText.includes("Other 1 times"));
+    const kd = elements(ownerTree, "KylesDay")[0] as { list: KyleChecklist | null; name: string } | undefined;
+    const kylesOwn = await opsHome.kyleChecklist({ now: new Date(), excludeClientIds: [fixture.id], person: { key: "kyle", teamMemberId: kyleTm.id } });
+    c.ok("Kyle's day: done today and still open, from Kyle's own checklist", kd?.name === "Kyle" && kd.list?.done.length === kylesOwn.done.length && kd.list?.stillOpen.total === kylesOwn.stillOpen.total && kd.list?.earlier.items.map((i) => i.id).join() === kylesOwn.earlier.items.map((i) => i.id).join(), `${kd?.list?.done.length}/${kylesOwn.done.length} · ${kd?.list?.stillOpen.total}/${kylesOwn.stillOpen.total}`);
+    c.ok("…Kyle's day is read-only: no hand-add form, no job list read for it", elements(expand(ownerTree), "AddAskForm").length === 0 && kd?.list?.requestJobs === null);
+    c.ok("…shown read-only on Jordan's Home (no buttons), and the owner sees the figures", elements(expand(ownerTree), "OldItemActions").length === 0 && elements(expand(ownerTree), "AskQuickActions").length === 0 && ownerText.includes("$750"));
+    c.ok("…and never sent to Jordan as a message", slack.length === 0 && await prisma.notification.count() === 0);
+    const oorder = namesOf(ownerTree);
+    const at = (n: string) => oorder.indexOf(n);
+    c.ok("order: this week, what we're behind on, shoot issues, Kyle's day, his list, money", at("OwnerWeekCard") >= 0 && at("OwnerWeekCard") < at("BehindCard") && at("BehindCard") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("KylesDay") && at("KylesDay") < at("QuickAdd") && at("QuickAdd") < at("MoneyStat"), oorder.filter((n) => ["OwnerWeekCard", "BehindCard", "ShootIssuesCard", "KylesDay", "QuickAdd", "MoneyStat"].includes(n)).join(","));
+    c.ok("the repeated checklist links row and the duplicated new-clients card are gone; no tiles, no checklist", ["ChecklistLinks", "NewClientCard", "JobTiles", "DailyChecklist", "Block", "NeedsToday"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
 
     // =====================================================================
     c.head("§5 · James's Home (review seat) keeps working");
@@ -339,45 +450,61 @@ async function main() {
     await signIn(james);
     const jamesTree = await settle(await home({}));
     const needs = elements(jamesTree, "NeedsToday")[0]?.needs as { key: string; href: string }[] | undefined;
-    c.ok("the review desk renders with its own rows", textOf(jamesTree).includes("Your creative review desk") && !!needs && elements(jamesTree, "JobTiles").length === 0);
-    c.ok("its anchors open the checklist screen, not a block that left Home", (needs ?? []).every((n) => !/^#(?!needs-you)/.test(n.href)) && (needs ?? []).some((n) => n.href.startsWith("/ops#")), (needs ?? []).map((n) => n.href).join(" "));
+    c.ok("the review desk renders with its own rows", textOf(jamesTree).includes("Your creative review desk") && !!needs && elements(jamesTree, "DailyChecklist").length === 0 && elements(jamesTree, "SummaryBox").length === 0);
+    c.ok("its rows open real screens, never an old block anchor", (needs ?? []).every((n) => !n.href.startsWith("#") && !/^\/ops#(?!shoots|stuck|exceptions)/.test(n.href)), (needs ?? []).map((n) => n.href).join(" "));
+    c.ok("no checklist links row on his Home either", elements(jamesTree, "ChecklistLinks").length === 0);
 
     // =====================================================================
-    c.head("§6 · /ops: the daily checklist");
+    c.head("§6 · /ops: today's shoots, stuck jobs, exceptions");
     // =====================================================================
+    videoLanes = null;
     await signIn(kyle);
-    await prisma.deliveryFollowUpHealth.deleteMany({});
     const opsTree = await settle(await opsPage({}));
-    const keys = elements(opsTree, "Block").map((b) => (b.def as { key: string }).key);
-    c.ok("every block id the old Home anchors pointed at is on /ops", ["tower", "qc-am", "overdue", "comms-1", "prep", "loops", "video-review", "pipeline", "monthly", "closeout"].every((k) => keys.includes(k)) && new Set(keys).size === keys.length, keys.join(","));
-    const ids = propValues(opsTree, "id").filter((x): x is string => typeof x === "string");
-    c.ok("…and so are #shoots, #stuck, #exceptions and #operating-routine", ["shoots", "stuck", "exceptions", "operating-routine"].every((id) => ids.includes(id)), ids.join(","));
-    c.ok("the checklist reads the delivery follow-up lanes (and records their health) here", await prisma.deliveryFollowUpHealth.count() >= 1);
-    c.ok("no money for Kyle on the checklist either", !textOf(opsTree).includes("$750"));
-    await signIn(revoked);
-    const revokedTree = await settle(await opsPage({}));
-    c.ok("someone with ops but Home revoked is told, not shown the day (guard kept)", textOf(revokedTree).includes("The daily checklist goes with the Home screen") && elements(revokedTree, "Block").length === 0);
+    const opsIds = propValues(opsTree, "id").filter((x): x is string => typeof x === "string");
+    c.ok("/ops keeps #shoots, #stuck and #exceptions", ["shoots", "stuck", "exceptions"].every((id) => opsIds.includes(id)), opsIds.join(","));
+    c.ok("…the ten time blocks are gone from it", elements(opsTree, "Block").length === 0 && elements(opsTree, "ChecklistJumps").length === 0);
+    c.ok("…an old block link that lands there is sent back to Home", elements(opsTree, "HomeAnchorForward").length === 1);
+    c.ok("…today's shoot cards are the operating day's own list", (elements(opsTree, "ShootList")[0]?.shoots as unknown[]).length === 1);
+    c.ok("no money for Kyle there either", !textOf(opsTree).includes("$750"));
 
     // =====================================================================
-    c.head("§7 · /ops/messages and /ops/old");
+    c.head("§7 · the retired pages redirect; /ops/messages = clients waiting + new leads");
     // =====================================================================
     await signIn(kyle);
+    c.ok("Kyle: /ops/requests → his Special requests group, /ops/scheduling → Scheduling, /ops/old → From earlier days", await redirectOf(() => requestsPage({})) === "/#requests" && await redirectOf(() => schedulingPage({})) === "/#scheduling" && await redirectOf(() => oldPage({})) === "/#earlier");
+    c.ok("…test scope rides along", await redirectOf(() => requestsPage({ searchParams: Promise.resolve({ test: "1" }) })) === "/?test=1#requests");
+    await signIn(owner);
+    c.ok("Jordan: requests and scheduling → Kyle's day; old items (and the pushed bell's ?who=all) → What we're behind on", await redirectOf(() => requestsPage({})) === "/#kyles-day" && await redirectOf(() => schedulingPage({})) === "/#kyles-day" && await redirectOf(() => oldPage({ searchParams: Promise.resolve({ who: "all" } as never) })) === "/#behind");
+    await signIn(james);
+    c.ok("James: requests → the Video Review Room, scheduling → the Schedule", await redirectOf(() => requestsPage({})) === "/review" && await redirectOf(() => schedulingPage({})) === "/schedule");
+    await signIn(kyle);
+    const msgBoard = await opsHome.messagesBoard({ now, excludeClientIds: [fixture.id], viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
     const mTree = await messagesPage({ searchParams: Promise.resolve({}) });
     const sub = String(elements(mTree, "PageHeader")[0]?.subtitle ?? "");
-    c.ok("Client messages screen states the tile's numbers", sub.startsWith(`${msgScreen.counts.open} to handle · ${msgScreen.counts.behind} behind · ${msgScreen.counts.dueToday} due today`), sub);
-    c.ok("…and lists texts, email, follow-ups and leads in one place", elements(mTree, "HandledButton").length === msgScreen.waiting.length && elements(mTree, "LoopRow").length === msgScreen.loops.length && elements(mTree, "LoopActions").length === msgScreen.leads.length);
-    const oTree = await oldPage({ searchParams: Promise.resolve({}) });
-    c.ok("/ops/old lists exactly Kyle's old items, each with the three actions", elements(oTree, "OldItemRow").length === oldKyle.items.length);
-    await signIn(owner);
-    const oTeam = await oldPage({ searchParams: Promise.resolve({}) });
-    c.ok("/ops/old opens on the whole team for Jordan", elements(oTeam, "OldItemRow").length === team.items.length && elements(oTeam, "OldItemRow").every((r) => r.showPerson === true));
+    c.ok("Messages lists the clients waiting (Reply + Handled) and the new leads, nothing else", elements(mTree, "HandledButton").length === msgBoard.waiting.length && elements(mTree, "LoopActions").length === msgBoard.leads.length && elements(mTree, "LoopRow").length === 0 && msgBoard.waiting.length === waitingNow.length);
+    c.ok("…internal follow-ups are not on it (they are on the checklist)", !textOf(mTree).includes("Follow-ups owed") && !textOf(mTree).includes("Call the stager") && msgBoard.counts.open === msgBoard.waiting.length + msgBoard.leads.length);
+    c.ok("…the leads: the one filed to Kyle and the one nobody holds", msgBoard.leads.some((l) => l.id === k7.id && l.behind) && msgBoard.leads.some((l) => l.id === leadToday.id) && msgBoard.leads.length === 2);
+    c.ok("…its header says who is waiting", sub.startsWith(`${msgBoard.waiting.length} client${msgBoard.waiting.length === 1 ? "" : "s"} waiting on a reply`) && sub.includes(`${msgBoard.leads.length} new lead`), sub);
 
     // =====================================================================
-    c.head("§8 · the morning digest (one bell + one DM each, Jordan's quiet time kept)");
+    c.head("§8 · Kyle's menu: six doors, everything else under More; 'Video Review Room' for everyone");
     // =====================================================================
+    const menu = (u: { name: string; email: string; role: string }) => renderToStaticMarkup(createElement(Sidebar, { user: { name: u.name, email: u.email, role: u.role } }));
+    const hrefs = (html: string) => [...html.matchAll(/<a\b[^>]*\shref="([^"]+)"/g)].map((m) => m[1]);
+    const section = (html: string, id: string) => html.match(new RegExp(`<section[^>]*data-sidebar-group="${id}"[^>]*>([\\s\\S]*?)</section>`))?.[1] ?? "";
+    const kyleMenu = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
+    c.ok("Kyle's six doors, in order: Home, Photo delivery, Video Review Room, Messages, Schedule, Tasks", hrefs(section(kyleMenu, "work")).join() === "/,/ops/photo-delivery,/review,/ops/messages,/schedule,/tasks" && section(kyleMenu, "work").includes("Video Review Room") && !section(kyleMenu, "work").includes("<details"), hrefs(section(kyleMenu, "work")).join());
+    c.ok("…everything else folded under More, nothing removed", section(kyleMenu, "more").includes("<details") && ["/communications", "/editing", "/clients", "/content", "/ops", "/upload"].every((h) => hrefs(section(kyleMenu, "more")).includes(h)));
+    const ownerMenu = menu({ name: "Jordan", email: owner.email, role: "OWNER" });
+    c.ok("video delivery, special requests, scheduling and old items are no menu entry for anyone", [kyleMenu, ownerMenu].every((html) => !["/ops/video-delivery", "/ops/requests", "/ops/scheduling", "/ops/old"].some((h) => hrefs(html).includes(h))));
+    c.ok("the owner keeps his groups, with the rename", ownerMenu.includes("Video Review Room") && !/>Review Room</.test(ownerMenu) && section(ownerMenu, "daily").includes('href="/tasks"'));
+
+    // =====================================================================
+    c.head("§9 · the morning digest (one bell + one DM each, Jordan's quiet time kept)");
+    // =====================================================================
+    // §3's fixtures that are not old items for the digest (done/dismissed) do not change it.
     const morning = etAt(etDayKey(new Date()), 8, 30);
     c.ok("idle outside 8 to 10 AM ET", (await aging.oldItemsMorning(etAt(etDayKey(new Date()), 11, 0))).window === false);
-    // Jordan is quiet all of today, the way his Saturday preset holds him.
     const dow = new Date(`${etDayKey(new Date())}T12:00:00Z`).getUTCDay();
     await saveSchedule(jordanTm.id, [{ day: dow, from: 0, to: 24 * 60 - 1 }], "drill");
     const firstRun = await aging.oldItemsMorning(morning);
@@ -389,14 +516,15 @@ async function main() {
     const held = await prisma.appSetting.findMany({ where: { key: { startsWith: "held-dm:" } } });
     const heldText = held.map((h) => String((JSON.parse(h.value) as { text?: string }).text ?? "")).join("\n");
     c.ok("Jordan's DM is held for his quiet time, not sent", slack.filter((m) => m.channel === "U-JORDAN").length === 0 && held.length === 1);
-    c.ok("Jordan's DM: his own item plus 'Kyle has N items over a week old'", heldText.includes("Sign the vendor agreement") && heldText.includes("Kyle has 2 items over a week old") && heldText.includes("/ops/old?who=all"), heldText);
+    c.ok("Jordan's DM: his own item plus 'Kyle has N items over a week old'", heldText.includes("Sign the vendor agreement") && /Kyle has \d+ items over a week old/.test(heldText) && heldText.includes("/ops/old?who=all"), heldText);
     await aging.oldItemsMorning(morning);
     c.ok("a second tick the same morning sends nothing more", (await prisma.notification.count({ where: { kind: "old_items" } })) === 3 && slack.filter((m) => m.channel === "U-JAMES").length === 1);
     const kyleLines = await aging.kyleOldItemLines("https://hub.example");
-    c.ok("Kyle's digest lines: his count, the oldest first, no figures, no em dashes", kyleLines.count === 6 && kyleLines.lines[0].includes("Old items to clear (6)") && kyleLines.lines.join("\n").includes("[amount]") && !kyleLines.lines.join("\n").includes("$750") && !EM_DASH.test(kyleLines.lines.join("\n")) && kyleLines.lines.at(-1) === "https://hub.example/ops/old");
+    const kyleOld = await aging.listOldItems(new Date(), { personKey: "kyle", excludeClientIds: [fixture.id], scrub: true });
+    c.ok("Kyle's digest lines: his count, the oldest first, no figures, no em dashes, and the link lands on his checklist via /ops/old", kyleLines.count === kyleOld.items.length && kyleLines.lines[0].includes(`Old items to clear (${kyleOld.items.length})`) && kyleLines.lines.join("\n").includes("[amount]") && !kyleLines.lines.join("\n").includes("$750") && !EM_DASH.test(kyleLines.lines.join("\n")) && kyleLines.lines.at(-1) === "https://hub.example/ops/old");
 
     // =====================================================================
-    c.head("§9 · New date: picked, counted, and the third tells Jordan");
+    c.head("§10 · New date: picked, counted, and the third tells Jordan");
     // =====================================================================
     await signIn(kyle);
     const today = etDayKey(new Date());
@@ -407,7 +535,8 @@ async function main() {
     const p1 = await pushOldItem(k1.id, d1);
     const after1 = await prisma.smartTask.findUniqueOrThrow({ where: { id: k1.id } });
     c.ok("a new date moves the chase date, never the promise", p1.ok && after1.followUpAt?.getTime() === etEndOfDay(d1).getTime() && after1.dueAt?.getTime() === k1.dueAt!.getTime(), p1.message);
-    c.ok("…and takes it off the old list", !(await aging.listOldItems(new Date(), { personKey: "kyle", excludeClientIds: [fixture.id] })).items.some((i) => i.id === k1.id));
+    const afterList = await aging.checklistTasks(new Date(), { person: { key: "kyle", teamMemberId: kyleTm.id }, excludeClientIds: [fixture.id] });
+    c.ok("…and takes it off today's checklist (earlier days and today's follow-ups)", !afterList.earlier.some((i) => i.id === k1.id) && !afterList.dueToday.some((i) => i.id === k1.id));
     await pushOldItem(k1.id, d2);
     c.ok("two pushes do not tell Jordan", (await prisma.notification.count({ where: { kind: "old_item_pushed" } })) === 0);
     const p3 = await pushOldItem(k1.id, d3);
@@ -416,7 +545,7 @@ async function main() {
     c.ok("every push is on the record", (await prisma.auditLog.count({ where: { action: aging.PUSH_ACTION, target: k1.id } })) === 3);
 
     // =====================================================================
-    c.head("§10 · shoot notes close themselves, reversibly");
+    c.head("§11 · shoot notes close themselves, reversibly");
     // =====================================================================
     const dry = await aging.expireShootNotes(new Date(), { apply: false });
     c.ok("the dry run finds exactly the shoot note whose shoot happened", dry.candidates.map((x) => x.id).join() === n1.id && dry.closed === 0, dry.candidates.map((x) => x.title).join(" | "));
@@ -426,6 +555,8 @@ async function main() {
     const closed = await prisma.smartTask.findUniqueOrThrow({ where: { id: n1.id } });
     c.ok("closed as a dismissal that says why, with the old summary kept under it", applied.closed === 1 && closed.status === "CANCELLED" && closed.completedAt === null && (closed.summary ?? "").startsWith(`${DISMISSED_PREFIX}the hub — shoot note, the shoot happened`) && (closed.summary ?? "").includes("Client wrote in."));
     c.ok("one AuditLog row with what it was", (await prisma.auditLog.count({ where: { action: aging.EXPIRE_ACTION, target: n1.id } })) === 1);
+    const closedToday = await aging.checklistTasksClosedToday(new Date(), { person: { key: "kyle", teamMemberId: kyleTm.id }, excludeClientIds: [fixture.id] });
+    c.ok("…and the hub's own close is not in anybody's Done today", !closedToday.some((x) => x.id === n1.id));
     c.ok("actions, edit notes, today's shoot, a still-scheduled job and a flagged note are untouched", (await prisma.smartTask.findMany({ where: { id: { in: [n2.id, n3.id, n4.id, n5.id, n6.id] } } })).every((x) => x.status === "OPEN"));
     c.ok("a second pass finds nothing more", (await aging.expireShootNotes(new Date(), { apply: true })).closed === 0);
     const undo = await aging.undoExpiredShootNotes({ apply: true, actor: "drill" });
@@ -433,30 +564,31 @@ async function main() {
     c.ok("undo puts it back exactly as it was", undo.reopened === 1 && back.status === "OPEN" && back.summary === "Client wrote in.");
 
     // =====================================================================
-    c.head("§11 · the screens render to HTML (phone-first markup, no nested links)");
+    c.head("§12 · the screens render to HTML (phone-first markup, no nested links)");
     // =====================================================================
     const ssr = (tree: unknown) => { try { return renderToStaticMarkup(tree as Parameters<typeof renderToStaticMarkup>[0]); } catch (e) { return `RENDER FAILED: ${(e as Error).message}`; } };
     // A link inside a link is invalid HTML and breaks taps on a phone.
     const nestedLink = (html: string) => { let depth = 0; for (const m of html.matchAll(/<(\/?)a\b/g)) { depth += m[1] ? -1 : 1; if (depth > 1) return true; } return false; };
     await signIn(kyle);
+    videoLanes = lanes;
     const kyleHtml = ssr(await settle(await home({})));
-    c.ok("Kyle's Home renders", !kyleHtml.startsWith("RENDER FAILED") && kyleHtml.includes("Your five jobs") && kyleHtml.includes("Old items to clear"), kyleHtml.slice(0, 200));
-    c.ok("…with no link nested in a link", !nestedLink(kyleHtml));
+    const kList = elements(await settle(await home({})), "DailyChecklist")[0]?.list as KyleChecklist;
+    c.ok("Kyle's Home renders (summary box, checklist, done today N, still open M)", !kyleHtml.startsWith("RENDER FAILED") && kyleHtml.includes("Today at a glance") && kyleHtml.includes("s checklist") && kyleHtml.includes(`Done today (${kList.done.length})`) && kyleHtml.includes(`Still open (${kList.stillOpen.total})`) && kyleHtml.includes(`Show ${Math.max(0, kList.earlier.items.length - aging.EARLIER_SHOWN)} more`), kyleHtml.slice(0, 200));
+    c.ok("…with no link nested in a link, and buttons a thumb can hit (min-h-11)", !nestedLink(kyleHtml) && (kyleHtml.match(/min-h-11/g) ?? []).length > 10);
     await signIn(owner);
     const ownerHtml = ssr(await settle(await home({})));
-    c.ok("Jordan's Home renders (this week, behind, list, money)", !ownerHtml.startsWith("RENDER FAILED") && ownerHtml.includes("This week") && ownerHtml.includes("behind on") && !nestedLink(ownerHtml), ownerHtml.slice(0, 200));
+    c.ok("Jordan's Home renders (this week, behind, shoot issues, Kyle's day, list, money)", !ownerHtml.startsWith("RENDER FAILED") && ownerHtml.includes("This week") && ownerHtml.includes("behind on") && ownerHtml.includes("Shoot issues") && /Kyle(&#x27;|’)s day/.test(ownerHtml) && !nestedLink(ownerHtml), ownerHtml.slice(0, 200));
+    videoLanes = null;
     await signIn(kyle);
     for (const [label, tree] of [
       ["/ops", await settle(await opsPage({}))],
       ["/ops/messages", await messagesPage({ searchParams: Promise.resolve({}) })],
-      ["/ops/old", await oldPage({ searchParams: Promise.resolve({}) })],
     ] as const) {
       const html = ssr(tree);
       c.ok(`${label} renders, no nested links`, !html.startsWith("RENDER FAILED") && !nestedLink(html), html.slice(0, 200));
     }
 
     c.ok("nothing left the box but faked Slack posts; no client message queued", fence.blocked.length === 0 && fence.faked.every((u) => u.startsWith("https://slack.com/api/")) && await prisma.outboxMessage.count() === 0, fence.blocked.join(", "));
-    void j1;
     c.summary();
   } finally { fence.restore(); await db.stop(); }
   process.exit(process.exitCode ?? 0);

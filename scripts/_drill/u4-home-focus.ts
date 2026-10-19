@@ -1,7 +1,10 @@
 // U4 Home role orientation, reader parity and preserved delivery/checklist anchors.
-// Oct 19 2026: the daily checklist moved off Home onto /ops (Jordan: "too much
-// on one screen"); the checklist checks below read /ops now, and Kyle's Home
-// is the five job tiles. Expectations changed only where that was the point.
+// Oct 19 2026 (evening): Kyle's Home is the summary box and ONE simplified
+// daily checklist (Jordan: "The home screen should have the daily checklist,
+// but with a box up top that summarizes the photo delivery, video delivery,
+// and comms needing responses"); the ten time blocks are gone and every old
+// block anchor lives inside a checklist group on his Home. Expectations
+// changed only where that was the point.
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { isValidElement } from "react";
 import { createRequire } from "node:module";
@@ -35,7 +38,7 @@ function textOf(tree: unknown): string {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Record<string, unknown>>(tree)) return tree;
@@ -53,7 +56,6 @@ async function main() {
     const { prisma } = await import("@/lib/prisma");
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { default: home } = await import("@/app/page");
-    const { default: ops } = await import("@/app/ops/page");
     const page = async (props: Parameters<typeof home>[0]) => settleHome(await home(props));
     const { getReviewQueue } = await import("@/lib/reviewRoom");
     const real = await prisma.client.create({ data: { name: "Real Agent" } });
@@ -101,37 +103,22 @@ async function main() {
     c.ok("failed assigned-review read retains known general queue and explicit warning", textOf(failedQueueTree).includes("The review queue could not be loaded") && failedNeeds.some((n) => n.key === "cuts" && n.count === 2));
     await signIn(kyle);
     const opsTree = await page({});
-    // Oct 19 2026: Kyle's operations Home is the five job tiles now.
-    c.ok("backup reviewer retains the operations first screen", elements(opsTree, "JobTiles").length === 1 && !textOf(opsTree).includes("Your creative review desk"));
-    // Oct 19 2026: no Home carries the checklist; it is its own screen, /ops.
-    c.ok("the daily checklist left every Home for its own screen (/ops)",
-      [opsTree, reviewTree].every((t) => elements(t, "HomeRoutine").length === 0 && elements(t, "Block").length === 0));
-    const checklist = await settleHome(await ops({}));
-    const blocks = elements(checklist, "Block");
-    const keys = blocks.map((b) => (b.def as { key: string }).key);
-    // Oct 13 2026 (Jordan's audit): the duplicated comms/prep blocks, Lunch and the fixed admin text came out;
-    // every anchor the page links to must still exist.
-    c.ok("the checklist keeps every block the old anchors link to (duplicates removed Oct 13)", keys.length >= 8 && new Set(keys).size === keys.length && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => keys.includes(id)), keys.join(","));
-    c.ok("Kyle's job tiles come before the old items", namesOf(opsTree).indexOf("JobTiles") < namesOf(opsTree).indexOf("OldItemsCard"));
-    const videoBlock = (function find(tree: unknown): unknown {
-      if (Array.isArray(tree)) return tree.map(find).find(Boolean);
-      if (!isValidElement<Record<string, unknown>>(tree)) return null;
-      const type = tree.type as { name?: string };
-      if (type.name === "Block" && (tree.props.def as { key: string }).key === "video-review") return tree;
-      return Object.values(tree.props).map(find).find(Boolean);
-    })(blocks.length ? checklist : null);
-    const renderedBlock = isValidElement<Record<string, unknown>>(videoBlock) ? (videoBlock.type as (props: Record<string, unknown>) => unknown)(videoBlock.props) : null;
-    const bodyElement = (function find(tree: unknown): unknown {
-      if (Array.isArray(tree)) return tree.map(find).find(Boolean);
-      if (!isValidElement<Record<string, unknown>>(tree)) return null;
-      if ((tree.type as { name?: string }).name === "BlockBody") return tree;
-      return Object.values(tree.props).map(find).find(Boolean);
-    })(renderedBlock);
-    const renderedBody = isValidElement<Record<string, unknown>>(bodyElement) ? (bodyElement.type as (props: Record<string, unknown>) => unknown)(bodyElement.props) : null;
-    c.ok("delivery evidence/actions remain reachable in the original video-review block", elements(renderedBody, "VideoReviewCard")[0]?.showReady === true);
+    // Oct 19 2026 (evening): Kyle's operations Home is the summary box and the daily checklist.
+    c.ok("backup reviewer retains the operations first screen", elements(opsTree, "SummaryBox").length === 1 && elements(opsTree, "DailyChecklist").length === 1 && !textOf(opsTree).includes("Your creative review desk"));
+    c.ok("the old ten time blocks are on no Home; the review desk carries no checklist",
+      [opsTree, reviewTree].every((t) => elements(t, "HomeRoutine").length === 0 && elements(t, "Block").length === 0) && elements(reviewTree, "DailyChecklist").length === 0);
+    const list = elements(opsTree, "DailyChecklist")[0]?.list as import("../../src/lib/opsHome").KyleChecklist;
+    const { GROUP_ALIASES } = await import("@/lib/homeAnchors");
+    // Oct 13 2026 (Jordan's audit) kept every block the old anchors link to;
+    // Oct 19 each of those ids is an anchor inside the group holding its work.
+    c.ok("every anchor the old blocks used lands inside a checklist group", list.groups.map((g) => g.key).join() === "deliveries,messages,requests,scheduling,followups" && ["tower", "video-review", "comms-1", "qc-am", "loops", "closeout"].every((id) => Object.values(GROUP_ALIASES).some((a) => a.includes(id))));
+    c.ok("Kyle's summary box comes before the checklist", namesOf(opsTree).indexOf("SummaryBox") < namesOf(opsTree).indexOf("DailyChecklist"));
+    // The delivery evidence and actions live with the video (Video Review
+    // Room); Kyle's Videos number opens it and each video line opens its cut.
+    c.ok("delivery evidence/actions stay one tap away: the Videos number opens the Video Review Room", (await import("@/lib/opsHome")).SUMMARY_HREF.videos === "/review" && list.groups[0].lines.filter((l) => l.key.startsWith("video:")).every((l) => l.href.startsWith("/review/")));
     await signIn(owner);
     const ownerTree = await page({});
-    c.ok("owner Home no longer carries the checklist (it is on /ops)", elements(ownerTree, "HomeRoutine").length === 0 && elements(ownerTree, "Block").length === 0);
+    c.ok("owner Home carries no checklist (Kyle's day is read from his)", elements(ownerTree, "HomeRoutine").length === 0 && elements(ownerTree, "Block").length === 0 && elements(ownerTree, "DailyChecklist").length === 0 && elements(ownerTree, "KylesDay").length === 1);
     c.ok("owner view preserves this week, what is behind, his private list and the money", elements(ownerTree, "OwnerWeekCard").length === 1 && elements(ownerTree, "BehindCard").length === 1 && elements(ownerTree, "QuickAdd").length === 1 && elements(ownerTree, "PulseStrip").length === 1);
     c.ok("Home presentation never completes tasks or starts editing", (await prisma.smartTask.findUniqueOrThrow({ where: { id: task.id } })).status === "OPEN" && await prisma.editorWorkEvent.count() === 0);
     c.ok("Home checks reach no providers and send no client communication", fence.blocked.length === 0 && fence.faked.length === 0 && await prisma.outboxMessage.count() === 0);

@@ -4,10 +4,10 @@ import { useEffect } from "react";
 import { forwardedHref } from "@/lib/homeAnchors";
 
 // Links minted before Oct 19 2026 (Slack lines, bells, delivery receipts,
-// other screens: "/#video-review", "/?test=1#loops") still point at Home, and
-// the fragment never reaches the server, so the hop happens here: an anchor
-// that now lives on /ops is replaced (not pushed) onto /ops with the same
-// query and fragment, where DayBlockJumps opens the block it lands on.
+// other screens) still carry the old anchors, and the fragment never reaches
+// the server, so the hop happens here (replaced, not pushed): "/#stuck" goes
+// to /ops, where the stuck jobs and exceptions are; "/ops#loops" comes back to
+// Home, where the checklist group that holds that work carries the anchor.
 export function HomeAnchorForward() {
   useEffect(() => {
     const go = () => {

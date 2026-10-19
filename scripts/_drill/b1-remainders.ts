@@ -511,10 +511,12 @@ async function main() {
         return r.workWord !== "In editing — not confirmed";
       });
       c.ok("new: each EDITING row says who is on it — active, paused, or \"not confirmed\" — from the same work reader", rows.length > 0 && wrong.length === 0 && rows.some((r) => /^In editing — (?!not)/.test(r.workWord ?? "")) && rows.some((r) => r.workWord === "In editing — not confirmed"), `${rows.length} rows; wrong: ${wrong.map((r) => `${r.title}=${r.workWord}`).join(", ")}`);
-      // Oct 19 2026: the pipeline rows render on the daily checklist (/ops),
-      // whose body moved from src/app/page.tsx to components/home/DailyChecklist.
-      const page = fs.readFileSync(path.join(REPO, "src/components/home/DailyChecklist.tsx"), "utf8");
-      c.ok("…and the checklist renders that word, not the stage", /r\.workWord \?\? "In editing — not confirmed"/.test(page) && !/r\.status === "REVIEW" \? "in review" : "editing"/.test(page));
+      // Oct 19 2026 (evening): the checklist block that printed these rows is
+      // gone (Jordan: "keep it simplified"); the word lives on in the operating
+      // day's rows above, and no screen went back to the bare stage word.
+      const srcFiles = execFileSync("git", ["ls-files", "src"], { cwd: REPO, encoding: "utf8" }).split("\n").filter((f) => /\.tsx?$/.test(f) && fs.existsSync(path.join(REPO, f)));
+      const bareStage = srcFiles.filter((f) => /r\.status === "REVIEW" \? "in review" : "editing"/.test(fs.readFileSync(path.join(REPO, f), "utf8")));
+      c.ok("…and no screen prints the bare stage word instead", bareStage.length === 0, bareStage.join(", "));
     }
   }
 

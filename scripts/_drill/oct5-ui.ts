@@ -15,10 +15,10 @@
 //      flag does the same, and "Discard" restored answers asks first and keeps
 //      them when the discard does not land.
 //   2. Home per role (Jordan OWNER, Kyle ADMIN, James the creative reviewer).
-//      Since Oct 19 2026: Jordan's week and what is behind, Kyle's five job
-//      tiles and one line for today's shoots (the full cards folded on the
-//      /ops checklist), James's "What needs you now" led by his own cut; the
-//      slow sections streamed behind Suspense; no money for Kyle.
+//      Since Oct 19 2026 (evening): Jordan's week, what is behind, shoot
+//      issues and Kyle's day; Kyle's summary box and daily checklist (today's
+//      shoot cards on /ops); James's "What needs you now" led by his own cut;
+//      the slow sections streamed behind Suspense; no money for Kyle.
 //   3. The Editing Room: soonest due first; who is working on what, by name,
 //      on the row; today's evidence on the row (office only); the editor's
 //      own queue with one named next action; filters fold on a phone.
@@ -127,7 +127,7 @@ function words(n: any, out: string[] = []): string[] {
 const textOfTree = (n: any) => words(n).join(" ").replace(/\s+/g, " ");
 const decode = (s: string) => s.replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 const text = (html: string) => decode(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-const STREAMED = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
+const STREAMED = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
 async function settle(tree: any): Promise<any> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement(tree)) return tree;
@@ -375,14 +375,15 @@ async function main() {
     await prisma.commLog.create({ data: { clientId: agent.id, clientName: agent.name, contactName: agent.name, channel: "email", source: "gmail", direction: "in", body: "When is my video coming?", occurredAt: ago(30) } });
 
     // =======================================================================
-    c.head("2 · Home: one screen per role (Oct 19 2026: Kyle's five jobs, Jordan's week; the checklist on /ops)");
+    c.head("2 · Home: one screen per role (Oct 19 2026: Kyle's summary box and checklist, Jordan's week and Kyle's day)");
     // =======================================================================
-    // Oct 19 2026 (Jordan: "There's just too much on one screen"): the owner's
-    // and Kyle's "What needs you now" lists are gone from Home. Kyle's Home is
-    // five job tiles; Jordan's is this week, what is behind, his list, money;
-    // the daily checklist with today's shoot cards moved to /ops. The checks
-    // below that read the old lists were rewritten for the new screens; the
-    // James checks are unchanged.
+    // Oct 19 2026 (Jordan: "The home screen should have the daily checklist,
+    // but with a box up top that summarizes the photo delivery, video
+    // delivery, and comms needing responses"): Kyle's Home is the summary box
+    // and one simplified checklist; Jordan's is this week, what is behind,
+    // shoot issues, Kyle's day, his list, money; today's shoot cards live on
+    // /ops. The checks below that read the earlier screens were rewritten for
+    // these; the James checks are unchanged.
     const { default: home } = await import("@/app/page");
     const { default: opsPage } = await import("@/app/ops/page");
     const render = async () => {
@@ -390,36 +391,30 @@ async function main() {
       return { raw, tree: await settle(raw) };
     };
     const needsOf = (tree: any) => (find(tree, "NeedsToday")[0]?.props.needs ?? []) as { key: string; count: number; href: string; tone: string }[];
-    const dayOf = (tree: any) => find(tree, "Block")[0].props.d as import("../../src/lib/opsDay").OpsDay;
     await signIn(jordan);
     const owner = await render();
     const checklist = await settle(await opsPage({ searchParams: Promise.resolve({}) }));
-    const od = dayOf(checklist);
     c.ok("owner: this week first, then what we're behind on (no needs wall)", find(owner.tree, "NeedsToday").length === 0 && find(owner.tree, "OwnerWeekCard").length === 1 && find(owner.tree, "BehindCard").length === 1);
-    const behindVideos = (find(owner.tree, "BehindCard")[0]?.props.tiles as { key: string; href: string }[] | undefined)?.find((t) => t.key === "videos");
-    c.ok("owner: videos behind is one row of 'What we're behind on', opening video delivery", behindVideos?.href === "/ops/video-delivery");
+    const behindSummary = find(owner.tree, "BehindCard")[0]?.props.summary as import("../../src/lib/opsHome").HomeSummary | null;
+    c.ok("owner: videos behind is one number of 'What we're behind on', the same as Kyle's box", !!behindSummary?.videos && typeof behindSummary.videos.late === "number");
     const ownerWords = textOfTree(owner.tree);
     c.ok("…and the old three-paragraph delivery card is gone (no second count of the same videos)", !ownerWords.includes("Operations owns the handoff") && !ownerWords.includes("ready for delivery"));
     const shootsBlock = findBy(checklist, (e) => nameOf(e.type) === "DayBlock" && e.props.id === "shoots")[0];
-    c.ok("…the full shoot cards (access, weather, week ahead) are folded on the checklist, not removed", !!shootsBlock && shootsBlock.props.defaultOpen === false && find(shootsBlock, "ShootList").length === 1 && find(shootsBlock, "WeekStrip").length === 1);
+    c.ok("…the full shoot cards (access, weather, week ahead) are on /ops, not removed", !!shootsBlock && find(shootsBlock, "ShootList").length === 1 && find(shootsBlock, "WeekStrip").length === 1);
     const suspended = (raw: any, name: string) => findBy(raw, (e) => e.type === Suspense && nameOf(e.props.children?.type) === name).length === 1;
-    c.ok("the slow sections stream behind their own Suspense: the week, what is behind, new clients, the owner's money", ["OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "OwnerBusiness"].every((n) => suspended(owner.raw, n)));
-    c.ok("…and they still compose: new-client card, money strip and the folded trends are there once streamed",
-      find(owner.tree, "NewClientCard").length === 1 && find(owner.tree, "MoneyStat").length === 4 && findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("Trends and quality")).length === 1);
-    c.ok("the footer that repeated the sidebar is gone; one line leads to the checklist", findBy(owner.tree, (e) => e.type === "nav" && e.props["aria-label"] === "Your work destinations").length === 0 && find(owner.tree, "ChecklistLinks").length === 1);
+    c.ok("the slow sections stream behind their own Suspense: the week, what is behind, shoot issues, Kyle's day, the owner's money", ["OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OwnerBusiness"].every((n) => suspended(owner.raw, n)));
+    c.ok("…and they still compose: money strip and the folded trends are there once streamed; new clients live on /ops",
+      find(checklist, "NewClientCard").length === 1 && find(owner.tree, "MoneyStat").length === 4 && findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("Trends and quality")).length === 1);
+    c.ok("the footer that repeated the sidebar and the checklist links row are gone", findBy(owner.tree, (e) => e.type === "nav" && e.props["aria-label"] === "Your work destinations").length === 0 && find(owner.tree, "ChecklistLinks").length === 0);
     c.ok("Oct 13 2026: the standing 'How the day runs' rules block is gone", findBy(owner.tree, (e) => e.type === "summary" && textOfTree(e.props.children).includes("How the day runs")).length === 0);
 
     await signIn(kyle);
     const ops = await render();
-    const tiles = (find(ops.tree, "JobTiles")[0]?.props.tiles ?? []) as { key: string; href: string; counts: { open: number } | null }[];
-    c.ok("Kyle (operations): five job tiles, in Jordan's order", tiles.map((t) => t.key).join() === "photos,videos,messages,requests,scheduling", tiles.map((t) => t.key).join());
-    const line = find(ops.tree, "ShootsTodayLine")[0]?.props as { count: number; next: { street: string; photographer: string | null } | null; href: string } | undefined;
-    c.ok("today's appointments are ONE line (count + next) linking to the cards on the checklist",
-      !!line && line.href === "/ops#shoots" && line.count === od.todayShoots.length && (line.next ? line.next.street === "123 Home Ave" && line.next.photographer === "Harrison Drill" : true), JSON.stringify(line));
+    const list = find(ops.tree, "DailyChecklist")[0]?.props.list as import("../../src/lib/opsHome").KyleChecklist | undefined;
+    c.ok("Kyle (operations): the summary box, then one checklist in five groups, in Jordan's order", find(ops.tree, "SummaryBox").length === 1 && list?.groups.map((g) => g.key).join() === "deliveries,messages,requests,scheduling,followups", list?.groups.map((g) => g.key).join());
     const { messagesBoard } = await import("@/lib/opsHome");
     const msgs = await messagesBoard({ viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
-    const msgTile = tiles.find((t) => t.key === "messages");
-    c.ok("…every tile's count is its screen's own (Client messages = messagesBoard)", msgTile?.counts?.open === msgs.counts.open, `${msgTile?.counts?.open} vs ${msgs.counts.open}`);
+    c.ok("…the Messages number is the Messages screen's own waiting list", list?.summary.messages?.waiting === msgs.waiting.length && list?.groups[1].lines.length === msgs.waiting.length, `${list?.summary.messages?.waiting} vs ${msgs.waiting.length}`);
     c.ok("Kyle: no money anywhere, no owner list, no business section", find(ops.tree, "MoneyStat").length === 0 && find(ops.tree, "QuickAdd").length === 0 && !findBy(ops.raw, (e) => e.type === Suspense && nameOf(e.props.children?.type) === "OwnerBusiness").length);
     void needsOf;
 

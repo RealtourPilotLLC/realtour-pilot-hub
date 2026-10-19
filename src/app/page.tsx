@@ -25,56 +25,53 @@ import { ownerTodoLists } from "@/lib/ownerDay";
 import { ownerPulse } from "@/lib/ownerPulse";
 import { getStuckJobs, getShootWindow, getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials, getFlaggedForMe } from "@/lib/queries";
 import { scrubMoney } from "@/lib/text";
-import { photoQcWhere } from "@/lib/taskBoard";
-import { NewClientCard } from "@/components/clients/NewClientCard";
-import { newClientsForDashboard } from "@/lib/newClients";
 import { listAssignees, slugForName, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { isSyntheticClientRow } from "@/lib/testClients";
-import { reviewerChain } from "@/lib/reviewerAssignment";
 import { getReviewQueue, followUpHref } from "@/lib/reviewRoom";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { openLeadsFor } from "@/lib/leadDesk";
-import { listOldItems, MAX_PUSH_DAYS, OLD_ITEMS_ON_HOME, type OldItemsRead } from "@/lib/taskAging";
-import { opsHomeTiles, ownerWeek, todayShootsLine, unavailableTiles, type OpsTiles, type OwnerWeek } from "@/lib/opsHome";
+import { listOldItems, MAX_PUSH_DAYS, type OldItemsRead } from "@/lib/taskAging";
+import { homeRoleOf, kyleChecklist, kylePerson, ownerWeek, type KyleChecklist, type OwnerWeek } from "@/lib/opsHome";
+import { behindState, type BehindState } from "@/lib/behindAlert";
+import { ownerShootIssues } from "@/lib/shootIssues";
 import { ageText, deliveryUnavailable, etMinutes, listingQc, offPageNumbers, rushShoots } from "@/components/home/DailyChecklist";
 import { HomeAnchorForward } from "@/components/home/HomeAnchorForward";
-import { opsAnchor } from "@/lib/homeAnchors";
-import {
-  BehindCard, ChecklistLinks, FlaggedBanner, JobTiles, OldItemsCard, OwnerWeekCard, ShootsTodayLine, VideoBehindBanner,
-} from "@/components/home/OpsHomeParts";
+import { blockScreen } from "@/lib/homeAnchors";
+import { BehindCard, FlaggedBanner, OwnerWeekCard, ShootIssuesCard, ShootsTodayLine } from "@/components/home/OpsHomeParts";
+import { BehindLine, DailyChecklist, KylesDay, SummaryBox } from "@/components/home/Checklist";
 
 export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // HOME — one screen per role.
 //
-// Oct 19 2026 (Jordan): "There's just too much on one screen. It should be
-// organized into separate screens. … His page can just be made simpler." and
-// "I want a way to see on my side how we're doing this week, what we're
-// behind on. My screen is way overloaded too."
+// Oct 19 2026, evening (Jordan): "The home screen should have the daily
+// checklist, but with a box up top that summarizes the photo delivery, video
+// delivery, and comms needing responses. … keep it simplified. We just need
+// Kyle to be able to keep track of what he got done and what's still
+// outstanding at the end of the day."
 //
-//   KYLE (operations): flagged-for-you · the video banner when we are behind
-//     · five job tiles (photos, videos, client messages, special requests,
-//     scheduling: due today / behind / oldest, each opening its own screen)
-//     · today's shoots in one line · old items to clear · one line to the
-//     daily checklist. The 10-block checklist moved to /ops (block ids kept;
-//     an old "/#loops" link is forwarded there by HomeAnchorForward), the
-//     delivery board stays at /pipeline, stuck jobs, new clients and the
-//     radar moved to the checklist screen, and the office-wide "running late"
-//     and "to assign" rows (72 of 92 were not his) left his screen.
-//   JORDAN (owner): this week against last · what we're behind on (the same
-//     five jobs, team-wide, plus the team's old items) · his own list · money,
-//     with the 30-day trends folded under it.
+//   KYLE (operations): flagged-for-you · a red line when we are behind
+//     (behindAlert) · the summary box (photos, videos, messages: three
+//     numbers, each opening its screen) · the daily checklist: one list for
+//     today in five groups (Deliveries, Messages to answer, Special requests
+//     to check, Scheduling to handle, Follow-ups due), then the items from
+//     earlier days, Done today (folded) and Still open. Every old block anchor
+//     ("/#loops", "/#video-review") is an anchor inside the group that holds
+//     that work now (lib/homeAnchors). The five tiles, the old-items card, the
+//     ten time blocks, stuck jobs, exceptions and the radar are off his Home
+//     (stuck jobs and exceptions live on /ops with today's shoot cards).
+//   JORDAN (owner): this week against last (on-time % only from 3 jobs) ·
+//     what we're behind on (the red line, the same three numbers team-wide,
+//     the team's old items) · shoot issues · Kyle's day (done today and still
+//     open, from Kyle's own checklist; shown here, never sent as a message) ·
+//     his own list · money, with the 30-day trends folded under it.
 //   JAMES (the review seat): his review desk, unchanged in substance; its
-//     anchors now open the checklist screen.
+//     old block anchors open the screens that hold that work now.
 //
 // THE RULE FOR EVERY NUMBER (audit fault #9, Sep 2 2026) still holds: a count
 // is computed with THE QUERY OF THE LIST IT LINKS TO (lib/opsHome says which
-// function feeds each tile).
-//
-// Kyle's Home no longer builds the whole operating day (buildOpsDay), so a
-// Home render no longer writes the delivery follow-up health rows: that write
-// now happens only where the follow-up lanes are shown, on /ops.
+// function feeds each number).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -192,7 +189,7 @@ async function HomeExceptions({ exceptionsP, includeTest, canReview, canEdit }: 
   const exceptions = await exceptionsP;
   return (
     <ExceptionsCard
-      rows={exceptions.rows.map((r) => ({ ...r, href: homeRecordHref(r.href, includeTest) }))}
+      rows={exceptions.rows.map((r) => ({ ...r, href: homeRecordHref(r.href.startsWith("/#") ? blockScreen(r.href.slice(1)) : r.href, includeTest) }))}
       totals={exceptions.totals}
       unavailable={exceptions.unavailable}
       includeTest={includeTest}
@@ -283,13 +280,19 @@ async function OwnerWeekSection({ weekP }: { weekP: Promise<OwnerWeek | null> })
   return <OwnerWeekCard week={await weekP} />;
 }
 
-async function OwnerBehindSection({ tilesP, oldP }: { tilesP: Promise<OpsTiles>; oldP: Promise<OldItemsRead | null> }) {
-  const [tiles, old] = await Promise.all([tilesP, oldP]);
-  return <BehindCard tiles={tiles.tiles} people={old?.people ?? []} oldTotal={old?.items.length ?? 0} unavailableOld={!old} />;
+async function OwnerBehindSection({ stateP, listP, oldP, includeTest }: {
+  stateP: Promise<BehindState | null>; listP: Promise<KyleChecklist | null>; oldP: Promise<OldItemsRead | null>; includeTest: boolean;
+}) {
+  const [state, list, old] = await Promise.all([stateP, listP, oldP]);
+  return <BehindCard state={state} summary={list?.summary ?? null} people={old?.people ?? null} includeTest={includeTest} />;
 }
 
-async function OwnerNewClients({ newClientsP }: { newClientsP: Promise<Awaited<ReturnType<typeof newClientsForDashboard>>> }) {
-  return <NewClientCard clients={await newClientsP} />;
+async function OwnerShootIssues({ issuesP }: { issuesP: Promise<Awaited<ReturnType<typeof ownerShootIssues>> | null> }) {
+  return <ShootIssuesCard issues={await issuesP} />;
+}
+
+async function OwnerKylesDay({ listP, name, includeTest }: { listP: Promise<KyleChecklist | null>; name: string; includeTest: boolean }) {
+  return <KylesDay list={await listP} name={name} includeTest={includeTest} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,7 +312,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const isOwner = !me || me.role === "OWNER";
   const canReview = !me || canAccess(me, "review");
   const includeTest = sp?.test === "1";
-  const scopeHref = (href: string) => homeRecordHref(opsAnchor(href), includeTest);
+  const scopeHref = (href: string) => homeRecordHref(blockScreen(href), includeTest);
   const excludedClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
   const scope = { excludeClientIds: excludedClientIds };
   const roster: Assignee[] = await listAssignees().catch(() => []);
@@ -319,20 +322,18 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   // openLoopsList resolves it (roster match by TeamMember → email → first
   // name, else the first-name slug). An editor's explicit editorKey still
   // wins when there is one (audit5 F11).
-  const [flaggedRaw, reviewChain] = await Promise.all([
+  const [flaggedRaw, homeRole] = await Promise.all([
     getFlaggedForMe({
       assignedKey: me ? me.editorKey ?? viewerKey ?? (me.name ? slugForName(me.name) : null) : null,
       memberId: me?.teamMemberId ?? null,
       role: me?.role ?? "OWNER",
       excludeClientIds: excludedClientIds,
     }),
-    canReview && !isOwner ? reviewerChain().catch(() => null) : Promise.resolve(null),
+    homeRoleOf(me),
   ]);
   // No money on an ADMIN screen (Jordan's standing rule): a flag's title and
   // note are typed by a person and pass through the figure scrub.
   const flagged = (isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }))).map((f) => ({ ...f, href: scopeHref(f.href) }));
-  const reviewLead = !isOwner && !!me?.teamMemberId && reviewChain?.primary?.teamMemberId === me.teamMemberId;
-  const homeRole = isOwner ? "owner" : reviewLead ? "review" : "operations";
   const now = new Date();
   const nowMin = etMinutes(now);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
@@ -350,21 +351,17 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     />
   );
   const testNotice = includeTest && <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm"><p className="font-semibold">Showing real and test records in Home workloads</p><p className="mt-1 text-muted">Tasks, Review Room, Client months, Editing Room, Schedule and delivery lists keep this view when opened. Figures from the books keep Finance’s existing definitions.</p></div>;
-  // The Review Room's own count of photo sets still on the older QC cards
-  // (a note under the Photos tile; read only by the two Homes that show it).
-  const photoQcCount = () => prisma.smartTask.count({ where: photoQcWhere(scope) }).catch(() => 0);
+  const behindP: Promise<BehindState | null> = behindState(now).catch((e: unknown) => { console.warn("behindState failed", (e as Error).message); return null; });
 
   // ===========================================================================
-  // KYLE — operations.
+  // KYLE — operations: the red line, the summary box, the daily checklist.
   // ===========================================================================
   if (homeRole === "operations") {
-    const viewer = me ? { key: viewerKey, role: me.role, teamMemberId: me.teamMemberId } : null;
-    const [ops, shoots, old] = await Promise.all([
-      photoQcCount().then((photoQcCards) => opsHomeTiles({ now, excludeClientIds: excludedClientIds, viewer, photoQcCards })).catch(() => unavailableTiles()),
-      todayShootsLine(now, scope).catch(() => null),
-      // A viewer we cannot place on the roster sees nobody's list rather
-      // than everybody's.
-      listOldItems(now, { personKey: viewerKey ?? "__unresolved__", excludeClientIds: excludedClientIds, scrub: true, roster }).catch(() => null),
+    const person = { key: viewerKey ?? (me?.teamMemberId ? null : "__unresolved__"), teamMemberId: me?.teamMemberId ?? null };
+    const [list, behind] = await Promise.all([
+      // No figures on his screen: what people typed passes the money scrub.
+      kyleChecklist({ now, excludeClientIds: excludedClientIds, person, scrub: true, roster, you: me?.name?.split(" ")[0] ?? null, withRequestJobs: true }),
+      behindP,
     ]);
     return (
       <div>
@@ -374,13 +371,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
         <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
           {testNotice}
           <FlaggedBanner flagged={flagged} />
-          <VideoBehindBanner alert={ops.alert} />
-          <JobTiles tiles={ops.tiles.map((t) => ({ ...t, href: scopeHref(t.href) }))} />
-          {shoots
-            ? <ShootsTodayLine count={shoots.count} next={shoots.next} untimed={shoots.untimed} rush={shoots.rush} href={scopeHref("/ops#shoots")} />
-            : <p role="status" className="rounded-xl border border-border bg-surface px-3.5 py-2 text-sm text-muted">Today&rsquo;s shoots couldn&rsquo;t load. <Link href={scopeHref("/ops#shoots")} className="text-brand hover:underline">Open the checklist</Link>.</p>}
-          <OldItemsCard items={old?.items.slice(0, OLD_ITEMS_ON_HOME) ?? []} total={old?.items.length ?? 0} minDay={minDay} maxDay={maxDay} unavailable={!old} />
-          <ChecklistLinks includeTest={includeTest} />
+          <BehindLine state={behind} href="#deliveries" />
+          <SummaryBox summary={list.summary} includeTest={includeTest} />
+          <DailyChecklist list={list} includeTest={includeTest} minDay={minDay} maxDay={maxDay} />
         </div>
       </div>
     );
@@ -392,10 +385,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   if (homeRole === "owner") {
     // Every read starts here, and each streamed section owns its failure.
     const weekP = ownerWeek(now, scope).catch((e: unknown) => { console.warn("ownerWeek failed", (e as Error).message); return null; });
-    const tilesP = photoQcCount().then((photoQcCards) => opsHomeTiles({ now, excludeClientIds: excludedClientIds, team: true, photoQcCards })).catch(() => unavailableTiles());
+    const kyle = (await kylePerson(roster).catch(() => null)) ?? { key: "kyle", teamMemberId: null, name: "Kyle" };
+    // Kyle's own checklist, as he sees it (figures and all, this is the owner).
+    const listP: Promise<KyleChecklist | null> = kyleChecklist({ now, excludeClientIds: excludedClientIds, person: kyle, roster })
+      .catch((e: unknown) => { console.warn("kyleChecklist failed", (e as Error).message); return null; });
     const oldP = listOldItems(now, { excludeClientIds: excludedClientIds, roster }).catch(() => null);
+    const issuesP = ownerShootIssues(now).catch(() => null);
     const radarP: Promise<RadarRead> = getProactiveFlags(scope).catch(() => null);
-    const newClientsP = newClientsForDashboard({ includeTest }).catch(() => []);
     const ownerP: Promise<OwnerReads> = Promise.all([
       getOwnerStats(scope).catch(() => null),
       getOwnerPulse(scope).catch(() => null),
@@ -415,7 +411,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             <OwnerWeekSection weekP={weekP} />
           </Suspense>
           <Suspense fallback={<SectionLoading label="Checking what is behind…" />}>
-            <OwnerBehindSection tilesP={tilesP} oldP={oldP} />
+            <OwnerBehindSection stateP={behindP} listP={listP} oldP={oldP} includeTest={includeTest} />
+          </Suspense>
+          <Suspense fallback={<SectionLoading label="Reading shoot issues…" />}>
+            <OwnerShootIssues issuesP={issuesP} />
+          </Suspense>
+          <Suspense fallback={<SectionLoading label={`Reading ${kyle.name}’s day…`} />}>
+            <OwnerKylesDay listP={listP} name={kyle.name} includeTest={includeTest} />
           </Suspense>
 
           {/* YOUR LIST — the owner's personal to-dos (the /day page's list).
@@ -483,24 +485,19 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             </DayBlock>
           )}
 
-          {/* New clients — say hello. Renders nothing when there are none. */}
-          <Suspense fallback={null}>
-            <OwnerNewClients newClientsP={newClientsP} />
-          </Suspense>
-
           {/* MONEY — owner only, last, streamed; the 30-day trends fold under it. */}
           <Suspense fallback={<SectionLoading label="Loading the business numbers…" />}>
             <OwnerBusiness ownerP={ownerP} radarP={radarP} includeTest={includeTest} />
           </Suspense>
-          <ChecklistLinks includeTest={includeTest} />
         </div>
       </div>
     );
   }
 
   // ===========================================================================
-  // JAMES — the creative review seat. His desk as before; the checklist,
-  // today's shoot cards and stuck jobs it used to sit above now live on /ops.
+  // JAMES — the creative review seat. His desk as before. Today's shoot cards
+  // and stuck jobs live on /ops; a need row that used to jump to a checklist
+  // block opens the screen that holds that work (homeAnchors.blockScreen).
   // ===========================================================================
   const exceptionsP: Promise<OpsExceptionBoard> = opsExceptionsBoard({ includeTest }).catch((e: unknown): OpsExceptionBoard => {
     console.warn("opsExceptions failed", (e as Error).message);
@@ -649,7 +646,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const upcomingToday = d.todayShoots.find((s) => s.timeISO && Date.parse(s.endISO ?? s.timeISO) >= now.getTime()) ?? null;
   const notices = [
     !reviewQueue ? "The review queue could not be loaded. Open Review Room to retry." : null,
-    deliveryUnavailable(d) ? "Delivery follow-up could not be fully checked. Open Video Review on the daily checklist to see what is known." : null,
+    deliveryUnavailable(d) ? "Delivery follow-up could not be fully checked. Open the Video Review Room to see what is known." : null,
   ].filter((x): x is string => !!x);
 
   return (
@@ -693,7 +690,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
         <Suspense fallback={<SectionLoading label="Checking review, assignment and delivery exceptions…" />}>
           <HomeExceptions exceptionsP={exceptionsP} includeTest={includeTest} canReview={canReview} canEdit={!me || canAccess(me, "editing")} />
         </Suspense>
-        <ChecklistLinks includeTest={includeTest} />
       </div>
     </div>
   );

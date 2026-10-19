@@ -696,7 +696,7 @@ async function main() {
     // =========================================================================
     await section("§15 · Home: money that couldn't load says so; an untimed shoot; held renders (items 17, 15)", async () => {
       const { default: home } = await import("@/app/page");
-      const STREAMED = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients"]);
+      const STREAMED = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay"]);
       const settle = async (tree: unknown): Promise<unknown> => {
         if (Array.isArray(tree)) return Promise.all(tree.map(settle));
         if (!isValidElement<Props>(tree)) return tree;

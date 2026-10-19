@@ -1,8 +1,10 @@
 // C14: explicit Home scope reaches the same operational lists and survives delivery return links.
-// Oct 19 2026: the daily checklist (the time blocks and their counts) moved off
-// Home onto /ops, so the block checks read /ops with the same ?test= flag; the
-// two footer links Home used to repeat from the sidebar ("My work", "Client
-// months") went with Jordan's "too much on one screen" and are no longer expected.
+// Oct 19 2026 (evening): the ten time blocks are gone. The scope is checked on
+// what replaced them: Kyle's Home (the summary box and the daily checklist),
+// /ops (today's shoots, stuck jobs, exceptions, new clients), /ops/messages
+// (the Outbox line) and the review seat's Home (its need rows), all with the
+// same ?test= flag. The footer links Home used to repeat from the sidebar are
+// no longer expected (Jordan's "too much on one screen").
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 import { createElement, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -25,7 +27,7 @@ function textOf(tree: unknown): string {
 }
 // Expand only the Home's pure presentation functions. Client components retain
 // their real props; the drill does not run hooks or invoke their actions.
-const HOME_FUNCTIONS = new Set(["Block", "BlockBody", "QcDueToday", "LoopsCard", "LoopRow", "VideoReviewCard", "VideoGroup", "Pill", "NeedsToday", "NeedRow"]);
+const HOME_FUNCTIONS = new Set(["SummaryBox", "SummaryTile", "DailyChecklist", "GroupCard", "LineRow", "LineActions", "EarlierCard", "OldItemRow", "DoneToday", "DoneRow", "StillOpen", "NeedsToday", "NeedRow"]);
 function expand(tree: unknown): unknown {
   if (Array.isArray(tree)) return tree.map(expand);
   if (!isValidElement<Props>(tree)) return tree;
@@ -40,7 +42,7 @@ function hrefs(tree: unknown): string[] {
 // Oct 5: Home streams its secondary sections (Suspense around async server
 // components that await reads started with the page's own). Resolve those
 // named components so the checks read the page as it finishes composing.
-const STREAMED_HOME = new Set(["HomeExceptions", "HomeRadar", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerNewClients", "ChecklistExceptions", "ChecklistRadar"]);
+const STREAMED_HOME = new Set(["HomeExceptions", "OwnerBusiness", "OwnerWeekSection", "OwnerBehindSection", "OwnerShootIssues", "OwnerKylesDay", "OpsExceptions", "OpsRadar"]);
 async function settleHome(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settleHome));
   if (!isValidElement<Props>(tree)) return tree;
@@ -62,7 +64,7 @@ async function main() {
     const { default: opsPage } = await import("@/app/ops/page");
     const { default: review } = await import("@/app/review/page");
     const { getReviewQueue } = await import("@/lib/reviewRoom");
-    const { boardWhere, photoQcWhere } = await import("@/lib/taskBoard");
+    const { photoQcWhere } = await import("@/lib/taskBoard");
     const { clientTextWhere } = await import("@/lib/clientTexts");
     const { unansweredCommsBoard } = await import("@/lib/commsBoard");
     const { homeRecordHref } = await import("@/lib/homeRecordScope");
@@ -76,6 +78,8 @@ async function main() {
     const owner = await prisma.appUser.create({ data: { name: "Owner", email: "c14-owner@example.test", role: "OWNER", status: "ACTIVE" } });
     const admin = await prisma.appUser.create({ data: { name: "Creative Reviewer", email: seat.email!, role: "ADMIN", teamMemberId: seat.id, status: "ACTIVE" } });
     const editor = await prisma.appUser.create({ data: { name: "Editor", email: "c14-editor@example.test", role: "EDITOR", editorKey: "kim", status: "ACTIVE" } });
+    // The office's operations login (Kyle's Home: the summary box and the checklist).
+    const ops = await prisma.appUser.create({ data: { name: "Ops Office", email: "c14-ops@example.test", role: "ADMIN", status: "ACTIVE" } });
     await prisma.appSetting.create({ data: { key: "review_room", value: JSON.stringify({ creativeApproverTeamMemberId: seat.id }) } });
     const jobs = [];
     for (const client of [real, fixture]) {
@@ -110,40 +114,46 @@ async function main() {
     const all = await render("1");
     const normalOps = await renderOps();
     const allOps = await renderOps("1");
-    const normalBlock = elements(normalOps, "Block")[0];
-    const allBlock = elements(allOps, "Block")[0];
-    const normalCounts = normalBlock.counts as { boardOpen: number; qc: number; textsToSend: number; emailsWaiting: number };
-    const allCounts = allBlock.counts as typeof normalCounts;
-    const normalDay = normalBlock.d as import("../../src/lib/opsDay").OpsDay;
-    const allDay = allBlock.d as typeof normalDay;
+    await signIn(ops);
+    const kNormal = await render();
+    const kAll = await render("1");
+    const { default: messages } = await import("@/app/ops/messages/page");
+    const { default: requests } = await import("@/app/ops/requests/page");
+    const mNormal = await messages({ searchParams: Promise.resolve({}) });
+    const mAll = await messages({ searchParams: Promise.resolve({ test: "1" }) });
+    const listOf = (tree: unknown) => elements(tree, "DailyChecklist")[0].list as import("../../src/lib/opsHome").KyleChecklist;
+    const kn = listOf(kNormal), ka = listOf(kAll);
     const normalScope = { excludeClientIds: [fixture.id] };
-    c.ok("normal Home task badge keeps destination membership", normalCounts.boardOpen === 1 && normalCounts.boardOpen === await prisma.smartTask.count({ where: boardWhere(null, normalScope) }));
-    c.ok("explicit Home test task badge equals the full destination list", allCounts.boardOpen === 2 && allCounts.boardOpen === await prisma.smartTask.count({ where: boardWhere(null) }));
-    c.ok("normal and explicit-test photo/QC badges share destination scope", normalCounts.qc === 1 && allCounts.qc === 2 && normalCounts.qc === await prisma.smartTask.count({ where: photoQcWhere(normalScope) }) && allCounts.qc === await prisma.smartTask.count({ where: photoQcWhere() }));
-    c.ok("normal and explicit-test Outbox badges share destination scope", normalCounts.textsToSend === 1 && allCounts.textsToSend === 2 && normalCounts.textsToSend === await prisma.smartTask.count({ where: clientTextWhere(now, normalScope) }) && allCounts.textsToSend === await prisma.smartTask.count({ where: clientTextWhere(now) }));
-    c.ok("email badge and operating-day waiting clients restore fixture evidence together", normalCounts.emailsWaiting === (await unansweredCommsBoard("email", now, normalScope)).length && allCounts.emailsWaiting === (await unansweredCommsBoard("email", now)).length && normalCounts.emailsWaiting === 1 && allCounts.emailsWaiting === 2 && normalDay.unanswered.count === 1 && allDay.unanswered.count === 2);
-    c.ok("appointment, review and ready-delivery rows use the explicit Home scope", normalDay.todayShoots.length === 1 && allDay.todayShoots.length === 2 && normalDay.videoReview.waiting.length === 1 && allDay.videoReview.waiting.length === 2 && normalDay.readySend.ready.length === 1 && allDay.readySend.ready.length === 2);
-    c.ok("new client card restores only the fixture excluded by normal view", (elements(normal, "NewClientCard")[0].clients as { id: string }[]).length === 1 && (elements(all, "NewClientCard")[0].clients as { id: string }[]).length === 2);
+    const waiting = async (scope?: { excludeClientIds: string[] }) => (await unansweredCommsBoard("phone", now, scope)).length + (await unansweredCommsBoard("email", now, scope)).length;
+    c.ok("normal and explicit-test photo/QC numbers share destination scope", kn.summary.photos?.olderQc === 1 && ka.summary.photos?.olderQc === 2 && kn.summary.photos?.olderQc === await prisma.smartTask.count({ where: photoQcWhere(normalScope) }) && ka.summary.photos?.olderQc === await prisma.smartTask.count({ where: photoQcWhere() }));
+    c.ok("normal and explicit-test Outbox line share destination scope", /\b1 client text ?drafted/.test(textOf(mNormal).replace(/\s+/g, " ")) && /\b2 client text ?s drafted/.test(textOf(mAll).replace(/\s+/g, " ")) && 1 === await prisma.smartTask.count({ where: clientTextWhere(now, normalScope) }) && 2 === await prisma.smartTask.count({ where: clientTextWhere(now) }));
+    c.ok("the waiting-clients number and its checklist group restore fixture evidence together", kn.summary.messages?.waiting === await waiting(normalScope) && ka.summary.messages?.waiting === await waiting() && kn.summary.messages?.waiting === 1 && ka.summary.messages?.waiting === 2 && kn.groups[1].lines.length === 1 && ka.groups[1].lines.length === 2);
+    const pile = (l: import("../../src/lib/opsHome").KyleChecklist) => [...l.groups.find((g) => g.key === "followups")!.lines.map((x) => x.key.slice(5)), ...l.earlier.items.map((i) => i.id)];
+    c.ok("the shared ops pile on the checklist uses the explicit Home scope", pile(kn).length === 1 && pile(ka).length === 2);
+    c.ok("appointment and ready-delivery rows use the explicit scope (shoot cards on /ops; the review seat's to-send row below)", (elements(normalOps, "ShootList")[0].shoots as unknown[]).length === 1 && (elements(allOps, "ShootList")[0].shoots as unknown[]).length === 2);
+    c.ok("new client card restores only the fixture excluded by normal view", (elements(normalOps, "NewClientCard")[0].clients as { id: string }[]).length === 1 && (elements(allOps, "NewClientCard")[0].clients as { id: string }[]).length === 2);
     c.ok("test view names supported queue scopes and unchanged Finance definitions", textOf(all).includes("Showing real and test records in Home workloads") && textOf(all).includes("Editing Room, Schedule and delivery lists keep this view") && textOf(all).includes("Finance’s existing definitions") && !textOf(normal).includes("Showing real and test records"));
-    const normalLinks = [...hrefs(expand(normal)), ...hrefs(expand(normalOps))];
-    const allLinks = [...hrefs(expand(all)), ...hrefs(expand(allOps))];
+    const normalLinks = [...hrefs(expand(normal)), ...hrefs(expand(normalOps)), ...hrefs(expand(kNormal)), ...hrefs(mNormal)];
+    const allLinks = [...hrefs(expand(all)), ...hrefs(expand(allOps)), ...hrefs(expand(kAll)), ...hrefs(mAll)];
     c.ok("normal Home links do not silently opt into test scope", !normalLinks.some((href) => /[?&]test=1/.test(href) && href !== "/?test=1" && href !== "/ops?test=1"));
-    c.ok("test workload destinations preserve scope through the checklist blocks", ["/review?test=1", "/tasks?tab=comms&via=email&test=1", "/tasks?tab=other&test=1", "/tasks?tab=slack&test=1", "/?test=1"].every((href) => allLinks.includes(href)), allLinks.join("\n"));
-    const { ChecklistLinks } = await import("@/components/home/OpsHomeParts");
-    c.ok("Home's line to the checklist keeps the test scope", elements(all, "ChecklistLinks")[0]?.includeTest === true && hrefs(ChecklistLinks({ includeTest: true })).every((h) => h.startsWith("/ops?test=1")) && elements(normal, "ChecklistLinks")[0]?.includeTest === false);
-    const fullQc = elements(expand(allOps), "LoopActions");
-    c.ok("synthetic Slack loop deep links retain task ID and scope", fullQc.length === 2 && fullQc.every((p) => String(p.viewHref).includes("tab=slack&task=") && String(p.viewHref).endsWith("&test=1")));
-    c.ok("exact-cut links retain recorded version without extra list flags", allLinks.includes(`/review/${jobs[1].project.id}?cut=${jobs[1].cut.id}`));
+    c.ok("test workload destinations preserve scope through the checklist and its screens", ["/review?test=1", "/tasks?tab=comms&via=email&test=1", "/ops/messages?test=1", "/communications?tab=outbox&test=1", "/?test=1"].every((href) => allLinks.includes(href)), allLinks.join("\n"));
+    c.ok("a retired page keeps the test scope when it redirects to the checklist", await (async () => { try { await requests({ searchParams: Promise.resolve({ test: "1" }) }); return null; } catch (e) { return e instanceof Redirect ? e.href : null; } })() === "/?test=1#requests");
+    const slackRows = allLinks.filter((h) => h.startsWith("/tasks?tab=slack&task="));
+    c.ok("synthetic Slack task deep links retain task ID and scope", slackRows.length >= 2 && slackRows.every((h) => h.endsWith("&test=1")));
     c.ok("figures from the books and Finance routes retain their definitions", JSON.stringify(elements(normal, "MoneyStat")) === JSON.stringify(elements(all, "MoneyStat")) && allLinks.includes("/sales") && !allLinks.some((href) => href.startsWith("/sales?")));
-    c.ok("only scalar test=1 enables the scope", (elements(await renderOps("true"), "Block")[0].counts as typeof normalCounts).boardOpen === 1 && (elements(await renderOps(["1", "1"]), "Block")[0].counts as typeof normalCounts).boardOpen === 1);
+    await signIn(ops);
+    c.ok("only scalar test=1 enables the scope", listOf(await render("true")).summary.messages?.waiting === 1 && listOf(await render(["1", "1"])).summary.messages?.waiting === 1);
     await signIn(admin);
     const assigned = await render("1");
     const needs = elements(assigned, "NeedsToday")[0].needs as { key: string; count: number; href: string }[];
+    c.ok("exact-cut links retain recorded version without extra list flags", hrefs(expand(assigned)).includes(`/review/${jobs[0].project.id}?cut=${jobs[0].cut.id}`));
+    c.ok("the review seat's ready-to-send row uses the explicit scope", needs.find((n) => n.key === "tosend")?.count === 2 && (elements(await render(), "NeedsToday")[0].needs as { key: string; count: number }[]).find((n) => n.key === "tosend")?.count === 1);
     c.ok("signed creative reviewer sees the same full assigned queue while retaining money gates", needs.find((n) => n.key === "review-mine")?.count === (await getReviewQueue({ includeTest: true })).pending.filter((cut) => cut.reviewer?.id === seat.id).length && needs.find((n) => n.key === "review-mine")?.count === 2 && elements(assigned, "MoneyStat").length === 0 && elements(assigned, "QuickAdd").length === 0);
     const reviewTree = await review({ searchParams: Promise.resolve({ test: "1" }) });
     // The simplified Review Room no longer embeds the delivery summary. Check
     // its actual scoped cut rows; the summary's return-link contract follows.
     c.ok("Review Room retains both real and fixture cuts in explicit test view", jobs.every(job => elements(reviewTree, "CutRow").some(row => (row.s as { id: string }).id === job.cut.id)));
+    const allDay = await (await import("@/lib/opsDay")).buildOpsDay({ excludeClientIds: [] });
     const summary = renderToStaticMarkup(createElement(DeliveryExitSummary, { board: allDay.readySend, includeTest: true }));
     c.ok("test delivery return opens Home test view at its original anchor", summary.includes('href="/?test=1#video-review"') && !summary.includes('href="/#video-review"'));
     const incident = { projectId: jobs[1].project.id, street: "Fixture-only property", state: "failed" as const, queuedAtISO: now.toISOString(), outboxId: "isolated-outbox", taskId: "isolated-task" };

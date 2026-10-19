@@ -1,31 +1,26 @@
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, Camera, CheckCircle2, Flag, ListChecks, Zap } from "lucide-react";
+import { ArrowRight, Camera, CheckCircle2, Flag, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
 import type { FlaggedItem } from "@/lib/queries";
-import type { JobTile, OwnerWeek, VideoAlert } from "@/lib/opsHome";
-import type { OldItem, OldPerson } from "@/lib/taskAging";
-import { OLD_AFTER_DAYS, PUSHES_BEFORE_FLAG, WEEK_OLD_DAYS } from "@/lib/taskAging";
-import { OldItemActions } from "@/components/home/OldItemActions";
+import { onTimeWords, ON_TIME_MIN_JOBS, type HomeSummary, type OwnerWeek } from "@/lib/opsHome";
+import type { OldPerson } from "@/lib/taskAging";
+import { OLD_AFTER_DAYS, PUSHES_BEFORE_FLAG } from "@/lib/taskAging";
+import type { BehindState } from "@/lib/behindAlert";
+import type { ShootIssue } from "@/lib/shootIssues";
+import { homeRecordHref } from "@/lib/homeRecordScope";
+import { SummaryBox } from "@/components/home/Checklist";
 
 // ---------------------------------------------------------------------------
-// The pieces of the two simplified Homes (Oct 19 2026). Kyle: flagged items,
-// the video banner, five job tiles, today's shoots in one line, old items,
-// and one line to the checklist. Jordan: this week, what we're behind on, his
-// own list, money. Every number here arrives computed (lib/opsHome,
-// lib/taskAging); these components only lay it out.
+// The pieces the Homes share (Oct 19 2026): the flagged-for-you banner (every
+// Home), today's shoots in one line (the review seat's Home), and Jordan's
+// sections: this week, what we're behind on, shoot issues. Every number arrives computed (lib/opsHome,
+// lib/taskAging, lib/behindAlert, lib/shootIssues); these only lay it out.
 // ---------------------------------------------------------------------------
 
 const ET = "America/New_York";
 const fmtTime = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit" });
 const fmtDay = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric" });
-
-/** "5h" / "3d" / "–" for a tile's oldest wait. */
-export function ageShort(hours: number | null | undefined): string {
-  if (hours == null) return "–";
-  if (hours < 24) return `${Math.max(0, Math.round(hours))}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
 
 /** Flags a PERSON raised for this viewer, above everything. */
 export function FlaggedBanner({ flagged }: { flagged: FlaggedItem[] }) {
@@ -57,80 +52,7 @@ export function FlaggedBanner({ flagged }: { flagged: FlaggedItem[] }) {
   );
 }
 
-/** Red when we are very behind on listing videos, amber for one or two late. */
-export function VideoBehindBanner({ alert }: { alert: VideoAlert | null }) {
-  if (!alert) return null;
-  const red = alert.level === "red";
-  return (
-    <Link
-      href={alert.href}
-      data-video-alert={alert.level}
-      className={cn(
-        "flex min-h-14 items-start gap-3 rounded-2xl border-2 px-4 py-3",
-        red ? "border-danger/60 bg-danger/10 hover:bg-danger/15" : "border-warning/50 bg-warning/10 hover:bg-warning/15",
-      )}
-    >
-      <AlertTriangle aria-hidden className={cn("mt-0.5 size-5 shrink-0", red ? "text-danger" : "text-warning")} />
-      <span className="min-w-0 flex-1">
-        <span className={cn("block text-[15px] font-semibold leading-snug", red ? "text-danger" : "text-warning")}>{alert.headline}</span>
-        <span className="mt-0.5 block text-sm text-foreground/80">{alert.detail}</span>
-      </span>
-      <span className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-lg bg-brand-action px-3 text-sm font-semibold text-white">
-        Open <ArrowRight aria-hidden className="size-4" />
-      </span>
-    </Link>
-  );
-}
-
-const TONE_TEXT: Record<JobTile["tone"], string> = { danger: "text-danger", warning: "text-warning", ok: "text-success", muted: "text-muted" };
-const TONE_BORDER: Record<JobTile["tone"], string> = { danger: "border-danger/45", warning: "border-warning/45", ok: "border-border", muted: "border-border" };
-
-/** The five jobs: due today, behind, oldest. Big and tappable; one column on a phone. */
-export function JobTiles({ tiles, title = "Your five jobs" }: { tiles: JobTile[]; title?: string }) {
-  return (
-    <section aria-labelledby="job-tiles-title">
-      <h2 id="job-tiles-title" className="px-1 pb-2 text-base font-semibold">{title}</h2>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {tiles.map((t) => (
-          <div key={t.key} data-tile={t.key} className={cn("panel-shadow flex flex-col rounded-2xl border bg-surface", TONE_BORDER[t.tone])}>
-            <Link href={t.href} className="flex flex-1 flex-col gap-2 rounded-2xl p-4 hover:bg-surface-2/50 focus-visible:outline-2 focus-visible:outline-brand">
-              <span className="flex items-center justify-between gap-2">
-                <span className="text-[15px] font-semibold">{t.label}</span>
-                <ArrowRight aria-hidden className="size-4 text-muted-2" />
-              </span>
-              {t.counts ? (
-                <span className="grid grid-cols-3 gap-2 text-center">
-                  <TileStat value={String(t.counts.dueToday)} label="due today" tone={t.counts.dueToday > 0 ? "text-warning" : "text-foreground"} />
-                  <TileStat value={String(t.counts.behind)} label="behind" tone={t.counts.behind > 0 ? "text-danger" : "text-foreground"} />
-                  <TileStat value={ageShort(t.counts.oldestHours)} label="oldest" tone="text-foreground" />
-                </span>
-              ) : (
-                <span className="rounded-xl bg-surface-2/60 px-3 py-3 text-center text-sm text-muted">Not available right now</span>
-              )}
-              <span className={cn("text-sm leading-snug", TONE_TEXT[t.tone])}>{t.status}</span>
-            </Link>
-            {t.note && (
-              <Link href={t.note.href} className="border-t border-border px-4 py-2 text-[13px] text-muted hover:text-foreground">
-                {t.note.text} <ArrowRight aria-hidden className="inline size-3" />
-              </Link>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function TileStat({ value, label, tone }: { value: string; label: string; tone: string }) {
-  return (
-    <span className="rounded-xl bg-surface-2/60 px-1 py-2">
-      <span className={cn("block text-2xl font-semibold tabular-nums leading-none", tone)}>{value}</span>
-      <span className="mt-1 block text-[11px] text-muted">{label}</span>
-    </span>
-  );
-}
-
-/** Today's shoots, as one line that opens the full cards on the checklist. */
+/** Today's shoots, as one line that opens the full cards on /ops. */
 export function ShootsTodayLine({ count, next, untimed, rush, href }: {
   count: number;
   next: { timeISO: string | null; street: string; photographer: string | null } | null;
@@ -167,86 +89,7 @@ export function ShootsTodayLine({ count, next, untimed, rush, href }: {
   );
 }
 
-/** Kyle's old items: the count, the oldest few with one-tap actions, and the full list. */
-export function OldItemsCard({ items, total, minDay, maxDay, unavailable = false }: {
-  items: OldItem[];
-  total: number;
-  minDay: string;
-  maxDay: string;
-  unavailable?: boolean;
-}) {
-  return (
-    <section id="old-items" aria-labelledby="old-items-title" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface p-4 sm:p-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h2 id="old-items-title" className="text-base font-semibold">
-          Old items to clear: <span className={cn("tabular-nums", total > 0 ? "text-danger" : "text-success")}>{unavailable ? "?" : total}</span>
-        </h2>
-        {total > 0 && (
-          <Link href="/ops/old" className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
-            See all {total} <ArrowRight aria-hidden className="size-4" />
-          </Link>
-        )}
-      </div>
-      <p className="mt-1 text-sm text-muted">
-        Open, assigned to you, and {OLD_AFTER_DAYS}+ days past their date. For each one: Done, Not needed, or pick a new date.
-      </p>
-      {unavailable ? (
-        <p role="status" className="mt-3 text-sm text-warning">The old items could not be read. Open the full list to try again.</p>
-      ) : total === 0 ? (
-        <p className="mt-3 flex items-center gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> Nothing old on your plate.</p>
-      ) : (
-        <ul className="mt-3 divide-y divide-border">
-          {items.map((i) => <OldItemRow key={i.id} item={i} minDay={minDay} maxDay={maxDay} />)}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-export function OldItemRow({ item, minDay, maxDay, showPerson = false }: { item: OldItem; minDay: string; maxDay: string; showPerson?: boolean }) {
-  return (
-    <li className="py-3" data-old-item={item.id}>
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-        <Link href={item.href} className="min-w-0 flex-1 basis-56 text-sm font-semibold leading-snug hover:text-brand">{item.title}</Link>
-        <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", item.daysPast >= WEEK_OLD_DAYS ? "bg-danger/15 text-danger" : "bg-warning/15 text-warning")}>
-          {item.daysPast} day{item.daysPast === 1 ? "" : "s"} past its date
-        </span>
-      </div>
-      <p className="mt-0.5 text-[12px] text-muted">
-        {item.kind}
-        {showPerson ? ` · ${item.personName}` : ""}
-        {item.projectTitle ? ` · ${item.projectTitle}` : ""}
-        {item.dueISO ? ` · due ${fmtDay(item.dueISO)}` : ""}
-        {item.pushedToISO ? ` · moved to ${fmtDay(item.pushedToISO)}` : ""}
-        {item.pushes > 0 ? (
-          <span className={cn(item.pushes >= PUSHES_BEFORE_FLAG - 1 && "font-semibold text-danger")}>
-            {` · pushed ${item.pushes} time${item.pushes === 1 ? "" : "s"}`}{item.pushes === PUSHES_BEFORE_FLAG - 1 ? " (one more tells Jordan)" : ""}
-          </span>
-        ) : null}
-      </p>
-      <div className="mt-2">
-        <OldItemActions taskId={item.id} minDay={minDay} maxDay={maxDay} />
-      </div>
-    </li>
-  );
-}
-
-/** One line to the screens that moved off Home. */
-export function ChecklistLinks({ includeTest = false }: { includeTest?: boolean }) {
-  const q = includeTest ? "?test=1" : "";
-  return (
-    <nav aria-label="More operations" className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-border bg-surface px-3.5 py-1 text-sm">
-      <ListChecks aria-hidden className="size-4 text-muted-2" />
-      <Link href={`/ops${q}`} className="inline-flex min-h-11 items-center font-medium hover:text-brand">Daily checklist</Link>
-      <Link href={`/ops${q}#exceptions`} className="inline-flex min-h-11 items-center text-muted hover:text-foreground">Exceptions</Link>
-      <Link href={`/ops${q}#stuck`} className="inline-flex min-h-11 items-center text-muted hover:text-foreground">Stuck jobs</Link>
-    </nav>
-  );
-}
-
 // ---- The owner's week ------------------------------------------------------------
-
-const pctText = (p: number | null) => (p == null ? "no promise to judge" : `${p}% on time`);
 
 export function OwnerWeekCard({ week }: { week: OwnerWeek | null }) {
   if (!week) {
@@ -254,6 +97,9 @@ export function OwnerWeekCard({ week }: { week: OwnerWeek | null }) {
   }
   const t = week.thisWeek;
   const l = week.lastWeek;
+  // A percentage of one or two jobs reads as a verdict it is not (Oct 19):
+  // shown from ON_TIME_MIN_JOBS jobs judged, "too few to judge" before.
+  const judged = (s: { judged: number; onTimePct: number | null }) => s.judged >= ON_TIME_MIN_JOBS && s.onTimePct != null;
   return (
     <section aria-labelledby="this-week-title" data-owner-week className="panel-shadow rounded-2xl border border-border bg-surface p-4 sm:p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
@@ -262,8 +108,8 @@ export function OwnerWeekCard({ week }: { week: OwnerWeek | null }) {
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
         <WeekStat label="Shoots done" value={String(t.shoots)} last={String(l.shoots)} />
-        <WeekStat label="Photo jobs delivered" value={String(t.photos.delivered)} sub={pctText(t.photos.onTimePct)} last={`${l.photos.delivered}, ${pctText(l.photos.onTimePct)}`} bad={t.photos.onTimePct != null && t.photos.onTimePct < 80} />
-        <WeekStat label="Listing videos delivered" value={String(t.listingVideos.delivered)} sub={pctText(t.listingVideos.onTimePct)} last={`${l.listingVideos.delivered}, ${pctText(l.listingVideos.onTimePct)}`} bad={t.listingVideos.onTimePct != null && t.listingVideos.onTimePct < 80} />
+        <WeekStat label="Photo jobs delivered" value={String(t.photos.delivered)} sub={onTimeWords(t.photos)} last={`${l.photos.delivered}, ${onTimeWords(l.photos)}`} bad={judged(t.photos) && t.photos.onTimePct! < 80} />
+        <WeekStat label="Listing videos delivered" value={String(t.listingVideos.delivered)} sub={onTimeWords(t.listingVideos)} last={`${l.listingVideos.delivered}, ${onTimeWords(l.listingVideos)}`} bad={judged(t.listingVideos) && t.listingVideos.onTimePct! < 80} />
         <WeekStat label="Monthly videos delivered" value={String(t.monthlyVideos)} last={String(l.monthlyVideos)} />
         <WeekStat label="Client texts answered in 1 hour" value={t.replies.fastPct == null ? "–" : `${t.replies.fastPct}%`} sub={`${t.replies.fast} of ${t.replies.inbound}`} last={l.replies.fastPct == null ? "–" : `${l.replies.fastPct}%`} bad={t.replies.fastPct != null && t.replies.fastPct < 70} />
         <WeekStat label="Revisions asked for" value={String(t.revisions)} last={String(l.revisions)} />
@@ -283,46 +129,75 @@ function WeekStat({ label, value, sub, last, bad }: { label: string; value: stri
   );
 }
 
-/** The owner's "what we're behind on": each job's behind number, team-wide, and the old items. */
-export function BehindCard({ tiles, people, oldTotal, unavailableOld = false }: { tiles: JobTile[]; people: OldPerson[]; oldTotal: number; unavailableOld?: boolean }) {
-  const weekOld = people.filter((p) => p.weekOld > 0);
-  const pushed = people.reduce((n, p) => n + p.pushedOften, 0);
+/** The owner's "What we're behind on": the team's red line, the same three
+ *  numbers as Kyle's box (they are team-wide already), and the old items. */
+export function BehindCard({ state, summary, people, includeTest = false }: {
+  state: BehindState | null;
+  summary: HomeSummary | null;
+  /** everyone's old items (3+ days past their date); null = could not load */
+  people: OldPerson[] | null;
+  includeTest?: boolean;
+}) {
+  const withOld = (people ?? []).filter((p) => p.total > 0);
+  const pushed = (people ?? []).reduce((n, p) => n + p.pushedOften, 0);
   return (
-    <section aria-labelledby="behind-title" data-owner-behind className="panel-shadow rounded-2xl border border-border bg-surface p-4 sm:p-5">
+    <section id="behind" aria-labelledby="behind-title" data-owner-behind className="panel-shadow scroll-mt-32 space-y-3 rounded-2xl border border-border bg-surface p-4 sm:p-5 md:scroll-mt-28">
       <h2 id="behind-title" className="text-base font-semibold">What we&rsquo;re behind on</h2>
-      <ul className="mt-2 divide-y divide-border">
-        {tiles.map((t) => (
-          <li key={t.key}>
-            <Link href={t.href} className="-mx-2 flex min-h-12 items-center gap-3 rounded-lg px-2 py-2 hover:bg-surface-2/60">
-              <span className={cn("w-10 shrink-0 text-right text-lg font-semibold tabular-nums", t.counts ? (t.counts.behind > 0 ? "text-danger" : "text-success") : "text-muted")}>
-                {t.counts ? t.counts.behind : "?"}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium">{t.label}</span>
-                <span className="block text-[12px] text-muted">{t.status}</span>
-              </span>
-              <ArrowRight aria-hidden className="size-3.5 shrink-0 text-muted-2" />
-            </Link>
-          </li>
-        ))}
-        <li>
-          <Link href="/ops/old?who=all" className="-mx-2 flex min-h-12 items-center gap-3 rounded-lg px-2 py-2 hover:bg-surface-2/60">
-            <span className={cn("w-10 shrink-0 text-right text-lg font-semibold tabular-nums", oldTotal > 0 ? "text-danger" : "text-success")}>{unavailableOld ? "?" : oldTotal}</span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium">Old items ({OLD_AFTER_DAYS}+ days past their date)</span>
-              <span className="block text-[12px] text-muted">
-                {unavailableOld
-                  ? "Couldn't load. Open the list to check."
-                  : weekOld.length === 0
-                    ? "Nothing over a week old."
-                    : weekOld.map((p) => `${p.name} has ${p.weekOld} over a week old`).join(" · ")}
-                {pushed > 0 ? ` · ${pushed} pushed ${PUSHES_BEFORE_FLAG}+ times` : ""}
-              </span>
-            </span>
-            <ArrowRight aria-hidden className="size-3.5 shrink-0 text-muted-2" />
-          </Link>
-        </li>
-      </ul>
+      {!state ? (
+        <p role="status" className="text-sm text-muted">Whether we&rsquo;re behind couldn&rsquo;t be checked. Refresh to try again.</p>
+      ) : state.level === "ok" ? (
+        <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> Nothing is past its promise.</p>
+      ) : (
+        <p data-behind={state.level} className="rounded-xl border-2 border-danger/50 bg-danger/10 px-3 py-2 text-[15px] font-semibold text-danger">
+          {state.headline ?? `${state.videosLate} video${state.videosLate === 1 ? "" : "s"} and ${state.photosLate} photo job${state.photosLate === 1 ? "" : "s"} late.`}
+        </p>
+      )}
+      {summary ? <SummaryBox summary={summary} includeTest={includeTest} title="Across the team, right now" /> : <p role="status" className="text-sm text-muted">The delivery and message numbers couldn&rsquo;t load.</p>}
+      <p className="text-sm">
+        <span className="font-medium">Old items ({OLD_AFTER_DAYS}+ days past their date):</span>{" "}
+        <span className="text-muted">
+          {people == null
+            ? "couldn't load."
+            : withOld.length === 0
+              ? "none."
+              : withOld.map((p) => `${p.name} ${p.total}${p.weekOld > 0 ? ` (${p.weekOld} over a week)` : ""}`).join(" · ")}
+          {pushed > 0 ? ` · ${pushed} pushed ${PUSHES_BEFORE_FLAG}+ times` : ""}
+        </span>
+      </p>
+      <Link href={homeRecordHref("/ops", includeTest)} className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
+        Today&rsquo;s shoots, stuck jobs and exceptions <ArrowRight aria-hidden className="size-4" />
+      </Link>
+    </section>
+  );
+}
+
+/** What keeps happening at shoots: the creatives' flags that only Jordan gets. */
+export function ShootIssuesCard({ issues }: { issues: { open: ShootIssue[]; byClient: { client: string; count: number }[] } | null }) {
+  if (!issues) {
+    return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">Shoot issues couldn&rsquo;t load. Refresh to try again.</p>;
+  }
+  const repeats = issues.byClient.filter((c) => c.count >= 2);
+  return (
+    <section aria-labelledby="shoot-issues-title" data-shoot-issues className="panel-shadow rounded-2xl border border-border bg-surface p-4 sm:p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+        <h2 id="shoot-issues-title" className="text-base font-semibold">Shoot issues</h2>
+        <p className="text-sm text-muted">{issues.open.length} open</p>
+      </div>
+      {issues.open.length === 0 ? (
+        <p className="mt-2 flex items-center gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> No shoot issues open.</p>
+      ) : (
+        <ul className="mt-2 divide-y divide-border">
+          {issues.open.map((i) => (
+            <li key={i.id} className="py-2.5">
+              <Link href={i.href} className="text-sm font-semibold leading-snug [overflow-wrap:anywhere] hover:text-brand">{i.text}</Link>
+              <p className="mt-0.5 text-[12px] text-muted">{[i.client, i.street, i.by, etDateTime(i.atISO)].filter(Boolean).join(" · ")}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {repeats.length > 0 && (
+        <p className="mt-2 text-sm"><span className="font-medium">Keeps happening:</span> <span className="text-muted">{repeats.map((c) => `${c.client} ${c.count} times`).join(" · ")}</span></p>
+      )}
     </section>
   );
 }

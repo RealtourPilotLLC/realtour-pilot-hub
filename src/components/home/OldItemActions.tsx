@@ -6,14 +6,15 @@ import { CalendarClock, Check, Loader2, X } from "lucide-react";
 import { dismissTask, setSmartTaskStatus } from "@/app/actions";
 import { pushOldItem } from "@/app/ops/old/actions";
 
-// The three ways out of an old item (Oct 19 2026): Done, Not needed, or a new
-// date. "New date" opens a date picker and nothing is saved until a day is
-// picked; the server counts the pushes and tells Jordan on the third.
-// Done and Not needed are the hub's existing task actions, unchanged.
+// The ways out of a task on Kyle's checklist (Oct 19 2026): Done, Not needed,
+// or (for an item from earlier days) a new date. "New date" opens a date
+// picker and nothing is saved until a day is picked; the server counts the
+// pushes and tells Jordan on the third. Done and Not needed are the hub's
+// existing task actions, unchanged.
 
 const btn = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border px-3 text-sm font-medium disabled:opacity-60";
 
-export function OldItemActions({ taskId, minDay, maxDay }: { taskId: string; minDay: string; maxDay: string }) {
+export function OldItemActions({ taskId, minDay, maxDay, allowNewDate = true }: { taskId: string; minDay?: string; maxDay?: string; allowNewDate?: boolean }) {
   const router = useRouter();
   const [busy, start] = useTransition();
   const [picking, setPicking] = useState(false);
@@ -43,9 +44,11 @@ export function OldItemActions({ taskId, minDay, maxDay }: { taskId: string; min
           <button type="button" disabled={busy} onClick={() => run(() => dismissTask(taskId, "not needed"), () => "Closed as not needed.")} className={`${btn} border-border text-muted hover:bg-surface-2 hover:text-foreground`}>
             <X aria-hidden className="size-4" /> Not needed
           </button>
-          <button type="button" disabled={busy} onClick={() => setPicking(true)} className={`${btn} border-border text-muted hover:bg-surface-2 hover:text-foreground`}>
-            <CalendarClock aria-hidden className="size-4" /> New date
-          </button>
+          {allowNewDate && (
+            <button type="button" disabled={busy} onClick={() => setPicking(true)} className={`${btn} border-border text-muted hover:bg-surface-2 hover:text-foreground`}>
+              <CalendarClock aria-hidden className="size-4" /> New date
+            </button>
+          )}
         </>
       ) : (
         <form

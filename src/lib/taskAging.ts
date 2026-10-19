@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { homeFor } from "@/lib/auth/access";
 import { listAssignees, slugForName, type Assignee } from "@/lib/assignees";
 import { taskClientScopeWhere } from "@/lib/taskClientScope";
-import { etDate, etDayKey } from "@/lib/datetime";
+import { etDate, etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { CLIENT_TEXT_TYPES } from "@/lib/clientTexts";
 import { noDashes, scrubMoney } from "@/lib/text";
 import { DISMISSED_PREFIX } from "@/lib/triage";
 
@@ -44,8 +45,8 @@ export const OLD_AFTER_DAYS = 3;
 export const WEEK_OLD_DAYS = 7;
 /** The push that flags Jordan ("a 3rd push flags Jordan"). */
 export const PUSHES_BEFORE_FLAG = 3;
-/** How many old items Home lists before "see all". */
-export const OLD_ITEMS_ON_HOME = 4;
+/** How many "from earlier days" items Kyle's checklist shows before the rest fold. */
+export const EARLIER_SHOWN = 5;
 /** The furthest out a New date may go. */
 export const MAX_PUSH_DAYS = 60;
 
@@ -181,6 +182,38 @@ function personKeyOf(t: { assignedKey: string | null; ownerId: string | null; ow
 
 const capitalize = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
+type ItemRow = {
+  id: string; title: string; taskType: string; source: string; projectId: string | null;
+  dueAt: Date | null; followUpAt: Date | null;
+  project: { title: string } | null;
+};
+
+/** One task as a list row (the old items list and the daily checklist share it). */
+function toOldItem(
+  t: ItemRow,
+  o: { key: string | null; roster: Assignee[]; now: Date; pushes: Map<string, number>; scrub?: boolean },
+): OldItem {
+  const at = chaseDate(t);
+  const pushed = !!t.followUpAt && (!t.dueAt || t.followUpAt > t.dueAt) && (o.pushes.get(t.id) ?? 0) > 0;
+  return {
+    id: t.id,
+    title: o.scrub ? scrubMoney(t.title) : t.title,
+    taskType: t.taskType,
+    kind: kindLabel(t.taskType),
+    source: t.source,
+    projectId: t.projectId,
+    projectTitle: t.project?.title?.split(",")[0]?.trim() ?? null,
+    personKey: o.key ?? "",
+    personName: o.key ? capitalize(o.roster.find((a) => a.key === o.key)?.name ?? o.key) : "Nobody yet",
+    dueISO: t.dueAt?.toISOString() ?? null,
+    chaseISO: (at ?? o.now).toISOString(),
+    pushedToISO: pushed ? t.followUpAt!.toISOString() : null,
+    daysPast: daysPast(t, o.now),
+    pushes: o.pushes.get(t.id) ?? 0,
+    href: oldItemHref(t),
+  };
+}
+
 /** How many New dates each task has had. */
 export async function pushCounts(taskIds: string[]): Promise<Map<string, number>> {
   if (taskIds.length === 0) return new Map();
@@ -215,26 +248,7 @@ export async function listOldItems(
   for (const t of old) {
     const key = personKeyOf(t, roster);
     if (!key) continue;
-    const at = chaseDate(t)!;
-    const pushed = !!t.followUpAt && (!t.dueAt || t.followUpAt > t.dueAt) && (pushes.get(t.id) ?? 0) > 0;
-    const title = opts.scrub ? scrubMoney(t.title) : t.title;
-    all.push({
-      id: t.id,
-      title,
-      taskType: t.taskType,
-      kind: kindLabel(t.taskType),
-      source: t.source,
-      projectId: t.projectId,
-      projectTitle: t.project?.title?.split(",")[0]?.trim() ?? null,
-      personKey: key,
-      personName: capitalize(roster.find((a) => a.key === key)?.name ?? key),
-      dueISO: t.dueAt?.toISOString() ?? null,
-      chaseISO: at.toISOString(),
-      pushedToISO: pushed ? t.followUpAt!.toISOString() : null,
-      daysPast: daysPast(t, now),
-      pushes: pushes.get(t.id) ?? 0,
-      href: oldItemHref(t),
-    });
+    all.push(toOldItem(t, { key, roster, now, pushes, scrub: opts.scrub }));
   }
   all.sort((a, b) => Date.parse(a.chaseISO) - Date.parse(b.chaseISO) || a.title.localeCompare(b.title));
   const byKey = new Map<string, OldPerson>();
@@ -253,6 +267,136 @@ export async function listOldItems(
   const people = [...byKey.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
   const items = opts.personKey === undefined || opts.personKey === null ? all : all.filter((i) => i.personKey === opts.personKey);
   return { items, people, total: items.length };
+}
+
+// ---------------------------------------------------------------------------
+// THE DAILY CHECKLIST'S TASKS (Jordan, Oct 19 2026: "We just need Kyle to be
+// able to keep track of what he got done and what's still outstanding at the
+// end of the day"). One person's open tasks, judged by the same date as the
+// old items (chaseDate: the later of the due date and a picked New date):
+//   · its date is today (ET)     → "Follow-ups due"
+//   · its date is before today   → "From earlier days, still open", oldest
+//                                  first; 3+ days past is OLD (the rule above)
+// and what was closed today, for "Done today".
+//
+// Whose: the tasks named to the person (assignedKey, or filed to their
+// TeamMember with no assignedKey), the leads nobody holds (the lead desk's
+// rule: an unassigned lead is the office's to call), and the follow-ups on
+// the shared ops pile (no name at all; opsDay.openLoopsList's OPS lane).
+// Never: drafted client texts (the Outbox sends those), and a shoot note that
+// closes itself (shootNoteExpires, below) is left off.
+// ---------------------------------------------------------------------------
+
+/** Whose checklist: an assignee key and/or a TeamMember id (either may be unknown). */
+export type ChecklistPerson = { key: string | null; teamMemberId: string | null };
+
+/** Loop kinds that sit on the shared ops pile when nobody's name is on them. */
+const OPS_PILE_TYPES = ["comms_followup", "internal_instruction", "callback"];
+/** Unclaimed work whose nature is the owner's (opsDay OWNER_LANE_SOURCES). */
+const OWNER_PILE_SOURCES = ["content_program"];
+
+/** The person's tasks, as a query (status and dates are the caller's). */
+export function personTaskWhere(person: ChecklistPerson, opts: { excludeClientIds?: string[] } = {}): Prisma.SmartTaskWhereInput {
+  const whose: Prisma.SmartTaskWhereInput[] = [
+    ...(person.key ? [{ assignedKey: person.key }] : []),
+    ...(person.teamMemberId ? [{ assignedKey: null, ownerId: person.teamMemberId }] : []),
+    { assignedKey: null, taskType: "lead" },
+    { assignedKey: null, ownerId: null, taskType: { in: OPS_PILE_TYPES }, source: { notIn: OWNER_PILE_SOURCES } },
+  ];
+  return { AND: [{ OR: whose }, { taskType: { notIn: [...CLIENT_TEXT_TYPES] } }, taskClientScopeWhere(opts)] };
+}
+
+const nextEtDayStart = (now: Date) => etDayStartUtc(new Date(etDayStartUtc(now).getTime() + 36 * 3_600_000));
+
+export type ChecklistTasks = {
+  /** its date is today: the "Follow-ups due" group */
+  dueToday: OldItem[];
+  /** its date is before today, oldest first: "From earlier days, still open" */
+  earlier: OldItem[];
+};
+
+/** The person's open tasks for today's checklist. `scrub` takes figures out
+ *  of titles (Kyle never sees dollar amounts). */
+export async function checklistTasks(
+  now: Date,
+  opts: { person: ChecklistPerson; excludeClientIds?: string[]; scrub?: boolean; roster?: Assignee[] },
+): Promise<ChecklistTasks> {
+  const startToday = etDayStartUtc(now);
+  const startTomorrow = nextEtDayStart(now);
+  const [rows, roster] = await Promise.all([
+    prisma.smartTask.findMany({
+      where: {
+        status: { notIn: CLOSED },
+        AND: [personTaskWhere(opts.person, opts), { OR: [{ dueAt: { lt: startTomorrow } }, { followUpAt: { lt: startTomorrow } }] }],
+      },
+      select: {
+        id: true, title: true, taskType: true, source: true, status: true, projectId: true,
+        dueAt: true, followUpAt: true, assignedKey: true, ownerId: true,
+        reasonCreated: true, description: true, flaggedAt: true, assignedManually: true, createdAt: true,
+        owner: { select: { name: true } },
+        project: { select: { title: true, status: true, shootDate: true } },
+      },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }],
+      take: 500,
+    }),
+    opts.roster ? Promise.resolve(opts.roster) : listAssignees().catch(() => [] as Assignee[]),
+  ]);
+  // The date is the later of due and chase: a New date in the future keeps a
+  // row off today's list even when its promise has passed.
+  const dated = rows.filter((t) => {
+    const at = chaseDate(t);
+    return !!at && at < startTomorrow;
+  });
+  const pushes = await pushCounts(dated.map((t) => t.id)).catch(() => new Map<string, number>());
+  const out: ChecklistTasks = { dueToday: [], earlier: [] };
+  for (const t of dated) {
+    if (shootNoteExpires({ ...t, pushed: (pushes.get(t.id) ?? 0) > 0 }, now)) continue;
+    const item = toOldItem(t, { key: personKeyOf(t, roster), roster, now, pushes, scrub: opts.scrub });
+    (chaseDate(t)! >= startToday ? out.dueToday : out.earlier).push(item);
+  }
+  const byDate = (a: OldItem, b: OldItem) => Date.parse(a.chaseISO) - Date.parse(b.chaseISO) || a.title.localeCompare(b.title);
+  out.dueToday.sort(byDate);
+  out.earlier.sort(byDate);
+  return out;
+}
+
+export type ClosedTask = { id: string; title: string; taskType: string; kind: string; how: "done" | "not needed"; atISO: string; href: string };
+
+/** The person's tasks closed today (ET) by anyone: Done (completed today) or
+ *  Not needed (a person dismissed it today). The hub's own closes (a shoot
+ *  note expiring) are not anybody's work and are left out, and so are client
+ *  replies (the checklist counts those under Messages). */
+export async function checklistTasksClosedToday(
+  now: Date,
+  opts: { person: ChecklistPerson; excludeClientIds?: string[]; scrub?: boolean },
+): Promise<ClosedTask[]> {
+  const startToday = etDayStartUtc(now);
+  const rows = await prisma.smartTask.findMany({
+    where: {
+      AND: [
+        personTaskWhere(opts.person, opts),
+        { taskType: { not: "client_reply" } },
+        {
+          OR: [
+            { status: "COMPLETED", completedAt: { gte: startToday } },
+            { status: "CANCELLED", updatedAt: { gte: startToday }, summary: { startsWith: DISMISSED_PREFIX }, NOT: { summary: { startsWith: `${DISMISSED_PREFIX}the hub` } } },
+          ],
+        },
+      ],
+    },
+    select: { id: true, title: true, taskType: true, source: true, status: true, projectId: true, completedAt: true, updatedAt: true },
+    orderBy: { updatedAt: "desc" },
+    take: 200,
+  });
+  return rows.map((t) => ({
+    id: t.id,
+    title: opts.scrub ? scrubMoney(t.title) : t.title,
+    taskType: t.taskType,
+    kind: kindLabel(t.taskType),
+    how: t.status === "COMPLETED" ? "done" : "not needed",
+    atISO: (t.status === "COMPLETED" ? t.completedAt ?? t.updatedAt : t.updatedAt).toISOString(),
+    href: oldItemHref(t),
+  }));
 }
 
 // ---------------------------------------------------------------------------

@@ -6,11 +6,8 @@ import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import {
   Activity,
-  CalendarClock,
   Clapperboard,
-  ClipboardList,
-  Film,
-  ListChecks,
+  Siren,
   MessagesSquare,
   Images,
   SlidersHorizontal,
@@ -44,7 +41,7 @@ import { cn } from "@/lib/utils";
 import { canAccess, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { groupSidebarDestinations } from "@/lib/sidebarNavigation";
+import { groupSidebarDestinations, opsMenuDestinations } from "@/lib/sidebarNavigation";
 
 export type ShellUser = {
   name: string | null;
@@ -80,9 +77,11 @@ const SECTIONS: NavSection[] = [
       // what needs you today, the Ops Day time blocks with their live contents,
       // today's shoots, the owner's own list, then the money. Three nav items
       // retired into it:
-      //   · Ops Day (/ops)          — moved here Sep 2, and back out Oct 19
-      //                               2026 as the "Daily checklist" (below, in
-      //                               the Operations group), block ids kept.
+      //   · Ops Day (/ops)          — moved here Sep 2; out for one afternoon
+      //                               on Oct 19 2026, then back on Kyle's Home
+      //                               as one simplified daily checklist. /ops
+      //                               keeps today's shoots, stuck jobs and the
+      //                               exceptions ("Shoots & exceptions").
       //   · My Day (/day)           — the owner's to-dos + business money are
       //                               the "Your list" and money sections here.
       //   · Project Tracker (/pipeline) — the delivery board is the Production
@@ -96,20 +95,24 @@ const SECTIONS: NavSection[] = [
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       // The owner's quality desk — cuts to review, photo QC, feedback loops.
-      { label: "Review Room", href: "/review", icon: MonitorPlay, key: "review" },
-      // KYLE'S FIVE JOBS + THE CHECKLIST (Oct 19 2026, Jordan: "It should be
-      // organized into separate screens"). One screen per job, each the
-      // destination of a Home tile, plus the daily checklist that moved off
-      // Home. All ride the `ops` PageKey (owner + office), so no new
-      // permission; sidebarNavigation files them in the "Operations" group.
+      // "Video Review Room" (Jordan, Oct 19 2026): the label only, for every
+      // role; the /review route and the `review` PageKey keep their names.
+      { label: "Video Review Room", href: "/review", icon: MonitorPlay, key: "review" },
+      // KYLE'S SCREENS (Oct 19 2026). All ride the `ops` PageKey (owner +
+      // office), so no new permission; sidebarNavigation files them in the
+      // "Operations" group, and for the office login (ADMIN) puts Photo
+      // delivery and Messages among its six doors (opsMenuDestinations).
+      // Video delivery, Special requests, Scheduling and Old items are no
+      // longer menu entries that evening: Kyle's checklist on Home holds
+      // them, and their old URLs land on the matching checklist group.
       // Photo delivery (Oct 14 2026, docs/photo-delivery): the queue, AI QC,
       // the AutoHDR Fix Cart and the delivery check.
       { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
-      { label: "Video delivery", href: "/ops/video-delivery", icon: Film, key: "ops" },
-      { label: "Client messages", href: "/ops/messages", icon: MessagesSquare, key: "ops" },
-      { label: "Special requests", href: "/ops/requests", icon: ClipboardList, key: "ops" },
-      { label: "Scheduling", href: "/ops/scheduling", icon: CalendarClock, key: "ops" },
-      { label: "Daily checklist", href: "/ops", icon: ListChecks, key: "ops" },
+      // Clients waiting on a reply, and new leads (internal follow-ups are on
+      // the checklist).
+      { label: "Messages", href: "/ops/messages", icon: MessagesSquare, key: "ops" },
+      // Today's shoot cards, stuck jobs and the quiet failures.
+      { label: "Shoots & exceptions", href: "/ops", icon: Siren, key: "ops" },
       // Feedback about the WORK: what clients said (the delivery-text form +
       // unhappy texts/emails) and how each photographer is shooting. Distinct
       // from "Feedback & requests" in System, which is feedback about the HUB.
@@ -267,7 +270,10 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
 
   // Group only AFTER the existing access rules and role exceptions. These
   // categories are navigation, never new permissions or replacement pages.
-  const sections = groupSidebarDestinations(authorized.flatMap((section) => section.items), pathname);
+  // The office's operations login (ADMIN) gets Kyle's six doors with the rest
+  // folded under More (Jordan, Oct 19 2026); every other role the groups.
+  const destinations = authorized.flatMap((section) => section.items);
+  const sections = user?.role === "ADMIN" ? opsMenuDestinations(destinations, pathname) : groupSidebarDestinations(destinations, pathname);
   const renderItem = (item: NavItem) => {
     const active = sections.some((section) => section.activeHref === item.href);
     const Icon = item.icon;

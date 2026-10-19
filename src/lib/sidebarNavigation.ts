@@ -1,9 +1,11 @@
 /** Presentation groups for destinations that Sidebar has already authorized. */
 const SIDEBAR_GROUPS = [
   { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/tasks", "/schedule", "/communications"] },
-  // Oct 19 2026: Kyle's five jobs, one screen each, and the daily checklist
-  // (the `ops` PageKey: owner and office). Open by default: it is his day.
-  { id: "operations", title: "Operations", frequent: true, paths: ["/ops/photo-delivery", "/ops/video-delivery", "/ops/messages", "/ops/requests", "/ops/scheduling", "/ops"] },
+  // Oct 19 2026: photo delivery, messages, and today's shoots with the stuck
+  // jobs and exceptions (the `ops` PageKey: owner and office). Video delivery,
+  // special requests, scheduling and old items stopped being screens of their
+  // own that evening (Kyle's checklist on Home holds them).
+  { id: "operations", title: "Operations", frequent: true, paths: ["/ops/photo-delivery", "/ops/messages", "/ops"] },
   { id: "production", title: "Production", frequent: true, paths: ["/editing", "/review", "/upload", "/shoot"] },
   // Open by default (Oct 5 2026): the office is onboarding clients into the
   // Content Program this week, and a folded group hid both doors.
@@ -34,4 +36,23 @@ export function groupSidebarDestinations<T extends Destination>(items: readonly 
     });
     return { id: group.id, title: group.title, frequent: group.frequent, current: ordered.some((item) => item.href === activeHref), activeHref, items: ordered };
   }).filter((group) => group.items.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// KYLE'S MENU (Jordan, Oct 19 2026): six doors for the office's operations
+// login (ADMIN), in this order, and everything else that login can open
+// folded under "More". Nothing is removed: More holds every other authorized
+// destination, in the usual group order. Other roles keep the groups above.
+// ---------------------------------------------------------------------------
+
+export const OPS_MENU = ["/", "/ops/photo-delivery", "/review", "/ops/messages", "/schedule", "/tasks"] as const;
+
+export function opsMenuDestinations<T extends Destination>(items: readonly T[], pathname: string) {
+  const activeHref = activeSidebarHref(items, pathname);
+  const primary = OPS_MENU.map((href) => items.find((item) => !item.external && item.href === href)).filter((item): item is T => !!item);
+  const rest = groupSidebarDestinations(items.filter((item) => !primary.includes(item)), pathname).flatMap((group) => group.items);
+  return [
+    { id: "work", title: "Your work", frequent: true, current: primary.some((item) => item.href === activeHref), activeHref, items: primary },
+    { id: "more", title: "More", frequent: false, current: rest.some((item) => item.href === activeHref), activeHref, items: rest },
+  ].filter((group) => group.items.length > 0);
 }
