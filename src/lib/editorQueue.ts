@@ -390,6 +390,50 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     }
   }
 
+  // THE OFFICE PUT A FINISHED JOB BACK (Oct 19 2026, Kyle: "the Greenridge Rd
+  // job keeps disappearing"). "Add a job to the queue" on a finished job and
+  // the board's move to Revisions both set the job to REVISION, but neither
+  // touches the approved video, and the office's own reopen is not a client
+  // ask, so the fold above left the row on "Approved": it fell into
+  // Completed. Twice on 632 Greenridge Rd (Oct 15 and Oct 19) Kyle reopened
+  // it and had to pin the pill back to Revisions within minutes. A job still
+  // on REVISION whose videos all read approved counts as in revisions when
+  // the office's reopen is NEWER than its newest approval; a version handed
+  // in and approved after the reopen answers it. Nothing is written.
+  {
+    const settled = inflight
+      .filter((p) => p.status === "REVISION")
+      .map((p) => p.id)
+      .filter((id) => {
+        const t = cutTally.get(id);
+        return !!t && t.approved > 0 && t.revising === 0 && t.waiting === 0 && t.checking === 0;
+      });
+    if (settled.length) {
+      const moves = await prisma.activity
+        .findMany({
+          where: { projectId: { in: settled }, OR: [{ body: { startsWith: "Moved from " } }, { body: { startsWith: "Queued a new cut (as a revision)" } }] },
+          orderBy: { createdAt: "desc" },
+          select: { projectId: true, body: true, createdAt: true },
+        })
+        .catch(() => []);
+      const reopenedAt = new Map<string, number>();
+      for (const m of moves) {
+        if (!m.projectId || reopenedAt.has(m.projectId)) continue;
+        if (m.body.startsWith("Moved from ") && !/ to Revisions\b/.test(m.body)) continue;
+        reopenedAt.set(m.projectId, m.createdAt.getTime());
+      }
+      for (const [pid, at] of reopenedAt) {
+        const rounds = cutsByProject.get(pid) ?? [];
+        const approvedAt = Math.max(0, ...rounds.filter((r) => r.status === "APPROVED").map((r) => new Date(r.decidedAt ?? r.createdAt).getTime() || 0));
+        if (at <= approvedAt) continue;
+        const t = cutTally.get(pid)!;
+        // One video: that video is owed again. Several: the whole job is.
+        if (t.total === 1) t.approved = Math.max(0, t.approved - 1);
+        t.revising++;
+      }
+    }
+  }
+
   // WHO SENT IT BACK (Review Room attribution, Sep 28). A row on "Revisions"
   // said so and nothing else; the line under the pill now names the newest
   // ask and when: a bounced cut's verdict (the office's, or the client's own

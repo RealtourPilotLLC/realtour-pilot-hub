@@ -319,6 +319,47 @@ async function main() {
   }
 
   // =========================================================================
+  c.head("§4b · (Oct 19 2026, 632 Greenridge Rd) the office reopens a job whose video was APPROVED: it stays on Open work");
+  // =========================================================================
+  {
+    const approvedAt = et(9, 17, 10);
+    const withApprovedCut = async (street: string) => {
+      const j = await mkJob({ street, status: "DELIVERED", deliveredAt: et(9, 17, 12) });
+      await prisma.reviewSubmission.create({ data: { projectId: j.id, kind: "video", deliverableId: j.deliverableId, slot: 1, round: 1, status: "APPROVED", source: "upload", fileName: `${street}.mp4`, decidedAt: approvedAt } });
+      return j;
+    };
+    const where = async (id: string) => {
+      const q = await buildEditorQueue();
+      const hit = (rows: { id: string; status: string }[]) => rows.find((r) => r.id === id) ?? null;
+      const n = hit(q.notDone), d = hit(q.done);
+      return n ? `open:${n.status}` : d ? `done:${d.status}` : "absent";
+    };
+    // "Add a job to the queue" on the finished job (Oct 15).
+    const G1 = await withApprovedCut("632 Queue Add Rd");
+    c.ok("(set-up) delivered with its video approved: Completed", (await where(G1.id)).startsWith("done:"), await where(G1.id));
+    const r1 = await editingActions.addToEditorQueue(G1.id, "kim", "Take out everything before Imagine");
+    await prisma.activity.updateMany({ where: { projectId: G1.id, body: { startsWith: "Queued a new cut (as a revision)" } }, data: { createdAt: new Date() } });
+    c.ok("queued as a new cut: on Open work as Revisions, not Approved in Completed", r1.ok && (await where(G1.id)) === "open:Revisions", `${r1.message} · ${await where(G1.id)}`);
+    const oldG1 = await oldRowOf(G1.id);
+    c.ok(`old (${BASE}): the same row read Approved, so it fell into Completed`, oldG1?.status === "Approved", oldG1?.status ?? "absent");
+    // The editor hands in the next version: the reopen is answered by it.
+    await prisma.reviewSubmission.create({ data: { projectId: G1.id, kind: "video", deliverableId: G1.deliverableId, slot: 1, round: 2, status: "APPROVED", source: "upload", fileName: "632 v2.mp4", decidedAt: new Date(Date.now() + 60_000) } });
+    c.ok("a version approved after the reopen answers it: Approved again", (await where(G1.id)).endsWith(":Approved"), await where(G1.id));
+    // The board move to Revisions (Oct 19).
+    const G2 = await withApprovedCut("632 Board Move Rd");
+    await appActions.moveProjectStatus(G2.id, "REVISION");
+    await prisma.activity.updateMany({ where: { projectId: G2.id, body: { startsWith: "Moved from Delivered to " } }, data: { createdAt: new Date() } });
+    c.ok("moved to Revisions on the board: on Open work as Revisions", (await where(G2.id)) === "open:Revisions", await where(G2.id));
+    // A job on REVISION from BEFORE its newest approval is not reopened by this rule.
+    const G3 = await withApprovedCut("632 Old Move Rd");
+    await prisma.project.update({ where: { id: G3.id }, data: { status: "REVISION" } });
+    await prisma.activity.create({ data: { projectId: G3.id, type: "STATUS_CHANGE", body: "Moved from Delivered to Revisions.", createdAt: et(9, 16, 9) } });
+    c.ok("a move to Revisions older than the newest approval does not count", !(await where(G3.id)).endsWith(":Revisions"), await where(G3.id));
+    // Out of the way of the later sections (Kyle's exceptions list is capped).
+    await prisma.project.updateMany({ where: { id: { in: [G1.id, G2.id, G3.id] } }, data: { status: "CANCELLED" } });
+  }
+
+  // =========================================================================
   c.head("§5 · a board move off Delivered — the hourly net dates it from the move");
   // =========================================================================
   const J4 = await mkJob({ street: "4 Board Move Blvd", status: "DELIVERED", deliveredAt: et(9, 17, 12) });
