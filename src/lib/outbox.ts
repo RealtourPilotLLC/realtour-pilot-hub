@@ -494,6 +494,8 @@ function programReminderSubject(dedupeKey: string | null): string {
     // 6.5: the one script-approval email before a session. Without its own
     // case it fell to "Let's plan …", hiding what it asks and by when.
     case "APPROVE_SCRIPTS": return month ? `Please approve your ${month} scripts before filming` : "Please approve your scripts before filming";
+    // Oct 20 2026: the weekly brand-kit reminder (no month in it: it is about the account).
+    case "BRAND_KIT": return "Your logo and brand colors for your videos";
     default: return `Let's plan${forMonth}`;
   }
 }

@@ -600,7 +600,9 @@ async function main(): Promise<void> {
     c.ok("address lane dry run (Mon): P send, X suppressed not_in_rollout_scope with its recipient shown", addr(P)?.decision === "send" && addr(X)?.decision === "suppressed" && addr(X)?.suppressionReason === "not_in_rollout_scope" && addr(X)?.to === outbox.maskToRef("email", "xo@example.test"), `${addr(P)?.decision}/${addr(P)?.reason} | ${addr(X)?.decision}/${addr(X)?.suppressionReason}/${addr(X)?.to}`);
     const j = mails.length;
     await R.evaluateReminders({ dryRun: false, now: MON });
-    c.ok("address lane live: only P's seat is asked for the address", JSON.stringify(mailsSince(j)) === JSON.stringify(["pat@example.test"]), mailsSince(j).join(", "));
+    // Oct 20 2026: the weekly brand-kit lane writes to these TEST seats too; this check is about the address emails.
+    const addressMails = mails.slice(j).filter((m) => /Where are we filming/i.test(m.subject)).map((m) => m.to);
+    c.ok("address lane live: only P's seat is asked for the address", JSON.stringify(addressMails) === JSON.stringify(["pat@example.test"]), addressMails.join(", "));
 
     // ---- share notices (STRATEGY_READY) --------------------------------------
     const strategyFor = async (f: Fx) => {

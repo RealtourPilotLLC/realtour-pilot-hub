@@ -29,7 +29,7 @@
 export type ReminderAction =
   | "CHOOSE_PATH" | "BOOK_CALL" | "COMPLETE_ANSWERS" | "BOOK_SESSION" | "REVIEW_WORK"
   | "SCRIPTS_READY" | "STRATEGY_READY" | "SESSION_REQUEST_FOLLOWUP" | "DIGEST" | "ESCALATION"
-  | "CONFIRM_ADDRESS" | "APPROVE_SCRIPTS";
+  | "CONFIRM_ADDRESS" | "APPROVE_SCRIPTS" | "BRAND_KIT";
 
 export type TemplateVars = {
   firstName: string;
@@ -95,6 +95,8 @@ export type TemplateVars = {
    *  client (call mode NOT_INCLUDED), so the next step is choosing topics in the
    *  portal, never "book your first strategy call". */
   strategyCallsOff?: boolean;
+  /** BRAND_KIT (Oct 20 2026): what the editor still has not got, in plain words ("logo", "brand colors"). */
+  brandMissing?: string[] | null;
 };
 
 export type ReminderTemplate = {
@@ -283,6 +285,31 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
   },
 };
 
+// BRAND_KIT (Oct 20 2026, Jordan: "If agents have not filled it out yet, then
+// send them a message once a week until they do"). Once a week while the logo
+// or the brand colors are missing; the editor puts both in every video.
+REMINDER_TEMPLATES["reminder.brand_kit.v1"] = {
+  id: "reminder.brand_kit.v1",
+  action: "BRAND_KIT",
+  version: "1",
+  purpose: "Once a week while the client's logo or brand colors are missing from their Brand Profile (the editor uses both in every video).",
+  render: (v) => {
+    const missing = v.brandMissing?.length ? v.brandMissing : ["logo", "brand colors"];
+    const what = missing.length <= 1 ? `your ${missing[0]}` : `your ${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]}`;
+    return [
+      `Hi ${v.firstName},`,
+      "",
+      `Your editor puts your brand into every video you get from us, so your content looks like you. We still don't have ${what}.`,
+      "",
+      `You can add ${missing.length === 1 ? "it" : "them"} on your Brand Profile in your portal. It only takes a couple of minutes: ${v.portalLink}`,
+      "",
+      `If it's easier, just reply to this email with ${missing.includes("logo") ? "your logo file" : ""}${missing.includes("logo") && missing.includes("brand colors") ? " and " : ""}${missing.includes("brand colors") ? "your brand colors (hex codes like #1A2B3C are perfect)" : ""}.`,
+      "",
+      SIGN_OFF,
+    ].join("\n");
+  },
+};
+
 /** "logo, headshot and brand colors" — a plain list for a sentence. */
 const andList = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
@@ -396,6 +423,7 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   STRATEGY_READY: "strategy_ready.v2",
   CONFIRM_ADDRESS: "reminder.confirm_address.v1",
   APPROVE_SCRIPTS: "reminder.approve_scripts.v1",
+  BRAND_KIT: "reminder.brand_kit.v1",
 };
 
 /** Resolve a template by id, refusing an id nobody has (a typo in the policy

@@ -79,6 +79,7 @@ export const REMINDER_ACTION_LABELS: Record<ReminderTemplateAction, string> = {
   CHOOSE_PATH: "Choose how to plan", BOOK_CALL: "Book a strategy call", COMPLETE_ANSWERS: "Finish preparation answers",
   BOOK_SESSION: "Book filming", REVIEW_WORK: "Review a cut", SCRIPTS_READY: "Scripts ready", STRATEGY_READY: "Strategy ready",
   CONFIRM_ADDRESS: "Confirm the filming address", APPROVE_SCRIPTS: "Approve scripts before filming",
+  BRAND_KIT: "Send the logo and brand colors (weekly)",
 };
 
 /** Same pure renderer as sending, with fictional sample values and no links. */

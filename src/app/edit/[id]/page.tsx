@@ -1107,6 +1107,27 @@ export default async function EditBriefPage({
   const brandColorsShown = agent?.style.colors.length ? agent.style.colors.map((c) => c.hex) : brandColors.map((c) => c.toLowerCase());
   const brandFonts = agent?.style.fonts?.text ?? brandBrief?.fontNames ?? null;
 
+  // THE BRAND, BESIDE WHAT TO MAKE (Jordan, Oct 20 2026: "I want to make sure
+  // the client's brand assets and brand colors are displayed clearly alongside
+  // the edit instructions. The colors and assets should be pulled from the
+  // content program portal."). Its own card right under What to make: the
+  // colors as swatches big enough to sample, the logo and end card as
+  // pictures (on a checkerboard, so a white logo still shows), then fonts,
+  // the other files and the folder. What is missing is said, and a program
+  // client is told about it every week (programReminders' BRAND_KIT lane, the
+  // same lib/brandKit test).
+  const BRAND_IMAGE = /\.(png|jpe?g|webp|gif|svg)(\?|$)/i;
+  const seenTile = new Set<string>();
+  const logoTiles = [
+    ...(brandBrief?.files ?? []).filter((f) => f.type === "LOGO" || f.type === "BRANDING_CARD").map((f) => ({ key: f.versionId, label: f.typeWord, name: f.fileName ?? f.name, url: f.url })),
+    ...(folderLogo ? [{ key: `folder:${folderLogo.name}`, label: "Logo", name: folderLogo.name, url: folderLogo.url }] : []),
+  ].filter((t) => { const k = t.url ?? t.key; if (seenTile.has(k)) return false; seenTile.add(k); return true; })
+    .map((t) => ({ ...t, image: BRAND_IMAGE.test(t.name) }));
+  const kitOtherFiles = otherBrandFiles.filter((f) => f.type !== "LOGO" && f.type !== "BRANDING_CARD");
+  const hasKitColors = brandColorsShown.length > 0 || (brandBrief?.files ?? []).some((f) => f.type === "COLOR_PALETTE") || (assets?.files ?? []).some((f) => /palette|colou?rs?\b|brand ?guide|style ?guide/i.test(f.name));
+  const kitMissing = [logoTiles.length || chosenFile ? null : "logo", hasKitColors ? null : "brand colors"].filter((x): x is string => !!x);
+  const onProgram = kitMissing.length ? !!(await prisma.contentEnrollment.findFirst({ where: { clientId: project.client.id, status: "ACTIVE" }, select: { id: true } }).catch(() => null)) : false;
+
   // The look-and-brand lines of the Aryeo customer note (the office's standing
   // note on the client) — said here, in the brief, not only inside the folded
   // Agent Profile: "Use his logo on every video" is an instruction.
@@ -1782,9 +1803,79 @@ export default async function EditBriefPage({
             );
           })()}
 
-          {/* 4 · FOOTAGE AND BRAND FILES */}
+          {/* 4 · THEIR BRAND (Oct 20 2026), right under What to make. */}
+          <section id="brand-assets" data-brief-section="brand" className={CARD}>
+            <h2 className={H2}>Their brand</h2>
+            {kitMissing.length > 0 && (
+              <p data-brand-missing className="mt-2 rounded-lg bg-warning/10 px-3 py-2 text-sm text-warning">
+                Not on file yet: their {kitMissing.join(" and ")}.{onProgram ? " They get a reminder every week until they add it on their portal." : ""} Until then, keep it clean and neutral{kitMissing.includes("logo") ? " and end on a name card (name and brokerage)" : ""}.
+              </p>
+            )}
+            {brandColorsShown.length > 0 && (
+              <div className="mt-3" data-brand-colors>
+                <p className={LABEL}>Brand colors</p>
+                <ul className="mt-2 flex flex-wrap gap-3">
+                  {brandColorsShown.map((c) => (
+                    <li key={c} className="flex flex-col items-center gap-1">
+                      <span aria-hidden className="size-12 rounded-xl border border-border shadow-sm" style={{ backgroundColor: c }} />
+                      <span className="font-mono text-xs font-semibold">{c.toUpperCase()}</span>
+                    </li>
+                  ))}
+                </ul>
+                {agent?.style.colorWords && <p className="mt-1.5 text-xs text-muted">{agent.style.colorWords}</p>}
+              </div>
+            )}
+            {logoTiles.length > 0 && (
+              <div className="mt-4" data-brand-logos>
+                <p className={LABEL}>Logo and end card</p>
+                <ul className="mt-2 flex flex-wrap gap-3">
+                  {logoTiles.map((t) => (
+                    <li key={t.key} className="w-40 min-w-0">
+                      {t.url ? (
+                        <a href={t.url} target="_blank" rel="noopener noreferrer" title={`Open ${t.name}`} className="block rounded-xl border border-border p-2 hover:border-brand focus-visible:outline-2 focus-visible:outline-brand" style={{ backgroundImage: "repeating-conic-gradient(#8883 0 25%, transparent 0 50%)", backgroundSize: "14px 14px" }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element -- a 4-hour Dropbox file link, not an optimisable asset */}
+                          {t.image ? <img src={t.url} alt={`${t.label}: ${t.name}`} loading="lazy" className="mx-auto h-20 w-full object-contain" /> : <span className="flex h-20 items-center justify-center px-1 text-center text-xs text-muted">{t.name}</span>}
+                        </a>
+                      ) : (
+                        <span className="flex h-24 items-center justify-center rounded-xl border border-border px-1 text-center text-xs text-muted">{t.name}</span>
+                      )}
+                      <p className="mt-1 truncate text-xs" title={t.name}><span className="font-semibold text-muted">{t.label}</span> · {t.name}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {brandFonts && <p className="mt-3 text-sm"><span className="text-muted">Fonts:</span> {brandFonts}</p>}
+            {kitOtherFiles.length > 0 && (
+              <ul className="mt-3 flex flex-wrap gap-2">
+                {kitOtherFiles.map((f) => (
+                  <li key={f.versionId} className="inline-flex min-h-11 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs">
+                    <span className="font-semibold text-muted">{f.typeWord}</span>
+                    {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate text-brand hover:underline">{f.fileName ?? f.name}</a> : <span className="min-w-0 truncate">{f.fileName ?? f.name}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {brandBrief?.website && <p className="mt-2 text-sm"><span className="text-muted">Website:</span> {brandBrief.website}</p>}
+            {assets ? (
+              <details className="mt-3 border-t border-border pt-2">
+                <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Their brand folder · add a file</summary>
+                <ClientAssetsCard
+                  clientId={assets.clientId}
+                  files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
+                  folderUrl={assets.folderUrl}
+                  canUpload
+                />
+              </details>
+            ) : brandUrl ? (
+              <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-brand hover:underline">Their brand folder <ExternalLink className="size-3.5" /></a>
+            ) : null}
+          </section>
+
+          {/* 5 · FOOTAGE */}
+          {isVideoJob && (
           <section id="video-footage" data-brief-section="footage" className={CARD}>
-            <h2 className={H2}>{isVideoJob ? "Footage and brand files" : "Brand files"}</h2>
+            <h2 className={H2}>Footage</h2>
             {isVideoJob && (
               <>
                 <a href={footageUrl} target="_blank" rel="noopener noreferrer" data-footage-link className="mt-3 inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border border-border-strong bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-brand">
@@ -1816,48 +1907,8 @@ export default async function EditBriefPage({
                 ))}
               </>
             )}
-            {/* The brand kit: colours, fonts, logo files, folder. */}
-            <section id="brand-assets" data-brief-section="brand" className={isVideoJob ? "mt-4 border-t border-border pt-4" : "mt-3"}>
-              <h3 className={H3}>Brand kit</h3>
-              {brandColorsShown.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-2" data-brand-colors>
-                  <Palette className="size-3.5 text-muted" />
-                  {brandColorsShown.map((c) => (
-                    <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2 py-1 text-xs font-medium">
-                      <span aria-hidden className="size-4 rounded border border-border" style={{ backgroundColor: c }} /> {c.toUpperCase()}
-                    </span>
-                  ))}
-                  {agent?.style.colorWords && <span className="text-xs text-muted">{agent.style.colorWords}</span>}
-                </div>
-              )}
-              {brandFonts && <p className="mt-2 text-sm"><span className="text-muted">Fonts:</span> {brandFonts}</p>}
-              {otherBrandFiles.length > 0 && (
-                <ul className="mt-2 flex flex-wrap gap-2">
-                  {otherBrandFiles.map((f) => (
-                    <li key={f.versionId} className="inline-flex min-h-11 min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs">
-                      <span className="font-semibold text-muted">{f.typeWord}</span>
-                      {f.url ? <a href={f.url} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate text-brand hover:underline">{f.fileName ?? f.name}</a> : <span className="min-w-0 truncate">{f.fileName ?? f.name}</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {brandBrief?.website && <p className="mt-2 text-sm"><span className="text-muted">Website:</span> {brandBrief.website}</p>}
-              {!brandColorsShown.length && !brandFonts && !otherBrandFiles.length && !endCard?.file && <p className="mt-2 text-sm text-muted">No colours or fonts on file. Keep it clean and neutral.</p>}
-              {assets ? (
-                <details className="mt-3 border-t border-border pt-2">
-                  <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium focus-visible:outline-2 focus-visible:outline-brand">Their brand folder · add a file</summary>
-                  <ClientAssetsCard
-                    clientId={assets.clientId}
-                    files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
-                    folderUrl={assets.folderUrl}
-                    canUpload
-                  />
-                </details>
-              ) : brandUrl ? (
-                <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-brand hover:underline">Their brand folder <ExternalLink className="size-3.5" /></a>
-              ) : null}
-            </section>
           </section>
+          )}
         </article>
 
         {/* 5 · SEND FOR REVIEW — this video's upload row, the version in front

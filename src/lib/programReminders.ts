@@ -1618,6 +1618,8 @@ async function evaluateMonth(
   const sentToday = await prisma.programReminder.count({
     where: {
       enrollmentId: e.id, channel: { in: ["email", "copy"] },
+      // The weekly brand-kit nudge never holds back a planning or review email (Oct 20 2026).
+      action: { not: "BRAND_KIT" },
       ...(ignoreReminderId ? { id: { not: ignoreReminderId } } : {}),
       // A QUEUED row has no sentAt yet — it is a message on its way out, and it
       // counts, or the second lane would slip past the one just handed over.
@@ -1957,6 +1959,8 @@ export type EvaluateResult = {
   /** 6.5: the scripts-not-approved lane — one row per upcoming session with
    *  shared scripts still waiting on the client, sent, waiting or suppressed. */
   scriptApprovalLane: ScriptApprovalPreview[];
+  /** Oct 20 2026: the weekly brand-kit lane — one row per client still missing a logo or brand colors. */
+  brandKitLane: BrandKitPreview[];
   /** A run that went quiet for an infrastructure reason, in words, for the
    *  automation row's lastError and the settings panel. null = healthy. */
   healthError: string | null;
@@ -1971,7 +1975,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const now = opts.now ?? new Date();
   const { enabled, policy, source } = await reminderPolicy({ orDefaults: opts.dryRun });
   if (!policy || (!enabled && !opts.dryRun)) {
-    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], scriptApprovalLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
+    return { enabled: false, policySource: source, evaluated: 0, candidates: [], sent: [], escalations: [], kyleFollowUps: [], addressLane: [], scriptApprovalLane: [], brandKitLane: [], healthError: null, note: "reminders are off (missing or disabled ProgramAutomation row) — nothing evaluated, nothing written" };
   }
   const [feeds, clientWindowOpen] = await Promise.all([bookingFeeds(now, policy), clientTextWindowOpen(now)]);
   const sync = feeds.call;
@@ -2017,6 +2021,8 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const kyleFollowUps: EvaluateResult["kyleFollowUps"] = [];
   const addressLane: AddressReminderPreview[] = [];
   const scriptApprovalLane: ScriptApprovalPreview[] = [];
+  const brandKitLane: BrandKitPreview[] = [];
+  const brandKitDone = new Set<string>();
   let sends = 0;
   for (const m of months) {
     const en = enrollments.find((e) => e.id === m.enrollmentId);
@@ -2079,6 +2085,23 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
       sent.push(r);
       if (r.outcome === "sent") sends++;
     }
+    // THE BRAND KIT LAST (Oct 20 2026): once per client per pass, on its first
+    // month in view, and only into a day nothing more urgent took.
+    if (!brandKitDone.has(e.id)) {
+      brandKitDone.add(e.id);
+      const b = await evaluateBrandKitLane(e, m, now, policy, clientWindowOpen, {}, rollout).catch(() => null);
+      if (b) {
+        brandKitLane.push(b);
+        if (!opts.dryRun && b.decision === "send") {
+          if (sends >= policy.maxSendsPerRun) sent.push({ reminderId: null, outcome: "skipped", detail: `maxSendsPerRun (${policy.maxSendsPerRun}) reached — ${b.clientName} brand kit reminder waits for the next run` });
+          else {
+            const r = await dispatchBrandKit(b, e, policy, now, { requestedBy: opts.requestedBy ?? "reminders-cron", clientWindowOpen, byAppUserId: opts.byAppUserId ?? null });
+            sent.push(r);
+            if (r.outcome === "sent") sends++;
+          }
+        }
+      }
+    }
   }
   const wouldSend = candidates.filter((c) => c.decision === "send").length;
   // A BROKEN SCHEDULER MUST NOT BE A QUIET ONE. `stale_scheduler_sync` is a
@@ -2098,7 +2121,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
   const healthError = [staleError, scopeError].filter(Boolean).join(" ") || null;
   if (!opts.dryRun && staleError) await raiseSchedulerStaleTask(stale, { fresh: false, detail: staleDetail }, now, staleError);
   return {
-    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, healthError,
+    enabled, policySource: source, evaluated: candidates.length, candidates, sent, escalations, kyleFollowUps, addressLane, scriptApprovalLane, brandKitLane, healthError,
     note: opts.dryRun ? `dry run: ${wouldSend} would send, ${candidates.filter((c) => c.decision === "suppressed").length} suppressed, ${candidates.filter((c) => c.decision === "wait").length} waiting` : `${sends} sent`,
   };
 }
@@ -2252,6 +2275,7 @@ async function evaluateAddressLane(
     const sentToday = await prisma.programReminder.count({
       where: {
         enrollmentId: e.id, channel: { in: ["email", "copy"] },
+        action: { not: "BRAND_KIT" }, // the weekly brand-kit nudge never holds back an address or approval email (Oct 20 2026)
         ...(opts.ignoreReminderId ? { id: { not: opts.ignoreReminderId } } : {}),
         OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }],
       },
@@ -2349,6 +2373,13 @@ async function dispatchAddress(a: AddressReminderPreview, e: EnrollmentRow, p: R
   return recordSendResult(reminderId, g.r, now);
 }
 
+/** Is the brand kit on file now (logo and brand colors)? A read that fails says no: nothing is cancelled on a guess. */
+async function brandKitReceived(enrollmentId: string, clientId: string): Promise<boolean> {
+  const { brandKitStatus } = await import("@/lib/brandKit");
+  const k = await brandKitStatus(enrollmentId, clientId);
+  return !!k && k.missing.length === 0;
+}
+
 /** Has the exact address for this reminder's session been given? */
 async function addressReceived(dedupeKey: string | null): Promise<boolean> {
   const key = addressReminderSessionKey(dedupeKey);
@@ -2361,6 +2392,149 @@ async function addressReceived(dedupeKey: string | null): Promise<boolean> {
 export function addressReminderSessionKey(dedupeKey: string | null): string | null {
   const m = /:CONFIRM_ADDRESS:(.+):\d+$/.exec(dedupeKey ?? "");
   return m ? m[1] : null;
+}
+
+// ---- the BRAND KIT lane (Oct 20 2026) -----------------------------------------------
+//
+// Jordan: "for the editor brief, I want to make sure the client's brand assets
+// and brand colors are displayed clearly ... If agents have not filled it out
+// yet, then send them a message once a week until they do. Just the clients
+// currently on the content program."
+//
+// Per ACCOUNT, not per month: ONE email a week (ET Monday-to-Sunday week, its
+// own dedupe key) while the logo or the brand colors are still missing
+// (lib/brandKit: from the Brand Profile, the office's standing note, a palette
+// asset, or their Dropbox brand folder; a read that fails waits, never nags).
+// It is the LAST lane of the client's pass, so it only ever takes the
+// one-email-a-day slot on a day nothing more urgent went. Same gates as every
+// lane: an ACTIVE program, the rollout scope and its TEST lock, a recipient,
+// a TEST client only at a verified inbox, the client window, the policy window.
+
+export type BrandKitPreview = {
+  enrollmentId: string; clientName: string; monthKey: string; monthId: string; weekKey: string;
+  missing: string[]; to: string | null; audience: RolloutAudience;
+  decision: ReminderDecision; reason: string; suppressionReason: string | null; nextEligibleAt: Date | null;
+  dedupeKey: string; retryOfId: string | null;
+};
+
+/** "2026-W43": the ISO week of the ET day, Monday first. */
+export function isoWeekKeyET(now: Date): string {
+  const [y, m, d] = etDayKey(now).split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+/** The one attempt a week gets: `<enrollment>:<isoWeek>:BRAND_KIT:1`. */
+export const brandKitReminderKey = (enrollmentId: string, weekKey: string) => `${enrollmentId}:${weekKey}:BRAND_KIT:1`;
+
+async function evaluateBrandKitLane(
+  e: EnrollmentRow,
+  month: { id: string; monthKey: string; remindersSnoozedUntil?: Date | null },
+  now: Date,
+  p: ReminderPolicy,
+  clientWindowOpen: boolean,
+  opts: { ignoreReminderId?: string | null },
+  rollout: ProgramRollout | null,
+): Promise<BrandKitPreview | null> {
+  const { brandKitStatus } = await import("@/lib/brandKit");
+  const kit = await brandKitStatus(e.id, e.clientId);
+  const weekKey = isoWeekKeyET(now);
+  const dedupeKey = brandKitReminderKey(e.id, weekKey);
+  const reach = reminderReach(rollout, e, now, p);
+  const base = { enrollmentId: e.id, clientName: e.client.name, monthKey: month.monthKey, monthId: month.id, weekKey, missing: kit?.missing ?? [], to: null as string | null, audience: audienceOf(reach), dedupeKey, retryOfId: null as string | null };
+  const row = (decision: ReminderDecision, reason: string, suppressionReason: string | null = null, nextEligibleAt: Date | null = null): BrandKitPreview => ({ ...base, decision, reason, suppressionReason, nextEligibleAt });
+  if (!kit) return row("wait", "the brand kit could not be read just now (Dropbox or the database), so nobody is asked on a guess");
+  if (!kit.missing.length) return null; // on file: nothing to ask, and no row in the preview
+  const recipient = await recipientFor(e);
+  base.to = recipient ? maskToRef("email", recipient.email) : null;
+  const existing = await prisma.programReminder.findUnique({ where: { dedupeKey }, select: { id: true, state: true, nextAttemptAt: true } });
+  if (existing && existing.id !== opts.ignoreReminderId) {
+    if (existing.state === "FAILED" && existing.nextAttemptAt && existing.nextAttemptAt <= now) base.retryOfId = existing.id;
+    else return row("none", `this week's brand kit reminder already exists (${existing.state.toLowerCase()})`);
+  }
+  if (e.status !== "ACTIVE") return row("suppressed", `the program is ${e.status.toLowerCase()}`, "paused");
+  // A staff snooze ("no emails for two weeks") covers this lane too.
+  if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return row("suppressed", `reminders are snoozed until ${fmtDay(month.remindersSnoozedUntil)}`, "snoozed", month.remindersSnoozedUntil);
+  if (reach && !reach.ok) { const code = reachSuppressionReason(reach) ?? "not_in_rollout_scope"; return row("suppressed", code === "launch_not_authorised" ? `policy.testClientsOnly is on — ${reach.reason}` : reach.reason, code); }
+  if (!recipient) return row("suppressed", "no email address on the portal seat or the client record", "no_recipient");
+  const isTest = isSyntheticClientRow({ id: e.clientId, name: e.client.name });
+  if (isTest && !isVerifiedTestDestinationEmail(recipient.email)) return row("suppressed", `TEST client's address ${maskToRef("email", recipient.email)} is not one of Jordan's verified test inboxes`, "test_client_real_address");
+  const dayFrom = etAt(etDayKey(now), 0);
+  const dayTo = etAt(shiftKey(etDayKey(now), 1), 0);
+  const sentToday = await prisma.programReminder.count({
+    where: {
+      enrollmentId: e.id, channel: { in: ["email", "copy"] },
+      ...(opts.ignoreReminderId ? { id: { not: opts.ignoreReminderId } } : {}),
+      OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }],
+    },
+  });
+  if (sentToday >= p.maxClientEmailsPerDay) {
+    const next = nextPolicyWindowOpen(etAt(shiftKey(etDayKey(now), 1), 0), p);
+    return row("wait", `${sentToday} program email already went to this client today — the brand kit reminder waits until ${fmtDay(next)}`, "another_reminder_today", next);
+  }
+  const inWindow = inPolicyWindow(now, p) && clientWindowOpen;
+  if (!inWindow) { const next = nextPolicyWindowOpen(now, p); return row("wait", `outside the send window — next opening ${fmtDay(next)}`, "quiet_hours", next); }
+  return row("send", `still missing: ${kit.missing.join(" and ")} (week ${weekKey})`);
+}
+
+/** One BRAND_KIT send: ledger row → recheck → link → outbox → outcome. */
+async function dispatchBrandKit(a: BrandKitPreview, e: EnrollmentRow, p: ReminderPolicy, now: Date, opts: { requestedBy: string; clientWindowOpen: boolean; byAppUserId: string | null }): Promise<DispatchOutcome> {
+  const leaseBy = `${opts.requestedBy}:${process.pid}`;
+  const template = templateForAction("BRAND_KIT", p.templates as Record<string, unknown> | undefined);
+  let reminderId: string;
+  if (a.retryOfId) {
+    const won = await prisma.programReminder.updateMany({ where: { id: a.retryOfId, state: "FAILED" }, data: { state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, nextAttemptAt: null } });
+    if (won.count === 0) return { reminderId: a.retryOfId, outcome: "duplicate", detail: "another run already took this retry" };
+    reminderId = a.retryOfId;
+  } else {
+    try {
+      const created = await prisma.programReminder.create({
+        data: {
+          enrollmentId: e.id, clientId: e.clientId, monthId: a.monthId, monthKey: a.monthKey, action: "BRAND_KIT", templateKey: template.id, templateVersion: template.version,
+          channel: "email", attempt: 1, state: "PENDING", leaseUntil: new Date(now.getTime() + 5 * 60_000), leaseBy, manual: false, requestedBy: opts.requestedBy, dedupeKey: a.dedupeKey,
+        },
+        select: { id: true },
+      });
+      reminderId = created.id;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { reminderId: null, outcome: "duplicate", detail: `this week's brand kit reminder for ${a.clientName} already exists` };
+      throw err;
+    }
+  }
+  const [enrollment, monthRow] = await Promise.all([
+    prisma.contentEnrollment.findUnique({ where: { id: e.id }, select: { status: true } }),
+    prisma.contentMonth.findUnique({ where: { id: a.monthId }, select: { remindersSnoozedUntil: true } }),
+  ]);
+  const scope = await freshRollout();
+  if (!scope.rollout) return leaveRetryable(reminderId, scope.error, now);
+  const fresh = enrollment ? await evaluateBrandKitLane({ ...e, status: enrollment.status }, { id: a.monthId, monthKey: a.monthKey, remindersSnoozedUntil: monthRow?.remindersSnoozedUntil ?? null }, now, p, opts.clientWindowOpen, { ignoreReminderId: reminderId }, scope.rollout) : null;
+  if (!fresh || fresh.decision !== "send") {
+    const reason = fresh?.suppressionReason ?? (fresh ? (fresh.decision === "wait" ? "quiet_hours" : "state_changed") : "brand_kit_received");
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: reason, leaseUntil: null, leaseBy: null, lastError: fresh?.reason ?? "the logo and brand colors are on file now" } });
+    return { reminderId, outcome: "suppressed", detail: reason };
+  }
+  const to = await recipientFor(e);
+  if (!to) {
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_recipient", leaseUntil: null, leaseBy: null } });
+    return { reminderId, outcome: "suppressed", detail: "no recipient" };
+  }
+  const link = await resolvePortalLink(e, to, opts.byAppUserId, now);
+  if (!link) {
+    await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "SUPPRESSED", suppressionReason: "no_portal_link", leaseUntil: null, leaseBy: null, lastError: "no portal link could be made for this client" } });
+    return { reminderId, outcome: "suppressed", detail: "no portal link" };
+  }
+  const body = renderReminder(template, {
+    firstName: firstNameOf(e.client.name), month: monthName(a.monthKey), portalLink: link.url, bookCallLink: null, noCallEligible: false, answersStarted: false,
+    sessionNote: null, earliestSession: null, itemCount: 0, titles: [], updatedTitles: [], deadline: null, brandMissing: fresh.missing,
+  });
+  await prisma.programReminder.update({ where: { id: reminderId }, data: { state: "QUEUED", toRef: to.email, evaluatedStateJson: JSON.stringify({ weekKey: a.weekKey, missing: fresh.missing, portalLinkKind: link.kind }) } });
+  const g = await sendGuarded(reminderId, { channel: "email", toRef: to.email, body, dedupeKey: programReminderKey("BRAND_KIT", reminderId, a.monthKey), clientId: e.clientId, requestedBy: opts.requestedBy }, leaseBy, now);
+  if (g.kind === "refused") return g.outcome;
+  return recordSendResult(reminderId, g.r, now);
 }
 
 // ---- the SCRIPTS lane (6.5, Jordan's answer Sep 25 2026) ---------------------------
@@ -2541,6 +2715,7 @@ async function evaluateScriptApprovalLane(
     const sentToday = await prisma.programReminder.count({
       where: {
         enrollmentId: e.id, channel: { in: ["email", "copy"] },
+        action: { not: "BRAND_KIT" }, // the weekly brand-kit nudge never holds back an address or approval email (Oct 20 2026)
         ...(opts.ignoreReminderId ? { id: { not: opts.ignoreReminderId } } : {}),
         OR: [{ state: "SENT", sentAt: { gte: dayFrom, lt: dayTo } }, { state: "QUEUED", createdAt: { gte: dayFrom, lt: dayTo } }],
       },
@@ -2703,11 +2878,11 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
         const switchOff = !switchOnFor(r.action);
         // CP-05: the exact address arrived while the email waited — it would
         // now ask for something the client has already given us.
-        const addressIn = (r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) || (r.action === "APPROVE_SCRIPTS" && !!r.monthId && (await monthScriptApprovals(r.monthId)).awaitingClient.length === 0);
+        const addressIn = (r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) || (r.action === "APPROVE_SCRIPTS" && !!r.monthId && (await monthScriptApprovals(r.monthId)).awaitingClient.length === 0) || (r.action === "BRAND_KIT" && (await brandKitReceived(r.enrollmentId, r.clientId)));
         const outOfScope = scopeOf(r.clientId, r.action);
         const stop = switchOff || !!outOfScope || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn;
         if (stop) {
-          const why = switchOff ? "the automation was switched off" : outOfScope ? outOfScope : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : "address_received") : booked ? "booked" : "snoozed";
+          const why = switchOff ? "the automation was switched off" : outOfScope ? outOfScope : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : r.action === "BRAND_KIT" ? "brand_kit_received" : "address_received") : booked ? "booked" : "snoozed";
           const released = await markFailed(r.outboxMessageId, `cancelled before send: ${why}`);
           if (released) {
             await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: switchOff ? "switched_off" : outOfScope ? "not_in_rollout_scope" : why, lastError: `cancelled before send: ${why}`, lastErrorAt: now } });
@@ -2731,6 +2906,11 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
     }
     // A failed address reminder whose address has since arrived is over — its
     // retry would ask for something we already have (CP-05).
+    if (r.state === "FAILED" && r.action === "BRAND_KIT" && (await brandKitReceived(r.enrollmentId, r.clientId))) {
+      await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: "brand_kit_received", nextAttemptAt: null, lastErrorAt: now } });
+      cancelled++;
+      continue;
+    }
     if (r.state === "FAILED" && r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) {
       await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: "address_received", nextAttemptAt: null, lastErrorAt: now } });
       cancelled++;

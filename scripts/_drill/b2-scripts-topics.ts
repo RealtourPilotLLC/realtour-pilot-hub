@@ -800,6 +800,35 @@ async function main() {
       c.ok("…a live pass sends nothing and writes no ledger row", outbox.length === snSent && (await prisma.programReminder.count({ where: { action: "APPROVE_SCRIPTS", enrollmentId: Sn.f.enrollmentId } })) === 0);
     }
 
+    {
+      // Oct 20 2026: THE WEEKLY BRAND-KIT EMAIL (Jordan: "If agents have not
+      // filled it out yet, then send them a message once a week until they do").
+      // Nov 2026: Wed the 18th and Thu the 19th share an ISO week; Tue the 24th is the next.
+      const B = await mkR("Bree TEST", "Accelerator", [et(27)]);
+      const lane = async (now: Date) => (await pr.evaluateReminders({ dryRun: true, now, ...only([B.f.enrollmentId]) })).brandKitLane[0];
+      const brandMails = () => outbox.filter((m) => m.dedupeKey.includes(":BRAND_KIT:") && m.toRef.includes("bree"));
+      const d1 = await lane(et(18));
+      c.ok("brand kit: no logo and no colors on file → this week's email is due, naming both", d1?.decision === "send" && d1.missing.join() === "logo,brand colors", `${d1?.decision} ${d1?.reason}`);
+      await pr.evaluateReminders({ dryRun: false, now: et(18), requestedBy: "drill", ...only([B.f.enrollmentId]) });
+      const m1 = brandMails();
+      c.ok("…a live pass sends it once, to the client, with the portal link and no dashes", m1.length === 1 && /We still don't have your logo and brand colors/.test(m1[0].body) && /Brand Profile/.test(m1[0].body) && /https?:\/\//.test(m1[0].body) && !/[\u2013\u2014]/.test(m1[0].body), m1[0]?.body.slice(0, 160));
+      await pr.evaluateReminders({ dryRun: false, now: et(19, 11), requestedBy: "drill", ...only([B.f.enrollmentId]) });
+      c.ok("…once a week: a later pass the same week sends no second one", brandMails().length === 1, `${brandMails().length}`);
+      const d2 = await lane(et(24));
+      c.ok("…the next week it is due again while anything is still missing", d2?.decision === "send" && d2.weekKey !== d1?.weekKey, `${d2?.decision} ${d2?.weekKey} vs ${d1?.weekKey}`);
+      await prisma.client.update({ where: { id: B.f.clientId }, data: { brandColors: "#112233, #DDEEFF" } });
+      const d3 = await lane(et(24));
+      c.ok("…with the colors in, it asks only for the logo", d3?.decision === "send" && d3.missing.join() === "logo", `${d3?.missing.join()}`);
+      const a = await prisma.clientAsset.create({ data: { clientId: B.f.clientId, type: "LOGO", name: "Logo", status: "ACTIVE" } });
+      const v = await prisma.clientAssetVersion.create({ data: { assetId: a.id, versionNo: 1, source: "client_portal", fileRef: "/AutoHDR/Client Assets/Bree TEST/logo.png", fileName: "logo.png" } });
+      await prisma.clientAsset.update({ where: { id: a.id }, data: { activeVersionId: v.id } });
+      c.ok("…and with the logo and colors on file, nothing more is asked", (await lane(et(24))) === undefined);
+      const Bs = await mkR("Bo TEST", "Accelerator", [et(27)]);
+      await pr.snoozeMonthReminders(Bs.f.monthId, et(30), "no emails for two weeks", STAFF_EMAIL);
+      const snoozedRow = (await pr.evaluateReminders({ dryRun: true, now: et(18), ...only([Bs.f.enrollmentId]) })).brandKitLane[0];
+      c.ok("a snoozed month's brand-kit email is suppressed 'snoozed' too", snoozedRow?.decision === "suppressed" && snoozedRow.suppressionReason === "snoozed", `${snoozedRow?.decision} ${snoozedRow?.suppressionReason}`);
+    }
+
     // The owner's bell three days out, Kyle's task at 24 hours.
     await setSwitch("reminders", false);
     const b1 = await desk.reconcileScriptApprovalTasks({ now: et(9, 11) });

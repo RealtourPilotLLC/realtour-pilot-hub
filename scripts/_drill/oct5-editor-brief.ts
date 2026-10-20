@@ -227,7 +227,7 @@ async function main() {
     // Oct 15 2026 (the brief audit): the order the work happens — the job bar,
     // What to make (script and music inside it), Footage and brand files; the
     // client closes the page, outside the video's brief.
-    c.ok("sections in order: job bar, What to make (script, music), Footage (brand kit)", JSON.stringify(order1) === JSON.stringify(["header", "make", "script", "music", "footage", "brand"]), order1.join(" > "));
+    c.ok("sections in order: job bar, What to make (script, music), Their brand (Oct 20 2026), Footage", JSON.stringify(order1) === JSON.stringify(["header", "make", "script", "music", "brand", "footage"]), order1.join(" > "));
     const make1 = block(article1, /data-brief-section="make"/);
     c.ok("Make this: the personal-branding default when the office wrote no specs", text(block(article1, /data-make-this/)).includes(PERSONAL_BRANDING_MAKE_THIS.replace(/&/g, "&")), text(block(article1, /data-make-this/)));
     c.ok("the script is OPEN by default with a Copy button, and an approved script wears no warning", /<section[^>]*data-brief-section="script"[\s\S]*?<details open=""/.test(article1) && article1.includes('aria-label="Copy the script"') && !article1.includes("data-not-approved"));
@@ -309,7 +309,7 @@ async function main() {
     const johnText = text(john);
     const articleL = block(john, new RegExp(`<article[^>]*id="brief-${oak.id}"`));
     const orderL = sectionsInOrder(articleL);
-    c.ok("the same order on a listing reel", JSON.stringify(orderL) === JSON.stringify(["header", "make", "script", "music", "footage", "brand"]), orderL.join(" > "));
+    c.ok("the same order on a listing reel", JSON.stringify(orderL) === JSON.stringify(["header", "make", "script", "music", "brand", "footage"]), orderL.join(" > "));
     c.ok("Make this: the listing style's own spec, not the monthly one", text(block(articleL, /data-make-this/)).includes(defaultMakeThis("standard_reel_agent_intro")) && !text(articleL).includes("30–60 s"));
     c.ok("Oct 16: the listing reel carries the Listing flow line and spells Rob, his brokerage, the street and the town", text(block(articleL, /data-listing-flow/)).includes("inside within 5 seconds") && ["Rob Listing", "Main Line Realty", "415 Oak Street", "Wayne"].every((x) => text(block(articleL, /data-spell-list/)).includes(x)), text(block(articleL, /data-spell-list/)));
     const scriptL = text(block(articleL, /data-brief-section="script"/));
@@ -334,7 +334,7 @@ async function main() {
     const articleB = block(back, new RegExp(`<article[^>]*id="brief-${outs[0].id}"`));
     const orderB = sectionsInOrder(articleB);
     // Oct 14 2026 (Jordan): "revision requests should be at the top of the editor brief".
-    c.ok("the order holds, with Fix these first, right under the job bar", JSON.stringify(orderB) === JSON.stringify(["header", "changes", "make", "script", "music", "footage", "brand"]), orderB.join(" > "));
+    c.ok("the order holds, with Fix these first, right under the job bar", JSON.stringify(orderB) === JSON.stringify(["header", "changes", "make", "script", "music", "brand", "footage"]), orderB.join(" > "));
     // Oct 15 2026 (the brief audit): Fix these IS the version's player and its
     // numbered notes, each time playable, said once on the page, with
     // "Upload version 2" at the end of the list.
