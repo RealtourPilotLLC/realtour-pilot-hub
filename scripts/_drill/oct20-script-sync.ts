@@ -149,6 +149,16 @@ async function main() {
     c.ok("the typed filmed record stays the working script", j6.reelScript === typed);
     c.ok("…while the current script moves to v11", j6.scriptingScript === scriptText(11, "swim spa and fire pit") && j6.scriptingVersion === 11);
 
+    // A typed "record" that is only a note is not a filmed record (Oct 20 2026:
+    // "N/A", "See dropbox folder for script" … typed when the hub had none).
+    const noteJob = await prisma.project.create({ data: { clientId: client.id, title: "34 Oakland Rd TEST", status: "DELIVERED", source: "ARYEO", aryeoOrderId: "aryeo-oakland", reelScript: "See dropbox folder for script", scriptConfirmedAt: new Date(), scriptConfirmNote: "Provided on site — typed by the photographer" } });
+    const oaklandAt = new Date(Date.now() - 86_400_000).toISOString();
+    platform.set("studio-oakland", { id: "studio-oakland", external_id: null, aryeo_order_id: "aryeo-oakland", status: "sent_to_client", updated_at: now(), appointment_date: null, created_at: now(), script: { raw: "Oakland v4 script", generated_at: oaklandAt, options: [] }, script_version: { version_number: 4, approved_at: oaklandAt, delivered_at: oaklandAt }, on_site_script: null, links: {} });
+    await sync.pullScriptFromStudio(noteJob.id);
+    const jn = await job(noteJob.id);
+    c.ok("a typed note ('See dropbox folder for script') gives way to the platform's script", jn.reelScript === "Oakland v4 script" && (jn.scriptConfirmNote ?? "").includes("See dropbox folder for script"), `${jn.reelScript} | ${jn.scriptConfirmNote}`);
+    c.ok("…while a real typed script is a record (looksLikeScript)", sync.looksLikeScript(typed) && !sync.looksLikeScript("N/A") && !sync.looksLikeScript("I need to add to this, standby") && !sync.looksLikeScript("Waiting for Alex to send her revised version") && !sync.looksLikeScript("This is essentially a music video for the listing video tour. Please see dropbox for EXACT Details on how to edit this together.") && sync.looksLikeScript("HOOK: WAIT! Before you sign that new construction contract, you gotta see this. REHOOK: Because what if everything you have been waiting for already exists? PAYOFF: Four bedrooms, spacious living, a finished basement and a backyard built for the way you actually live, all ready right now. CALLBACK: Skip the wait."));
+
     // ======================================================================
     c.head("7 · an office correction in the hub, against older and newer versions");
     const other = await prisma.project.create({ data: { clientId: client.id, title: "12 Elm St TEST", status: "EDITING", source: "MANUAL" } });
@@ -179,7 +189,7 @@ async function main() {
     // ======================================================================
     c.head("9 · the 15-minute reconcile");
     const first = await sync.reconcileScripting();
-    c.ok("one list call; the never-read job is read and linked", listReads === 1 && first.matched === 3 && (await job(late.id)).scriptingId === "studio-late", JSON.stringify(first));
+    c.ok("one list call; the never-read job is read and linked", listReads === 1 && first.matched === 4 && (await job(late.id)).scriptingId === "studio-late", JSON.stringify(first));
     const readsBefore = reads;
     const quiet = await sync.reconcileScripting({ now: new Date() });
     c.ok("unchanged projects are not re-read, except a shoot within three days that was read 10+ minutes ago", quiet.read === 0 && reads === readsBefore, JSON.stringify(quiet));

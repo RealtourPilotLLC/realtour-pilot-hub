@@ -54,6 +54,24 @@ import {
 
 const HUB_EDIT = /^Edited in the hub by [^\n]*\n?/;
 
+/**
+ * Is a photographer's typed-on-site text a script at all? (Oct 20 2026.) The
+ * upload debrief asks for the script when the hub had none, and with the
+ * Aryeo bookings never matched, photographers typed what they could: "N/A",
+ * "Script", "See dropbox folder for script", "Waiting for Alex to send her
+ * revised version". Those are notes, not a filmed record; the platform's
+ * script replaces them. Anything that reads like words spoken on camera stays.
+ */
+export function looksLikeScript(text: string | null | undefined): boolean {
+  const t = (text ?? "").trim();
+  const words = t ? t.split(/\s+/).length : 0;
+  if (words < 12) return false;
+  // The note phrases only mark a SHORT text: a real script can say "everything
+  // you've been waiting for" (2236 Gregory Dr).
+  if (words < 40 && /dropbox|stand ?by|waiting (for|on)|will be (uploaded|sent|added)|example video|see (the )?(attached|folder|file)/i.test(t)) return false;
+  return true;
+}
+
 type ProjectRef = { id: string; aryeoOrderId: string | null; scriptingId: string | null };
 
 /** Mirror one platform snapshot onto a hub job. Returns what changed in words. */
@@ -89,15 +107,18 @@ export async function applyStudioSnapshot(projectId: string, snap: StudioSnapsho
   const draft = opts.draftVersion ?? p.scriptingDraftVersion;
   if (draft != null && ((crew?.version ?? 0) >= draft || (client?.version ?? p.scriptingClientVersion ?? 0) >= draft)) data.scriptingDraftVersion = null;
 
-  // The working script.
+  // The working script. A typed-on-site "record" that is only a note (see
+  // looksLikeScript) does not hold the script back.
   let workingChanged = false;
-  if (crew && !p.scriptConfirmedAt) {
+  const noteOnly = !!p.scriptConfirmedAt && (p.scriptConfirmNote ?? "").startsWith("Provided on site") && !looksLikeScript(p.reelScript);
+  if (crew && (!p.scriptConfirmedAt || noteOnly)) {
     const hubEditAt = HUB_EDIT.test(p.scriptConfirmNote ?? "") ? p.reelRecipeUpdatedAt : null;
     const platformNewer = !hubEditAt || !crew.at || crew.at > hubEditAt;
     if (platformNewer && (p.reelScript ?? "").trim() !== crew.text.trim()) {
       data.reelScript = crew.text.slice(0, 20_000);
       data.reelRecipeUpdatedAt = now;
       if (hubEditAt) data.scriptConfirmNote = (p.scriptConfirmNote ?? "").replace(HUB_EDIT, "").trim() || null;
+      if (noteOnly) data.scriptConfirmNote = `Script from Script Writing. The photographer's on-site note was: "${(p.reelScript ?? "").trim().slice(0, 200)}"`;
       workingChanged = true;
     }
     if (platformNewer && snap.hook && snap.hook !== p.reelHook) data.reelHook = snap.hook;

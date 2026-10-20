@@ -15,6 +15,8 @@
 //   ... --apply
 // ---------------------------------------------------------------------------
 
+export {};
+
 async function main() {
   const apply = process.argv.includes("--apply");
   const { prisma } = await import("../../../src/lib/prisma");
