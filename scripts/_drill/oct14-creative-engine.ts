@@ -263,7 +263,8 @@ async function main() {
     c.ok("…and leaves a fresh title alone", !policy.formulaicTitleShape("Three offers by Sunday: the pricing plan") && !policy.formulaicTitleShape("Actually, the roof is fine") && !policy.formulaicTitleShape("What sellers ask on day one"));
     const bankP = policy.buildTopicBankPrompt(builtD.ctx, { pillarEmphasis: { [BUYER]: "LIGHT", [SELLER]: "LEAD" } });
     c.ok("the bank prompt carries the originality rule", bankP.system.includes(policy.TOPIC_ORIGINALITY_RULE) && /angle only this client could take/.test(policy.TOPIC_ORIGINALITY_RULE));
-    c.ok("…and the per-pillar counts and emphasis are intact", bankP.system.includes(`${BUYER}: exactly 3`) && bankP.system.includes(`${SELLER}: exactly 10`) && /LEAD pillars/.test(bankP.system) && /LIGHT pillars/.test(bankP.system));
+    // Oct 20 2026: every pillar, LIGHT included, gets the full 10.
+    c.ok("…and the per-pillar counts and emphasis are intact", /exactly 10 topics under EACH/.test(bankP.system) && /LEAD pillars/.test(bankP.system) && /LIGHT pillars/.test(bankP.system));
     const run4 = await ct.startTopicRefresh({ enrollmentId: D.enrollmentId, kind: "BANK", requestedBy: STAFF_EMAIL });
     const row4 = await prisma.contentTopicRefreshRun.findUnique({ where: { id: run4.runId } });
     const suggs = await prisma.contentTopicSuggestion.findMany({ where: { refreshRunId: run4.runId }, select: { title: true } });

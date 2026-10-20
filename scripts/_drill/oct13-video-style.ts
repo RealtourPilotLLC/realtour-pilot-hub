@@ -230,11 +230,12 @@ async function main() {
     c.ok("DIRECT: the bank prompt carries the humour and originality rules and no skit rule", bankD.system.includes(policy.PERSONAL_BRAND_HUMOUR_RULE) && bankD.system.includes(policy.TOPIC_ORIGINALITY_RULE) && !bankD.system.includes(policy.SKIT_TOPIC_RULE) && !/VIDEO STYLE: SKITS/.test(bankD.system));
     const emph = { [BUYER]: "LIGHT", [SELLER]: "LEAD" };
     const bankSE = policy.buildTopicBankPrompt(withStrategy(builtS.ctx), { pillarEmphasis: emph });
-    c.ok("pillar emphasis still shapes a SKITS bank: per-pillar counts, LEAD and LIGHT named", bankSE.system.includes(`${BUYER}: exactly 3`) && bankSE.system.includes(`${SELLER}: exactly 10`) && /LEAD pillars[^\n]*Seller Strategy/.test(bankSE.system) && /LIGHT pillars[^\n]*Buyer Education/.test(bankSE.system) && bankSE.system.includes(policy.SKIT_TOPIC_RULE));
+    // Oct 20 2026: every pillar, LIGHT included, gets the full count; emphasis is still named.
+    c.ok("pillar emphasis still shapes a SKITS bank: 10 per pillar, LEAD and LIGHT named", /exactly 10 topics under EACH/.test(bankSE.system) && /LEAD pillars[^\n]*Seller Strategy/.test(bankSE.system) && /LIGHT pillars[^\n]*Buyer Education/.test(bankSE.system) && bankSE.system.includes(policy.SKIT_TOPIC_RULE));
     const oldBankDE = oldPrompts.buildTopicBankPrompt(withStrategy(builtD.ctx), { pillarEmphasis: emph });
     const countLine = (sys: string) => (/^COUNT:.*$/m.exec(sys) ?? [""])[0] + (/^EMPHASIS:.*$/m.exec(sys) ?? [""])[0];
     const bankDE = policy.buildTopicBankPrompt(withStrategy(builtD.ctx), { pillarEmphasis: emph });
-    c.ok("…and a DIRECT bank with emphasis keeps the OLD per-pillar counts and emphasis lines exactly", countLine(bankDE.system) === countLine(oldBankDE.system) && countLine(bankDE.system).length > 20 && !bankDE.system.includes(policy.SKIT_TOPIC_RULE));
+    c.ok("…and a DIRECT bank with emphasis has the same count and emphasis lines as a SKITS one", countLine(bankDE.system) === countLine(bankSE.system) && countLine(bankDE.system).length > 20 && !bankDE.system.includes(policy.SKIT_TOPIC_RULE), `${countLine(oldBankDE.system).length}`);
 
     // ======================================================================
     c.head("4 · validation: a skit passes, dialogue only is counted; direct unchanged");

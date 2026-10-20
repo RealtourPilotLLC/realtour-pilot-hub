@@ -90,7 +90,10 @@ interceptModule(
           const out = pillars.map((p) => {
             const extra = inject[p] ?? [];
             inject[p] = [];
-            const fresh = Array.from({ length: 12 }, (_, i) => `${p} angle ${bankRound}.${i + 1}`);
+            // Distinct titles: since Oct 20 2026 a fresh idea that READS like one
+            // on file (not only an exact repeat) is dropped, so "<pillar> angle
+            // 2.3" beside "<pillar> angle 1.3" would be a duplicate.
+            const fresh = Array.from({ length: 12 }, (_, i) => distinctTitle(`${p}:${bankRound}:${i}`));
             return {
               pillarName: p,
               topics: [...extra, ...fresh].map((title) => ({ title, description: `About ${title}.`, audienceNeed: "Sellers deciding when to list", businessGoal: "Trust", intendedMessage: "Plan before you list", sourceRef: null })),
@@ -150,6 +153,18 @@ async function strategyText(name: string): Promise<string> {
 
 /** "YYYY-MM" shifted by n months. */
 const shiftKey = (key: string, n: number) => { const [y, m] = key.split("-").map(Number); const d = new Date(Date.UTC(y, m - 1 + n, 1)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
+
+
+// Three words from a fixed vocabulary, picked by a hash of the key: different
+// keys read as different ideas to contentPolicy.titleSimilarity.
+const VOCAB = ["harbor", "quartz", "mitten", "lantern", "falcon", "velvet", "cobalt", "pepper", "tundra", "orchid", "basalt", "wicker", "saddle", "jigsaw", "nectar", "pylon", "gravel", "umbra", "kettle", "zephyr", "meadow", "rocket", "sphinx", "bonsai", "dynamo", "iguana", "lychee", "mosaic", "nimbus", "oyster", "plinth", "quiver", "raptor", "sorbet", "tulip", "vortex", "walrus", "yonder", "zircon", "anchor", "bugle", "cactus", "dahlia", "ember", "fjord", "gazebo", "hazel", "ivory", "jasper", "kiosk"];
+function distinctTitle(key: string): string {
+  let h = 2166136261;
+  for (const ch of key) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+  const pick = (n: number) => VOCAB[(h >>> (n * 7)) % VOCAB.length];
+  const w = [pick(0), pick(1), pick(2)];
+  return `${w[0][0].toUpperCase()}${w[0].slice(1)} ${w[1]} ${w[2]} ${key.split(":").slice(1).join("-")}`;
+}
 
 async function main() {
   const { server, stop } = await bootDrillDb({ port: PORT });
@@ -321,7 +336,19 @@ async function main() {
     const r7 = await ct.startTopicRefresh({ enrollmentId: A.enrollmentId, kind: "REFRESH", requestedBy: STAFF_EMAIL, pillarId: pB.id, keep: 3 });
     const run7 = await prisma.contentTopicRefreshRun.findUnique({ where: { id: r7.runId } });
     c.ok("a refresh offering it again withholds it", /1 archived concept withheld/.test(run7?.changeSummary ?? "") && !(await prisma.contentTopicSuggestion.findFirst({ where: { title: bTopic.title, refreshRunId: r7.runId } })), run7?.changeSummary ?? "");
-    c.ok("…and the model was told it is set aside, with the reason", prompts[prompts.length - 1].prompt.includes(`${bTopic.title} — client not interested: not my market`));
+    // Oct 20 2026: a pillar topic's line also says what it covers, between the title and the note.
+    c.ok("…and the model was told it is set aside, with the reason", prompts[prompts.length - 1].prompt.split("\n").some((l) => l.includes(bTopic.title) && l.endsWith("— client not interested: not my market")));
+    // Oct 20 2026: a REWORDED copy is the same idea. One of the turned-down
+    // topic comes back withheld; one of a live topic is dropped as on file.
+    const live7 = (await prisma.contentTopic.findMany({ where: { enrollmentId: A.enrollmentId, pillarId: pB.id, clientDeclinedAt: null, status: { notIn: ["ARCHIVED", "REJECTED"] } }, orderBy: { createdAt: "asc" } }))[0];
+    const reworded = (t: string) => `${t}, revisited`;
+    inject["Seller Education"] = [reworded(bTopic.title), reworded(live7.title)];
+    const r7b = await ct.startTopicRefresh({ enrollmentId: A.enrollmentId, kind: "REFRESH", requestedBy: STAFF_EMAIL, pillarId: pB.id, keep: 3 });
+    const run7b = await prisma.contentTopicRefreshRun.findUnique({ where: { id: r7b.runId } });
+    const kept7b = await prisma.contentTopicSuggestion.findMany({ where: { refreshRunId: r7b.runId }, select: { title: true } });
+    c.ok("a reworded copy of the turned-down topic is withheld", /1 archived concept withheld/.test(run7b?.changeSummary ?? "") && !kept7b.some((x) => x.title === reworded(bTopic.title)), run7b?.changeSummary ?? "");
+    c.ok("…and a reworded copy of a live topic is dropped as already on file", !kept7b.some((x) => x.title === reworded(live7.title)) && /\b[1-9]\d* already in the bank/.test(run7b?.changeSummary ?? ""), run7b?.changeSummary ?? "");
+    c.ok("…while fresh ideas still come through", kept7b.length === 3, `${kept7b.length}`);
     const und = await portalActions.portalUndeclineTopic(auth, bTopic.id);
     c.ok("undo brings it back", und.ok && (await portalTopics({ id: A.enrollmentId, clientId: A.clientId })).total === 20, und.message);
     c.ok("…with a REINTRODUCED event", (await prisma.contentTopicEvent.count({ where: { topicId: bTopic.id, kind: "REINTRODUCED" } })) === 1);

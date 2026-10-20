@@ -152,7 +152,47 @@ export async function aiJsonWithUsage<T>(opts: {
   );
   const call = json.content?.find((b) => b.type === "tool_use" && b.name === "emit");
   if (!call?.input) throw new Error("The AI did not return a usable answer.");
-  return { result: call.input as T, usage: usageOf(json), model: json.model ?? model };
+  return { result: decodeStringifiedJson(call.input, opts.schema) as T, usage: usageOf(json), model: json.model ?? model };
+}
+
+/**
+ * A tool call's input follows the schema's shape, except that now and then
+ * the model sends a nested list or object as a JSON STRING ("pillars":
+ * "[{...}]"): about one run in ten of topic banks, first drafts and script
+ * revisions (Oct 20 2026; two of Erica Walker's topic refills came back empty
+ * because of it). Where the schema asks for an array or an object and a
+ * string arrives that parses as one (or starts with one, when the string
+ * swallowed the keys after it), the parsed value is used, all the way down;
+ * anything else is left exactly as sent.
+ */
+export function decodeStringifiedJson(value: unknown, schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") return value;
+  const s = schema as { type?: unknown; properties?: Record<string, unknown>; items?: unknown };
+  const types = Array.isArray(s.type) ? s.type : s.type ? [s.type] : [];
+  const wantsArray = types.includes("array") || (!types.length && !!s.items);
+  const wantsObject = types.includes("object") || (!types.length && !!s.properties);
+  if (typeof value === "string" && (wantsArray || wantsObject) && !types.includes("string")) {
+    const t = value.trim();
+    if ((wantsArray && t.startsWith("[")) || (wantsObject && t.startsWith("{"))) {
+      const fits = (v: unknown) => (wantsArray && Array.isArray(v)) || (wantsObject && !!v && typeof v === "object" && !Array.isArray(v));
+      // The string can also run on past its value and swallow the object's
+      // later keys ('[...], "gaps": [], "complete": true'): read as the first
+      // key of an object, the value comes out whole and the tail is dropped.
+      for (const attempt of [() => JSON.parse(t) as unknown, () => (JSON.parse(`{"v":${t}}`) as { v: unknown }).v]) {
+        try {
+          const parsed = attempt();
+          if (fits(parsed)) { value = parsed; break; }
+        } catch { /* not JSON: try the next reading, else left as sent */ }
+      }
+    }
+  }
+  if (Array.isArray(value) && s.items) return value.map((v) => decodeStringifiedJson(v, s.items));
+  if (value && typeof value === "object" && !Array.isArray(value) && s.properties) {
+    const out: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+    for (const [k, sub] of Object.entries(s.properties)) if (k in out) out[k] = decodeStringifiedJson(out[k], sub);
+    return out;
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------

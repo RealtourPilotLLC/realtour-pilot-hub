@@ -473,9 +473,10 @@ export function buildTopicBankPrompt(
   ctx: ClientContext,
   opts: {
     topicsPerPillar?: number;
-    existingTopics?: { title: string; pillarName: string; state: Topic["state"]; note?: string | null }[];
+    /** `concept` (Oct 20 2026): what a topic covers, so a new idea on the same subject under another title is seen as one. */
+    existingTopics?: { title: string; pillarName: string; state: Topic["state"]; note?: string | null; concept?: string | null }[];
     refresh?: boolean;
-    /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT (ContentPillar.emphasis). A LIGHT pillar asks for topicsForEmphasis(n, "LIGHT"). */
+    /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT (ContentPillar.emphasis). Since Oct 20 every pillar asks for the same n (topicsForEmphasis). */
     pillarEmphasis?: Record<string, string>;
   } = {},
 ): PromptBundle {
@@ -501,7 +502,7 @@ export function buildTopicBankPrompt(
       : `COUNT: each pillar has its OWN count: ${pillars.map((p) => `${p}: exactly ${countOf(p)}`).join("; ")} = ${total} topics. Never more, never fewer, never padded. If the source context cannot support a pillar's count at the quality bar, return fewer for that pillar, set complete=false, and add an insufficient-context gap naming what is missing.`;
   const emphasisLine = [
     lead.length ? `LEAD pillars (the client's main focus; most of their content should come from these): ${lead.join("; ")}.` : "",
-    light.length ? `LIGHT pillars (supporting only; keep their topics few and do not let them crowd the bank): ${light.join("; ")}.` : "",
+    light.length ? `LIGHT pillars (supporting; they still get their full count, but their topics should be the easiest to film alongside the main focus): ${light.join("; ")}.` : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -522,7 +523,7 @@ export function buildTopicBankPrompt(
     PERSONAL_BRAND_HUMOUR_RULE,
     ...(asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE] : []),
     opts.refresh
-      ? "REFRESH: preserve accepted, rejected, selected and filmed history. Do not re-suggest an archived idea as new; do not rename the client's pillars; add candidates, never delete."
+      ? "REFRESH: preserve accepted, rejected, selected and filmed history. Do not re-suggest an archived idea as new; do not rename the client's pillars; add candidates, never delete. The existing topics already cover their subjects: spend every new idea on a focus area, story or angle none of them covers yet."
       : "",
     "",
     SPEAKER_ATTRIBUTION_RULE,
@@ -533,7 +534,7 @@ export function buildTopicBankPrompt(
     .join("\n");
   const user = [
     contextBlock(ctx),
-    existing.length ? `\nEXISTING TOPICS (do not duplicate; archived ones must not come back):\n${existing.map((t) => `- [${t.state}] ${t.pillarName} · ${t.title}${t.note ? ` — ${t.note}` : ""}`).join("\n")}` : "",
+    existing.length ? `\nEXISTING TOPICS (do not duplicate: a reworded title, or the same subject, example, story or takeaway under a new title, is a duplicate; archived ones must not come back in any wording):\n${existing.map((t) => `- [${t.state}] ${t.pillarName} · ${t.title}${t.concept ? ` (covers: ${t.concept.replace(/\s+/g, " ").slice(0, 180)})` : ""}${t.note ? ` — ${t.note}` : ""}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n");

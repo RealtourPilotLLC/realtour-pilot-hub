@@ -132,9 +132,14 @@ export function asPillarEmphasis(v: string | null | undefined): PillarEmphasis {
   return u === "LEAD" || u === "LIGHT" ? u : "NORMAL";
 }
 
-/** How many bank topics a pillar gets: n for LEAD and NORMAL, max(2, round(n/3)) for LIGHT. */
-export function topicsForEmphasis(n: number, emphasis: string | null | undefined): number {
-  return asPillarEmphasis(emphasis) === "LIGHT" ? Math.max(2, Math.round(n / 3)) : n;
+/**
+ * How many bank topics a pillar gets: n, whatever its emphasis. Until Oct 20
+ * 2026 a LIGHT pillar got max(2, round(n/3)); Jordan: "For every client they
+ * should have 10-15 video topics per content pillar on their content
+ * strategy." Emphasis still orders the bank and weights the recommendations.
+ */
+export function topicsForEmphasis(n: number, _emphasis?: string | null): number {
+  return n;
 }
 
 /** A pillar's emphasis from a name-keyed map, matched the way pillar names are everywhere (case and punctuation ignored). */
@@ -419,7 +424,7 @@ export type ValidateTopicBankOptions = {
   mode?: "generated" | "imported";
   /** Pillar names the approved strategy defines — a topic under any other name is flagged. */
   strategyPillarNames?: string[];
-  /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT. A LIGHT pillar is held to topicsForEmphasis(n, "LIGHT"), not n. */
+  /** Oct 13 2026: pillar name → LEAD | NORMAL | LIGHT. Since Oct 20 every pillar is held to the same n (topicsForEmphasis). */
   pillarEmphasis?: Record<string, string>;
 };
 

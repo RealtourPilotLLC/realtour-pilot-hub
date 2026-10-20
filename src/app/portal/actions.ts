@@ -832,7 +832,7 @@ export async function portalDeclineTopic(auth: PortalAuth, topicId: string, reas
     await declineTopicForClient(topic.id, topicActor(v), why);
     await ownerBell("portal_topic_declined", `Topic set aside — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: not interested in "${clip(topic.title, 100)}"${why ? ` — ${clip(why, 120)}` : ""}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-declined-${topic.id}`);
     try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Set aside. We won't suggest it again. You can undo this below." };
+    return { ok: true, message: "Removed from your list. We won't suggest it again." };
   } catch (e) {
     return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
   }

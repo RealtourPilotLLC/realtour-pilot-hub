@@ -1460,7 +1460,9 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   const orderedGroups = orderByPillarEmphasis(bank.groups, (g) => (g.pillarId ? emphasisOf.get(g.pillarId) : null), (g) => !!g.pillarId);
   const groups = orderedGroups.map((g) => ({
     pillarId: g.pillarId, pillarName: g.pillarName, purpose: g.pillarId ? purposeOf.get(g.pillarId) ?? null : null,
-    topics: [...g.topics.filter((t) => visibleIds.has(t.id)), ...declinedIn(g.pillarId)].map((t) => toTopic(t, g.pillarName)),
+    // In the bank's own order, a turned-down topic in its place: the card the
+    // client just turned down stays where it was, with its Undo (Oct 20 2026).
+    topics: [...g.topics.filter((t) => visibleIds.has(t.id)), ...declinedIn(g.pillarId)].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((t) => toTopic(t, g.pillarName)),
   }));
   // A declined topic with no pillar, on a bank whose every topic has one.
   if (!groups.some((g) => !g.pillarId)) {

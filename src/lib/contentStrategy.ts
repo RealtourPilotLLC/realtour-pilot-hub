@@ -578,7 +578,7 @@ export async function acceptStrategyProposal(proposalId: string, by: string, not
  * parse is known to be reading the same document). Otherwise the old read is
  * kept — the verbatim sections are the truth, and Jordan approves the draft.
  */
-function refreshedDocument(before: StoredSections, sections: StoredSection[]): StrategyDocument | null {
+export function refreshedDocument(before: StoredSections, sections: StoredSection[]): StrategyDocument | null {
   if (!before.document) return null;
   try {
     // Headings are stored verbatim, numbering included ("2. Content Goals").

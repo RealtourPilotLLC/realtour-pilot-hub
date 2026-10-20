@@ -14,15 +14,16 @@
 // The OLD ranking is loaded for real from BASE (the commit this change starts
 // from) so its behaviour is asserted first, beside the new one.
 //
-//   1. The pure rules: LIGHT = max(2, round(n/3)), LEAD and NORMAL = n.
-//   2. The validator holds each pillar to its own count.
+//   1. The pure rules: every pillar gets n (Oct 20 2026: "10-15 video topics
+//      per content pillar"; LIGHT was max(2, round(n/3)) from Oct 13).
+//   2. The validator holds every pillar, LIGHT included, to n.
 //   3. The ranking: a LIGHT pillar's topic used to tie a NORMAL one (no goal
 //      link) or beat it (under-represented in filming); now it ranks below.
 //   4. The staff action: refuses a bad value and another client's pillar;
 //      sets LEAD / LIGHT on Arielle-shaped pillars.
-//   5. The bank run: the prompt states each pillar's own count and names the
-//      LEAD and LIGHT pillars; a LIGHT pillar keeps only its count even when
-//      the model sends a full pillar; the weekly refill target is per pillar.
+//   5. The bank run: the prompt asks every pillar for n and names the LEAD and
+//      LIGHT pillars; a LIGHT pillar keeps its full n; the weekly refill
+//      target is n for every pillar.
 //   6. The recommendation run: no LIGHT topic is recommended, a LEAD one is
 //      ranked first.
 //   7. The client's topic bank: LEAD first, LIGHT last (the staff bank keeps
@@ -126,9 +127,8 @@ async function main() {
   try {
     // ======================================================================
     c.head("1 · the pure rules");
-    c.ok("LIGHT at 10 per pillar → 3", policy.topicsForEmphasis(10, "LIGHT") === 3);
-    c.ok("LIGHT at 15 per pillar → 5", policy.topicsForEmphasis(15, "LIGHT") === 5);
-    c.ok("LIGHT never below 2", policy.topicsForEmphasis(4, "LIGHT") === 2);
+    c.ok("LIGHT at 10 per pillar → 10 (Oct 20 2026)", policy.topicsForEmphasis(10, "LIGHT") === 10);
+    c.ok("LIGHT at 15 per pillar → 15", policy.topicsForEmphasis(15, "LIGHT") === 15);
     c.ok("LEAD and NORMAL keep the full count", policy.topicsForEmphasis(10, "LEAD") === 10 && policy.topicsForEmphasis(10, "NORMAL") === 10);
     c.ok("an unknown stored value reads as NORMAL", policy.asPillarEmphasis("loud") === "NORMAL" && policy.asPillarEmphasis(null) === "NORMAL" && policy.asPillarEmphasis(" light ") === "LIGHT");
     c.ok("weights LEAD 1.5 · NORMAL 1 · LIGHT 0.5", policy.PILLAR_EMPHASIS_WEIGHT.LEAD === 1.5 && policy.PILLAR_EMPHASIS_WEIGHT.NORMAL === 1 && policy.PILLAR_EMPHASIS_WEIGHT.LIGHT === 0.5);
@@ -137,17 +137,17 @@ async function main() {
     c.ok("ordering: LEAD, NORMAL (stable), LIGHT, then no pillar", ordered.map((r) => r.n).join(",") === "c,b,d,a,none", ordered.map((r) => r.n).join(","));
 
     // ======================================================================
-    c.head("2 · the validator holds each pillar to its own count");
+    c.head("2 · the validator holds every pillar to the same count");
     const bankOf = (counts: Record<string, number>): import("@/lib/contentPolicy").TopicBank => ({
       clientId: null, clientName: "Arielle TEST", intro: [], strategyVersion: null, stamp: null,
       pillars: Object.entries(counts).map(([name, n]) => ({ pillarId: null, name, purpose: null, topics: Array.from({ length: n }, (_, i) => policy.makeTopic({ title: `${name.split(" ")[0]} distinct ${["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"][i]} subject ${i * 7}`, pillarName: name, description: "A concrete video." })) })),
     });
     const emph = { [BUYER]: "LIGHT", [SELLER]: "LEAD" };
     const v1 = policy.validateTopicBank(bankOf({ [BUYER]: 3, [SELLER]: 10, [BRAND]: 10 }), { topicsPerPillar: 10, mode: "generated", pillarEmphasis: emph });
-    c.ok("3 / 10 / 10 with Buyer LIGHT passes the count rule", !v1.findings.some((f) => f.code === "pillar.count"), JSON.stringify(v1.findings.map((f) => f.message)).slice(0, 300));
-    c.ok("…and reports each pillar's own expected count", v1.counts.map((x) => x.expected).join("/") === "3/10/10", JSON.stringify(v1.counts));
+    c.ok("3 / 10 / 10 with Buyer LIGHT is held to 10 for Buyer too", v1.findings.some((f) => f.code === "pillar.count" && f.message.includes(BUYER) && f.message.includes("exactly 10")), JSON.stringify(v1.findings.map((f) => f.message)).slice(0, 300));
+    c.ok("…and reports 10 expected for every pillar", v1.counts.map((x) => x.expected).join("/") === "10/10/10", JSON.stringify(v1.counts));
     const v2 = policy.validateTopicBank(bankOf({ [BUYER]: 10, [SELLER]: 10, [BRAND]: 10 }), { topicsPerPillar: 10, mode: "generated", pillarEmphasis: emph });
-    c.ok("a full 10 under the LIGHT pillar is blocked", !v2.ok && v2.findings.some((f) => f.code === "pillar.count" && f.message.includes(BUYER) && f.message.includes("exactly 3")), JSON.stringify(v2.findings.map((f) => f.message)).slice(0, 300));
+    c.ok("a full 10 under the LIGHT pillar passes the count rule", !v2.findings.some((f) => f.code === "pillar.count"), JSON.stringify(v2.findings.map((f) => f.message)).slice(0, 300));
     const v3 = policy.validateTopicBank(bankOf({ [BUYER]: 3, [SELLER]: 10, [BRAND]: 10 }), { topicsPerPillar: 10, mode: "generated" });
     c.ok("with no emphasis every pillar is still held to 10 (unchanged)", v3.findings.some((f) => f.code === "pillar.count" && f.message.includes(BUYER) && f.message.includes("exactly 10")));
 
@@ -202,26 +202,25 @@ async function main() {
     c.ok("setting the same value again changes nothing", same.ok && /already light/.test(same.message), same.message);
 
     // ======================================================================
-    c.head("5 · the bank run: per-pillar counts in the prompt, LIGHT capped");
+    c.head("5 · the bank run: the full count for every pillar, emphasis named");
     await prisma.programAutomation.upsert({ where: { key: "ai_runs" }, create: { key: "ai_runs", enabled: true, enabledBy: "drill", enabledAt: new Date() }, update: { enabled: true } });
     const run5 = await ct.startTopicRefresh({ enrollmentId: A.enrollmentId, kind: "BANK", requestedBy: STAFF_EMAIL });
     const row5 = await prisma.contentTopicRefreshRun.findUnique({ where: { id: run5.runId } });
     c.ok("the bank run SUCCEEDED with one model call", row5?.status === "SUCCEEDED" && aiCalls === 1, `${row5?.status} ${row5?.lastError ?? row5?.changeSummary ?? ""}`);
     const sys = prompts[0]?.system ?? "";
-    c.ok("the prompt states each pillar's own count", sys.includes(`${BUYER}: exactly 3`) && sys.includes(`${SELLER}: exactly 10`) && sys.includes(`${BRAND}: exactly 10`) && sys.includes("= 23 topics"), (/COUNT:[^\n]+/.exec(sys)?.[0] ?? "").slice(0, 300));
+    c.ok("the prompt asks every pillar for 10, the LIGHT one too", /exactly 10 topics under EACH of the client's 3 pillars/.test(sys) && sys.includes("= 30 topics"), (/COUNT:[^\n]+/.exec(sys)?.[0] ?? "").slice(0, 300));
     c.ok("…names the LEAD pillar as the main focus", new RegExp(`LEAD pillars \\(the client's main focus[^)]*\\): ${SELLER}\\.`).test(sys), /EMPHASIS:[^\n]+/.exec(sys)?.[0]);
-    c.ok("…and the LIGHT pillar as supporting, keep few", new RegExp(`LIGHT pillars \\(supporting only; keep their topics few[^)]*\\): ${BUYER.replace(/[&]/g, "\\&")}\\.`).test(sys));
-    c.ok("…no longer 'exactly 10 under EACH'", !/under EACH/.test(sys));
+    c.ok("…and the LIGHT pillar as supporting, with its full count", new RegExp(`LIGHT pillars \\(supporting; they still get their full count[^)]*\\): ${BUYER.replace(/[&]/g, "\\&")}\\.`).test(sys), /EMPHASIS:[^\n]+/.exec(sys)?.[0]);
     c.ok("the prompt has no em dash in the new lines", !/[—–]/.test((/COUNT:[^\n]+/.exec(sys)?.[0] ?? "") + (/EMPHASIS:[^\n]+/.exec(sys)?.[0] ?? "")));
     const sugg = await prisma.contentTopicSuggestion.findMany({ where: { enrollmentId: A.enrollmentId, disposition: "PENDING" } });
     const per = (id: string) => sugg.filter((s) => s.pillarId === id).length;
-    c.ok("the model sent 10 for Buyer; only 3 were kept", per(pBuyer.id) === 3 && per(pSeller.id) === 10 && sugg.length === 23, `${per(pBuyer.id)} / ${per(pSeller.id)} / ${sugg.length}`);
+    c.ok("the model sent 10 for Buyer; all 10 were kept", per(pBuyer.id) === 10 && per(pSeller.id) === 10 && sugg.length === 30, `${per(pBuyer.id)} / ${per(pSeller.id)} / ${sugg.length}`);
     const plainPrompt = policy.buildTopicBankPrompt((await (await import("@/lib/contentGeneration")).buildClientContext(A.enrollmentId)).ctx);
     c.ok("with no emphasis map the prompt reads as before (10 under EACH, no EMPHASIS line)", /exactly 10 topics under EACH of the client's 3 pillars/.test(plainPrompt.system) && !/EMPHASIS:/.test(plainPrompt.system));
     for (const s of sugg) await ct.acceptSuggestion(s.id, STAFF_EMAIL);
     const stock = await ct.bankStock(A.enrollmentId);
     const st = (id: string) => stock.find((p) => p.pillarId === id);
-    c.ok("refill target: Buyer 3 (light), Seller 10", st(pBuyer.id)?.target === 3 && st(pSeller.id)?.target === 10, JSON.stringify(stock.map((p) => [p.pillarName, p.usable, p.target, p.need])));
+    c.ok("refill target: 10 for Buyer (light) and Seller alike", st(pBuyer.id)?.target === 10 && st(pSeller.id)?.target === 10, JSON.stringify(stock.map((p) => [p.pillarName, p.usable, p.target, p.need])));
     c.ok("…every pillar at target, nothing needed", stock.every((p) => p.need === 0));
 
     // ======================================================================
@@ -242,7 +241,7 @@ async function main() {
     const page = await portalTopics({ id: A.enrollmentId, clientId: A.clientId });
     const order = page.groups.map((g) => g.pillarName);
     c.ok("the portal shows Seller, Personal Branding, Buyer", order.join(" | ") === [SELLER, BRAND, BUYER].join(" | "), order.join(" | "));
-    c.ok("…with all 23 accepted topics", page.total === 23, `${page.total}`);
+    c.ok("…with all 30 accepted topics", page.total === 30, `${page.total}`);
     await contentActions.setPillarEmphasisAction(A.enrollmentId, pBuyer.id, "NORMAL");
     await contentActions.setPillarEmphasisAction(A.enrollmentId, pSeller.id, "NORMAL");
     const back = (await portalTopics({ id: A.enrollmentId, clientId: A.clientId })).groups.map((g) => g.pillarName);

@@ -344,6 +344,8 @@ export type BankTopic = {
   audienceNeed: string | null; businessGoal: string | null; intendedMessage: string | null; monthId: string | null; importedMark: string | null; proposedState: string | null; lastEventAt: string | null;
   /** CP-07: the client said "not interested", and why (optional). */
   clientDeclinedAt: string | null; clientDeclineReason: string | null;
+  /** The bank's order (oldest first). */
+  createdAt: string;
 };
 export type BankGroup = { pillarId: string | null; pillarName: string; topics: BankTopic[] };
 
@@ -361,7 +363,7 @@ export async function topicBankByPillar(enrollmentId: string): Promise<{ groups:
   const toRow = (t: (typeof topics)[number]): BankTopic => ({
     id: t.id, title: t.title, concept: t.concept, pillarId: t.pillarId, pillarLabel: t.pillar, status: t.status, approvalState: t.approvalState, source: t.source,
     audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, monthId: t.monthId, importedMark: t.importedMark, proposedState: t.proposedState, lastEventAt: t.lastEventAt?.toISOString() ?? null,
-    clientDeclinedAt: t.clientDeclinedAt?.toISOString() ?? null, clientDeclineReason: t.clientDeclineReason,
+    clientDeclinedAt: t.clientDeclinedAt?.toISOString() ?? null, clientDeclineReason: t.clientDeclineReason, createdAt: t.createdAt.toISOString(),
   });
   const live = topics.filter((t) => !t.clientDeclinedAt);
   const groups: BankGroup[] = pillars.map((p) => ({ pillarId: p.id, pillarName: p.name, topics: live.filter((t) => t.pillarId === p.id).map(toRow) }));
@@ -815,9 +817,8 @@ export async function bankStock(enrollmentId: string): Promise<PillarStock[]> {
     prisma.contentTopic.findMany({ where: { enrollmentId, pillarId: { not: null } }, select: { pillarId: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true } }),
     prisma.contentTopicSuggestion.groupBy({ by: ["pillarId"], where: { enrollmentId, disposition: "PENDING", kind: "BANK" }, _count: { _all: true } }),
   ]);
-  // Oct 13 2026: the target is per pillar. A LIGHT pillar is stocked to about
-  // a third of the policy count (never below 2), so the weekly refill stops
-  // topping a supporting pillar up to a full bank.
+  // The target is per pillar: the policy count for every pillar since Oct 20
+  // 2026 (a LIGHT pillar was stocked to a third of it from Oct 13).
   return pillars.map((p) => {
     const target = topicsForEmphasis(policy.topicsPerPillar, p.emphasis);
     const mine = topics.filter((t) => t.pillarId === p.id);

@@ -3,9 +3,9 @@
 import { useMemo, useState, useSyncExternalStore, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeftRight, CheckCircle2, ChevronRight, Lightbulb, Loader2, Plus, ScrollText, Sparkles, Undo2, X } from "lucide-react";
+import { ArrowLeftRight, CheckCircle2, ChevronRight, Lightbulb, Loader2, Plus, ScrollText, Sparkles, ThumbsDown, Undo2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalOpenInterview, portalRemoveSelection, portalSelectTopic, portalSuggestTopic, portalUndeclineTopic } from "@/app/portal/actions";
+import { portalDeclineTopic, portalOpenInterview, portalRemoveSelection, portalSelectTopic, portalSuggestTopic, portalUndeclineTopic } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { ScriptView } from "@/components/script/ScriptView";
 import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
@@ -46,6 +46,15 @@ import { portalMonthHref } from "@/lib/portalScheduling";
 // action's result INSIDE the topic card that produced it, and give phones
 // 44px buttons. The old layout's one long page ("all") went with that layout
 // (Oct 6 2026).
+//
+// Oct 20 2026 (Jordan: "10-15 video topics per content pillar ... Then, more
+// ideas beneath it ... Add an 'I don't like this one'"): in the bank each
+// pillar lists its first PER_PILLAR topics (the ones they can choose first)
+// and folds the rest under "More ideas"; topics with no pillar sit at the
+// bottom, folded the same way. "I don't like this one" is the CP-07 decline
+// (portalDeclineTopic, no reason asked): the topic leaves their list, no
+// refresh offers it again, and the card stays put with an Undo until they
+// move on.
 // ---------------------------------------------------------------------------
 
 const subscribeHash = (cb: () => void) => { window.addEventListener("hashchange", cb); return () => window.removeEventListener("hashchange", cb); };
@@ -59,6 +68,8 @@ const FILTERS: { key: PortalTopicState | "ALL"; label: string }[] = [
 // tapping one told a client with four topics chosen that they had none
 // (Sep 24). The bank offers what can be in it; the month view holds the rest.
 const BANK_FILTER_KEYS: readonly (PortalTopicState | "ALL")[] = ["ALL", "SUGGESTED", "FILMED"];
+/** How many topics a pillar lists in the bank before the rest fold under "More ideas". */
+const PER_PILLAR = 15;
 const monthLabel = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" }); };
 const shortMonth = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short" }); };
 
@@ -98,6 +109,8 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
   const [justAdded, setJustAdded] = useState<{ topicId: string; monthId: string } | null>(null);
   /** 6.3: the recommendation strip's "Choose another topic" opens the alternatives. */
   const [showAlternatives, setShowAlternatives] = useState(false);
+  /** The topic they just said "I don't like this one" to: its card stays, with Undo. */
+  const [justDeclined, setJustDeclined] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const month = months.find((m) => m.id === monthId) ?? null;
   const done = (r: { ok: boolean; message: string }, topicId: string | null = null) => { setMsg({ ok: r.ok, text: r.message, topicId }); if (r.ok) router.refresh(); };
@@ -107,8 +120,8 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
 
   // Topics they set aside live in their pillar's group flagged `declined`: the
   // bank and its counts leave them out; the strip below the bank lists them.
-  const active = useMemo(() => groups.map((g) => ({ ...g, topics: g.topics.filter((t) => !t.declined) })), [groups]);
-  const setAside = useMemo(() => groups.flatMap((g) => g.topics.filter((t) => t.declined)), [groups]);
+  const active = useMemo(() => groups.map((g) => ({ ...g, topics: g.topics.filter((t) => !t.declined || t.id === justDeclined) })), [groups, justDeclined]);
+  const setAside = useMemo(() => groups.flatMap((g) => g.topics.filter((t) => t.declined && t.id !== justDeclined)), [groups, justDeclined]);
   // The bank view keeps a topic a #topic- link points at in view: the filter
   // steps back to All for it (C14: there are no chips to pick another).
   // An address asking the bank for a month-only filter (?filter=SELECTED) lands on All.
@@ -165,6 +178,26 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
     });
   };
   const undecline = (topicId: string) => act(null, async () => done(await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save. Try again." }))));
+  const decline = (topicId: string) => act(topicId, async () => {
+    const r = await portalDeclineTopic(portalAuthFromLocation(), topicId, null).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+    // In the bank the card stays with its Undo; the month's recommendation
+    // strip has no card left to hold it, so the line shows above and Undo
+    // waits in the strip below.
+    const inCard = view === "bank";
+    if (r.ok && inCard) setJustDeclined(topicId);
+    done(r, inCard ? topicId : null);
+  });
+  /** Undo from the card itself, right after "I don't like this one". */
+  const undoDecline = (topicId: string) => act(topicId, async () => {
+    const r = await portalUndeclineTopic(portalAuthFromLocation(), topicId).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+    if (r.ok) setJustDeclined(null);
+    done(r, topicId);
+  });
+  /** A topic they could still choose, and so could still turn down. */
+  const canDecline = (t: PortalTopic) => canAct && !readOnly && !t.selection && !t.declined && t.state === "SUGGESTED";
+  const dislikeButton = (t: PortalTopic) => (
+    <button type="button" onClick={() => decline(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ThumbsDown className="size-3" aria-hidden /> I don&rsquo;t like this one</button>
+  );
   /** Bigger targets on a phone, the compact size from sm up. */
   const tap = "min-h-11 px-3 text-xs sm:min-h-0 sm:px-2 sm:text-[11px]";
   /** The result of an action on THIS topic, inside its card. */
@@ -174,6 +207,94 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
       {!busy && msg?.topicId === topicId && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </>
   );
+
+  /** One topic in the bank (or the month's list), numbered within its pillar. */
+  const topicCard = (t: PortalTopic, i: number) => {
+    // Just turned down: the card stays where it was, with Undo, until they move on.
+    if (t.declined) {
+      return (
+        <li key={t.id} id={`topic-${t.id}`} className="scroll-mt-20 rounded-xl border border-dashed border-border bg-surface/60 px-3 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 flex-1 break-words text-sm text-muted line-through">{t.title}</span>
+            {canAct && !readOnly && <button type="button" onClick={() => undoDecline(t.id)} disabled={busy} className={cn("inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Undo2 className="size-3" /> Undo</button>}
+          </div>
+          {cardStatus(t.id)}
+        </li>
+      );
+    }
+    const selectedHere = t.selection && month && t.selection.monthId === month.id;
+    const canSelect = canAct && !readOnly && !!month && !t.selection;
+    return (
+      // The id is the interview page's "Read my script" target:
+      // that panel links to #topic-<id> rather than telling the
+      // client to go and find it.
+      <li key={t.id} id={`topic-${t.id}`} className="scroll-mt-20 rounded-xl border border-border bg-surface px-3 py-2.5">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 w-5 shrink-0 text-right text-xs text-muted-2 tabular-nums">{i + 1}.</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm font-semibold">{t.title}</span>
+              {/* R01 / §11: a topic on an open month reads its step in the month
+                  ("We need one more answer", "Our team is reviewing") — the
+                  server's, so it survives a refresh; the bank keeps its states. */}
+              <StatusChip word={t.plan ? planStepWord(t.plan.step, t.plan.missing) : TOPIC_WORDS[t.state]} />
+              {!t.plan && awaitingScript(t) && <StatusChip word={SCRIPT_WORDS.AWAITING} />}
+              {t.mine && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">your idea</span>}
+              {t.selection && <span className="text-[11px] text-muted-2">{t.selection.status === "PROPOSED" ? "proposed on your call for" : "for"} {shortMonth(t.selection.monthKey)}{t.selection.overflow ? " (extra)" : ""}</span>}
+            </div>
+            {t.concept && <p className="mt-0.5 text-xs text-muted">{t.concept}</p>}
+            {/* THE SCRIPT. The server sends words only when
+                postingKit.scriptVisibility says this client may
+                read them, so there is nothing to decide here — if
+                it arrived, it is theirs. A released script opens on
+                arrival (the client was sent here to read it); an
+                import stays closed behind its own label, because an
+                old script we hold is not this topic's script and
+                must never be mistaken for one (Jordan's ruling). */}
+            {t.scriptText && (
+              <details className="mt-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2" open={targetId === t.id}>
+                <summary className="cursor-pointer text-xs font-bold">
+                  {t.scriptText.historical ? "An earlier script we have on file" : "Your script"}
+                  <span className="ml-1 text-[10px] font-normal text-muted-2">
+                    {t.scriptText.historical ? "history" : t.scriptText.versionLabel ? `script ${t.scriptText.versionLabel}` : "script"}
+                  </span>
+                </summary>
+                {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history. It&rsquo;s a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
+                <ScriptView body={t.scriptText.body} parts={t.scriptText.parts ?? null} pillarName={t.scriptText.pillarName ?? null} size="xs" fileTitle={t.title} textDownload={t.scriptText.historical || !t.script?.shared} />
+                {/* THE CLIENT'S OWN VERDICT (F09). Only on a script
+                    that is genuinely shared with them — an import we
+                    hold as history is not theirs to approve, and a
+                    draft they cannot see has nothing to approve. */}
+                {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
+                  <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large />
+                )}
+              </details>
+            )}
+            {/* Actions */}
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
+              {canDecline(t) && dislikeButton(t)}
+              {t.selection && t.selection.removable && canAct && !readOnly && <button type="button" onClick={() => remove(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-danger disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><X className="size-3" /> Remove from {shortMonth(t.selection.monthKey)}</button>}
+              {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> Locked in. Send us a message to change it.</span>}
+              {/* R01: no questions offered for what nobody owes — an extra waiting
+                  its turn, a topic the booked call covers, a call's proposal —
+                  unless they already started them. */}
+              {(t.selection || selectedHere) && t.state !== "FILMED" && canAct && !readOnly && (t.interview || !t.plan || !["EXTRA", "ON_CALL", "CONFIRMING"].includes(t.plan.step)) && (!t.questions || t.plan?.step === "NEEDS_MORE") && (
+                <button type="button" onClick={() => openQuestions(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>
+                  {t.plan?.step === "NEEDS_MORE" ? answerCta(t.plan.missing) : t.interview ? (t.interview.status === "SUBMITTED" ? "Your answers" : t.interview.answered > 0 ? "Continue answering" : CTA_WORDS.ANSWER) : CTA_WORDS.ANSWER} <ChevronRight className="size-3" />
+                </button>
+              )}
+              {/* A script waiting on them is answered in Your Month › Scripts, with the words in front of them. */}
+              {scriptsHref && awaitingScript(t) && canAct && !readOnly && <Link href={`${scriptsHref}#script-${t.id}`} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ScrollText className="size-3" /> {CTA_WORDS.REVIEW}</Link>}
+            </div>
+            {/* Oct 15 2026: the questions open underneath the chosen topic. */}
+            {view === "month" && t.selection && <TopicQuestions t={t} canAct={canAct} readOnly={readOnly} staff={staff} tabHref={tabHref} />}
+            {cardStatus(t.id)}
+          </div>
+        </div>
+      </li>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -185,7 +306,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
             {months.length > 1 && (
               <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
                 {months.map((m) => (
-                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); router.replace(portalMonthHref(tabHref, m.monthKey), { scroll: false }); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground", "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
+                  <button key={m.id} type="button" role="tab" aria-selected={m.id === monthId} onClick={() => { setMonthId(m.id); setMsg(null); setJustDeclined(null); router.replace(portalMonthHref(tabHref, m.monthKey), { scroll: false }); }} className={cn("rounded-lg border px-2.5 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", m.id === monthId ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:text-foreground", "min-h-11 sm:min-h-0")}>{monthLabel(m.monthKey)}</button>
                 ))}
               </div>
             )}
@@ -224,6 +345,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                 {canAct && !readOnly && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> Choose this topic</button>
+                    {canDecline(t) && dislikeButton(t)}
                   </div>
                 )}
                 {cardStatus(t.id)}
@@ -286,93 +408,43 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
           <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">No new ideas in your topic bank right now.{canAct && !readOnly ? " Suggest one of your own below." : ""}</p>
         )
       ) : (
-        visible.map((g) => (
-          <section key={g.pillarId ?? "none"} className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
-            <h2 className="text-base font-semibold">{g.pillarName}</h2>
-            {g.purpose && <p className="text-xs text-muted">Purpose: {g.purpose}</p>}
-            <ol className="mt-3 space-y-2">
-              {g.topics.map((t, i) => {
-                const selectedHere = t.selection && month && t.selection.monthId === month.id;
-                const canSelect = canAct && !readOnly && !!month && !t.selection;
-                return (
-                  // The id is the interview page's "Read my script" target:
-                  // that panel links to #topic-<id> rather than telling the
-                  // client to go and find it.
-                  <li key={t.id} id={`topic-${t.id}`} className="scroll-mt-20 rounded-xl border border-border bg-surface px-3 py-2.5">
-                    <div className="flex items-start gap-2">
-                      <span className="mt-0.5 w-5 shrink-0 text-right text-xs text-muted-2 tabular-nums">{i + 1}.</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-sm font-semibold">{t.title}</span>
-                          {/* R01 / §11: a topic on an open month reads its step in the month
-                              ("We need one more answer", "Our team is reviewing") — the
-                              server's, so it survives a refresh; the bank keeps its states. */}
-                          <StatusChip word={t.plan ? planStepWord(t.plan.step, t.plan.missing) : TOPIC_WORDS[t.state]} />
-                          {!t.plan && awaitingScript(t) && <StatusChip word={SCRIPT_WORDS.AWAITING} />}
-                          {t.mine && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">your idea</span>}
-                          {t.selection && <span className="text-[11px] text-muted-2">{t.selection.status === "PROPOSED" ? "proposed on your call for" : "for"} {shortMonth(t.selection.monthKey)}{t.selection.overflow ? " (extra)" : ""}</span>}
-                        </div>
-                        {t.concept && <p className="mt-0.5 text-xs text-muted">{t.concept}</p>}
-                        {/* THE SCRIPT. The server sends words only when
-                            postingKit.scriptVisibility says this client may
-                            read them, so there is nothing to decide here — if
-                            it arrived, it is theirs. A released script opens on
-                            arrival (the client was sent here to read it); an
-                            import stays closed behind its own label, because an
-                            old script we hold is not this topic's script and
-                            must never be mistaken for one (Jordan's ruling). */}
-                        {t.scriptText && (
-                          <details className="mt-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2" open={targetId === t.id}>
-                            <summary className="cursor-pointer text-xs font-bold">
-                              {t.scriptText.historical ? "An earlier script we have on file" : "Your script"}
-                              <span className="ml-1 text-[10px] font-normal text-muted-2">
-                                {t.scriptText.historical ? "history" : t.scriptText.versionLabel ? `script ${t.scriptText.versionLabel}` : "script"}
-                              </span>
-                            </summary>
-                            {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history. It&rsquo;s a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
-                            <ScriptView body={t.scriptText.body} parts={t.scriptText.parts ?? null} pillarName={t.scriptText.pillarName ?? null} size="xs" fileTitle={t.title} textDownload={t.scriptText.historical || !t.script?.shared} />
-                            {/* THE CLIENT'S OWN VERDICT (F09). Only on a script
-                                that is genuinely shared with them — an import we
-                                hold as history is not theirs to approve, and a
-                                draft they cannot see has nothing to approve. */}
-                            {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
-                              <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large />
-                            )}
-                          </details>
-                        )}
-                        {/* Actions */}
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {canSelect && <button type="button" onClick={() => select(t.id)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><Plus className="size-3" /> {CTA_WORDS.CHOOSE}</button>}
-                          {t.selection && t.selection.removable && canAct && !readOnly && <button type="button" onClick={() => remove(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-danger disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><X className="size-3" /> Remove from {shortMonth(t.selection.monthKey)}</button>}
-                          {t.selection && !t.selection.removable && t.state !== "FILMED" && <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><CheckCircle2 className="size-3" /> Locked in. Send us a message to change it.</span>}
-                          {/* R01: no questions offered for what nobody owes — an extra waiting
-                              its turn, a topic the booked call covers, a call's proposal —
-                              unless they already started them. */}
-                          {(t.selection || selectedHere) && t.state !== "FILMED" && canAct && !readOnly && (t.interview || !t.plan || !["EXTRA", "ON_CALL", "CONFIRMING"].includes(t.plan.step)) && (!t.questions || t.plan?.step === "NEEDS_MORE") && (
-                            <button type="button" onClick={() => openQuestions(t)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-brand/30 px-2 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}>
-                              {t.plan?.step === "NEEDS_MORE" ? answerCta(t.plan.missing) : t.interview ? (t.interview.status === "SUBMITTED" ? "Your answers" : t.interview.answered > 0 ? "Continue answering" : CTA_WORDS.ANSWER) : CTA_WORDS.ANSWER} <ChevronRight className="size-3" />
-                            </button>
-                          )}
-                          {/* A script waiting on them is answered in Your Month › Scripts, with the words in front of them. */}
-                          {scriptsHref && awaitingScript(t) && canAct && !readOnly && <Link href={`${scriptsHref}#script-${t.id}`} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", tap)}><ScrollText className="size-3" /> {CTA_WORDS.REVIEW}</Link>}
-                        </div>
-                        {/* Oct 15 2026: the questions open underneath the chosen topic. */}
-                        {view === "month" && t.selection && <TopicQuestions t={t} canAct={canAct} readOnly={readOnly} staff={staff} tabHref={tabHref} />}
-                        {cardStatus(t.id)}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
-          </section>
-        ))
+        visible.map((g) => {
+          // The bank lists what they can choose first, PER_PILLAR to a pillar;
+          // the rest (and everything with no pillar) folds under "More ideas".
+          const choosable = (t: PortalTopic) => t.state === "SUGGESTED" && !t.selection;
+          const ordered = view === "bank" ? [...g.topics.filter(choosable), ...g.topics.filter((t) => !choosable(t))] : g.topics;
+          const cap = view === "bank" ? (g.pillarId ? PER_PILLAR : 0) : ordered.length;
+          const shown = ordered.slice(0, cap);
+          const more = ordered.slice(cap);
+          return (
+            <section key={g.pillarId ?? "none"} className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
+              {g.pillarId || view !== "bank" ? (
+                <>
+                  <h2 className="text-base font-semibold">{g.pillarName}</h2>
+                  {g.purpose && <p className="text-xs text-muted">Purpose: {g.purpose}</p>}
+                  {shown.length > 0 && <ol className="mt-3 space-y-2">{shown.map((t, i) => topicCard(t, i))}</ol>}
+                  {more.length > 0 && (
+                    <details className="mt-3" open={!!targetId && more.some((t) => t.id === targetId)}>
+                      <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium text-muted hover:text-foreground sm:min-h-0">More ideas ({more.length})</summary>
+                      <ol start={shown.length + 1} className="mt-2 space-y-2">{more.map((t, i) => topicCard(t, shown.length + i))}</ol>
+                    </details>
+                  )}
+                </>
+              ) : (
+                <details open={!!targetId && more.some((t) => t.id === targetId)}>
+                  <summary className="min-h-11 cursor-pointer text-base font-semibold sm:min-h-0">{g.pillarName} <span className="text-sm font-normal text-muted">({more.length})</span></summary>
+                  <ol className="mt-3 space-y-2">{more.map((t, i) => topicCard(t, i))}</ol>
+                </details>
+              )}
+            </section>
+          );
+        })
       )}
 
       {/* What they set aside — kept, with undo */}
       {setAside.length > 0 && (
         <details className="rounded-2xl border border-border bg-surface/70 p-4 text-sm">
-          <summary className="cursor-pointer text-xs font-semibold text-muted">You set aside {setAside.length} topic{setAside.length === 1 ? "" : "s"}. We won&rsquo;t suggest {setAside.length === 1 ? "it" : "them"} again.</summary>
+          <summary className="cursor-pointer text-xs font-semibold text-muted">You turned down {setAside.length} topic{setAside.length === 1 ? "" : "s"}. We won&rsquo;t suggest {setAside.length === 1 ? "it" : "them"} again.</summary>
           <ul className="mt-2 space-y-1.5">
             {setAside.map((t) => (
               <li key={t.id} className="flex items-start gap-2">

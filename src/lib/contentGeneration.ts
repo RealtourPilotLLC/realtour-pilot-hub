@@ -12,7 +12,7 @@ import { CONTENT_RULES } from "@/lib/contentPipeline";
 import { pendingJudge } from "@/lib/scriptJudgeRecord";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
-  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, emphasisOfPillar, topicsForEmphasis, videoStyleFromOverrides,
+  GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, videoStyleFromOverrides, titleSimilarity, NEAR_DUPLICATE_THRESHOLD,
   creativeIdentityFromOverrides, buildScriptRevisePrompt, formulaicTitleShape, asLockSections, ANGLE_FIELDS,
   type ClientContext, type SourceExcerpt, type GeneratedScriptJson, type Topic, type TopicBank, type Gap, type StrategyDocument, type ScriptPromptSource, type LockableSection, type ScriptAngle,
 } from "@/lib/contentPolicy";
@@ -610,20 +610,24 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   // anything outside 10–15); a single-suggestion regeneration asks for the
   // policy count and KEEPS one (opts.keep) — never a forked prompt rule.
   const perPillar = opts.count ?? run.topicsPerPillar ?? GENERATION_POLICY.topicsPerPillar.default;
-  const existingRows = await prisma.contentTopic.findMany({ where: { enrollmentId: run.enrollmentId }, select: { title: true, status: true, pillarId: true, pillar: true, rejectionReason: true, archiveReason: true, clientDeclinedAt: true, clientDeclineReason: true } });
+  const existingRows = await prisma.contentTopic.findMany({ where: { enrollmentId: run.enrollmentId }, select: { title: true, concept: true, status: true, pillarId: true, pillar: true, rejectionReason: true, archiveReason: true, clientDeclinedAt: true, clientDeclineReason: true } });
   const nameOf = (id: string | null, label: string | null) => pillars.find((p) => p.id === id)?.name ?? label ?? "(no pillar)";
   // A topic the client said "not interested" to (CP-07) reads to the model as
   // ARCHIVED with their reason, and blockedTopicHashes withholds it below too.
-  const existing = existingRows.map((t) => ({ title: t.title, pillarName: nameOf(t.pillarId, t.pillar), state: (t.clientDeclinedAt || t.status === "REJECTED" || t.status === "ARCHIVED" ? "ARCHIVED" : t.status === "SELECTED" || t.status === "SCRIPTED" ? "SELECTED" : ["FILMED", "DELIVERED", "EDITING"].includes(t.status) ? "FILMED" : "SUGGESTED") as Topic["state"], note: t.clientDeclinedAt ? `client not interested${t.clientDeclineReason ? `: ${t.clientDeclineReason}` : ""}` : t.rejectionReason ?? t.archiveReason ?? null }));
+  const existing = existingRows.map((t) => ({ title: t.title, pillarName: nameOf(t.pillarId, t.pillar), state: (t.clientDeclinedAt || t.status === "REJECTED" || t.status === "ARCHIVED" ? "ARCHIVED" : t.status === "SELECTED" || t.status === "SCRIPTED" ? "SELECTED" : ["FILMED", "DELIVERED", "EDITING"].includes(t.status) ? "FILMED" : "SUGGESTED") as Topic["state"], note: t.clientDeclinedAt ? `client not interested${t.clientDeclineReason ? `: ${t.clientDeclineReason}` : ""}` : t.rejectionReason ?? t.archiveReason ?? null,
+    // What the client's pillar topics cover (Oct 20 2026): titles alone let the
+    // model offer Jordan's "We Want to Move, but Where Would We Go?" back three
+    // times as "The Sale and the Purchase Are One Decision, Not Two".
+    concept: t.pillarId && pillars.some((p) => p.id === t.pillarId) ? t.concept : null }));
   const prevArchivedSugg = await prisma.contentTopicSuggestion.findMany({ where: { enrollmentId: run.enrollmentId, disposition: "ARCHIVED" }, select: { title: true, pillarId: true } });
-  for (const s of prevArchivedSugg) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "ARCHIVED", note: "archived suggestion" });
+  for (const s of prevArchivedSugg) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "ARCHIVED", note: "archived suggestion", concept: null });
   const ctx: ClientContext = opts.pillarId
     ? { ...built.ctx, strategy: built.ctx.strategy && built.ctx.strategy.document ? { ...built.ctx.strategy, document: { ...built.ctx.strategy.document, contentPillars: { ...built.ctx.strategy.document.contentPillars, pillars: built.ctx.strategy.document.contentPillars.pillars.filter((p) => normalizeTitle(p.name) === normalizeTitle(nameOf(opts.pillarId!, null))) } } } : built.ctx.strategy }
     : built.ctx;
   // Suggestions still waiting on Jordan from earlier runs count as "existing" for
   // the prompt AND the dedupe below — a second click must not offer the same title twice.
   const pendingRows = await prisma.contentTopicSuggestion.findMany({ where: { enrollmentId: run.enrollmentId, disposition: "PENDING" }, select: { title: true, pillarId: true } });
-  for (const s of pendingRows) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "SUGGESTED", note: "already suggested, awaiting review" });
+  for (const s of pendingRows) existing.push({ title: s.title, pillarName: nameOf(s.pillarId, null), state: "SUGGESTED", note: "already suggested, awaiting review", concept: null });
   // Oct 13 2026: each pillar's emphasis (LEAD | NORMAL | LIGHT) by every name
   // it goes by, so the prompt asks a LIGHT pillar for its smaller count and
   // the validator below holds it to that count, not the full one.
@@ -637,6 +641,21 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   const out = runRes.output;
   const [blocked, pendingHashes] = await Promise.all([blockedTopicHashes(run.enrollmentId), pendingSuggestionHashes(run.enrollmentId)]);
   const existingHashes = new Set([...existingRows.filter((t) => t.status !== "REJECTED" && t.status !== "ARCHIVED").map((t) => topicDedupeHash(t.title)), ...pendingHashes]);
+  // REWORDED IS STILL A DUPLICATE (Oct 20 2026). Erica Walker's refill came
+  // back with "More Space, or Space That Actually Works Better?" beside
+  // Jordan's "More Space, or Space That Works Better?": only an exact repeat
+  // was caught. A fresh idea that reads like a topic on file (any pillar at
+  // NEAR_DUPLICATE_THRESHOLD, its own pillar at SAME_PILLAR_NEAR) is dropped;
+  // like an archived, rejected or "I don't like this one" topic, it is
+  // withheld, so a turned-down idea does not come back in new words either.
+  // (Two ideas of the same run are the validator's near-duplicate check.)
+  const SAME_PILLAR_NEAR = 0.6;
+  const onFile = [
+    ...existingRows.map((t) => ({ title: t.title, pillarId: t.pillarId, gone: t.status === "REJECTED" || t.status === "ARCHIVED" || !!t.clientDeclinedAt })),
+    ...pendingRows.map((s) => ({ title: s.title, pillarId: s.pillarId, gone: false })),
+    ...prevArchivedSugg.map((s) => ({ title: s.title, pillarId: s.pillarId, gone: true })),
+  ];
+  const nearOnFile = (title: string, pillarId: string | null) => onFile.find((r) => { const sim = titleSimilarity(title, r.title); return sim >= NEAR_DUPLICATE_THRESHOLD || (!!pillarId && r.pillarId === pillarId && sim >= SAME_PILLAR_NEAR); });
   const bank: TopicBank = { clientId: run.clientId, clientName: built.ctx.clientName, intro: [], strategyVersion: built.strategyLabel, stamp: policyStamp(built.strategyLabel), pillars: [] };
   for (const p of Array.isArray(out.pillars) ? out.pillars : []) {
     const pillarId = await resolvePillarByLabel(run.enrollmentId, p.pillarName);
@@ -650,8 +669,6 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   const rows: Prisma.ContentTopicSuggestionCreateManyInput[] = [];
   for (const p of bank.pillars) {
     if (!p.pillarId) continue; // an unknown pillar name is a finding, never a new pillar
-    // A LIGHT pillar keeps at most its own count even when the model sends a full pillar's worth (Oct 13 2026).
-    const lightCap = emphasisOfPillar(pillarEmphasis, p.name) === "LIGHT" ? topicsForEmphasis(perPillar, "LIGHT") : null;
     let rank = 0;
     for (const t of p.topics) {
       const hash = topicDedupeHash(t.title);
@@ -661,8 +678,8 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
       const shape = formulaicTitleShape(t.title);
       if (shape) { formulaic.push(`${t.title} (${shape})`); continue; }
       if (existingHashes.has(hash)) { duplicates++; continue; }
+      { const near = nearOnFile(t.title, p.pillarId); if (near) { if (near.gone) resurfaced++; else duplicates++; continue; } }
       if (opts.keep && rank >= opts.keep) { notKept++; continue; } // "regenerate ONE": the replacement is the first fresh idea, the rest are not stored
-      if (lightCap != null && rank >= lightCap) { notKept++; continue; }
       existingHashes.add(hash);
       rows.push({ refreshRunId: runId, enrollmentId: run.enrollmentId, clientId: run.clientId, pillarId: p.pillarId, kind: "BANK", rank: ++rank, title: t.title.slice(0, 200), description: t.description, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, rationale: t.sourceRef ? `Grounded in: ${t.sourceRef}` : "Inferred from the pillar's focus areas", dedupeHash: hash });
       created++;
