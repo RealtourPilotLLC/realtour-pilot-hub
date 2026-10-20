@@ -299,7 +299,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 id="editing-queue-heading" className="text-base font-semibold">Work queue</h2>
-              <p className="mt-0.5 text-sm text-muted">Soonest due first. Open a project for its brief, files and latest cut.</p>
+              <p className="mt-0.5 hidden text-sm text-muted sm:block">Soonest due first. Open a project for its brief, files and latest cut.</p>
             </div>
             {/* The manual handoff stays available beside its queue. */}
             <div className="contents [&>div]:basis-full"><AddToQueue /></div>

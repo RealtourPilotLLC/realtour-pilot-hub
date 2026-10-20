@@ -328,7 +328,7 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
         label={`Change status for ${row.street}: ${status}`}
         title={note ?? pinTitle ?? undefined}
         busy={pending}
-        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium sm:px-2 sm:text-xs"
+        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium"
         style={badgeColors(meta.color)}
         items={Object.entries(STATUSES).map(([name, m]) => ({
           id: name.replaceAll(" ", "-"),
@@ -374,7 +374,7 @@ function QueueActions({ row, office, chatHref, queueHref, onReceipt }: {
   const menu = (extra: import("@/components/ui/ActionMenu").ActionMenuItem[] = []) => <ActionMenu
     triggerRef={triggerRef}
     label={`${office ? "More actions" : "Files and chat"} for ${row.street}`}
-    className="inline-flex items-center justify-center rounded-md border border-transparent text-muted hover:bg-surface-2 hover:text-foreground lg:min-h-8 lg:min-w-7"
+    className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-md border border-transparent text-muted hover:bg-surface-2 hover:text-foreground lg:min-h-8"
     items={[...common, ...extra]}
     footer={row.revisionContext ? <div className="space-y-2 break-words"><p>{row.revisionContext}</p></div> : undefined}
   ><MoreHorizontal aria-hidden="true" className="size-4" /></ActionMenu>;
@@ -426,7 +426,7 @@ function EditorSelect({ row }: { row: QueueRow }) {
       label={`Change editor for ${row.street}: ${currentName}`}
       title={err ?? undefined}
       busy={pending}
-      className="inline-flex max-w-full items-center gap-1 rounded-md px-0 text-sm lg:min-h-8 lg:text-xs"
+      className="inline-flex min-h-7 max-w-full items-center gap-1 rounded-md px-0 text-xs lg:min-h-8"
       footer={key === SUGGESTED ? `Suggested: ${row.editor ?? "editor"}. No editor is assigned yet.` : undefined}
       items={[
         { id: "unassigned", text: "Unassigned", label: "Unassigned", checked: key === UNASSIGN, onSelect: () => pick(UNASSIGN) },
@@ -461,7 +461,8 @@ function LinkChip({
 }) {
   const external = href.startsWith("http");
   const classes = cn(
-    "inline-flex min-h-11 items-center gap-1.5 rounded-md border px-2 py-2 text-sm font-medium lg:min-h-8 lg:border-transparent lg:px-1.5 lg:py-1 lg:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+    // Desktop only: on a phone the queue is a thin list and the row opens the job.
+    "hidden min-h-8 items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 text-xs font-medium lg:inline-flex focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
     brand
       ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
       : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
@@ -863,7 +864,7 @@ export function SimpleQueue({
           ) : view === "upcoming" ? "No upcoming video shoots on the schedule." : view === "done" ? "Nothing completed in the last 60 days." : "Nothing open — new jobs add themselves when a video shoot is booked."}
         </p>
       ) : (
-        <div className="lg:overflow-x-auto lg:rounded-xl lg:border lg:border-border lg:bg-surface">
+        <div className="overflow-hidden rounded-xl border border-border bg-surface lg:overflow-x-auto">
           <table className="block w-full min-w-0 text-sm lg:table lg:table-fixed lg:min-w-[880px]">
             <thead className="sr-only lg:not-sr-only lg:table-header-group">
               <tr className="border-b border-border bg-surface-2/40 text-left text-xs font-medium text-muted">
@@ -874,7 +875,7 @@ export function SimpleQueue({
                 <th className="px-3 py-2.5 lg:w-[24%]">Action</th>
               </tr>
             </thead>
-            <tbody className="block space-y-3 lg:table-row-group lg:space-y-0 lg:divide-y lg:divide-border">
+            <tbody className="block divide-y divide-border lg:table-row-group">
               {rows.map((r) => {
                 const t = TIER[r.tier];
                 return (
@@ -883,27 +884,33 @@ export function SimpleQueue({
                     onClick={() => { rememberQueueScroll(queueHref); router.push(jobHref(r.id)); }}
                     // No row-wide tooltip: it followed the cursor across every
                     // cell and sat on top of the controls underneath it.
-                    // Below lg the row is a card: a two-column grid, so the
-                    // due date and the editor share one line (Oct 19 2026).
-                    className="grid cursor-pointer grid-cols-2 gap-x-3 rounded-2xl border border-border bg-surface p-3 align-middle hover:bg-surface-2/50 lg:table-row lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
+                    // BELOW lg THE ROW IS A LIST ITEM, NOT A CARD (Jordan, Oct
+                    // 19 2026: "I'd like them to be thinner like a list
+                    // almost"): name and due date on the first line, the
+                    // client with the editor and the … menu on the second,
+                    // stage and counts across the third. Tapping the row opens
+                    // the job, so Raw / Final / Open are desktop only.
+                    className="grid cursor-pointer grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-2 gap-y-1 px-3 py-2.5 align-middle hover:bg-surface-2/50 lg:table-row lg:p-0"
                   >
                     {/* min-w-52, up from 44: the copy glyph took the width the
                         address used to have, and streets like "2051 Old
                         Sumneytown Pike" started wrapping onto a second line —
                         every row a little taller, which is the opposite of
                         what Jordan asked for. */}
-                    <td className="col-span-2 block min-w-0 px-0 py-1 lg:table-cell lg:min-w-52 lg:px-3 lg:py-2">
+                    <td className="col-start-1 row-span-2 row-start-1 block min-w-0 p-0 lg:table-cell lg:min-w-52 lg:px-3 lg:py-2">
                       <span className="flex items-start gap-1.5">
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
                         <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
-                          <span className="block text-sm font-semibold lg:truncate" title={r.street}>{rowName(r)}</span>
+                          <span className="block truncate text-sm font-semibold" title={r.street}>{rowName(r)}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
                               Video-type cell beside it — the row doesn't grow. */}
                           <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted">
                             <Avatar name={r.client} src={r.clientAvatarUrl} size={16} />
-                            <span className="min-w-0 truncate">{r.client}</span><span className="shrink-0 text-muted-2">· {t.label} · {r.videos} video{r.videos === 1 ? "" : "s"}</span>
+                            {/* One truncating line, the client first: on a narrow row the
+                                kind of video trims, never the name (Oct 19 2026). */}
+                            <span className="min-w-0 truncate">{r.client}<span className="text-muted-2"> · {t.label} · {r.videos} video{r.videos === 1 ? "" : "s"}</span></span>
                           </span>
                           <span className="sr-only">{r.typeDetail}</span>
                           {/* One line for all the chips, not stacked blocks —
@@ -928,7 +935,7 @@ export function SimpleQueue({
                         </Link>
                       </span>
                     </td>
-                    <td className="col-span-2 mt-2 block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 lg:[&_button]:min-h-7 lg:[&_button]:min-w-0 lg:mt-0 lg:table-cell lg:border-0 lg:px-3 lg:py-2 " onClick={swallow}>
+                    <td className="col-span-3 col-start-1 row-start-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 p-0 [&_button]:min-h-7 lg:table-cell lg:px-3 lg:py-2" onClick={swallow}>
                       <span className="flex min-w-0 flex-wrap items-start gap-1">
                         {view === "upcoming" ? (
                           // An Upcoming row reads Waiting — unless the office
@@ -975,7 +982,7 @@ export function SimpleQueue({
                           arithmetic under it. Never rendered on a one-video
                           job (editorQueue leaves it null there). */}
                       {r.videoBreakdown && (
-                        <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0 text-xs leading-4 text-muted" title={r.videoBreakdown}>
+                        <span className="flex flex-wrap gap-x-2 gap-y-0 text-xs leading-4 text-muted lg:mt-0.5" title={r.videoBreakdown}>
                           {(r.progressSummary ?? r.videoBreakdown).split(" · ").map((part, index) => <span key={index} className="whitespace-nowrap">{part}</span>)}
                         </span>
                       )}
@@ -983,7 +990,7 @@ export function SimpleQueue({
                           age the editor's daily reminder quotes, from 24 hours
                           on. Who asked and when stays in the row's menu. */}
                       {r.status === "Revisions" && (r.revisionWaitingDays ?? 0) >= 1 && (
-                        <span className="mt-1 block text-xs font-medium leading-4 text-warning" title={r.revisionContext ?? undefined}>
+                        <span className="block text-xs font-medium leading-4 text-warning lg:mt-1" title={r.revisionContext ?? undefined}>
                           Waiting {r.revisionWaitingDays} day{r.revisionWaitingDays === 1 ? "" : "s"}
                         </span>
                       )}
@@ -991,7 +998,7 @@ export function SimpleQueue({
                           stored sentence, the one the edit card and Kyle's
                           board quote too. */}
                       {r.blocker && (
-                        <span className="mt-1 block max-w-full break-words whitespace-normal text-xs leading-4 text-warning">{r.blocker}</span>
+                        <span className="block max-w-full basis-full break-words whitespace-normal text-xs leading-4 text-warning lg:mt-1">{r.blocker}</span>
                       )}
                       {/* TODAY'S EVIDENCE (Sep 28) — what an editor who is not
                           on this job right now DID to it today, labelled as
@@ -1002,7 +1009,7 @@ export function SimpleQueue({
                           "…" menu, where the office never saw it. */}
                       {!hideEditor && r.lastAction && (
                         <span
-                          className="mt-1 block max-w-full break-words whitespace-normal text-xs leading-4 text-muted"
+                          className="block max-w-full basis-full break-words whitespace-normal text-xs leading-4 text-muted lg:mt-1"
                           title="Today's activity — not a Start. Only Start and Pause say someone is working."
                         >
                           {r.lastAction.name} {r.lastAction.words} · {r.lastAction.at}
@@ -1017,19 +1024,17 @@ export function SimpleQueue({
                           screen was the confusion. */}
                     </td>
                     <td
-                      className={cn("block min-w-0 px-0 py-1 text-sm font-medium lg:text-xs lg:table-cell lg:whitespace-nowrap lg:px-3 lg:py-2", hideEditor && "col-span-2", r.late ? "text-danger" : "")}
+                      className={cn("col-span-2 col-start-2 row-start-1 block self-start whitespace-nowrap p-0 pt-0.5 text-right text-xs font-medium lg:table-cell lg:px-3 lg:py-2 lg:text-left", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
                     >
-                      <span className="block text-xs font-medium text-muted lg:hidden">{view === "upcoming" ? "Shoot" : "Due"}</span>
-                      {/* As tall as the editor picker beside it on a phone, so the two line up. */}
-                      <span className="flex min-h-11 items-center lg:inline lg:min-h-0">{view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}</span>
-                      {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
+                      {view !== "upcoming" && <span className={cn("lg:hidden", !r.late && "text-muted")}>Due </span>}
+                      {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
+                      {view === "upcoming" && r.photographer && <span className="hidden text-muted lg:block">📷 {r.photographer}</span>}
                     </td>
                     {!hideEditor && (
-                      <td className="block min-w-0 px-0 py-1 lg:table-cell lg:whitespace-nowrap lg:px-3 lg:py-2" onClick={swallow}>
-                        <span className="block text-xs font-medium text-muted lg:hidden">Editor</span>
+                      <td className="col-start-2 row-start-2 block min-w-0 max-w-28 self-end p-0 text-right lg:table-cell lg:max-w-none lg:whitespace-nowrap lg:px-3 lg:py-2 lg:text-left" onClick={swallow}>
                         {view === "done" ? (
                           // Delivered = credit, not live work — no reassign here
                           // (the server refuses too). A new cut on a finished
@@ -1041,14 +1046,15 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td className="col-span-2 block px-0 py-2 lg:table-cell lg:px-3 lg:py-2" onClick={swallow}><div className="flex flex-wrap items-center gap-1 lg:flex-nowrap lg:gap-0.5">
+                    <td className="col-start-3 row-start-2 block self-end p-0 lg:table-cell lg:px-3 lg:py-2" onClick={swallow}><div className="flex items-center justify-end gap-0.5 lg:justify-start">
                           {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="Raw" dot={r.rawCount > 0}
                             title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"} />}
                           {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" dot={r.finalCount > 0}
                             title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
                       <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)}
                         title="Open editing brief" className={cn(
-                          "inline-flex min-h-11 flex-1 items-center justify-center rounded-md border px-3 py-2 text-sm font-medium lg:min-h-8 lg:flex-none lg:px-2 lg:py-1 lg:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                          "min-h-7 items-center justify-center rounded-md border px-2 py-1 text-xs font-medium lg:min-h-8 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                          hideEditor ? "inline-flex" : "hidden lg:inline-flex",
                           hideEditor && view === "notdone" && editorCanMove(r) ? "border-brand-action bg-brand-action text-white hover:opacity-90" : "border-border bg-surface hover:bg-surface-2",
                         )}>
                         {hideEditor ? editorNextAction(r, view) : "Open"}
