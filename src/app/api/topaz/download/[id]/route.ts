@@ -72,10 +72,16 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     // and nothing else: the row stays on the card, stays owed, and still needs
     // Mark as sent or the hourly Aryeo proof. It also never fails the download
     // — the bytes are the point.
-    const { getCurrentUser } = await import("@/lib/auth/user");
-    const me = await getCurrentUser().catch(() => null);
-    const { markCutDownloaded } = await import("@/lib/readyToSend");
-    await markCutDownloaded(job.submissionId, me?.name ?? me?.email ?? null).catch(() => {});
+    //
+    // ?watch=1 is the Ready to send row's "Watch it" (Oct 19 2026): the same
+    // fresh link, played in the row's player to check the render before it
+    // goes to Aryeo. Watching is not taking the file, so no stamp.
+    if (req.nextUrl.searchParams.get("watch") !== "1") {
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const me = await getCurrentUser().catch(() => null);
+      const { markCutDownloaded } = await import("@/lib/readyToSend");
+      await markCutDownloaded(job.submissionId, me?.name ?? me?.email ?? null).catch(() => {});
+    }
 
     const res = NextResponse.redirect(r.link, 302);
     // Minted per press and good for four hours — never cache it anywhere.

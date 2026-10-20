@@ -155,6 +155,8 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
     const l = listings.get(m[1]);
     if (!l) return new Response("nope", { status: 404 });
     if (u.searchParams.get("err") === "video") return json({ ...editPage(l), props: { ...editPage(l).props, errors: { "videos.0.url": "The video could not be read." } } });
+    // Aryeo's live answer to the short shape (Oct 19 2026, the first two real presses).
+    if (u.searchParams.get("err") === "fields") return json({ ...editPage(l), props: { ...editPage(l).props, errors: { "videos.0.titleValue": "Video title is required for each video.", "videos.0.displayType": "Display type is required for each video.", "videos.0.size": "File size is required for each video." } } });
     if ((h.get("x-inertia-partial-data") ?? "").split(",").includes("delivery_email")) {
       return json({ component: "Company/Listings/EditListing", version: "v1", url: `/admin/listings/${l.id}/edit`, props: { delivery_email: { email_subject: "Your listing media is ready!", email_body: "<p>Your video is ready.</p>", email_cc_list: "", email_bcc_list: "office@realtourpilot.com" } } });
     }
@@ -168,8 +170,10 @@ async function aryeoWeb(url: string, init?: RequestInit): Promise<Response | nul
       neverReaches.delete(l.id);
       throw new TypeError("fetch failed (the connection dropped before Aryeo answered)");
     }
-    const b = JSON.parse(String(init?.body)) as { video_title: unknown; display_type: string; video_url: unknown; videos: { url: string; video_title: string; display_type: string }[] };
+    const b = JSON.parse(String(init?.body)) as { video_title: unknown; display_type: string; video_url: unknown; videos: { url: string; video_title: string; display_type: string; titleValue?: string; displayType?: string; size?: number }[] };
     calls.push({ kind: "add", listing: l.id, body: b });
+    // Aryeo checks the window's raw file record (titleValue, displayType, size), not the mapped one.
+    if (!b.videos?.every((v) => !!v.titleValue && !!v.displayType && typeof v.size === "number" && v.size > 0)) return redirect(`/admin/listings/${l.id}/edit?err=fields`);
     const uuid = /^https:\/\/aryeo\.ucarecd\.net\/([^/]+)\/$/.exec(b.videos?.[0]?.url ?? "")?.[1];
     const f = uuid ? ucFiles.get(uuid) : null;
     if (!f || !f.bytes) return redirect(`/admin/listings/${l.id}/edit?err=video`);
@@ -702,6 +706,14 @@ async function main() {
     await V.advanceVideoPush(N.cuts[0].sub, { budgetMs: 60_000 });
     const nAfter = await runOf(N.cuts[0].sub);
     c.ok("(set-up) one press, one pass: through to the check", nAfter?.state === "CHECKING" && !!nAfter.addSentAt && kinds("add", "L-N").length === 1, nAfter?.state);
+    {
+      // Oct 19 2026: Aryeo refused the short shape on the first two real presses.
+      const sent = (calls.filter((x) => x.kind === "add" && x.listing === "L-N").pop()?.body ?? null) as { videos?: { uuid?: string; url?: string; filename?: string; size?: number; titleValue?: string; displayType?: string; uploadProgress?: number; video_title?: string; display_type?: string }[] } | null;
+      const v0 = sent?.videos?.[0];
+      c.ok("the add sends the Add Video window's whole file record (title, display type, file size, name, id) as well as the short one",
+        !!v0 && v0.size === nAfter?.file.size && !!v0.titleValue && v0.titleValue === v0.video_title && v0.displayType === "both" && v0.display_type === "both" && !!v0.uuid && v0.url?.includes(v0.uuid) === true && v0.filename === nAfter?.file.name && v0.uploadProgress === 100,
+        JSON.stringify(v0));
+    }
     const N2 = await mkJob("175 Short Pass Rd", "L-N2");
     await press(N2.cuts[0].sub);
     // Walk it to ADDING without an intent: PREPARING then SENDING in a long pass, but stopped before the add.

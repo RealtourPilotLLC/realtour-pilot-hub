@@ -903,6 +903,13 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
         const g = await gates(r.submissionId, { asks: true, sound: false });
         if (!g.ok) return unlessSame(blocked(r, g, "ADDING"), r0);
         if (g.fingerprint !== r.fingerprint) return fail(r, "The finished file changed after it was sent to Aryeo's upload service. Press Try again to send the new file.");
+        // Aryeo refuses an add without the file's size (Oct 19 2026): Dropbox's
+        // number is on the run; when it is not, the upload service's is.
+        if (!r.file.size) {
+          const info = await W.uploadcareVideoInfo(r.upload.fileUuid!).catch(() => null);
+          if (!info?.size) return fail(r, "Aryeo's upload service did not say how big the file is, and Aryeo needs that to add it. Press Try again.");
+          r.file.size = info.size;
+        }
         if (ctx.deadline - Date.now() < ADD_MARGIN_MS) return null;
         // One run per listing between the add and the check.
         if (!(await takeAddLock(r))) return unlessSame({ ...r, note: "Waiting for another video to finish going up on this listing." }, r0);
@@ -921,7 +928,7 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
       //    out in the middle, a page the hub does not recognise, no answer)
       //    may have added it, so the check decides and nothing is sent again.
       try {
-        await W.addListingVideo(r.listingId, { cdnUrl: W.videoCdnUrl(r.upload.fileUuid!), title: r.title });
+        await W.addListingVideo(r.listingId, { uuid: r.upload.fileUuid!, cdnUrl: W.videoCdnUrl(r.upload.fileUuid!), title: r.title, filename: r.file.name, size: r.file.size ?? 0 });
         r.note = null;
       } catch (e) {
         const err = e as Error & { kind?: string };

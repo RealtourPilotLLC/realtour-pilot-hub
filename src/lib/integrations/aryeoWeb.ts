@@ -582,13 +582,36 @@ export async function listingVideos(listingId: string): Promise<AryeoWebVideo[] 
     .filter((v) => !!v.uuid);
 }
 
-/** Put one uploaded video file on the listing (the Add Video window's own call). Never retried by this function. */
-export async function addListingVideo(listingId: string, o: { cdnUrl: string; title: string }): Promise<void> {
+/**
+ * Put one uploaded video file on the listing (the Add Video window's own call). Never retried by this function.
+ *
+ * THE WINDOW'S WHOLE FILE RECORD (Oct 19 2026, first two real presses refused:
+ * "Video title is required for each video. Display type is required for each
+ * video. File size is required for each video."). The window's submit maps
+ * each file to {url, video_title, display_type}, but its upload-finished
+ * handler installs a form transform that swaps `videos` back to the raw file
+ * records ({uuid, internalId, url, filename, size, titleValue, titleError,
+ * displayType, uploadProgress}) just before the POST, and that is what Aryeo's
+ * server checks. Both spellings go up; Aryeo ignores the keys it does not read.
+ */
+export async function addListingVideo(listingId: string, o: { uuid: string; cdnUrl: string; title: string; filename: string; size: number }): Promise<void> {
   const page = await inertia("POST", `${aryeoAdminOrigin()}/admin/listing/${encodeURIComponent(listingId)}/videos`, {
     video_title: null,
     display_type: "both",
     video_url: null,
-    videos: [{ url: o.cdnUrl, video_title: o.title, display_type: "both" }],
+    videos: [{
+      uuid: o.uuid,
+      internalId: o.uuid,
+      url: o.cdnUrl,
+      filename: o.filename,
+      size: o.size,
+      titleValue: o.title,
+      titleError: "",
+      displayType: "both",
+      uploadProgress: 100,
+      video_title: o.title,
+      display_type: "both",
+    }],
   }, false, { referer: editor(listingId) });
   const no = refusedBy(page);
   if (no) throw new AryeoWebError(`Aryeo would not add the video: ${no}`, "refused");

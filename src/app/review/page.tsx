@@ -1,4 +1,5 @@
 import { SendBack } from "@/components/videoDelivery/SendBack";
+import { WatchFile } from "@/components/videoDelivery/WatchFile";
 import { requirePageAccess } from "@/lib/auth/guards";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -118,6 +119,7 @@ function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
       {p && (run || s.uploaded) && <p className={cn("mt-1 text-sm", PUSH_TONE[p.tone])}>{p.says}</p>}
       {s.byHandWhy && <p className="mt-1 text-sm font-medium text-warning">{s.byHandWhy}</p>}
       {!s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
+      <WatchFile href={s.watchHref} fileName={s.fileName} isRender={s.fileSource === "topaz-1080p"} />
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} />}
       {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} street={r.street} canRetry={false} canDeliverNow={p.canDeliverNow} canHold={false} canRelease={p.canRelease} />}
       {!run && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
@@ -128,7 +130,7 @@ function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
           <div className="flex flex-wrap items-center gap-2">
             <a href={s.downloadHref} className={quietBtn}><Download aria-hidden className="size-3.5" /> Download the file</a>
             {r.aryeoUrl && <a href={r.aryeoUrl} target="_blank" rel="noreferrer" className={quietBtn}><ExternalLink aria-hidden className="size-3.5" /> Aryeo listing</a>}
-            {r.reviewHref && <Link href={r.reviewHref} prefetch={false} className={quietBtn}><Eye aria-hidden className="size-3.5" /> Watch it</Link>}
+            {r.reviewHref && <Link href={r.reviewHref} prefetch={false} className={quietBtn}><Eye aria-hidden className="size-3.5" /> Open the review</Link>}
           </div>
           {s.uploaded
             ? <><p className="text-muted">Uploaded by {s.uploaded.by} · {etDateTime(s.uploaded.at)} ET. After you send the listing in Aryeo:</p><MarkSent submissionId={r.submissionId!} street={r.street} expectedFingerprint={s.uploadFingerprint ?? undefined} /></>

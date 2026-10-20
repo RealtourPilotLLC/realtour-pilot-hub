@@ -70,6 +70,8 @@ export type VideoSend = {
   fileName: string;
   fileSays: string;
   downloadHref: string;
+  /** Plays the same file on the row ("Watch it"): the 1080p render when the pass finished. */
+  watchHref: string;
   uploadFingerprint: string | null;
   /** A person (or the listing check) recorded this exact version on the listing. */
   uploaded: { by: string; at: string } | null;
@@ -328,7 +330,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
             waitingSinceISO: rend ? null : approvedAt,
             heldRender: rend?.held ? { jobId: rend.held.jobId, fileName: rend.held.fileName, dropboxUrl: rend.held.dropboxUrl, lastCheck: rend.held.lastCheck } : null,
             send: r ? {
-              approvedBy: r.approvedBy, fileSource: r.file.source, fileName: r.file.fileName, fileSays: r.file.says.replace(/\s*[\u2014\u2013]\s*/g, ": "), downloadHref: r.file.downloadHref,
+              approvedBy: r.approvedBy, fileSource: r.file.source, fileName: r.file.fileName, fileSays: r.file.says.replace(/\s*[\u2014\u2013]\s*/g, ": "), downloadHref: r.file.downloadHref, watchHref: r.file.watchHref,
               uploadFingerprint: r.uploadFingerprint ?? null,
               uploaded: r.uploaded ? { by: r.uploaded.by, at: r.uploaded.at } : null,
               listingMissing: !!r.listingMissing,

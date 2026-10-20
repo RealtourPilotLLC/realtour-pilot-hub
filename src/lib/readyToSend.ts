@@ -224,6 +224,9 @@ export type ReadyVideo = {
      *  the press, so it is live on day thirty; null is never rendered as a
      *  button. */
     downloadHref: string;
+    /** the same bytes, for playing on the row ("Watch it", Oct 19 2026):
+     *  never stamps the hand-off the way a download does. */
+    watchHref: string;
     /** the Dropbox path ONLY when that is where the offered bytes are read
      *  from — and always the SAME path the download route will serve. A path we
      *  are not serving from is not printed: 322's Final Video folder is empty
@@ -2124,6 +2127,7 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
       source: "topaz-1080p",
       fileName: named(j.finalPath, sub.fileName),
       downloadHref: `/api/topaz/download/${j.id}`,
+      watchHref: `/api/topaz/download/${j.id}?watch=1`,
       dropboxPath: j.finalPath,
       dropboxUrl: dropboxFileUrl(j.finalPath),
       says: "The 1080p pass finished — this is the file to send.",
@@ -2156,6 +2160,7 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
       // route is already gated to the job's own people and proxies the bytes,
       // so the store's public URL never leaves the building.
       downloadHref: `/api/review/cut/${sub.id}/stream?dl=1`,
+      watchHref: `/api/review/cut/${sub.id}/stream`,
       // The hub serves the bytes, but the SAME file is usually also filed in the
       // job's Final Video folder — that copy is what the approval writes there,
       // and Dropbox is where Kyle actually works. Name it when the record has
@@ -2185,6 +2190,7 @@ function fileFor(sub: CandidateSub, s: { enabled: boolean; deliverableTypes: str
       // and an editor pressing play would have read as Kyle taking the file
       // (review, Sep 21 2026).
       downloadHref: `/api/review/cut/${sub.id}/stream?dl=1`,
+      watchHref: `/api/review/cut/${sub.id}/stream`,
       dropboxPath: path,
       dropboxUrl: dropboxFileUrl(path),
       says,
