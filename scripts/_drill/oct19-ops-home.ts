@@ -560,7 +560,7 @@ async function main() {
     }
     const oorder = namesOf(ownerTree);
     const at = (n: string) => oorder.indexOf(n);
-    c.ok("order: flagged, the red line slot, the tiles, today's shoots and shoots in progress, needs attention, Kyle's day, shoot issues, then this week and money last", at("FlaggedBanner") < at("HealthStrip") && at("BehindLine") < at("HealthStrip") && at("HealthStrip") < at("ShootsInProgress") && at("ShootsInProgress") < at("NeedsAttention") && at("NeedsAttention") < at("KylesDayCard") && at("KylesDayCard") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("OwnerWeekCard") && at("OwnerWeekCard") < at("MoneyStat"), oorder.filter((n) => ["FlaggedBanner", "BehindLine", "HealthStrip", "ShootsInProgress", "NeedsAttention", "KylesDayCard", "ShootIssuesCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
+    c.ok("order (no flagged banner since Oct 19: flags live on the shoot): the red line slot, the tiles, today's shoots and shoots in progress, needs attention, Kyle's day, shoot issues, then this week and money last", at("FlaggedBanner") === -1 && at("BehindLine") < at("HealthStrip") && at("HealthStrip") < at("ShootsInProgress") && at("ShootsInProgress") < at("NeedsAttention") && at("NeedsAttention") < at("KylesDayCard") && at("KylesDayCard") < at("ShootIssuesCard") && at("ShootIssuesCard") < at("OwnerWeekCard") && at("OwnerWeekCard") < at("MoneyStat"), oorder.filter((n) => ["FlaggedBanner", "BehindLine", "HealthStrip", "ShootsInProgress", "NeedsAttention", "KylesDayCard", "ShootIssuesCard", "OwnerWeekCard", "MoneyStat"].includes(n)).join(","));
     c.ok("the old Home's duplicates are gone: no checklist, summary box, behind card, his list, needs wall, exceptions, stuck jobs", ["DailyChecklist", "SummaryBox", "BehindCard", "KylesDay", "QuickAdd", "NeedsToday", "ExceptionsCard", "StuckJobs", "NewClientCard", "ChecklistLinks"].every((n) => elements(ownerTree, n).length === 0) && elements(ownerTree, "PulseStrip").length <= 1);
     c.ok("the dashboard render writes nothing", dashBefore === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.outboxMessage.count() === 0);
 
@@ -580,7 +580,8 @@ async function main() {
     const kDay = elements(kDash, "KylesDayCard")[0]?.day as KyleDay | null;
     c.ok("Kyle's day reads 'Your list' for Kyle, the same numbers, and opens his list", kDay?.you === true && kDay.done === day?.done && kDay.open === day?.open && kDay.href === "/ops/checklist" && kHtml.includes("Your list") && kHtml.includes('href="/ops/checklist"') && !kHtml.includes("Kyle’s day"));
     c.ok("no money for Kyle: no week, no money, no shoot issues, no figure anywhere on the page", ["OwnerWeekCard", "MoneyStat", "ShootIssuesCard", "OwnerBusiness", "PulseStrip"].every((n) => elements(kDash, n).length === 0) && !/\$\d/.test(kHtml), (kHtml.match(/.{40}\$\d.{40}/) ?? [""])[0]);
-    c.ok("the flagged-for-you banner still leads for him", (elements(kDash, "FlaggedBanner")[0]?.flagged as { taskId: string }[]).some((f) => f.taskId === n4.id) && namesOf(kDash).indexOf("FlaggedBanner") < namesOf(kDash).indexOf("HealthStrip"));
+    // Jordan, Oct 19 2026: "we don't need this at the top of the screen. Only flagged issues should show up on the shoot itself."
+    c.ok("no flagged banner on the dashboard (flags show on the shoot itself)", elements(kDash, "FlaggedBanner").length === 0);
 
     // =====================================================================
     c.head("§6 · the same dashboard, as James (office, the review seat)");

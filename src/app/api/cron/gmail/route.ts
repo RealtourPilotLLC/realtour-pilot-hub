@@ -223,8 +223,10 @@ export async function GET(req: NextRequest) {
     const { closeAsksOnDeliveredJobs } = await import("@/lib/clientAsks");
     const { runBehindAlert } = await import("@/lib/behindAlert");
     const asks = await closeAsksOnDeliveredJobs();
+    // A shoot's flags clear once the job is delivered (Jordan, Oct 19 2026).
+    const flags = await import("@/lib/shootIssues").then((m) => m.closeShootFlagsOnDeliveredJobs()).catch(() => ({ closed: 0 }));
     const behind = await runBehindAlert();
-    return { asksClosed: asks.closed, behind };
+    return { asksClosed: asks.closed, flagsClosed: flags.closed, behind };
   }, { maxMs: 30_000 });
   //  · from 6 PM ET: tomorrow's shoot brief to each photographer, and Jordan's
   //    6 PM wrap (Mon to Sat) with a copy to Kyle. Idle every other tick.

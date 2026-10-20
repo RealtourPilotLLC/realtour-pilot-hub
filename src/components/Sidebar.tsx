@@ -322,22 +322,22 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
             ? <div className="space-y-2.5">{subgroups.map((g) => {
                 const inGroup = g.items.filter((item) => list.includes(item as (typeof list)[number]));
                 return inGroup.length ? <div key={g.id} data-sidebar-subgroup={g.id}>
-                  <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-2">{g.title}</p>
+                  <p className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-brand/80">{g.title}</p>
                   <div className="space-y-0.5">{inGroup.map((item) => renderItem(item as (typeof list)[number]))}</div>
                 </div> : null;
               })}</div>
             : <div className="space-y-0.5">{list.map(renderItem)}</div>;
           return <section key={section.id} data-sidebar-group={section.id} aria-labelledby={`${navigationId}-${section.id}`}>
             {expanded ? <>
-              <h2 id={`${navigationId}-${section.id}`} className="px-3 pb-1.5 text-sm font-semibold text-muted">{section.title}</h2>
+              <h2 id={`${navigationId}-${section.id}`} className="px-3 pb-1.5 text-sm font-semibold text-brand">{section.title}</h2>
               {renderList(section.items)}
             </> : <>
               {folded.length > 0 ? <details className="group/sidebar">
-                <summary id={`${navigationId}-${section.id}`} tabIndex={0} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-3 text-sm font-semibold text-muted hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+                <summary id={`${navigationId}-${section.id}`} tabIndex={0} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-3 text-sm font-semibold text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
                   {section.title}<ChevronDown aria-hidden className="size-4 shrink-0 transition-transform group-open/sidebar:rotate-180" />
                 </summary>
                 {renderList(folded)}
-              </details> : <h2 id={`${navigationId}-${section.id}`} className="px-3 text-sm font-semibold text-muted">{section.title}</h2>}
+              </details> : <h2 id={`${navigationId}-${section.id}`} className="px-3 text-sm font-semibold text-brand">{section.title}</h2>}
               {shortcut.map(renderItem)}
             </>}
           </section>;

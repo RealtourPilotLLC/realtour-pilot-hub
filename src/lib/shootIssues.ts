@@ -137,3 +137,40 @@ export async function ownerShootIssues(now: Date = new Date()): Promise<{ open: 
     return { open: [], byClient: [] };
   }
 }
+
+/**
+ * A SHOOT FLAG CLEARS WHEN ITS JOB IS DELIVERED (Jordan, Oct 19 2026: "Only
+ * flagged issues should show up on the shoot itself. It should clear once the
+ * job is delivered."). Every open flag loop (Kyle's `shoot-issue-<job>`,
+ * Jordan's `shoot-owner-<job>`) on a job that is DELIVERED or CANCELLED is
+ * completed with the reason. A job reopened for revisions is not delivered,
+ * so its flags stay. Run every five minutes from the comms cron; cheap (open
+ * loops only). Never throws.
+ */
+export async function closeShootFlagsOnDeliveredJobs(now: Date = new Date()): Promise<{ closed: number }> {
+  const out = { closed: 0 };
+  try {
+    const open = await prisma.smartTask.findMany({
+      where: {
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        projectId: { not: null },
+        OR: [{ dedupeKey: { startsWith: "shoot-issue-" } }, { dedupeKey: { startsWith: "shoot-owner-" } }],
+      },
+      select: { id: true, status: true, summary: true, project: { select: { status: true } } },
+      take: 500,
+    });
+    for (const t of open) {
+      const st = t.project?.status;
+      if (st !== "DELIVERED" && st !== "CANCELLED") continue;
+      const why = st === "CANCELLED" ? "Closed by the hub: the job was cancelled." : "Closed by the hub: the job was delivered.";
+      const r = await prisma.smartTask.updateMany({
+        where: { id: t.id, status: t.status },
+        data: { status: "COMPLETED", completedAt: now, summary: clip(t.summary ? `${why}\n${t.summary}` : why, 500) },
+      });
+      out.closed += r.count;
+    }
+  } catch (e) {
+    console.error("[shoot issues] closing flags on delivered jobs failed", e);
+  }
+  return out;
+}

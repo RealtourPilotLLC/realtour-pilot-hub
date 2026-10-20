@@ -13,9 +13,8 @@ import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
 import { QualityDials } from "@/components/dashboard/QualityDials";
 import { ownerPulse } from "@/lib/ownerPulse";
-import { getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials, getFlaggedForMe } from "@/lib/queries";
-import { scrubMoney } from "@/lib/text";
-import { listAssignees, slugForName, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
+import { getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials } from "@/lib/queries";
+import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { buildDashboard, kyleDay, kylePerson, ownerWeek, type KyleDay, type OwnerWeek } from "@/lib/opsHome";
@@ -23,8 +22,7 @@ import { behindState, type BehindState } from "@/lib/behindAlert";
 import { ownerShootIssues } from "@/lib/shootIssues";
 import { etMinutes } from "@/components/home/DailyChecklist";
 import { HomeAnchorForward } from "@/components/home/HomeAnchorForward";
-import { blockScreen } from "@/lib/homeAnchors";
-import { FlaggedBanner, OwnerWeekCard, ShootIssuesCard } from "@/components/home/OpsHomeParts";
+import { OwnerWeekCard, ShootIssuesCard } from "@/components/home/OpsHomeParts";
 import { ExceptionsCard } from "@/components/ops/ExceptionsCard";
 import { emptyExceptionBoard, opsExceptionsBoard, type ExceptionKind, type OpsExceptionBoard } from "@/lib/opsExceptions";
 import { BehindLine } from "@/components/home/Checklist";
@@ -239,24 +237,10 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
       ]).then(([stats, pulse, dials, money]) => ({ stats, pulse, dials, money }))
     : null;
 
-  // WHO the flags are for: the viewer's own assignee key, resolved the way
-  // openLoopsList resolves it (roster match by TeamMember → email → first
-  // name, else the first-name slug). An editor's explicit editorKey still
-  // wins when there is one (audit5 F11).
-  const [flaggedRaw, dash, behind] = await Promise.all([
-    getFlaggedForMe({
-      assignedKey: me ? me.editorKey ?? viewerKey ?? (me.name ? slugForName(me.name) : null) : null,
-      memberId: me?.teamMemberId ?? null,
-      role: me?.role ?? "OWNER",
-      excludeClientIds: excludedClientIds,
-    }).catch(() => []),
+  const [dash, behind] = await Promise.all([
     buildDashboard({ now, includeTest, excludeClientIds: excludedClientIds, viewer, ops, roster, scrub: !isOwner }),
     behindP,
   ]);
-  const scopeHref = (href: string) => homeRecordHref(blockScreen(href), includeTest);
-  // No money on an office screen (Jordan's standing rule): a flag's title and
-  // note are typed by a person and pass through the figure scrub.
-  const flagged = (isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }))).map((f) => ({ ...f, href: scopeHref(f.href) }));
   const nowMin = etMinutes(now);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
   // A per-user override can close a screen to this reader: its tile and actions show without the link.
@@ -280,7 +264,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             <p className="mt-1 text-muted">Shoots, the review queue, messages and the lists it opens keep this view when opened. Figures from the books keep Finance’s existing definitions.</p>
           </div>
         )}
-        <FlaggedBanner flagged={flagged} />
+        {/* No flagged banner (Jordan, Oct 19 2026: "we don't need this at the
+            top of the screen. Only flagged issues should show up on the shoot
+            itself."): a shoot's flags show on its own page. */}
         <BehindLine state={behind} href={homeRecordHref("/jobs?f=late", includeTest)} />
         <HealthStrip health={dash.health} includeTest={includeTest} doors={doors} />
 

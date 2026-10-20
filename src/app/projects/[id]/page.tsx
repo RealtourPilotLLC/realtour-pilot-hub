@@ -73,6 +73,7 @@ import { PhotoBatchPanel } from "@/components/project/PhotoBatchPanel";
 import { ReworkCostPanel } from "@/components/project/ReworkCostPanel";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { JobDeliverablesSection } from "@/components/jobs/JobDeliverables";
+import { ShootFlags } from "@/components/jobs/ShootFlags";
 
 export const dynamic = "force-dynamic";
 
@@ -308,7 +309,10 @@ export default async function ProjectPage({
           flags and notes come from the job's "Before you send" read. Every
           section below is unchanged. A failed read shows no cards, never the
           page's loss. */}
-      <div className="mt-6">
+      <div className="mt-6 space-y-4">
+        <Suspense fallback={null}>
+          <ShootFlags projectId={project.id} />
+        </Suspense>
         <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl bg-surface-2 motion-reduce:animate-none" aria-hidden />}>
           <JobDeliverablesSection projectId={project.id} />
         </Suspense>

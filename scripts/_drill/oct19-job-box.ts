@@ -378,6 +378,23 @@ async function main() {
   const home = await ba.behindState(new Date());
   c.ok("behindState (Home's red line) says the same in one sentence", home.level === "behind" && home.headline === "1 photo job is late by 5 h.", JSON.stringify(home));
 
+  c.head("5 · A shoot's flags clear once the job is delivered (Oct 19 2026)");
+  {
+    const si = await import("@/lib/shootIssues");
+    const delivered = await prisma.project.create({ data: { title: "9 Done Way, Malvern, PA", clientId: heather.id, status: "DELIVERED", deliveredAt: new Date() }, select: { id: true } });
+    const revising = await prisma.project.create({ data: { title: "8 Again Rd, Malvern, PA", clientId: heather.id, status: "REVISION" }, select: { id: true } });
+    const loop = (projectId: string, key: string) => prisma.smartTask.create({ data: { taskType: "todo", source: "manual", status: "OPEN", title: "Shoot issue: x", dedupeKey: key, projectId, flaggedAt: new Date() } as never, select: { id: true } });
+    const k1 = await loop(delivered.id, `shoot-issue-${delivered.id}`);
+    const j1 = await loop(delivered.id, si.ownerShootLoopKey(delivered.id));
+    const k2 = await loop(revising.id, `shoot-issue-${revising.id}`);
+    const r = await si.closeShootFlagsOnDeliveredJobs();
+    const after = await prisma.smartTask.findMany({ where: { id: { in: [k1.id, j1.id, k2.id] } }, select: { id: true, status: true, summary: true } });
+    const st = (id: string) => after.find((x) => x.id === id);
+    c.ok("Kyle's and Jordan's flag loops on the delivered job are completed, saying why", st(k1.id)?.status === "COMPLETED" && st(j1.id)?.status === "COMPLETED" && (st(k1.id)?.summary ?? "").startsWith("Closed by the hub: the job was delivered."), JSON.stringify(after));
+    c.ok("a job back in revisions keeps its flag", st(k2.id)?.status === "OPEN");
+    c.ok("it counts what it closed, and a second pass closes nothing", r.closed >= 2 && (await si.closeShootFlagsOnDeliveredJobs()).closed === 0);
+  }
+
   c.head("Nothing left the hub");
   c.ok("the fence held (Slack answered by the fake only)", fence.blocked.length === 0, fence.blocked.join(", "));
 
