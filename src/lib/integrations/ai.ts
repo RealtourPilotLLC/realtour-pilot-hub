@@ -165,6 +165,24 @@ export async function aiJsonWithUsage<T>(opts: {
  * swallowed the keys after it), the parsed value is used, all the way down;
  * anything else is left exactly as sent.
  */
+/** The first complete JSON array or object at the start of `t` (strings and escapes respected), or null. */
+function leadingJson(t: string): string | null {
+  let depth = 0, inString = false, escaped = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[" || ch === "{") depth++;
+    else if (ch === "]" || ch === "}") { depth--; if (depth === 0) return t.slice(0, i + 1); }
+  }
+  return null;
+}
+
 export function decodeStringifiedJson(value: unknown, schema: unknown): unknown {
   if (!schema || typeof schema !== "object") return value;
   const s = schema as { type?: unknown; properties?: Record<string, unknown>; items?: unknown };
@@ -175,12 +193,13 @@ export function decodeStringifiedJson(value: unknown, schema: unknown): unknown 
     const t = value.trim();
     if ((wantsArray && t.startsWith("[")) || (wantsObject && t.startsWith("{"))) {
       const fits = (v: unknown) => (wantsArray && Array.isArray(v)) || (wantsObject && !!v && typeof v === "object" && !Array.isArray(v));
-      // The string can also run on past its value and swallow the object's
-      // later keys ('[...], "gaps": [], "complete": true'): read as the first
-      // key of an object, the value comes out whole and the tail is dropped.
-      for (const attempt of [() => JSON.parse(t) as unknown, () => (JSON.parse(`{"v":${t}}`) as { v: unknown }).v]) {
+      // The string can also run on past its value ('[...], "gaps": [],
+      // "complete": true', or just '[...],'): then the value is read from the
+      // front up to its own closing bracket and the tail is dropped.
+      for (const text of [t, leadingJson(t)]) {
+        if (!text) continue;
         try {
-          const parsed = attempt();
+          const parsed: unknown = JSON.parse(text);
           if (fits(parsed)) { value = parsed; break; }
         } catch { /* not JSON: try the next reading, else left as sent */ }
       }

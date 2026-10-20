@@ -523,7 +523,7 @@ export function buildTopicBankPrompt(
     PERSONAL_BRAND_HUMOUR_RULE,
     ...(asVideoStyle(ctx.videoStyle) === "SKITS" ? ["", SKIT_TOPIC_RULE] : []),
     opts.refresh
-      ? "REFRESH: preserve accepted, rejected, selected and filmed history. Do not re-suggest an archived idea as new; do not rename the client's pillars; add candidates, never delete. The existing topics already cover their subjects: spend every new idea on a focus area, story or angle none of them covers yet."
+      ? "REFRESH: the existing topics below stay in the client's bank on our side; return ONLY new ideas, never an existing topic again (not even word for word). Do not re-suggest an archived idea as new; do not rename the client's pillars. The existing topics already cover their subjects: spend every new idea on a focus area, story or angle none of them covers yet."
       : "",
     "",
     SPEAKER_ATTRIBUTION_RULE,
