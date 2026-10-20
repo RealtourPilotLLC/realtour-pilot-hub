@@ -44,9 +44,11 @@ import type { ReachRefusalCode, ReachTier } from "@/lib/programRolloutCore";
 //      Unclear which video: stored as a message with the chip, and moving it
 //      is a person's decision, as before.
 //   3. NOTHING HERE MESSAGES A CLIENT UNLESS A SWITCH SAYS SO. The staff side is
-//      internal and live: a bell row for the owner (bell only — `program_message`
-//      is deliberately NOT mapped in notifyPrefs.KIND_TO_EVENT, so nobody's
-//      phone or Slack is paged by it) and the desk task. The email telling a
+//      internal and live: a bell row for the owner, the desk task, and since
+//      Oct 20 2026 a post to the ops Slack channel plus a text to the owner and
+//      Jordan with the reply link (alertOffice; Jordan asked for both).
+//      `program_message` is still NOT mapped in notifyPrefs.KIND_TO_EVENT: the
+//      bell row itself pages nobody, alertOffice does it once. The email telling a
 //      client "Kyle replied" is `program_message_notice`, which is OFF, and
 //      when it is on it rides the outbox with its TEST-client floor and the
 //      Mon–Fri-before-4:30 client window.
@@ -216,6 +218,60 @@ async function announce(e: { id: string; clientName: string }, owner: DutyOwner,
 }
 
 /**
+ * A TEXT AND A SLACK POST FOR A CLIENT'S MESSAGE (Oct 20 2026). Jordan: "when
+ * a client messages us on the portal we need a text and slack message with a
+ * link to respond to the message." The bell alone (above) was the only signal,
+ * by design until now. Each new message posts to the ops Slack channel and
+ * texts the account's MESSAGES owner and Jordan, every line carrying the link
+ * to the reply box. A burst is one conversation: a thread alerts at most once
+ * per ALERT_EVERY_MS. Kyle's roster phone IS the office line, which cannot be
+ * texted, so he hears it on Slack. A person inside their own quiet time gets
+ * the text when it ends. Never for a TEST client.
+ */
+const ALERT_EVERY_MS = 10 * 60_000;
+async function alertOffice(e: { id: string; clientName: string }, owner: DutyOwner, body: string, now: Date): Promise<void> {
+  if (isTestClientName(e.clientName)) return;
+  const key = `program-msg-alert:${e.id}`;
+  const prev = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } }).catch(() => null);
+  if (prev && now.getTime() - Date.parse(prev.value) < ALERT_EVERY_MS) return;
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value: now.toISOString() }, update: { value: now.toISOString() } });
+
+  const link = `${appBase()}/content/${e.id}?tab=messages`;
+  const line = `New portal message from ${e.clientName || "a program client"}: “${clip(body.replace(/\s+/g, " "), 160)}” Reply here: ${link}`;
+  const { opsAlert, queueStaffSms, logDelivery } = await import("@/lib/notify");
+  await opsAlert(`💬 ${line}`).catch(() => false);
+
+  // The texts: the MESSAGES owner and Jordan (once when he is the owner).
+  const ids = new Set<string>();
+  const ownerTm = owner.appUserId ? await teamMemberFor(owner.appUserId).catch(() => null) : null;
+  if (ownerTm) ids.add(ownerTm.id);
+  const jordan = await prisma.teamMember.findFirst({ where: { name: { startsWith: "Jordan" }, active: true }, select: { id: true } }).catch(() => null);
+  if (jordan) ids.add(jordan.id);
+  if (!ids.size) return;
+  const [members, op, sched, sms] = await Promise.all([
+    prisma.teamMember.findMany({ where: { id: { in: [...ids] }, active: true }, select: { id: true, name: true, phone: true } }),
+    import("@/lib/integrations/openphone"),
+    import("@/lib/notifySchedule"),
+    import("@/lib/hubSms"),
+  ]);
+  const ours = await op.ourOpenPhoneNumberKeys().catch(() => new Set<string>());
+  const from = await op.defaultOpenPhoneNumber().catch(() => null);
+  for (const m of members) {
+    const num = sms.staffTextNumber(m.phone);
+    if (!num || ours.has(num.key)) continue; // no number, or the office line itself (Kyle): Slack carries it
+    const until = await sched.holdFor(m.id, now).catch(() => null);
+    if (until) { await queueStaffSms(m.id, line, { kind: "program_message_text" }, until).catch(() => false); continue; }
+    try {
+      if (!from) throw new Error("no OpenPhone number");
+      await op.OpenPhone.sendMessage(from, num.to, `${sms.HUB_SMS_PREFIX}: ${line}`);
+      await logDelivery({ teamMemberId: m.id, kind: "program_message_text", channel: "sms", status: "sent" });
+    } catch (err) {
+      await logDelivery({ teamMemberId: m.id, kind: "program_message_text", channel: "sms", status: "failed", detail: err instanceof Error ? err.message : "send failed" }).catch(() => {});
+    }
+  }
+}
+
+/**
  * ONE desk task per account, refreshed by every message while the thread is
  * unanswered and reopened by a new one after it closed. Never for a TEST
  * client (the same rule as openProgramDeskTask). The assignee is the MESSAGES
@@ -333,6 +389,7 @@ export async function postClientMessage(
     const first = await prisma.programMessage.findFirst({ where: { enrollmentId: e.id, authorKind: "CLIENT", handledAt: null }, orderBy: { createdAt: "asc" }, select: { id: true } });
     await announce({ id: e.id, clientName: e.clientName }, owner, first?.id ?? row.id, clip(body.replace(/\s+/g, " "), 120));
   }
+  await alertOffice({ id: e.id, clientName: e.clientName }, owner, body, now).catch((err) => console.error("[programMessages] text/Slack alert", err));
   const { classifyComm, askMedium } = await import("@/lib/comms");
   const looksLikeChange = classifyComm(body).isRevision;
   const who = owner.label && owner.label !== "unassigned" ? owner.label.split(/\s+/)[0] : "The team";

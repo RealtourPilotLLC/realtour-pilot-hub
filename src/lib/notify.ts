@@ -493,7 +493,7 @@ export function dueSmsWhere(now: Date = new Date()): Prisma.PendingSmsWhereInput
 // at the weekend. The line is captured exactly as any other — it simply becomes
 // invisible to the flusher until that instant. Null (every existing caller) is
 // unchanged behaviour: send at the next permitted flush.
-async function queueStaffSms(
+export async function queueStaffSms(
   teamMemberId: string,
   line: string,
   meta: { kind: string; notificationId?: string | null } = { kind: "staff_sms" },

@@ -64,8 +64,14 @@ installNextStubs();
 type Mail = { to: string; subject: string; body: string };
 const mails: Mail[] = [];
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
+const slackPosts: { channel: string; text: string }[] = [];
 const fence = fenceFetch(async (url, init) => {
   const u = new URL(url);
+  if (url === "https://slack.com/api/chat.postMessage") {
+    const b = JSON.parse(String(init?.body ?? "{}")) as { channel?: string; text?: string };
+    slackPosts.push({ channel: String(b.channel ?? ""), text: String(b.text ?? "") });
+    return json({ ok: true, ts: `${slackPosts.length}.0001` });
+  }
   if (u.hostname === "oauth2.googleapis.com") return json({ access_token: "drill-access", expires_in: 3600 });
   if (u.hostname === "gmail.googleapis.com" && u.pathname.endsWith("/messages/send")) {
     const { raw } = JSON.parse(String(init?.body ?? "{}")) as { raw: string };
@@ -178,6 +184,38 @@ async function main() {
     await prisma.smartTask.update({ where: { dedupeKey: taskKey }, data: { assignedKey: "jordan", assignedManually: true } });
     await pm.postClientMessage(lopezViewer, { body: "Sorry, one more: the Tuesday time works." });
     c.ok("a person's reassignment survives the next refresh (assignedManually)", (await prisma.smartTask.findUnique({ where: { dedupeKey: taskKey } }))?.assignedKey === "jordan");
+  }
+
+  // =========================================================================
+  c.head("3b · (Oct 20 2026) a text and a Slack post with the reply link");
+  // =========================================================================
+  {
+    const op = await import("@/lib/integrations/openphone");
+    const OFFICE = "+12156454889";
+    (op.OpenPhone as unknown as { phoneNumbers: () => Promise<unknown[]> }).phoneNumbers = async () => [{ id: "PN-drill", number: OFFICE }];
+    const texts: { to: string; body: string }[] = [];
+    (op.OpenPhone as unknown as { sendMessage: unknown }).sendMessage = async (_from: string, to: string, body: string) => { texts.push({ to: String(to), body }); return { data: { id: `op-${texts.length}` } }; };
+    process.env.SLACK_ALERT_CHANNEL = "C0DRILLOPS";
+    await saveSecret("slack", "xoxb-drill-not-a-real-token");
+    // Kyle's roster phone IS the office line; Jordan has his own.
+    await prisma.teamMember.update({ where: { id: kyleTm.id }, data: { phone: "(215) 645-4889" } });
+    await prisma.teamMember.create({ data: { name: "Jordan Spackman", email: "info@realtourpilot.com", phone: "(215) 534-8650", active: true } });
+    const novakClient = await prisma.client.create({ data: { name: "Rae Novak", email: "rae.novak@example.com" } });
+    const novakE = await prisma.contentEnrollment.create({ data: { clientId: novakClient.id, package: "Accelerator", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 4, status: "ACTIVE" } });
+    const novakUser = await prisma.clientUser.create({ data: { email: "rae.novak@example.com", name: "Rae Novak", status: "ACTIVE" } });
+    const novakSeat = await prisma.clientMembership.create({ data: { clientUserId: novakUser.id, enrollmentId: novakE.id, clientId: novakClient.id, role: "OWNER", acceptedAt: new Date() } });
+    const novakViewer = viewerOf({ enrollmentId: novakE.id, clientId: novakClient.id, clientName: "Rae Novak" }, { kind: "CLIENT", clientUserId: novakUser.id, email: novakUser.email, name: "Rae Novak", membershipId: novakSeat.id, membershipRole: "OWNER" });
+    const [s0, t0] = [slackPosts.length, texts.length];
+    const r = await pm.postClientMessage(novakViewer, { body: "Can we move Thursday's shoot to the afternoon?" });
+    const link = `/content/${novakE.id}?tab=messages`;
+    const post = slackPosts.slice(s0);
+    c.ok("one post to the ops Slack channel, with the client, her words and the reply link", r.ok && post.length === 1 && post[0].channel === "C0DRILLOPS" && post[0].text.includes("Rae Novak") && post[0].text.includes("move Thursday's shoot") && post[0].text.includes(link), JSON.stringify(post));
+    const sent = texts.slice(t0);
+    c.ok("one text, to Jordan's own phone, with the reply link", sent.length === 1 && sent[0].to.replace(/\D/g, "").endsWith("2155348650") && sent[0].body.includes(link) && sent[0].body.includes("Rae Novak"), JSON.stringify(sent));
+    c.ok("…and none to the office line (Kyle's roster phone): Slack carries it for him", !texts.some((x) => x.to.replace(/\D/g, "").endsWith("2156454889")));
+    await pm.postClientMessage(novakViewer, { body: "Or Friday morning works too." });
+    c.ok("a second line inside 10 minutes is the same conversation: no second text or post", slackPosts.length === s0 + 1 && texts.length === t0 + 1, `${slackPosts.length - s0} posts, ${texts.length - t0} texts`);
+    delete process.env.SLACK_ALERT_CHANNEL;
   }
 
   // =========================================================================
