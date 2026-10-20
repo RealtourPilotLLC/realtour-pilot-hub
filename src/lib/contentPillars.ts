@@ -33,11 +33,24 @@ export async function resolvePillarByLabel(enrollmentId: string, label: string |
   const key = normalizeTitle(label);
   if (!key) return null;
   const pillars = await listPillars(enrollmentId, { includeRetired: true });
-  for (const p of pillars) {
-    if (normalizeTitle(p.name) === key) return p.id;
-    if (p.aliases.some((a) => normalizeTitle(a) === key)) return p.id;
+  const hits = pillars.filter((p) => normalizeTitle(p.name) === key || p.aliases.some((a) => normalizeTitle(a) === key));
+  // THE PILLAR IN USE WINS (Oct 20 2026). A retired duplicate keeps its old
+  // name as an alias, and sorted first, it took all 20 of Kristin Ciarmella's
+  // new Malvern topics out of her bank. An active match is returned; a retired
+  // one is followed to the pillar it was merged into; only a retired pillar
+  // with nowhere to go is returned as itself (old documents still resolve).
+  const active = hits.find((p) => p.status !== "RETIRED" && normalizeTitle(p.name) === key) ?? hits.find((p) => p.status !== "RETIRED");
+  if (active) return active.id;
+  for (const h of hits) {
+    let at: string | null = h.id;
+    for (let i = 0; at && i < 5; i++) {
+      const row: { status: string; mergedIntoId: string | null } | null = await prisma.contentPillar.findUnique({ where: { id: at }, select: { status: true, mergedIntoId: true } });
+      if (!row) break;
+      if (row.status !== "RETIRED") return at;
+      at = row.mergedIntoId;
+    }
   }
-  return null;
+  return hits[0]?.id ?? null;
 }
 
 export async function createPillar(opts: { enrollmentId: string; clientId: string; name: string; purpose?: string | null; focusAreas?: string | null; contentApproach?: string | null; strategyVersionId?: string | null; sortOrder?: number; createdBy: string }): Promise<string> {

@@ -352,6 +352,16 @@ async function main() {
     const und = await portalActions.portalUndeclineTopic(auth, bTopic.id);
     c.ok("undo brings it back", und.ok && (await portalTopics({ id: A.enrollmentId, clientId: A.clientId })).total === 20, und.message);
     c.ok("…with a REINTRODUCED event", (await prisma.contentTopicEvent.count({ where: { topicId: bTopic.id, kind: "REINTRODUCED" } })) === 1);
+    // Oct 20 2026 (Kristin Ciarmella): a retired duplicate that kept the
+    // pillar's name as an alias, and sorts first, must not take new topics.
+    const { resolvePillarByLabel } = await import("@/lib/contentPillars");
+    const dupe = await prisma.contentPillar.create({ data: { enrollmentId: A.enrollmentId, clientId: A.clientId, name: "Seller Education (duplicate, merged)", sortOrder: -1, status: "RETIRED", retiredAt: new Date(), mergedIntoId: pB.id } });
+    await prisma.contentPillarAlias.create({ data: { pillarId: dupe.id, name: "Seller Education", kind: "PREVIOUS", validFrom: new Date(), source: "drill" } });
+    c.ok("a retired duplicate sorted first does not win the name", (await resolvePillarByLabel(A.enrollmentId, "Seller Education")) === pB.id);
+    c.ok("…its own old name follows the merge to the pillar in use", (await resolvePillarByLabel(A.enrollmentId, "Seller Education (duplicate, merged)")) === pB.id);
+    inject["Seller Education"] = [];
+    const r7c = await ct.startTopicRefresh({ enrollmentId: A.enrollmentId, kind: "REFRESH", requestedBy: STAFF_EMAIL, pillarId: pB.id, keep: 2 });
+    c.ok("…and a refill files its ideas under the pillar in use", (await prisma.contentTopicSuggestion.count({ where: { refreshRunId: r7c.runId, pillarId: dupe.id } })) === 0 && (await prisma.contentTopicSuggestion.count({ where: { refreshRunId: r7c.runId, pillarId: pB.id } })) === 2);
 
     // ======================================================================
     c.head("8 · carryover — an unfilmed script moves into the new month, with its history");
