@@ -113,7 +113,18 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
   if (bare) return <>{children}</>;
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    // THE VISIBLE SCREEN, NOT 100vh (Jordan, Oct 19 2026: "scrolling to the
+    // bottom of any page, the menu doesn't disappear"). On a phone 100vh is
+    // the height with the browser's bars hidden, so this frame was taller than
+    // the screen: at the bottom of a page the scroll spilled over to the whole
+    // document, the hub's top bar slid off and the browser's bottom bar hid.
+    // dvh is the height actually on screen; main keeps its scroll to itself.
+    // `relative` here and on main: an absolutely positioned box with no
+    // positioned ancestor (every sr-only label, e.g. the queue's " projects")
+    // was placed against the whole page, so each one below the fold made the
+    // DOCUMENT taller (1415px on an 812px phone with three queue rows) and
+    // the document scrolled under the frame.
+    <div className="relative flex h-screen overflow-hidden supports-[height:100dvh]:h-dvh">
       <a href="#staff-main" inert={open} className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[1400] focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:shadow-lg">
         Skip to content
       </a>
@@ -180,7 +191,7 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         </header>
 
         {user?.impersonating && <ViewAsBanner name={user.name} />}
-        <main id="staff-main" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-x-none scroll-thin">{children}</main>
+        <main id="staff-main" tabIndex={-1} className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-x-none overscroll-y-contain scroll-thin">{children}</main>
       </div>
 
       {/* Always-on feedback launcher (Kyle → review board) */}

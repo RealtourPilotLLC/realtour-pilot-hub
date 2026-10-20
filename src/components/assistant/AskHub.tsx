@@ -334,7 +334,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
   }
 
   return (
-    <div className="relative mx-auto flex h-[calc(100vh-8.5rem)] max-w-3xl flex-col p-6" {...dragHandlers}>
+    <div className="relative mx-auto flex h-[calc(100dvh-8.5rem)] max-w-3xl flex-col p-6" {...dragHandlers}>
       {dragOver && (
         <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-3xl border-2 border-dashed border-brand bg-brand/10">
           <div className="flex items-center gap-2 rounded-2xl bg-surface px-4 py-2.5 text-sm font-medium text-brand shadow-lg">

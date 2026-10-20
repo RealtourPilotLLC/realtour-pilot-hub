@@ -209,6 +209,11 @@ const UNASSIGN = "";
 const SUGGESTED = "__routing_suggestion__";
 const EXTERNAL = "external_agency";
 
+/** The row's name: the street, or for a pin-only Aryeo order ("[No address
+ *  provided], 40.0,-75.5") the client's name, which is how the team knows
+ *  that job (Oct 19 2026, Mike Flatley's sessions read "[No address provided]"). */
+const rowName = (r: QueueRow) => (!r.street || /^\s*\[?\s*no address/i.test(r.street) ? `${r.client} (no address)` : r.street);
+
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "—";
 
@@ -737,9 +742,9 @@ export function SimpleQueue({
     return rows.filter((r) => byWho(r) && byStage(r) && matchesDue(w, r.late, dueKeys.get(r.id) ?? null, todayKey, week)).length;
   };
   const VIEWS = [
-    { key: "notdone" as const, label: "Open work", n: countOn("notdone", notDone) },
-    { key: "upcoming" as const, label: "Upcoming", n: countOn("upcoming", upcoming) },
-    { key: "done" as const, label: "Completed", n: countOn("done", done) },
+    { key: "notdone" as const, label: "Open work", short: "Open", n: countOn("notdone", notDone) },
+    { key: "upcoming" as const, label: "Upcoming", short: "Upcoming", n: countOn("upcoming", upcoming) },
+    { key: "done" as const, label: "Completed", short: "Done", n: countOn("done", done) },
   ];
   // Keeps click-to-open from firing when the click was really for a control
   // inside the row (status pill, editor select, a link).
@@ -755,17 +760,23 @@ export function SimpleQueue({
       )}
       {/* Slack's saved views, as pills. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
-        {VIEWS.map((v) => (
-          <button key={v.key} type="button" aria-pressed={view === v.key} onClick={() => updateFilters({ view: v.key })}
-            className={cn("min-h-11 rounded-lg px-3 py-1.5 text-sm font-medium",
-              view === v.key ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2")}>
-            {v.label}
-            {/* A zero is worth printing while a filter is on: "Done 0" is the
-                answer to "is there any of Kim's in there", and a bare pill
-                would read as a tab nobody has counted. */}
-            {(v.n > 0 || filtering) && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}<span className="sr-only"> projects</span></span>}
-          </button>
-        ))}
+        {/* ON A PHONE (Jordan, Oct 19 2026: "make sure the editing room UI is
+            mobile friendly"): the three views share one row in short words,
+            and Filters gets the row under them, instead of the pills wrapping
+            and Filters floating on a line of its own. */}
+        <div className="grid w-full grid-cols-3 gap-1.5 sm:flex sm:w-auto sm:flex-wrap">
+          {VIEWS.map((v) => (
+            <button key={v.key} type="button" aria-pressed={view === v.key} onClick={() => updateFilters({ view: v.key })}
+              className={cn("inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-lg px-1.5 py-1.5 text-sm font-medium sm:px-3",
+                view === v.key ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2")}>
+              <span className="sm:hidden">{v.short}</span><span className="hidden sm:inline">{v.label}</span>
+              {/* A zero is worth printing while a filter is on: "Done 0" is the
+                  answer to "is there any of Kim's in there", and a bare pill
+                  would read as a tab nobody has counted. */}
+              {(v.n > 0 || filtering) && <span className={cn("ml-1 rounded-full px-1.5 text-xs font-semibold sm:ml-1.5", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}<span className="sr-only"> projects</span></span>}
+            </button>
+          ))}
+        </div>
         {/* Not pills: the editor list grows, the due list is four words long,
             and either as a row of buttons would compete with the views for the
             eye. Both sit right-aligned together; the Editor one is hidden on an
@@ -777,8 +788,9 @@ export function SimpleQueue({
           aria-expanded={filtersOpen}
           aria-controls="editing-queue-filters"
           onClick={() => setFiltersOpen((o) => !o)}
-          className={cn("ml-auto min-h-11 rounded-lg border px-3 py-1.5 text-sm font-medium sm:hidden", filtering ? "border-brand text-brand" : "border-border text-muted")}
+          className={cn("inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium sm:hidden", filtering ? "border-brand text-brand" : "border-border text-muted")}
         >
+          <SlidersHorizontal aria-hidden className="size-4" />
           {filtering ? `Filters · ${[who !== null, when !== "any", stage !== "all"].filter(Boolean).length} on` : "Filters"}
         </button>
         <div id="editing-queue-filters" className={cn("w-full flex-wrap items-center gap-x-3 gap-y-1.5 sm:ml-auto sm:flex sm:w-auto", filtersOpen ? "flex" : "hidden")}>
@@ -871,19 +883,21 @@ export function SimpleQueue({
                     onClick={() => { rememberQueueScroll(queueHref); router.push(jobHref(r.id)); }}
                     // No row-wide tooltip: it followed the cursor across every
                     // cell and sat on top of the controls underneath it.
-                    className="block cursor-pointer rounded-2xl border border-border bg-surface p-3 align-middle hover:bg-surface-2/50 lg:table-row lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
+                    // Below lg the row is a card: a two-column grid, so the
+                    // due date and the editor share one line (Oct 19 2026).
+                    className="grid cursor-pointer grid-cols-2 gap-x-3 rounded-2xl border border-border bg-surface p-3 align-middle hover:bg-surface-2/50 lg:table-row lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
                   >
                     {/* min-w-52, up from 44: the copy glyph took the width the
                         address used to have, and streets like "2051 Old
                         Sumneytown Pike" started wrapping onto a second line —
                         every row a little taller, which is the opposite of
                         what Jordan asked for. */}
-                    <td className="block min-w-0 px-0 py-1 lg:table-cell lg:min-w-52 lg:px-3 lg:py-2">
+                    <td className="col-span-2 block min-w-0 px-0 py-1 lg:table-cell lg:min-w-52 lg:px-3 lg:py-2">
                       <span className="flex items-start gap-1.5">
                         {/* A real link under the row click, so cmd/middle-click
                             opens the edit page in a new tab. */}
                         <Link href={jobHref(r.id)} onClick={(e) => { swallow(e); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) rememberQueueScroll(queueHref); }} title="Open the edit page" className="block min-w-0 flex-1">
-                          <span className="block text-sm font-semibold lg:truncate" title={r.street}>{r.street}</span>
+                          <span className="block text-sm font-semibold lg:truncate" title={r.street}>{rowName(r)}</span>
                           {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
                               and shrink-0, so the cell stays the height of the
                               Video-type cell beside it — the row doesn't grow. */}
@@ -914,8 +928,7 @@ export function SimpleQueue({
                         </Link>
                       </span>
                     </td>
-                    <td className="block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 lg:[&_button]:min-h-7 lg:[&_button]:min-w-0 lg:table-cell lg:border-0 lg:px-3 lg:py-2 " onClick={swallow}>
-                      <span className="mb-1 block text-xs font-medium text-muted lg:hidden">Stage</span>
+                    <td className="col-span-2 mt-2 block border-t border-border px-0 pt-3 pb-1 [&_button]:min-h-11 [&_button]:min-w-11 lg:[&_button]:min-h-7 lg:[&_button]:min-w-0 lg:mt-0 lg:table-cell lg:border-0 lg:px-3 lg:py-2 " onClick={swallow}>
                       <span className="flex min-w-0 flex-wrap items-start gap-1">
                         {view === "upcoming" ? (
                           // An Upcoming row reads Waiting — unless the office
@@ -1004,18 +1017,19 @@ export function SimpleQueue({
                           screen was the confusion. */}
                     </td>
                     <td
-                      className={cn("block px-0 py-1 text-sm font-medium lg:text-xs lg:table-cell lg:whitespace-nowrap lg:px-3 lg:py-2", r.late ? "text-danger" : "")}
+                      className={cn("block min-w-0 px-0 py-1 text-sm font-medium lg:text-xs lg:table-cell lg:whitespace-nowrap lg:px-3 lg:py-2", hideEditor && "col-span-2", r.late ? "text-danger" : "")}
                       // An office-set due says so on hover, with what the hub
                       // would have said.
                       title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
                     >
-                      <span className="mr-2 text-muted lg:hidden">{view === "upcoming" ? "Shoot" : "Due"}</span>
-                      {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
+                      <span className="block text-xs font-medium text-muted lg:hidden">{view === "upcoming" ? "Shoot" : "Due"}</span>
+                      {/* As tall as the editor picker beside it on a phone, so the two line up. */}
+                      <span className="flex min-h-11 items-center lg:inline lg:min-h-0">{view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}</span>
                       {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
                     </td>
                     {!hideEditor && (
-                      <td className="block px-0 py-1 lg:table-cell lg:whitespace-nowrap lg:px-3 lg:py-2" onClick={swallow}>
-                        <span className="mr-2 text-xs font-medium text-muted lg:hidden">Editor</span>
+                      <td className="block min-w-0 px-0 py-1 lg:table-cell lg:whitespace-nowrap lg:px-3 lg:py-2" onClick={swallow}>
+                        <span className="block text-xs font-medium text-muted lg:hidden">Editor</span>
                         {view === "done" ? (
                           // Delivered = credit, not live work — no reassign here
                           // (the server refuses too). A new cut on a finished
@@ -1027,14 +1041,14 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td className="block px-0 py-2 lg:table-cell lg:px-3 lg:py-2" onClick={swallow}><div className="flex flex-wrap items-center gap-0.5 lg:flex-nowrap">
+                    <td className="col-span-2 block px-0 py-2 lg:table-cell lg:px-3 lg:py-2" onClick={swallow}><div className="flex flex-wrap items-center gap-1 lg:flex-nowrap lg:gap-0.5">
                           {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="Raw" dot={r.rawCount > 0}
                             title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"} />}
                           {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" dot={r.finalCount > 0}
                             title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"} />}
                       <Link href={jobHref(r.id)} onClick={() => rememberQueueScroll(queueHref)}
                         title="Open editing brief" className={cn(
-                          "inline-flex min-h-11 items-center justify-center rounded-md border px-3 py-2 text-sm font-medium lg:min-h-8 lg:px-2 lg:py-1 lg:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                          "inline-flex min-h-11 flex-1 items-center justify-center rounded-md border px-3 py-2 text-sm font-medium lg:min-h-8 lg:flex-none lg:px-2 lg:py-1 lg:text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                           hideEditor && view === "notdone" && editorCanMove(r) ? "border-brand-action bg-brand-action text-white hover:opacity-90" : "border-border bg-surface hover:bg-surface-2",
                         )}>
                         {hideEditor ? editorNextAction(r, view) : "Open"}

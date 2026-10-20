@@ -455,7 +455,7 @@ async function main() {
     c.ok("office row: today's evidence is ON the row with its not-a-Start title", /Kim wrote a note · \d/.test(text(qh)) && qh.includes('title="Today&#x27;s activity — not a Start. Only Start and Pause say someone is working."'), text(qh).match(/Kim [a-z ]+· \d+:\d+[ap]m/)?.[0] ?? text(qh).slice(0, 300));
     c.ok("office row: the kind of video is visible beside the count ('Standard · 1 video')", /Standard · 1 video/.test(text(qh)));
     const filterClass = qh.match(/id="editing-queue-filters" class="([^"]*)"/)?.[1] ?? "";
-    c.ok("filters fold behind one 'Filters' button on a phone", /<button[^>]*aria-controls="editing-queue-filters"[^>]*>Filters<\/button>/.test(qh) && /(^| )hidden( |$)/.test(filterClass) && /(^| )sm:flex( |$)/.test(filterClass) && /sm:hidden/.test(qh.match(/<button[^>]*aria-controls="editing-queue-filters"[^>]*>/)?.[0] ?? ""), filterClass);
+    c.ok("filters fold behind one 'Filters' button on a phone", /<button[^>]*aria-controls="editing-queue-filters"[^>]*>(?:<svg[\s\S]*?<\/svg>)?Filters<\/button>/.test(qh) && /(^| )hidden( |$)/.test(filterClass) && /(^| )sm:flex( |$)/.test(filterClass) && /sm:hidden/.test(qh.match(/<button[^>]*aria-controls="editing-queue-filters"[^>]*>/)?.[0] ?? ""), filterClass);
     await signIn(kim);
     const editorTree = await editing({ searchParams: Promise.resolve({}) });
     const own = find(editorTree, "SimpleQueue")[0];

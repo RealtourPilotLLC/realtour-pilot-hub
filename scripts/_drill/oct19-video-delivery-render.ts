@@ -110,7 +110,7 @@ async function main() {
 
     c.head("2 · what it says");
     c.ok("the header: Video Review Room, to review, ready to send, with editors (late)", /Video Review Room/.test(t) && /\d+ to review · \d+ ready to send · \d+ with editors \(\d+ late\)/.test(t), t.slice(0, 300));
-    c.ok("the late video is under With the editors, first, with how late", /With the editors \d+, \d+ late 1 Late Lane/.test(t) && /Late by \d+ h/.test(t), (t.match(/With the editors .{0,200}/) ?? [""])[0]);
+    c.ok("the late video is under With the editors, first, with how late", /With the editors \d+, \d+ late (?:Open the Editing Room )?1 Late Lane/.test(t) && /Late by \d+ h/.test(t), (t.match(/With the editors .{0,200}/) ?? [""])[0]);
     c.ok("a started run shows its three steps and its own words", /3 Sending St/.test(t) && /Uploading On the listing Sent/.test(t) && /Sending the 1080p file to Aryeo: 10 of 23 parts/.test(t) && /aria-current="step"[^>]*>Uploading</.test(owner));
     c.ok("a held run says why, under Held", /Held \(\d+\).*4 Held Ct/.test(t) && /Sound check held this file: this video has no sound/.test(t));
     c.ok("a run the hub will not send says so, with the hand path open", /5 By Hand Rd/.test(t) && /never checked, so the hub does not send it on its own/.test(t) && /Done it by hand\?/.test(t));

@@ -274,7 +274,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
         // you put it), so the guide can sit beside the queue while working.
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Link href={scopeToggleHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>
+            <Link href={scopeToggleHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"><span className="sm:hidden">{includeTest ? "Hide tests" : "Show tests"}</span><span className="hidden sm:inline">{includeTest ? "Hide test records" : "Show test records"}</span></Link>
             <MessagesButton unread={unread} />
             <FloatingStyleGuide />
           </div>

@@ -56,6 +56,13 @@ export function FloatingStyleGuide() {
     } catch { /* corrupt store → defaults */ }
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    // A phone has no room beside the queue (Oct 19 2026): the guide opens over
+    // the whole screen there, whatever a desktop drag stored.
+    if (vw < 640) {
+      setWin({ x: 8, y: 8, w: vw - 16, h: vh - 16 });
+      setOpen(true);
+      return;
+    }
     const w = Math.min(460, vw - 24);
     const h = Math.min(640, vh - 24);
     // Default: docked to the right, vertically centered — next to the queue.
@@ -104,7 +111,7 @@ export function FloatingStyleGuide() {
       <button
         onClick={() => (open ? setOpen(false) : openWindow())}
         title="Pop up the Video Style Guide — drag it wherever you want"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-foreground/80 hover:bg-surface-2 hover:text-foreground"
+        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-foreground/80 hover:bg-surface-2 hover:text-foreground"
       >
         <Clapperboard className="size-4 text-brand" />
         Style Guide
@@ -139,7 +146,7 @@ export function FloatingStyleGuide() {
                 rel="noopener noreferrer"
                 title="Open the full Style Guide page"
                 onPointerDown={(e) => e.stopPropagation()}
-                className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground"
+                className="flex size-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground sm:size-7"
               >
                 <ExternalLink className="size-3.5" />
               </a>
@@ -147,7 +154,7 @@ export function FloatingStyleGuide() {
                 onClick={() => setOpen(false)}
                 onPointerDown={(e) => e.stopPropagation()}
                 title="Close"
-                className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground"
+                className="flex size-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground sm:size-7"
               >
                 <X className="size-4" />
               </button>

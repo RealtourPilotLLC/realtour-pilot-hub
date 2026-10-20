@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { canAccess, homeFor } from "@/lib/auth/access";
 import { getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
 import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { CutRow, Holder, RowHead, ago, linkCls, type CutDue } from "@/components/review/ReviewRoomParts";
@@ -345,6 +345,9 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
       })
     : new Map<string, RemindState>();
 
+  // The Editing Room shortcut: anyone whose login opens that page (with
+  // sign-in switched off, everyone).
+  const showEditingRoom = me ? canAccess(me, "editing") : !authEnforced();
   const subtitle = [
     `${q.pending.length} to review`,
     board ? `${ready.length} ready to send` : null,
@@ -358,7 +361,18 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
 
   return (
     <div>
-      <PageHeader eyebrow="Video" title="Video Review Room" subtitle={subtitle} />
+      <PageHeader
+        eyebrow="Video"
+        title="Video Review Room"
+        subtitle={subtitle}
+        // The way over to the editors' side (Jordan, Oct 19 2026: "add a
+        // shortcut to the editing room in the Video page").
+        actions={showEditingRoom ? (
+          <Link href="/editing" prefetch={false} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+            <Clapperboard aria-hidden className="size-4 text-brand" /> Editing Room
+          </Link>
+        ) : undefined}
+      />
 
       <div className="space-y-6 p-4 sm:p-6">
         {moving && <AutoRefresh active />}
@@ -451,7 +465,13 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
         )}
 
         {/* ————— 3 · WITH THE EDITORS ————— */}
-        <Section icon={Hourglass} title="With the editors" count={editorsLate ? `${editors.length}, ${editorsLate} late` : editors.length} flush>
+        <Section
+          icon={Hourglass}
+          title="With the editors"
+          count={editorsLate ? `${editors.length}, ${editorsLate} late` : editors.length}
+          action={showEditingRoom ? <Link href="/editing" prefetch={false} className={linkCls}>Open the Editing Room</Link> : undefined}
+          flush
+        >
           {editors.length ? (
             <>
               <ul className="divide-y divide-border">{editors.slice(0, EDITORS_SHOWN).map(editorRow)}</ul>

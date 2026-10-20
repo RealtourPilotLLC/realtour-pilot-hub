@@ -67,7 +67,7 @@ function dayLabel(iso: string): string {
 // The reusable chat box (header + bottom-up messages + composer). Used on both
 // the Communications page and embedded on the client detail page.
 export function ChatPanel({
-  toPhone, title, items, client, members, banner, heightClass = "h-[calc(100vh-9rem)]",
+  toPhone, title, items, client, members, banner, heightClass = "h-[calc(100dvh-9rem)]",
 }: {
   toPhone: string; title: string; items: ChatItem[]; client: ConvoClient; members?: ChatMember[];
   banner?: string | null; heightClass?: string;
