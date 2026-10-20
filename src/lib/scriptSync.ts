@@ -236,13 +236,21 @@ export async function hubJobFor(data: Pick<StudioProject, "id" | "external_id" |
 // happening: read every run whatever updated_at says.
 const SHOOT_WINDOW_MS = 3 * 24 * 3600_000;
 const WINDOW_REREAD_MS = 10 * 60_000;
+// Every matched project at least once a day. The platform's updated_at does
+// NOT move when a new script version is saved (an on-site edit, a Revise, a
+// client-requested revision: confirmed by the scripting session, Oct 20 2026;
+// their fix a3757ab waits on Jordan's deploy OK), so an on-site edit to a job
+// outside the shoot window would otherwise wait for a webhook that may have
+// failed. ~83 reads a day, spread by the per-run cap. Once updated_since is
+// live, the reconcile switches to it (they will say).
+const DAILY_REREAD_MS = 24 * 3600_000;
 
 /**
  * EVERY 15 MINUTES (cron/aryeo). One list call (every platform project, with
  * its updated_at), then a detail read for each project matched to a hub job
- * that changed since our last read, was never read, or shoots within three
- * days (an on-site change may not move updated_at). `all` reads every matched
- * project (the backfill).
+ * that changed since our last read, was never read, shoots within three days,
+ * or was last read a day ago (a new script version does not move updated_at
+ * yet). `all` reads every matched project (the backfill).
  */
 export async function reconcileScripting(opts: { max?: number; budgetMs?: number; all?: boolean; now?: Date } = {}): Promise<{ listed: number; matched: number; read: number; workingChanged: number; currentChanged: number; errors: number; skipped?: string }> {
   const out = { listed: 0, matched: 0, read: 0, workingChanged: 0, currentChanged: 0, errors: 0 };
@@ -269,7 +277,8 @@ export async function reconcileScripting(opts: { max?: number; budgetMs?: number
     const changed = !job.scriptingUpdatedAt || updated == null || job.scriptingUpdatedAt.getTime() !== updated;
     const appt = s.appointment_date ? new Date(s.appointment_date).getTime() : null;
     const inWindow = appt != null && Math.abs(appt - now.getTime()) <= SHOOT_WINDOW_MS && (!job.scriptingSyncedAt || now.getTime() - job.scriptingSyncedAt.getTime() >= WINDOW_REREAD_MS);
-    if (opts.all || changed || inWindow) due.push({ studio: s, job, rank: changed ? 0 : 1 });
+    const daily = !job.scriptingSyncedAt || now.getTime() - job.scriptingSyncedAt.getTime() >= DAILY_REREAD_MS;
+    if (opts.all || changed || inWindow || daily) due.push({ studio: s, job, rank: changed ? 0 : inWindow ? 1 : 2 });
   }
   due.sort((a, b) => a.rank - b.rank || (b.studio.updated_at ?? "").localeCompare(a.studio.updated_at ?? ""));
   for (const d of due.slice(0, max)) {

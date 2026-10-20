@@ -199,6 +199,11 @@ async function main() {
     await prisma.project.update({ where: { id: ridley.id }, data: { scriptingSyncedAt: new Date(Date.now() - 20 * 60_000) } });
     const windowed = await sync.reconcileScripting();
     c.ok("a shoot within three days is re-read every run whatever updated_at says", windowed.read === 1, JSON.stringify(windowed));
+    // The platform's updated_at does not move on a new script version (yet):
+    // every matched project is re-read at least once a day.
+    await prisma.project.update({ where: { id: other.id }, data: { scriptingSyncedAt: new Date(Date.now() - 25 * 3600_000) } });
+    const daily = await sync.reconcileScripting();
+    c.ok("a project last read a day ago is re-read whatever updated_at says", daily.read === 1 && (await job(other.id)).scriptingSyncedAt!.getTime() > Date.now() - 60_000, JSON.stringify(daily));
 
     // ======================================================================
     c.head("10 · the card");
