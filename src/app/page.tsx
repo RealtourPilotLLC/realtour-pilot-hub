@@ -28,6 +28,8 @@ import { emptyExceptionBoard, opsExceptionsBoard, type ExceptionKind, type OpsEx
 import { BehindLine } from "@/components/home/Checklist";
 import { HealthStrip, KylesDayCard, NeedsAttention, ShootsInProgress, type Doors } from "@/components/home/Dashboard";
 import { TodaysShoots } from "@/components/home/TodaysShoots";
+import { ScriptsToWriteCard } from "@/components/home/ScriptsToWriteCard";
+import { scriptsToWrite, type ScriptsToWrite } from "@/lib/scriptsToWrite";
 
 export const dynamic = "force-dynamic";
 
@@ -148,6 +150,11 @@ async function OwnerBusiness({ ownerP, radarP, includeTest }: { ownerP: Promise<
   );
 }
 
+// SCRIPTS TO WRITE (Oct 20 2026): Jordan's and the creative manager's.
+async function ScriptsSection({ scriptsP }: { scriptsP: Promise<ScriptsToWrite | null> }) {
+  return <ScriptsToWriteCard data={await scriptsP} />;
+}
+
 async function OwnerWeekSection({ weekP }: { weekP: Promise<OwnerWeek | null> }) {
   return <OwnerWeekCard week={await weekP} />;
 }
@@ -223,6 +230,13 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     .catch((e: unknown) => { console.warn("kyleDay failed", (e as Error).message); return null; });
   const weekP = isOwner ? ownerWeek(now, scope).catch((e: unknown) => { console.warn("ownerWeek failed", (e as Error).message); return null; }) : null;
   const issuesP = isOwner ? ownerShootIssues(now).catch(() => null) : null;
+  // Jordan and the creative manager (Jordan, Oct 20 2026) see the scripts still owed.
+  const creativeManager = !isOwner && !!me?.teamMemberId
+    ? !!(await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { creativeManager: true } }).catch(() => null))?.creativeManager
+    : false;
+  const scriptsP: Promise<ScriptsToWrite | null> | null = isOwner || creativeManager
+    ? scriptsToWrite({ now, excludeClientIds: excludedClientIds }).catch((e: unknown) => { console.warn("scriptsToWrite failed", (e as Error).message); return null; })
+    : null;
   const caughtP: Promise<OpsExceptionBoard> = opsExceptionsBoard({ now, includeTest }).catch((e: unknown) => {
     console.warn("exceptions board failed", (e as Error).message);
     return { ...emptyExceptionBoard(), unavailable: true };
@@ -284,6 +298,11 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             <Suspense fallback={<SectionLoading label={`Reading ${ops.name}’s day…`} />}>
               <KylesDaySection dayP={dayP} includeTest={includeTest} doors={doors} />
             </Suspense>
+            {scriptsP && (
+              <Suspense fallback={<SectionLoading label="Reading the scripts still owed…" />}>
+                <ScriptsSection scriptsP={scriptsP} />
+              </Suspense>
+            )}
             {issuesP && (
               <Suspense fallback={<SectionLoading label="Reading shoot issues…" />}>
                 <OwnerShootIssues issuesP={issuesP} />
