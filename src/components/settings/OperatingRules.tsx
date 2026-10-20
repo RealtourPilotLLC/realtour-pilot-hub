@@ -137,6 +137,7 @@ const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; fi
   eveningPush: { words: "the 6 PM wrap, Monday to Saturday", files: ["src/lib/eveningPush.ts"] },
   photographerBrief: { words: "the 6 PM shoot briefs for tomorrow", files: ["src/lib/eveningPush.ts"] },
   shootDayText: { words: "the shoot start check, every 5 minutes", files: ["src/lib/shootDayText.ts"] },
+  uploadGap: { words: "the upload check, every 5 minutes (each job at most every 15)", files: ["src/lib/uploadGaps.ts"] },
   promiseWatch: { words: "the promise check, every 5 minutes", files: ["src/lib/promiseWatch.ts"] },
   coverage: { words: "the client-reply pager, the late-photos alert and the review cover clock", files: ["src/lib/coverage.ts"] },
 };
@@ -358,6 +359,15 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           <ReadBy k="shootDayText" />
         </div>
         <Toggle on={r.shootDayText.enabled} onChange={(v) => set({ shootDayText: { enabled: v } })} label="Special requests at the shoot" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Missing from the upload</p>
+          <p className="text-[13px] text-muted">Checks each shoot&rsquo;s Dropbox upload against what was ordered. When it is sure something is missing, the creative gets one text from the company line, Kyle gets a bell and the photo delivery check stays open until the files land. Sure means: drone photos in but not one ground photo, and nothing new for an hour; or the creative handed that part in on the upload page and there is nothing. Floor plans and 3D tours are not checked.</p>
+          <ReadBy k="uploadGap" />
+        </div>
+        <Toggle on={r.uploadGap.enabled} onChange={(v) => set({ uploadGap: { enabled: v } })} label="Missing from the upload" />
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">

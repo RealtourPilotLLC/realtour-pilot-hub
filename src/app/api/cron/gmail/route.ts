@@ -123,6 +123,18 @@ export async function GET(req: NextRequest) {
           }
           return true;
         }
+        // An upload-gap text (lib/uploadGaps) answers to its own switch the same way.
+        if (kind === "upload_gap") {
+          if (!switchOn.has("uploadGap")) {
+            const { internalAlertRules } = await import("@/lib/settings");
+            switchOn.set("uploadGap", await internalAlertRules().then((r) => r.uploadGap.enabled).catch(() => false));
+          }
+          if (!switchOn.get("uploadGap")) {
+            switchedOff.push("upload_gap: Missing from the upload is off");
+            return false;
+          }
+          return true;
+        }
         if (!isClientKind(kind)) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
         if (!windowOpen) return false;
@@ -151,7 +163,9 @@ export async function GET(req: NextRequest) {
             ? await import("@/lib/clientOnboarding").then(({ recordOnboardingOutboxSend }) => recordOnboardingOutboxSend(row, "recovered"))
             : kind === "shoot_day"
               ? await import("@/lib/shootDayText").then(({ recordDrainedShootDayText }) => recordDrainedShootDayText(row, providerId))
-              : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
+              : kind === "upload_gap"
+                ? await import("@/lib/uploadGaps").then(({ recordDrainedUploadGapText }) => recordDrainedUploadGapText(row))
+                : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
         if (note) recovered.push(note);
       },
     });
@@ -197,6 +211,16 @@ export async function GET(req: NextRequest) {
     const { sweepShootDayTexts } = await import("@/lib/shootDayText");
     return sweepShootDayTexts();
   }, { maxMs: 20_000 });
+
+  // MISSING FROM THE UPLOAD (Oct 19 2026, lib/uploadGaps): a job shot in the
+  // last three days whose Dropbox upload is missing part of the order (only
+  // drone photos, no ground photos) texts its creative once per gap, bells the
+  // office and holds the photo delivery check. Each job's folders are read at
+  // most every 15 minutes. Its own Settings switch.
+  await step("uploadGaps", async () => {
+    const { sweepUploadGaps } = await import("@/lib/uploadGaps");
+    return sweepUploadGaps();
+  }, { maxMs: 40_000 });
 
   // KYLE'S REMINDERS, AUTOMATED (Oct 14 2026 comms audit). All three are staff
   // messages only, each behind its own Settings switch (Internal alerts), each

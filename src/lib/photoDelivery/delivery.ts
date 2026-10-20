@@ -33,7 +33,7 @@ export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boole
 
 export async function deliveryGate(jobId: string): Promise<GateResult> {
   const [job, settings] = await Promise.all([
-    prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, stage: true, lastQcRunId: true, finalsCount: true, coverageJson: true } }),
+    prisma.photoJob.findUnique({ where: { id: jobId }, select: { id: true, projectId: true, stage: true, lastQcRunId: true, finalsCount: true, coverageJson: true } }),
     photoDeliverySettings(),
   ]);
   if (!job) throw new Error("Photo job not found.");
@@ -72,6 +72,10 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // have looked at THIS set of photos (coverage.ts), so the same-day
     // automatic delivery never goes out before it.
     ...(await roomsCheck(settings.freeCoverage && settings.freeCheck, lastRun, job.coverageJson, photos.map((p) => p.id))),
+    // Oct 19 2026 (lib/uploadGaps): the shoot's upload is missing part of the
+    // order, e.g. only drone photos came in. Delivering the edits of half a
+    // shoot is the one thing this gate must not wave through.
+    ...(await uploadCheck(job.projectId)),
   ];
   const passed = checks.every((c) => c.ok);
   // The house setting decides (audit, Oct 15): a job's own qcShadow only records
@@ -86,6 +90,13 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     overrideAllowed: !privacyOrWrong,
     blockedForOverride: privacyOrWrong ? "A privacy or wrong-property issue is open. That one has to be resolved, not overridden." : null,
   };
+}
+
+async function uploadCheck(projectId: string | null): Promise<GateCheck[]> {
+  if (!projectId) return [];
+  const { openPhotoGaps } = await import("@/lib/uploadGaps");
+  const gaps = await openPhotoGaps(projectId).catch(() => null);
+  return gaps ? [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: gaps.words }] : [];
 }
 
 async function roomsCheck(on: boolean, run: { trigger: string; checksJson: string | null } | null, coverageJson: string | null, activeIds: string[]): Promise<GateCheck[]> {

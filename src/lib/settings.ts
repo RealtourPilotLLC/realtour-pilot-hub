@@ -536,6 +536,10 @@ export type InternalAlertRules = {
   /** At a shoot's start time, one text to its creative(s) with the job's
    *  special requests (Oct 19 2026, lib/shootDayText). Nothing to say, no text. */
   shootDayText: { enabled: boolean };
+  /** A shoot's Dropbox upload is missing part of the order (only drone
+   *  photos, no ground photos): its creative gets one text per gap (Oct 19
+   *  2026, lib/uploadGaps). */
+  uploadGap: { enabled: boolean };
   /** Kyle's Slack 3 covered hours before a job's promise, with a drafted client update. */
   promiseWatch: { enabled: boolean };
   /**
@@ -577,6 +581,7 @@ export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
   eveningPush: { enabled: true },
   photographerBrief: { enabled: true },
   shootDayText: { enabled: true },
+  uploadGap: { enabled: true },
   promiseWatch: { enabled: true },
   coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null },
 };
@@ -620,6 +625,8 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
     photographerBrief: { enabled: r.photographerBrief?.enabled !== false },
     // A row saved before Oct 19 2026 has no shootDayText: missing reads as ON.
     shootDayText: { enabled: r.shootDayText?.enabled !== false },
+    // A row saved before Oct 19 2026 has no uploadGap: missing reads as ON.
+    uploadGap: { enabled: r.uploadGap?.enabled !== false },
     promiseWatch: { enabled: r.promiseWatch?.enabled !== false },
     coverage,
   };
