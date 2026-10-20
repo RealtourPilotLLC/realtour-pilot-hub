@@ -230,7 +230,7 @@ export function cadenceLabel(j: Pick<CronJobHealth, "firingsPerDay" | "cadenceMs
   if (!j.firingsPerDay || !j.cadenceMs) return "not scheduled";
   if (j.firingsPerDay >= 24) {
     const mins = Math.round(1440 / j.firingsPerDay);
-    return mins === 60 ? "hourly" : `every ${mins} min`;
+    return mins === 60 ? "hourly" : mins === 1 ? "every minute" : `every ${mins} min`;
   }
   return j.firingsPerDay === 1 ? "daily" : `${j.firingsPerDay}× a day`;
 }

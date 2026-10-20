@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 // ---------------------------------------------------------------------------
-// THE 1080p LANE (every 5 minutes — see vercel.json).
+// THE 1080p LANE (every minute since Oct 19 2026 — see vercel.json).
 //
 // This is the driver for src/lib/topazJobs.ts: it claims a few jobs, moves each
 // one step, and goes away. It does NOT try to finish anything. A render takes
@@ -19,6 +19,12 @@ export const maxDuration = 300;
 // untouched until 10:00 before the upload even started. Five minutes keeps the
 // whole pass — estimate, upload, render, file, ping Kyle — inside the window
 // where he is still thinking about that job.
+//
+// EVERY MINUTE, NOT FIVE (Oct 19 2026, Jordan: "why is it taking so long to
+// send the videos to Topaz?"). One step per tick at five-minute ticks made the
+// median approve-to-filed time 28 minutes, about 6 of them real work (the
+// estimate, the upload, Topaz's render, the Dropbox copy) and the rest waiting
+// for the next tick. A tick with nothing to move does two reads and returns.
 //
 // It is SAFE for this and the hourly sync's own topaz step to run at the same
 // time: every row is claimed by a compare-and-swap lease, so two ticks each get

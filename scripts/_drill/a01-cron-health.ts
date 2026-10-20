@@ -120,7 +120,8 @@ async function main() {
   });
   c.ok("each scheduled route records under the job name the health reader expects", mismatched.length === 0, mismatched.map((e) => e.path).join(", ") || exp.map((e) => e.job).join(" "));
   const cad = Object.fromEntries(exp.map((e) => [e.job, e]));
-  c.ok("gmail and topaz: every 5 min", cad.gmail?.cadenceMs === 5 * 60_000 && cad.topaz?.cadenceMs === 5 * 60_000 && cadenceLabel(cad.gmail) === "every 5 min");
+  // Oct 19 2026: topaz runs every minute (one step per tick; five-minute ticks made a render wait ~28 min).
+  c.ok("gmail every 5 min, topaz every minute", cad.gmail?.cadenceMs === 5 * 60_000 && cad.topaz?.cadenceMs === 60_000 && cadenceLabel(cad.gmail) === "every 5 min" && cadenceLabel(cad.topaz) === "every minute");
   c.ok("sync and reconcile: hourly", cad.sync?.cadenceMs === 3600_000 && cad.reconcile?.cadenceMs === 3600_000 && cadenceLabel(cad.sync) === "hourly");
   c.ok("the three daily jobs: 24 h", ["daily", "daily-clients", "daily-reconcile"].every((j) => cad[j]?.cadenceMs === 24 * 3600_000 && cadenceLabel(cad[j]) === "daily"));
   c.ok("evening: four firings a day, longest gap 20 h (03:00 → 23:00 UTC)", cad.evening?.firingsPerDay === 4 && cad.evening.cadenceMs === 20 * 3600_000, cadenceLabel(cad.evening));

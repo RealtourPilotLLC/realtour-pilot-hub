@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/topaz",
-      "schedule": "*/5 * * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/cron/photo-delivery",
