@@ -424,6 +424,33 @@ async function main() {
     c.ok("a call-drafted script still revises from its call excerpts", !!topicRevPrompt && /TOPIC-SPECIFIC EXCERPTS/.test(topicRevPrompt.prompt));
 
     // ======================================================================
+    c.head("8b · (Oct 20 2026, Marcee's Malvern video) one script per video: the written answers never make a second one");
+    {
+      const M = await buildContentMonth(db, { name: "One Script TEST", package: "Accelerator", monthKey: MONTH, topics: [{ title: "Why this town is underrated", selection: "SELECTED" }] });
+      await approveStrategy(M.enrollmentId, "One Script TEST");
+      const mActor = { clientUserId: M.clientUserId };
+      // The call path drafts the video first (what happened at 2:41:51 PM)…
+      judgeQueue.push("pass");
+      const fromCall = await gen.generateScriptForTopic({ topicId: M.topicIds[0], monthId: M.monthId, requestedBy: STAFF_EMAIL, unattended: false });
+      // …then the client's written answer arrives and the sweep reaches it.
+      const mIv = await ci.getOrCreateInterview(M.topicIds[0], M.monthId, mActor);
+      for (let i = 0; i < 20; i++) {
+        const st = await ci.interviewState(mIv);
+        if (st.next.kind === "done") break;
+        await ci.answerQuestion(mIv, st.nextKey!, { text: CANNED[st.nextKey!] ?? "The coffee shops and the train station along the main street.", kind: "TYPED", actor: mActor });
+      }
+      let refused = "";
+      try {
+        await gen.generateScriptFromInterview(mIv, STAFF_EMAIL, { onlyIfUnscripted: true });
+      } catch (e) { refused = (e as Error).name; }
+      const count = () => prisma.contentScript.count({ where: { topicId: M.topicIds[0], monthId: M.monthId, historical: false } });
+      c.ok("the sweep's written-answer draft stops: the video already has its script (AlreadyDraftedError)", refused === "AlreadyDraftedError" && (await count()) === 1, `${refused || "no error"} · ${await count()} script(s)`);
+      judgeQueue.push("pass");
+      const asked = await gen.generateScriptFromInterview(mIv, STAFF_EMAIL);
+      c.ok("a person's explicit draft from the answers becomes the NEXT VERSION of that script, not a second script", asked.scriptId === fromCall.scriptId && (await count()) === 1, `${asked.scriptId} vs ${fromCall.scriptId} · ${await count()} script(s)`);
+    }
+
+    // ======================================================================
     c.head("9 · the call's quotable lines and the month's priorities reach the script");
     const Q = await buildContentMonth(db, { name: "Quotable TEST", package: "Accelerator", monthKey: MONTH });
     await approveStrategy(Q.enrollmentId, "Quotable TEST");

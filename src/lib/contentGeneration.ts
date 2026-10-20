@@ -467,7 +467,15 @@ export async function generateScriptFromInterview(interviewId: string, requested
   try {
     const { parts, validation, gaps, angle } = partsFromGenerated(run.output, a.topic.pillarRef.pillarId, a.clientId, { skit: built.ctx.videoStyle === "SKITS" });
     if (!parts.title) parts.title = a.topic.title;
-    const existing = await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } });
+    // ONE SCRIPT PER VIDEO (Oct 20 2026, Marcee's Malvern video). This looked
+    // only for a script drafted from THESE answers, so the call path's script
+    // for the same topic, written 10 seconds earlier by a run holding a
+    // different key, went unseen and the video got two scripts. A script for
+    // this topic in this month counts too (assertUnscripted's own test): the
+    // sweep stops, and a person's explicit draft becomes its next version.
+    const existing =
+      (await prisma.contentScript.findFirst({ where: { interviewId }, select: { id: true, currentVersionId: true } })) ??
+      (a.topic.id ? await prisma.contentScript.findFirst({ where: { topicId: a.topic.id, monthId: a.monthId, historical: false }, orderBy: { createdAt: "asc" }, select: { id: true, currentVersionId: true } }) : null);
     if (existing && opts.onlyIfUnscripted) throw new AlreadyDraftedError(`"${a.topic.title}"`);
     await claimRunWrite(run.runId); // still this run's to write (see generateScriptForTopic)
     const r = await createScriptVersion({
