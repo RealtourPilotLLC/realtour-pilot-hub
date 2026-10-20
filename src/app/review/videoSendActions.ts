@@ -144,3 +144,35 @@ export async function remindVideoAction(input: { key: string; projectId: string;
     return failed("remind", e);
   }
 }
+
+/**
+ * SEND BACK FOR REVISIONS FROM READY TO SEND (Jordan, Oct 19 2026: "We also
+ * approved this one, but I learned from Kyle it wasn't ready yet and needs to
+ * be revised. Make sure I have a way to send back for revision / remove this
+ * from ready to send."). The same reopen the review screen's "Reopen for
+ * revisions" does (review/actions.requestCutChanges with reopen), which needs
+ * at least one note for the editor: the words typed here become that note
+ * (the editor lane, a fix). The video leaves Ready to send, the job goes back
+ * to revisions and the editor is told, as with any reopen.
+ */
+export async function sendBackForRevisionsAction(submissionId: string, projectId: string, note: string): Promise<SendResult> {
+  if (!ID.test(submissionId) || !ID.test(projectId)) return { ok: false, message: "That video wasn't found." };
+  const body = (note ?? "").trim().slice(0, 2000);
+  if (body.length < 3) return { ok: false, message: "Say what needs changing, so the editor knows what to fix." };
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, status: true } });
+  if (!sub || sub.projectId !== projectId) return { ok: false, message: "That video wasn't found." };
+  if (sub.status === "CHANGES_REQUESTED") return { ok: true, message: "It is already back with the editor." };
+  if (sub.status !== "APPROVED") return { ok: false, message: "Only an approved video can be sent back from here." };
+  const { addCutNote, requestCutChanges } = await import("@/app/review/actions");
+  const n = await addCutNote({ projectId, submissionId, body, lane: "EDITOR", kind: "fix", timeSec: null });
+  if (!n.ok) return { ok: false, message: n.message ?? "The note couldn't be saved." };
+  const r = await requestCutChanges(submissionId, { reopen: true });
+  revalidatePath("/review");
+  revalidatePath("/");
+  return { ok: r.ok, message: r.ok ? "Sent back to the editor. It's off Ready to send." : r.message };
+}

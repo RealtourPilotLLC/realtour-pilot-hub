@@ -1,3 +1,4 @@
+import { SendBack } from "@/components/videoDelivery/SendBack";
 import { requirePageAccess } from "@/lib/auth/guards";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -119,6 +120,7 @@ function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
       {!s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} />}
       {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} street={r.street} canRetry={false} canDeliverNow={p.canDeliverNow} canHold={false} canRelease={p.canRelease} />}
+      {!run && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
       <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={!!s.byHandWhy || (!!p?.canRetry && !p.canStart)}>
         <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Done it by hand?</summary>
         <div className="space-y-2 px-3 pb-3 text-sm">
