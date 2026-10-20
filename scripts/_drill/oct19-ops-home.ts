@@ -99,7 +99,7 @@ function propValues(tree: unknown, key: string): unknown[] {
   if (!isValidElement<Props>(tree)) return [];
   return [...(key in tree.props ? [tree.props[key]] : []), ...Object.values(tree.props).flatMap((part) => propValues(part, key))];
 }
-const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ScriptsSection"]);
+const STREAMED = new Set(["OwnerBusiness", "OwnerWeekSection", "OwnerShootIssues", "KylesDaySection", "TodaysShoots", "ContentActionsSection"]);
 async function settle(tree: unknown): Promise<unknown> {
   if (Array.isArray(tree)) return Promise.all(tree.map(settle));
   if (!isValidElement<Props>(tree)) return tree;
@@ -729,7 +729,7 @@ async function main() {
     for (const [who, u] of [["Jordan", owner], ["Kyle", kyle], ["James", james]] as const) {
       await signIn(u);
       const html = ssr(await settle(await home({})));
-      c.ok(`${who}'s dashboard: Scripts to write ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("Scripts to write") : html.includes("Scripts to write"));
+      c.ok(`${who}'s dashboard: Monthly content ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("data-content-actions") : html.includes("data-content-actions"));
       c.ok(`${who}'s dashboard renders (tiles, shoots in progress, needs attention, the list card), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && ["On time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"].every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > 8, html.slice(0, 200));
       c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
     }
