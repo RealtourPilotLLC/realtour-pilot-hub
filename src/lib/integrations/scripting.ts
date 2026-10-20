@@ -66,6 +66,9 @@ async function sc<T = unknown>(path: string, opts: { method?: string; body?: unk
 export type StudioProject = {
   id: string;
   external_id?: string | null;
+  aryeo_order_id?: string | null;
+  updated_at?: string | null;
+  appointment_date?: string | null;
   status?: string;
   client_name?: string;
   address?: string;
@@ -77,6 +80,8 @@ export type StudioProject = {
   script?: unknown;
   client_response?: unknown;
   intake?: unknown;
+  script_version?: unknown;
+  on_site_script?: unknown;
 };
 
 export type CreateStudioInput = {
@@ -124,6 +129,37 @@ export async function scriptingGetByExternalId(hubProjectId: string): Promise<St
 export async function scriptingListSince(sinceIso: string, limit = 100): Promise<StudioProject[]> {
   const r = await sc<{ projects?: StudioProject[] }>(`/projects?since=${encodeURIComponent(sinceIso)}&limit=${limit}`);
   return r.projects ?? [];
+}
+
+// Every project, newest first (the platform caps a page at 200; it held 83 on
+// Oct 20 2026). `since` filters on created_at, so a reconcile that must see
+// CHANGES to older projects reads the whole list and compares updated_at.
+export async function scriptingListAll(limit = 200): Promise<StudioProject[]> {
+  const r = await sc<{ projects?: StudioProject[] }>(`/projects?limit=${limit}`);
+  return r.projects ?? [];
+}
+
+/**
+ * Full detail for a hub job, however the platform knows it (Oct 20 2026).
+ * Most projects come from Aryeo bookings and carry only aryeo_order_id; the
+ * ones the hub created carry its id as external_id; a stored scripting id
+ * works for either. Tried in that order; a 404 moves to the next; null when
+ * the platform has no project for the job.
+ */
+export async function scriptingGetDetail(ref: { aryeoOrderId?: string | null; hubId?: string | null; scriptingId?: string | null }): Promise<StudioProject | null> {
+  const tries: string[] = [];
+  if (ref.aryeoOrderId) tries.push(`/projects/${encodeURIComponent(ref.aryeoOrderId)}?by=aryeo_order_id`);
+  if (ref.hubId) tries.push(`/projects/${encodeURIComponent(ref.hubId)}?by=external_id`);
+  if (ref.scriptingId) tries.push(`/projects/${encodeURIComponent(ref.scriptingId)}`);
+  for (const path of tries) {
+    try {
+      return unwrap(await sc<unknown>(path)) as StudioProject;
+    } catch (e) {
+      if (e instanceof ScriptingError && e.status === 404) continue;
+      throw e;
+    }
+  }
+  return null;
 }
 
 // --- Tolerant extraction (the exact nested shapes are confirmed against a live
@@ -174,6 +210,93 @@ export function studioBestLink(raw: StudioProject | unknown): string | null {
   const ready = READY_STATUSES.has(String(p.status ?? ""));
   // Once a script exists, the creative page shows it; before that, the intake form.
   return (ready ? creative || intake || admin : intake || creative || admin) || creative || intake || admin || null;
+}
+
+/**
+ * What the platform says the crew is shooting, and the versions around it
+ * (Oct 20 2026). The CREW script is `on_site_script` when the creative changed
+ * the released script on the shoot link (Edit or Revise with AI), else
+ * `script` (released to the creative, else delivered to the agent, else
+ * approved). A draft waiting on Jordan's review is never in the detail at all
+ * (`script` is null while only a draft exists): the hub shows it as a status.
+ */
+export type StudioSnapshot = {
+  studioId: string | null;
+  status: string | null;
+  updatedAt: Date | null;
+  url: string | null;
+  hook: string | null;
+  song: string | null;
+  crew: { text: string; version: number | null; at: Date | null; onSiteBy: string | null } | null;
+  /** The version the agent received, when the detail says so (its delivered_at). */
+  client: { version: number | null; sentAt: Date } | null;
+};
+
+function asDate(v: unknown): Date | null {
+  if (typeof v !== "string" || !v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function asInt(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : null;
+}
+
+export function studioSnapshot(raw: StudioProject | unknown): StudioSnapshot {
+  const p = unwrap(raw);
+  const onSite = p.on_site_script && typeof p.on_site_script === "object" ? (p.on_site_script as Record<string, unknown>) : null;
+  const script = p.script && typeof p.script === "object" ? (p.script as Record<string, unknown>) : null;
+  const sv = p.script_version && typeof p.script_version === "object" ? (p.script_version as Record<string, unknown>) : null;
+  const onSiteText = onSite ? firstString(onSite.raw) : null;
+  const scriptText = script ? firstString(script.raw) : typeof p.script === "string" ? firstString(p.script) : null;
+  const crew = onSiteText
+    ? { text: onSiteText, version: asInt(onSite!.version_number), at: asDate(onSite!.generated_at), onSiteBy: firstString(onSite!.edited_by) ?? "creative" }
+    : scriptText
+      ? { text: scriptText, version: asInt(sv?.version_number), at: asDate(sv?.delivered_at) ?? asDate(sv?.approved_at) ?? asDate(script?.generated_at), onSiteBy: null }
+      : null;
+  const crewSource = onSiteText ? onSite : script;
+  const firstOption = (o: Record<string, unknown> | null) => (o && Array.isArray(o.options) ? (o.options[0] as Record<string, unknown> | undefined) : undefined);
+  const hook = firstString(firstOption(crewSource)?.hook) ?? chosenHookText(p.hooks) ?? firstString(at(p, "script", "hook"));
+  const songLine = crew ? crew.text.match(/(?:^|\n)\s*(?:\*{0,2})song(?:\*{0,2})\s*[:\-–—]\s*(.+)/i)?.[1]?.trim() : null;
+  const song = firstString(crewSource?.song, at(p, "script", "song"), at(p, "intake", "answers", "song"), at(p, "intake", "answers", "music"), songLine);
+  const delivered = asDate(sv?.delivered_at);
+  return {
+    studioId: p.id ? String(p.id) : null,
+    status: p.status ? String(p.status) : null,
+    updatedAt: asDate(p.updated_at),
+    url: studioBestLink(p),
+    hook,
+    song,
+    crew,
+    client: delivered ? { version: asInt(sv?.version_number), sentAt: delivered } : null,
+  };
+}
+
+/**
+ * The snapshot an EVENT carries on its own, when it carries the crew script
+ * (Oct 20 2026): `project.script_updated` (the creative changed the script on
+ * the shoot link) and `project.updated` on a release to the creative. Saves a
+ * round trip inside the platform's 5-second webhook timeout. Null for every
+ * other event: those are read back with a GET.
+ */
+export function studioSnapshotFromEvent(event: string, data: StudioProject & Record<string, unknown>): StudioSnapshot | null {
+  const change = data.change && typeof data.change === "object" ? (data.change as Record<string, unknown>) : null;
+  const release = event === "project.updated" && change?.kind === "released_to_creative";
+  if (event !== "project.script_updated" && !release) return null;
+  const script = data.script && typeof data.script === "object" ? (data.script as Record<string, unknown>) : null;
+  const text = script ? firstString(script.raw) : null;
+  if (!text) return null;
+  const sv = data.script_version && typeof data.script_version === "object" ? (data.script_version as Record<string, unknown>) : null;
+  const opt = Array.isArray(script!.options) ? (script!.options[0] as Record<string, unknown> | undefined) : undefined;
+  return {
+    studioId: data.id ? String(data.id) : null,
+    status: data.status ? String(data.status) : null,
+    updatedAt: asDate(data.updated_at),
+    url: null,
+    hook: firstString(opt?.hook),
+    song: firstString(script!.song),
+    crew: { text, version: asInt(sv?.version_number), at: asDate(sv?.created_at) ?? asDate(script!.generated_at) ?? new Date(), onSiteBy: release ? null : firstString(change?.by) ?? "creative" },
+    client: null,
+  };
 }
 
 // Map a Studio detail → the fields we mirror into the reel recipe. Only returns

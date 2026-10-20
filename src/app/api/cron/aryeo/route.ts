@@ -26,6 +26,8 @@ export const maxDuration = 300;
 //                      3 a run, no new write with under 30 s left. Aryeo's
 //                      customer notifications stay OFF (notifyCustomer false),
 //                      exactly as before;
+//   · scripting      the scripting platform's reconcile: every job's current
+//                      script (lib/scriptSync.reconcileScripting, Oct 20 2026);
 //   · readyToSendAryeo  one Aryeo listing read per job on the Ready-to-send
 //                      card (at most 12): it files what the listing shows
 //                      (the card's evidence line) and runs the delivery proof
@@ -71,6 +73,15 @@ export async function GET(req: NextRequest) {
     const { sweepReadyToSendAgainstAryeo } = await import("@/lib/aryeoDelivery");
     return sweepReadyToSendAgainstAryeo({ max: 12, budgetMs: 25_000 });
   }, { maxMs: 30_000 });
+  // Oct 20 2026 (Jordan, via the scripting platform): every job's script kept
+  // current. The platform's webhooks are one try with a 5-second timeout, so
+  // this reads its project list (one call) and re-reads each job that changed,
+  // was never read, or shoots within three days (lib/scriptSync). Riding the
+  // 15-minute Aryeo job because an Aryeo booking is how most jobs are matched.
+  await step("scripting", async () => {
+    const { reconcileScripting } = await import("@/lib/scriptSync");
+    return reconcileScripting({ max: 30, budgetMs: 40_000 });
+  }, { maxMs: 45_000 });
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

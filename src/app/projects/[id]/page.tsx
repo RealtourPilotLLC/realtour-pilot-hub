@@ -34,7 +34,7 @@ import { projectBrief } from "@/lib/projectBrief";
 import { MergeWork } from "@/components/project/MergeWork";
 import { mergeFrom, mergedInto } from "@/lib/projectMerge";
 import { TaskCard } from "@/components/queue/TaskCard";
-import { ReelScriptCard } from "@/components/project/ReelScriptCard";
+import { ReelScriptCard, currentScriptOf } from "@/components/project/ReelScriptCard";
 import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { AppointmentManager } from "@/components/project/AppointmentManager";
@@ -410,6 +410,9 @@ export default async function ProjectPage({
             shotList={project.reelShotList}
             updatedAt={project.reelRecipeUpdatedAt ? project.reelRecipeUpdatedAt.toISOString() : null}
             studioUrl={project.scriptingUrl ?? project.reelScriptUrl}
+            current={currentScriptOf(project)}
+            recordNote={project.scriptConfirmNote}
+            showClientVersion
           />
 
           {/* Order gone from Aryeo — the one place a human decides. Automations

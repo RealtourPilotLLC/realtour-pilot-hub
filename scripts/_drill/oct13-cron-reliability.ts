@@ -160,7 +160,8 @@ async function main() {
     const body = (await res.json()) as Record<string, unknown> & { ms?: Record<string, number>; skipped?: string[] };
     const steps = Object.keys(body.ms ?? {});
     c.ok("200, ok", res.status === 200 && body.ok === true, `${res.status}`);
-    c.ok("its five steps ran, in order", steps.join() === "orders,appointments,sessionRequests,sessionBookings,readyToSendAryeo", steps.join());
+    // Oct 20 2026: the scripting platform's reconcile rides this job too.
+    c.ok("its six steps ran, in order", steps.join() === "orders,appointments,sessionRequests,sessionBookings,readyToSendAryeo,scripting", steps.join());
     c.ok("none skipped for budget, none errored", (body.skipped ?? []).length === 0 && !Object.keys(body).some((k) => k.endsWith("Error")), Object.keys(body).filter((k) => k.endsWith("Error")).map((k) => `${k}: ${String(body[k]).slice(0, 80)}`).join(" | ") || "clean");
     c.ok("session booking stays behind its switch (off → skipped, zero calls)", /session_booking is off/.test(JSON.stringify(body.sessionBookings)), JSON.stringify(body.sessionBookings).slice(0, 120));
     const run = await prisma.cronRun.findFirst({ where: { job: "aryeo" }, orderBy: { startedAt: "desc" } });

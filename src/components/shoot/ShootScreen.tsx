@@ -187,12 +187,15 @@ export function ShootScreen({
               song={project.reelSong}
               shotList={project.reelShotList}
               updatedAt={project.reelRecipeUpdatedAt}
+              current={project.currentScript ?? null}
+              recordNote={project.scriptConfirmNote}
             />
           ) : view.session ? null : (
             <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
-              <span className="font-semibold">No script yet.</span> This reel&rsquo;s script is written in Script
-              Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or
-              ask Jordan.
+              <span className="font-semibold">No script yet.</span>{" "}
+              {project.currentScript?.status && ["awaiting_review", "generating", "revising", "generating_hooks", "hooks_proposed", "approved"].includes(project.currentScript.status)
+                ? "It is written and waiting on review in Script Writing. It shows up here automatically once it is released to you; check back before you press record, or ask Jordan."
+                : <>This reel&rsquo;s script is written in Script Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or ask Jordan.</>}
             </div>
           ))}
         {isVideo && <AocPlaybookCard context="shoot" />}

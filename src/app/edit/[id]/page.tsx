@@ -22,7 +22,7 @@ import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, canViewProject } from "@/lib/auth/guards";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
-import { ReelScriptCard } from "@/components/project/ReelScriptCard";
+import { ReelScriptCard, currentScriptOf } from "@/components/project/ReelScriptCard";
 // Oct 5: the brief's own script block (no "(empty)" sections, one Copy), the
 // one-per-job "Got it", the Agent Profile and the live due countdown.
 import { BriefScript } from "@/components/editing/BriefScript";
@@ -2177,6 +2177,9 @@ export default async function EditBriefPage({
                     studioUrl={project.scriptingUrl ?? project.reelScriptUrl}
                     projectId={project.id}
                     canEdit={isOwnerAdmin}
+                    current={currentScriptOf(project)}
+                    recordNote={project.scriptConfirmNote}
+                    showClientVersion={isOwnerAdmin}
                   />
                 )}
               </div>

@@ -1,4 +1,5 @@
 import "server-only";
+import { currentScriptOf } from "@/lib/currentScript";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
@@ -149,6 +150,9 @@ export type ShootView = {
     reelShotList: string | null;
     reelScriptUrl: string | null;
     reelRecipeUpdatedAt: string | null;
+    /** Oct 20 2026: the scripting platform's current crew script and versions; where the working script came from. */
+    currentScript?: import("@/lib/currentScript").CurrentScript;
+    scriptConfirmNote: string | null;
     /**
      * A25 (Sep 25 2026): "Address change pending: <NEW> (not yet on the
      * booking)" while a content client's new exact address for this job's
@@ -330,6 +334,8 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       reelShotList: p.reelShotList,
       reelScriptUrl: p.reelScriptUrl,
       reelRecipeUpdatedAt: p.reelRecipeUpdatedAt?.toISOString() ?? null,
+      currentScript: currentScriptOf(p),
+      scriptConfirmNote: p.scriptConfirmNote,
       addressChangePending,
       contentSession: !!p.contentMonthId,
     },

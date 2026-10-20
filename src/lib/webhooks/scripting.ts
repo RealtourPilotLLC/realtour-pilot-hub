@@ -3,8 +3,9 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import {
   scriptingConfigured,
-  scriptingGetByExternalId,
-  studioToRecipe,
+  scriptingGetDetail,
+  studioSnapshot,
+  studioSnapshotFromEvent,
   studioBestLink,
   type StudioProject,
 } from "@/lib/integrations/scripting";
@@ -12,11 +13,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Receives Script Studio → hub webhooks (project.created, hooks_proposed,
-// script_generated, sent_to_client, client_responded, done, updated, deleted).
-// Verifies the HMAC signature when SCRIPTING_WEBHOOK_SECRET is set (must equal
-// HUB_WEBHOOK_SECRET on the Studio server). The webhook is the fast-path; we
-// re-fetch the authoritative project by external_id before mirroring anything.
+// Receives Script Studio → hub webhooks (project.created, intake_submitted,
+// hooks_proposed, script_generated, sent_to_client, client_responded, updated,
+// script_updated, done, deleted; any other event is recorded and mirrored the
+// same way). Verifies the HMAC signature when SCRIPTING_WEBHOOK_SECRET is set
+// (must equal HUB_WEBHOOK_SECRET on the Studio server). The webhook is the
+// fast path (best-effort on their side: one try, 5 s); the 15-minute
+// reconcile in lib/scriptSync is the safety net. Jobs are matched by Aryeo
+// order, then external_id, then the stored scripting id (Oct 20 2026).
 
 // Stamped on the WebhookEvent row of every event we let through WITHOUT
 // verifying it, so an unsigned acceptance is self-describing forever instead of
@@ -122,18 +126,21 @@ export async function processScriptingEvent(
   event: string,
   data: StudioProject & Record<string, unknown>,
 ): Promise<void> {
-  // Resolve the hub project. The Studio passes our id back as external_id; fall
-  // back to a stored Studio id link.
+  // Resolve the hub job: its Aryeo order (most platform projects come from
+  // Aryeo bookings and carry nothing else, Oct 20 2026), then the hub id the
+  // platform passes back as external_id, then a stored scripting id.
+  const { hubJobFor, applyStudioSnapshot } = await import("@/lib/scriptSync");
   const hubId = data.external_id ? String(data.external_id) : null;
-  const project =
-    (hubId ? await prisma.project.findUnique({ where: { id: hubId }, select: { id: true, title: true, clientId: true } }) : null) ||
-    (data.id ? await prisma.project.findFirst({ where: { scriptingId: String(data.id) }, select: { id: true, title: true, clientId: true } }) : null);
+  const job = await hubJobFor(data);
+  const project = job ? await prisma.project.findUnique({ where: { id: job.id }, select: { id: true, title: true, clientId: true } }) : null;
 
   if (!project) {
     // Studio-NATIVE projects (created inside Studio, external_id never set) can
     // never link to a hub job — skip them cleanly instead of erroring forever
-    // into the /connections badge and the hourly retry loop. Only an event that
-    // CARRIES a hub id is a real linkage failure worth retrying.
+    // into the /connections badge and the hourly retry loop. An Aryeo booking
+    // the hub has not imported yet is picked up by the 15-minute reconcile
+    // once the order arrives. Only an event that CARRIES a hub id is a real
+    // linkage failure worth retrying.
     if (!hubId) return;
     // …and the same for an external_id that is not shaped like a hub id at
     // all. Studio's own test projects carry ids like "skit_test" or
@@ -142,49 +149,38 @@ export async function processScriptingEvent(
     // only buries the real linkage failures. A hub id is a cuid; anything that
     // could be one still throws and retries.
     if (!HUB_ID_SHAPE.test(hubId)) return;
-    throw new Error(`No linked hub project (external_id=${hubId}, studio id=${data.id ?? "none"}).`);
+    throw new Error(`No linked hub project (external_id=${hubId}, aryeo order=${data.aryeo_order_id ?? "none"}, studio id=${data.id ?? "none"}).`);
   }
 
   // Unlink on delete — never delete the hub job, just drop the Studio link.
   if (event === "project.deleted") {
     await prisma.project.update({
       where: { id: project.id },
-      data: { scriptingId: null, scriptingStatus: null, scriptingUrl: null, scriptingSyncedAt: new Date() },
+      data: { scriptingId: null, scriptingStatus: null, scriptingUrl: null, scriptingDraftVersion: null, scriptingSyncedAt: new Date() },
     });
     return;
   }
 
-  // Baseline update from the summary payload (status + best link + link id).
-  const base: Record<string, unknown> = {};
-  if (data.id) base.scriptingId = String(data.id);
-  if (data.status) base.scriptingStatus = String(data.status);
-  const summaryLink = studioBestLink(data);
-  if (summaryLink) base.scriptingUrl = summaryLink;
+  // What the event itself says about versions: a draft saved for Jordan's
+  // review (status only, never its text) and the version the agent received.
+  const sv = data.script_version && typeof data.script_version === "object" ? (data.script_version as Record<string, unknown>) : null;
+  const version = typeof sv?.version_number === "number" ? sv.version_number : null;
+  const draftVersion = event === "project.script_generated" ? version : null;
+  const sentAt = typeof sv?.delivered_at === "string" ? new Date(sv.delivered_at) : null;
+  const client = event === "project.sent_to_client" ? { version, sentAt: sentAt && !Number.isNaN(sentAt.getTime()) ? sentAt : new Date() } : null;
 
-  // For script/state milestones, re-fetch the full project and mirror the
-  // hooks/script/song into the reel recipe (source-of-truth reconcile).
-  const enrich = ["project.hooks_proposed", "project.script_generated", "project.sent_to_client", "project.done", "project.updated", "project.client_responded"].includes(event);
-  if (enrich && scriptingConfigured()) {
-    const detail = await scriptingGetByExternalId(project.id).catch(() => null);
-    if (detail) {
-      const r = studioToRecipe(detail);
-      // Frozen once the photographer confirmed what was filmed (upload
-      // debrief) — Studio pushes keep status/link/song, never the words.
-      const confirmed = await prisma.project.findUnique({
-        where: { id: project.id },
-        select: { scriptConfirmedAt: true },
-      });
-      const frozen = !!confirmed?.scriptConfirmedAt;
-      if (r.hook && !frozen) base.reelHook = r.hook;
-      if (r.script && !frozen) base.reelScript = r.script;
-      if (r.song) base.reelSong = r.song;
-      if (r.url) { base.reelScriptUrl = r.url; base.scriptingUrl = r.url; }
-      if (r.status) base.scriptingStatus = r.status;
-      if ((r.hook || r.script) && !frozen) base.reelRecipeUpdatedAt = new Date();
-    }
+  // The crew script: from the event when it carries it (script_updated, a
+  // release), else read back from the platform, which is the source of truth.
+  let snap = studioSnapshotFromEvent(event, data);
+  if (!snap && scriptingConfigured()) {
+    const detail = await scriptingGetDetail({ aryeoOrderId: data.aryeo_order_id ?? job!.aryeoOrderId, hubId: project.id, scriptingId: data.id ? String(data.id) : job!.scriptingId });
+    if (detail) snap = studioSnapshot(detail);
   }
-  base.scriptingSyncedAt = new Date();
-  await prisma.project.update({ where: { id: project.id }, data: base });
+  if (!snap) {
+    // Not configured for reads, or the platform did not answer: keep status + link.
+    snap = { studioId: data.id ? String(data.id) : null, status: data.status ? String(data.status) : null, updatedAt: null, url: studioBestLink(data), hook: null, song: null, crew: null, client: null };
+  }
+  await applyStudioSnapshot(project.id, snap, { draftVersion, client });
 
   // Nudge the team on the two moments that need a human: a fresh script to
   // review/lock, and a client reply on the script. And CLOSE those nudges when

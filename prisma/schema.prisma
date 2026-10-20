@@ -636,6 +636,19 @@ model Project {
   scriptingStatus   String? // last-known Studio status (awaiting_intake … done)
   scriptingUrl      String? // best link to open there (agent intake or review)
   scriptingSyncedAt DateTime?
+  // Oct 20 2026 (Jordan, via the scripting platform): every job shows its
+  // CURRENT script, kept current automatically. The platform's crew script
+  // (the creative's on-site change when there is one, else the released
+  // script) and its versions. reelScript stays the WORKING script the editor
+  // cuts to (a photographer-confirmed record is never overwritten).
+  scriptingScript        String? // the platform's current crew script (markdown)
+  scriptingVersion       Int? // its version number
+  scriptingVersionAt     DateTime? // when that version was written or released
+  scriptingOnSiteBy      String? // set when the creative changed it on the shoot link
+  scriptingDraftVersion  Int? // a newer draft waiting on Jordan's review (status only, never text)
+  scriptingClientVersion Int? // the version sent to the agent
+  scriptingClientSentAt  DateTime?
+  scriptingUpdatedAt     DateTime? // the platform's updated_at at our last read
 
   deliverables      Deliverable[]
   orderItems        OrderItem[] // the real Aryeo line items (commercial truth)
