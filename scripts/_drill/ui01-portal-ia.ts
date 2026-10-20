@@ -405,7 +405,10 @@ async function main() {
       const t = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: q });
       walk(t, (e) => { if (typeof e.props.href === "string") allHrefs.push(e.props.href); }, new Set(["PortalShell", "HomeV2", "MoreTab", "LibraryV2", "PlanTab", "MonthCardV2", "RailLink", "TermsCard", "AppointmentCards", "ScriptsView"]));
     }
-    const odd = allHrefs.filter((h) => !(h.startsWith("?") || h.startsWith("#") || h === "/portal/login" || /^https:\/\//.test(h) || /^(tel|sms):\+1\d{10}$/.test(h)));
+    // Oct 20 2026: a month's "Download all scripts (PDF)" is the portal's own
+    // download door (/api/portal/scripts/all/…, a signed media token), the
+    // same kind of link as Rick's bulk-plan PDF: it works from either address.
+    const odd = allHrefs.filter((h) => !(h.startsWith("?") || h.startsWith("#") || h === "/portal/login" || /^https:\/\//.test(h) || /^(tel|sms):\+1\d{10}$/.test(h) || /^\/api\/portal\/scripts\/all\/[a-z0-9]+\?month=\d{4}-\d{2}&m=/.test(h)));
     c.ok(`every link on eleven v2 pages is query-only (or login / external / tel: / sms:) — ${allHrefs.length} links`, odd.length === 0 && allHrefs.length > 40, odd.slice(0, 3).join(" "));
     c.ok("no link carries the enrollment token", !allHrefs.some((h) => h.includes(T.portalToken!)));
 

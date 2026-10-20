@@ -2453,6 +2453,16 @@ model ScriptSuggestion {
   staffUserId     String?
   scriptVersionId String? // -> ContentScriptVersion
 
+  // Oct 20 2026 (Jordan: "take what she wrote and apply it, or edit it and
+  // then apply it ... I don't want to hit Apply with AI and then lose her
+  // response"). The client's own edit of the script's words when she edited
+  // it in place (JSON {hook, points[], close, captionCta}); how the office
+  // applied the request (HERS | EDITED | AI), the version it became, and who.
+  editedPartsJson  String?
+  appliedHow       String?
+  appliedVersionId String? // -> ContentScriptVersion
+  resolvedBy       String?
+
   @@index([scriptId])
   @@index([enrollmentId, status])
 }

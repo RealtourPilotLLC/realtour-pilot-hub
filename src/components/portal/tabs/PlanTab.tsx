@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCheck, ChevronRight, PencilLine, ScrollText } from "lucide-react";
+import { CheckCheck, ChevronRight, Download, PencilLine, ScrollText } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalInterviewView, PortalStrategyView, PortalTopicsData } from "@/lib/portal";
 import { planModel } from "@/lib/portalHome";
@@ -58,6 +58,8 @@ export type PlanTabData = {
   clientPlanned?: boolean;
   /** Oct 15 2026: the client is on a bulk plan — Your sessions replaces the month, scripts and bank views. */
   bulk?: PortalBulkView | null;
+  /** Oct 20 2026: the months whose scripts are all approved, each as one PDF (Rick's "Download all scripts", for every client). */
+  scriptPdfs?: { monthKey: string; label: string; count: number; href: string }[];
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
 };
@@ -109,7 +111,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       ) : d.topicsFailed ? (
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (
-        <ScriptsView plan={plan} canAct={d.canAct} readOnly={d.readOnly} monthHref={d.hrefs.month} />
+        <ScriptsView plan={plan} canAct={d.canAct} readOnly={d.readOnly} monthHref={d.hrefs.month} pdfs={d.scriptPdfs ?? []} />
       ) : d.view === "month" && d.yourMonth ? (
         <YourMonth d={{
           ...d.yourMonth, topics: d.topics, readOnly: d.readOnly, filter: d.filter,
@@ -147,7 +149,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
 }
 
 /** Scripts waiting on the client's read, the words in full, the two answers beside them. */
-function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<typeof planModel>; canAct: boolean; readOnly: boolean; monthHref: string }) {
+function ScriptsView({ plan, canAct, readOnly, monthHref, pdfs }: { plan: ReturnType<typeof planModel>; canAct: boolean; readOnly: boolean; monthHref: string; pdfs: { monthKey: string; label: string; count: number; href: string }[] }) {
   // A script answered a moment ago stays a card, in the same keyed list, so
   // the ScriptApprovalCard that sent the answer keeps its result line (Sep 24).
   const just = new Set(plan.justDecided.map((t) => t.id));
@@ -157,6 +159,18 @@ function ScriptsView({ plan, canAct, readOnly, monthHref }: { plan: ReturnType<t
   const otherEarlier = earlier.filter((t) => t.script?.decision !== "APPROVED");
   return (
     <div className="space-y-4">
+      {/* Oct 20 2026 (Jordan: "download all the scripts as PDFs once they are
+          all approved, just like Rick can"): one PDF per month, offered once
+          every script of that month is approved. */}
+      {pdfs.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {pdfs.map((p) => (
+            <a key={p.monthKey} href={p.href} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+              <Download className="size-4" aria-hidden /> Download all {p.label.split(" ")[0]} scripts (PDF, {p.count})
+            </a>
+          ))}
+        </div>
+      )}
       {cards.length === 0 ? (
         <Empty icon={ScrollText}>
           No scripts are waiting on you. When we share one, it lands here for your read-through. <Link href={monthHref} className="font-medium text-brand hover:underline">See this month&rsquo;s topics</Link>.

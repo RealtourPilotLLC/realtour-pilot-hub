@@ -1144,6 +1144,8 @@ export type PortalTopic = {
     decidedAtISO: string | null;
     /** They approved an earlier version and the words have changed since. */
     staleApproval: boolean;
+    /** Oct 20 2026: the office's replies about this script (newest last, up to three). */
+    replies?: { body: string; atISO: string; by: string }[];
   } | null;
   /**
    * THE WORDS, when the client is allowed to read them. Null is the normal
@@ -1378,6 +1380,11 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   // Their standing answer on each shared script (F09) — one batched read.
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
   const decisions = await scriptDecisionsFor(enrollment.id, scripts.map((s) => s.id)).catch(() => new Map());
+  // Oct 20 2026: the office's replies about a script, shown under it.
+  const { replyText } = await import("@/lib/scriptRequests");
+  const scriptReplies = scripts.length
+    ? await prisma.programMessage.findMany({ where: { enrollmentId: enrollment.id, authorKind: "STAFF", refKind: "SCRIPT", refId: { in: scripts.map((s) => s.id) } }, orderBy: { createdAt: "asc" }, select: { refId: true, body: true, createdAt: true, authorLabel: true } }).catch(() => [])
+    : [];
   const monthKeyOf = new Map(monthsRaw.map((m) => [m.id, m.monthKey]));
   const lastKey = portalLastMonthKey();
   const openMonth = new Map(monthsRaw.map((m) => [m.id, !m.historical && m.monthKey >= etMonthKey() && m.monthKey <= lastKey]));
@@ -1431,6 +1438,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
             decision: decisions.get(sc.id)?.decision ?? null,
             decidedAtISO: decisions.get(sc.id)?.decidedAt ?? null,
             staleApproval: decisions.get(sc.id)?.staleApproval ?? false,
+            replies: scriptReplies.filter((m) => m.refId === sc.id).slice(-3).map((m) => ({ body: replyText(m.body), atISO: m.createdAt.toISOString(), by: m.authorLabel })),
           }
         : null,
       scriptText: topicScripts.get(t.id) ?? null,

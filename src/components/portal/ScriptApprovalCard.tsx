@@ -2,9 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCheck, Download, Loader2, PencilLine } from "lucide-react";
+import { CheckCheck, Download, Loader2, MessageSquare, PencilLine } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalApproveScript, portalEditApprovedScript, portalRequestScriptChanges, portalScriptPdfLink } from "@/app/portal/actions";
+import { portalApproveScript, portalEditApprovedScript, portalRequestScriptChanges, portalScriptPdfLink, portalSuggestScriptEdit } from "@/app/portal/actions";
 import { ScriptWordsEditor, type EditableParts } from "@/components/script/ScriptWordsEditor";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalTopic } from "@/lib/portal";
@@ -99,6 +99,12 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
     else setOwn({ ok: false, text: r.message });
   };
   const saveWords = async (w: { hook: string; points: string[]; close: string; captionCta?: string | null }) => portalEditApprovedScript(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", w);
+  // Oct 20 2026 (Jordan: "I also want them to be able to edit the scripts on
+  // their side"): BEFORE they approve, their edit goes to us as a change
+  // request with their exact words; we use it, polish it, or answer it.
+  const [proposing, setProposing] = useState(false);
+  const sendEdit = async (w: { hook: string; points: string[]; close: string; captionCta?: string | null }) => portalSuggestScriptEdit(portalAuthFromLocation(), script.id, script.sharedVersionId ?? "", w);
+  const replies = script.replies ?? [];
 
   return (
     <div className={cn("mt-3 border-t border-border pt-3", large && "space-y-2")}>
@@ -127,12 +133,25 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
       ) : (
         <>
           {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it. Have another read.</p>}
-          <p className="mb-1.5 text-[11px] text-muted">Once you approve it, you can edit the wording yourself and download it as a PDF.</p>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>
-            <button type="button" onClick={() => setChanging(!changing)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> {CTA_WORDS.CHANGES}</button>
-            {!onResult && busy && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</span>}
-          </div>
+          <p className="mb-1.5 text-[11px] text-muted">Approve it, edit the wording yourself, or tell us what to change. Once it&rsquo;s approved you can download it as a PDF.</p>
+          {!proposing && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>
+              {parts && <button type="button" onClick={() => { setProposing(true); setChanging(false); setOwn(null); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Edit the wording</button>}
+              <button type="button" onClick={() => setChanging(!changing)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><MessageSquare className="size-3" /> {CTA_WORDS.CHANGES}</button>
+              {!onResult && busy && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</span>}
+            </div>
+          )}
+          {proposing && parts && (
+            <ScriptWordsEditor
+              parts={parts}
+              intro="Change any line to say it your way. We'll read your edit, polish it if it needs it, and share the final version here for your OK."
+              saveLabel="Send my edit"
+              onSave={sendEdit}
+              onCancel={() => setProposing(false)}
+              onSaved={(m) => { setProposing(false); setOwn({ ok: true, text: m }); router.refresh(); }}
+            />
+          )}
           {/* Oct 12 2026: the change box says what it's for, takes a few
               lines, and stacks on a phone — Submit and Cancel under the words. */}
           {changing && (
@@ -147,6 +166,17 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
             </div>
           )}
         </>
+      )}
+      {/* Oct 20 2026: what we wrote back about this script. */}
+      {replies.length > 0 && (
+        <ul className="mt-2 space-y-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2">
+          {replies.map((m, i) => (
+            <li key={i} className="text-xs">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">{m.by} · {new Date(m.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}</span>
+              <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
+            </li>
+          ))}
+        </ul>
       )}
       {/* Standing alone, the answer sits beside the buttons that produced it. */}
       {!onResult && own && (

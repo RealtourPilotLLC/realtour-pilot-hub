@@ -155,3 +155,58 @@ export async function bulkScriptsForPdf(enrollmentId: string): Promise<{ heading
     fileName: pdfFileName(`${who ?? "Your"} scripts`),
   };
 }
+
+/**
+ * A PROGRAM MONTH'S SCRIPTS, IN ONE PDF, ONCE EVERY ONE IS APPROVED (Oct 20
+ * 2026, Jordan: "I also want them to be able to download all the scripts as
+ * PDFs once they are all approved, just like Rick can"). The month's scripts
+ * that are on the client's page (released, not history); offered only when
+ * every one of them carries the client's approval of the version on their
+ * page. Each page is that approved version, as in approvedScriptForPdf.
+ */
+async function monthScriptRows(enrollmentId: string, monthId: string) {
+  return prisma.contentScript.findMany({
+    where: { enrollmentId, monthId, historical: false, releaseState: "released", sharedVersionId: { not: null } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+}
+
+/** The months whose scripts are all approved: what the Scripts view offers to download. */
+export async function monthsReadyForPdf(enrollmentId: string): Promise<{ monthKey: string; count: number }[]> {
+  const months = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false }, orderBy: { monthKey: "desc" }, select: { id: true, monthKey: true } });
+  if (!months.length) return [];
+  const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
+  const out: { monthKey: string; count: number }[] = [];
+  for (const m of months.slice(0, 6)) {
+    const rows = await monthScriptRows(enrollmentId, m.id);
+    if (!rows.length) continue;
+    const d = await scriptDecisionsFor(enrollmentId, rows.map((r) => r.id));
+    if (rows.every((r) => d.get(r.id)?.decision === "APPROVED")) out.push({ monthKey: m.monthKey, count: rows.length });
+  }
+  return out;
+}
+
+export async function monthScriptsForPdf(enrollmentId: string, monthKey: string): Promise<{ heading: string; subheading: string | null; scripts: PdfScript[]; fileName: string } | { refused: string }> {
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return { refused: "That month isn't on your page." };
+  const month = await prisma.contentMonth.findFirst({ where: { enrollmentId, monthKey, historical: false }, select: { id: true } });
+  if (!month) return { refused: "That month isn't on your page." };
+  const rows = await monthScriptRows(enrollmentId, month.id);
+  if (!rows.length) return { refused: "There are no scripts on your page for that month yet." };
+  const scripts: PdfScript[] = [];
+  for (const r of rows) {
+    const one = await approvedScriptForPdf(enrollmentId, r.id);
+    if ("refused" in one) return { refused: "Approve every script for the month first. The PDF of all of them is there once they're all approved." };
+    scripts.push(one.script);
+  }
+  const en = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+  const who = en ? (await prisma.client.findUnique({ where: { id: en.clientId }, select: { name: true } }))?.name?.trim() || null : null;
+  const [y, mo] = monthKey.split("-").map(Number);
+  const monthName = new Date(Date.UTC(y, mo - 1, 15)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" });
+  return {
+    heading: `${who ? `${who}: ` : ""}${monthName} scripts`,
+    subheading: `${scripts.length} approved script${scripts.length === 1 ? "" : "s"}.`,
+    scripts,
+    fileName: pdfFileName(`${who ?? "Your"} ${monthName} scripts`),
+  };
+}

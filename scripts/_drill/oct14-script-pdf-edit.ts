@@ -216,7 +216,8 @@ async function main() {
     c.head("6 · the screens");
     const read = (p: string) => fs.readFileSync(path.join(process.cwd(), p), "utf8");
     const card = read("src/components/portal/ScriptApprovalCard.tsx");
-    c.ok("the portal says they can edit and download once approved", /Once you approve it, you can edit the wording yourself and download it as a PDF/.test(card) && /Download PDF/.test(card) && /Edit the wording/.test(card));
+    // Oct 20 2026: they can edit before approving too (it goes to the office as a request).
+    c.ok("the portal says they can edit, and download once approved", /edit the wording yourself/.test(card) && /Once it&rsquo;s approved you can download it as a PDF/.test(card) && /Download PDF/.test(card) && /Edit the wording/.test(card));
     const page = read("src/app/shoot/[id]/page.tsx");
     c.ok("the shoot screen has the per-script tools and the session bar", /<ScriptCardTools /.test(page) && /<ShootScriptsBar /.test(page));
     c.ok("My Shoots marks shoots with scripts", /hasScripts && <Badge/.test(read("src/components/shoot/MyShootsView.tsx")));

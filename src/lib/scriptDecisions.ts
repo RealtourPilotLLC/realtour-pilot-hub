@@ -348,11 +348,14 @@ async function bellForChangeRequest(
  * lesson here — a revision instruction that lives only inside a generated
  * brief is an instruction that can be overwritten by the next one.
  */
-export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId: string, note: string, readVersionId: string): Promise<Outcome> {
+export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId: string, note: string, readVersionId: string, opts: { editedParts?: { hook: string; points: string[]; close: string; captionCta?: string | null } | null } = {}): Promise<Outcome> {
   if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now — ${TEXT_KYLE} and we'll sort it.` };
   const s = await sharedScriptFor(viewer, scriptId);
   if (!s) return { ok: false, message: "That script isn't on your page." };
-  const body = clip((note ?? "").trim(), 2000);
+  // Oct 20 2026: the client's own edit of the words comes as the request,
+  // with the parts kept exactly (the office can use them as written).
+  const editedPartsJson = opts.editedParts ? JSON.stringify(opts.editedParts) : null;
+  const body = clip((note ?? "").trim(), editedPartsJson ? 6000 : 2000);
   if (body.length < 3) return { ok: false, message: "Tell us what to change — a line, a word, the whole angle." };
   const versionId = s.sharedVersionId!;
   // R1: same rule as the approval. A note about v1 must not be filed against v2.
@@ -395,7 +398,7 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
     // The ledger has it and the queue does not. Repair, then say so honestly.
     await prisma.scriptSuggestion.create({
       data: {
-        scriptId: s.id, enrollmentId: s.enrollmentId, scriptVersionId: versionId, body,
+        scriptId: s.id, enrollmentId: s.enrollmentId, scriptVersionId: versionId, body, editedPartsJson,
         clientUserId: viewer.actor.kind === "CLIENT" ? viewer.actor.clientUserId : null,
         staffUserId: viewer.actor.kind === "STAFF" ? viewer.actor.staffUserId : null,
       },
@@ -421,7 +424,7 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
       // version they are asking about so a note on v2 is never applied blind to v4.
       await tx.scriptSuggestion.create({
         data: {
-          scriptId: s.id, enrollmentId: s.enrollmentId, scriptVersionId: versionId, body,
+          scriptId: s.id, enrollmentId: s.enrollmentId, scriptVersionId: versionId, body, editedPartsJson,
           clientUserId: viewer.actor.kind === "CLIENT" ? viewer.actor.clientUserId : null,
           staffUserId: viewer.actor.kind === "STAFF" ? viewer.actor.staffUserId : null,
         },

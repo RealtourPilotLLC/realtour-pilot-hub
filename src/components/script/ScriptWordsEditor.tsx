@@ -16,12 +16,14 @@ import { pointLabel } from "@/lib/scriptLayout";
 export type EditableParts = { hook: string; points: { role: "re-hook" | "build-up" | "payoff" | null; text: string }[]; close: string; captionCta: string | null };
 export type Words = { hook: string; points: string[]; close: string; captionCta?: string | null };
 
-export function ScriptWordsEditor({ parts, onSave, onCancel, onSaved, intro }: {
+export function ScriptWordsEditor({ parts, onSave, onCancel, onSaved, intro, saveLabel = "Save the new wording" }: {
   parts: EditableParts;
   onSave: (w: Words) => Promise<{ ok: boolean; message: string }>;
   onCancel: () => void;
   onSaved?: (message: string) => void;
   intro?: string;
+  /** Oct 20 2026: what the save button says (the office's "Save and send to her"). */
+  saveLabel?: string;
 }) {
   const [hook, setHook] = useState(parts.hook);
   const [points, setPoints] = useState(parts.points.map((p) => p.text));
@@ -57,7 +59,7 @@ export function ScriptWordsEditor({ parts, onSave, onCancel, onSaved, intro }: {
       {err && <p role="alert" className="text-sm text-danger">{err}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" onClick={save} disabled={busy} className={cn("inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand")}>
-          {busy && <Loader2 className="size-4 animate-spin" />} Save the new wording
+          {busy && <Loader2 className="size-4 animate-spin" />} {saveLabel}
         </button>
         <button type="button" onClick={onCancel} disabled={busy} className="min-h-11 rounded-xl border border-border px-4 text-sm text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
       </div>

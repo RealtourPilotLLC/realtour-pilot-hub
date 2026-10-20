@@ -152,6 +152,21 @@ export async function portalEditApprovedScript(auth: PortalAuth, scriptId: strin
 }
 
 /**
+ * Oct 20 2026: the client edits the words of a script still waiting on their
+ * OK. It goes to the office as a change request with their exact words
+ * (lib/scriptRequests.clientEditAsRequest); an approved script is edited
+ * directly (portalEditApprovedScript).
+ */
+export async function portalSuggestScriptEdit(auth: PortalAuth, scriptId: string, readVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const { clientEditAsRequest } = await import("@/lib/scriptRequests");
+  const r = await clientEditAsRequest(v, scriptId, readVersionId, words).catch(() => ({ ok: false, message: "That didn't send. Try again." }));
+  if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
+  return { ok: r.ok, message: r.message };
+}
+
+/**
  * "Change this." Recorded against the version they read and routed into the
  * suggestion queue staff already work from — never an edit, never a model call
  * on the client's click.

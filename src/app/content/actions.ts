@@ -631,19 +631,54 @@ export async function applyScriptSuggestion(suggestionId: string): Promise<Resul
     await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", originalBody: null } }).catch(() => {});
     return fail(e);
   }
+  // Oct 20 2026: the request stays on the card (the client's words are never lost),
+  // with how it was handled and the version the rewrite became.
+  const after = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { currentVersionId: true } });
+  const me2 = await actor();
   await prisma.scriptSuggestion.update({
     where: { id: sugg.id },
-    data: { status: "APPLIED", resolvedAt: new Date() },
+    data: { status: "APPLIED", resolvedAt: new Date(), appliedHow: "AI", appliedVersionId: after?.currentVersionId ?? null, resolvedBy: me2.email },
   });
   revalidatePath("/content");
-  return { ok: true, message: "Rewritten with their suggestion — review and approve the new version." };
+  return { ok: true, message: "Rewritten with their suggestion. Review and approve the new version below." };
+}
+
+// Oct 20 2026 (Jordan: "take what she wrote and apply it, or take what she
+// wrote and edit it and then apply it, and then add a message below to be
+// able to respond"). lib/scriptRequests holds the rules.
+export async function applyClientScriptVersion(suggestionId: string): Promise<Result & { versionNo?: number }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const me = await actor();
+  const { applyRequestWords } = await import("@/lib/scriptRequests");
+  const r = await applyRequestWords(suggestionId, "HERS", null, { email: me.email, appUserId: me.id });
+  if (r.ok) revalidatePath("/content");
+  return r;
+}
+
+export async function applyEditedScriptRequest(suggestionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<Result & { versionNo?: number }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const me = await actor();
+  const { applyRequestWords } = await import("@/lib/scriptRequests");
+  const r = await applyRequestWords(suggestionId, "EDITED", words, { email: me.email, appUserId: me.id });
+  if (r.ok) revalidatePath("/content");
+  return r;
+}
+
+export async function replyToScriptRequestAction(suggestionId: string, body: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const me = await actor();
+  const { replyToScriptRequest } = await import("@/lib/scriptRequests");
+  const r = await replyToScriptRequest(suggestionId, body, { id: me.id, name: me.name, email: me.email });
+  if (r.ok) revalidatePath("/content");
+  return r;
 }
 
 export async function dismissScriptSuggestion(suggestionId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
+  const me = await actor();
   await prisma.scriptSuggestion.updateMany({
     where: { id: suggestionId, status: "OPEN" },
-    data: { status: "DISMISSED", resolvedAt: new Date() },
+    data: { status: "DISMISSED", resolvedAt: new Date(), resolvedBy: me.email },
   });
   revalidatePath("/content");
   return { ok: true, message: "Dismissed." };

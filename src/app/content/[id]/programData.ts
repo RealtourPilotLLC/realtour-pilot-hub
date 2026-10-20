@@ -274,19 +274,10 @@ export type CallRowUi = Awaited<ReturnType<typeof loadCallsTab>>[number];
  */
 export async function loadScriptRequests(month: { id: string } | null) {
   if (!month) return [];
-  const scripts = await prisma.contentScript.findMany({ where: { monthId: month.id }, orderBy: { createdAt: "asc" }, select: { id: true, title: true, currentVersionId: true } });
-  if (scripts.length === 0) return [];
-  const [open, versions] = await Promise.all([
-    prisma.scriptSuggestion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) }, status: "OPEN" }, orderBy: { createdAt: "asc" }, select: { id: true, scriptId: true, body: true, createdAt: true } }),
-    prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId).filter((x): x is string => !!x) } }, select: { id: true, versionNo: true } }),
-  ]);
-  const vno = new Map(versions.map((v) => [v.id, v.versionNo]));
-  return scripts
-    .map((s) => ({
-      scriptId: s.id, title: s.title, versionNo: s.currentVersionId ? vno.get(s.currentVersionId) ?? null : null,
-      requests: open.filter((o) => o.scriptId === s.id).map((o) => ({ id: o.id, body: o.body, createdAtISO: o.createdAt.toISOString() })),
-    }))
-    .filter((g) => g.requests.length > 0);
+  // Oct 20 2026: open AND handled requests, each with the version the client
+  // read, her words laid over it, and the office's replies (lib/scriptRequests).
+  const { loadScriptRequestsForMonth } = await import("@/lib/scriptRequests");
+  return loadScriptRequestsForMonth(month.id);
 }
 
 /** The legacy free-text notes, shown under Knowledge while they migrate to facts. */

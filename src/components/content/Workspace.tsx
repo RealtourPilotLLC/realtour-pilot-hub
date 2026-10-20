@@ -2,14 +2,13 @@
 
 import { useState, useTransition } from "react";
 import {
-  CalendarClock, Check, FileText, Loader2, NotebookPen, Settings2, Sparkles,
+  CalendarClock, Check, Loader2, NotebookPen, Settings2, Sparkles,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
   addContentNote, analyzeTranscript, buildProfile, generateTopicIdeas,
   saveMonthTranscript, saveProfileSection,
-  applyScriptSuggestion, dismissScriptSuggestion,
   setStrategyCallStatus,
   staffChangePackageAction, staffSetEnrollmentStatusAction,
 } from "@/app/content/actions";
@@ -458,62 +457,6 @@ export function EnrollmentControls({
         {note && <p className={`text-[11px] ${note.ok ? "text-success" : "text-danger"}`}>{note.ok ? note.text : `Couldn't do that — ${note.text}`}</p>}
       </div>
     </Section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// THE CLIENT'S SCRIPT CHANGE REQUESTS (UI-02). These OPEN ScriptSuggestion rows
-// were only ever shown inside the Overview's ScriptReview list — which also
-// carried a second, by-id Approve button. That list is retired (the Scripts
-// view's version-exact ScriptsPanel is the one approval surface); the queue of
-// client asks moves here, above it, with the same Apply-with-AI / Dismiss.
-// ---------------------------------------------------------------------------
-export type ScriptRequestGroup = { scriptId: string; title: string; versionNo: number | null; requests: { id: string; body: string; createdAtISO: string }[] };
-
-export function ScriptRequestsPanel({ groups }: { groups: ScriptRequestGroup[] }) {
-  const total = groups.reduce((n, g) => n + g.requests.length, 0);
-  if (total === 0) return null;
-  return (
-    <Section icon={FileText} title="The client asked for changes" count={total}
-      action={<span className="text-[11px] text-muted-2">apply rewrites it as a new version for review</span>}>
-      <div className="space-y-3">
-        {groups.map((g) => (
-          <div key={g.scriptId}>
-            <p className="mb-1 text-[13px] font-semibold">{g.title}{g.versionNo != null && <span className="ml-1.5 text-[11px] font-normal text-muted-2">now v{g.versionNo}</span>}</p>
-            {g.requests.map((sg) => <SuggestionRow key={sg.id} suggestion={sg} />)}
-          </div>
-        ))}
-      </div>
-    </Section>
-  );
-}
-
-function SuggestionRow({ suggestion }: { suggestion: { id: string; body: string; createdAtISO: string } }) {
-  const [gone, setGone] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [busy, start] = useTransition();
-  if (gone) return <p className="mb-2 text-[11px] font-medium text-success">{gone}</p>;
-  return (
-    <div className="mb-2 rounded-lg border border-brand/30 bg-brand-soft/40 px-3 py-2">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-brand">
-        Client suggestion · {new Date(suggestion.createdAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
-      </div>
-      <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-foreground/90">{suggestion.body}</p>
-      <div className="mt-1.5 flex items-center gap-1.5">
-        <button disabled={busy} onClick={() => start(async () => {
-          setNote("Rewriting with their suggestion…");
-          const r = await applyScriptSuggestion(suggestion.id);
-          if (r.ok) setGone(r.message); else setNote(r.message);
-        })} className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
-          {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />} Apply with AI
-        </button>
-        <button disabled={busy} onClick={() => start(async () => {
-          const r = await dismissScriptSuggestion(suggestion.id);
-          if (r.ok) setGone("Dismissed."); else setNote(r.message);
-        })} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Dismiss</button>
-      </div>
-      {note && <p className="mt-1 text-[11px] text-muted">{note}</p>}
-    </div>
   );
 }
 

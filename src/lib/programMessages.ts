@@ -433,7 +433,8 @@ export async function postStaffMessage(
   me: { id: string | null; name: string | null; email: string | null },
   bodyRaw: string,
   replyToId: string | null = null,
-  opts: { now?: Date } = {},
+  /** Oct 20 2026: `ref` marks what the reply is about (a script the client asked to change). */
+  opts: { now?: Date; ref?: ProgramMessageRef | null } = {},
 ): Promise<Result> {
   const now = opts.now ?? new Date();
   const body = (bodyRaw ?? "").trim();
@@ -451,6 +452,7 @@ export async function postStaffMessage(
       staffUserId: me.id, authorLabel: label,
       body: body.slice(0, MESSAGE_BODY_MAX),
       replyToId: replyTo?.id ?? null,
+      refKind: opts.ref?.kind ?? null, refId: opts.ref?.id ?? null,
       createdAt: now,
     },
     select: { id: true },
