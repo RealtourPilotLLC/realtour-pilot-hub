@@ -160,7 +160,6 @@ async function main() {
     c.ok("late known response never clears another attempt's guard", markers.get("rtp:delivery-record:fixture-exact-cut") === other && elements(tree(), "Button")[0].disabled === true && words(tree()).includes("different unconfirmed change"));
 
     const { ReadyToSendCard } = await import("../../src/components/ops/ReadyToSendCard");
-    const { DeliveryExitSummary } = await import("../../src/components/review/DeliveryExitSummary");
     const ready: ReadyVideo = {
       submissionId: props.submissionId, projectId: "fixture-project", monthlyProgram: true, monthKey: "2026-10", topicTitle: "Exact topic", monthlyPortalReleased: true, monthlyPortalAccess: true, monthlyFinalCheckRecorded: false,
       topazJobId: null, street: props.street, clientName: "Fixture Grove Client", clientAvatarUrl: null, cutLabel: "Output 2", round: 3, approvedAtISO: "2026-10-01T15:00:00Z", approvedBy: "James", waitingHours: 1, overdue: false,
@@ -260,8 +259,7 @@ async function main() {
     c.ok("direct send receipt removes row once without heavy dashboard refresh", sentRemoved === 1 && refreshes === refreshBeforeSend && markers.size === 0);
     const partialHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [], needsFinishing: [{ submissionId: ready.submissionId, projectId: ready.projectId, street: ready.street, sentAtISO: ready.approvedAtISO, sentBy: "Kyle", why: "Fixture partial" }] } }));
     c.ok("partial follow-up no longer claims client possession from a handoff stamp", !partialHTML.includes("The client has these") && partialHTML.includes("does not prove client approval, notification or receipt"));
-    const exitHTML = renderToStaticMarkup(createElement(DeliveryExitSummary, { board }));
-    c.ok("James-to-Kyle handoff keeps exact version link and separate approval/notification with accessible control", exitHTML.includes("fixture-exact-cut") && exitHTML.includes("Notification and client approval remain separate") && exitHTML.includes("min-h-11") && exitHTML.includes("focus-visible:outline"));
+    // Oct 20 2026 (B7/H13): DeliveryExitSummary was never rendered and is deleted, with its two checks.
 
     const { clientNotToldYet } = await import("../../src/lib/readyToSend");
     const noticeRows = await clientNotToldYet({ projectId: "exact-requested-project", excludeClientIds: ["excluded-fixture"], max: 7 });
@@ -296,8 +294,6 @@ async function main() {
     c.ok("listing follow-up retains all three original notice choices", !!button("Aryeo emailed them") && !!button("We texted them") && !!button("Call or in person") && words(tree()).includes("delivery recorded"));
     noticeResult = deferred(); click("Aryeo emailed them"); noticeResult.resolve({ ok: false, message: "Known no-write refusal." }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("first known refusal preserves exact reason and permits corrected notice recording", !markers.size && words(tree()).includes("Known no-write refusal") && !elements(tree(), "Button")[0].disabled);
-    const noticeExit = renderToStaticMarkup(createElement(DeliveryExitSummary, { board: { ...board, ready: [], notTold: [noticeRows[0]] } }));
-    c.ok("review-exit monthly notification state names portal handoff without claiming delivery to or approval by client", noticeExit.includes("Portal handoff recorded; client notification owed") && noticeExit.includes("does not establish client approval or receipt") && !noticeExit.includes("video is marked sent"));
     let apiAllowed = true, apiWrites = 0;
     stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (!apiAllowed) throw new Error("Forbidden"); } });
     stub(req.resolve("../../src/lib/auth/user.ts"), { getCurrentUser: async () => ({ id: "fixture-office", name: "Kyle", impersonating: false }) });

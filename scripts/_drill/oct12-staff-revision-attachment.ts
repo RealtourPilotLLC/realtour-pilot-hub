@@ -205,10 +205,10 @@ async function main() {
       const state = staffReceiptIntake((await receipt(String(form.get("requestKey"))))?.itemsJson ?? null)?.attachment?.state;
       c.ok(`a ${name.split(".")[1].toUpperCase()} attachment uploads and records`, r.ok && state === "CONFIRMED", r.message);
     }
-    const formSrc = fs.readFileSync(path.join(REPO, "src/components/review/StaffCutRevisionForm.tsx"), "utf8");
-    c.ok("the form submits by hand (no React form action, which reset the pickers)", /<form onSubmit=\{record\}/.test(formSrc) && /e\.preventDefault\(\)/.test(formSrc) && !/<form[^>]*\saction=/.test(formSrc));
-    c.ok("…its fields are controlled, so a failed try keeps them", /value=\{contact\}/.test(formSrc) && /value=\{words\}/.test(formSrc) && /checked=\{confirmed\}/.test(formSrc));
-    c.ok("…and its spinner is plain async, not a transition held open by a refresh", !/useTransition/.test(formSrc));
+    // Oct 20 2026 (audit B7): StaffCutRevisionForm.tsx, the revision form
+    // Jordan removed on Oct 14, was never rendered and is deleted; its
+    // form-source checks went with it.
+    c.ok("the retired revision form is gone from the code", !fs.existsSync(path.join(REPO, "src/components/review/StaffCutRevisionForm.tsx")));
     c.ok("no provider request escaped the fence", fence.blocked.length === 0, fence.blocked.join(", "));
   } finally {
     console.log(await drill.evidence());

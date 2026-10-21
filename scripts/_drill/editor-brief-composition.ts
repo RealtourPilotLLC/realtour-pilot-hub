@@ -74,8 +74,7 @@ const batchFiles = [
   "src/app/edit/[id]/page.tsx", "src/app/editing/page.tsx",
   "src/components/editing/EditorDesk.tsx", "src/components/editing/SimpleQueue.tsx",
   "src/components/editing/AddToQueue.tsx", "src/components/ops/ReadyToSendCard.tsx",
-  "src/components/review/DeliveryExitSummary.tsx", "src/components/ops/MarkSent.tsx",
-  "src/components/ops/NotTold.tsx", "src/components/ops/FinalRenditionCheck.tsx",
+  "src/components/ops/MarkSent.tsx", "src/components/ops/NotTold.tsx",
   "src/lib/readyToSend.ts",
 ];
 function sourceCopy(runtime: string) {
