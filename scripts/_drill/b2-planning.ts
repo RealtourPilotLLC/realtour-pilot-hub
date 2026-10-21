@@ -374,7 +374,7 @@ async function main() {
     c.ok("Home asks which route (CHOOSE_ROUTE → #step-route), not 'Book your strategy call'", routeAct?.kind === "CHOOSE_ROUTE" && routeAct.href === "?tab=plan#step-route", `${routeAct?.kind} ${routeAct?.href}`);
     const planPageR = await PortalPage({ viewer: ownerR, path: "/portal/[token]", query: { tab: "plan" } });
     const planTabR = find(planPageR, "PlanTab")[0];
-    const ymTreeR = planTabR?.props.d.yourMonth ? YourMonth({ d: { ...planTabR.props.d.yourMonth, topics: planTabR.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } }) : null;
+    const ymTreeR = planTabR?.props.d.yourMonth ? YourMonth({ d: { ...planTabR.props.d.yourMonth, topics: planTabR.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" } } }) : null;
     const currentR = ymTreeR ? find(ymTreeR, "li").filter((e) => e.props["aria-current"] === "step") : [];
     c.ok("Your Month opens on the prompt: one current step, #step-route, with the two route cards", currentR.length === 1 && currentR[0].props.id === "step-route" && find(ymTreeR, "RouteChoice").length === 1, currentR.map((e) => e.props.id).join(","));
     const routeTopics = find(ymTreeR, "section").find((e) => e.props.id === "this-month");
@@ -471,7 +471,7 @@ async function main() {
     c.ok("Home keeps BOOK_SESSION waiting, 'Book filming' → #step-filming", bookT?.cta === "Book filming" && bookT.href === "?tab=plan#step-filming", `${bookT?.cta} ${bookT?.href}`);
     const planPageT = await PortalPage({ viewer: ownerT, path: "/portal/[token]", query: { tab: "plan" } });
     const ptT = find(planPageT, "PlanTab")[0];
-    const ymT = ptT?.props.d.yourMonth ? YourMonth({ d: { ...ptT.props.d.yourMonth, topics: ptT.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } }) : null;
+    const ymT = ptT?.props.d.yourMonth ? YourMonth({ d: { ...ptT.props.d.yourMonth, topics: ptT.props.d.topics, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" } } }) : null;
     const curT = ymT ? find(ymT, "li").filter((e) => e.props["aria-current"] === "step") : [];
     // C14 (Oct 13 2026): the "Schedule later" button is gone from Your Month; a choice already saved still reads in the step (above).
     c.ok("the page: one current step (#step-filming) with the embedded picker, and no 'Schedule later' button (C14)", curT.length === 1 && curT[0].props.id === "step-filming" && find(ymT, "PortalScheduler")[0]?.props.embedded === true && find(ymT, "ScheduleLaterButton").length === 0);

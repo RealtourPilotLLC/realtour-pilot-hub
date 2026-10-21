@@ -74,7 +74,6 @@ export type PostingKit = {
   transcript: { text: string | null; gap: string | null; source: string | null };
   /** `historical` = an imported record we hold, shown as history — never re-labelled as this video’s script. */
   script: { title: string; body: string; versionLabel: string | null; strategyLabel: string | null; historical: boolean } | null;
-  postedAtISO: string | null;
   /** The client (never staff) last opened the download door — a download STARTED. */
   downloadStartedAtISO: string | null;
   /** The page received every byte AND handed the file on — the share sheet
@@ -338,7 +337,6 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     // a word filter.
     transcript: { text: transcript.text, gap: transcript.gap, source: transcript.source },
     script: script ? { title: script.title, body: script.body, versionLabel: script.versionLabel, strategyLabel: script.strategyLabel, historical: script.historical } : null,
-    postedAtISO: video.postedByClientAt?.toISOString() ?? null,
     downloadStartedAtISO: lastStarted?.createdAt.toISOString() ?? null,
     downloadCompletedAtISO: lastCompleted?.createdAt.toISOString() ?? null,
     download,
@@ -348,16 +346,6 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
 }
 
 type R = { ok: boolean; message: string };
-
-/** "Marked as posted by me" — a client-recorded fact, never a verified publication. */
-export async function setPostedByClient(viewer: PortalViewer, videoId: string, posted: boolean): Promise<R> {
-  const v = await videoForEnrollment(viewer.enrollment, videoId);
-  if (!v) return { ok: false, message: "That video isn't on your page." };
-  await prisma.contentVideo.update({ where: { id: v.id }, data: { postedByClientAt: posted ? new Date() : null } });
-  // Who said so is the visit row (PortalVisit carries the person / staff id); the video keeps the when.
-  await prisma.portalVisit.create({ data: { enrollmentId: viewer.enrollment.id, clientUserId: viewer.actor.kind === "CLIENT" ? viewer.actor.clientUserId : null, staffUserId: viewer.actor.kind === "STAFF" ? viewer.actor.staffUserId : null, via: viewer.via, path: `/portal/posted/${v.id}${posted ? "" : "?undo=1"}` } }).catch(() => {});
-  return { ok: true, message: posted ? "Marked as posted by you. (We don't check the platform. This is your note to yourself and to us.)" : "Unmarked." };
-}
 
 /** Record a download STARTING as a client fact: a PortalVisit row on the
  *  download path, attributable to the person or staff. The door writes it as

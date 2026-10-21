@@ -44,10 +44,13 @@ function fmtPhone(p: string) {
 //
 // The views, in order (components/comms/messagesNav.ts):
 //   Waiting on us  every client waiting on a reply, texts and email together,
-//                  oldest first, with Reply and Handled; new leads; promises
-//                  at risk. The same read as the Home summary box.
+//                  oldest first, with Reply and Dismiss (the Texts tab's own
+//                  control, Oct 21 2026: the one place a waiting client is
+//                  cleared); new leads; promises at risk. The same read as
+//                  the Home summary box.
 //   Texts          every unanswered text, each with a reply ready to write
-//                  (was "Replies"; ?tab=replies still opens it)
+//                  (was "Replies"; ?tab=replies still opens it). Its number
+//                  counts only the unsaved and team numbers Waiting leaves out.
 //   Email          client email threads from Gmail (read here, reply in Gmail)
 //   Team           internal messages by property
 //   Outbox         today's drafted confirmation and delivery texts
@@ -93,9 +96,15 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   // THE MONEY RULE ON CLIENT WORDS (audit F7): owner only, on every view,
   // the same scrub Waiting on us already ran.
   const clean = isOwner ? (t: string) => t : scrubMoney;
+  // ONE "WAITING ON US" (Jordan, Oct 21 2026; audit F5). A client waiting on
+  // a text is counted and cleared on Waiting on us; the Texts tab's number is
+  // only what Waiting does not show, the numbers we have not saved and our own
+  // team, so the tab bar never counts one waiting client twice. Texts still
+  // lists every unanswered text, to write the reply.
+  const textsOnlyHere = texts.cards.filter((c) => !c.clientId).length;
   const counts: Partial<Record<MessagesTab, TabCount>> = {
     waiting: { n: board.waiting.length + board.leads.length, tone: board.counts.behind > 0 ? "danger" : "brand" },
-    texts: { n: texts.cards.length, tone: "danger" },
+    texts: { n: textsOnlyHere, tone: "danger" },
     outbox: { n: board.outbox },
   };
   const tabBar = (extra: Partial<Record<MessagesTab, TabCount>> = {}) => <MessagesTabs tab={tab} counts={{ ...counts, ...extra }} test={includeTest} />;
@@ -168,6 +177,9 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
             <span>{includeTest ? "Showing real and test records" : "Test records hidden"}</span>
             <Link href={messagesHref("texts", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
           </div>
+          <p className="mb-3 text-[13px] text-muted">
+            Clients waiting on a reply are counted on <Link href={messagesHref("waiting", { test: includeTest })} className="font-medium text-brand underline">Waiting on us</Link>. This tab&rsquo;s number is texts from numbers we have not saved and from our own team.
+          </p>
           <ReplyQueue key={`${match?.key ?? "all"}:${includeTest ? "test" : "real"}`} cards={cards} handled={handled} focusKey={match?.key ?? null} />
         </div>
       </div>

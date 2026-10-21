@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
-  Activity, AlertTriangle, Bell, BrainCircuit, CalendarCheck, CheckCircle2, FileUp, Gauge, Phone, ScrollText,
+  Activity, AlertTriangle, ArrowRight, Bell, BrainCircuit, CalendarCheck, CheckCircle2, FileUp, Gauge, KeyRound, Phone, ScrollText,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -10,13 +10,10 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { cn } from "@/lib/utils";
-import { aiRunLedger, aiQuotaUse, failedAutomations, sessionRequestState, reminderLedger, importOverview } from "@/lib/programMonitoring";
+import { aiRunLedger, aiQuotaUse, failedAutomations, sessionRequestState, reminderLedger, importOverview, linkOnlyClients } from "@/lib/programMonitoring";
 import { allAutomations } from "@/lib/programAutomation";
 import { transcriptJobsSnapshot, transcriptQueueBatch } from "@/lib/transcriptJobs";
-import { listCallRecords, callReviewQueue } from "@/lib/contentCallRecords";
-import { CallReviewQueue } from "@/components/content/CallReviewQueue";
 import { deployStamp, lastRunDeploy } from "@/lib/cron";
-import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -36,31 +33,23 @@ export default async function ContentMonitoringPage() {
   if (me && !canAccess(me, "content")) redirect("/");
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
 
-  const [runs, quota, jobs, jobBatch, calls, queue, sessions, reminders, failures, switches, imports, months, lastSync] = await Promise.all([
+  const [runs, quota, jobs, jobBatch, sessions, reminders, failures, switches, imports, lastSync, linkOnly] = await Promise.all([
     aiRunLedger({ take: 60 }).catch(() => []),
     aiQuotaUse().catch(() => null),
     transcriptJobsSnapshot().catch(() => null),
     transcriptQueueBatch().catch(() => null),
-    listCallRecords({ onlyReview: true, limit: 40 }).catch(() => null),
-    callReviewQueue().catch(() => null),
     sessionRequestState().catch(() => ({ counts: [], stuck: [] })),
     reminderLedger({ take: 60 }).catch(() => []),
     failedAutomations({ sinceDays: 30 }).catch(() => []),
     allAutomations().catch(() => []),
     importOverview().catch(() => ({ batches: [], unapplied: 0 })),
-    prisma.contentMonth.findMany({ select: { monthKey: true }, distinct: ["monthKey"], orderBy: { monthKey: "desc" }, take: 18 }).catch(() => null),
     lastRunDeploy("sync").catch(() => null),
+    linkOnlyClients().catch(() => null),
   ]);
   // CP-15: which build is answering, and which build the hourly run that wrote
   // most of these rows was. Right after a deploy they differ until the next
   // hour — that is the point of showing both.
   const pageBuild = deployStamp();
-  // ContentEnrollment.clientId is a plain ref, so the enrolled clients are
-  // resolved in two steps rather than through a relation filter.
-  const enrolled = await prisma.contentEnrollment.findMany({ select: { clientId: true } }).catch(() => null);
-  const clientList = enrolled === null ? null : enrolled.length
-    ? await prisma.client.findMany({ where: { id: { in: enrolled.map((e) => e.clientId) } }, select: { id: true, name: true }, orderBy: { name: "asc" } }).catch(() => null)
-    : [];
 
   const money = (c: number | null | undefined) => (c == null ? "—" : `$${(c / 100).toFixed(2)}`);
   const when = (d: Date | null) => (d ? d.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—");
@@ -127,23 +116,44 @@ export default async function ContentMonitoringPage() {
           </div>
         </Section>
 
-        {/* CALL REVIEW QUEUE — unmatched invitees, alias proposals, ambiguous transcripts. */}
+        {/* LINK-ONLY CLIENTS (Oct 21 2026, display only): when this reaches
+            0, the shared link's comment and change-request rights can be
+            switched off (audit E2b). */}
+        <Section icon={KeyRound} title="Client portal sign-ins" count={linkOnly ? linkOnly.linkOnly.length : null} flush>
+          <div className="px-5 py-3 text-[13px]">
+            {!linkOnly ? (
+              <p className="text-muted">The portal sign-ins could not be read just now. Reload to try again.</p>
+            ) : (
+              <>
+                <p data-link-only={linkOnly.linkOnly.length}>
+                  <span className="font-semibold">{linkOnly.linkOnly.length}</span> client{linkOnly.linkOnly.length === 1 ? "" : "s"} still use{linkOnly.linkOnly.length === 1 ? "s" : ""} only the shared link (no sign-in yet)
+                  <span className="text-muted"> · {linkOnly.active - linkOnly.linkOnly.length} of {linkOnly.active} active client{linkOnly.active === 1 ? " has" : "s have"} a sign-in.</span>
+                </p>
+                <p className="mt-1 text-muted">
+                  {linkOnly.linkOnly.length === 0
+                    ? "Every active client can sign in, so the shared link's commenting and change requests can be switched off."
+                    : "The shared link can still comment and ask for changes. Once this reaches 0, that can be switched off."}
+                </p>
+                {linkOnly.linkOnly.length > 0 && (
+                  <details className="mt-1.5">
+                    <summary className="inline-flex min-h-11 cursor-pointer items-center text-[12px] font-medium text-brand">Who</summary>
+                    <p className="text-[12px] text-muted">{linkOnly.linkOnly.map((c) => c.name).join(" · ")}</p>
+                    <Link href="/settings/onboarding" className="mt-1 inline-flex min-h-11 items-center gap-1 text-[12px] font-medium text-brand hover:underline">Set up their sign-ins in Client onboarding <ArrowRight className="size-3.5" aria-hidden /></Link>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        </Section>
+
+        {/* ONE CALL QUEUE (Jordan, Oct 21 2026; audit D12). The calls, email
+            addresses and transcripts that need a person are answered on
+            Strategy calls, under one rule; the old anchor still lands here. */}
         <div id="calls" className="scroll-mt-20">
-          <CallReviewQueue
-            calls={calls?.map((c) => ({
-              id: c.id, callType: c.callType, status: c.status, matchState: c.matchState, matchNote: c.matchNote,
-              transcriptState: c.transcriptState, scheduledStartISO: c.scheduledStart?.toISOString() ?? null,
-              clientName: c.client?.name ?? null, inviteeEmail: c.inviteeEmail, inviteeName: c.inviteeName,
-              eventTypeName: c.eventTypeName, targetMonthKey: c.targetMonthKey, lastError: c.lastError,
-              candidates: c.candidates, jobs: c.jobs,
-              transcripts: c.transcripts.map((t) => ({ id: t.id, title: t.title, sourceUrl: t.sourceUrl, matchState: t.matchState, recordedAtISO: t.recordedAt?.toISOString() ?? null })),
-            })) ?? null}
-            aliases={queue?.aliases.map((a) => ({ id: a.id, clientName: a.clientName, email: a.email, source: a.source, createdAtISO: a.createdAt.toISOString() })) ?? null}
-            unlinked={queue?.unlinkedTranscripts.map((u) => ({ id: u.id, title: u.title, sourceUrl: u.sourceUrl, recordedAtISO: u.recordedAt?.toISOString() ?? null, legacyMonthId: u.legacyMonthId, candidates: u.candidates })) ?? null}
-            clients={clientList}
-            monthKeys={months?.map((m) => m.monthKey) ?? null}
-            isOwner={ownerEyes}
-          />
+          <Section icon={Phone} title="Calls waiting for a person">
+            <p className="text-[13px] text-muted">Calls the matcher could not place, email addresses proposed as a client&rsquo;s, and transcripts with no call are on Strategy calls, beside the calls to file.</p>
+            <Link href="/content/calls#review" className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2">Open Strategy calls <ArrowRight className="size-4" aria-hidden /></Link>
+          </Section>
         </div>
 
         {/* TRANSCRIPT JOBS. */}
@@ -344,7 +354,7 @@ export default async function ContentMonitoringPage() {
           <Activity className="size-3.5" />
           Everything on this page is read from the durable rows the automations leave behind. Nothing here starts work; the switches live in{" "}
           <Link href="/settings#program-automations" className="font-medium text-brand hover:underline">Settings</Link>.
-          <Phone className="ml-2 size-3.5" /> Call matching never guesses a client — an ambiguous call waits here for a person.
+          <Phone className="ml-2 size-3.5" /> Call matching never guesses a client — an ambiguous call waits on Strategy calls for a person.
         </p>
       </div>
     </div>

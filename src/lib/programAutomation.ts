@@ -40,7 +40,7 @@ export const AUTOMATION_KEYS = [
   // CP-07 (Sep 24 2026). Carrying is a pointer move with full history, but it
   // rewrites which month every past unfilmed script belongs to at once — so it
   // is its own switch, dry-run first (carryUnfilmedTopics({ dryRun: true })).
-  "topic_carryover", // §3 on the 1st, scripted-but-unfilmed topics carry into the new month's allowance (swappable by the client)
+  "topic_carryover", // §3 on the 1st, scripted-but-unfilmed topics carry into the new month's allowance
   "strategy_generation", // §21 discovery → strategy draft
   // A04 (unified handoff, Sep 25 2026). The pre-mapping call sweeps
   // (contentCalls.ts: Calendly by invitee email, Drive by the title's NAME,

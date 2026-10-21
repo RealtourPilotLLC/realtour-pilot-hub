@@ -1242,48 +1242,9 @@ export async function sweepCarryover(opts: { now?: Date } = {}): Promise<{ skipp
   return { enrollments: touched, carried, skippedTopics, outOfScope };
 }
 
-/**
- * Replace a carried-over, unfilmed topic with another one for the same month.
- * The carried selection is REMOVED (reason SWAPPED, pointing at the
- * replacement); its script, every version and every client decision stay
- * exactly as they are, parked with the topic as "scripted, not filmed"; the
- * replacement takes the freed slot. One transaction: the allowance never counts
- * both, and a failure leaves the carry in place.
- */
-export async function swapCarriedTopic(selectionId: string, replacementTopicId: string, actor: Actor): Promise<{ overflow: boolean; capacity: { owed: number; selected: number } }> {
-  const sel = await prisma.contentTopicSelection.findUnique({ where: { id: selectionId } });
-  if (!sel || !(sel.status === "CARRIED" || (sel.carriedScriptId && ALLOWANCE_SELECTION_STATUSES.includes(sel.status)))) throw new Error("That isn't a carried-over topic any more.");
-  if (sel.topicId === replacementTopicId) throw new Error("Pick a different topic to swap in.");
-  const [month, topic, repl] = await Promise.all([
-    prisma.contentMonth.findUnique({ where: { id: sel.monthId }, select: { id: true, monthKey: true, historical: true, status: true, enrollmentId: true } }),
-    prisma.contentTopic.findUnique({ where: { id: sel.topicId }, select: { id: true, title: true, status: true, enrollmentId: true } }),
-    prisma.contentTopic.findUnique({ where: { id: replacementTopicId }, select: { id: true, title: true, status: true, approvalState: true, source: true, proposedState: true, clientDeclinedAt: true, enrollmentId: true } }),
-  ]);
-  if (!month || !topic || !repl) throw new Error("Topic or month not found.");
-  if (!monthIsOpen(month)) throw new Error("That month is closed.");
-  if (repl.enrollmentId !== month.enrollmentId || topic.enrollmentId !== month.enrollmentId) throw new Error("That topic belongs to another client.");
-  if (["FILMED", "EDITING", "DELIVERED"].includes(topic.status)) throw new Error("That one has been filmed — there is nothing to swap.");
-  const footage = await prisma.contentVideo.findFirst({ where: { topicId: topic.id, OR: [{ filmedConfirmedAt: { not: null } }, { status: { in: FOOTAGE_VIDEO_STATUSES } }] }, select: { id: true } });
-  if (footage) throw new Error("That one has been filmed — there is nothing to swap.");
-  if (!clientCanSeeTopic(repl, false)) throw new Error("That topic isn't available to swap in.");
-  if (["FILMED", "EDITING", "DELIVERED"].includes(repl.status)) throw new Error("That topic has already been filmed.");
-  const already = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: repl.id, monthId: month.id } }, select: { status: true } });
-  if (already && ALLOWANCE_SELECTION_STATUSES.includes(already.status)) throw new Error("That topic is already planned for this month.");
-  const by = actor.clientUserId ?? actor.staffUserId ?? actor.kind;
-  return prisma.$transaction(async (tx) => {
-    // Guarded: a second swap of the same carried row finds nothing to remove.
-    const removed = await tx.contentTopicSelection.updateMany({ where: { id: sel.id, status: sel.status }, data: { status: "REMOVED", removedAt: new Date(), removedBy: by, removedReason: "SWAPPED", replacedByTopicId: repl.id } });
-    if (removed.count !== 1) throw new Error("That swap already happened.");
-    // Park the script (and its topic): versions, the shared copy and the
-    // client's decisions are untouched rows — only the month pointer moves.
-    const scriptId = sel.carriedScriptId ?? (await tx.contentScript.findFirst({ where: { topicId: topic.id, monthId: month.id, historical: false }, select: { id: true } }))?.id ?? null;
-    if (scriptId) await tx.contentScript.updateMany({ where: { id: scriptId, monthId: month.id }, data: { monthId: null } });
-    await tx.contentTopic.updateMany({ where: { id: topic.id, monthId: month.id }, data: { monthId: null } });
-    await recordTopicEvent(topic.id, month.enrollmentId, "DESELECTED", actor, { monthId: month.id, fromStatus: topic.status, toStatus: topic.status, db: tx, note: `Swapped for “${repl.title}” in ${month.monthKey}. The script is kept — scripted, not filmed — and can be used for another month.`, evidence: { selectionId: sel.id, scriptId, replacedByTopicId: repl.id } });
-    const r = await selectTopicForMonth(repl.id, month.id, { source: actor.kind === "CLIENT" ? "client" : "staff", actor, status: "SELECTED", db: tx });
-    return { overflow: r.overflow, capacity: r.capacity };
-  }, { maxWait: 15_000, timeout: 30_000 });
-}
+// Oct 21 2026 (Jordan; audit E9): swapCarriedTopic, the client's "swap a
+// carried script", is retired with its portal action. Selections it marked
+// REMOVED (reason SWAPPED) and the scripts it parked stay as recorded.
 
 /**
  * A late filming confirmation for the month a topic was carried FROM (the

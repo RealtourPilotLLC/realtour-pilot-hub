@@ -353,7 +353,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
             {t.approvalState === "APPROVED" && <span className="text-[11px] text-success">approved</span>}
             {t.proposedState && <span className="text-[11px] text-warning">{topicSourceIsCall(t.source) ? `declined on the call — ${t.proposedState === "REJECTED" ? "reject it to confirm" : "unconfirmed"}` : `import mark says ${t.proposedState.toLowerCase()} — unconfirmed`}</span>}
             {topicSourceNeedsApproval(t.source) && t.approvalState !== "APPROVED" && !t.proposedState && <span className="text-[11px] text-muted-2">hidden from the client until approved</span>}
-            {t.carriedFrom && <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] text-warning">carried from {t.carriedFrom} — unfilmed, swappable</span>}
+            {t.carriedFrom && <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] text-warning">carried from {t.carriedFrom}, unfilmed</span>}
             {parkedScript && <span className="text-[11px] text-muted-2">scripted, not filmed</span>}
             {t.alignment && <span className="text-[11px] text-warning" title="Internal only — the client can still use it">check: {t.alignment}</span>}
             {!t.pillarId && t.pillarLabel && <span className="text-[11px] text-muted-2">label “{t.pillarLabel}” not mapped</span>}

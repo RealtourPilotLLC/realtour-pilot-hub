@@ -197,15 +197,22 @@ const COMMS_REASONS: { key: string; label: string; title: string }[] = [
   { key: "spam", label: "Spam", title: "Mute this number until someone un-mutes it" },
 ];
 
+// ONE DISMISS FOR BOTH TABS (Jordan, Oct 21 2026; audit F5): Messages · Waiting
+// on us clears a waiting client with this same control, and the same reasons,
+// as the Texts tab. `groupKey` scopes an email row to its sender group (the
+// email ack the old Handled tick wrote), so clearing one sender never clears
+// another's thread under the same client record.
 export function CommsDismissButton({
   threadKey,
   family,
   clientId,
+  groupKey,
   onCleared,
 }: {
   threadKey: string;
   family: "phone" | "email";
   clientId?: string | null;
+  groupKey?: string;
   onCleared?: (message: string | null) => void;
 }) {
   const router = useRouter();
@@ -222,7 +229,7 @@ export function CommsDismissButton({
   const pick = (reason: string) =>
     start(async () => {
       setErr(null);
-      const r = await markCommsHandled(clientId ?? null, family, undefined, { threadKey, reason }).catch(() => ({
+      const r = await markCommsHandled(clientId ?? null, family, groupKey, { threadKey, reason }).catch(() => ({
         ok: false as const,
         message: "Couldn’t save — try again.",
       }));
@@ -246,7 +253,7 @@ export function CommsDismissButton({
           disabled={busy}
           onClick={() => setOpen(true)}
           title="Clear this conversation — the messages stay in the Inbox, the row goes"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted transition hover:text-foreground disabled:opacity-50"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted transition hover:text-foreground disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <X className="size-4" />} Dismiss
         </button>
@@ -263,12 +270,12 @@ export function CommsDismissButton({
           disabled={busy}
           title={r.title}
           onClick={() => pick(r.key)}
-          className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-foreground/85 hover:bg-surface-2 disabled:opacity-50"
+          className="min-h-11 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-foreground/85 hover:bg-surface-2 disabled:opacity-50"
         >
           {r.label}
         </button>
       ))}
-      <button onClick={() => setOpen(false)} disabled={busy} className="px-1.5 py-1 text-xs text-muted hover:text-foreground">
+      <button onClick={() => setOpen(false)} disabled={busy} className="min-h-11 px-1.5 py-1 text-xs text-muted hover:text-foreground">
         Cancel
       </button>
       {busy && <Loader2 className="size-4 animate-spin text-muted" />}

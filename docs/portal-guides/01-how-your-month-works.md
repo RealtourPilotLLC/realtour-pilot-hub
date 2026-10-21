@@ -13,7 +13,7 @@ Every month follows the same six steps, and your portal shows where you are in e
 
 1. **Plan the month.** On your strategy call we look at what is working and choose the month's topics together. If you plan in writing instead, you pick topics under **Video Topics** and answer a few short questions about each one.
 2. **Scripts.** We write a short script for every topic. You read them under **Video Topics** and approve them or ask for changes.
-3. **Filming.** You book your session under **Schedule**. Starter and Accelerator months have one session. Pro months have two separate four-hour sessions. Sessions are on weekdays.
+3. **Filming.** You book, change or cancel your session in **Your Month**. Starter and Accelerator months have one session. Pro months have two separate four-hour sessions. Sessions are on weekdays.
 4. **Editing.** Your videos are edited within 7 to 10 business days of the end of each session.
 5. **Review.** Each finished video appears under **My Videos**. Approve it, or pause it and leave a note wherever you want a change.
 6. **Download and post.** Once you approve a video, its download and caption are on the same page.

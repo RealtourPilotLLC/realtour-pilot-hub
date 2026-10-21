@@ -1,14 +1,15 @@
 import Link from "next/link";
-import { CalendarClock, Camera, CheckCircle2, ChevronDown, ChevronRight, Clapperboard, Clock, ListChecks, Sparkles, Video } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Clapperboard, ListChecks, Sparkles } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
-import { homeSessionView, readOnlyNotice, type PortalPlanning, type PortalScheduleMonth, type PortalTopicsData } from "@/lib/portal";
+import { readOnlyNotice, type PortalPlanning, type PortalScheduleMonth, type PortalTopicsData } from "@/lib/portal";
 import type { LibraryAttention, VideoListRow } from "@/lib/contentVideos";
 import type { ClientMonthProgress } from "@/lib/monthProgress";
 import type { HomeAction } from "@/lib/portalHome";
 import { awaitingScript } from "@/lib/portalHome";
 import { SCRIPT_WORDS, TOPIC_WORDS, planStepWord } from "@/lib/portalWords";
-import { Card, CardTitle, CountBadge, StatusChip, fmtDate, fmtTime, tzShort } from "@/components/portal/ui";
+import { Card, CardTitle, CountBadge, StatusChip } from "@/components/portal/ui";
 import { ExpectedLine } from "@/components/portal/ExpectedLine";
+import { ComingUpList, comingUpItems } from "@/components/portal/ComingUp";
 import type { SetupCardData } from "@/components/portal/PortalProfile";
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,8 @@ export type HomeData = {
   progress: ClientMonthProgress | null;
   planning: PortalPlanning | null;
   schedule: PortalScheduleMonth | null;
+  /** Every open month's scheduling card (Oct 21 2026: Home's "Coming up" lists them all); null = not loaded. */
+  scheduleMonths: PortalScheduleMonth[] | null;
   videos: { rows: VideoListRow[]; total: number } | null;
   /** Library-wide counts for the badges — a page total would understate them. */
   attention: LibraryAttention | null;
@@ -66,7 +69,8 @@ export type HomeData = {
 // month card's "waiting on your review" each said again what a next-step
 // action already said. They are gone; each to-do appears ONCE (the next step,
 // or "Also waiting on you"), and the month card says where the month stands
-// and when the next call and filming are, linking to Schedule's list.
+// and what is coming up (Oct 21 2026: the whole list, which was the Schedule
+// page's; each item links to where it is changed in Your Month).
 // ===========================================================================
 
 const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -139,35 +143,20 @@ export function HomeV2({ d, actions, href }: {
   );
 }
 
-/** The month's next call and filming, one line each. Schedule holds the full list. */
+/**
+ * What is coming up: every booked strategy call and filming session, soonest
+ * first, each with Change or cancel (in Your Month). Oct 21 2026: the Schedule
+ * page's list, folded in here when Messages took its place in the bottom bar;
+ * booking stays Home's next step, so "Still to book" is not repeated here.
+ */
 function ComingUp({ d, href }: { d: HomeData; href: (tab: string, extra?: string) => string }) {
-  const p = d.planning;
-  const tz = p?.timezone ?? "America/New_York";
-  const now = new Date().getTime();
-  const zoneOf = (iso: string) => tzShort(tz, new Date(iso));
-  const when = (iso: string) => `${fmtDate(iso, tz)} at ${fmtTime(iso, tz)} ${zoneOf(iso)}`;
-  const rows: { key: string; icon: typeof CalendarClock; text: string; meet?: string | null }[] = [];
-  if (p && p.callStatus === "SCHEDULED" && p.callAtISO && Date.parse(p.callAtISO) > now - 3600_000) {
-    rows.push({ key: "call", icon: CalendarClock, text: `Strategy call: ${when(p.callAtISO)}`, meet: p.meetLink ?? null });
-  }
-  const sv = homeSessionView(d.progress, d.schedule, { canBook: d.perms.session, readOnly: d.readOnly });
-  sv.cards.forEach((c, i) => {
-    if (c.state === "BOOKED" && c.startsAtISO && Date.parse(c.startsAtISO) > now) rows.push({ key: `film-${i}`, icon: Camera, text: `Filming session: ${when(c.startsAtISO)}` });
-  });
-  const asked = d.schedule?.requests.find((r) => r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED") ?? null;
-  if (sv.requested && asked) rows.push({ key: "asked", icon: Clock, text: `Filming session requested${asked.slotStartISO ? ` for ${when(asked.slotStartISO)}` : ""}. We're confirming it.` });
-  if (rows.length === 0) return null;
+  if (!d.scheduleMonths) return null;
+  const props = { planning: d.planning, months: d.scheduleMonths, perms: { session: d.perms.session }, readOnly: d.readOnly, topicsHref: href("plan"), topicsLabel: "Your Month", showToBook: false };
+  if (comingUpItems(props).items.length === 0) return null;
   return (
     <div className="mt-3 border-t border-border pt-3">
-      <ul className="space-y-1 text-sm">
-        {rows.map((r) => (
-          <li key={r.key} className="flex flex-wrap items-center gap-x-1.5">
-            <r.icon className="size-4 shrink-0 text-brand" aria-hidden /> <span>{r.text}</span>
-            {r.meet && <a href={r.meet} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center gap-1 font-medium text-brand hover:underline ${focusRing}`}><Video className="size-3.5" aria-hidden /> Join on Google Meet</a>}
-          </li>
-        ))}
-      </ul>
-      <Link href={href("schedule")} className={`mt-1 inline-flex min-h-11 items-center gap-1 text-xs font-medium text-brand hover:underline ${focusRing}`}>See what&rsquo;s coming up <ChevronRight className="size-3.5" aria-hidden /></Link>
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-2">Coming up</div>
+      <ComingUpList {...props} />
     </div>
   );
 }

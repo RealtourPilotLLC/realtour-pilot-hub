@@ -22,7 +22,10 @@ import {
 // outbox row itself):
 //   2 Strategy   the newest APPROVED version, released if it is not
 //                (programOnboarding.releaseStrategyToPortal: the strategy-ready
-//                email only through its own switch and the rollout);
+//                email only through its own switch and the rollout). An
+//                unattended run (maybeAutoOnboard) releases only a version
+//                Jordan approved: an admin's approval waits for his Release
+//                (Oct 21 2026);
 //   3/6 Features every toggle in AUTO_ONBOARD_TOGGLES through
 //                setOnboardingToggle, never "Share scripts without my approval"
 //                (Jordan reviews every script). Bookings is skipped, Kyle
@@ -73,6 +76,10 @@ export type AutoOnboardOpts = {
   /** Write nothing and send nothing: say what each step would do. */
   dryRun?: boolean;
   byAppUserId?: string | null;
+  /** Oct 21 2026: a sweep or a status change, not Jordan's press. An approved
+   *  strategy is released only when Jordan approved it; an admin's approval
+   *  waits for his Release (content/actions.approveStrategy, the same rule). */
+  unattended?: boolean;
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -144,6 +151,13 @@ async function staleHeldWelcomes(clientId: string, email: string): Promise<{ key
   return mine.filter((m) => !live.has(m.enrollmentId));
 }
 
+/** Did the owner approve this strategy version? `approvedBy` is the approver's sign-in email. */
+async function approvedByOwner(approvedBy: string | null): Promise<boolean> {
+  const email = (approvedBy ?? "").trim();
+  if (!email.includes("@")) return false;
+  return (await prisma.appUser.count({ where: { email: { equals: email, mode: "insensitive" }, role: "OWNER" } })) > 0;
+}
+
 /** "their existing program <id> (3 months, 12 scripts, 9 topics)". */
 async function existingPortalWords(enrollmentId: string): Promise<string> {
   const [months, scripts, topics] = await Promise.all([
@@ -187,13 +201,14 @@ export async function autoOnboardClient(clientId: string, by: string, opts: Auto
     // Oct 20 2026 (audit D4): "waiting" is the one rule in strategyAwaiting.ts
     // (DRAFT or INTERNAL_REVIEW, newer than the version in force), so a
     // discovery DRAFT is named here the way the Dashboard names it.
-    const versions = await prisma.contentStrategyVersion.findMany({ where: { enrollmentId: enrollment.id, status: { in: ["DRAFT", "INTERNAL_REVIEW", "APPROVED"] } }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, status: true, releasedAt: true } });
+    const versions = await prisma.contentStrategyVersion.findMany({ where: { enrollmentId: enrollment.id, status: { in: ["DRAFT", "INTERNAL_REVIEW", "APPROVED"] } }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, status: true, releasedAt: true, approvedBy: true } });
     const approved = versions.find((v) => v.status === "APPROVED") ?? null;
     const inForceNo = strategyInForceNo(versions);
     const waiting = versions.find((v) => strategyAwaits(v, inForceNo));
-    const waitingNote = waiting ? ` v${waiting.versionNo} is waiting for your approval (approving releases it).` : "";
+    const waitingNote = waiting ? ` v${waiting.versionNo} is waiting for your approval (your approval releases it).` : "";
     if (!approved) step({ key: "strategy", status: "skipped", detail: `No approved strategy yet.${waitingNote}` });
     else if (approved.releasedAt) step({ key: "strategy", status: "already", detail: `v${approved.versionNo} is in their portal.${waitingNote}` });
+    else if (opts.unattended && !(await approvedByOwner(approved.approvedBy))) step({ key: "strategy", status: "skipped", detail: `v${approved.versionNo} is approved, waiting for Jordan to release it.${waitingNote}` });
     else if (dry) step({ key: "strategy", status: "would", detail: `would release v${approved.versionNo} to their portal (the strategy-ready email only if its switch and the rollout allow it).${waitingNote}` });
     else {
       const { releaseStrategyToPortal } = await import("@/lib/programOnboarding");
@@ -373,7 +388,7 @@ export function reportLine(r: AutoOnboardReport): string {
 export async function maybeAutoOnboard(clientId: string, by: string, why: string): Promise<AutoOnboardReport | null> {
   try {
     if (!(await isAutomationEnabled("auto_onboarding"))) return null;
-    const r = await autoOnboardClient(clientId, by, { sendWelcome: true });
+    const r = await autoOnboardClient(clientId, by, { sendWelcome: true, unattended: true });
     console.info(`[auto-onboarding] ${why}: ${reportLine(r)}`);
     if (r.outcome !== "skipped") await prisma.programAutomation.updateMany({ where: { key: "auto_onboarding" }, data: r.outcome === "onboarded" ? { lastRunAt: new Date(), lastError: null, lastErrorAt: null } : { lastRunAt: new Date(), lastError: reportLine(r).slice(0, 2000), lastErrorAt: new Date() } }).catch(() => {});
     return r;

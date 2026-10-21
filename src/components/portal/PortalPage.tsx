@@ -3,7 +3,7 @@ import { etMonthKey, monthLabel, portalLastMonthKey } from "@/lib/contentProgram
 import { portalBookingLinks, type PortalCallBookingView } from "@/lib/callBooking";
 import {
   recordPortalVisit, enrollmentHasMembership, portalScheduleMonths, companySlotDays, portalPlanning, portalTopics, portalInterview, portalStrategy, portalMonthProgress, readOnlyNotice, homeSessionView,
-  type PortalViewer, type PortalScheduleMonth, type PortalSlotDay, type PortalTopicsData, type PortalInterviewView, type PortalStrategyView, type PortalPlanning,
+  type PortalViewer, type PortalSlotDay, type PortalTopicsData, type PortalInterviewView, type PortalStrategyView,
 } from "@/lib/portal";
 import { can } from "@/lib/portalAccess";
 import { withMediaToken, mediaScopeOf, mediaToken } from "@/lib/portalMedia";
@@ -16,7 +16,6 @@ import { SettingsTab, type SettingsData } from "@/components/portal/tabs/Setting
 import { LoadFailed } from "@/components/portal/ui";
 import { HomeV2, type HomeData } from "@/components/portal/tabs/HomeTab";
 import { LibraryV2, VideoDetailV2, type LibraryV2Data, type VideoDetailData } from "@/components/portal/tabs/VideosTab";
-import { ScheduleTab } from "@/components/portal/tabs/ScheduleTab";
 import { ResourcesTab } from "@/components/portal/tabs/ResourcesTab";
 import { MessagesTab, type MessagesTabData } from "@/components/portal/tabs/MessagesTab";
 import { ContactTeam } from "@/components/portal/ContactTeam";
@@ -24,7 +23,7 @@ import { resolvePortalRoute, portalHref, v2HrefFor, baseQueryPairs, portalNav, f
 import { portalMonthKey, portalSessionIndex, selectedPortalMonth } from "@/lib/portalScheduling";
 import { libraryRows, reviewDeadlines } from "@/lib/portalLayout";
 import { homeActions, planModel, libraryView, type HomeAction } from "@/lib/portalHome";
-import { isLibraryFilter } from "@/lib/portalWords";
+import { isLibraryFilter, TEXT_KYLE_START } from "@/lib/portalWords";
 import Link from "next/link";
 import { PortalShell } from "@/components/portal/PortalShell";
 import { PORTAL_MIGRATION_NOTICE, PORTAL_FEEDBACK_QUERY } from "@/lib/portalNotice";
@@ -36,9 +35,10 @@ import { MoreTab, TermsCard } from "@/components/portal/tabs/MoreTab";
 // link) and /portal/me (a signed-in person) both resolve a PortalViewer and
 // hand it here; the page never looks at a cookie or a token itself.
 //
-// Navigation (UI-01, Sep 24 2026): Home · Your Month · Content Library ·
-// Schedule · More (Brand Profile, Messages, Resources, Settings & Team,
-// Terms), in PortalShell — a bottom bar on a phone, a rail on a wide screen.
+// Navigation (UI-01, Sep 24 2026; Oct 21 2026): Home · Your Month · Content
+// Library · Messages · More (Brand Profile, Filming sessions, Resources,
+// Settings & Team, Terms), in PortalShell — a bottom bar on a phone, a rail
+// on a wide screen. The Schedule page's list is on Home and Your Month now.
 // Every page has a real page behind it. Each page loads ONLY its own data,
 // and every load is wrapped so a failure renders as "couldn't load", never
 // as an empty program.
@@ -75,6 +75,10 @@ export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string
 // 24 hours is a phone call: sessionBooking.within24hElapsed, Jordan's rule),
 // and it typed out Kyle's number. It now says the rule the portal enforces and
 // names the owner-editable office line.
+//
+// Oct 21 2026 (Jordan: "Billing questions can go to Kyle. It should say Text
+// Kyle."): the billing line names Kyle and the office number (OFFICE_LINE),
+// not Jordan with no number.
 const defaultTerms = (contact: { name: string; display: string }) => `## The program
 Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. Each month we plan your videos with you, film them at your session, and deliver the finished videos here in your portal.
 
@@ -88,7 +92,7 @@ Every video comes with revision rounds to get it right. Ask right here in the po
 Finished videos are yours to post, share and run ads with. Raw footage stays with us. We may feature finished work in our own portfolio unless you ask us not to.
 
 ## Cancellation
-Month-to-month plans can cancel with notice before the next billing date. Annual commitments run their term as agreed. Questions about billing? Text Jordan directly. This portal never handles payment details.`;
+Month-to-month plans can cancel with notice before the next billing date. Annual commitments run their term as agreed. Questions about billing? ${TEXT_KYLE_START}. This portal never handles payment details.`;
 
 const ID_RE = /^[a-z0-9]{10,40}$/i;
 /** try/catch as a value: ok with the data, or failed (logged) — the tabs render both honestly. */
@@ -193,8 +197,6 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   let interviewRes: { ok: true; data: PortalInterviewView | null } | { ok: false } | null = null;
   let strategyRes: { ok: true; data: PortalStrategyView | null } | { ok: false } | null = null;
   let priorities: string[] = [];
-  let planningRes: { ok: true; data: PortalPlanning | null } | { ok: false } | null = null;
-  let scheduleRes: { ok: true; data: PortalScheduleMonth[] } | { ok: false } | null = null;
   let resourcesRes: { ok: true; data: ResourceGroupView[] } | { ok: false } | null = null;
 
   if (dataTab === "home" || dataTab === "videos") {
@@ -222,6 +224,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       progress: progress.ok ? progress.data : null,
       planning: planning.ok ? planning.data : null,
       schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === monthKey) ?? schedule.data[0] ?? null : null,
+      // Oct 21 2026: Home's "Coming up" lists every open month (the Schedule page's list).
+      scheduleMonths: schedule.ok ? schedule.data : null,
       videos: videos.ok ? { rows: videos.data.rows, total: videos.data.total } : null,
       attention: attention.ok ? attention.data : null,
       topics: topics.ok ? topics.data : null, topicsFailed: !topics.ok,
@@ -315,16 +319,6 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     ]);
     strategyRes = s;
     if (m?.prioritiesJson) { const { monthPriorities } = await import("@/lib/contentStrategy"); priorities = monthPriorities(m.prioritiesJson); }
-  }
-  if (dataTab === "schedule") {
-    // C14 (Oct 13 2026): Schedule is a read-only "Upcoming" list. Booking,
-    // changing and cancelling all happen in Your Month, so this page loads no
-    // live slots and no booking links.
-    const [p, s] = await Promise.all([
-      attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
-      attempt("schedule months", () => portalScheduleMonths(enrollment)),
-    ]);
-    planningRes = p; scheduleRes = s;
   }
   if (dataTab === "resources") resourcesRes = await attempt("resources", () => publishedResources());
 
@@ -423,7 +417,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   const plan = topicsAll?.ok ? planModel(topicsAll.data, monthKey) : null;
   const published = guides.ok ? guides.data.reduce((n, g) => n + g.resources.length, 0) : 0;
   const nav = portalNav({ publishedResources: published, badges: { plan: badgePlan ? plan?.scripts.length : 0, library: attn?.ok ? attn.data.needReview : 0, messages: messagesUnread } });
-  const linked = { primary: nav.primary.map((i) => ({ ...i, href: portalHref(contextBase, i.dest) })), more: nav.more.map((i) => ({ ...i, href: portalHref(contextBase, i.dest) })) };
+  const navHref = (i: { dest: Parameters<typeof portalHref>[1]; anchor?: string | null }) => `${portalHref(contextBase, i.dest)}${i.anchor ? `#${i.anchor}` : ""}`;
+  const linked = { primary: nav.primary.map((i) => ({ ...i, href: navHref(i) })), more: nav.more.map((i) => ({ ...i, href: navHref(i) })) };
 
   // ---- Home: the one next step ----
   let actions: { primary: HomeAction | null; more: HomeAction[] } = { primary: null, more: [] };
@@ -505,7 +500,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
 
   // ---- Your Month: the guided plan needs the month's planning, its
   // scheduling card and (to book) the live slots — the same loads the
-  // Schedule page makes, each wrapped so a failure reads "couldn't load".
+  // Schedule page made, each wrapped so a failure reads "couldn't load".
   let yourMonth: PlanTabData["yourMonth"] = null;
   if (route.dest === "plan" && route.planView === "month" && !interviewRes) {
     const [p, sm] = await Promise.all([
@@ -534,7 +529,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       schedule: thisMonth, scheduleFailed: !sm.ok,
       slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
       can: { suggest: perms.suggest, session: perms.session, staff: actor.kind === "STAFF", approve: perms.approve },
-      scheduleHref: portalHref(contextBase, "schedule"),
+      // Oct 21 2026: the other open months, for "Also coming up" below the steps.
+      months: sm.ok ? sm.data : null,
       selectedSessionIndex: selectedSession,
       late: lateP ? { schedule: sm.ok ? sm.data.find((m) => m.monthId === lateP.monthId) ?? null : null, scripts: lateScripts } : null,
       selectedScheduleMonthId: scheduleMonthId,
@@ -566,7 +562,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         </>
       ) : null}
     >
-      {query.month && !selectedMonth && (route.dest === "plan" || route.dest === "schedule") && <p role="status" className="mt-4 rounded-xl border border-border bg-surface-2 p-3 text-sm text-muted">That planning month is not available here. Your open months are shown below.</p>}
+      {query.month && !selectedMonth && route.dest === "plan" && <p role="status" className="mt-4 rounded-xl border border-border bg-surface-2 p-3 text-sm text-muted">That planning month is not available here. Your open months are shown below.</p>}
       {route.dest === "home" && home && <HomeV2 d={home} actions={actions} href={tabHref} />}
       {route.dest === "plan" && route.planView && (
         <PlanTab d={{
@@ -585,14 +581,6 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         }} />
       )}
       {route.dest === "library" && (detail ? <VideoDetailV2 d={detail} href={tabHref} /> : <LibraryV2 d={library} failed={libraryFailed} href={tabHref} />)}
-      {route.dest === "schedule" && (
-        <ScheduleTab
-          planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
-          months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
-          perms={{ session: perms.session }} readOnly={readOnly}
-          topicsHref={planHrefs.month} topicsLabel="Your Month"
-        />
-      )}
       {route.dest === "more" && (
         <MoreTab d={{
           items: linked.more, setupLeft, who, staff: actor.kind === "STAFF", clientFirst: (client?.name || "the client").split(/\s+/)[0],

@@ -428,7 +428,7 @@ async function main() {
       return {
         topics,
         planning, planningFailed: false, schedule, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false,
-        hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" },
+        hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" },
         late: { schedule: lateSchedule, scripts: [] }, selectedScheduleMonthId: null,
       };
     }

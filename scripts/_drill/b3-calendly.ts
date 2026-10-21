@@ -649,7 +649,7 @@ async function main() {
     c.ok("Your Month renders the picker in the call step, never after the call is held", /step\.key === "call" && d\.callBooking && planning\.call !== "HELD"/.test(ym) && /<PortalCallPicker/.test(ym));
     const inline = code(read("src/components/portal/CalendlyInline.tsx"));
     c.ok("the embed believes only https://calendly.com AND its own iframe", /e\.origin !== CALENDLY_ORIGIN/.test(inline) && /e\.source !== frame\.current\.contentWindow/.test(inline) && /CALENDLY_ORIGIN = "https:\/\/calendly\.com"/.test(inline));
-    for (const f of ["src/components/portal/tabs/ScheduleTab.tsx", "src/components/portal/tabs/HomeTab.tsx", "src/components/portal/PortalScheduler.tsx"]) {
+    for (const f of ["src/components/portal/ComingUp.tsx", "src/components/portal/tabs/HomeTab.tsx", "src/components/portal/PortalScheduler.tsx"]) {
       const src = code(read(f));
       c.ok(`${path.basename(f)}: the booking link opens a new tab only for an outside address`, !/href=\{(d\.)?bookingUrl\} target="_blank"/.test(src));
     }

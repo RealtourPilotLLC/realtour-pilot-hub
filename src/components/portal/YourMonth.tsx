@@ -16,6 +16,7 @@ import type { MonthBriefView } from "@/lib/monthBriefCore";
 import { MonthBriefPanel } from "@/components/brief/MonthBriefPanel";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalLateScript } from "@/lib/monthLateSession";
+import { ComingUpList, comingUpItems } from "@/components/portal/ComingUp";
 
 // ---------------------------------------------------------------------------
 // YOUR MONTH (§6.4 / §11, Sep 25 2026) — planning and scheduling as one
@@ -23,8 +24,10 @@ import type { PortalLateScript } from "@/lib/monthLateSession";
 // (pure), the numbers from the one planning reader (R01), the booking picker
 // is PortalScheduler (the same actions as ever), and the topics are
 // TopicBank's month view. C14 (Oct 13 2026): this is the ONE place filming is
-// booked, changed or cancelled, and the strategy call changed or cancelled;
-// the Schedule page only lists what is coming up and links back here.
+// booked, changed or cancelled, and the strategy call changed or cancelled.
+// Oct 21 2026: the Schedule page is gone from the portal (Messages took its
+// place in the bottom bar); its list of what is coming up in the OTHER open
+// months, and what is still to book there, sits below this month's steps.
 //
 // Each step carries an id (#step-route, #step-topics, #step-answers,
 // #step-call, #step-filming, #step-scripts) so Home's next step opens the plan
@@ -46,7 +49,9 @@ export type YourMonthData = {
   can: { suggest: boolean; session: boolean; staff?: boolean; approve?: boolean };
   readOnly: boolean;
   filter?: string;
-  hrefs: { month: string; bank: string; scripts: string; schedule: string };
+  hrefs: { month: string; bank: string; scripts: string };
+  /** Every open month's scheduling card, for "Also coming up" (Oct 21 2026); null/absent = not loaded. */
+  months?: PortalScheduleMonth[] | null;
   /** Oct 8 2026: a client who plans their own content — this month's creative brief (links scoped to this visit). */
   brief?: MonthBriefView | null;
   /**
@@ -199,7 +204,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
 
       {/* C14 (Oct 13 2026): a strategy call booked on a month whose steps have
           no call step (planned here, or a client who plans their own videos)
-          is still changed or cancelled here — Schedule links to #step-call. */}
+          is still changed or cancelled here — Home's coming-up list links to #step-call. */}
       {!steps.some((x) => x.key === "call") && d.callBooking?.booked && (
         <section id="step-call" aria-labelledby="booked-call-line" className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 px-4 py-3 backdrop-blur">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Strategy call</div>
@@ -207,6 +212,10 @@ export function YourMonth({ d }: { d: YourMonthData }) {
           <PortalCallPicker view={d.callBooking} />
         </section>
       )}
+
+      {/* Oct 21 2026: the other open months' calls and sessions, and what is
+          still to book there (this month's own are in the steps above). */}
+      <AlsoComingUp d={d} thisMonthIds={[p.monthId, s?.monthId ?? null, p.late?.monthId ?? null].filter((x): x is string => !!x)} />
 
       {/* Keep the full bank in reach when choosing or answering, then fold it
           so a later action does not compete with a second work area. A client
@@ -226,6 +235,20 @@ export function YourMonth({ d }: { d: YourMonthData }) {
         </details>
       </section>}
     </div>
+  );
+}
+
+/** The rest of the program's schedule, from Schedule's old list (ComingUp.tsx). Nothing when nothing else is booked or left to book. */
+function AlsoComingUp({ d, thisMonthIds }: { d: YourMonthData; thisMonthIds: string[] }) {
+  if (!d.months || d.scheduleFailed) return null;
+  const props = { planning: d.planning, months: d.months, perms: { session: d.can.session }, readOnly: d.readOnly, topicsHref: d.hrefs.month, topicsLabel: "Your Month", excludeMonthIds: thisMonthIds, includeCall: false };
+  const { items, toBook } = comingUpItems(props);
+  if (items.length === 0 && toBook.length === 0) return null;
+  return (
+    <section aria-labelledby="also-coming-up" className="rounded-2xl border border-border bg-surface/70 px-4 py-3 backdrop-blur">
+      <h3 id="also-coming-up" className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Also coming up</h3>
+      <ComingUpList {...props} />
+    </section>
   );
 }
 

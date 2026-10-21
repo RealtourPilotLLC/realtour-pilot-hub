@@ -5,8 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 import { setOwnerOverride, type OwnerDuty, OWNER_DUTIES } from "@/lib/contentProgram";
 import {
-  changePackage, setCallMode, setEnrollmentStatus, setBillingTerms, setWorkflowFlags, setOverride,
-  OVERRIDE_KEYS, type CurrentMonthChoice, type OverrideKey,
+  setCallMode, setBillingTerms, setWorkflowFlags, setOverride,
+  OVERRIDE_KEYS, type OverrideKey,
 } from "@/lib/enrollmentChanges";
 import {
   createAssetWithVersion, addAssetVersion, setActiveAssetVersion, retireAsset, updateAssetMeta,
@@ -45,45 +45,10 @@ function touch(enrollmentId: string) {
 }
 
 // ---- package & enrollment --------------------------------------------------------------
-
-/**
- * A package change (spec §17). The caller MUST supply an effective month and,
- * when that month is the one in flight, an explicit choice for its obligation:
- * KEEP the number already minted, or APPLY the new one. There is no silent
- * rewrite path — `changePackage` throws when the choice is missing.
- */
-export async function changePackageAction(
-  enrollmentId: string,
-  input: { package: string; effectiveMonthKey: string | null; currentMonthChoice: CurrentMonthChoice | null; videosPerMonth?: number | null; sessionsPerMonth?: number | null; reason?: string | null },
-): Promise<Result & { effectiveMonthKey?: string; obligationMonthKey?: string }> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
-  try {
-    const me = await actor();
-    const r = await changePackage(enrollmentId, input, me.email);
-    touch(enrollmentId);
-    // A decision this one CANCELLED is named out loud. Superseding a scheduled
-    // change silently would be exactly the rewrite Jordan's rule forbids.
-    const cancelled = r.superseded.length
-      ? ` It replaces ${r.superseded.length} decision${r.superseded.length === 1 ? "" : "s"} that had been scheduled and will now never take effect: ${r.superseded.map((x) => x.sentence).join("; ")}. ${r.superseded.length === 1 ? "That row is" : "Those rows are"} kept in the history, marked superseded.`
-      : "";
-    if (r.changeIds.length === 0) {
-      // A true no-op cancels nothing now (enrollmentChanges.supersedePending);
-      // a revert that only retires a LATER scheduled decision says so.
-      return {
-        ok: true,
-        message: r.superseded.length
-          ? `The current terms stay.${cancelled}`
-          : "Nothing changed — those are already this client's terms from that month, and nothing scheduled was cancelled.",
-      };
-    }
-    return {
-      ok: true,
-      effectiveMonthKey: r.effectiveMonthKey,
-      obligationMonthKey: r.obligationMonthKey,
-      message: `Recorded. The package changes from ${r.effectiveMonthKey}; the video/session quantities apply from ${r.obligationMonthKey}.${cancelled} No invoice, subscription or payment was touched.`,
-    };
-  } catch (e) { return fail(e); }
-}
+// Oct 21 2026 (audit D13): changePackageAction and setEnrollmentStatusAction
+// (owner-only twins of the staff actions in content/actions.ts, over the same
+// ledgered setters) are gone. One package and status card serves Jordan and
+// Kyle alike: staffChangePackageAction / staffSetEnrollmentStatusAction.
 
 export async function setCallModeAction(enrollmentId: string, mode: CallMode, noCallEligible: boolean | null, reason?: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
@@ -92,23 +57,6 @@ export async function setCallModeAction(enrollmentId: string, mode: CallMode, no
     await setCallMode(enrollmentId, mode, noCallEligible, me.email, reason);
     touch(enrollmentId);
     return { ok: true, message: "Call requirement saved — open months re-derive their planning path." };
-  } catch (e) { return fail(e); }
-}
-
-export async function setEnrollmentStatusAction(enrollmentId: string, status: "ACTIVE" | "PAUSED" | "ENDED", reason?: string): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
-  try {
-    const me = await actor();
-    await setEnrollmentStatus(enrollmentId, status, me.email, reason);
-    touch(enrollmentId);
-    // Jordan's rule: paused/ended KEEP read-only portal access to released
-    // work unless a person explicitly revokes it on the access card.
-    return {
-      ok: true,
-      message: status === "ACTIVE"
-        ? "Back to active."
-        : `Marked ${status.toLowerCase()}. Their portal still opens, read-only, on work already released — revoke it on the Portal access card if that is what you want. No subscription was cancelled.`,
-    };
   } catch (e) { return fail(e); }
 }
 

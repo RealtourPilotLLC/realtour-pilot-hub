@@ -323,7 +323,8 @@ async function main() {
     const foreign = await download.GET(new NextRequest(`http://localhost/api/portal/download/${firstVideo.id}?m=${encodeURIComponent(mediaToken(firstVideo.id, { kind: "membership", id: other.membershipId! }))}`), { params: Promise.resolve({ videoId: firstVideo.id }) });
     await prisma.clientMembership.update({ where: { id: f.membershipId! }, data: { revokedAt: new Date() } });
     const revoked = await download.GET(new NextRequest(`http://localhost/api/portal/download/${firstVideo.id}?m=${encodeURIComponent(mediaToken(firstVideo.id, scope))}`), { params: Promise.resolve({ videoId: firstVideo.id }) });
-    const revokedWrite = await pa.portalMarkPosted(auth, firstVideo.id, true);
+    // Oct 21 2026: "Mark as posted" is retired; a caption edit is the same suggest-gated write on this video.
+    const revokedWrite = await pa.portalSaveCaption(auth, firstVideo.id, { kind: "CAPTION", body: "A revoked seat's caption" });
     c.ok("foreign and revoked memberships cannot download or mutate this client's final", foreign.status === 403 && revoked.status === 403 && !revokedWrite.ok && mediaPaths.length === 1);
     const finalScripts = await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } } });
     c.ok("the journey keeps agreed script versions and creates no client sends or provider bookings", finalScripts.length === 2 && finalScripts.every((s) => s.body.includes("Your first weekend sets the tone.")) && await prisma.outboxMessage.count() === 0 && await prisma.programBookingAttempt.count() === 0 && await prisma.programAutomation.count({ where: { enabled: true, key: { notIn: ["portal_login_email"] } } }) === 0 && fence.blocked.length === 0, fence.blocked.join(", "));

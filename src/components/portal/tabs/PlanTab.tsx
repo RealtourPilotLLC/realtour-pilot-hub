@@ -64,7 +64,7 @@ export type PlanTabData = {
   /** Oct 20 2026 (audit E1): may approve scripts (the account owner). */
   canApprove?: boolean;
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
-  yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
+  yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> | null;
 };
 
 export function PlanTab({ d }: { d: PlanTabData }) {
@@ -126,7 +126,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
           planning: d.yourMonth.planning && d.yourMonth.schedule
             ? { ...d.yourMonth.planning, deferredAtISO: d.yourMonth.schedule.deferredAtISO }
             : d.yourMonth.planning,
-          hrefs: { month: d.hrefs.month, bank: d.hrefs.bank, scripts: d.hrefs.scripts, schedule: d.yourMonth.scheduleHref },
+          hrefs: { month: d.hrefs.month, bank: d.hrefs.bank, scripts: d.hrefs.scripts },
         }} />
       ) : (
         <>

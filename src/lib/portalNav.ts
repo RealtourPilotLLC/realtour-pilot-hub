@@ -3,8 +3,8 @@
 // components and the drill all read the same map.
 //
 // The client IA is five destinations — Home · Your Month (key "plan") ·
-// Content Library · Schedule · More (Brand Profile, Messages, Resources,
-// Settings & Team, Terms). Until Oct 6 2026 that was the "v2" layout behind
+// Content Library · Messages · More (Brand Profile, Filming sessions,
+// Resources, Settings & Team, Terms). Until Oct 6 2026 that was the "v2" layout behind
 // `portal_layout_v2`, beside the old six tabs ("v1"); since Jordan's "I want
 // to just be fully transitioned to the new layout" (Oct 6 2026) it is the
 // only layout, for everyone.
@@ -17,9 +17,17 @@
 //     carry the old tab keys — ?tab=videos, topics, ideas, strategy, profile,
 //     settings, library… Each resolves to its page here; unknown → Home. A
 //     stray `layout=v2` from an old staff-preview link is simply ignored.
+//
+// MESSAGES IN THE BAR (Jordan, Oct 21 2026; audit E13). Schedule held one of
+// the five bar slots with a read-only copy of Home's "coming up" and Your
+// Month's steps, while Messages, the only two-way channel, sat under More.
+// Messages now has Schedule's slot (with its unread count); the list folded
+// into Home and Your Month (components/portal/ComingUp.tsx); requesting,
+// changing or cancelling a session stays in Your Month, and More links there
+// ("Filming sessions"). An old ?tab=schedule lands on Your Month.
 // ---------------------------------------------------------------------------
 
-export const PORTAL_DESTS = ["home", "plan", "library", "schedule", "more", "brand", "messages", "resources", "team", "terms"] as const;
+export const PORTAL_DESTS = ["home", "plan", "library", "messages", "more", "brand", "resources", "team", "terms"] as const;
 export type PortalDest = (typeof PORTAL_DESTS)[number];
 
 /** My Plan's subviews: this month's topics, scripts awaiting approval, the topic bank, the strategy. */
@@ -31,7 +39,7 @@ export type PlanView = (typeof PLAN_VIEWS)[number];
  * the old tab keys (the loaders were written against them); "more" loads
  * nothing page-specific. Internal only — never written into a link.
  */
-export type PortalDataTab = "home" | "videos" | "topics" | "strategy" | "schedule" | "resources" | "messages" | "profile" | "settings" | "terms" | "more";
+export type PortalDataTab = "home" | "videos" | "topics" | "strategy" | "resources" | "messages" | "profile" | "settings" | "terms" | "more";
 
 export type PortalRoute = {
   /** The page this address renders. */
@@ -51,7 +59,8 @@ const DEST_OF: Record<string, { dest: PortalDest; planView?: PlanView }> = {
   ideas: { dest: "plan", planView: "bank" },
   strategy: { dest: "plan", planView: "strategy" },
   plan: { dest: "plan" },
-  schedule: { dest: "schedule" },
+  // Oct 21 2026: the Schedule page is retired; its sessions are booked, changed and listed in Your Month.
+  schedule: { dest: "plan", planView: "month" },
   resources: { dest: "resources" },
   messages: { dest: "messages" },
   profile: { dest: "brand" },
@@ -64,7 +73,7 @@ const DEST_OF: Record<string, { dest: PortalDest; planView?: PlanView }> = {
 
 /** A destination's data block. */
 const DATA_OF: Record<PortalDest, PortalDataTab> = {
-  home: "home", library: "videos", schedule: "schedule", resources: "resources", messages: "messages",
+  home: "home", library: "videos", resources: "resources", messages: "messages",
   brand: "profile", team: "settings", terms: "terms", more: "more",
   plan: "topics", // pv=strategy → "strategy", below
 };
@@ -101,7 +110,7 @@ export function resolvePortalRoute(q: { tab?: string | null; pv?: string | null 
 }
 
 /** Destinations that live under More — the bottom bar lights "More" for them. */
-export const MORE_DESTS: readonly PortalDest[] = ["more", "brand", "messages", "resources", "team", "terms"];
+export const MORE_DESTS: readonly PortalDest[] = ["more", "brand", "resources", "team", "terms"];
 export const primaryDestOf = (dest: PortalDest): PortalDest => (MORE_DESTS.includes(dest) ? "more" : dest);
 
 /**
@@ -137,21 +146,27 @@ export function baseQueryPairs(base: string): [string, string][] {
 
 // ---- navigation --------------------------------------------------------------
 
-export type NavItem = { dest: PortalDest; label: string; short: string; badge: number; hint?: string | null };
+export type NavItem = {
+  dest: PortalDest; label: string; short: string; badge: number; hint?: string | null;
+  /** A spot on the destination's page ("step-filming"): More's Filming sessions opens Your Month's filming step. */
+  anchor?: string | null;
+};
 export type NavBadges = { plan?: number; library?: number; messages?: number; brand?: number };
 
 /**
  * The navigation. Resources is listed ONLY when at least one guide is
  * published — an empty Resources page is not a launch feature (audit §6).
  * Messages is always listed: CP-13's conversation exists, and a paused or
- * view-only seat still reads it (the page says why it cannot write).
+ * view-only seat still reads it (the page says why it cannot write). Since
+ * Oct 21 2026 it is in the bar, carrying its own unread count.
  */
 export function portalNav(input: { publishedResources: number; badges?: NavBadges }): { primary: NavItem[]; more: NavItem[] } {
   const b = input.badges ?? {};
   const n = (x: number | undefined) => (typeof x === "number" && x > 0 ? x : 0);
   const more: NavItem[] = [
     { dest: "brand", label: "Brand Profile", short: "Brand", badge: n(b.brand), hint: "Colors, logo, fonts, links, music" },
-    { dest: "messages", label: "Messages", short: "Messages", badge: n(b.messages), hint: "Your conversation with the team" },
+    // Oct 21 2026: requesting, changing or cancelling a session, reachable from More (it happens in Your Month).
+    { dest: "plan", label: "Filming sessions", short: "Sessions", badge: 0, hint: "Book, change or cancel a session in Your Month", anchor: "step-filming" },
     ...(input.publishedResources > 0 ? [{ dest: "resources" as const, label: "Resources", short: "Resources", badge: 0, hint: "Short guides for each step" }] : []),
     { dest: "team", label: "Settings & Team", short: "Settings", badge: 0, hint: "Your account and who else is on it" },
     { dest: "terms", label: "Terms", short: "Terms", badge: 0, hint: "How the program works" },
@@ -162,9 +177,9 @@ export function portalNav(input: { publishedResources: number; badges?: NavBadge
     // page. The destination key stays "plan", so every link still lands.
     { dest: "plan", label: "Your Month", short: "Month", badge: n(b.plan) },
     { dest: "library", label: "Content Library", short: "Library", badge: n(b.library) },
-    { dest: "schedule", label: "Schedule", short: "Schedule", badge: 0 },
-    // More carries the unread replies so they are never hidden behind it.
-    { dest: "more", label: "More", short: "More", badge: n(b.messages) },
+    // Oct 21 2026: Messages has Schedule's old slot, with its unread replies.
+    { dest: "messages", label: "Messages", short: "Messages", badge: n(b.messages) },
+    { dest: "more", label: "More", short: "More", badge: 0 },
   ];
   return { primary, more };
 }

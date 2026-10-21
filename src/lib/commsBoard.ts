@@ -37,6 +37,10 @@ export type CommsGroup = {
   /** stable per-sender key — the React key AND the Handled tick's ack scope,
    *  so two senders mis-filed under one client record never share a tick */
   groupKey: string;
+  /** the conversation's thread key (`c:<clientId>`, `c:<clientId>#<taskId>`,
+   *  `e:<group>`): the Dismiss tick's cut, the same key the Texts tab's
+   *  Dismiss writes (Oct 21 2026, one dismiss path for both tabs) */
+  key: string;
   /** the SENDER the group is keyed by — for email this is the actual From
    *  name, not the (sometimes mis-attributed) client record */
   clientName: string;
@@ -98,6 +102,7 @@ async function commsBoardsFor(families: ("phone" | "email")[], now: Date, opts: 
   const groups = (family: "phone" | "email"): CommsGroup[] => threads.filter((t) => t.family === family).map((t) => ({
     clientId: t.clientId ?? "",
     groupKey: t.groupKey,
+    key: t.key,
     clientName: t.displayName,
     isVip: t.isVip,
     items: t.pending.map((i) => ({

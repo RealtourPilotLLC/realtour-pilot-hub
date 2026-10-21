@@ -14,8 +14,10 @@ import { cn } from "@/lib/utils";
 // around whichever destination PortalPage renders. Server-only markup — no
 // client state, so nothing can be left "open" and nothing needs JS to work.
 //
-//   phone (<640px)   a fixed bottom bar, Home · Plan · Library · Schedule ·
-//                    More, each 48px tall with an icon, a word and a count;
+//   phone (<640px)   a fixed bottom bar, Home · Month · Library · Messages ·
+//                    More, each 48px tall with an icon, a word and a count
+//                    (Oct 21 2026: Messages took Schedule's slot, unread
+//                    count and all; see lib/portalNav);
 //   tablet           the same five as a segmented bar under the header;
 //   desktop (≥1024)  a compact left rail: the four, then More's pages listed
 //                    inline so nothing on a wide screen hides behind a click.
@@ -26,9 +28,11 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 const ICON: Record<PortalDest, LucideIcon> = {
-  home: Home, plan: ClipboardList, library: Clapperboard, schedule: CalendarClock, more: MoreHorizontal,
-  brand: Palette, messages: MessageSquare, resources: BookOpen, team: Settings, terms: ScrollText,
+  home: Home, plan: ClipboardList, library: Clapperboard, messages: MessageSquare, more: MoreHorizontal,
+  brand: Palette, resources: BookOpen, team: Settings, terms: ScrollText,
 };
+/** The unread count is Messages'; every other count is things waiting. */
+const badgeWord = (i: NavItem) => (i.dest === "messages" ? "unread" : "waiting");
 const focus = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 type Linked = NavItem & { href: string };
 
@@ -73,7 +77,7 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
           <div className="sticky top-6 mt-6 space-y-1">
             {rail.map((i) => <RailLink key={i.dest} i={i} active={active === i.dest} />)}
             <div className="px-3 pb-1 pt-5 text-[10px] font-semibold uppercase tracking-widest text-muted-2">More</div>
-            {nav.more.map((i) => <RailLink key={i.dest} i={i} active={dest === i.dest} small />)}
+            {nav.more.map((i) => <RailLink key={`${i.dest}:${i.anchor ?? ""}`} i={i} active={dest === i.dest && !i.anchor} small />)}
           </div>
         </nav>
 
@@ -86,7 +90,7 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
               return (
                 <Link key={i.dest} href={i.href} aria-current={on ? "page" : undefined} className={cn("flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-[13px] font-semibold", focus, on ? "bg-brand-action text-white shadow" : "text-muted hover:text-foreground")}>
                   <Icon className="size-4" aria-hidden /> {i.short}
-                  <CountBadge n={i.badge} label={i.dest === "more" ? "unread" : "waiting"} className={on ? "bg-white text-brand" : ""} />
+                  <CountBadge n={i.badge} label={badgeWord(i)} className={on ? "bg-white text-brand" : ""} />
                 </Link>
               );
             })}
@@ -101,7 +105,7 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
         </div>
       </div>
 
-      {/* PHONE BAR — Home · Plan · Library · Schedule · More, 48px targets. */}
+      {/* PHONE BAR — Home · Month · Library · Messages · More, 48px targets. */}
       <nav aria-label="Portal sections" className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 backdrop-blur sm:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
         <ul className="mx-auto grid max-w-3xl grid-cols-5">
           {nav.primary.map((i) => {
@@ -112,7 +116,7 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
                 <Link href={i.href} aria-current={on ? "page" : undefined} className={cn("flex min-h-12 flex-col items-center justify-center gap-0.5 py-1.5 text-[11px] font-semibold", focus, "focus-visible:-outline-offset-2", on ? "text-brand" : "text-muted")}>
                   <span className="relative">
                     <Icon className="size-5" aria-hidden />
-                    {i.badge > 0 && <CountBadge n={i.badge} label={i.dest === "more" ? "unread" : "waiting"} className="absolute -right-3 -top-1.5 min-w-4 px-1 text-[10px] leading-4" />}
+                    {i.badge > 0 && <CountBadge n={i.badge} label={badgeWord(i)} className="absolute -right-3 -top-1.5 min-w-4 px-1 text-[10px] leading-4" />}
                   </span>
                   {i.short}
                 </Link>
@@ -126,12 +130,13 @@ export function PortalShell({ clientName, dest, nav, notices, footer, children }
 }
 
 function RailLink({ i, active, small = false }: { i: Linked; active: boolean; small?: boolean }) {
-  const Icon = ICON[i.dest];
+  // More's link to a spot on another page (Filming sessions → Your Month) wears its own icon.
+  const Icon = i.anchor === "step-filming" ? CalendarClock : ICON[i.dest];
   return (
     <Link href={i.href} aria-current={active ? "page" : undefined} className={cn("flex min-h-11 items-center gap-2.5 rounded-xl px-3 font-semibold", small ? "text-[13px]" : "text-sm", focus, active ? "bg-brand-action text-white shadow" : "text-muted hover:bg-surface hover:text-foreground")}>
       <Icon className="size-4 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1 truncate">{i.label}</span>
-      <CountBadge n={i.badge} label={i.dest === "messages" ? "unread" : "waiting"} className={active ? "bg-white text-brand" : ""} />
+      <CountBadge n={i.badge} label={badgeWord(i)} className={active ? "bg-white text-brand" : ""} />
     </Link>
   );
 }

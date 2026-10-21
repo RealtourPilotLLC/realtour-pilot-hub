@@ -56,22 +56,9 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // Orders count + lifetime spend exclude cancelled, to match the segment chip.
   const orderCount = client.projects.filter((p) => p.status !== "CANCELLED").length;
 
-  // The last thing the CLIENT said, for the AI draft hint: their newest inbound
-  // message in comms memory. Oct 20 2026 (audit F9): this used to be the newest
-  // timeline line matching /text:|email|…/, and the webhook writes our OWN
-  // outbound as "OpenPhone outgoing text: …", which matched, so the email draft
-  // could be a reply to our own text (and the prefix kept it from deduping
-  // against the real turns, so it was appended as a fresh client turn).
-  const lastInbound =
-    (
-      await prisma.commLog
-        .findFirst({
-          where: { clientId: client.id, direction: "in", channel: { in: ["text", "email"] } },
-          orderBy: { occurredAt: "desc" },
-          select: { body: true },
-        })
-        .catch(() => null)
-    )?.body ?? "";
+  // Oct 21 2026 (audit F9, Jordan): one email draft on this page, ClientEmails'
+  // Gmail-thread "AI-draft a reply". The customer-notes card's own "Email
+  // draft" tab, and the last-inbound read that fed it, are gone.
 
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true, overridesJson: true } }).catch(() => null);
 
@@ -332,9 +319,6 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               card pushes edits straight back — see saveCustomerNotes. */}
           <ClientWorkspace
             clientId={client.id}
-            hasPhone={!!client.phone}
-            email={client.email}
-            lastInbound={scrub(lastInbound)}
             notes={notesHtmlToText(client.generalNotes)}
             notesSyncedAt={client.notesSyncedAt ? etDateTime(client.notesSyncedAt) : null}
             notesSyncError={client.notesSyncError}

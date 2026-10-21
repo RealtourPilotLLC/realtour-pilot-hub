@@ -15,7 +15,7 @@ import type { CaptionView, DownloadPlan } from "@/lib/postingKit";
 // caption (a save is a new version; nothing overwrites), "Draft a caption"
 // which the server refuses with a reason while the assistant is off, and the
 // client-recorded download facts — Download started / Saved. ("Mark as posted
-// by me" was hidden in C14, Oct 13 2026: the action and column remain.) "Started" (the door opened)
+// by me" was hidden in C14, Oct 13 2026, and retired Oct 21 2026.) "Started" (the door opened)
 // and "Saved" (the page received every byte) are shown apart on purpose
 // (CP-12): the first used to be labelled "Downloaded".
 //
@@ -40,8 +40,6 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
   finalNote: string | null;
   captions: CaptionView[];
   assistant: { enabled: boolean; why: string | null };
-  /** Kept for callers; "Mark as posted" is no longer shown (C14, Oct 13 2026). */
-  postedAtISO?: string | null;
   downloadStartedAtISO: string | null;
   downloadCompletedAtISO: string | null;
   canEdit: boolean;

@@ -276,7 +276,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           <div className="mt-2">
             <PostingKitPanel
               videoId={d.video.id} title={d.video.title} downloadHref={d.kit.access.download ? d.downloadHref : null} download={d.kit.download} access={d.kit.access} finalLabel={d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
-              captions={d.kit.captions} assistant={d.kit.assistant} postedAtISO={d.kit.postedAtISO} downloadStartedAtISO={d.kit.downloadStartedAtISO} downloadCompletedAtISO={d.kit.downloadCompletedAtISO}
+              captions={d.kit.captions} assistant={d.kit.assistant} downloadStartedAtISO={d.kit.downloadStartedAtISO} downloadCompletedAtISO={d.kit.downloadCompletedAtISO}
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />
             {d.kit.final?.approvedByLabel && <p className="mt-2 text-[11px] text-muted-2">{versionWords(d.kit.final.label)} was approved by {d.kit.final.approvedByLabel}{d.kit.final.approvedAtISO ? ` on ${fmtShort(d.kit.final.approvedAtISO)}` : ""}.</p>}

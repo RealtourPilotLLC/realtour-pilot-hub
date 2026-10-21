@@ -125,6 +125,31 @@ async function main() {
     }
 
     // =========================================================================
+    c.head("2b · Oct 21 2026: only Jordan's approval releases; an admin's waits for his Release");
+    {
+      const { setOwnerOverride } = await import("@/lib/contentProgram");
+      const kyle = await prisma.appUser.create({ data: { name: "Kyle", email: "kyle@auto.test", role: "ADMIN", status: "ACTIVE" } });
+      const W = await mkClient("Wren Waiting", "wren@example.test");
+      await setOwnerOverride("ENROLLMENT", W.enrollmentId, "STRATEGY", kyle.id, owner.email);
+      const v = await mkVersion(W, 1, "INTERNAL_REVIEW", [section("brand-overview", "Brand Overview", "Serving the Main Line.", 1)]);
+      await setSession({ uid: kyle.id, email: kyle.email, role: kyle.role });
+      const r = await actions.approveStrategy(v.id);
+      const after = await prisma.contentStrategyVersion.findUniqueOrThrow({ where: { id: v.id } });
+      c.ok("an admin holding the strategy duty approves: APPROVED, not released, and the message says it waits for Jordan", r.ok && after.status === "APPROVED" && !after.releasedAt && /waiting for Jordan to release/.test(r.message), r.message);
+      c.ok("…Jordan's bell says so, once", (await prisma.notification.count({ where: { kind: "strategy_release_waiting" } })) === 1);
+      const releaseByAdmin = await actions.releaseStrategy(v.id);
+      c.ok("…the admin still cannot release it (the Release button stays owner-only)", !releaseByAdmin.ok && !(await prisma.contentStrategyVersion.findUniqueOrThrow({ where: { id: v.id } })).releasedAt, releaseByAdmin.message);
+      const unattended = await auto.autoOnboardClient(W.id, "auto-onboarding (drill sweep)", { sendWelcome: false, unattended: true, dryRun: true });
+      c.ok("…an unattended onboarding run does not release an admin's approval either", unattended.steps.find((s) => s.key === "strategy")?.status === "skipped" && /waiting for Jordan to release/.test(unattended.steps.find((s) => s.key === "strategy")?.detail ?? ""), JSON.stringify(unattended.steps.find((s) => s.key === "strategy")));
+      await setSession({ uid: owner.id, email: owner.email, role: owner.role });
+      const rel = await actions.releaseStrategy(v.id);
+      c.ok("Jordan's Release puts it in the portal", rel.ok && !!(await prisma.contentStrategyVersion.findUniqueOrThrow({ where: { id: v.id } })).releasedAt, rel.message);
+      const v2 = await mkVersion(W, 2, "INTERNAL_REVIEW", [section("brand-overview", "Brand Overview", "Serving the whole Main Line.", 1)]);
+      const ownRun = await actions.approveStrategy(v2.id);
+      c.ok("Jordan's own approval still releases at once", ownRun.ok && !!(await prisma.contentStrategyVersion.findUniqueOrThrow({ where: { id: v2.id } })).releasedAt && /Released to the portal/.test(ownRun.message), ownRun.message);
+    }
+
+    // =========================================================================
     c.head("3 · confidentialFilter ignores short pieces");
     {
       const F = await mkClient("Filter Example", "filter@example.test");

@@ -364,13 +364,17 @@ async function main() {
 
     const settingsTab = read("src/app/content/[id]/tabs/SettingsTab.tsx");
     const ws = read("src/components/content/Workspace.tsx");
-    c.ok("the Settings tab mounts the ledgered controls for OWNER/ADMIN (package & status for the non-owner)", /<EnrollmentControls/.test(settingsTab) && /ctx\.staffEyes/.test(settingsTab) && /packageAndStatus=\{!ctx\.ownerEyes\}/.test(settingsTab));
+    // CHANGED Oct 21 2026 (audit D13, Jordan): ONE package and status card for the owner and admins alike.
+    c.ok("the Settings tab mounts the ledgered controls for OWNER/ADMIN, package & status for both", /<EnrollmentControls/.test(settingsTab) && /ctx\.staffEyes/.test(settingsTab) && !/packageAndStatus/.test(settingsTab + ws));
     c.ok("the controls post to the ledgered actions only — the legacy card and saveEnrollmentSettings are gone", /staffChangePackageAction\(/.test(ws) && /staffSetEnrollmentStatusAction\(/.test(ws) && !/saveEnrollmentSettings\(|function EnrollmentSettingsCard/.test(ws));
     // Finding 5/14: Kyle's panel below the card no longer says "Only Jordan
     // changes a package", nor repeats a button-less status section.
     const sp = read("src/components/content/SettingsPanel.tsx");
     c.ok("OLD: the panel under Kyle's card told him 'Only Jordan changes a package.'", /Only Jordan changes a package\./.test(show("src/components/content/SettingsPanel.tsx")));
-    c.ok("NEW: the Settings tab passes packageHandledAbove for ADMIN, and the panel then drops its package + status copies", /packageHandledAbove=\{ctx\.staffEyes && !ctx\.ownerEyes\}/.test(settingsTab) && /!packageHandledAbove && <PackageCard/.test(sp) && /!packageHandledAbove && <Section icon=\{Settings2\} title="Enrollment status"/.test(sp) && !/Only Jordan changes a package/.test(sp));
+    c.ok("NEW: the Settings tab passes packageHandledAbove for OWNER and ADMIN, and the panel then drops its package + status copies", /packageHandledAbove=\{ctx\.staffEyes\}/.test(settingsTab) && /!packageHandledAbove && <PackageCard/.test(sp) && /!packageHandledAbove && <Section icon=\{Settings2\} title="Enrollment status"/.test(sp) && !/Only Jordan changes a package/.test(sp));
+    // Oct 21 2026 (audit D13): the owner-only twins are gone; the panel's own copies change nothing.
+    c.ok("the owner-only changePackageAction / setEnrollmentStatusAction are gone, and the panel has no package form or status buttons", !("changePackageAction" in wa) && !("setEnrollmentStatusAction" in wa) && !/changePackageAction|setEnrollmentStatusAction|Record the package change/.test(sp));
+    c.ok("ONE call-mode control: Program style's Required · Optional · Off; the panel's 'Planning & call requirement' form is gone", /CALL_MODES/.test(read("src/components/content/ProgramStyleCard.tsx")) && /setCallModeAction\(/.test(read("src/components/content/ProgramStyleCard.tsx")) && !/Planning &amp; call requirement|Planning & call requirement|CallModeForm|setCallModeAction/.test(sp));
   }
 
   // =========================================================================

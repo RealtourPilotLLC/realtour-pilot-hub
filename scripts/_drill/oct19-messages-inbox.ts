@@ -167,8 +167,10 @@ async function main() {
     c.ok("its leads are messagesBoard's: Kyle's and nobody's, not James's", !!shown && shown.leads.map((l) => l.id).join() === kyleBoard.leads.map((l) => l.id).join() && shown.leads.some((l) => l.id === leadKyle.id && l.behind) && shown.leads.some((l) => l.id === leadFree.id && l.dueToday) && !shown.leads.some((l) => l.id === leadJames.id));
     const kWaiting = await settle(kTree);
     const kHtml = ssr(kWaiting);
-    const handled = elements(kWaiting, "HandledButton");
-    c.ok("every waiting client has Handled, keyed to its row", handled.length === kyleBoard.waiting.length && kyleBoard.waiting.every((w) => handled.some((h) => h.clientId === w.group.clientId && h.family === w.family && h.groupKey === w.group.groupKey)));
+    // CHANGED Oct 21 2026 (audit F5, Jordan): a waiting client is cleared with the Texts tab's own Dismiss
+    // (reasons, the thread's cut), keyed to its row's conversation and sender group.
+    const handled = elements(kWaiting, "CommsDismissButton");
+    c.ok("every waiting client has the Texts tab's Dismiss, keyed to its row", elements(kWaiting, "HandledButton").length === 0 && handled.length === kyleBoard.waiting.length && kyleBoard.waiting.every((w) => handled.some((h) => h.threadKey === w.group.key && h.clientId === w.group.clientId && h.family === w.family && h.groupKey === w.group.groupKey)));
     const replyLinks = hrefs(kWaiting).filter((h) => h.includes("focus="));
     const vipRow = kyleBoard.waiting.find((w) => w.group.clientId === vip.id)!;
     const brokerRow = kyleBoard.waiting.find((w) => w.group.clientId === broker.id)!;
@@ -188,8 +190,11 @@ async function main() {
     // Waiting, Email and the Outbox do, unless ?test=1. The library list still
     // carries them; the page filters.
     const kTextsReal = kTexts.cards.filter((card) => card.clientId !== fixture.id);
-    c.ok("the tab bar: six tabs in order, with counts (waiting clients + leads; texts owed; drafts in the Outbox)", tabsIn(kHtml) === "waiting,texts,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length) && countOf(kHtml, "texts") === String(kTextsReal.length) && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "texts")}/${countOf(kHtml, "outbox")}`);
-    c.ok("…Texts counts every unanswered text (the unsaved number too), so it differs from the clients waiting", kTexts.cards.length === 3 && kTexts.cards.some((card) => !card.isClient) && kTexts.cards.some((card) => card.clientId === vip.id));
+    // CHANGED Oct 21 2026 (audit F5): one "Waiting on us". Texts still lists every unanswered text,
+    // but its number counts only what Waiting does not show (unsaved and team numbers), never a waiting client twice.
+    const kTextsOnlyHere = kTextsReal.filter((card) => !card.clientId).length;
+    c.ok("the tab bar: six tabs in order, with counts (waiting clients + leads; texts from unsaved and team numbers; drafts in the Outbox)", tabsIn(kHtml) === "waiting,texts,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length) && countOf(kHtml, "texts") === String(kTextsOnlyHere) && kTextsOnlyHere >= 1 && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "texts")}/${countOf(kHtml, "outbox")}`);
+    c.ok("…the Texts list still holds every unanswered text (the unsaved number and the waiting client too)", kTexts.cards.length === 3 && kTexts.cards.some((card) => !card.isClient) && kTexts.cards.some((card) => card.clientId === vip.id));
     c.ok("each number appears once: no count in the header or the section titles", !/\d/.test(h2s.join(" ")) && !sub.includes(`${kyleBoard.waiting.length} client`) && !sub.includes(`${kyleBoard.leads.length} new lead`) && sub.includes("1 client has waited over 24 hours"), `${h2s.join(" | ")} || ${sub}`);
     c.ok("the Outbox is a tab, not a second line on this view", !kHtml.includes("drafted and ready in the Outbox"));
 
@@ -286,9 +291,11 @@ async function main() {
     c.ok("a photographer: Handled on a waiting client is refused, nothing written", (await markCommsHandled(vip.id, "phone", vipRow.group.groupKey)).ok === false && (await markCommsHandled(broker.id, "email", brokerRow.group.groupKey)).ok === false && await acks() === before);
     c.ok("…and Handled on a lead is refused, the lead stays open", (await markLoopHandled(leadFree.id)).ok === false && await leadState(leadFree.id) === "OPEN");
     await signIn(kyle);
-    const r1 = await markCommsHandled(broker.id, "email", brokerRow.group.groupKey);
+    // Oct 21 2026: the row's Dismiss (CommsDismissButton) sends the thread key and a reason too.
+    const r1 = await markCommsHandled(broker.id, "email", brokerRow.group.groupKey, { threadKey: brokerRow.group.key, reason: "answered elsewhere" });
     const after = await messagesBoard({ now: new Date(), excludeClientIds: [fixture.id], viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
-    c.ok("Kyle: Handled on the email takes it off Waiting on us; the text stays", r1.ok && await acks() === before + 1 && !after.waiting.some((w) => w.group.clientId === broker.id) && after.waiting.some((w) => w.group.clientId === vip.id));
+    const brokerAck = await prisma.appSetting.findFirst({ where: { key: { startsWith: "comms-ack-thread:email:" } }, select: { value: true } });
+    c.ok("Kyle: Dismiss on the email takes it off Waiting on us, with its reason on the record; the text stays", r1.ok && await acks() === before + 2 && /\|answered elsewhere$/.test(brokerAck?.value ?? "") && !after.waiting.some((w) => w.group.clientId === broker.id) && after.waiting.some((w) => w.group.clientId === vip.id), brokerAck?.value);
     const r2 = await markLoopHandled(leadFree.id);
     const after2 = await messagesBoard({ now: new Date(), excludeClientIds: [fixture.id], viewer: { key: "kyle", role: "ADMIN", teamMemberId: kyleTm.id } });
     c.ok("Kyle: Handled on a lead closes it and takes it off the list", r2.ok && await leadState(leadFree.id) === "COMPLETED" && !after2.leads.some((l) => l.id === leadFree.id));

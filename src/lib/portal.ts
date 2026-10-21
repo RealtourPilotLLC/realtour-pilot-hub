@@ -1148,9 +1148,9 @@ export type PortalTopic = {
   /**
    * CP-07. `declined`: they said "not interested" (the bank hides it; the page
    * shows it in a "set aside" strip with undo). `carried`: an unfilmed script
-   * carried into an open month, which they may swap. `scriptedNotFilmed`: a
-   * script exists and nothing has been filmed — carried, or parked by a swap.
-   * `swappable`: the carried selection's id, when a swap is allowed now.
+   * carried into an open month. `scriptedNotFilmed`: a script exists and
+   * nothing has been filmed — carried, or parked by an earlier swap. (The
+   * client's swap was retired Oct 21 2026, and its `swappable` field with it.)
    */
   declined: { atISO: string; reason: string | null } | null;
   carried: { selectionId: string; fromMonthKey: string | null } | null;
@@ -1162,7 +1162,6 @@ export type PortalTopic = {
    */
   questions?: { route: "CALL" | "WRITTEN"; callMonth: boolean; interviewId: string | null; status: string | null; items: { key: string; text: string; answer: string | null; skipped: boolean }[] } | null;
   scriptedNotFilmed: boolean;
-  swappable: string | null;
   /**
    * R01: where this topic stands in its open month's plan — the one planning
    * reader's step (planningState.topicPlanStep), so a chip, a count and a
@@ -1437,7 +1436,6 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       carried: carriedSel ? { selectionId: carriedSel.id, fromMonthKey: carriedSel.carriedFromMonthId ? monthKeyOf.get(carriedSel.carriedFromMonthId) ?? null : null } : null,
       // Carried, parked by a swap, or left on a month that has closed.
       scriptedNotFilmed: t.status === "SCRIPTED" && !!sc && !isFilmed && (!!carriedSel || !sel || !openMonth.get(sel.monthId)),
-      swappable: carriedSel && !isFilmed && openMonth.get(carriedSel.monthId) ? carriedSel.id : null,
       plan: tp ? { step: tp.step, missing: tp.missing, inAllowance: tp.inAllowance } : null,
       questions: (() => {
         const sheet = sel && openMonth.get(sel.monthId) ? sheets.get(`${t.id}:${sel.monthId}`) : undefined;

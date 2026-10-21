@@ -418,9 +418,9 @@ async function main() {
     const line = (await import("@/lib/portalWords")).OFFICE_LINE;
     c.ok("the client-safe copy of the default says exactly what the server's says", /DEFAULT_PORTAL_CONTACT: PortalContact = \{ \.\.\.OFFICE_LINE \}/.test(card) && line.name === pm.DEFAULT_OFFICE_CONTACT.name && line.display === pm.DEFAULT_OFFICE_CONTACT.display && line.e164 === pm.DEFAULT_OFFICE_CONTACT.e164, JSON.stringify(line));
     c.ok("the card dials: tel: and sms: links, and Message <name> to the thread", card.includes("href={`tel:${contact.e164}`}") && card.includes("href={`sms:${contact.e164}`}") && card.includes("Message {contact.name}"));
-    // One portal layout since Oct 6 2026: Messages lives under More (a badge on More carries the unread count).
+    // CHANGED Oct 21 2026 (Jordan, audit E13): Messages is in the bottom bar (Schedule's old slot), carrying its own unread count.
     const navSrc = read("src/lib/portalNav.ts");
-    c.ok("the portal has a Messages page, listed under More with its unread badge", page.includes('route.dest === "messages" && <MessagesTab') && /dest: "messages", label: "Messages"/.test(navSrc) && /dest: "more", label: "More", short: "More", badge: n\(b\.messages\)/.test(navSrc));
+    c.ok("the portal has a Messages page, in the bottom bar with its unread badge", page.includes('route.dest === "messages" && <MessagesTab') && /dest: "messages", label: "Messages", short: "Messages", badge: n\(b\.messages\)/.test(navSrc) && /dest: "more", label: "More", short: "More", badge: 0/.test(navSrc));
   }
 
   // =========================================================================

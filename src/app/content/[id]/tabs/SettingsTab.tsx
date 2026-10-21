@@ -43,20 +43,21 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
       {care?.[2] && <CreativeGuardEditor enrollmentId={ctx.id} guard={care[2]} canEdit />}
       {/* Oct 8 2026: strategy calls on/off and "we show up and shoot" — owner/admin. */}
       {/* Oct 13 2026: + video style, Direct-to-camera or Skits (overridesJson.videoStyle). */}
-      <ProgramStyleCard enrollmentId={ctx.id} strategyCalls={s.callMode !== "NOT_INCLUDED"} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />
+      {/* Oct 21 2026: the ONE call-mode control (Required · Optional · Off) is Program style's. */}
+      <ProgramStyleCard enrollmentId={ctx.id} callMode={s.callMode} callModeExplicit={s.callModeExplicit} noCallEligible={s.noCallEligible} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />
+      {/* ONE package and status card for Jordan and Kyle alike (Oct 21 2026,
+          audit D13), through the ledgered staff actions both already passed. */}
       {ctx.staffEyes && (
         <EnrollmentControls
           enrollmentId={ctx.id} pkg={s.pkg} status={s.status} videosPerMonth={s.videosPerMonth} sessionsPerMonth={s.sessionsPerMonth}
           nextTerms={s.nextTerms} packages={s.packages} currentMonthKey={s.currentMonthKey} currentMonthLabel={s.currentMonthLabel}
           nextMonthKey={s.nextMonthKey} nextMonthLabel={s.nextMonthLabel} currentMonthOwed={s.currentMonthOwed}
-          // The owner's SettingsPanel below already carries package and status.
-          packageAndStatus={!ctx.ownerEyes}
         />
       )}
-      {/* For Kyle the card above IS the package and status control — the panel
-          must not repeat them below as "Only Jordan changes a package". */}
+      {/* The card above IS the package and status control; the panel shows
+          them read-only only to a viewer who cannot change them. */}
       <SettingsPanel s={s} billing={d.billing} owners={d.owners} history={d.history} staff={d.staff} isOwner={ctx.ownerEyes}
-        packageHandledAbove={ctx.staffEyes && !ctx.ownerEyes} />
+        packageHandledAbove={ctx.staffEyes} />
       {/* W1-A: link status, seats and visits — self-guarded to OWNER. */}
       <PortalAccessCard enrollmentId={ctx.id} />
     </div>

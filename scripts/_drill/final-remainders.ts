@@ -706,7 +706,8 @@ async function main() {
     // — today's zone — and the call picker said "Times in EDT" for a November
     // week. Each now asks the zone of the time it prints.
     const readSrc = (f: string) => fs.readFileSync(path.join(REPO, f), "utf8");
-    const tabs = ["src/components/portal/tabs/HomeTab.tsx", "src/components/portal/tabs/ScheduleTab.tsx"].map((f) => [f, readSrc(f)] as const);
+    // Oct 21 2026: the Schedule page's list (and Home's coming-up lines) are ComingUp.tsx.
+    const tabs = ["src/components/portal/ComingUp.tsx"].map((f) => [f, readSrc(f)] as const);
     c.ok("Home and Schedule tabs: no label from today's zone; every time asks its own (zoneOf(iso))",
       tabs.every(([, src]) => !/tzShort\(tz\)/.test(src) && !/\{tzName\}/.test(src) && /zoneOf\(/.test(src)), tabs.map(([f]) => path.basename(f)).join(", "));
     const picker = readSrc("src/components/portal/PortalCallPicker.tsx");
