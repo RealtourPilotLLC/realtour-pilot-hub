@@ -78,7 +78,7 @@ export function DeliverPanel() {
   const total = gate?.checks.length ?? 0;
   const canStage = START_FROM.has(stage);
   const canStart = !!gate && canStage && gate.canDeliver;
-  const startWhy = !gate ? "The checklist could not be read." : !canStage ? STAGE_WHY[stage] ?? "Not from this stage." : !gate.canDeliver ? "The checklist has open items." : null;
+  const startWhy = !gate ? "The checklist could not be read." : !canStage ? STAGE_WHY[stage] ?? "Not from this stage." : !gate.canDeliver ? gate.blockedForOverride ?? "The checklist has open items." : null;
   const showOverride = viewer.isOwner && !!gate && canStage && !gate.canDeliver;
   const showVerify = ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(stage);
   const replacements = steps?.replacements ?? [];

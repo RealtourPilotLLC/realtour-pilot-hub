@@ -90,8 +90,9 @@ export function FindingActions({ findings, className, showFix = true }: { findin
               : "AutoHDR has no edit for this. Next: Send to editor (under More), or decide with the buttons here.";
   const n = open.length;
   const suffix = n > 1 ? ` (${n})` : "";
-  // OTHER_DEFECT is the catch-all: switching it off would hide everything unnamed. An AI fix that changed the house is never switched off either.
-  const canStopFlagging = viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && ruleIds[0] !== "FIX_DAMAGE_AI_EDIT";
+  // OTHER_DEFECT is the catch-all: switching it off would hide everything unnamed. An AI fix that changed the house is never switched off either,
+  // nor a check the house always fixes, trash cans above all (audit C19, Oct 20 2026).
+  const canStopFlagging = viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && ruleIds[0] !== "FIX_DAMAGE_AI_EDIT" && !findings.some((f) => f.alwaysFixed);
   return (
     <div className={cn("flex flex-wrap gap-1.5", className)} role="group" aria-label="Decide">
       {showFix && fixable.length > 0 && (

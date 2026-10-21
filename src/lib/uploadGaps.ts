@@ -4,6 +4,7 @@ import { etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
 // WHAT THE UPLOAD IS MISSING (Oct 19 2026). Jordan: "it would be cool if the
@@ -48,6 +49,8 @@ const HANDOFF_SETTLE_MIN = 15;
 const AFTER_START_H = 2;
 /** Jobs whose shoot started within this many days are checked. */
 const LOOKBACK_DAYS = 3;
+/** A job with a gap still open is re-read this long after its shoot, until the gap closes. */
+const OPEN_GAP_LOOKBACK_DAYS = 30;
 /** One Dropbox read per job at most this often. */
 const RECHECK_MIN = 15;
 const REQUESTED_BY = "upload-gap-text";
@@ -165,10 +168,22 @@ export type GapState = {
   resolved: { kind: GapKind; at: string }[];
 };
 
-const keyOf = (projectId: string) => `upload_gaps:${projectId}`;
+const KEY_PREFIX = "upload_gaps:";
+const keyOf = (projectId: string) => `${KEY_PREFIX}${projectId}`;
 
+/**
+ * What the order still owes for the upload check (audit C1, Oct 20 2026): a
+ * line pulled from the Aryeo order, waived, or marked "couldn't complete" on
+ * the wrap-up is not owed, so it is never texted for and never holds the gate.
+ */
+const OWED_FOR_GAPS = { ...OWED_DELIVERABLE_WHERE, notCompletedReason: null };
+
+const owedKind = (kind: GapKind, types: Set<string>) =>
+  kind === "ground_photos" ? types.has("PHOTOS") : kind === "drone" ? types.has("DRONE") : types.has("VIDEO") || types.has("SOCIAL_REEL");
+
+/** The job's gap record. A database error THROWS (audit C1): the gate must not read it as "no gap". */
 export async function gapStateFor(projectId: string): Promise<GapState | null> {
-  const row = await prisma.appSetting.findUnique({ where: { key: keyOf(projectId) }, select: { value: true } }).catch(() => null);
+  const row = await prisma.appSetting.findUnique({ where: { key: keyOf(projectId) }, select: { value: true } });
   if (!row) return null;
   try { return JSON.parse(row.value) as GapState; } catch { return null; }
 }
@@ -178,11 +193,21 @@ async function saveState(projectId: string, s: GapState): Promise<void> {
   await prisma.appSetting.upsert({ where: { key: keyOf(projectId) }, create: { key: keyOf(projectId), value }, update: { value } });
 }
 
-/** The photo delivery gate's line: open photo-side gaps (ground photos, drone) on this job. */
+/**
+ * The photo delivery gate's line: open photo-side gaps (ground photos, drone)
+ * on this job that the order still owes. Throws when it cannot read, so the
+ * gate shows the line as not met instead of passing it.
+ */
 export async function openPhotoGaps(projectId: string): Promise<{ kinds: GapKind[]; words: string } | null> {
   const s = await gapStateFor(projectId);
-  const kinds = (s?.open ?? []).map((g) => g.kind).filter((k) => k === "ground_photos" || k === "drone");
-  if (!kinds.length || !s) return null;
+  const recorded = (s?.open ?? []).map((g) => g.kind).filter((k) => k === "ground_photos" || k === "drone");
+  if (!recorded.length || !s) return null;
+  // A line pulled from the order after the gap opened no longer holds the gate,
+  // even before the next sweep closes the record.
+  const owed = await prisma.deliverable.findMany({ where: { projectId, ...OWED_FOR_GAPS, type: { in: ["PHOTOS", "DRONE"] } }, select: { type: true } });
+  const types = new Set<string>(owed.map((d) => d.type));
+  const kinds = recorded.filter((k) => owedKind(k, types));
+  if (!kinds.length) return null;
   return { kinds, words: `Dropbox has ${heldWords({ ...s.counts, newestAt: null })}; missing ${listWords(kinds)}` };
 }
 
@@ -211,9 +236,21 @@ export async function sweepUploadGaps(now: Date = new Date(), opts: { only?: str
   const rules = await internalAlertRules();
   if (!rules.uploadGap.enabled && !opts.dryRun) return { skipped: "switched off (Settings, Internal alerts, Missing from the upload)" };
 
+  // Jobs with a gap still open are re-read past the 3 days until it closes
+  // (audit C1): otherwise a gap opened on day 3 stayed open, and held the gate,
+  // forever. JSON.stringify writes an empty list as "open":[].
+  const openRows = await prisma.appSetting.findMany({
+    where: { key: { startsWith: KEY_PREFIX }, NOT: { value: { contains: '"open":[]' } } },
+    select: { key: true },
+  });
+  const openIds = new Set(openRows.map((r) => r.key.slice(KEY_PREFIX.length)));
+  const started = new Date(now.getTime() - AFTER_START_H * 3_600_000);
   const appts = await prisma.appointment.findMany({
     where: {
-      startAt: { gte: new Date(now.getTime() - LOOKBACK_DAYS * 86_400_000), lte: new Date(now.getTime() - AFTER_START_H * 3_600_000) },
+      OR: [
+        { startAt: { gte: new Date(now.getTime() - LOOKBACK_DAYS * 86_400_000), lte: started } },
+        ...(openIds.size ? [{ projectId: { in: [...openIds] }, startAt: { gte: new Date(now.getTime() - OPEN_GAP_LOOKBACK_DAYS * 86_400_000), lte: started } }] : []),
+      ],
       project: {
         status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] },
         contentMonthId: null,
@@ -228,7 +265,7 @@ export async function sweepUploadGaps(now: Date = new Date(), opts: { only?: str
           id: true, title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, photographerId: true,
           photosHandoffAt: true, videoHandoffAt: true,
           client: { select: { id: true, name: true } },
-          deliverables: { select: { type: true } },
+          deliverables: { where: OWED_FOR_GAPS, select: { type: true } },
         },
       },
     },
@@ -239,7 +276,9 @@ export async function sweepUploadGaps(now: Date = new Date(), opts: { only?: str
   for (const a of appts) {
     if (!liveAppointment(a) || isSyntheticClientRow(a.project.client)) continue;
     const types = new Set(a.project.deliverables.map((d) => d.type));
-    if (!types.has("PHOTOS") && !types.has("DRONE") && !types.has("VIDEO") && !types.has("SOCIAL_REEL")) continue;
+    // Nothing the upload check reads is owed: skipped, unless a gap is still
+    // open on it, which the loop below closes.
+    if (!types.has("PHOTOS") && !types.has("DRONE") && !types.has("VIDEO") && !types.has("SOCIAL_REEL") && !openIds.has(a.project.id)) continue;
     const j = jobs.get(a.project.id) ?? { p: a.project, startAt: a.startAt!, creatives: new Set<string>() };
     const who = a.assignedToId ?? a.project.photographerId;
     if (who) j.creatives.add(who);
@@ -253,11 +292,26 @@ export async function sweepUploadGaps(now: Date = new Date(), opts: { only?: str
   const { appBase } = await import("@/lib/appUrl");
 
   for (const { p, startAt, creatives } of jobs.values()) {
-    const before = await gapStateFor(p.id);
-    if (!opts.only && before && now.getTime() - Date.parse(before.checkedAt) < RECHECK_MIN * 60_000) continue;
     const street = streetOf(p.title, p.addressLine);
-    const types = new Set(p.deliverables.map((d) => d.type));
+    let before: GapState | null;
+    try {
+      before = await gapStateFor(p.id);
+    } catch (e) {
+      // Never overwrite a record the sweep could not read.
+      run.notSent.push(`${street}: the upload check record could not be read (${(e as Error)?.message?.slice(0, 80) ?? "error"})`);
+      continue;
+    }
+    const types = new Set<string>(p.deliverables.map((d) => d.type));
     const ordered: Ordered = { photos: types.has("PHOTOS"), drone: types.has("DRONE"), video: types.has("VIDEO") || types.has("SOCIAL_REEL") };
+    // An open gap whose line left the order closes without a Dropbox read.
+    if (!ordered.photos && !ordered.drone && !ordered.video) {
+      if (before?.open.length && !opts.dryRun) {
+        await closeGapsNoLongerOwed(p.id, before, before.open.map((g) => g.kind), now);
+        run.resolved.push(`${street}: no longer on the order`);
+      }
+      continue;
+    }
+    if (!opts.only && before && now.getTime() - Date.parse(before.checkedAt) < RECHECK_MIN * 60_000) continue;
     const paths = actualFolderPaths({ ...p, client: p.client! } as never) as { rawPhotos: string; rawVideo: string };
     const list = async (path: string) => {
       try {
@@ -291,10 +345,14 @@ export async function sweepUploadGaps(now: Date = new Date(), opts: { only?: str
     for (const g of before?.open ?? []) {
       if (nowMissing.has(g.kind)) state.open.push(g);
       else {
+        const dropped = !owedKind(g.kind, types);
         state.resolved.push({ kind: g.kind, at: now.toISOString() });
-        run.resolved.push(`${street}: ${GAP_WORDS[g.kind]}`);
+        run.resolved.push(`${street}: ${GAP_WORDS[g.kind]}${dropped ? " (no longer on the order)" : ""}`);
         if (!opts.dryRun) {
-          await prisma.activity.create({ data: { projectId: p.id, type: "SYSTEM", body: `Upload check: ${GAP_WORDS[g.kind]} are in Dropbox now (${heldWords(counts)}).` } }).catch(() => {});
+          const body = dropped
+            ? `Upload check: no longer owed on the order, so the check for ${GAP_WORDS[g.kind]} is closed.`
+            : `Upload check: ${GAP_WORDS[g.kind]} are in Dropbox now (${heldWords(counts)}).`;
+          await prisma.activity.create({ data: { projectId: p.id, type: "SYSTEM", body } }).catch(() => {});
         }
       }
     }
@@ -318,6 +376,17 @@ export async function sweepUploadGaps(now: Date = new Date(), opts: { only?: str
     await saveState(p.id, state);
   }
   return run;
+}
+
+async function closeGapsNoLongerOwed(projectId: string, before: GapState, kinds: GapKind[], now: Date): Promise<void> {
+  const at = now.toISOString();
+  await saveState(projectId, {
+    ...before,
+    checkedAt: at,
+    open: before.open.filter((g) => !kinds.includes(g.kind)),
+    resolved: [...before.resolved, ...kinds.map((kind) => ({ kind, at }))],
+  });
+  await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: `Upload check: no longer owed on the order, so the check for ${listWords(kinds)} is closed.` } }).catch(() => {});
 }
 
 async function textCreatives(o: { projectId: string; street: string; startAt: Date; now: Date; counts: UploadCounts; sure: GapKind[]; alsoEmpty: GapKind[]; creatives: string[]; link: string }): Promise<{ sentTo: string[]; notSent: string[] }> {

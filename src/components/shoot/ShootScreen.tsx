@@ -921,9 +921,11 @@ function NotesCard({ projectId, initial, flash, contentSession = false }: { proj
     setFailure(null);
     start(async () => {
       try {
-        const r = await saveShootNote(projectId, text);
-        if (!r?.ok) { setFailure("Not saved. Your notes are still here — tap Save notes to try again."); return; }
-        setSaved(text);
+        // `saved` is what the server held when this screen loaded (or last
+        // saved): a newer brief from the office is refused, never overwritten.
+        const r = await saveShootNote(projectId, text, saved);
+        if (!r?.ok) { setFailure(r?.message ?? "Not saved. Your notes are still here. Tap Save notes to try again."); return; }
+        setSaved(text.trim().slice(0, 4000));
         flash("ok", "Notes saved for editors");
       } catch {
         setFailure("Not saved — the connection dropped. Your notes are still here; tap Save notes to try again.");

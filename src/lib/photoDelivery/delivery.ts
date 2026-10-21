@@ -86,7 +86,10 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     checks,
     passed,
     advisory,
-    canDeliver: passed || advisory,
+    // Oct 20 2026 (audit C7): shadow mode makes the checklist advisory for a
+    // person, never for a privacy or wrong-property critical. Those are the
+    // ones Jordan's override refuses, so the routine path refuses them too.
+    canDeliver: (passed || advisory) && !privacyOrWrong,
     overrideAllowed: !privacyOrWrong,
     blockedForOverride: privacyOrWrong ? "A privacy or wrong-property issue is open. That one has to be resolved, not overridden." : null,
   };
@@ -95,7 +98,14 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
 async function uploadCheck(projectId: string | null): Promise<GateCheck[]> {
   if (!projectId) return [];
   const { openPhotoGaps } = await import("@/lib/uploadGaps");
-  const gaps = await openPhotoGaps(projectId).catch(() => null);
+  // Oct 20 2026 (audit C1): a read that fails is an open line, not a pass,
+  // so the same-day automatic delivery never goes out on a check it couldn't make.
+  let gaps: Awaited<ReturnType<typeof openPhotoGaps>>;
+  try {
+    gaps = await openPhotoGaps(projectId);
+  } catch {
+    return [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: "the upload check could not be read, it runs again on the next pass" }];
+  }
   return gaps ? [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: gaps.words }] : [];
 }
 
@@ -237,6 +247,7 @@ export async function deliverySteps(jobId: string): Promise<DeliverySteps> {
 export async function startDelivery(jobId: string, by: string, opts: { override?: { reason: string; role: string } } = {}): Promise<{ ok: boolean; message: string }> {
   const gate = await deliveryGate(jobId);
   if (!gate.canDeliver) {
+    if (!gate.overrideAllowed) return { ok: false, message: gate.blockedForOverride ?? "This gallery cannot be delivered yet." };
     if (!opts.override) return { ok: false, message: "The delivery checklist has open items. Resolve them, or (owner) override with a reason." };
     if (opts.override.role !== "OWNER") return { ok: false, message: "Only Jordan can override the delivery checklist." };
     if (!gate.overrideAllowed) return { ok: false, message: gate.blockedForOverride ?? "This gallery cannot be overridden." };

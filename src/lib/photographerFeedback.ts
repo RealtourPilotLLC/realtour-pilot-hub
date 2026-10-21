@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { toReviewNote, type ReviewNote } from "@/lib/review";
 import { stripMoneySentences } from "@/lib/text";
 import { hasNegativeCues } from "@/lib/feedback";
+import { ownsShootWhere } from "@/lib/shoot";
 
 // ---------------------------------------------------------------------------
 // Read layer for the photographer QUALITY FEEDBACK hub (/shoot/feedback) — the
@@ -16,11 +17,10 @@ import { hasNegativeCues } from "@/lib/feedback";
 
 const streetOf = (title?: string | null) => (title || "Shoot").split(",")[0].trim() || "Shoot";
 
-// A shoot belongs to a photographer if they're the project's photographer OR an
-// appointment assignee — same OR photographerOwnsShoot / My Shoots use.
-const ownsShoot = (memberId: string) => ({
-  OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }],
-});
+// A shoot belongs to a photographer if they're the project's photographer OR a
+// live appointment's assignee: lib/shoot's one predicate (audit C4, Oct 20 2026:
+// a cancelled visit used to count, so Quality rates scored others' shoots).
+const ownsShoot = ownsShootWhere;
 
 export type HubKpis = {
   windowDays: number; // the shoots/notes rate window (90d)
@@ -348,7 +348,7 @@ export async function getFeedbackRoster(): Promise<RosterRow[]> {
     // the appointment. One narrow window read, counted in JS.
     prisma.project.findMany({
       where: { status: { not: "CANCELLED" }, shootDate: { gte: since, lte: new Date() } },
-      select: { photographerId: true, appointments: { select: { assignedToId: true } } },
+      select: { photographerId: true, appointments: { where: { status: { not: "CANCELED" } }, select: { assignedToId: true } } },
     }),
   ]);
 

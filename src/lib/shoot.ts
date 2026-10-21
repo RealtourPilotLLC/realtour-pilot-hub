@@ -735,13 +735,21 @@ export async function getShootPhotographer(memberId: string): Promise<{ id: stri
 // and reassigned ones; the ladder everywhere else already skips them
 // (editorQueue's liveAppts, getShootMapData, the pay engine).
 export async function photographerOwnsShoot(projectId: string, memberId: string): Promise<boolean> {
-  const n = await prisma.project.count({
-    where: {
-      id: projectId,
-      OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId, status: { not: "CANCELED" } } } }],
-    },
-  });
+  const n = await prisma.project.count({ where: { id: projectId, ...ownsShootWhere(memberId) } });
   return n > 0;
+}
+
+/**
+ * Whose shoot, as a project filter: the project's photographer, or the
+ * assignee of a LIVE appointment. The one predicate every "my shoots" list,
+ * upload bucket, history and scorecard uses (audit C4, Oct 20 2026: five
+ * copies still counted cancelled visits, so a photographer taken off a job
+ * kept seeing it, and it scored on their KPIs).
+ */
+export function ownsShootWhere(memberId: string) {
+  return {
+    OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId, status: { not: "CANCELED" as const } } } }],
+  };
 }
 
 export type ShootMapPin = { lat: number; lng: number; label: string; time: string | null; current: boolean };
@@ -881,9 +889,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
     where: {
       status: { not: "CANCELLED" },
       shootDate: { gte: since },
-      ...(memberId
-        ? { OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }] }
-        : {}),
+      ...(memberId ? ownsShootWhere(memberId) : {}),
     },
     include: {
       client: { select: { name: true, avatarUrl: true } },

@@ -439,8 +439,13 @@ async function main() {
     for (let i = 0; i < 8; i++) await P.advancePush(K.job.id, { budgetMs: 30_000 });
     const pk = await P.pushProgress(K.job.id);
     c.ok("auto, shadow mode on, an open privacy issue: uploaded, NOT delivered, waits with why", listings.get("L-K")!.delivery === "UNDELIVERED" && pk?.state === "WAITING" && /open items/.test(pk.note ?? ""), JSON.stringify(pk));
+    // Oct 20 2026 (audit C7): shadow mode advises on everything EXCEPT a privacy
+    // or wrong-property critical, which a person's press can't wave through either.
+    const pkNo = await P.approvePushDelivery(K.job.id, "Kyle");
+    c.ok("…a person's Deliver in Aryeo is refused while the privacy issue is open, and says why", !pkNo.ok && /privacy or wrong-property/.test(pkNo.message) && listings.get("L-K")!.delivery === "UNDELIVERED", pkNo.message);
+    await prisma.photoQcFinding.updateMany({ where: { jobId: K.job.id, ruleId: "PREP_PERSONAL_DOCUMENTS" }, data: { status: "IGNORED", decidedBy: "Kyle", decidedAt: new Date() } });
     const pkOk = await P.approvePushDelivery(K.job.id, "Kyle");
-    c.ok("…a person's Deliver in Aryeo still goes through the usual gate (shadow mode advises)", pkOk.ok, pkOk.message);
+    c.ok("…once it is decided, a person's Deliver in Aryeo goes through the usual gate (shadow mode advises)", pkOk.ok, pkOk.message);
 
     // ======================================================================
     c.head("9 · a photo fixed after it went on the listing (audit, Oct 15)");

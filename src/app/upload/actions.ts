@@ -1,6 +1,6 @@
 "use server";
 
-import { deliverableInProject, requireDeliverableAccess, requireShootAccess, requireUploadFileAccess } from "@/lib/auth/guards";
+import { deliverableInProject, requireDeliverableAccess, requireShootAccess } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { NOTHING_TO_REMOVE_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
@@ -30,7 +30,6 @@ import { etAt, etDate, etDayKey, etDayStartUtc } from "@/lib/datetime";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
-import { saveUpload, deleteFile } from "@/lib/storage";
 import { UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
 import { UPLOAD_ATTEMPT_ACTION, uploadAttemptIdValid, uploadFingerprintValid, uploadAttemptFingerprint, uploadAttemptRowId, parseUploadCommitReceipt, type UploadCommitReceipt } from "@/lib/uploadReceipt";
 
@@ -50,59 +49,6 @@ export async function checkUploadRawFiles(projectId: string, scope?: "photos" | 
   if (!project) throw new Error("This shoot is no longer available.");
   const { freshHandoffFileCheck } = await import("@/lib/dropboxFolders");
   return freshHandoffFileCheck(project, scope);
-}
-
-/** Save one or more files, optionally tied to a deliverable, and mark it uploaded. */
-export async function uploadFiles(
-  projectId: string,
-  deliverableId: string | null,
-  formData: FormData,
-) {
-  await requireShootAccess(projectId);
-  // The guard above proves this shoot is theirs; it says nothing about the
-  // deliverable id the form sent (RTP-02, Sep 16). Unchecked, a photographer
-  // on their own job could file an upload against — and flip to UPLOADED —
-  // another client's line item. Drop a foreign id rather than throw: the files
-  // still belong on this job, they just land unattached.
-  if (deliverableId && !(await deliverableInProject(deliverableId, projectId))) deliverableId = null;
-  const files = formData.getAll("files").filter((f): f is File => f instanceof File);
-  const created = [];
-  for (const file of files) {
-    if (file.size === 0) continue;
-    const meta = await saveUpload(projectId, file);
-    const row = await prisma.uploadedFile.create({
-      data: {
-        projectId,
-        deliverableId: deliverableId ?? undefined,
-        originalName: meta.originalName,
-        storedPath: meta.storedPath,
-        size: meta.size,
-        mimeType: meta.mimeType,
-      },
-    });
-    created.push({ id: row.id, originalName: row.originalName, size: row.size });
-  }
-
-  if (deliverableId && created.length) {
-    await prisma.deliverable.update({
-      where: { id: deliverableId },
-      data: { status: DeliverableStatus.UPLOADED },
-    });
-  }
-
-  revalidatePath(`/upload/${projectId}`);
-  revalidatePath(`/projects/${projectId}`);
-  return created;
-}
-
-export async function removeUpload(fileId: string) {
-  await requireUploadFileAccess(fileId);
-  const file = await prisma.uploadedFile.findUnique({ where: { id: fileId } });
-  if (!file) return;
-  await deleteFile(file.storedPath);
-  await prisma.uploadedFile.delete({ where: { id: fileId } });
-  revalidatePath(`/upload/${file.projectId}`);
-  revalidatePath(`/projects/${file.projectId}`);
 }
 
 /**
@@ -1450,10 +1396,9 @@ export async function addShootAddOn(
     };
   }
 
-  const kyle = await prisma.teamMember.findFirst({
-    where: { name: { contains: "Kyle" } },
-    select: { id: true },
-  });
+  // The delivery owner's roster row, never a guess by name (audit C10, Oct 20
+  // 2026; lib/kyleNotice). Unresolved: the task stays on Kyle's desk key, unowned.
+  const kyle = await import("@/lib/kyleNotice").then((m) => m.kyleDesk()).catch(() => null);
 
   let created;
   try {
@@ -1475,7 +1420,7 @@ export async function addShootAddOn(
         // Ordering paperwork is a next-morning job, which is exactly where
         // Jordan wants it: Kyle's Ops Day the day after the shoot.
         dueAt: new Date(Date.now() + 24 * 3600_000),
-        assignedKey: "kyle",
+        assignedKey: kyle?.key ?? "kyle",
         ownerId: kyle?.id ?? null,
         projectId,
         propertyAddress: project.title,

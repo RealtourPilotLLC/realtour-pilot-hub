@@ -2,7 +2,6 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { appBase } from "@/lib/appUrl";
-import { getSetting, putSetting } from "@/lib/settings";
 import { etDayKey, etMinutesOfDay, etWeekday } from "@/lib/datetime";
 import { ruleById } from "./registry";
 import { creditView } from "./credits";
@@ -90,21 +89,71 @@ export async function buildPhotoDigest(now = new Date()): Promise<PhotoDigest> {
   return { lines, ownerOnlyLines, weekKey: etDayKey(now) };
 }
 
+/** The week's record: `{ day }` alone (before Oct 20 2026) reads as sent. */
+type SentRecord = { day: string | null; state?: "sending" | "sent"; at?: string };
+/** A claim older than this was a tick that died mid-send: the next tick takes it over. */
+const CLAIM_STALE_MS = 15 * 60_000;
+
+/**
+ * Take this Monday's send in ONE atomic step (audit H27/C21, Oct 20 2026): the
+ * old read-then-write let two overlapping ticks both send, and a claim written
+ * before the digest was built lost the week if building or sending threw.
+ * Answers the claim's stored value (to finish or release it with), or why not.
+ */
+async function claimWeek(key: string, now: Date): Promise<{ claim: string; prev: string | null } | { reason: string }> {
+  const row = await prisma.appSetting.findUnique({ where: { key: SENT_KEY }, select: { value: true } });
+  let last: SentRecord = { day: null };
+  try {
+    if (row) last = JSON.parse(row.value) as SentRecord;
+  } catch {
+    /* an unreadable record is taken over below */
+  }
+  if (last.day === key) {
+    if (last.state !== "sending") return { reason: "already sent this Monday" };
+    if (now.getTime() - Date.parse(last.at ?? "") < CLAIM_STALE_MS) return { reason: "another run is sending it" };
+  }
+  const claim = JSON.stringify({ day: key, state: "sending", at: now.toISOString() } satisfies SentRecord);
+  if (!row) {
+    const made = await prisma.appSetting.create({ data: { key: SENT_KEY, value: claim, updatedBy: "system" } }).then(() => true, () => false);
+    return made ? { claim, prev: null } : { reason: "another run is sending it" };
+  }
+  const r = await prisma.appSetting.updateMany({ where: { key: SENT_KEY, value: row.value }, data: { value: claim, updatedBy: "system" } });
+  return r.count === 1 ? { claim, prev: row.value } : { reason: "another run is sending it" };
+}
+
 /** Called every 5 minutes; sends once, on Monday from 8 AM ET. */
 export async function maybeSendPhotoDigest(now = new Date()): Promise<{ sent: boolean; reason: string }> {
   if (etWeekday(now) !== "Mon" || etMinutesOfDay(now) < 8 * 60) return { sent: false, reason: "not Monday 8 AM ET yet" };
   const key = etDayKey(now);
-  // An object, not a bare string: getSetting merges the stored JSON into the
-  // fallback object, which would scatter a string into characters.
-  const last = await getSetting<{ day: string | null }>(SENT_KEY, { day: null });
-  if (last.day === key) return { sent: false, reason: "already sent this Monday" };
-  // Claim first, so two ticks can't both send.
-  await putSetting(SENT_KEY, { day: key }, "system");
-  const d = await buildPhotoDigest(now);
-  const { ownerId, kyleId } = await opsRecipients();
-  const { notifyStaffSms } = await import("@/lib/notify");
-  const text = d.lines.join("\n");
-  if (ownerId) await notifyStaffSms([ownerId], [text, ...d.ownerOnlyLines].join("\n"), "photo_weekly_digest");
-  if (kyleId && kyleId !== ownerId) await notifyStaffSms([kyleId], text, "photo_weekly_digest");
-  return { sent: true, reason: `sent to ${[ownerId && "owner", kyleId && "kyle"].filter(Boolean).join(" and ")}` };
+  const taken = await claimWeek(key, now);
+  if ("reason" in taken) return { sent: false, reason: taken.reason };
+  // Only this run's own claim is finished or released (compare-and-swap on it).
+  const settle = async (value: string | null) => {
+    if (value == null) await prisma.appSetting.deleteMany({ where: { key: SENT_KEY, value: taken.claim } });
+    else await prisma.appSetting.updateMany({ where: { key: SENT_KEY, value: taken.claim }, data: { value, updatedBy: "system" } });
+  };
+  const sentTo: string[] = [];
+  try {
+    const d = await buildPhotoDigest(now);
+    const { ownerId, kyleId } = await opsRecipients();
+    const { notifyStaffSms } = await import("@/lib/notify");
+    const text = d.lines.join("\n");
+    if (ownerId) {
+      await notifyStaffSms([ownerId], [text, ...d.ownerOnlyLines].join("\n"), "photo_weekly_digest");
+      sentTo.push("owner");
+    }
+    if (kyleId && kyleId !== ownerId) {
+      await notifyStaffSms([kyleId], text, "photo_weekly_digest");
+      sentTo.push("kyle");
+    }
+  } catch (e) {
+    // Nothing went out: let the next tick try again. Something did: the week
+    // counts as sent, so nobody gets it twice.
+    if (!sentTo.length) {
+      await settle(taken.prev).catch(() => {});
+      throw e;
+    }
+  }
+  await settle(JSON.stringify({ day: key, state: "sent", at: new Date().toISOString() } satisfies SentRecord));
+  return { sent: true, reason: `sent to ${sentTo.join(" and ") || "nobody (no owner or ops alerts person found)"}` };
 }

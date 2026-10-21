@@ -172,6 +172,8 @@ export type FindingView = {
   statusReason: string | null;
   /** Why the automatic fix plan fixed or skipped it, in plain words (huddle finding 5). */
   planNote: string | null;
+  /** House policy fixes it on every shoot (trash cans, cars, camera mistakes, lens distortion): never switched off house-wide (audit C19). */
+  alwaysFixed?: boolean;
   decidedBy: string | null;
   decidedAt: string | null;
   arbitration: string;

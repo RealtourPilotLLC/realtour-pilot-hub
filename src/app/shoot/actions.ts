@@ -308,9 +308,30 @@ export async function setDeliverableCaptured(
 
 // Save the photographer's on-site notes. These flow straight into the editor
 // brief the upload portal uses (Project.editorBrief), so nothing is re-typed.
-export async function saveShootNote(projectId: string, note: string): Promise<{ ok: boolean }> {
+// Oct 20 2026 (audit C6): `expected` is the brief as the screen loaded it. A
+// field tab left open no longer overwrites what the Editing Room or the upload
+// page saved since: the save is refused with a reload message, the words stay
+// in the box. Capped at 4000 like every other brief write, and the change goes
+// on the job's timeline.
+export async function saveShootNote(projectId: string, note: string, expected?: string | null): Promise<{ ok: boolean; message?: string; conflict?: boolean }> {
   await requireShootAccess(projectId);
-  await prisma.project.update({ where: { id: projectId }, data: { editorBrief: note.trim() || null } });
+  const next = note.trim().slice(0, 4000) || null;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { editorBrief: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").trim() === (b ?? "").trim();
+  const stale = "Someone changed these notes since you opened this screen. Your words are still here: copy them, reload to see the new version, then add yours.";
+  if (expected !== undefined && !same(p.editorBrief, expected)) return { ok: false, conflict: true, message: stale };
+  if (same(p.editorBrief, next)) return { ok: true };
+  // Compare-and-swap on the value just read: a save landing in between loses nothing.
+  const r = await prisma.project.updateMany({ where: { id: projectId, editorBrief: p.editorBrief }, data: { editorBrief: next } });
+  if (r.count !== 1) return { ok: false, conflict: true, message: stale };
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const u = await getCurrentUser().catch(() => null);
+    const tm = u?.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } }).catch(() => null) : null;
+    const who = tm?.name?.trim() || u?.name?.trim() || u?.email || "the photographer";
+    await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: `Shoot brief for the editor updated by ${who} (shoot screen).`, authorId: u?.teamMemberId ?? null } });
+  } catch { /* the timeline line is a courtesy; the save above stands */ }
   revalShoot(projectId);
   return { ok: true };
 }
