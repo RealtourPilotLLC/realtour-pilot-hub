@@ -24,9 +24,7 @@ NEVER invent specifics you were not given: do not make up dates, times, availabi
 Never offer a catch-up, make-up or extra filming session for a missed content-program month: a missed month is forfeited, and only the office approves an exception.
 Sign-off only if it reads like a full email, as: "In the Spirit of Success, Jordan Spackman".`;
 
-// Low-level POST to the Messages API with transient-failure retry (529/429/5xx/
-// network). Returns the parsed JSON response (caller pulls text / tool_use out).
-// Shared by the simple one-shot helper and the tool-using agent loop.
+// The Messages API's answer, as callMessages (below) returns it.
 type AnthropicResponse = {
   content?: { type?: string; text?: string; id?: string; name?: string; input?: unknown }[];
   stop_reason?: string;
@@ -53,25 +51,100 @@ function usageOf(json: AnthropicResponse): AiUsage {
 
 /** The two model ids this module uses — exported so a run ledger can record which one answered. */
 export const AI_MODELS = { FAST: "claude-haiku-4-5-20251001", SMART: "claude-sonnet-4-6" } as const;
-async function callMessages(body: Record<string, unknown>, key: string): Promise<AnthropicResponse> {
+
+// ---------------------------------------------------------------------------
+// ONE ANTHROPIC TRANSPORT, WITH A TIME LIMIT (Oct 20 2026, audit H1). The
+// request had none, and it retried network errors up to four times, so one
+// stalled call could hold a cron step past its budget (the AI job's "start
+// only with the time to finish" rule assumes a call ENDS), let its lease
+// expire ("lease expired") and push the steps after it into `skipped`. Every
+// Messages call, here and the photo QC engine's (qc/claude.ts), now goes
+// through postMessages, which always carries a time limit.
+//
+// The default limit grows with the answer the call may write: a minute at
+// least, plus 25 ms per max_tokens (40 tokens a second, slower than the
+// models write), under the platform's 300 s ceiling. So a 500-token reply
+// gets 60 s, a 4,000-token answer 130 s, and a 12,000-token strategy draft or
+// a 16,000-token topic bank the full 285 s — no longer than the function they
+// run in could live anyway. A caller with a tighter budget passes timeoutMs.
+// The limit covers the whole call, retries included, and running out of it
+// is final: it is never retried.
+// ---------------------------------------------------------------------------
+const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const AI_TIMEOUT_FLOOR_MS = 60_000;
+const AI_TIMEOUT_CEILING_MS = 285_000;
+/** A retry is not started with less than this left of the call's limit. */
+const AI_MIN_ATTEMPT_MS = 10_000;
+
+/** The time limit a call gets when its caller names none (see above). */
+export function aiTimeoutFor(maxTokens: number): number {
+  const tokens = Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 4000;
+  return Math.min(AI_TIMEOUT_CEILING_MS, Math.max(AI_TIMEOUT_FLOOR_MS, 30_000 + tokens * 25));
+}
+
+/** The time limit (or a caller's abort) ended the request. */
+function isAbortError(e: unknown): boolean {
+  const name = e && typeof e === "object" ? (e as { name?: unknown }).name : null;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/** What one Messages request answered: the HTTP status, the parsed body (null when it was not JSON) and the headers the callers read. */
+export type MessagesHttpResponse = { status: number; json: unknown; requestId: string | null; retryAfter: string | null };
+
+/**
+ * ONE POST to the Messages API, no retry, bounded by `timeoutMs` (the body
+ * read included). Throws on a network failure, and on the time limit with a
+ * DOMException named "TimeoutError". The key travels in the header only.
+ */
+export async function postMessages(body: Record<string, unknown> | string, key: string, opts: { timeoutMs: number }): Promise<MessagesHttpResponse> {
+  const res = await fetch(ANTHROPIC_MESSAGES_URL, {
+    method: "POST",
+    headers: { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+    cache: "no-store",
+    signal: AbortSignal.timeout(Math.max(1_000, Math.round(opts.timeoutMs))),
+  });
+  const text = await res.text();
+  let json: unknown = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  return { status: res.status, json, requestId: res.headers.get("request-id"), retryAfter: res.headers.get("retry-after") };
+}
+
+// Low-level call with transient-failure retry (529/429/5xx/network) inside
+// the call's time limit. Returns the parsed JSON response (caller pulls text /
+// tool_use out). Shared by the simple one-shot helper and the agent loop.
+async function callMessages(body: Record<string, unknown>, key: string, opts: { timeoutMs?: number } = {}): Promise<AnthropicResponse> {
   const payload = JSON.stringify(body);
+  const limitMs = opts.timeoutMs ?? aiTimeoutFor(typeof body.max_tokens === "number" ? body.max_tokens : 4000);
+  const deadline = Date.now() + limitMs;
   let lastErr: Error | null = null;
   for (let attempt = 0; attempt < 4; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, attempt * 1200));
-    let res: Response;
+    if (attempt > 0) {
+      const wait = attempt * 1200;
+      if (deadline - Date.now() - wait < AI_MIN_ATTEMPT_MS) break; // no time left for another try
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    let res: MessagesHttpResponse;
     try {
-      res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: payload,
-        cache: "no-store",
-      });
+      res = await postMessages(payload, key, { timeoutMs: deadline - Date.now() });
     } catch (e) {
+      if (isAbortError(e)) {
+        // Out of time is final: another try would only spend the rest of
+        // someone's budget on a call that has already run out of it.
+        const err = new Error(`The AI request timed out after ${Math.round(limitMs / 1000)} seconds. Please try again.`);
+        err.name = "TimeoutError";
+        throw err;
+      }
       lastErr = e instanceof Error ? e : new Error("Network error reaching the AI.");
       continue; // network blip → retry
     }
-    const json = (await res.json().catch(() => ({}))) as AnthropicResponse;
-    if (res.ok) return json;
+    const json = (res.json && typeof res.json === "object" ? res.json : {}) as AnthropicResponse;
+    if (res.status >= 200 && res.status < 300) return json;
     lastErr = new Error(json.error?.message || `Anthropic ${res.status}`);
     const retryable = res.status === 429 || res.status === 529 || (res.status >= 500 && res.status < 600);
     if (!retryable) throw lastErr;
@@ -88,6 +161,8 @@ async function anthropic(opts: {
   user: string;
   maxTokens?: number;
   key?: string;
+  /** The whole call's time limit; default aiTimeoutFor(maxTokens). */
+  timeoutMs?: number;
 }): Promise<string> {
   const key = opts.key ?? (await getSecret("ai"));
   if (!key) throw new Error("AI is not connected.");
@@ -99,6 +174,7 @@ async function anthropic(opts: {
       messages: [{ role: "user", content: opts.user }],
     },
     key,
+    { timeoutMs: opts.timeoutMs },
   );
   return (json.content?.find((b) => b.type === "text")?.text ?? json.content?.[0]?.text ?? "").trim();
 }
@@ -118,6 +194,8 @@ export async function aiJson<T>(opts: {
   maxTokens?: number;
   model?: string;
   key?: string;
+  /** The whole call's time limit; default aiTimeoutFor(maxTokens). */
+  timeoutMs?: number;
 }): Promise<T> {
   return (await aiJsonWithUsage<T>(opts)).result;
 }
@@ -135,6 +213,8 @@ export async function aiJsonWithUsage<T>(opts: {
   maxTokens?: number;
   model?: string;
   key?: string;
+  /** The whole call's time limit; default aiTimeoutFor(maxTokens). */
+  timeoutMs?: number;
 }): Promise<{ result: T; usage: AiUsage; model: string }> {
   const key = opts.key ?? (await getSecret("ai"));
   if (!key) throw new Error("AI is not connected.");
@@ -149,6 +229,7 @@ export async function aiJsonWithUsage<T>(opts: {
       tool_choice: { type: "tool", name: "emit" },
     },
     key,
+    { timeoutMs: opts.timeoutMs },
   );
   const call = json.content?.find((b) => b.type === "tool_use" && b.name === "emit");
   if (!call?.input) throw new Error("The AI did not return a usable answer.");
@@ -239,6 +320,8 @@ export async function runHubAgent(opts: {
   model?: string;
   maxSteps?: number;
   maxTokens?: number; // raise for long outputs (formal reports blow the 1600 default)
+  /** Each model call's time limit; default aiTimeoutFor(maxTokens). */
+  timeoutMs?: number;
 }): Promise<{ answer: string; toolsUsed: HubToolCall[] }> {
   const key = await getSecret("ai");
   if (!key) throw new Error("AI is not connected.");
@@ -270,6 +353,7 @@ export async function runHubAgent(opts: {
     const json = await callMessages(
       { model, max_tokens: maxTokens, system: opts.system, tools: opts.tools, messages },
       key,
+      { timeoutMs: opts.timeoutMs },
     );
     const blocks = json.content ?? [];
     messages.push({ role: "assistant", content: blocks });
@@ -309,6 +393,7 @@ export async function runHubAgent(opts: {
       messages,
     },
     key,
+    { timeoutMs: opts.timeoutMs },
   );
   const text = (finalJson.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
   return {

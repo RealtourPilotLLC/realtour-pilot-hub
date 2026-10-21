@@ -37,11 +37,15 @@ export async function POST(req: NextRequest) {
   if (secret) {
     const headerName = "x-scripting-signature";
     const sig = req.headers.get(headerName) || "";
-    const provided = sig.replace(/^sha256=/, "");
-    const expected = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-    const ok =
-      provided.length === expected.length &&
-      crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+    // Compare BYTES, gated on BYTE length (Oct 20 2026, audit H19; the same
+    // fix the Aryeo and OpenPhone receivers carry). timingSafeEqual throws on
+    // buffers of different lengths, and a string's .length counts characters:
+    // a header of 64 multi-byte characters passed the old character gate, threw
+    // inside the compare, and turned an unauthenticated post into a 500, an
+    // error-tracker row and an owner alert. Now it is a plain bad signature.
+    const provided = Buffer.from(sig.replace(/^sha256=/, ""), "utf8");
+    const expected = Buffer.from(crypto.createHmac("sha256", secret).update(raw).digest("hex"), "utf8");
+    const ok = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
     if (!ok) {
       const { refuseWebhook } = await import("@/lib/webhookRetry");
       await refuseWebhook("scripting", { code: "bad-signature", rawBody: raw, header: headerName, sig });
