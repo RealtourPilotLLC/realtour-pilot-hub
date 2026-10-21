@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
 import { appBase } from "@/lib/appUrl";
+import { strategyAwaits, strategyInForceNo } from "@/lib/strategyAwaiting";
 import { isAutomationEnabled, type AutomationKey } from "@/lib/programAutomation";
 import { isStaffControlledEmail, isSyntheticClientRow, isVerifiedTestDestinationEmail, isVerifiedTestDestinationPhone } from "@/lib/testClients";
 import { featureTestOnlyFor, loadProgramRollout, programReach, updateProgramRollout } from "@/lib/programRollout";
@@ -205,9 +206,8 @@ export type OnboardingDetail = {
     status: string; trial: boolean; monthKey: string; monthLabel: string; monthStatus: string | null; callStatus: string | null;
   };
   strategy: {
+    /** The newest version waiting for approval (DRAFT or INTERNAL_REVIEW, newer than the one in force). */
     inReview: { id: string; versionNo: number } | null;
-    /** A newer version still being written (DRAFT), when nothing waits for approval. */
-    draftNo: number | null;
     approved: { id: string; versionNo: number; approvedAt: string | null; approvedBy: string | null; releasedAt: string | null } | null;
     /**
      * The version their portal actually shows (Oct 14 2026): the newest released
@@ -258,10 +258,9 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
   const { AUTOMATION_EFFECTS } = await import("@/lib/programAutomationCopy");
   const switchKeys = [...new Set(ONBOARDING_TOGGLES.flatMap((t) => t.switches))];
 
-  const [month, inReview, draft, approved, inPortal, loaded, switchRows, seats, record, recipients] = await Promise.all([
+  const [month, openVersions, approved, inPortal, loaded, switchRows, seats, record, recipients] = await Promise.all([
     prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { id: true, status: true, strategyCallStatus: true } }),
-    prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "INTERNAL_REVIEW" }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true } }),
-    prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "DRAFT" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } }),
+    prisma.contentStrategyVersion.findMany({ where: { enrollmentId: enrollment.id, status: { in: ["DRAFT", "INTERNAL_REVIEW", "APPROVED"] } }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, status: true } }),
     prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, approvedAt: true, approvedBy: true, releasedAt: true } }),
     prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, clientId: client.id, releasedAt: { not: null }, status: { in: ["APPROVED", "SUPERSEDED", "SHARED"] } }, orderBy: { versionNo: "desc" }, select: { versionNo: true, releasedAt: true } }),
     loadProgramRollout().then((l) => ({ rollout: l.rollout, problem: l.problem })).catch((e) => ({ rollout: { ...CLOSED_ROLLOUT } as ProgramRollout, problem: `the rollout could not be read (${errText(e)})` })),
@@ -271,6 +270,13 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
     onboardingRecipientsFor(clientId),
   ]);
   const { rollout, problem } = loaded;
+  // Oct 20 2026 (audit D4): the version waiting for approval is the one rule in
+  // strategyAwaiting.ts, DRAFT or INTERNAL_REVIEW and newer than the version in
+  // force, so a discovery DRAFT is offered for approval here the way the
+  // Dashboard and the Strategy panel offer it. (A separate "still a draft"
+  // line went with it: under that rule every such draft is waiting.)
+  const inForceNo = strategyInForceNo(openVersions);
+  const inReview = openVersions.find((v) => strategyAwaits(v, inForceNo)) ?? null;
   const switchOn = (k: AutomationKey) => !!switchRows.find((r) => r.key === k)?.enabled;
   const lockOps: ProgramReachOp[] = ["reminders", "script_share_email", "script_auto_share", "review_auto_approve"];
   const locks = new Map<ProgramReachOp, boolean>(await Promise.all(lockOps.map(async (op) => [op, await featureTestOnlyFor(op)] as const)));
@@ -321,7 +327,7 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
   const steps = onboardingSteps({
     isTest, paused: enrollment.status !== "ACTIVE",
     emails: recipients.filter((r) => r.channel === "email").map((r) => r.toRef),
-    strategy: { inReview: inReview?.versionNo ?? null, draftNo: inReview ? null : draft?.versionNo ?? null, approvedNo: approved?.versionNo ?? null, released: !!approved?.releasedAt, portalNo: inPortal?.versionNo ?? null },
+    strategy: { inReview: inReview?.versionNo ?? null, approvedNo: approved?.versionNo ?? null, released: !!approved?.releasedAt, portalNo: inPortal?.versionNo ?? null },
     allowed, liveOwnerSeat, record, autoBooking: !isTest && toggleOn(toggleOf("bookings"), allowed),
   });
 
@@ -334,7 +340,6 @@ export async function loadOnboardingDetail(clientId: string): Promise<Onboarding
     },
     strategy: {
       inReview: inReview ? { id: inReview.id, versionNo: inReview.versionNo } : null,
-      draftNo: inReview ? null : draft?.versionNo ?? null,
       approved: approved ? { id: approved.id, versionNo: approved.versionNo, approvedAt: approved.approvedAt?.toISOString() ?? null, approvedBy: approved.approvedBy, releasedAt: approved.releasedAt?.toISOString() ?? null } : null,
       inPortal: inPortal?.releasedAt ? { versionNo: inPortal.versionNo, releasedAt: inPortal.releasedAt.toISOString() } : null,
       releaseEmails,

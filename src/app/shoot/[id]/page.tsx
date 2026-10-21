@@ -110,7 +110,11 @@ export default async function ShootDetailPage({
   // everywhere, ?as= photographer previews included. The route/map card below is
   // unaffected — miles are ops, not money.
   const ownPay = payMemberId != null && payMemberId === (viewerMemberId ?? user?.teamMemberId ?? null);
-  const showPay = payMemberId != null && (ownPay || (user ? canSeeMoney(user.role) : !authEnforced()));
+  // Oct 20 2026 (audit G): and never while this viewer's pay view is paused
+  // (Harrison, James: My Performance, not pay). The card checked this itself,
+  // but only after its skeleton had painted in the pay slot.
+  const { payHiddenFor } = await import("@/lib/settings");
+  const showPay = payMemberId != null && (ownPay || (user ? canSeeMoney(user.role) : !authEnforced())) && !(await payHiddenFor(user));
 
   // Pay (this viewer's earnings for this shoot) streams in via Suspense so the
   // screen paints immediately instead of blocking on mileage.

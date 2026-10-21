@@ -191,9 +191,7 @@ function StrategyStep({ d, canAct }: { d: OnboardingDetail; canAct: boolean }) {
             : <Button variant="secondary" disabled={busy} onClick={() => setConfirming("release")}>Release to their portal</Button>)}
         </div>
       )}
-      {!s.inReview && !s.approved && (s.draftNo
-        ? <p>Version {s.draftNo} is still a draft. Finish it and send it for approval on <Link href={read} className={link}>Plan › Strategy</Link>.</p>
-        : <p>No strategy on file yet. Draft or upload it on <Link href={read} className={link}>Plan › Strategy</Link>.</p>)}
+      {!s.inReview && !s.approved && <p>No strategy on file yet. Draft or upload it on <Link href={read} className={link}>Plan › Strategy</Link>.</p>}
       <Note note={note} busy={busy} busyText="Saving…" />
     </>
   );

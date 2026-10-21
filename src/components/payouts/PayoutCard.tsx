@@ -172,7 +172,9 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
           <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-medium text-brand">
             <span className="inline-flex items-center gap-1.5"><ChevronDown className="size-3.5" /> Daily mileage</span>
             <button
-              onClick={(e) => { e.preventDefault(); start(async () => { await recomputeMileage(person.member.id); refresh(); }); }}
+              // This period's days only (audit G13): one card never clears the whole history.
+              onClick={(e) => { e.preventDefault(); start(async () => { await recomputeMileage(person.member.id, periodStartISO); refresh(); }); }}
+              title="Route this pay period's days again (your adjustments are kept)"
               className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
             >
               {busy ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} Recompute
@@ -440,6 +442,14 @@ function MileageDayRow({ day: d, memberId, busy, run }: {
       <div className="flex items-center justify-between gap-2">
         <span className="text-muted">{dayLabel}</span>
         <span className="min-w-0 flex-1 text-right text-muted-2">
+          {d.estimated && !adjusted && (
+            <span
+              title="The route planner did not answer, so this is a straight-line estimate. It is routed again on the next load, or adjust it by hand."
+              className="mr-1.5 rounded bg-warning/10 px-1 py-0.5 text-[10px] font-semibold text-warning"
+            >
+              estimated
+            </span>
+          )}
           {adjusted && (
             <span
               title={`${d.overrideNote ? `${d.overrideNote} · ` : ""}router said ${d.computedMiles.toFixed(1)} mi`}

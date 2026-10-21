@@ -1,6 +1,8 @@
 import { BadgeDollarSign, CheckCircle2, FolderOpen, Scissors, Route, Eraser, Clapperboard, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AgreeButton } from "@/components/upload/AgreeButton";
+import { getCurrentUser } from "@/lib/auth/user";
+import { payHiddenFor } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +17,9 @@ export default async function UploadWelcomePage({
   const { next } = await searchParams;
   // Only ever bounce back inside the upload portal — no open redirects.
   const dest = next && next.startsWith("/upload") ? next : "/upload";
+  // Oct 20 2026 (audit G): a viewer whose pay view is paused (Harrison,
+  // James) never reads about payroll or My Pay; the submit rule stays.
+  const payHidden = await payHiddenFor(await getCurrentUser().catch(() => null));
   return (
     <div className="mx-auto max-w-2xl p-4 pb-16 sm:p-6">
       <p className="text-xs font-bold uppercase tracking-widest text-brand">New for every shoot</p>
@@ -79,10 +84,17 @@ export default async function UploadWelcomePage({
           "One tap on submit notifies the editors and builds the editor brief — that's the job closed out.",
           "Afterward there's an optional feedback box — anything you'd change goes straight to Jordan.",
         ]} />
-        <Row icon={BadgeDollarSign} title="Your pay rides on the submit" points={[
-          "Once submitted, the shoot is added to your payroll — you'll see it in My Pay right away.",
-          "Uploaded but never submitted? It doesn't show in My Pay — the job isn't done until the page is done.",
-        ]} />
+        {payHidden ? (
+          <Row icon={CheckCircle2} title="The job is done on the submit" points={[
+            "Once submitted, the shoot is finished and the editors have everything they need.",
+            "Uploaded but never submitted? The job isn't done until the page is done.",
+          ]} />
+        ) : (
+          <Row icon={BadgeDollarSign} title="Your pay rides on the submit" points={[
+            "Once submitted, the shoot is added to your payroll — you'll see it in My Pay right away.",
+            "Uploaded but never submitted? It doesn't show in My Pay — the job isn't done until the page is done.",
+          ]} />
+        )}
       </div>
 
       <a

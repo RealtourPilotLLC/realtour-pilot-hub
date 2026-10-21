@@ -269,13 +269,13 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
         {verdict && <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${verdict.cls}`} title={s.clientVerdictAt ? `on ${fmt(s.clientVerdictAt)}` : undefined}>{verdict.label}</span>}
         {s.answersChanged && <span className="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning" title="The client edited an answer after this draft. Revise it, or draft again from the answers.">answers changed since this draft</span>}
-        {revBusy && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"><Loader2 className="size-3 animate-spin" />{rev?.server?.label === "tighten" ? "tightening…" : "revising…"}</span>}
+        {revBusy && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"><Loader2 className="size-3 animate-spin" />{rev?.server?.label === "tighten" ? "tightening…" : rev?.server?.label === "redraft" ? "redrafting…" : "revising…"}</span>}
       </summary>
       <div className="mt-2">
-        {revBusy && <p className="mb-1.5 text-[12px] text-muted"><Loader2 className="mr-1 inline size-3 animate-spin" />{rev?.server?.label === "tighten" ? "Tightening" : "Revising"} in the background — the new version appears here when it&rsquo;s ready{cur ? `; v${cur.versionNo} is kept` : ""}.</p>}
+        {revBusy && <p className="mb-1.5 text-[12px] text-muted"><Loader2 className="mr-1 inline size-3 animate-spin" />{rev?.server?.label === "tighten" ? "Tightening" : rev?.server?.label === "redraft" ? "Drafting again from the answers" : "Revising"} in the background — the new version appears here when it&rsquo;s ready{cur ? `; v${cur.versionNo} is kept` : ""}.</p>}
         {revFailed && (
           <p className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[12px] text-danger">
-            <AlertTriangle className="size-3.5" />{revFailed.label === "tighten" ? "Tightening" : "The revision"} failed: {revFailed.error}
+            <AlertTriangle className="size-3.5" />{revFailed.label === "tighten" ? "Tightening" : revFailed.label === "redraft" ? "The new draft" : "The revision"} failed: {revFailed.error}
             <button onClick={rev?.onRetry} className="rounded-md border border-danger/40 px-2 py-0.5 text-[11px] font-semibold hover:bg-danger-soft">Try again</button>
           </p>
         )}

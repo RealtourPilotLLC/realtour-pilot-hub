@@ -116,7 +116,7 @@ export const SETTINGS_SEARCH_LABELS: Record<SettingsCardKey, string> = {
   "internal-alerts": "Internal alerts notification schedule coverage hours on call quiet time urgent Slack digests",
   "team-notifications": "Team notifications members mentions project messages bell Slack SMS phone channels",
   coaching: "Comms coaching audited team members report send notes",
-  "pay-view": "Photographer pay view visibility paused payroll financial",
+  "pay-view": "Team pay view Photographer pay view visibility paused payroll financial My Performance",
   "review-room": "Review Room reviewer coverage primary backup fallback creative approver offer transfer covered hours upload retention Dropbox discovery",
   topaz: "1080p video pass Topaz upscale enhancement limits credits",
   "program-automations": "Content program automations switches enabled dependencies rollout pilot client scope AI script drafting call transcript discovery monthly",

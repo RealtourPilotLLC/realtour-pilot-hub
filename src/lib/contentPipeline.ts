@@ -162,29 +162,6 @@ export async function reviseScriptWithInstructions(scriptId: string, instruction
 }
 
 // ---------------------------------------------------------------------------
-// 4. Topic bank seeding (spec §18/§27) — a ContentTopicRefreshRun whose
-// suggestions Jordan accepts one by one; N per pillar from the policy
-// (10, configurable to 15), archived concepts never resurface, and duplicate
-// clicks join the running job. `created` = suggestions awaiting his review.
-//
-// CP-07 (Sep 24 2026): this is the PERSON's path. The same run is now also
-// queued when a strategy is approved and refilled per pillar by the hourly
-// sweep behind `topic_refresh` (contentTopics.sweepTopicBanks); a click here
-// takes over a whole-bank run the queue is still holding rather than paying
-// for a second one.
-// ---------------------------------------------------------------------------
-export async function seedTopicBank(enrollmentId: string, perPillar?: number | null, opts?: PipelineOpts): Promise<{ created: number; pillars: string[]; runId: string; needsInput: string[] }> {
-  const { startTopicRefresh } = await import("@/lib/contentTopics");
-  const { listPillars } = await import("@/lib/contentPillars");
-  const existing = await prisma.contentTopic.count({ where: { enrollmentId, status: { notIn: ["REJECTED", "ARCHIVED"] } } });
-  const { runId } = await startTopicRefresh({ enrollmentId, kind: existing > 0 ? "REFRESH" : "BANK", topicsPerPillar: perPillar ?? null, ...who(opts) });
-  const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: runId }, select: { generatedCount: true, missingContextJson: true, status: true } });
-  let needsInput: string[] = [];
-  try { const mc = run?.missingContextJson ? (JSON.parse(run.missingContextJson) as { missing?: string[]; gaps?: string[] }) : null; needsInput = [...(mc?.missing ?? []), ...(mc?.gaps ?? [])]; } catch { /* none */ }
-  return { created: run?.generatedCount ?? 0, pillars: (await listPillars(enrollmentId)).map((p) => p.name), runId, needsInput };
-}
-
-// ---------------------------------------------------------------------------
 // 4b. Transcript-job handlers for W1-B's driver (src/lib/transcriptJobs.ts).
 // The driver leases the job, checks the transcript_jobs switch and records the
 // outcome; each handler here delegates to contentGeneration.runTranscriptJob,

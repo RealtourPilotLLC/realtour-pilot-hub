@@ -22,7 +22,8 @@
 //   4. The view: last reading; photos since it (an ESTIMATE, uncounted jobs
 //      named, never zero); credits only once credits-per-photo is set; the
 //      last AutoHDR top-up from the bank feed; no threshold → no comparison.
-//   5. Permissions: Kyle records a reading; only the owner changes settings.
+//   5. (retired Oct 20 2026 with Settings → AutoHDR balance and its actions;
+//      the Photo Delivery Credits page reads the balance through the API.)
 //   5b. The card: the owner sees the last top-up; Kyle (ADMIN, who opens the
 //      page for the Monday reading) never sees the owner's payment (review).
 //   6. Zero outbound calls beyond the faked Google endpoints.
@@ -145,7 +146,6 @@ async function main() {
   const vb = await import("@/lib/vendorBalance");
   const { syncGmail } = await import("@/lib/integrations/google");
   const { establishSession } = await import("@/lib/auth/session");
-  const { recordAutohdrReading, saveAutohdrSettings } = await import("@/app/settings/autohdr/actions");
 
   const jordanTm = await prisma.teamMember.create({ data: { name: "Jordan Spackman", email: "jordan-vb@drill.invalid", role: "PHOTOGRAPHER" } });
   const kyleTm = await prisma.teamMember.create({ data: { name: "Kyle Drill", email: "kyle-vb@drill.invalid", role: "ADMIN" } });
@@ -275,22 +275,9 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("5 · who may do what");
-  {
-    await establishSession(kyle.id);
-    const r = await recordAutohdrReading({ credits: "410" });
-    c.ok("Kyle records a reading", r.ok, r.message);
-    let refused = false;
-    try { await saveAutohdrSettings({ checkOwnerKey: "kyle", checkWeekday: 1, thresholdCredits: "10" }); } catch { refused = true; }
-    c.ok("Kyle cannot change the threshold or who checks", refused);
-    await establishSession(owner.id);
-    const s = await saveAutohdrSettings({ checkOwnerKey: "kyle", checkWeekday: 1, thresholdCredits: "", thresholdDollars: "", creditsPerPhoto: "" });
-    c.ok("the owner can — and empty boxes clear back to unset", s.ok && (await vb.vendorBalanceSettings()).thresholdCredits === null);
-  }
-
-  // =========================================================================
   c.head("5b · the Connections card says what is and isn't known");
   {
+    await establishSession(owner.id);
     stubUiModules();
     const { AutohdrCard } = await import("@/components/connections/AutohdrCard");
     const text = await renderText(await AutohdrCard());
@@ -299,8 +286,7 @@ async function main() {
     // and the owner's last top-up. Thresholds moved to the credit monitor
     // (250 / 100), which only alerts on a live API balance.
     c.ok("card, as the owner: API not connected, the last reading, the last top-up", /API not connected/.test(text) && /Last reading:/.test(text) && /\$200\.00/.test(text), text.slice(0, 200));
-    // Settings → AutoHDR balance renders the same card for Kyle (ADMIN) when he
-    // records the Monday reading. The top-up is Jordan's own payment.
+    // Kyle (ADMIN) can open the card too. The top-up is Jordan's own payment.
     await establishSession(kyle.id);
     const asKyle = await renderText(await AutohdrCard());
     c.ok("card, as Kyle: the reading is there, the owner's payment is not (no line, no $200)", /Last reading:/.test(asKyle) && !/Last top-up/.test(asKyle) && !/\$200/.test(asKyle), asKyle.slice(0, 300));

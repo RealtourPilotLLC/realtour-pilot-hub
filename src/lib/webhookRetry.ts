@@ -450,6 +450,27 @@ const MAX_ATTEMPTS = 6;
  *  means "next hourly run". */
 const BACKOFF_MINUTES = [0, 60, 240, 720, 1440, 2880];
 
+// STALLED RECEIPTS (Oct 20 2026, audit H8 follow-up). OpenPhone and Slack now
+// store the row, answer 200 and do the work in after(). If that after() dies
+// (a deploy, the function's time limit) the row stays RECEIVED, and no
+// provider will ever resend it: it was already told 200. So a RECEIVED row on
+// those lanes older than STALLED_AFTER_MINUTES is replayed here like an ERROR
+// row, through the same twin check, ordering guard and dispatch() (the
+// receivers' own idempotent processing: a replay never sends a text). 15
+// minutes is past any function's lifetime (Vercel stops one at 800 s at the
+// most), so the first copy is certainly not still working on it.
+//
+// Rows from before after() are left alone (STALLED_SINCE): those were worked
+// inline, a stuck one was resent by its provider then, and replaying weeks-old
+// texts now would only file stale reply tasks.
+const STALLED_PROVIDERS = ["openphone", "slack"];
+const STALLED_AFTER_MINUTES = 15;
+const STALLED_SINCE = new Date("2026-10-20T00:00:00-04:00");
+const STALLED_NOTE = "Stalled: received, but its background processing never finished. Replayed by the hourly sweep.";
+/** How long a claimed replay holds its row (the sweep runs hourly): a second
+ *  sweep that overlaps it reads the lease as "not yet" and leaves the row. */
+const LEASE_MINUTES = 30;
+
 type RetryState = { attempts: number; nextAt: Date | null; gaveUp: boolean; dismissed: boolean; message: string };
 
 export function readRetryState(error: string | null | undefined): RetryState {
@@ -495,15 +516,19 @@ async function recordReplayFailure(id: string, state: RetryState, now: number, e
 
 export async function retryFailedWebhooks(
   limit = 25,
-): Promise<{ retried: number; recovered: number; failed: number; deduped: number; superseded: number; waiting: number }> {
+): Promise<{ retried: number; recovered: number; failed: number; deduped: number; superseded: number; waiting: number; stalled: number }> {
+  const stalledBefore = new Date(Date.now() - STALLED_AFTER_MINUTES * 60_000);
   const candidates = await prisma.webhookEvent.findMany({
     // Gmail rows are excluded: they can't be re-dispatched from the stored
     // payload (it's just a snippet) — the gmail cron re-scans the inbox and
     // retries any non-PROCESSED row itself, so marking them FAILED here would
     // only fight that loop.
     where: {
-      status: { in: ["ERROR", "FAILED"] },
-      provider: { not: "gmail" },
+      OR: [
+        { status: { in: ["ERROR", "FAILED"] }, provider: { not: "gmail" } },
+        // A stalled receipt (see STALLED_PROVIDERS above).
+        { status: "RECEIVED", provider: { in: STALLED_PROVIDERS }, createdAt: { lt: stalledBefore, gte: STALLED_SINCE } },
+      ],
       // Prisma's NOT-contains is NULL-hostile (a NULL error would be filtered
       // out entirely), so spell the null case explicitly.
       AND: [
@@ -519,7 +544,7 @@ export async function retryFailedWebhooks(
     },
     orderBy: { createdAt: "asc" },
     take: Math.max(limit * 4, 50),
-    select: { id: true, provider: true, eventType: true, externalId: true, payload: true, error: true, createdAt: true },
+    select: { id: true, provider: true, eventType: true, externalId: true, payload: true, status: true, error: true, createdAt: true },
   });
 
   const now = Date.now();
@@ -529,12 +554,28 @@ export async function retryFailedWebhooks(
   let superseded = 0;
   let waiting = 0;
   let retried = 0;
+  let stalled = 0;
 
   for (const row of candidates) {
     if (retried >= limit) break;
     const state = readRetryState(row.error);
     if (state.gaveUp) { waiting++; continue; }
     if (state.nextAt && state.nextAt.getTime() > now) { waiting++; continue; }
+    // Every write below is fenced on the row as it was read (status AND error),
+    // so two sweeps that overlap cannot both act on it: the second one's write
+    // matches nothing and it moves on.
+    const asRead = { id: row.id, status: row.status, error: row.error };
+    const isStalled = row.status === "RECEIVED";
+    if (isStalled && row.externalId) {
+      // A later copy of the same event that is still being worked (inside its
+      // own 15 minutes) owns it for now; the next sweep closes this row against
+      // it once it has processed.
+      const inFlight = await prisma.webhookEvent.findFirst({
+        where: { provider: row.provider, externalId: row.externalId, eventType: row.eventType, status: "RECEIVED", createdAt: { gte: stalledBefore }, id: { not: row.id } },
+        select: { id: true },
+      });
+      if (inFlight) { waiting++; continue; }
+    }
 
     // Idempotent replay: if the provider already re-delivered this SAME event
     // and that copy processed cleanly, re-running the processor would only
@@ -573,15 +614,15 @@ export async function retryFailedWebhooks(
         continue;
       }
       if (twinProven) {
-        await prisma.webhookEvent.update({
-          where: { id: row.id },
+        const closed = await prisma.webhookEvent.updateMany({
+          where: asRead,
           data: {
             status: "PROCESSED",
             processedAt: new Date(),
             error: carryUnsigned(state.message, "Resolved: the same event was delivered again and processed."),
           },
         });
-        deduped++;
+        if (closed.count) { deduped++; if (isStalled) stalled++; }
         continue;
       }
 
@@ -606,16 +647,30 @@ export async function retryFailedWebhooks(
       });
       if (newer && !needsDeliveryProof) {
         const note = `${SUPERSEDED_PREFIX} a newer event (${newer.eventType ?? "unknown"}) for the same record processed on ${newer.createdAt.toISOString()}, so replaying this one could undo it. Not retried — dismiss it, or replay it by hand if you know it is still wanted.`;
-        await prisma.webhookEvent.update({
-          where: { id: row.id },
+        const parked = await prisma.webhookEvent.updateMany({
+          where: asRead,
           data: { status: "FAILED", error: writeRetryState(carryUnsigned(state.message, note), state.attempts, null) },
         });
-        superseded++;
+        if (parked.count) { superseded++; if (isStalled) stalled++; }
         continue;
       }
     }
 
+    // CLAIM before replaying (Oct 20 2026): the row takes a lease (ERROR,
+    // "next=" LEASE_MINUTES away, this attempt counted) only if it is still
+    // exactly as read. A sweep that overlaps this one sees the lease and waits;
+    // if this replay dies mid-way, the row is simply retried once the lease
+    // has passed. A stalled receipt says so on the row while it is replayed.
+    const claimed = await prisma.webhookEvent.updateMany({
+      where: asRead,
+      data: {
+        status: isStalled ? "ERROR" : row.status,
+        error: writeRetryState(isStalled ? carryUnsigned(state.message, STALLED_NOTE) : state.message, state.attempts + 1, new Date(now + LEASE_MINUTES * 60_000)),
+      },
+    });
+    if (!claimed.count) { waiting++; continue; }
     retried++;
+    if (isStalled) stalled++;
     let payload: Record<string, unknown> = {};
     try {
       payload = row.payload ? (JSON.parse(row.payload) as Record<string, unknown>) : {};
@@ -640,7 +695,7 @@ export async function retryFailedWebhooks(
   // happens to reach its last line is not an alarm. It is now its own step at
   // the TOP of the hourly cron (api/cron/sync), where nothing can starve it and
   // its errors are caught on their own.
-  return { retried, recovered, failed, deduped, superseded, waiting };
+  return { retried, recovered, failed, deduped, superseded, waiting, stalled };
 }
 
 /** One manual attempt from /connections, ignoring the backoff clock. */

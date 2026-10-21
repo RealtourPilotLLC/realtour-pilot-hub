@@ -16,7 +16,8 @@
 //      "to approve"; an earlier open month with a script waiting shows; a
 //      paused client does not.
 //   6. D11 "Draft the script from these answers" queues a first draft (the
-//      click answers at once; a second click is refused while it waits).
+//      click answers at once; a second click is refused while it waits), and
+//      "New draft from the changed answers" is queued onto the existing script.
 //
 // ISOLATION: PGlite via the shared harness; no message leaves.
 // ---------------------------------------------------------------------------
@@ -171,6 +172,17 @@ async function main() {
       c.ok("…and the worker waits in after(), the model untouched", pendingAfter.length > 0);
       const again = await A.draftScriptFromInterview(ivId);
       c.ok("a second click is refused while it is queued", !again.ok && (await prisma.programAiRun.count({ where: { enrollmentId: W.enrollmentId } })) === 1, again.message);
+      // The first draft lands (its key freed); the answers change; "New draft from the changed answers".
+      const first = await prisma.programAiRun.findFirstOrThrow({ where: { enrollmentId: W.enrollmentId } });
+      await prisma.programAiRun.update({ where: { id: first.id }, data: { status: "SUCCEEDED", dedupeKey: null, finishedAt: new Date() } });
+      const made = await scripts.createScriptVersion({ enrollmentId: W.enrollmentId, monthId: W.monthId, topicId: W.topicIds[0], interviewId: ivId, source: "AI", status: "DRAFT", createdBy: "ai", parts: { ...parts("A hook written from their first answers."), title: "Written topic" } });
+      const redraft = await A.draftScriptFromInterview(ivId);
+      const queued = await prisma.programAiRun.findMany({ where: { enrollmentId: W.enrollmentId, status: "QUEUED" } });
+      const rscope = JSON.parse(queued[0]?.scopeJson ?? "{}") as { job?: string; onlyIfUnscripted?: boolean; scriptId?: string };
+      c.ok("a NEW draft from changed answers is queued too (onlyIfUnscripted off, on the existing script), no version written yet", redraft.ok && /Sent for a new draft/.test(redraft.message) && queued.length === 1 && rscope.job === "script_interview" && rscope.onlyIfUnscripted === false && rscope.scriptId === made.scriptId && (await prisma.contentScriptVersion.count({ where: { scriptId: made.scriptId } })) === 1, `${redraft.message} · ${queued[0]?.scopeJson}`);
+      const { queueStateFor } = await import("@/lib/aiQueue");
+      const qs = await queueStateFor(W.enrollmentId, { monthId: W.monthId });
+      c.ok("…and the page shows it on that script (\"redraft\"), not as a topic draft", qs.scripts[made.scriptId]?.label === "redraft" && !qs.topics[W.topicIds[0]], JSON.stringify(qs));
     }
 
     c.ok("no call left the drill", fence.blocked.length === 0, fence.blocked.join(", "));

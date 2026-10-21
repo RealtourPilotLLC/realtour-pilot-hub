@@ -1,13 +1,17 @@
 import { prisma } from "@/lib/prisma";
 import { ROLE_LABEL } from "@/lib/auth/access";
 import { SetPasswordForm } from "@/components/auth/SetPasswordForm";
+import { INVITE_EXPIRED_MESSAGE, inviteTokenExpired } from "@/lib/auth/inviteToken";
 
 export const dynamic = "force-dynamic";
 
 export default async function InvitePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const u = await prisma.appUser.findUnique({ where: { inviteToken: token } });
-  const valid = !!u && u.status !== "DISABLED";
+  // Oct 20 2026 (audit G15): a lapsed link shows no password form (the set
+  // action refuses it anyway), and says why rather than "already used".
+  const expired = !!u && u.status !== "DISABLED" && inviteTokenExpired(u.invitedAt);
+  const valid = !!u && u.status !== "DISABLED" && !expired;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand/[0.08] via-surface to-surface p-6">
@@ -46,7 +50,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
         ) : (
           <>
             <h1 className="text-lg font-semibold tracking-tight">Invite not valid</h1>
-            <p className="mt-2 text-sm text-muted">This invite link has already been used or was revoked. Ask the owner for a new one.</p>
+            <p className="mt-2 text-sm text-muted">{expired ? INVITE_EXPIRED_MESSAGE : "This invite link has already been used or was revoked. Ask the owner for a new one."}</p>
             <a href="/login" className="mt-6 inline-block text-sm text-brand hover:underline">Go to sign in</a>
           </>
         )}
