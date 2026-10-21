@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { contentHref } from "@/lib/contentNav";
 import type { ScriptReadiness } from "@/lib/contentDrafting";
+import type { MonthProgress } from "@/lib/monthProgress";
+import { monthStarted, monthTouched } from "@/lib/forfeit";
 
 // ---------------------------------------------------------------------------
 // MONTHLY CONTENT: WHAT NEEDS YOU, ON THE DASHBOARD (Oct 20 2026). Jordan:
@@ -26,6 +28,12 @@ import type { ScriptReadiness } from "@/lib/contentDrafting";
 //                topic ideas the client suggested.
 // An EARLIER open month joins when a script on it waits on an OK or a client
 // request (audit D10), with only those items. Reads only; no model call.
+//
+// NEXT MONTH (Oct 21 2026) is made early so clients can get ahead
+// (contentProgram.ensureNextMonths). Until its 1st it joins the card only once
+// the client has done something on it (topics chosen, answers, a script, a
+// session or call booked: forfeit.monthTouched); an untouched next month
+// stays quiet.
 // ---------------------------------------------------------------------------
 
 export type ActionItem = { key: string; words: string; tone: "warn" | "brand" | "muted"; href: string };
@@ -110,11 +118,13 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
   const countBy = (rows: { enrollmentId: string; _count: { _all: number } }[]) => new Map(rows.map((r) => [r.enrollmentId, r._count._all]));
   const changes = countBy(proposals), ideas = countBy(clientTopics), waiting = countBy(messages);
 
+  // Oct 21 2026: next month before its 1st, untouched, is quiet (read off the same progress).
+  const quiet = new Set(owed.filter((m) => !monthStarted(m.monthKey, now) && !progressTouched(progress.get(progressKey(m.enrollmentId, m.id, m.monthKey)))).map((m) => m.id));
   // Videos that need a person to get a script, per month (six months at a
   // time): this month and next only, and never a month the reader mutes
   // (skipped, imported or forfeited: nothing is owed on it).
   const needScript = new Map<string, number>();
-  const toCheck = owed.filter((m) => !isEarlier.has(m.id) && !live.get(m.enrollmentId)?.clientSuppliesTopics && !progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted);
+  const toCheck = owed.filter((m) => !isEarlier.has(m.id) && !quiet.has(m.id) && !live.get(m.enrollmentId)?.clientSuppliesTopics && !progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted);
   for (let i = 0; i < toCheck.length; i += 6) {
     await Promise.all(toCheck.slice(i, i + 6).map(async (m) => {
       const work = await scriptWorkForMonth(m.id).catch(() => []);
@@ -130,7 +140,9 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
     if (p?.muted) continue;
     const at = (tab: "plan" | "messages", view?: "topics" | "scripts" | "strategy") => contentHref(m.enrollmentId, { tab, view, month: m.monthKey, now });
     const items: ActionItem[] = [];
-    const na = p?.nextAction;
+    // An untouched next month carries nothing of its own (only, if it is the
+    // client's first row, the account-wide items below).
+    const na = quiet.has(m.id) ? null : p?.nextAction;
     if (!isEarlier.has(m.id) && na && na.blocked === "us" && (na.ownerDuty === "strategy" || na.ownerDuty === "month reconciliation")) items.push({ key: "topics", words: na.text, tone: "warn", href: at("plan", "topics") });
     const write = needScript.get(m.id) ?? 0;
     if (write) items.push({ key: "write", words: `Needs ${n(write, "script")}`, tone: "warn", href: at("plan", "scripts") });
@@ -158,6 +170,20 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
   const warns = (r: ContentActionRow) => r.items.filter((i) => i.tone === "warn").length;
   rows.sort((a, b) => Number(warns(b) > 0) - Number(warns(a) > 0) || a.monthKey.localeCompare(b.monthKey) || b.items.length - a.items.length || a.clientName.localeCompare(b.clientName));
   return { rows };
+}
+
+/**
+ * Has the client (or anyone) done something on this month: topics chosen, a
+ * script, a session asked for or on the calendar, a call booked or held, a
+ * video? forfeit.monthTouched's rule, read off the progress the card already
+ * has (no extra query).
+ */
+function progressTouched(p: MonthProgress | undefined): boolean {
+  if (!p) return false;
+  return monthTouched({ strategyCallStatus: p.call.status }, {
+    shoots: p.sessions.list.length, sessionRequests: p.sessions.pendingRequests, videos: p.production.libraryRows,
+    filmedTopics: p.production.filmed, plannedWork: p.topics.selected + p.topics.overflow + p.scripts.total, calls: 0,
+  });
 }
 
 /**

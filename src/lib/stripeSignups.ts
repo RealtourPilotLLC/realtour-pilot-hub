@@ -782,8 +782,10 @@ async function activateSignup(sig: {
 
   // The month workspace, immediately — the hourly pass would also catch it,
   // but the owner clicking the bell should land on a live workspace.
-  const { ensureCurrentMonths } = await import("@/lib/contentProgram");
+  const { ensureCurrentMonths, ensureNextMonths } = await import("@/lib/contentProgram");
   await ensureCurrentMonths().catch(() => {});
+  // Oct 21 2026: and next month's, early, so a new client can get ahead too.
+  await ensureNextMonths().catch(() => {});
 
   // ---- DISCOVERY FIRST, THEN ACCESS (CP-14, Sep 24 2026). The two blocks
   // below used to run the other way round, and the audit's own acceptance case

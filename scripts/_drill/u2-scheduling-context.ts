@@ -50,8 +50,10 @@ async function main() {
     const months = await portal.portalScheduleMonths(viewer.enrollment);
     c.ok("month query resolves only among the signed enrollment's open months", selectedPortalMonth(months, "2026-11")?.monthId === november.id && selectedPortalMonth(months, "2026-12") === null && selectedPortalMonth(months, "2026-09") === null);
     {
-      const { portalLastMonthKey } = await import("@/lib/contentProgram");
-      c.ok("Oct 13 2026 rule: before the 24th the client sees only this month; from the 24th, next month too", portalLastMonthKey(new RealDate("2026-10-13T16:00:00Z")) === "2026-10" && portalLastMonthKey(new RealDate("2026-10-24T05:00:00Z")) === "2026-11" && portalLastMonthKey(new RealDate("2026-10-24T03:00:00Z")) === "2026-10" && portalLastMonthKey(new RealDate("2026-12-28T16:00:00Z")) === "2027-01");
+      const { portalLastMonthKey, nextMonthOpen } = await import("@/lib/contentProgram");
+      // CHANGED Oct 21 2026 (Jordan: "I'd like it to show November too, so people can schedule the next month ahead of time"):
+      // the Oct 13 "from the 24th" rule became ONE setting, NEXT_MONTH_OPENS_DAYS_BEFORE, ALWAYS by default.
+      c.ok("Oct 21 2026 rule: next month always shows (the year rolls over); a days-before setting would still hold it back", portalLastMonthKey(new RealDate("2026-10-13T16:00:00Z")) === "2026-11" && portalLastMonthKey(new RealDate("2026-10-24T05:00:00Z")) === "2026-11" && portalLastMonthKey(new RealDate("2026-12-28T16:00:00Z")) === "2027-01" && !nextMonthOpen(new RealDate("2026-10-13T16:00:00Z"), 8) && nextMonthOpen(new RealDate("2026-10-24T05:00:00Z"), 8));
     }
     c.ok("malformed month and impossible Pro session query are refused", portalMonthKey("2026-13") === null && portalMonthKey("2026-1") === null && portalSessionIndex("3", 2) === null && portalSessionIndex("2", 2) === 2);
     const link = portalMonthHref(`?e=${f.enrollmentId}&tab=plan&pv=month&iv=oldinterview&page=7&q=private+draft&token=private-token`, "2026-11", 2);
@@ -61,6 +63,10 @@ async function main() {
     c.ok("call booking context uses the selected month even without provider setup", call.view?.monthId === november.id && call.view.monthKey === "2026-11");
     c.ok("selected call context refuses another enrollment's month", (await portalBookingLinks(viewer, { planHref: link, monthId: other.monthId })).view === null);
 
+    // Oct 21 2026: once November has an open workspace, October books only its
+    // own dates (portal.sessionDateRule). The paging below needs more than six
+    // dates from Oct 27, so it runs with November closed (October's old reach).
+    await prisma.contentMonth.update({ where: { id: november.id }, data: { status: "SKIPPED" } });
     const exact = (street: string) => ({ street, city: "West Chester", state: "PA", zip: "19382" });
     const firstAddress = await actions.portalSaveSessionPlanAddress(auth, f.monthId, 1, exact("117 First Lane"));
     const secondAddress = await actions.portalSaveSessionPlanAddress(auth, f.monthId, 2, exact("220 Second Lane"));

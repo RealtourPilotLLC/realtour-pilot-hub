@@ -15,6 +15,7 @@ import { clientTextWindowOpen } from "@/lib/clientTextSweeps";
 import { ownersFor, type OwnerDuty } from "@/lib/programOwners";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import { lateMonthName, lateSessionOf } from "@/lib/lateSession";
+import { monthStarted } from "@/lib/forfeit";
 import {
   templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS, SIGN_OFF_FIRST_LINE,
   type ReminderAction, type TemplateVars,
@@ -734,6 +735,8 @@ type EnrollmentRow = {
   videosPerMonth: number;
   /** Oct 7 2026: the ledgered overrides bag — read for a month's catch-up (catchUp.ts). */
   overridesJson?: string | null;
+  /** Oct 21 2026: the client plans their own videos (a late session then waits on no scripts of ours). */
+  clientSuppliesTopics?: boolean;
   /** A28: the first program month this enrollment ever had — its first paid
    *  production cycle, which never receives a use-it-or-lose-it warning. */
   firstMonthKey: string | null;
@@ -743,6 +746,7 @@ type EnrollmentRow = {
 const ENROLLMENT_SELECT = {
   id: true, clientId: true, status: true, callMode: true, strategyCallRequired: true, noCallEligible: true,
   portalToken: true, portalTokenExpiresAt: true, accessRevokedAt: true, sessionsPerMonth: true, videosPerMonth: true, startedAt: true, overridesJson: true,
+  clientSuppliesTopics: true,
 } as const;
 
 /** The enrollment's first paid production cycle: whichever is EARLIER, the
@@ -1261,7 +1265,8 @@ async function evaluateMonth(
   // Oct 12 2026: a late month's session opens on its scripts being ready (the
   // portal's gate, monthLateSession.lateGateLock) — no booking ask before then.
   if (action === "BOOK_SESSION" && lateIn && !sessionShut) {
-    const ready = await import("@/lib/monthLateSession").then((m) => m.lateScriptsReady(month.id, lateRec)).then((r) => r.ready).catch(() => false);
+    // Oct 21 2026: a client who plans their own videos waits on no scripts of ours (lateGateLock agrees).
+    const ready = e.clientSuppliesTopics || await import("@/lib/monthLateSession").then((m) => m.lateScriptsReady(month.id, lateRec)).then((r) => r.ready).catch(() => false);
     if (!ready) sessionShut = `${lateMonthName(month.monthKey, lateIn)}'s session is booking in ${lateMonthName(lateIn)}, but its scripts aren't ready yet — no booking ask until they are`;
     // Oct 13 2026: one session for both months opens on the HOST month's gate too.
     if (ready && lateRec?.combined) {
@@ -2029,6 +2034,13 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     const client = en ? clients.get(en.clientId) : null;
     if (!en || !client) continue;
     const e: EnrollmentRow = { ...en, client: { name: client.name, email: client.email } };
+    // NEXT MONTH, MADE EARLY (Oct 21 2026: contentProgram.ensureNextMonths), is
+    // opt-in prep until its 1st: no planning, booking, review or brand-kit
+    // reminder (and so no mid-month task or escalation) acts on it before
+    // then. Only the two session-bound lanes run, each on a session the client
+    // has already booked and that session's own clock: the exact address
+    // before filming, and the scripts to approve before it.
+    const started = monthStarted(m.monthKey, now);
     // ONE MONTH, THE LANES IN ORDER. Planning/session first — it is the lane
     // §12's calendar belongs to — then review on its own clock. The one-email-
     // a-day rule inside the derivation is what stops the second lane doubling
@@ -2064,6 +2076,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     for (const lane of ["PRIMARY", "REVIEW"] as const) {
       if (bulkMonth && lane === "PRIMARY") continue;
+      if (!started) continue;
       const c = await evaluateMonth(e, m, now, policy, feeds, clientWindowOpen, lane, null, rollout);
       // A forfeited month's internal chasing stops with it (Oct 8 2026).
       if (lane === "PRIMARY" && c.reason === FORFEITED_REASON && !opts.dryRun) {
@@ -2087,7 +2100,7 @@ export async function evaluateReminders(opts: EvaluateOpts): Promise<EvaluateRes
     }
     // THE BRAND KIT LAST (Oct 20 2026): once per client per pass, on its first
     // month in view, and only into a day nothing more urgent took.
-    if (!brandKitDone.has(e.id)) {
+    if (started && !brandKitDone.has(e.id)) {
       brandKitDone.add(e.id);
       const b = await evaluateBrandKitLane(e, m, now, policy, clientWindowOpen, {}, rollout).catch(() => null);
       if (b) {

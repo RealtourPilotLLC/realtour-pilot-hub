@@ -86,7 +86,9 @@ export type HomeActionKind =
   | "REVIEW_VIDEOS" | "APPROVE_SCRIPTS" | "READ_REPLY" | "ANSWER_QUESTIONS" | "CHOOSE_ROUTE" | "BOOK_CALL"
   | "PICK_TOPICS" | "BOOK_SESSION" | "COMPLETE_ADDRESS" | "FINISH_SETUP" | "DOWNLOAD" | "ADD_BRIEF"
   // Oct 15 2026: a bulk plan's next session's scripts (bulkPlan.ts).
-  | "READ_SESSION";
+  | "READ_SESSION"
+  // Oct 21 2026: this month's steps are done; next month is open to get ahead on.
+  | "GET_AHEAD";
 
 /**
  * The order a client should do things in. Reviews first — a video waiting on
@@ -98,7 +100,7 @@ export type HomeActionKind =
  */
 export const HOME_PRIORITY: readonly HomeActionKind[] = [
   "REVIEW_VIDEOS", "APPROVE_SCRIPTS", "READ_REPLY", "READ_SESSION", "ANSWER_QUESTIONS", "CHOOSE_ROUTE", "BOOK_CALL",
-  "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS", "FINISH_SETUP", "DOWNLOAD", "ADD_BRIEF",
+  "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS", "FINISH_SETUP", "DOWNLOAD", "ADD_BRIEF", "GET_AHEAD",
 ];
 
 export type HomeAction = {
@@ -151,7 +153,16 @@ export type HomeActionsInput = {
    * invitation email).
    */
   linkVisitor?: { signInHref: string | null; /** Oct 20 2026 (audit E2): anyone holds a seat; none = the office sets one up. */ hasSeat?: boolean } | null;
+  /**
+   * Oct 21 2026: next month, open early, with something still to plan or book
+   * there ("November", and Your Month's address for it). Offered only once
+   * THIS month's steps are done: Home's next step stays about this month.
+   */
+  ahead?: { label: string; href: string; clientPlanned?: boolean } | null;
 };
+
+/** This month's own steps: while any is on the list, Home does not point at next month. */
+const THIS_MONTH_STEPS: ReadonlySet<HomeActionKind> = new Set<HomeActionKind>(["APPROVE_SCRIPTS", "READ_SESSION", "ANSWER_QUESTIONS", "CHOOSE_ROUTE", "BOOK_CALL", "PICK_TOPICS", "BOOK_SESSION", "COMPLETE_ADDRESS"]);
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -257,6 +268,14 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     // Optional, so it is the last thing on the list — never ahead of booking filming.
     if (cp && !cp.briefIn && i.perms.suggest) {
       add({ kind: "ADD_BRIEF", count: 1, title: `Add your creative brief for ${cp.monthLabel}`, detail: "Optional: upload your plan as a PDF or Word document, or paste notes for your crew.", cta: "Add your brief", dest: "plan", step: "brief" });
+    }
+    // Oct 21 2026: optional and last, and only once this month's steps are done.
+    if (i.ahead && !bulk && (i.perms.suggest || i.perms.session) && !out.some((a) => THIS_MONTH_STEPS.has(a.kind))) {
+      add({
+        kind: "GET_AHEAD", count: 1, title: `Get ahead on ${i.ahead.label}`,
+        detail: `${i.ahead.clientPlanned ? "Add your plan" : "Choose topics"} and book filming for ${i.ahead.label} now, if you like. Nothing is due before it starts.`,
+        cta: `Plan ${i.ahead.label}`, dest: "plan", href: i.ahead.href,
+      });
     }
     if (i.ready.count > 0 && i.ready.withFile) {
       add({

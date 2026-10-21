@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etMonthKey, aryeoProductFor, portalLastMonthKey, RESUBSCRIBE_URL } from "@/lib/contentProgram";
+import { etMonthKey, aryeoProductFor, monthLabel, portalLastMonthKey, RESUBSCRIBE_URL } from "@/lib/contentProgram";
+import { etAt } from "@/lib/datetime";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
@@ -725,9 +726,79 @@ const closedGate = (now: Date, reason: string, extra: Partial<SessionGate> = {})
 
 type GateContext = {
   d: import("@/lib/programMonths").DerivedMonthState; clientId: string; preparationGate: typeof import("@/lib/programMonths").preparationGate;
-  /** Oct 13 2026: a late month filmed together with its host — the host's own (open) gate's earliest start. */
+  /** Oct 13 2026: a late month filmed together with its host — the host's own (open) gate's earliest start.
+   *  Oct 21 2026: next month, booked early — its 1st (it films on its own dates). */
   hostEarliest: Date | null;
 };
+
+/** The start of a month's first weekday on the ET calendar ("2026-11" → Mon Nov 2 00:00 ET): sessions film Monday to Friday. */
+function monthStartET(monthKey: string): Date {
+  let day = `${monthKey}-01`;
+  for (let i = 0; i < 2; i++) {
+    const weekday = new Date(`${day}T12:00:00Z`).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) break;
+    day = new Date(Date.parse(`${day}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  }
+  return etAt(day, 0);
+}
+
+/**
+ * WHICH DATES A MONTH'S SESSION MAY TAKE (Oct 21 2026). Next month opens for
+ * booking early, so a date goes to the month it falls in whenever that month
+ * has an open workspace, the way the shoot attaches
+ * (contentProgram.attachMonthlyProjects) and the booking is matched
+ * (sessionRequests.contentEvidence):
+ *   · a month books its own dates, and a later date only when that date's
+ *     month has no open workspace to take it (the reach it always had);
+ *   · when its own preparation window already runs past its end (A18/A20:
+ *     planned at the very end of the month), it books from that earliest
+ *     start on, as before;
+ *   · next month's gate starts it on its own first weekday (gateContext), so
+ *     it never takes this month's dates;
+ *   · an over month booked late films in its HOST month (lateSession.ts).
+ * null = any date: a bulk plan's month runs for weeks past its calendar
+ * month (bulkPlan.ts).
+ */
+export type SessionDateRule = { own: string[]; elsewhere: string[] };
+
+export async function sessionDateRule(enrollmentId: string, monthId: string, now: Date = new Date()): Promise<SessionDateRule | null> {
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, monthKey: true } });
+  if (!month || month.enrollmentId !== enrollmentId) return { own: [], elsewhere: [] };
+  if (await prisma.contentBulkPlan.findUnique({ where: { monthId }, select: { id: true } }).catch(() => null)) return null;
+  let own = month.monthKey;
+  if (month.monthKey < etMonthKey(now)) {
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+    const rec = (await import("@/lib/lateSession")).lateSessionOf(e?.overridesJson, month.monthKey);
+    if (rec && rec.lateMonthId === monthId) own = rec.hostMonthKey;
+  }
+  const elsewhere = (await prisma.contentMonth.findMany({
+    where: { enrollmentId, historical: false, status: "OPEN", monthKey: { gt: own } },
+    select: { monthKey: true },
+  })).map((m) => m.monthKey);
+  return { own: [own], elsewhere };
+}
+
+/** Does this date fit the month's rule (sessionDateRule)? `earliest`: the session's gate. */
+export function sessionDateFits(rule: SessionDateRule | null, slot: Date, earliest: Date | null): boolean {
+  if (!rule) return true;
+  const at = etMonthKey(slot);
+  if (rule.own.includes(at)) return true;
+  const last = rule.own[rule.own.length - 1];
+  if (!last) return false;
+  if (earliest && etMonthKey(earliest) > last && slot >= earliest) return true;
+  return at > last && !rule.elsewhere.includes(at);
+}
+
+/** The client's words when a picked date belongs to another month, or null when it fits. */
+export async function sessionMonthRefusal(enrollmentId: string, monthId: string, slot: Date, opts: { now?: Date; earliest?: Date | null } = {}): Promise<string | null> {
+  const rule = await sessionDateRule(enrollmentId, monthId, opts.now ?? new Date());
+  if (sessionDateFits(rule, slot, opts.earliest ?? null)) return null;
+  const name = (k: string) => monthLabel(k).split(" ")[0];
+  const at = etMonthKey(slot);
+  return rule?.own.length
+    ? `${name(at)} dates are booked under ${name(at)}. Pick a date in ${name(rule.own[0])} for this session.`
+    : "Pick one of your program months.";
+}
 
 async function gateContext(enrollmentId: string, monthId: string, now: Date): Promise<GateContext | SessionGate> {
   if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return closedGate(now, "Pick one of your program months.");
@@ -756,6 +827,10 @@ async function gateContext(enrollmentId: string, monthId: string, now: Date): Pr
       hostEarliest = host.earliest;
     }
   }
+  // Oct 21 2026: next month, open early (contentProgram.ensureNextMonths),
+  // films on its own dates: its sessions start no earlier than its 1st. This
+  // month's gate is untouched.
+  if (month.monthKey > etMonthKey(now)) hostEarliest = monthStartET(month.monthKey);
   const { recalcProgramMonth, preparationGate } = await import("@/lib/programMonths");
   const r = await recalcProgramMonth(monthId, { dryRun: true, now });
   if (!r) return closedGate(now, "Pick one of your program months.");
@@ -876,8 +951,8 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
   // Oct 12 2026: an over month whose session is booked late beside one of
   // these (lateSession.ts) is bookable here too, first, under its own name —
   // until its session has been filmed.
-  const lateRecs = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } })
-    .then((e) => import("@/lib/lateSession").then((l) => l.readLateSessions(e?.overridesJson).filter((r) => open.some((m) => m.id === r.hostMonthId && m.monthKey === r.hostMonthKey))))
+  const bag = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true, clientSuppliesTopics: true } }).catch(() => null);
+  const lateRecs = await import("@/lib/lateSession").then((l) => l.readLateSessions(bag?.overridesJson).filter((r) => open.some((m) => m.id === r.hostMonthId && m.monthKey === r.hostMonthKey)))
     .catch(() => []);
   const lateInfo = new Map<string, { hostMonthKey: string; scriptsReady: boolean; tabLabel: string; combined: boolean; combinedVideos: number }>();
   const hostTab = new Map<string, string>();
@@ -893,7 +968,9 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
       const row = rows.find((x) => x.id === r.lateMonthId && x.monthKey === r.lateMonthKey);
       if (!row || !(await bookableLateRecord(enrollment.id, row).catch(() => null))) continue;
       if ((await lateMonthState(row.id, enrollment.clientId, new Date()).catch(() => null))?.filmed) continue;
-      const scripts = await lateScriptsReady(row.id, r).catch(() => ({ released: 0, ready: r.scriptsSentOutside }));
+      const found = await lateScriptsReady(row.id, r).catch(() => ({ released: 0, ready: r.scriptsSentOutside }));
+      // Oct 21 2026: a client who plans their own videos waits on no scripts of ours (lateGateLock).
+      const scripts = bag?.clientSuppliesTopics ? { ...found, ready: true } : found;
       if (r.combined) {
         const videos = await combinedVideoCount(r).catch(() => 4);
         lateInfo.set(row.id, { hostMonthKey: r.hostMonthKey, scriptsReady: scripts.ready, tabLabel: combinedSlotLabel(r.lateMonthKey, r.hostMonthKey, videos), combined: true, combinedVideos: videos });

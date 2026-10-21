@@ -433,6 +433,13 @@ export async function portalRequestSession(
   if (input.slotISO) {
     const slot = new Date(input.slotISO);
     if (!Number.isFinite(slot.getTime())) return fail("Pick a time from the list.");
+    // Oct 21 2026: a session is the month its date falls in (next month books
+    // early on its own dates, portal.sessionDateRule). Asked before "too
+    // soon": an October date for November is the wrong month, not a short
+    // preparation window.
+    const { sessionMonthRefusal } = await import("@/lib/portal");
+    const otherMonth = await sessionMonthRefusal(enrollment.id, monthId, slot, { earliest: gate.earliest });
+    if (otherMonth) return fail(otherMonth);
     // THE GATE, for real. `gate.earliest` is the later of the §8 preparation
     // window and a 24-hour floor (a same-day ask is not a request the desk can
     // honour), so this one comparison enforces both.
@@ -574,6 +581,10 @@ export async function portalRescheduleSession(
   const { within24hElapsed, INSIDE_24H_MESSAGE } = await import("@/lib/sessionBooking");
   if (within24hElapsed(slot, new Date())) return fail(INSIDE_24H_MESSAGE);
   if (gate.locked) return fail(gate.reason);
+  // Oct 21 2026: a move stays in the session's own month (portal.sessionDateRule).
+  const { sessionMonthRefusal } = await import("@/lib/portal");
+  const otherMonth = await sessionMonthRefusal(v.enrollment.id, r.monthId, slot, { earliest: gate.earliest });
+  if (otherMonth) return fail(otherMonth);
   if (slot < gate.earliest) return fail(tooSoon(gate.earliest));
   const creativeId = String(input.creativeTeamMemberId ?? "").trim();
   const creative = creativeId && /^[0-9a-f-]{20,40}$/i.test(creativeId) ? { teamMemberId: creativeId, name: null } : null;

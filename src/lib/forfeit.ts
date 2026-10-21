@@ -54,6 +54,26 @@ export function monthEnded(monthKey: string, now: Date): boolean {
   return monthKey < etMonthKeyOf(now);
 }
 
+/**
+ * The month's ET calendar month has begun (Oct 21 2026). Next month is made
+ * early so a client can get ahead (contentProgram.ensureNextMonths), and until
+ * its 1st it is opt-in prep: reminders, office alerts, forfeits and "owed"
+ * counts act on a month only once this is true.
+ */
+export function monthStarted(monthKey: string, now: Date): boolean {
+  return monthKey <= etMonthKeyOf(now);
+}
+
+/**
+ * Has anything been done on the month (the same evidence the forfeit rule
+ * reads, plus a call stamp)? An early month nobody has touched stays quiet on
+ * the office's screens; one the client has started on is worth showing.
+ */
+export function monthTouched(m: Pick<ForfeitMonthRow, "strategyCallStatus">, ev: ForfeitEvidence): boolean {
+  if (m.strategyCallStatus === "SCHEDULED" || m.strategyCallStatus === "COMPLETED") return true;
+  return ev.shoots + ev.sessionRequests + ev.videos + ev.filmedTopics + ev.plannedWork + ev.calls > 0;
+}
+
 /** Could this month be forfeited at all (before looking at its evidence)? */
 export function forfeitCandidate(m: ForfeitMonthRow, now: Date): boolean {
   return !m.historical && m.status === "OPEN" && monthEnded(m.monthKey, now);

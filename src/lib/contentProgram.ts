@@ -10,7 +10,7 @@ import {
   type SessionLeg,
 } from "@/lib/turnaround";
 import type { MonthProgress } from "@/lib/monthProgress";
-import { etMonthKey } from "@/lib/datetime";
+import { etDayKey, etMonthKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Content Creator Program — domain layer (Phase 1).
@@ -177,21 +177,45 @@ export function programPriceFor(priceId: string | null | undefined): StripeProgr
 // The one definition lives in datetime.ts (Oct 21 2026, audit H15).
 export { etMonthKey };
 
-/**
- * The LAST month a client may see in the portal (Jordan, Oct 13 2026: "I
- * shouldn't have even seen November yet"). This ET month, and the next one
- * from the 24th on: the day the hub starts planning the following month
- * (contentCallRecords' nextMonthFromDay). A month row further ahead (one made
- * early by mistake, like Arielle Roemer's November) never shows or takes a
- * choice before then.
- */
-export const PORTAL_NEXT_MONTH_FROM_DAY = 24;
-export function portalLastMonthKey(d: Date = new Date()): string {
-  const day = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", day: "numeric" }).format(d));
-  const cur = etMonthKey(d);
-  if (day < PORTAL_NEXT_MONTH_FROM_DAY) return cur;
-  const [y, m] = cur.split("-").map(Number);
+/** The month after `key` ("2026-12" → "2027-01"). */
+export function nextMonthKeyOf(key: string): string {
+  const [y, m] = key.split("-").map(Number);
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+/**
+ * NEXT MONTH OPENS EARLY (Jordan, Oct 21 2026: "Can we allow people to prep
+ * for content for the next month too? Like, it shows October, but I'd like it
+ * to show November too, so people can schedule the next month ahead of
+ * time"). THE ONE RULE for when next month's workspace is made
+ * (ensureNextMonths) and shows in the portal (portalLastMonthKey): this many
+ * days before its 1st (ET), or ALWAYS when null. It replaces the Oct 13 rule
+ * (next month only from the 24th, after Arielle's portal showed November
+ * early).
+ *
+ * Until its 1st, next month is opt-in prep: the client may plan and book it,
+ * but no reminder, office alert, forfeit or "owed" count acts on it before
+ * it starts (forfeit.monthStarted is the one test the sweeps ask).
+ */
+export const NEXT_MONTH_OPENS_DAYS_BEFORE: number | null = null;
+
+/** Is next month open yet (made, and shown in the portal)? */
+export function nextMonthOpen(d: Date = new Date(), daysBefore: number | null = NEXT_MONTH_OPENS_DAYS_BEFORE): boolean {
+  if (daysBefore == null) return true;
+  const first = `${nextMonthKeyOf(etMonthKey(d))}-01`;
+  const daysLeft = Math.round((Date.parse(`${first}T00:00:00Z`) - Date.parse(`${etDayKey(d)}T00:00:00Z`)) / 864e5);
+  return daysLeft <= daysBefore;
+}
+
+/**
+ * The LAST month a client may see in the portal: this ET month, and the next
+ * one once it is open (NEXT_MONTH_OPENS_DAYS_BEFORE). A month row further
+ * ahead (one made early by mistake, or by a shoot booked months out) never
+ * shows or takes a choice before then.
+ */
+export function portalLastMonthKey(d: Date = new Date()): string {
+  const cur = etMonthKey(d);
+  return nextMonthOpen(d) ? nextMonthKeyOf(cur) : cur;
 }
 
 export function monthLabel(monthKey: string): string {
@@ -292,6 +316,50 @@ export async function ensureCurrentMonths(): Promise<{ created: number }> {
     created++;
   }
   return { created };
+}
+
+/**
+ * NEXT month's workspace for every ACTIVE, non-bulk enrollment, made early
+ * (Oct 21 2026) so a client can plan and book it ahead. The same defaults as
+ * ensureCurrentMonths, except the video count is the one IN FORCE next month
+ * (a package change scheduled for the 1st is counted now, the way
+ * applyDueEnrollmentChanges will write it then). Idempotent: an existing
+ * month is left exactly as it is. Callable on its own (the one-time run on
+ * the live database), and run wherever ensureCurrentMonths runs.
+ */
+export async function ensureNextMonths(opts: { now?: Date; daysBefore?: number | null } = {}): Promise<{ created: number; monthKey: string | null }> {
+  const now = opts.now ?? new Date();
+  if (!nextMonthOpen(now, opts.daysBefore === undefined ? NEXT_MONTH_OPENS_DAYS_BEFORE : opts.daysBefore)) return { created: 0, monthKey: null };
+  const key = nextMonthKeyOf(etMonthKey(now));
+  const active = await prisma.contentEnrollment.findMany({
+    where: { status: "ACTIVE" },
+    select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true, programKind: true },
+  });
+  // Dynamic import: enrollmentChanges imports this module.
+  const { termsInMonth } = await import("@/lib/enrollmentChanges");
+  let created = 0;
+  for (const e of active) {
+    // A bulk plan has no calendar months while it runs (as ensureCurrentMonths).
+    if (e.programKind === "BULK") continue;
+    const exists = await prisma.contentMonth.findUnique({
+      where: { enrollmentId_monthKey: { enrollmentId: e.id, monthKey: key } },
+      select: { id: true },
+    });
+    if (exists) continue;
+    const terms = await termsInMonth(e.id, key).catch(() => null);
+    const made = await prisma.contentMonth.create({
+      data: {
+        enrollmentId: e.id,
+        clientId: e.clientId,
+        monthKey: key,
+        videosOwed: terms?.videosPerMonth ?? e.videosPerMonth,
+        strategyCallStatus: e.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED",
+      },
+      select: { id: true },
+    }).catch(() => null); // P2002: another pass made it a moment ago
+    if (made) created++;
+  }
+  return { created, monthKey: key };
 }
 
 // ---------------------------------------------------------------------------
@@ -400,8 +468,10 @@ export async function contentProgramSweep() {
   const changes = await applyDueEnrollmentChanges().catch(() => ({ applied: 0 }));
   const enr = await syncEnrollments();
   const months = await ensureCurrentMonths();
+  // Oct 21 2026: next month too, early, for clients getting ahead.
+  const next = await ensureNextMonths();
   const attach = await attachMonthlyProjects();
-  return { ...enr, monthsCreated: months.created, projectsAttached: attach.attached, changesApplied: changes.applied };
+  return { ...enr, monthsCreated: months.created + next.created, nextMonthsCreated: next.created, projectsAttached: attach.attached, changesApplied: changes.applied };
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +536,8 @@ export async function getProgramRoster(opts: { now?: Date } = {}): Promise<Progr
   // signal for the paused section.
   const lastMonths = await prisma.contentMonth.groupBy({
     by: ["enrollmentId"],
-    where: { enrollmentId: { in: enrollments.map((e) => e.id) } },
+    // Oct 21 2026: a month opened early (ensureNextMonths) is not activity.
+    where: { enrollmentId: { in: enrollments.map((e) => e.id) }, monthKey: { lte: key } },
     _max: { monthKey: true },
   });
   const lastMonthOf = new Map(lastMonths.map((l) => [l.enrollmentId, l._max.monthKey]));

@@ -4,7 +4,9 @@ import { LateFilmingChoice } from "@/components/portal/LateFilmingChoice";
 import { CheckCircle2, ChevronRight, Circle, Clock, ExternalLink } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalPlanning, PortalScheduleMonth, PortalSlotDay, PortalTopicsData } from "@/lib/portal";
-import { callWhenWords, yourMonthSteps, type YourMonthStep } from "@/lib/yourMonth";
+import { aheadLine, callWhenWords, yourMonthSteps, yourMonthTabs, type YourMonthStep } from "@/lib/yourMonth";
+import { etMonthKey } from "@/lib/datetime";
+import { portalMonthHref } from "@/lib/portalScheduling";
 import { cn } from "@/lib/utils";
 import { LoadFailed } from "@/components/portal/ui";
 import { TopicBank } from "@/components/portal/TopicBank";
@@ -32,6 +34,10 @@ import { ComingUpList, comingUpItems } from "@/components/portal/ComingUp";
 // Each step carries an id (#step-route, #step-topics, #step-answers,
 // #step-call, #step-filming, #step-scripts) so Home's next step opens the plan
 // exactly where that step is.
+//
+// Oct 21 2026: next month is open early, so a month switch sits on top: this
+// month first, then "November · getting ahead" (lib/yourMonth.yourMonthTabs).
+// The ahead month runs the same steps on its own topics, call and dates.
 // ---------------------------------------------------------------------------
 
 export type YourMonthData = {
@@ -104,13 +110,28 @@ export function YourMonth({ d }: { d: YourMonthData }) {
   const canChoose = p.noCallEligible && d.can.session && !d.readOnly && !p.officePlanned;
   const current = steps.find((x) => x.state === "current") ?? null;
   const topicsAreCurrent = current?.key === "topics" || current?.key === "answers" || (current?.key === "call" && planning.call === "HELD");
+  // Oct 21 2026: this month and next, one tap apart; next month reads as getting ahead.
+  const tabs = yourMonthTabs(d.topics.months, month.id, etMonthKey());
+  const ahead = tabs.find((t) => t.id === month.id)?.ahead ?? false;
 
   return (
     <div className="space-y-4">
+      {tabs.length > 1 && (
+        <nav aria-label="Which month" className="flex flex-wrap gap-2">
+          {tabs.map((t) => (
+            <Link key={t.id} href={portalMonthHref(d.hrefs.month, t.monthKey)} aria-current={t.active ? "page" : undefined}
+              className={cn("inline-flex min-h-11 items-center rounded-xl border px-4 text-sm font-semibold", t.active ? "border-brand bg-brand-action text-white" : "border-border bg-surface/70 text-muted hover:text-foreground", focusRing)}>
+              {t.label}
+            </Link>
+          ))}
+        </nav>
+      )}
+
       {/* The month in one sentence, and precise progress. */}
       <section aria-labelledby="your-month-headline" className="panel-shadow rounded-2xl border border-brand/30 bg-brand-soft/30 p-4 backdrop-blur">
-        <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{monthLabel(month.monthKey)}</div>
+        <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">{ahead ? `${monthLabel(month.monthKey)} · getting ahead` : monthLabel(month.monthKey)}</div>
         <h2 id="your-month-headline" className="mt-1 break-words text-lg font-semibold leading-snug">{planning.headline.text}</h2>
+        {ahead && <p className="mt-1 text-sm text-muted">{aheadLine(month.monthKey, !!p.clientPlanned)}</p>}
         {p.catchUp && <p className="mt-1 text-sm font-medium text-brand">{p.catchUp.line}</p>}
         {clientPlanned ? (
           <p className="mt-0.5 text-sm text-muted">{month.owed} video{month.owed === 1 ? "" : "s"} this month · you plan them, we film and edit them</p>
@@ -273,6 +294,8 @@ function LateSessionCard({ d, late, hostName }: { d: YourMonthData; late: NonNul
       <p className="mt-1 text-sm text-muted">
         {combined
           ? `One session films your ${late.label} and ${hostName} videos together.`
+          // Oct 21 2026: a client who plans their own videos brings their own scripts, so nothing waits on ours.
+          : late.clientPlanned ? `You plan these videos yourself, so you can book that session now.`
           : late.scriptsReady ? `Your ${late.label} scripts are ready, so you can book that session now.` : `That session opens as soon as your ${late.label} scripts are ready.`}
       </p>
       {/* Oct 13 2026: once the office offers it, the client chooses one 4-hour session or two 2-hour sessions. */}
