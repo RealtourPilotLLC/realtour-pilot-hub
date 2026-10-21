@@ -570,7 +570,8 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       const internallyApproved = !!cut && cut.status === "APPROVED" && cut.decidedBy !== DELIVERED_STAMP && !cut.clientReleasedAt;
       const clientApproved = ent?.current?.state === "APPROVED";
       const changesRequested = ent?.current?.state === "CHANGES_REQUESTED";
-      const awaitingClient = !!ent && !ent.file && ent.blockedBy === "AWAITING_DECISION";
+      // Oct 21 2026: a newer version waiting on them while they keep the earlier one is awaiting them too.
+      const awaitingClient = !!ent && ((!ent.file && ent.blockedBy === "AWAITING_DECISION") || (!!ent.priorVersion && ent.current?.state === "AWAITING"));
       const downloadable = entitlements ? !!ent?.file : null;
       const filmed = !!v.filmedConfirmedAt || produced;
       const stage: VideoStage =

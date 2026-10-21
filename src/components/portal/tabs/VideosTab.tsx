@@ -39,18 +39,32 @@ const versionWords = (label: string | null | undefined) => {
   return n ? `Version ${n}` : "This version";
 };
 
+// Oct 21 2026 (Jordan: "if a video is open for review it changes the
+// delivered status on their portal to needs your review"). A "Delivered"
+// date beside "Needs your review" read as delivered: the date is the EARLIER
+// version's, kept so its download works. It shows only while the video
+// stands approved or delivered; an open newer version says "Updated version".
+const showsDelivered = (state: ClientVideoState) => state === "APPROVED" || state === "DELIVERED";
+const UPDATED_CHIP = "inline-flex items-center rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand";
+
 export type VideoDetailData = {
   video: {
     id: string; title: string; monthKey: string | null; kind: string; state: ClientVideoState; filmedAtISO: string | null; deliveredAtISO: string | null; pillarName: string | null; format: string | null;
     /** CP-12: a PREVIOUS video is never labelled with its (uncertain) month. */
     section?: LibrarySection;
+    /** Oct 21 2026: a newer version is open while they keep the earlier one (contentVideos.isUpdatedVersion). */
+    updated?: boolean;
   };
+  /** Oct 21 2026: our staff through the owner iframe. Approving RECORDS the client's sign-off, with a note. */
+  staff?: boolean;
   versions: CutVersion[];
   versionsFailed: boolean;
   kit: PostingKit | null;
   kitFailed: boolean;
   /** The delivered (Aryeo) playable file with its media-safe URL, when the video has no hub cut. */
   delivered: { playback: string; thumb: string | null } | null;
+  /** Oct 21 2026: the poster for the version on show, never an older delivered file's frame (contentVideos.posterFor). */
+  poster?: string | null;
   downloadHref: string | null;
   perms: { comment: boolean; request: boolean; approve: boolean; suggest: boolean };
   readOnly: boolean;
@@ -101,13 +115,14 @@ function VideoRowV2({ v, to, deadline, previous }: { v: VideoListRow; to: string
           <div className="break-words text-sm font-semibold leading-snug">{v.title}</div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <StatusChip word={VIDEO_WORDS[v.state]} />
+            {v.updated && <span className={UPDATED_CHIP}>Updated version</span>}
             {v.kind !== "PROGRAM" && <span className="inline-flex items-center gap-0.5 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted"><Tag className="size-2.5" aria-hidden /> {v.kind === "LISTING" ? "Listing video" : v.kind === "EXTRA" ? "Extra" : v.kind.toLowerCase()}</span>}
             {deadline && <span className="text-[11px] font-medium text-foreground/80">Review by {deadline}</span>}
           </div>
           {v.expected && <ExpectedLine e={v.expected} />}
           <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
             {!previous && v.filmedAtISO && <span>Filmed {fmtShort(v.filmedAtISO)}</span>}
-            {v.deliveredAtISO && <span>Delivered {fmtShort(v.deliveredAtISO)}</span>}
+            {v.deliveredAtISO && showsDelivered(v.state) && <span>Delivered {fmtShort(v.deliveredAtISO)}</span>}
             {!previous && v.pillarName && <span>{v.pillarName}</span>}
           </div>
         </div>
@@ -238,14 +253,16 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
         <h1 className="break-words text-xl font-semibold tracking-tight">{d.video.title}</h1>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <StatusChip word={VIDEO_WORDS[d.video.state]} />
+          {d.video.updated && <span className={UPDATED_CHIP}>Updated version</span>}
           {d.video.kind !== "PROGRAM" && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold text-muted">{d.video.kind === "LISTING" ? "Listing video, not part of your monthly program" : d.video.kind === "EXTRA" ? "Extra" : d.video.kind.toLowerCase()}</span>}
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-2">
           {d.video.pillarName && <span>{d.video.pillarName}</span>}
           {d.video.section === "PREVIOUS" ? <span>Previous content</span> : d.video.monthKey && <span>{monthLabel(d.video.monthKey)}</span>}
           {d.video.section !== "PREVIOUS" && d.video.filmedAtISO && <span className="inline-flex items-center gap-1"><Camera className="size-3" aria-hidden /> Filmed {fmtShort(d.video.filmedAtISO)}</span>}
-          {d.video.deliveredAtISO && <span>Delivered {fmtShort(d.video.deliveredAtISO)}</span>}
+          {d.video.deliveredAtISO && showsDelivered(d.video.state) && <span>Delivered {fmtShort(d.video.deliveredAtISO)}</span>}
         </div>
+        {d.video.updated && d.video.state === "FOR_REVIEW" && <p className="mt-1.5 text-xs text-muted">We made changes to this video. Watch the new version below and approve it, or tell us what to change. The version you already have stays below to download until then.</p>}
       </div>
 
       {/* Player + review: deadline, notes at the moment, approve or send changes. */}
@@ -256,7 +273,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
         ) : hasCut ? (
           <div className="mt-2">
             {d.perms.request && !d.readOnly && !d.linkVisitor && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note. Send them all as one change request, or approve this version.</p>}
-            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} linkHasSeat={d.linkHasSeat !== false} />
+            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.poster ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} linkHasSeat={d.linkHasSeat !== false} staff={!!d.staff} />
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>
@@ -275,7 +292,9 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
           <CardTitle icon={Download}>Download &amp; caption</CardTitle>
           <div className="mt-2">
             <PostingKitPanel
-              videoId={d.video.id} title={d.video.title} downloadHref={d.kit.access.download ? d.downloadHref : null} download={d.kit.download} access={d.kit.access} finalLabel={d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
+              videoId={d.video.id} title={d.video.title} downloadHref={d.kit.access.download ? d.downloadHref : null} download={d.kit.download} access={d.kit.access}
+              /* Oct 21 2026: an earlier version handed over while a newer one is open says which one it is. */
+              finalLabel={d.kit.prior ? `the version ${d.kit.prior.approved ? "you approved" : "we delivered"} (v${d.kit.prior.version})` : d.kit.final?.label ?? null} finalNote={d.kit.finalNote}
               captions={d.kit.captions} assistant={d.kit.assistant} downloadStartedAtISO={d.kit.downloadStartedAtISO} downloadCompletedAtISO={d.kit.downloadCompletedAtISO}
               canEdit={d.perms.suggest && !d.readOnly} transcriptGap={d.kit.transcript.gap}
             />

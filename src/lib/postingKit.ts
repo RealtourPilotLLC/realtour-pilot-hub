@@ -5,7 +5,7 @@ import { isAutomationEnabled } from "@/lib/programAutomation";
 import { transcriptForCut } from "@/lib/cutTranscripts";
 import { canonicalFromParts, partsFromBody, pointsFromJson } from "@/lib/contentScripts";
 import { renderScript, stripRenderPlaceholders, buildCaptionPrompt, type CanonicalScript } from "@/lib/contentPolicy";
-import { videoForEnrollment } from "@/lib/contentVideos";
+import { deliveredMediaFor, videoForEnrollment } from "@/lib/contentVideos";
 import { actorLabel, can } from "@/lib/portalAccess";
 import { WHY, captionTarget, videoEntitlement, type Entitlement, type EntitlementBasis, type EntitlementBlock, type EntitlementVideo, type FinalFile } from "@/lib/cutEntitlement";
 import { CLIENT_VISIBLE_SCRIPT, type PortalViewer } from "@/lib/portal";
@@ -88,6 +88,11 @@ export type PostingKit = {
    *  rule's answer (cutEntitlement), so the page never offers a button the
    *  server would refuse. */
   access: { download: boolean; captions: boolean; why: string | null; blockedBy: EntitlementBlock | null; basis: EntitlementBasis };
+  /** Oct 21 2026: the file handed over is an EARLIER version (or this one as
+   *  approved before they asked for changes) while a newer one is open: which
+   *  version, and whether they approved it here or we delivered it. The page
+   *  labels the button "Download the version you approved (v1)". */
+  prior: { version: number; approved: boolean } | null;
 };
 
 const DOWNLOAD_PATH = (videoId: string) => `/portal/download/${videoId}`;
@@ -293,7 +298,7 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
   // staff included), so "once the account owner approves" would promise
   // something that cannot happen. Kyle can send the file instead.
   const why = e.blockedBy === "AWAITING_DECISION" && viewer.access !== "FULL"
-    ? `Your program is ${viewer.enrollment.status === "ENDED" ? "ended" : "paused"}, so this version can't be approved here and its download isn't open. Call or text Kyle at ${URGENT_CONTACT} and he'll get you the file.`
+    ? `Your program is ${viewer.enrollment.status === "ENDED" ? "ended" : "paused"}, so this version can't be approved here and its download isn't open. Call or text Kyle at ${URGENT_CONTACT} and we'll get you the file.`
     : e.blockedBy === "AWAITING_DECISION" && !can(viewer, "approveEdits") ? WHY.AWAITING_OWNER : note;
   // The client's own facts only: a staff member opening the door on their
   // behalf is recorded (attributed) but is not the client downloading.
@@ -304,7 +309,9 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     scriptForVideo(video).catch(() => null),
     prisma.portalVisit.findFirst({ where: { ...clientVisit, NOT: { path: { contains: DONE_MARK } } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
     prisma.portalVisit.findFirst({ where: { ...clientVisit, path: { contains: DONE_MARK } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-    prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, select: { portalVideoId: true } }).then(async (s) => (s?.portalVideoId ? (await prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { thumb: true } }))?.thumb ?? null : null)),
+    // The cover is the poster OF the file handed over (Oct 21 2026): any
+    // delivered file's frame used to be shown, so an approved v3 carried v1's.
+    coverFor(video.id, e).catch(() => null),
     assistantFor(viewer.enrollment.clientId),
     downloadPlanFor(e).catch(() => (e.file ? { mode: "redirect" as const, fileName: e.file.fileName, sizeBytes: null, ref: e.captionRef } : null)),
   ]);
@@ -342,7 +349,19 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     download,
     assistant: { enabled: assistantOn, why: assistantOn ? null : "We'll write your caption with the script, or you can write one below." },
     access: { download: !!e.file, captions: !!e.captionRef, why, blockedBy: e.blockedBy, basis: e.basis },
+    prior: e.priorVersion && e.file ? { version: Number(e.file.label.match(/^v(\d+)/)?.[1] ?? 1), approved: e.basis === "CLIENT_APPROVED" } : null,
   };
+}
+
+/** The poster of the entitled file: a delivered (Aryeo) file's own frame, or
+ *  the frame of a delivered copy of the entitled cut (contentVideos.posterFor). */
+async function coverFor(videoId: string, e: Entitlement): Promise<string | null> {
+  if (!e.file) return null;
+  if (e.file.kind === "delivered") {
+    const id = e.captionRef?.startsWith("portal-video:") ? e.captionRef.slice("portal-video:".length) : null;
+    return id ? (await prisma.portalVideo.findUnique({ where: { id }, select: { thumb: true } }))?.thumb ?? null : null;
+  }
+  return (await deliveredMediaFor(videoId, e.file.submissionId)).thumb;
 }
 
 type R = { ok: boolean; message: string };

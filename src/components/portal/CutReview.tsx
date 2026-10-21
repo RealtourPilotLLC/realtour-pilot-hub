@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, CheckCircle2, Clock, CornerDownRight, History, Loader2, MessageSquare, Send, ThumbsUp, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalAddComment, portalApproveCut, portalDeleteComment, portalRequestRevision, portalResolveComment } from "@/app/portal/actions";
+import { portalAddComment, portalApproveCut, portalDeleteComment, portalRecordClientApproval, portalRequestRevision, portalResolveComment } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import { PortalPlayer, type PortalPlayerHandle } from "@/components/portal/PortalPlayer";
 import { contactLine } from "@/components/portal/ContactTeam";
@@ -27,6 +27,11 @@ import type { CutVersion, CommentView } from "@/lib/clientDecisions";
 // the current version is playable. Each "Send to the editor" attempt carries a
 // request key, kept across a retry and renewed after it lands, so a double
 // click or a flaky network cannot send one request twice.
+//
+// STAFF (Oct 21 2026): our team looking through the owner iframe does not
+// approve for the client; they RECORD an approval the client gave elsewhere
+// (a text, a call), with a required note saying how and when. The client's
+// own login and the shared link never see this.
 // ---------------------------------------------------------------------------
 
 const fmtT = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
@@ -44,7 +49,7 @@ const STATE_LABEL: Record<CutVersion["clientState"], [mine: string, theirs: stri
   NOT_RELEASED: ["Not shared with you", "Not shared with you"],
 };
 
-export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null, linkVisitor = false, linkHasSeat = true }: {
+export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null, linkVisitor = false, linkHasSeat = true, staff = false }: {
   /** Oldest → newest; assetUrl already carries the media token. */
   versions: CutVersion[];
   perms: { comment: boolean; request: boolean; approve: boolean };
@@ -62,6 +67,8 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   /** Oct 20 2026 (audit E2): a seat exists on this program. Without one there
    *  is no invitation email to sign in from; the office sets one up. */
   linkHasSeat?: boolean;
+  /** Oct 21 2026: staff through the owner iframe; approving RECORDS the client's sign-off, with a note. */
+  staff?: boolean;
 }) {
   const router = useRouter();
   const current = versions.find((v) => v.isCurrent) ?? null;
@@ -77,6 +84,8 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
   // No default: §8 asks for a CLEAR choice about open notes, and a pre-picked
   // "discard" would resolve a client's notes without them ever choosing.
   const [choice, setChoice] = useState<"INCLUDE" | "DISCARD" | null>(null);
+  // Staff only: how and when the client approved ("by text, Oct 15").
+  const [how, setHow] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [reply, setReply] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -163,9 +172,13 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
     else if (r.needsFeeAck && r.ackText) setServerAck(r.ackText);
     done(r);
   });
+  const howOk = how.trim().length >= 6;
   const approve = () => start(async () => {
-    const r = await portalApproveCut(portalAuthFromLocation(), current.submissionId, open.length ? (choice ?? "NONE") : "NONE").catch(() => ({ ok: false, message: "That didn't save. Try again." }));
-    if (r.ok) setApproving(false);
+    const notes = open.length ? (choice ?? "NONE") : "NONE";
+    const r = await (staff
+      ? portalRecordClientApproval(portalAuthFromLocation(), current.submissionId, notes, how)
+      : portalApproveCut(portalAuthFromLocation(), current.submissionId, notes)).catch(() => ({ ok: false, message: "That didn't save. Try again." }));
+    if (r.ok) { setApproving(false); setHow(""); }
     done(r);
   });
 
@@ -214,6 +227,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 {d.decision === "REQUEST_CHANGES" && <span className="text-muted"> · {d.receiptState === "DONE" ? "done, see the newer version" : d.receiptState === "SUPERSEDED" ? "a newer version replaced this one" : d.receiptState === "ROUTED" || d.receiptState === "IN_PROGRESS" ? "with your editor" : "received"}</span>}
                 {d.decision === "APPROVE" && d.openNotesChoice === "INCLUDE" && <span className="text-muted"> · notes sent along</span>}
                 {d.decision === "APPROVE" && d.openNotesChoice === "DISCARD" && <span className="text-muted"> · open notes resolved</span>}
+                {staff && d.decision === "APPROVE" && d.basis === "STAFF" && d.note && <span className="text-muted"> · recorded from: {d.note}</span>}
               </span>
             </li>
           ))}
@@ -298,7 +312,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                   version's to give — the server refuses both verdicts on one cut. */}
               {perms.approve && !requested && !approved && (
                 <button type="button" onClick={() => setApproving(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-                  <ThumbsUp className="size-3.5" /> Approve this version
+                  <ThumbsUp className="size-3.5" /> {staff ? "Record the client's approval" : "Approve this version"}
                 </button>
               )}
             </div>
@@ -327,8 +341,16 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           )}
           {approving && (
             <div className="space-y-2 rounded-xl border border-success/30 bg-success-soft/30 p-3">
-              <p className="text-sm font-medium">Approve version {current.clientVersion} as final?</p>
-              <p className="text-xs text-muted">This records your approval of exactly this version. If a newer version ever replaces it, that one will need its own approval.</p>
+              <p className="text-sm font-medium">{staff ? `Record the client's approval of version ${current.clientVersion}?` : `Approve version ${current.clientVersion} as final?`}</p>
+              <p className="text-xs text-muted">{staff
+                ? "Only for an approval the client gave outside the portal, by text, call or email. It is recorded in your name on their behalf, with your note, in the audit log and on the job's timeline."
+                : "This records your approval of exactly this version. If a newer version ever replaces it, that one will need its own approval."}</p>
+              {staff && (
+                <label className="block text-xs">
+                  <span className="font-semibold">How and when did they approve? (required)</span>
+                  <input type="text" value={how} onChange={(e) => setHow(e.target.value)} maxLength={300} placeholder="For example: by text, Oct 15" className="mt-1 min-h-11 w-full rounded-lg border border-border bg-surface px-3 text-base outline-none focus:border-brand sm:text-sm" />
+                </label>
+              )}
               {open.length > 0 && (
                 <fieldset className="space-y-1.5 text-sm">
                   <legend className="text-xs font-semibold">You have {open.length} open note{open.length === 1 ? "" : "s"}. What should we do with {open.length === 1 ? "it" : "them"}?</legend>
@@ -338,7 +360,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 </fieldset>
               )}
               <div className="flex items-center gap-2">
-                <button type="button" onClick={approve} disabled={busy || (open.length > 0 && choice === null)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Yes, approve</button>
+                <button type="button" onClick={approve} disabled={busy || (open.length > 0 && choice === null) || (staff && !howOk)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} {staff ? "Record approval" : "Yes, approve"}</button>
                 <button type="button" onClick={() => setApproving(false)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Not yet</button>
               </div>
             </div>

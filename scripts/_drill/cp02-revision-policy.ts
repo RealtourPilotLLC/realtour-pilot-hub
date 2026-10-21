@@ -602,7 +602,9 @@ async function main() {
     await note(K, k1, "please fix");
     await cd.requestChangesOnCut(K.viewer, k1, "");
     const before = await rw.roundsUsed(kw!.videoKey);
-    const sa = await cd.approveCut(K.staff, k1, "NONE");
+    // Oct 21 2026: a staff approval RECORDS the client's sign-off given
+    // elsewhere and needs a note saying how and when (oct21-review-state).
+    const sa = await cd.approveCut(K.staff, k1, "NONE", { onBehalfNote: "by phone, Oct 21" });
     const req = await prisma.clientDecision.findFirstOrThrow({ where: { submissionId: k1, decision: "REQUEST_CHANGES" } });
     c.ok("staff may approve over the client's request: window APPROVED", sa.ok && (await windowOf(k1))?.state === "APPROVED", sa.message);
     c.ok("  …the request is SUPERSEDED by the approval, its round CANCELLED", req.receiptState === "SUPERSEDED" && req.supersededById === (sa.ok ? sa.decisionId : "-") && (await prisma.contentRevisionRound.findFirstOrThrow({ where: { decisionId: req.id } })).state === "CANCELLED");

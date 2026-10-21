@@ -249,8 +249,26 @@ export async function portalRequestRevision(
 export async function portalApproveCut(auth: PortalAuth, submissionId: string, choice: OpenNotesChoice): Promise<R & { duplicate?: boolean }> {
   const v = await viewerFor(auth, "approveEdits");
   if (typeof v === "string") return fail(v);
+  return approveAs(v, submissionId, choice, null);
+}
+
+/**
+ * "Record the client's approval" (Oct 21 2026): staff in the owner iframe
+ * write down a sign-off the client gave OUTSIDE the portal (a text, a call),
+ * with a required note saying how and when. Staff only: the client's own
+ * login approves for itself, and the shared link cannot approve at all.
+ * approveCut refuses it without the note, and audits it with one.
+ */
+export async function portalRecordClientApproval(auth: PortalAuth, submissionId: string, choice: OpenNotesChoice, note: string): Promise<R & { duplicate?: boolean }> {
+  const v = await viewerFor(auth, "approveEdits");
+  if (typeof v === "string") return fail(v);
+  if (v.actor.kind !== "STAFF") return fail("Only our team can record an approval given outside the portal. To approve this version yourself, use Approve this version.");
+  return approveAs(v, submissionId, choice, typeof note === "string" ? note : "");
+}
+
+async function approveAs(v: PortalViewer, submissionId: string, choice: OpenNotesChoice, onBehalfNote: string | null): Promise<R & { duplicate?: boolean }> {
   const c: OpenNotesChoice = choice === "INCLUDE" || choice === "DISCARD" ? choice : "NONE";
-  const r = await approveCut(v, submissionId, c);
+  const r = await approveCut(v, submissionId, c, { onBehalfNote });
   if (!r.ok) return fail(r.message);
   // Notes sent along with the approval are Kyle's task (written by approveCut);
   // his bell and Slack go after the reply so the client's press stays instant.
@@ -261,7 +279,9 @@ export async function portalApproveCut(auth: PortalAuth, submissionId: string, c
   await ownerBell(
     "portal_approval",
     `Video approved — ${v.enrollment.clientName || "a client"}`,
-    `${actorLabel(v)} approved a cut${c === "INCLUDE" ? " (with notes attached)" : ""}.`,
+    onBehalfNote != null && v.actor.kind === "STAFF"
+      ? `${actorLabel(v)} recorded the client's approval of a cut (${clip(onBehalfNote.trim(), 120)}).`
+      : `${actorLabel(v)} approved a cut${c === "INCLUDE" ? " (with notes attached)" : ""}.`,
     contentHref(v.enrollment.id, { tab: "production", view: "videos" }),
     `portal-approve-${submissionId}`,
   );
