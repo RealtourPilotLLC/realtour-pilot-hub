@@ -89,17 +89,6 @@ export const EXTRA_SHOOT_STATUS = "Extra video owed";
  */
 export const CHECK_NEEDED_STATUS = "Check needed";
 
-/**
- * The files are in and the handoff is not (O01/A32, Sep 25): the engine could
- * not call the job ready — the flow and vision, the wrap-up, how many videos
- * were filmed are still owed by the photographer. "Ready for editing" said the
- * opposite of the edit card and the delivery board. The row reads this, and
- * the engine's own sentence rides under it as `blocker` — stored on the job
- * by ensureEditorHandoff and READ here, never recomputed, so the queue, the
- * card and the board quote the same words. Worn, not picked: it clears itself
- * when the handoff completes. Not the editor's move, so the page counts it
- * with Waiting, not as work to edit.
- */
 /** The client, editor and photographer columns a queue row reads (Oct 20 2026,
  *  audit B14): the office's Editing Room rebuilds the queue every minute, and
  *  whole client rows (notes, brand fields) were read for a name and a flag. */
@@ -111,6 +100,17 @@ const QUEUE_PERSON_SELECT = { id: true, name: true } as const;
  *  writer and the reader (Oct 20 2026, audit B11). */
 export const OFFICE_NEW_CUT_LINE = "Queued a new cut (as a revision)";
 
+/**
+ * The files are in and the handoff is not (O01/A32, Sep 25): the engine could
+ * not call the job ready — the flow and vision, the wrap-up, how many videos
+ * were filmed are still owed by the photographer. "Ready for editing" said the
+ * opposite of the edit card and the delivery board. The row reads this, and
+ * the engine's own sentence rides under it as `blocker` — stored on the job
+ * by ensureEditorHandoff and READ here, never recomputed, so the queue, the
+ * card and the board quote the same words. Worn, not picked: it clears itself
+ * when the handoff completes. Not the editor's move, so the page counts it
+ * with Waiting, not as work to edit.
+ */
 export const WAITING_ON_INSTRUCTIONS = "Waiting on instructions";
 
 /** A queue row plus the words under its date (A52): where a reopened job's

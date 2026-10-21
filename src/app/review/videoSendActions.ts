@@ -185,16 +185,6 @@ export async function remindVideoAction(input: { key: string; projectId: string;
   }
 }
 
-/**
- * SEND BACK FOR REVISIONS FROM READY TO SEND (Jordan, Oct 19 2026: "We also
- * approved this one, but I learned from Kyle it wasn't ready yet and needs to
- * be revised. Make sure I have a way to send back for revision / remove this
- * from ready to send."). The same reopen the review screen's "Reopen for
- * revisions" does (review/actions.requestCutChanges with reopen), which needs
- * at least one note for the editor: the words typed here become that note
- * (the editor lane, a fix). The video leaves Ready to send, the job goes back
- * to revisions and the editor is told, as with any reopen.
- */
 /** Remove a note this action wrote and could not use: the note, and the
  *  revision issue made from it (revisionIssues.ingestReviewNote) with its
  *  history. Best-effort; never throws. */
@@ -211,6 +201,16 @@ async function dropUnsentNote(noteId: string): Promise<void> {
   }
 }
 
+/**
+ * SEND BACK FOR REVISIONS FROM READY TO SEND (Jordan, Oct 19 2026: "We also
+ * approved this one, but I learned from Kyle it wasn't ready yet and needs to
+ * be revised. Make sure I have a way to send back for revision / remove this
+ * from ready to send."). The same reopen the review screen's "Reopen for
+ * revisions" does (review/actions.requestCutChanges with reopen), which needs
+ * at least one note for the editor: the words typed here become that note
+ * (the editor lane, a fix). The video leaves Ready to send, the job goes back
+ * to revisions and the editor is told, as with any reopen.
+ */
 export async function sendBackForRevisionsAction(submissionId: string, projectId: string, note: string): Promise<SendResult> {
   if (!ID.test(submissionId) || !ID.test(projectId)) return { ok: false, message: "That video wasn't found." };
   const body = (note ?? "").trim().slice(0, 2000);

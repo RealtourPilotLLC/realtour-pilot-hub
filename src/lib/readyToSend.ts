@@ -981,6 +981,17 @@ const CANDIDATE_SELECT = {
 
 type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE_SELECT }>;
 
+type ReadyToSendOpts = {
+  projectId?: string;
+  recordFollowUpHealth?: boolean;
+  includeNoticeIncidents?: boolean;
+  excludeClientIds?: string[];
+  /** Only `ready` and `rendering` are wanted (the delivery alerts): the follow-up lanes are skipped. */
+  readyOnly?: boolean;
+  /** Also the week-long "delivered via the content program" information rows. */
+  withPortalDelivered?: boolean;
+};
+
 /**
  * Every video finished and not yet sent, oldest first, anything the hub knows
  * is late first of all — plus the ones the 1080p lane is still working on, so
@@ -999,17 +1010,6 @@ type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE
  * get that answer from this module rather than re-deriving the eligibility
  * rules beside it — see cutsOnTheCardFor.
  */
-type ReadyToSendOpts = {
-  projectId?: string;
-  recordFollowUpHealth?: boolean;
-  includeNoticeIncidents?: boolean;
-  excludeClientIds?: string[];
-  /** Only `ready` and `rendering` are wanted (the delivery alerts): the follow-up lanes are skipped. */
-  readyOnly?: boolean;
-  /** Also the week-long "delivered via the content program" information rows. */
-  withPortalDelivered?: boolean;
-};
-
 export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   const subs = await prisma.reviewSubmission.findMany({
     where: {
