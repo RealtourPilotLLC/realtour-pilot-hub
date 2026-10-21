@@ -49,8 +49,6 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
   topicsHref: string;
   /** What that page is called ("Your Month"). */
   topicsLabel: string;
-  /** Your Month's route step (kept for callers; the route is chosen there). */
-  routeHref?: string;
 }) {
   const p = planning;
   const tz = p?.timezone ?? "America/New_York";

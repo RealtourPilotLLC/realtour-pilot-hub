@@ -11,6 +11,7 @@ import { URGENT_CONTACT } from "@/lib/reviewWindows";
 // Type only: the component module itself imports next/link and lucide, which a
 // server module (a cron, a drill under react-server) must not load.
 import type { PortalContact } from "@/components/portal/ContactTeam";
+import { OFFICE_LINE } from "@/lib/portalWords";
 import type { PortalViewer } from "@/lib/portal";
 import type { NotifyTarget } from "@/lib/notify";
 import type { ReachRefusalCode, ReachTier } from "@/lib/programRolloutCore";
@@ -90,7 +91,7 @@ const fail = (message: string): Result => ({ ok: false, message });
  * DEFAULT_PORTAL_CONTACT, which the client components use for their own error
  * sentences; the cp13 drill asserts the two copies agree.
  */
-export const DEFAULT_OFFICE_CONTACT: PortalContact = { name: "Kyle", display: URGENT_CONTACT, e164: "+12156454889" };
+export const DEFAULT_OFFICE_CONTACT: PortalContact = { name: OFFICE_LINE.name, display: URGENT_CONTACT, e164: OFFICE_LINE.e164 };
 const contactLine = (c: PortalContact) => `call or text ${c.name} at ${c.display}`;
 
 /** The owner-editable office contact (AppSetting `portal-contact`), or Kyle. */

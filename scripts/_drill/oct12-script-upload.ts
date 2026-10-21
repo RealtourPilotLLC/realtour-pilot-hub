@@ -623,7 +623,7 @@ async function main() {
     c.ok("Request changes needs words (a two-letter note is refused)", !short.ok, short.message);
     const NOTE = "Can the hook mention first-time sellers? And drop the kitchen line.";
     const ask = await portalActions.portalRequestScriptChanges(auth, repairs.id, NOTE, repairs.sharedVersionId!);
-    c.ok("Request changes + Submit: 'Sent — we'll rework it and share the new version here.'", ask.ok && /^Sent — we.ll rework it/.test(ask.message), ask.message);
+    c.ok("Request changes + Submit: 'Sent. We'll rework it and share the new version here.' (no em dash, audit E7)", ask.ok && /^Sent\. We.ll rework it/.test(ask.message), ask.message);
     const sugg = await prisma.scriptSuggestion.findMany({ where: { scriptId: repairs.id } });
     const ledgerAsk = await prisma.contentScriptRelease.findFirst({ where: { scriptId: repairs.id, action: "CLIENT_CHANGES" } });
     c.ok("…it lands with the office: a work item with their words, on the version they read", sugg.length === 1 && sugg[0].body === NOTE && sugg[0].scriptVersionId === repairs.sharedVersionId && sugg[0].status === "OPEN" && ledgerAsk?.note === NOTE);

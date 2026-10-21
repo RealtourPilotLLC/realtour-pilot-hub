@@ -1,5 +1,5 @@
 import "server-only";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
@@ -13,6 +13,7 @@ import { isSyntheticClientRow } from "@/lib/testClients";
 import { isAutomationEnabled } from "@/lib/programAutomation";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
+import { mediaToken, type MediaScope } from "@/lib/portalMedia";
 
 // ---------------------------------------------------------------------------
 // THE BRAND PROFILE — one spine for every change to what a client's videos
@@ -947,17 +948,71 @@ export type PortalBrandView = {
   folderOnly: { name: string; url: string | null }[];
 };
 
-/** Everything the portal's Brand Profile renders — the client's own fields and files only. */
-export async function portalBrandProfileView(clientId: string, opts: { folder?: boolean } = {}): Promise<PortalBrandView> {
+// THE PORTAL'S DOOR FOR BRAND FILES (Oct 20 2026, audit E3). Clients never get
+// a Dropbox link: the page used to mint a Dropbox temporary link for every
+// filed asset and every file in the brand folder (up to 40 API calls a render)
+// and print them as hrefs. Each file is now served by the portal's download
+// door, /api/portal/download/brand/<clientId>/<fileId> (already a public
+// prefix: the door authenticates itself), with a media token minted for this
+// viewer over that one file (portalMedia, the same HMAC + live-scope check
+// every portal video and brief file uses). A filed asset is named by its
+// version id; a folder file by a hash of its path, never the path itself.
+
+const DROPBOX_HOST_RE = /(^|\.)(dropbox\.com|dropboxusercontent\.com|db\.tt)$/i;
+/** A Dropbox address of any kind: never handed to a client. */
+export function isDropboxUrl(u: string): boolean {
+  try { return DROPBOX_HOST_RE.test(new URL(u).host); } catch { return false; }
+}
+
+/** The id a file in the client's brand folder is served under: stable per (client, path). */
+export function brandFolderFileKey(clientId: string, path: string): string {
+  return createHash("sha256").update(`brand-folder:${clientId}:${path.toLowerCase()}`).digest("hex").slice(0, 32);
+}
+
+/** The portal door for one brand file, minted for this viewer's scope. */
+export function portalBrandFileHref(clientId: string, fileId: string, scope: MediaScope, opts: { folder?: boolean } = {}): string {
+  return `/api/portal/download/brand/${clientId}/${fileId}?m=${encodeURIComponent(mediaToken(fileId, scope))}${opts.folder ? "&src=folder" : ""}`;
+}
+
+/** What a filed asset's link is on the portal: the door for a file in Dropbox,
+ *  a staff-entered outside address as it is, and never a Dropbox address. */
+function portalAssetHref(clientId: string, versionId: string, fileRef: string | null, scope: MediaScope | undefined): string | null {
+  if (!scope || !fileRef) return null;
+  if (fileRef.startsWith("/")) return portalBrandFileHref(clientId, versionId, scope);
+  return /^https:\/\//i.test(fileRef) && !isDropboxUrl(fileRef) ? fileRef : null;
+}
+
+/**
+ * The file one door request names, or null: a filed CLIENT asset of THIS
+ * client (by its version id), or a file listed in THIS client's brand folder
+ * (by its key). The door has already proved the viewer is this client's.
+ */
+export async function portalBrandFileFor(clientId: string, fileId: string, opts: { folder?: boolean } = {}): Promise<{ path: string; name: string } | null> {
+  if (opts.folder) {
+    const listed = await listClientAssets(clientId, { links: false }).catch(() => null);
+    const f = listed?.files.find((x) => brandFolderFileKey(clientId, x.path) === fileId);
+    return f ? { path: f.path, name: f.name } : null;
+  }
+  const ver = await prisma.clientAssetVersion.findUnique({ where: { id: fileId }, select: { assetId: true, fileRef: true, fileName: true } });
+  if (!ver?.fileRef?.startsWith("/")) return null;
+  const asset = await prisma.clientAsset.findUnique({ where: { id: ver.assetId }, select: { clientId: true, ownership: true, status: true, name: true } });
+  if (!asset || asset.clientId !== clientId || asset.ownership !== "CLIENT" || asset.status !== "ACTIVE") return null;
+  return { path: ver.fileRef, name: ver.fileName || asset.name };
+}
+
+/** Everything the portal's Brand Profile renders — the client's own fields and files only.
+ *  `scope`: the viewer the file links are minted for (none, no links). */
+export async function portalBrandProfileView(clientId: string, opts: { folder?: boolean; scope?: MediaScope } = {}): Promise<PortalBrandView> {
   const [client, slots, registry, folder] = await Promise.all([
     prisma.client.findUnique({ where: { id: clientId }, select: { brandColors: true, portalVideoStyle: true, portalPreferences: true } }),
     slotValues(clientId),
-    assetRegistry(clientId, { links: true }),
-    opts.folder === false ? Promise.resolve(null) : listClientAssets(clientId, { links: true }).catch(() => null),
+    // No Dropbox links: one folder listing, the links are the portal's door.
+    assetRegistry(clientId, { links: false }),
+    opts.folder === false ? Promise.resolve(null) : listClientAssets(clientId, { links: false }).catch(() => null),
   ]);
   const files = registry
     .filter((a) => a.status === "ACTIVE" && !a.profileKey && a.ownership === "CLIENT" && a.active?.fileRef && !a.active.cleared)
-    .map((a) => ({ assetId: a.id, type: a.type, typeWord: ASSET_TYPE_WORDS[a.type], name: a.name, fileName: a.active!.fileName, url: a.active!.url, versionNo: a.active!.versionNo, updatedAtISO: a.active!.createdAt.toISOString() }));
+    .map((a) => ({ assetId: a.id, type: a.type, typeWord: ASSET_TYPE_WORDS[a.type], name: a.name, fileName: a.active!.fileName, url: portalAssetHref(clientId, a.active!.id, a.active!.fileRef, opts.scope), versionNo: a.active!.versionNo, updatedAtISO: a.active!.createdAt.toISOString() }));
   // Every version's path counts as "on the profile", not just the active one —
   // a replaced logo's old file is history, not an unfiled upload.
   const assetIds = registry.map((a) => a.id);
@@ -967,7 +1022,7 @@ export async function portalBrandProfileView(clientId: string, opts: { folder?: 
     columns: { brandColors: client?.brandColors ?? null, videoStyle: client?.portalVideoStyle ?? null, preferences: client?.portalPreferences ?? null },
     slots: { fonts: slots.fonts, website: slots.website, social: slots.social, music: slots.music },
     files,
-    folderOnly: (folder?.files ?? []).filter((f) => !known.has(f.path.toLowerCase())).map((f) => ({ name: f.name, url: f.url })),
+    folderOnly: (folder?.files ?? []).filter((f) => !known.has(f.path.toLowerCase())).map((f) => ({ name: f.name, url: opts.scope ? portalBrandFileHref(clientId, brandFolderFileKey(clientId, f.path), opts.scope, { folder: true }) : null })),
   };
 }
 

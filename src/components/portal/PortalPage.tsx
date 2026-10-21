@@ -69,11 +69,17 @@ export type PortalQuery = { tab?: string; v?: string; iv?: string; year?: string
 // Client-facing program terms. The AppSetting `portal-terms` overrides this
 // default wholesale (blank lines split paragraphs; "## " starts a heading) —
 // so the owner can rewrite the language without a deploy.
-const DEFAULT_TERMS = `## The program
+//
+// Oct 20 2026 (audit E17/E12): the default asked for "48 hours' notice" while
+// the portal itself changes and cancels a session up to 24 hours out (inside
+// 24 hours is a phone call: sessionBooking.within24hElapsed, Jordan's rule),
+// and it typed out Kyle's number. It now says the rule the portal enforces and
+// names the owner-editable office line.
+const defaultTerms = (contact: { name: string; display: string }) => `## The program
 Your Content Program includes the monthly videos, filming sessions, scripting, editing and delivery described in your package. Each month we plan your videos with you, film them at your session, and deliver the finished videos here in your portal.
 
 ## Scheduling
-Each month is planned either on a strategy call or here in the portal, where you pick your topics and answer a few short questions. Filming can be booked as soon as your answers are sent or your call is booked. Sessions start at least three business days after your answers are sent or your call ends, so your scripts are ready. Need to move a session? Give us 48 hours' notice and we'll reschedule without fuss. Inside 24 hours, call or text Kyle at (215) 645-4889.
+Each month is planned either on a strategy call or here in the portal, where you pick your topics and answer a few short questions. Filming can be booked as soon as your answers are sent or your call is booked. Sessions start at least three business days after your answers are sent or your call ends, so your scripts are ready. Need to move or cancel a session? Do it right here in the portal, up to 24 hours before it starts. Inside 24 hours, call or text ${contact.name} at ${contact.display}.
 
 ## Revisions
 Every video comes with revision rounds to get it right. Ask right here in the portal: pause the video, tell us what to change, and it goes straight to your editor.
@@ -151,10 +157,11 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   const contextBase = [baseQuery, pickedMonth ? `month=${pickedMonth.monthKey}` : "", selectedSession ? `session=${selectedSession}` : ""].filter(Boolean).join("&");
   const tabHref = v2HrefFor(contextBase);
   // W03: "Book the call" goes to the booking inside Your Month —
-  // lib/callBooking.portalBookingLinks. Loaded once, only by the pages that
-  // show it; with no mapping the link is the office conversation.
+  // lib/callBooking.portalBookingLinks. Loaded once, only by the page that
+  // shows it (Your Month; Home never read it, audit E6); with no mapping the
+  // link is the office conversation.
   const noCallLinks: { bookingUrl: string | null; view: PortalCallBookingView | null } = { bookingUrl: null, view: null };
-  const callLinksP = dataTab === "home" || route.dest === "plan"
+  const callLinksP = route.dest === "plan"
     ? portalBookingLinks(viewer, { planHref: portalHref(contextBase, "plan"), monthId: selectedMonth?.id })
       .catch((e) => { console.error("[portal] call booking links failed", e); return noCallLinks; })
     : Promise.resolve(noCallLinks);
@@ -171,7 +178,12 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   // alone would invite them to a form that never answers.
   const { portalLoginEmailEnabledFor } = await import("@/lib/portalAccess");
   const emailSignInLive = await portalLoginEmailEnabledFor(enrollment.clientId).catch(() => false);
-  const offerSignIn = emailSignInLive && actor.kind === "TOKEN" && (await enrollmentHasMembership(enrollment.id));
+  // Oct 20 2026 (audit E2): the same test decides every "Sign in" on the page.
+  // The video page and Home's next step used to offer the sign-in form on the
+  // switch alone, so a link-only client (no seat at all) was sent to a form
+  // that never answers; with no seat they are told how to get one instead.
+  const linkHasSeat = actor.kind === "TOKEN" ? await enrollmentHasMembership(enrollment.id).catch(() => false) : false;
+  const offerSignIn = emailSignInLive && linkHasSeat;
 
   // ---- per-tab data --------------------------------------------------------
   let home: HomeData | null = null;
@@ -191,13 +203,13 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     await attempt("video sync", () => syncEnrollmentVideos(enrollment));
   }
   if (dataTab === "home") {
-    const [planning, schedule, videos, topics, released, month, progress, attention] = await Promise.all([
+    const [planning, schedule, videos, topics, month, progress, attention] = await Promise.all([
       attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
       attempt("schedule", () => portalScheduleMonths(enrollment)),
       attempt("videos", () => portalVideoList(enrollment, { page: 1, perPage: 24 })),
       attempt("topics", () => portalTopics(enrollment)),
-      attempt("strategy", () => prisma.contentStrategyVersion.count({ where: { enrollmentId: enrollment.id, releasedAt: { not: null } } })),
-      prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { videosOwed: true } }),
+      // Audit E4: a hiccup here used to fail the whole page.
+      attempt("month", () => prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { videosOwed: true } })),
       // The month through lib/monthProgress (CP-10): sessions and the meter
       // read the same facts Jordan's roster and the client file do.
       attempt("progress", () => portalMonthProgress(enrollment, monthKey)),
@@ -205,16 +217,16 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       attempt("attention", () => libraryAttention(enrollment)),
     ]);
     home = {
-      first, monthKey, videosOwed: month?.videosOwed ?? enrollment.videosPerMonth,
+      first, monthKey, videosOwed: (month.ok ? month.data?.videosOwed : null) ?? enrollment.videosPerMonth,
       program: progress.ok ? { delivered: progress.data.production.delivered, total: progress.data.production.total } : null, countsFailed: !progress.ok,
       progress: progress.ok ? progress.data : null,
-      planning: planning.ok ? planning.data : null, planningFailed: !planning.ok,
-      schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === monthKey) ?? schedule.data[0] ?? null : null, scheduleFailed: !schedule.ok,
-      bookingUrl: await callBookingUrl(),
-      videos: videos.ok ? { rows: videos.data.rows, total: videos.data.total } : null, videosFailed: !videos.ok,
+      planning: planning.ok ? planning.data : null,
+      schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === monthKey) ?? schedule.data[0] ?? null : null,
+      videos: videos.ok ? { rows: videos.data.rows, total: videos.data.total } : null,
       attention: attention.ok ? attention.data : null,
       topics: topics.ok ? topics.data : null, topicsFailed: !topics.ok,
-      strategyReleased: released.ok ? released.data > 0 : null,
+      // Audit E4: a read behind the next step failed, so "all caught up" would be a guess.
+      checksFailed: !planning.ok || !schedule.ok || !videos.ok || !topics.ok || !progress.ok || !attention.ok,
       perms: { session: perms.session, suggest: perms.suggest, request: perms.request, approve: perms.approve }, readOnly,
       readOnlyState: readOnly ? (enrollment.status === "PAUSED" ? "PAUSED" : "ENDED") : null,
     };
@@ -226,7 +238,10 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     // CP-06: the account-setup checklist — derived from what is on file, only
     // for someone who can act on it, and never on a paused/ended program.
     if (!readOnly && perms.profile) {
-      const setup = await attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer));
+      // Audit E6: Home ranks the step from its counts; the live Dropbox folder
+      // listing (which only rewords the logo/headshot items) is the Brand
+      // Profile page's, not every Home load's.
+      const setup = await attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer, { folder: false }));
       if (setup.ok) home.setup = { ...setup.data, items: setup.data.items.map((i) => ({ ...i, href: `${tabHref(i.tab)}#${i.anchor}` })) };
     }
   }
@@ -278,7 +293,8 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           perms: { comment: perms.comment, request: perms.request, approve: perms.approve, suggest: perms.suggest }, readOnly,
           // Only the emailed-link seat can never approve; point it at the door
           // that leads to one that can — when that door actually opens.
-          signInHref: actor.kind === "TOKEN" && emailSignInLive ? "/portal/login" : null,
+          signInHref: offerSignIn ? "/portal/login" : null,
+          linkHasSeat,
           // A1 (Oct 13 2026): the link watches; deciding (approve or request
           // changes) is for a signed-in seat, and the page says so plainly.
           linkVisitor: actor.kind === "TOKEN",
@@ -327,11 +343,13 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     messagesRes = await attempt("messages", async () => {
       const t = await pm.threadFor(enrollment.id, readerKey, { audience: "client" });
       await pm.markThreadRead(enrollment.id, readerKey).catch(() => {});
-      const { refusalMessage } = await import("@/lib/portalAccess");
+      const { refusalMessage, actorLabel } = await import("@/lib/portalAccess");
       return {
         messages: t.messages, unreadBefore: t.unread,
         ownerFirst: t.owner.label && t.owner.label !== "unassigned" ? t.owner.label.split(/\s+/)[0] : contact.name,
         canMessage, refusal: canMessage ? null : refusalMessage(viewer, "message"), contact, hint: pm.VIDEO_CHANGES_HINT,
+        // The same words a message from this viewer is stamped with (programMessages), so its own read "You".
+        youLabel: actor.kind === "STAFF" ? null : actorLabel(viewer).slice(0, 120),
         // Oct 6 2026: from the portal notice's "Tell us" — the box starts "Portal feedback: ".
         ...(query.about === "portal" && PORTAL_MIGRATION_NOTICE.on ? { prefill: PORTAL_MIGRATION_NOTICE.prefill } : {}),
       };
@@ -347,7 +365,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
   let brandFailed = false;
   const suggested = { brandColors: "", videoStyle: "", preferences: "" };
   if (dataTab === "profile") {
-    const view = await attempt("brand profile", async () => (await import("@/lib/brandProfile")).portalBrandProfileView(enrollment.clientId));
+    const view = await attempt("brand profile", async () => (await import("@/lib/brandProfile")).portalBrandProfileView(enrollment.clientId, { scope }));
     if (view.ok) brand = view.data; else brandFailed = true;
     if (brand && (brand.columns.videoStyle == null || brand.columns.preferences == null)) {
       const { getPortalPrefill } = await import("@/lib/portalPrefill");
@@ -371,7 +389,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       canManageTeam: can(viewer, "manageTeam"),
       team: team && team.ok && team.data.ok ? { seats: team.data.seats, invitationsOn: team.data.invitationsOn } : null,
       teamFailed: !!team && (!team.ok || !team.data.ok),
-      signInEmailOn: emailSignInLive,
+      // The shared link is offered the sign-in form only when it can answer (audit E2).
+      signInEmailOn: actor.kind === "TOKEN" ? offerSignIn : emailSignInLive,
+      linkHasSeat: actor.kind === "TOKEN" ? linkHasSeat : undefined,
       profileHref: tabHref("profile"),
       // The page named as the nav names it; the office line from the
       // owner-editable contact.
@@ -379,22 +399,30 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     };
   }
   const termsSetting = dataTab === "terms" ? await prisma.appSetting.findUnique({ where: { key: "portal-terms" } }).catch(() => null) : null;
-  const terms = (termsSetting?.value?.trim() || DEFAULT_TERMS).split(/\n\s*\n/);
+  const terms = (termsSetting?.value?.trim() || defaultTerms(contact)).split(/\n\s*\n/);
 
   // ---- what the navigation counts, from the readers the pages use ----
   // Loaded on every page so a badge never appears on one tab and vanishes on
   // the next; each is wrapped, and an unreadable count is no badge, not zero.
+  //
+  // Oct 20 2026 (audit E18/E5): a badge counts what THIS viewer can act on. A
+  // view-only seat, or a paused or ended program, can't decide on a script or
+  // a video, so its badges never cleared; it gets none, and the whole topic
+  // bank behind the plan badge is not read for it off the plan page.
+  const badgePlan = perms.suggest;
+  const badgeLibrary = perms.request || perms.approve;
+  const needTopics = route.dest === "plan" || badgePlan;
   const [attn, topicsAll, guides, setupMore] = await Promise.all([
-    home?.attention ? Promise.resolve({ ok: true as const, data: home.attention }) : attempt("attention", () => libraryAttention(enrollment)),
-    topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : attempt("topics", () => portalTopics(enrollment)),
+    !badgeLibrary ? Promise.resolve(null) : home?.attention ? Promise.resolve({ ok: true as const, data: home.attention }) : attempt("attention", () => libraryAttention(enrollment)),
+    topicsRes?.ok ? Promise.resolve(topicsRes) : home?.topics ? Promise.resolve({ ok: true as const, data: home.topics }) : needTopics ? attempt("topics", () => portalTopics(enrollment)) : Promise.resolve(null),
     resourcesRes ?? attempt("resources", () => publishedResources()),
     dataTab === "more" && !readOnly && perms.profile
       ? attempt("setup", async () => (await import("@/lib/portalSetup")).setupChecklist(viewer, { folder: false }))
       : Promise.resolve(null),
   ]);
-  const plan = topicsAll.ok ? planModel(topicsAll.data, monthKey) : null;
+  const plan = topicsAll?.ok ? planModel(topicsAll.data, monthKey) : null;
   const published = guides.ok ? guides.data.reduce((n, g) => n + g.resources.length, 0) : 0;
-  const nav = portalNav({ publishedResources: published, badges: { plan: plan?.scripts.length, library: attn.ok ? attn.data.needReview : 0, messages: messagesUnread } });
+  const nav = portalNav({ publishedResources: published, badges: { plan: badgePlan ? plan?.scripts.length : 0, library: attn?.ok ? attn.data.needReview : 0, messages: messagesUnread } });
   const linked = { primary: nav.primary.map((i) => ({ ...i, href: portalHref(contextBase, i.dest) })), more: nav.more.map((i) => ({ ...i, href: portalHref(contextBase, i.dest) })) };
 
   // ---- Home: the one next step ----
@@ -455,7 +483,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       setup: home.setup ? { complete: home.setup.complete, remaining: Math.max(0, home.setup.total - home.setup.done) } : null,
       ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
       // A1 (Oct 13 2026): the shared link watches; a signed-in seat decides.
-      linkVisitor: actor.kind === "TOKEN" ? { signInHref: emailSignInLive ? "/portal/login" : null } : null,
+      linkVisitor: actor.kind === "TOKEN" ? { signInHref: offerSignIn ? "/portal/login" : null, hasSeat: linkHasSeat } : null,
     }, contextBase);
   }
 
@@ -543,7 +571,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       {route.dest === "plan" && route.planView && (
         <PlanTab d={{
           view: route.planView,
-          topics: topicsAll.ok ? topicsAll.data : null, topicsFailed: !topicsAll.ok,
+          topics: topicsAll?.ok ? topicsAll.data : null, topicsFailed: !!topicsAll && !topicsAll.ok,
           interview: interviewRes?.ok ? interviewRes.data : null, interviewFailed: !!interviewRes && !interviewRes.ok,
           strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
           monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
@@ -562,7 +590,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
           months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
           perms={{ session: perms.session }} readOnly={readOnly}
-          topicsHref={planHrefs.month} topicsLabel="Your Month" routeHref={`${planHrefs.month}#step-route`}
+          topicsHref={planHrefs.month} topicsLabel="Your Month"
         />
       )}
       {route.dest === "more" && (

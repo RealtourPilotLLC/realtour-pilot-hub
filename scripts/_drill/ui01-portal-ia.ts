@@ -443,7 +443,7 @@ async function main() {
     const sched = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "schedule" } });
     // Batch 2 (Sep 25): the plan is "Your Month", and the route choice lives
     // there — Schedule links to its route step instead of carrying the buttons.
-    c.ok("v2 Schedule names 'Your Month', not a 'Video Topics' page that is not in the nav, and routes the choice there", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "Your Month" && find(sched, "ScheduleTab")[0]?.props.routeHref === "?tab=plan#step-route");
+    c.ok("v2 Schedule names 'Your Month', not a 'Video Topics' page that is not in the nav, and routes the choice there", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "Your Month" && find(sched, "ScheduleTab")[0]?.props.topicsHref === "?tab=plan");
     const schedReal = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
     c.ok("…and a real client's Schedule says the same (the old 'Video Topics' wording went with the old layout)", find(schedReal, "ScheduleTab")[0]?.props.topicsLabel === "Your Month");
     const hv2 = find((await homeOf(testOwner)).tree, "AppointmentCards", new Set(["HomeV2"]));

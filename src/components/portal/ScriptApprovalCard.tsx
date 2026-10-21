@@ -89,7 +89,8 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
       if (r.ok) { setChangeNote(""); setChanging(false); }
       done(r, sendChanges);
     });
-  const btn = large ? "min-h-11 rounded-xl px-4 text-sm" : "";
+  // Audit E8: a phone needs a real target even on the compact card.
+  const btn = large ? "min-h-11 rounded-xl px-4 text-sm" : "min-h-9 px-2.5 text-xs";
   // AFTER THEY APPROVE (Oct 14 2026, Jordan): the PDF and their own edits.
   const [editing, setEditing] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -170,8 +171,8 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
               <p className="mt-0.5 text-[11px] text-muted">A line, a word, or the whole angle. We&rsquo;ll rework it and share the new version here.</p>
               <textarea id={`script-changes-${script.id}`} value={changeNote} onChange={(e) => { setChangeNote(e.target.value); setRetry(null); setOwn(null); }} rows={large ? 4 : 3} placeholder="For example: make the hook about first-time buyers" className="mt-1.5 block w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base outline-none focus:border-brand sm:text-sm" />
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                <button type="button" onClick={sendChanges} disabled={busy || changeNote.trim().length < 3} className={cn("rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11 px-4 text-sm" : "")}>Submit changes</button>
-                <button type="button" onClick={() => setChanging(false)} disabled={busy} className={cn("rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11 px-4 text-sm" : "")}>Cancel</button>
+                <button type="button" onClick={sendChanges} disabled={busy || changeNote.trim().length < 3} className={cn("min-h-9 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11 px-4 text-sm" : "")}>Submit changes</button>
+                <button type="button" onClick={() => setChanging(false)} disabled={busy} className={cn("min-h-9 rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", large ? "min-h-11 px-4 text-sm" : "")}>Cancel</button>
               </div>
             </div>
           )}
@@ -192,7 +193,7 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
       {!onResult && own && (
         <p role="status" className={cn("mt-1.5 flex flex-wrap items-center gap-2 text-xs", own.ok ? "text-success" : "text-danger")}>
           {own.text}
-          {!own.ok && retry && retry.versionId === (script.sharedVersionId ?? null) && <button type="button" onClick={retry.fn} disabled={busy} className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Try again</button>}
+          {!own.ok && retry && retry.versionId === (script.sharedVersionId ?? null) && <button type="button" onClick={retry.fn} disabled={busy} className="inline-flex min-h-11 items-center rounded-md border border-border px-3 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Try again</button>}
         </p>
       )}
     </div>

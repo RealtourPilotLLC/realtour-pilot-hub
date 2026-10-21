@@ -7,6 +7,7 @@ import { isSyntheticClientRow, isStaffControlledEmail, isVerifiedTestDestination
 import { liveMemberships, type PortalRole, type PortalViewer } from "@/lib/portal";
 import { programReach, programReachMany } from "@/lib/programRollout";
 import type { ReachDecision } from "@/lib/programRolloutCore";
+import { OFFICE_LINE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // PORTAL ACCESS — who may do what on a client's portal, and the staff-side
@@ -135,7 +136,7 @@ export async function actorLabelResolved(viewer: PortalViewer): Promise<string> 
 export function refusalMessage(viewer: PortalViewer, permission: PortalPermission): string {
   if (viewer.access === "READ_ONLY") {
     return viewer.enrollment.status === "PAUSED"
-      ? "Your program is paused, so this is view-only for now. Call or text Kyle at (215) 645-4889 and we'll pick it back up."
+      ? `Your program is paused, so this is view-only for now. Call or text ${OFFICE_LINE.name} at ${OFFICE_LINE.display} and we'll pick it back up.`
       : "Your program has ended, so this is view-only. Your finished content stays here for you.";
   }
   if (viewer.actor.kind === "CLIENT" && viewer.actor.membershipRole === "VIEWER") return "Your access is view-only. Ask the program owner if you need to make changes.";
@@ -789,7 +790,7 @@ export async function cancelOwedAccess(enrollmentId: string, emailRaw: string): 
   try { reason = (JSON.parse(row.value) as OwedAccess).reason ?? null; } catch { reason = null; }
   if (reason !== "teammate") return { ok: false, note: "That's the account owner's own access, which can't be cancelled here." };
   await prisma.appSetting.deleteMany({ where: { key } });
-  return { ok: true, note: "Cancelled — nothing was ever sent to them." };
+  return { ok: true, note: "Cancelled. Nothing was ever sent to them." };
 }
 
 // ---------------------------------------------------------------------------

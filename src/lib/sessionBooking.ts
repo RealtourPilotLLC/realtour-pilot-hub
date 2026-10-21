@@ -8,6 +8,7 @@ import {
 import { automationConfig, recordAutomationRun } from "@/lib/programAutomation";
 import { aryeoProductById, aryeoProductFor, type AryeoContentProduct } from "@/lib/contentProgram";
 import { URGENT_CONTACT } from "@/lib/reviewWindows";
+import { OFFICE_LINE } from "@/lib/portalWords";
 import { etAt, etDayKey } from "@/lib/datetime";
 import { isWeekendET } from "@/lib/portal";
 import { planBookable, sameAddress, formatAddressLine } from "@/lib/sessionAddress";
@@ -56,10 +57,10 @@ import { TRAVEL_DEFAULTS, travelEvidence, travelFit, type TravelSource } from "@
 // ---------------------------------------------------------------------------
 
 /** Kyle's line for anything inside 24 hours (Jordan, Sep 24 2026). */
-export const KYLE_SCHEDULING_PHONE = { display: URGENT_CONTACT, e164: "+12156454889" } as const;
+export const KYLE_SCHEDULING_PHONE = { display: URGENT_CONTACT, e164: OFFICE_LINE.e164 } as const;
 
 /** Client-safe, Jordan's voice: no em dashes, and it says the way forward. */
-export const INSIDE_24H_MESSAGE = `That is less than 24 hours away, so it needs a person. Call or text Kyle at ${URGENT_CONTACT} and he will sort it out with you.`;
+export const INSIDE_24H_MESSAGE = `That is less than 24 hours away, so it needs a person. Call or text ${OFFICE_LINE.name} at ${URGENT_CONTACT} and we'll sort it out with you.`;
 
 /** Inside 24 ELAPSED hours of the slot (not office hours — Jordan's rule is a phone call either way). */
 export function within24hElapsed(slotStart: Date, now: Date): boolean {

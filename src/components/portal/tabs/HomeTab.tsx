@@ -29,17 +29,16 @@ export type HomeData = {
   /** This month through lib/monthProgress — the reader every staff screen uses (CP-10). */
   progress: ClientMonthProgress | null;
   planning: PortalPlanning | null;
-  planningFailed: boolean;
   schedule: PortalScheduleMonth | null;
-  scheduleFailed: boolean;
-  bookingUrl: string;
   videos: { rows: VideoListRow[]; total: number } | null;
-  videosFailed: boolean;
   /** Library-wide counts for the badges — a page total would understate them. */
   attention: LibraryAttention | null;
   topics: PortalTopicsData | null;
   topicsFailed: boolean;
-  strategyReleased: boolean | null;
+  /** Oct 20 2026 (audit E4): one of the reads the next step ranks from failed
+   *  (planning, schedule, videos, topics, the month's counts, the review list).
+   *  Home then never says "all caught up"; it says it couldn't check. */
+  checksFailed: boolean;
   perms: { session: boolean; suggest: boolean; request: boolean; approve: boolean };
   readOnly: boolean;
   /** WHICH read-only state, so this tab and the banner above it never say
@@ -100,6 +99,11 @@ export function HomeV2({ d, actions, href }: {
             <p className="mt-0.5 text-sm text-muted">Everything we&rsquo;ve delivered stays here for you to watch and download.</p>
             <a href={notice.cta.href} target="_blank" rel="noopener noreferrer" className={`mt-3 inline-flex min-h-12 w-full items-center justify-center gap-1.5 rounded-xl bg-brand-action px-5 text-sm font-semibold text-white shadow sm:w-auto ${focusRing}`}>{notice.cta.label} <ChevronRight className="size-4" aria-hidden /></a>
           </>
+        ) : d.checksFailed ? (
+          <>
+            <h2 id="home-next-step" className="mt-1 text-lg font-semibold leading-snug">We couldn&rsquo;t check everything just now</h2>
+            <p className="mt-0.5 text-sm text-muted">Refresh the page in a minute. Anything waiting on you, like a script or a video to review, shows up here.</p>
+          </>
         ) : (
           <>
             <h2 id="home-next-step" className="mt-1 flex items-center gap-2 text-lg font-semibold leading-snug"><CheckCircle2 className="size-5 text-success" aria-hidden /> You&rsquo;re all caught up</h2>
@@ -159,7 +163,7 @@ function ComingUp({ d, href }: { d: HomeData; href: (tab: string, extra?: string
         {rows.map((r) => (
           <li key={r.key} className="flex flex-wrap items-center gap-x-1.5">
             <r.icon className="size-4 shrink-0 text-brand" aria-hidden /> <span>{r.text}</span>
-            {r.meet && <a href={r.meet} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-medium text-brand hover:underline"><Video className="size-3.5" aria-hidden /> Join on Google Meet</a>}
+            {r.meet && <a href={r.meet} target="_blank" rel="noopener noreferrer" className={`inline-flex min-h-11 items-center gap-1 font-medium text-brand hover:underline ${focusRing}`}><Video className="size-3.5" aria-hidden /> Join on Google Meet</a>}
           </li>
         ))}
       </ul>
@@ -189,7 +193,7 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
   const expected = (d.videos?.rows ?? []).filter((v) => v.expected && v.monthKey === d.monthKey);
   return (
     <Card>
-      <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
+      <CardTitle icon={Clapperboard} action={<Link href={href("plan")} className={`inline-flex min-h-11 items-center px-1 text-xs font-medium text-brand hover:underline ${focusRing}`}>Your Month →</Link>}>{monthLabel(d.monthKey)}</CardTitle>
       {/* A count that failed to load is unknown, not zero. */}
       {d.countsFailed || !d.program ? (
         <p className="mt-2 text-xs text-warning">We couldn&rsquo;t count this month&rsquo;s videos just now. Refresh to try again, or open your Content Library to see them.</p>

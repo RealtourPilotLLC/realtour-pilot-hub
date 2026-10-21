@@ -655,7 +655,8 @@ async function main() {
     const terms = code(read("src/components/portal/PortalPage.tsx"));
     c.ok("OLD terms: 'Sessions are booked after your call … a few business days'", /a few business days between the call and the shoot/.test(show("src/components/portal/PortalPage.tsx")));
     // Oct 13 2026: the client's words are "three business days" ("72 weekday hours" is the office's measure).
-    c.ok("NEW terms: both routes, three business days, Kyle inside 24 hours", /at least three business days after your answers are sent or your call ends/.test(terms) && !/72 weekday hours/.test(terms) && /Inside 24 hours, call or text Kyle at \(215\) 645-4889/.test(terms) && !/a few business days/.test(terms));
+    // Oct 20 2026 (audit E12/E17): the office line in the Terms is the owner-editable contact, not a typed-out number.
+    c.ok("NEW terms: both routes, three business days, the office line inside 24 hours", /at least three business days after your answers are sent or your call ends/.test(terms) && !/72 weekday hours/.test(terms) && /Inside 24 hours, call or text \$\{contact\.name\} at \$\{contact\.display\}/.test(terms) && !/a few business days/.test(terms));
     const choice = code(read("src/components/portal/PlanningChoice.tsx"));
     const sched = code(read("src/components/portal/tabs/ScheduleTab.tsx"));
     c.ok("OLD route card / schedule tab: 'opens a few business days after'", /opens a few business days after/.test(show("src/components/portal/PlanningChoice.tsx")) && /opens a few business days after/.test(show("src/components/portal/tabs/ScheduleTab.tsx")));

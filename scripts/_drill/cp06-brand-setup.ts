@@ -35,6 +35,10 @@
 //  14. The hourly sweep alerts a stranded row exactly once.
 //  15. A staff edit on the Brand tab is recorded and alerted the same way.
 //  16. The real hourly cron runs the brandChangeAlerts step.
+//  20. (Oct 20 2026, audit E3) Brand files open through the portal's own
+//      door with a per-viewer media token; the page hands out no Dropbox
+//      address and mints no Dropbox links; another client's token, a forged
+//      id and a swapped id are refused.
 //
 // ISOLATION: PGlite on 127.0.0.1:5511 via the shared harness; production is
 // never opened. Slack and Dropbox are answered by fakes at the fetch fence;
@@ -75,6 +79,7 @@ type SlackPost = { channel: string; text: string };
 const slackPosts: SlackPost[] = [];
 const dbxUploads: string[] = [];
 const dbxFiles = new Set<string>();
+let dbxTempLinks = 0;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const fence = fenceFetch(async (url, init) => {
   if (url.startsWith("https://slack.com/api/")) {
@@ -90,7 +95,7 @@ const fence = fenceFetch(async (url, init) => {
     const arg = typeof init?.body === "string" ? (JSON.parse(init.body) as { path?: string }) : {};
     if (ep === "users/get_current_account") return json({});
     if (ep === "files/create_folder_v2") return json({ metadata: { path_display: arg.path } });
-    if (ep === "files/get_temporary_link") return json({ link: `https://dl.drill.invalid${arg.path ?? ""}` });
+    if (ep === "files/get_temporary_link") { dbxTempLinks++; return json({ link: `https://dl.drill.invalid${arg.path ?? ""}` }); }
     if (ep === "files/list_folder") {
       const dir = (arg.path ?? "").toLowerCase();
       const entries = [...dbxFiles].filter((f) => f.toLowerCase().startsWith(`${dir}/`)).map((f) => ({ ".tag": "file", name: f.slice(f.lastIndexOf("/") + 1), path_display: f }));
@@ -98,6 +103,8 @@ const fence = fenceFetch(async (url, init) => {
     }
     return json({ error_summary: `drill: unstubbed dropbox ${ep}` }, 400);
   }
+  // The temporary link's bytes, as Dropbox's content host would serve them (audit E3's door relays these).
+  if (url.startsWith("https://dl.drill.invalid/")) return new Response("DRILL-BYTES", { status: 200, headers: { "content-type": "application/octet-stream" } });
   if (url === "https://content.dropboxapi.com/2/files/upload") {
     const h = new Headers(init?.headers);
     const arg = JSON.parse(h.get("Dropbox-API-Arg") ?? "{}") as { path: string; autorename?: boolean };
@@ -673,6 +680,47 @@ async function main() {
     c.ok("NEW: the preference is read in the query, before the limit", lines.some((l) => /bold yellow/.test(l)), JSON.stringify(lines));
     const brief = await bp.brandBriefFor(P.clientId, { projectId: P.projectId, scrub: true });
     c.ok("  and the /edit brief shows it under 'From their calls'", brief.acceptedPreferences.some((l) => /bold yellow/.test(l)), JSON.stringify(brief.acceptedPreferences));
+  }
+
+  // =========================================================================
+  c.head("20 · brand files open through the portal's door, never a Dropbox link (audit E3)");
+  // =========================================================================
+  {
+    const Q = await realClient("Door Quinn");
+    const O = await realClient("Door Other");
+    const folder = (await import("@/lib/clientFolders")).brandFolderPath("Door Quinn");
+    dbxFiles.add(`${folder}/Quinn Logo.png`);
+    dbxFiles.add(`${folder}/notes.pdf`);
+    c.ok("(the logo is filed from the folder)", (await bp.claimFolderFileForPortal(Q.viewer, { name: "Quinn Logo.png", kind: "LOGO" })).ok);
+    const { mediaScopeOf } = await import("@/lib/portalMedia");
+    const scope = mediaScopeOf(Q.tokenViewer);
+    const links0 = dbxTempLinks;
+    const view = await bp.portalBrandProfileView(Q.clientId, { scope });
+    const urls = [...view.files.map((f) => f.url), ...view.folderOnly.map((f) => f.url)];
+    c.ok("every file link is the portal's own door, none a Dropbox address", urls.length === 2 && urls.every((u) => !!u && u.startsWith(`/api/portal/download/brand/${Q.clientId}/`) && !/dropbox|drill\.invalid/i.test(u)), JSON.stringify(urls));
+    c.ok("  and drawing the page minted no Dropbox link at all", dbxTempLinks === links0, `${dbxTempLinks - links0} minted`);
+    const door = await import("@/app/api/portal/download/brand/[clientId]/[fileId]/route");
+    const open = (u: string) => {
+      const url = new URL(u, "http://127.0.0.1");
+      const [, , , , , clientId, fileId] = url.pathname.split("/");
+      return door.GET(new NextRequest(url), { params: Promise.resolve({ clientId, fileId }) });
+    };
+    const logo = await open(view.files[0].url!);
+    const headers = JSON.stringify([...logo.headers]);
+    c.ok("the logo opens: the bytes come through the hub, shown inline as a picture", logo.status === 200 && (await logo.text()) === "DRILL-BYTES" && logo.headers.get("content-type") === "image/png" && /inline/.test(logo.headers.get("content-disposition") ?? ""), `${logo.status} ${headers}`);
+    c.ok("  no Dropbox address anywhere in the answer", !/dropbox|drill\.invalid/i.test(headers), headers);
+    const pdf = view.folderOnly.find((f) => f.name === "notes.pdf");
+    const folderRes = pdf?.url ? await open(pdf.url) : null;
+    c.ok("a file still only in their folder opens too", folderRes?.status === 200, String(folderRes?.status));
+    const fileId = new URL(view.files[0].url!, "http://127.0.0.1").pathname.split("/")[6];
+    const foreign = await open(bp.portalBrandFileHref(Q.clientId, fileId, mediaScopeOf(O.tokenViewer)));
+    c.ok("another client's link is refused (403)", foreign.status === 403, String(foreign.status));
+    const forged = await open(bp.portalBrandFileHref(Q.clientId, "a".repeat(32), scope, { folder: true }));
+    c.ok("a forged folder id is not a file (404)", forged.status === 404, String(forged.status));
+    const swapped = await open(view.files[0].url!.replace(fileId, "b".repeat(25)));
+    c.ok("a token minted for one file does not open another (403)", swapped.status === 403, String(swapped.status));
+    const otherClient = await open(bp.portalBrandFileHref(O.clientId, fileId, mediaScopeOf(O.tokenViewer)));
+    c.ok("Q's file asked for under another client's id is not theirs (404)", otherClient.status === 404, String(otherClient.status));
   }
 
   const blockedMine = fence.blocked.length;

@@ -413,8 +413,10 @@ async function main() {
     const page = read("src/components/portal/PortalPage.tsx");
     c.ok("the portal footer is the contact card, not 'Text us any time'", !page.includes("Text us any time") && page.includes("<ContactTeam"));
     const card = read("src/components/portal/ContactTeam.tsx");
-    const clientCopy = /DEFAULT_PORTAL_CONTACT: PortalContact = \{ name: "([^"]+)", display: "([^"]+)", e164: "([^"]+)" \}/.exec(card);
-    c.ok("the client-safe copy of the default says exactly what the server's says", !!clientCopy && clientCopy[1] === pm.DEFAULT_OFFICE_CONTACT.name && clientCopy[2] === pm.DEFAULT_OFFICE_CONTACT.display && clientCopy[3] === pm.DEFAULT_OFFICE_CONTACT.e164, clientCopy?.slice(1).join(" / "));
+    // Oct 20 2026 (audit E12): both defaults now read the one copy,
+    // portalWords.OFFICE_LINE (a pure module; the card itself loads next/link).
+    const line = (await import("@/lib/portalWords")).OFFICE_LINE;
+    c.ok("the client-safe copy of the default says exactly what the server's says", /DEFAULT_PORTAL_CONTACT: PortalContact = \{ \.\.\.OFFICE_LINE \}/.test(card) && line.name === pm.DEFAULT_OFFICE_CONTACT.name && line.display === pm.DEFAULT_OFFICE_CONTACT.display && line.e164 === pm.DEFAULT_OFFICE_CONTACT.e164, JSON.stringify(line));
     c.ok("the card dials: tel: and sms: links, and Message <name> to the thread", card.includes("href={`tel:${contact.e164}`}") && card.includes("href={`sms:${contact.e164}`}") && card.includes("Message {contact.name}"));
     // One portal layout since Oct 6 2026: Messages lives under More (a badge on More carries the unread count).
     const navSrc = read("src/lib/portalNav.ts");

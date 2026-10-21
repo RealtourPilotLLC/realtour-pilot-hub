@@ -115,10 +115,10 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
                 </div>
                 {isEditing ? (
                   <div className="mt-1.5 space-y-1.5">
-                    <textarea value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} rows={k === "CAPTION" ? 5 : 2} aria-label={`Edit ${KIND_LABEL[k] ?? k}`} className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-sm outline-none focus:border-brand" />
+                    <textarea value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} rows={k === "CAPTION" ? 5 : 2} aria-label={`Edit ${KIND_LABEL[k] ?? k}`} className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base outline-none focus:border-brand sm:text-sm" />
                     <div className="flex gap-2">
-                      <button type="button" onClick={save} disabled={busy || !editing.body.trim()} className="rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Save as new version</button>
-                      <button type="button" onClick={() => setEditing(null)} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
+                      <button type="button" onClick={save} disabled={busy || !editing.body.trim()} className="min-h-11 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Save as new version</button>
+                      <button type="button" onClick={() => setEditing(null)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Cancel</button>
                     </div>
                   </div>
                 ) : c ? (
@@ -126,14 +126,14 @@ export function PostingKitPanel({ videoId, title, downloadHref, download, finalL
                     <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{c.body}</p>
                     {c.alternatives.length > 0 && <ul className="mt-1 space-y-0.5 text-xs text-muted">{c.alternatives.map((a, i) => <li key={i}>· {a}</li>)}</ul>}
                     <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
-                      <button type="button" onClick={() => copy(c.body, c.id)} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Copy className="size-3" /> {copied === c.id ? "Copied" : "Copy"}</button>
-                      {captionsOpen && <button type="button" onClick={() => setEditing({ kind: k, body: c.body, basedOnId: c.id })} className="rounded-md border border-border px-2 py-1 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Edit</button>}
+                      <button type="button" onClick={() => copy(c.body, c.id)} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-border px-3 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Copy className="size-3" /> {copied === c.id ? "Copied" : "Copy"}</button>
+                      {captionsOpen && <button type="button" onClick={() => setEditing({ kind: k, body: c.body, basedOnId: c.id })} className="min-h-11 rounded-md border border-border px-3 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Edit</button>}
                     </div>
                   </>
                 ) : (
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted">
                     <span>No caption yet.</span>
-                    {captionsOpen && <button type="button" onClick={() => setEditing({ kind: k, body: "", basedOnId: null })} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Write one</button>}
+                    {captionsOpen && <button type="button" onClick={() => setEditing({ kind: k, body: "", basedOnId: null })} className="min-h-11 rounded-md border border-border px-3 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Write one</button>}
                   </div>
                 )}
               </div>

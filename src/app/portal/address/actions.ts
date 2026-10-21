@@ -20,7 +20,11 @@ export async function submitSessionAddressByToken(formData: FormData): Promise<v
   const r = await submitSessionAddress(
     { kind: "TOKEN", token },
     { street: field(formData, "street"), unit: field(formData, "unit"), city: field(formData, "city"), state: field(formData, "state"), zip: field(formData, "zip") },
-  ).catch(() => ({ ok: false, message: "That didn't save. Try again, or call or text Kyle at (215) 645-4889." }));
+  ).catch(async () => {
+    // The owner-editable office line (audit E12), never a typed-out number.
+    const c = await import("@/lib/programMessages").then((m) => m.portalContact()).catch(() => null);
+    return { ok: false, message: c ? `That didn't save. Try again, or call or text ${c.name} at ${c.display}.` : "That didn't save. Try again." };
+  });
   const q = new URLSearchParams({ r: r.ok ? "ok" : "err", m: r.message.slice(0, 300) });
   redirect(`/portal/address/${token}?${q.toString()}`);
 }

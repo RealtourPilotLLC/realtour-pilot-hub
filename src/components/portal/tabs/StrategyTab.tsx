@@ -2,25 +2,24 @@ import { Compass, Sparkles, Target } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalStrategyView } from "@/lib/portal";
 import { Card, CardTitle, Empty, LoadFailed, fmtShort } from "@/components/portal/ui";
-import { ProposeCorrection } from "@/components/portal/ProposeCorrection";
 import { StrategyDocView } from "@/components/content/StrategyDocView";
 
 // MY STRATEGY (spec §3): the released version — version number + approval
 // date, the accessible summary (brand foundation), this month's priorities
-// kept apart, then the full document in its own structure. Corrections go to
-// the team as proposals; nothing here edits the strategy.
+// kept apart, then the full document in its own structure. Nothing here
+// edits the strategy. (The "propose a correction" box was switched off on Oct
+// 13 2026 and deleted with its action on Oct 20, audit E9: a correction is a
+// message to the office.)
 //
 // U01 (Sep 25 2026): the full document renders through the same structured
 // view as the staff Strategy tab — labelled rows, real lists, one card per
 // pillar — over the released sections portalStrategy already filtered (the
 // framework, caption lists and the team's working notes never reach here).
-export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest, readOnly }: {
+export function StrategyTab({ strategy, failed, priorities, monthKey }: {
   strategy: PortalStrategyView | null;
   failed: boolean;
   priorities: string[];
   monthKey: string;
-  canSuggest: boolean;
-  readOnly: boolean;
 }) {
   if (failed) return <div className="mt-6"><LoadFailed what="your strategy" /></div>;
   if (!strategy) {
@@ -74,12 +73,6 @@ export function StrategyTab({ strategy, failed, priorities, monthKey, canSuggest
             empty={<p className="text-sm text-muted">The document has no client-facing sections beyond the summary above.</p>}
           />
         </div>
-        {canSuggest && !readOnly && (
-          <div className="mt-4 border-t border-border pt-3">
-            <p className="mb-2 text-xs text-muted">Something changed, or something&rsquo;s not quite right? Tell us. We review every correction before it changes your strategy.{strategy.proposalsOpen ? ` (${strategy.proposalsOpen} of yours waiting for review.)` : ""}</p>
-            <ProposeCorrection sections={strategy.sections.map((s) => ({ id: s.id, heading: s.heading }))} />
-          </div>
-        )}
       </Card>
     </div>
   );
