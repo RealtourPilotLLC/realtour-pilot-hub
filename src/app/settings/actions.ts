@@ -406,7 +406,7 @@ export async function saveNotifySchedule(
       .catch(() => {});
     revalidatePath("/settings");
     const [row] = await scheduleRows([teamMemberId]);
-    const tail = after.source === "preset" ? " (Jordan's preset — nothing of his own saved)" : after.source === "none" ? " (the default — notified at any hour)" : "";
+    const tail = after.source === "preset" ? " (Jordan's preset, nothing of their own saved)" : after.source === "none" ? " (the default — notified at any hour)" : "";
     return { ok: true, message: `Saved. ${afterWords}${tail} Applies from the next notice.`, row };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };

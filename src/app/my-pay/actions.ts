@@ -72,5 +72,5 @@ export async function flagPay(input: {
   } catch { /* bell is best-effort */ }
 
   revalidatePath("/my-pay");
-  return { ok: true, message: "Sent to Jordan — he'll take a look." };
+  return { ok: true, message: "Sent to Jordan to take a look." };
 }

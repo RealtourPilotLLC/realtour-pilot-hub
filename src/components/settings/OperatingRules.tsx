@@ -321,7 +321,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-semibold">New lead pings</p>
-          <p className="text-[13px] text-muted">New call, text and email leads go on Kyle&rsquo;s list. This switch is the Slack nudge to him at 15 and 60 covered minutes while a lead is still untouched.</p>
+          <p className="text-[13px] text-muted">New call, text and email leads go on Kyle&rsquo;s list. This switch is the Slack nudge to Kyle at 15 and 60 covered minutes while a lead is still untouched.</p>
           <ReadBy k="leadPing" />
         </div>
         <Toggle on={r.leadPing.enabled} onChange={(v) => set({ leadPing: { enabled: v } })} label="New lead pings" />
@@ -366,7 +366,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
         <div>
           <p className="text-sm font-semibold">Delivery watch before the promise</p>
-          <p className="text-[13px] text-muted">Slacks Kyle 3 covered hours before a job&rsquo;s promised time with where the job stands, and drafts a client update on his list. Nothing is sent to the client.</p>
+          <p className="text-[13px] text-muted">Slacks Kyle 3 covered hours before a job&rsquo;s promised time with where the job stands, and drafts a client update on Kyle&rsquo;s list. Nothing is sent to the client.</p>
           <ReadBy k="promiseWatch" />
         </div>
         <Toggle on={r.promiseWatch.enabled} onChange={(v) => set({ promiseWatch: { enabled: v } })} label="Delivery watch before the promise" />

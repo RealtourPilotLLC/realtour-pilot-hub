@@ -106,7 +106,7 @@ function Switches({ rules, canEdit }: { rules: WatchRulesView; canEdit: boolean 
       setMsg(res.ok ? "Saved." : res.message);
     });
   const items: { k: keyof WatchRulesView; label: string; hint: string }[] = [
-    { k: "alerts", label: "Tell Kyle when a program video falls behind", hint: "A Slack message and a drafted client update on his list. Nothing is sent to the client." },
+    { k: "alerts", label: "Tell Kyle when a program video falls behind", hint: "A Slack message and a drafted client update on Kyle's list. Nothing is sent to the client." },
     { k: "chaseEscalation", label: "Escalate repeated \"any update?\" messages", hint: "The 2nd ask in 14 days makes a HIGH task for Kyle; the 3rd also tells Jordan." },
     { k: "portalExpectedBy", label: "Show clients \"expected by\" dates on their portal", hint: "Each video in production shows its stage and date, and a plain reason if the date moved." },
     { k: "libraryRepoint", label: "Point old library rows at their re-edit (V2)", hint: "Off: the nightly check only reports them." },

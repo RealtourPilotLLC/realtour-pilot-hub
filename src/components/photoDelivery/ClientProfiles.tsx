@@ -98,7 +98,7 @@ function ProfileEditor({ p, rules, ruleById }: { p: ClientProfileView; rules: Ru
       <div>
         <label htmlFor={`${id}-msg`} className="text-sm font-medium">Delivery message</label>
         <textarea id={`${id}-msg`} rows={4} maxLength={2000} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Blank uses the standard message, signed Realtour Pilot Team." className={cn(input, "py-2")} />
-        <p className="mt-1 text-[12px] text-muted">Kyle copies this when he delivers by hand.</p>
+        <p className="mt-1 text-[12px] text-muted">Kyle copies this when delivering by hand.</p>
       </div>
       <div>
         <p className="text-sm font-medium">Rule overrides ({overrides.length})</p>

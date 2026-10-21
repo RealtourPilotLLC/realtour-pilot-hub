@@ -309,7 +309,7 @@ function FilmingStep({ d, canAct }: { d: OnboardingDetail; canAct: boolean }) {
         <legend className="sr-only">How this client&rsquo;s filming sessions are booked</legend>
         <label className="flex min-h-11 items-start gap-2 py-1">
           <input type="radio" name="booking-mode" className="mt-1" checked={!auto} onChange={() => change("bookings", false)} />
-          <span><span className="font-medium">Kyle books by hand</span> <span className="text-muted">— their session requests land on Kyle&rsquo;s desk and he books them in Aryeo.</span></span>
+          <span><span className="font-medium">Kyle books by hand</span> <span className="text-muted">— their session requests land on Kyle&rsquo;s desk and Kyle books them in Aryeo.</span></span>
         </label>
         <label className={cn("flex min-h-11 items-start gap-2 py-1", !b.autoAvailable && !auto && "opacity-60")}>
           <input type="radio" name="booking-mode" className="mt-1" checked={auto} disabled={!b.autoAvailable && !auto} onChange={() => change("bookings", true)} />

@@ -2592,8 +2592,8 @@ function whyNotTakeBack(
   // editor's. Name the reviewer so the refusal tells them what to do next.
   if (sub.status === "APPROVED" && !actor.office) {
     return mode === "move"
-      ? "Jordan has already approved this cut, so moving it is his call — message him or Kyle and they'll do it."
-      : "Jordan has already approved this cut, so removing it is his call — message him or Kyle and they'll pull it.";
+      ? "Jordan has already approved this cut, so moving it is Jordan's call. Message Jordan or Kyle and they'll do it."
+      : "Jordan has already approved this cut, so removing it is Jordan's call. Message Jordan or Kyle and they'll pull it.";
   }
   // A row that carries a stranded path WAS approved — one of the afternoon's
   // withdrawals, or an approved cut that has since been moved. Jordan's rule
@@ -2601,10 +2601,10 @@ function whyNotTakeBack(
   //
   // REMOVE ONLY. Moving such a row is the same move it always was, and this
   // clause was quietly taking that away from the editor who holds the job —
-  // and telling them "removing it for good is his call" while they were trying
+  // and telling them "removing it for good is Jordan's call" while they were trying
   // to move it (reviewer, Sep 16). Move behaves exactly as it did at HEAD.
   if (mode === "remove" && !actor.office && sub.strandedFinalPath) {
-    return "Jordan approved this cut before it was pulled, so removing it for good is his call — message him or Kyle.";
+    return "Jordan approved this cut before it was pulled, so removing it for good is Jordan's call. Message Jordan or Kyle.";
   }
   return null;
 }

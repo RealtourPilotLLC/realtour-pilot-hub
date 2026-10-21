@@ -880,7 +880,7 @@ Client texts outside the confirmation and delivery sweeps; anything that changes
       body: `- **Dashboard** — the ten-second glance. One primary button, a row of chips, stuck jobs, today's shoots and the week ahead, videos waiting versus in revisions, open loops you can close in place, then the money strip, the 30-day pulse and the quality dials.
 - **My Day** — your own to-dos and your planned day, with travel buffers. Yours alone; nobody else can open it.
 - **Review Room** — cuts to review, cuts in revisions, photo sets in QC, and open feedback by lane.
-- **Ops Day** — Kyle's screen. Open it when you want to see his day the way he sees it.
+- **Ops Day** — Kyle's screen. Open it when you want to see Kyle's day the way Kyle sees it.
 - **Finance** — Overview, Advisor, Jobs, People, Personal, Budget, Spending, Unpaid, Payroll, Bonus.
 - **Trends** — bookings by order date, service mix, top spenders and clients going quiet.
 - **Project Tracker, Schedule, Clients, Communications, Content Program** — the working surfaces.

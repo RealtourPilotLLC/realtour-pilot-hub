@@ -1204,7 +1204,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
           // The click is the editor's word that this pending cut IS the
           // correction (isRedo), whatever slot it sits on.
           await correctedCutSubmitted(projectId, { round: newest.round, isRedo: true });
-          return done(wantsReview, `${street} has a client revision open — the corrected cut is in the Review Room waiting on Jordan. It reads Ready for review until he rules, and Completed once he approves it.`);
+          return done(wantsReview, `${street} has a client revision open — the corrected cut is in the Review Room waiting on Jordan. It reads Ready for review until Jordan rules, and Completed once Jordan approves it.`);
         }
         if (newest?.status === "CHANGES_REQUESTED") {
           return done(false, `The corrected cut for ${street} came back with notes — fix them and press Upload version ${newest.round + 1} on the edit page; it goes back to the Review Room from there.`);
@@ -1280,7 +1280,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
           const { submitCutForReview } = await import("@/app/review/actions");
           const sent: { ok: boolean; message: string; needsSelfCheck?: boolean } = await submitCutForReview(projectId).catch(() => ({ ok: false as const, message: "" }));
           if (sent.ok) {
-            return done(wantsReview, `Sent to the Review Room — ${street} has a client revision open, so it reads Ready for review until Jordan rules and Completed once he approves the corrected cut.`);
+            return done(wantsReview, `Sent to the Review Room — ${street} has a client revision open, so it reads Ready for review until Jordan rules and Completed once Jordan approves the corrected cut.`);
           }
           // §8.2: the corrected cut is there, but nothing reaches review without
           // the editor's check — and a queue pill has nowhere to ask it.

@@ -71,7 +71,7 @@ export async function PersonalTab({ show }: { show: FinanceTab[] }) {
               detailTitle: "Money sent to your wife's account — where it was spent",
               details: [
                 { label: "Sent to ··4284 (net YTD)", value: m0(data.toWife), sub: "the funding transfers" },
-                { label: "Her spending already counted above", value: m0(data.wifeCounted), sub: "··4284 purchases + her Venmo payments" },
+                { label: "Spouse's spending already counted above", value: m0(data.wifeCounted), sub: "··4284 purchases + their Venmo payments" },
                 { label: "Still uncategorised (in Review)", value: m0(data.wifeInReview), sub: "not in the total yet" },
                 { label: "Unaccounted for", value: m0(data.wifeUnaccounted), sub: "gap between sent and found" },
               ],

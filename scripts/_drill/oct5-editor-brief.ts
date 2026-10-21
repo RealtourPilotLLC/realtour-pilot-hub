@@ -387,7 +387,7 @@ async function main() {
     const johnHeld = await view("John", listing.id);
     const fixHeld = block(johnHeld, /data-brief-section="changes"/);
     c.ok("all held for creative review: one plain line naming James, and no upload button anywhere above the row",
-      text(fixHeld).includes("1 note is with James for a creative review. You'll get it here once he's turned it into changes.") && text(header(johnHeld)).includes("with James for a creative review") && !fixHeld.includes("data-upload-trigger") && !actions(johnHeld).includes("data-upload-trigger") && !text(johnHeld).includes("Client feels it is flat"), text(fixHeld).slice(0, 300));
+      text(fixHeld).includes("1 note is with James for a creative review. You'll get it here once they've turned it into changes.") && text(header(johnHeld)).includes("with James for a creative review") && !fixHeld.includes("data-upload-trigger") && !actions(johnHeld).includes("data-upload-trigger") && !text(johnHeld).includes("Client feels it is flat"), text(fixHeld).slice(0, 300));
 
     c.ok("nothing was sent: no outbox rows", (await prisma.outboxMessage.count()) === 0);
     c.summary();

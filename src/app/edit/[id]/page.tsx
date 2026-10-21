@@ -1587,8 +1587,8 @@ export default async function EditBriefPage({
               {heldItems.length > 0 && (
                 <p className="rounded-xl border border-brand/30 bg-brand-soft/30 px-3.5 py-2.5 text-sm" data-creative-review>
                   {heldItems.length === 1
-                    ? `1 note is with ${heldWho} for a creative review. You'll get it here once he's turned it into changes.`
-                    : `${heldItems.length} notes are with ${heldWho} for a creative review. You'll get them here once he's turned them into changes.`}
+                    ? `1 note is with ${heldWho} for a creative review. You'll get it here once they've turned it into changes.`
+                    : `${heldItems.length} notes are with ${heldWho} for a creative review. You'll get them here once they've turned them into changes.`}
                 </p>
               )}
               {/* The version's player and its numbered notes: each time plays

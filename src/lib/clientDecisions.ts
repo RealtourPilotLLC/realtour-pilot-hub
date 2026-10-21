@@ -1078,7 +1078,7 @@ async function lateRefusal(w: { id: string; enrollmentId: string; deadlineAt: Da
       dedupeKey: `review-late-${w.id}`,
     });
   } catch { /* the refusal still stands */ }
-  return { ok: false, message: `The review window for this version closed ${deadlineLabel(w.deadlineAt)}. Your notes are saved. Call or text Kyle at ${URGENT_CONTACT} and he can reopen it for you.` };
+  return { ok: false, message: `The review window for this version closed ${deadlineLabel(w.deadlineAt)}. Your notes are saved. Call or text Kyle at ${URGENT_CONTACT} and Kyle can reopen it for you.` };
 }
 
 type RequestCtx = {
