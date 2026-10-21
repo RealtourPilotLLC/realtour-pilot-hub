@@ -336,9 +336,21 @@ async function main() {
     const C = await mkJob("30 Approve Ct", "L-C", 3);
     const drive1 = await P.drivePushes({ budgetMs: 60_000 });
     c.ok("a job Ready to review waits for Kyle: the cron sends nothing", !drive1.started.includes(C.job.id) && !(await P.pushProgress(C.job.id)) && listings.get("L-C")!.images.length === 0, JSON.stringify(drive1));
+    // Oct 21 2026 (Jordan's decisions 6 and 7): an open photo flag is a line
+    // on Kyle's checklist that never holds his approval, and his approval
+    // closes the shoot's media check (the media_qa card) with the reason.
+    await prisma.imageFlag.create({ data: { projectId: C.project.id, imageUrl: "https://example.test/30-approve.jpg", tags: JSON.stringify(["Sign in the yard"]) } });
+    const qcCard = await prisma.smartTask.create({ data: { projectId: C.project.id, taskType: "media_qa", title: "QC & deliver 30 Approve Ct", assignedKey: "kyle", checklist: JSON.stringify([{ label: "QC Photos", done: false }]) } });
+    const { deliveryGate } = await import("@/lib/photoDelivery/delivery");
+    const gateC = await deliveryGate(C.job.id);
+    const flagLine = gateC.checks.find((x) => x.key === "flags");
+    c.ok("an open photo flag is a line on Kyle's checklist, linking to the flags, never counted against the checklist", !!flagLine && flagLine.advisory === true && flagLine.detail === "1 photo flag still open" && flagLine.href === `/projects/${C.project.id}#flags` && gateC.passed === gateC.checks.filter((x) => !x.advisory).every((x) => x.ok), JSON.stringify(gateC.checks));
     const ok = await P.approveJob(C.job.id, "Kyle", { deliver: true });
     const cStage = (await prisma.photoJob.findUniqueOrThrow({ where: { id: C.job.id } })).stage;
     c.ok("Approve and deliver: the photos go up first (nothing marked as delivering before they are on the listing)", ok.ok && ok.started && cStage === "READY", `${ok.message} ${cStage}`);
+    const mediaCheckClosed = () => prisma.activity.count({ where: { projectId: C.project.id, body: { startsWith: "Media check closed" } } });
+    const card = await prisma.smartTask.findUniqueOrThrow({ where: { id: qcCard.id } });
+    c.ok("…the open flag did not hold it, and the approval closed the shoot's media check with the reason", ok.ok && card.status === "COMPLETED" && card.sourceDetail === "closed-by-hand" && /Photos approved in Photo Delivery by Kyle/.test(card.summary ?? "") && (await mediaCheckClosed()) === 1, JSON.stringify({ status: card.status, summary: card.summary }));
     for (let i = 0; i < 10; i++) await P.advancePush(C.job.id, { budgetMs: 30_000 });
     const del = calls.filter((x) => x.kind === "deliver").pop()?.body as Record<string, unknown>;
     c.ok("Deliver in Aryeo sends what Aryeo's Deliver window sends: its own email (subject, body, bcc) to the listing's customers", ok.ok && listings.get("L-C")!.delivery === "DELIVERED" && JSON.stringify(del.added_customer_ids) === JSON.stringify(["ctm-L-C"]) && (del.added_emails as unknown[]).length === 0 && del.email_subject === "Your listing media is ready!" && /902 Valley Rd/.test(String(del.email_body)) && del.email_bcc_list === "office@realtourpilot.com" && del.notify_via_email === true && del.fulfill_orders === true && del.schedule_date === null, JSON.stringify(del));
@@ -346,6 +358,7 @@ async function main() {
     const jc = await prisma.photoJob.findUniqueOrThrow({ where: { id: C.job.id } });
     const pc = await P.pushProgress(C.job.id);
     c.ok("the hub confirms DELIVERED through the API and the job is verified", jc.stage === "DELIVERED" && pc?.state === "DONE" && !!pc.deliveredAt, `${jc.stage} ${pc?.state}`);
+    c.ok("…the media check closed once: the verified delivery found nothing left to close and reopened nothing", (await mediaCheckClosed()) === 1 && (await prisma.smartTask.findUniqueOrThrow({ where: { id: qcCard.id } })).status === "COMPLETED");
     c.ok("…and the job's activity says Kyle approved it", (await prisma.photoJobEvent.count({ where: { jobId: C.job.id, actor: "Kyle", action: "approved: deliver" } })) === 1);
 
     // ======================================================================

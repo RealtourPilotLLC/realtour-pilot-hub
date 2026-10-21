@@ -235,7 +235,7 @@ export function ShootScreen({
         <div className="pointer-events-none fixed inset-x-0 bottom-48 z-[1400] flex justify-center px-4">
           <div className={cn(
             "pointer-events-auto rounded-full px-4 py-2 text-sm font-medium shadow-lg ring-1",
-            toast.kind === "ok" ? "bg-success text-white ring-success/30" : "bg-danger text-white ring-danger/30",
+            toast.kind === "ok" ? "bg-success-action text-white ring-success/30" : "bg-danger text-white ring-danger/30",
           )}>
             {toast.text}
           </div>

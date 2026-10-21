@@ -34,7 +34,8 @@ export const dynamic = "force-dynamic";
 // requests and scheduling are the office's, so everyone's list holds the same
 // ones; follow-ups and earlier items are theirs). The owner sees Kyle's, and
 // so does anyone who opens it with ?who=kyle (the dashboard's "Open Kyle's
-// list"). Old links ("/#loops", "/ops#video-review", /ops/requests) land on
+// list"); the owner's own (?who=me) is where the dashboard's "N of your items
+// are over a week old" line opens (Oct 21 2026). Old links ("/#loops", "/ops#video-review", /ops/requests) land on
 // the group that holds that work (lib/homeAnchors).
 // ---------------------------------------------------------------------------
 
@@ -49,7 +50,8 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
   const viewerKey = me ? viewerAssigneeKey(me, roster) : null;
   const ops = (await kylePerson(roster).catch(() => null)) ?? { key: "kyle", teamMemberId: null, name: "Kyle" };
   const viewerIsOps = !!me && ((!!ops.teamMemberId && ops.teamMemberId === me.teamMemberId) || (!!viewerKey && viewerKey === ops.key));
-  const forOps = isOwner || sp?.who === "kyle" || viewerIsOps;
+  const ownerOwnList = isOwner && sp?.who === "me";
+  const forOps = (isOwner && !ownerOwnList) || sp?.who === "kyle" || viewerIsOps;
   // An office login with no roster match still gets their own (empty) follow-ups, never someone else's.
   const person = forOps ? ops : { key: viewerKey ?? (me?.teamMemberId ? null : "__unresolved__"), teamMemberId: me?.teamMemberId ?? null };
   const now = new Date();
@@ -62,7 +64,7 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
   const minDay = etDayKey(etAddDays(now, 1));
   const maxDay = etDayKey(etAddDays(now, MAX_PUSH_DAYS));
   const mine = !forOps || viewerIsOps;
-  const self = `${CHECKLIST_PATH}${sp?.who === "kyle" && !isOwner && !viewerIsOps ? "?who=kyle" : ""}`;
+  const self = `${CHECKLIST_PATH}${sp?.who === "kyle" && !isOwner && !viewerIsOps ? "?who=kyle" : ownerOwnList ? "?who=me" : ""}`;
   const toggleHref = includeTest ? self : homeRecordHref(self, true);
   return (
     <div>

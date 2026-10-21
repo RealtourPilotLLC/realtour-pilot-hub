@@ -203,7 +203,6 @@ export type ReadyVideo = {
   monthlyPortalReleased: boolean;
   /** Recorded evidence, not a fresh provider playback/access proof. */
   monthlyPortalAccess?: boolean;
-  monthlyFinalCheckRecorded?: boolean;
   /** null for cases (b)/(c) — there is no 1080p job to stamp */
   topazJobId: string | null;
   /** "322 N 62nd St" — the same street the rest of the day uses */
@@ -357,41 +356,9 @@ export type NeedsFinishing = { submissionId: string; projectId: string; street: 
  *  proves it). */
 export type NotTold = { submissionId: string; projectId: string; street: string; fileName: string; sentAtISO: string; sentBy: string | null; markedBy: string | null; deliveryDestination?: "client-portal" | "aryeo-listing"; /** Always supplied by the production reader; optional for older callers. */ monthlyProgram?: boolean };
 
-/**
- * DELIVERED VIA THE CONTENT PROGRAM (Jordan, Oct 12 2026): "branding content
- * should go straight to the portal once its approved and ran through topaz.
- * Then, on the home screen, it should say that it was delivered via the
- * content program, with the option to upload it to Aryeo".
- * Oct 13 2026 (Jordan): these close BY THEMSELVES. The portal already has the
- * video, so there is nothing for anybody to press: one informational row per
- * version the hub published to a client's portal in the last
- * PORTAL_DELIVERED_SHOW_DAYS days, never counted as work. The old "Mark as
- * completed" button is gone; a row somebody completed with it stays hidden.
- */
-export type PortalDelivered = {
-  submissionId: string;
-  projectId: string;
-  clientName: string;
-  street: string;
-  cutLabel: string;
-  round: number;
-  monthKey: string | null;
-  topicTitle: string | null;
-  deliveredAtISO: string;
-  /** nobody can sign in to this portal yet: the video waits there for them */
-  waitingForSignUp: boolean;
-  /** the checked 1080p file, for the Aryeo upload; null when the hub has no bytes to hand over */
-  file: { fileName: string; downloadHref: string } | null;
-  downloadedAtISO: string | null;
-  aryeoUrl: string | null;
-  aryeoTitle: string;
-};
-
 export type ReadyBoard = {
   ready: ReadyVideo[];
   rendering: RenderingVideo[];
-  /** Branding videos the portal has, shown for a week as information only (never counted as work). */
-  portalDelivered?: PortalDelivered[];
   needsFinishing: NeedsFinishing[];
   notTold?: NotTold[];
   followUpChecks?: { needsFinishing: string | null; notTold: string | null };
@@ -433,7 +400,7 @@ async function deliveryFollowUps(projectId?: string, recordHealth = false, exclu
   };
 }
 
-type ExitExtras = Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck" | "portalDelivered">;
+type ExitExtras = Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck">;
 
 async function deliveryExitExtras(opts: ReadyToSendOpts | undefined): Promise<ExitExtras> {
   // READY ROWS ONLY (Oct 20 2026, audit H2/B3): the delivery alerts read
@@ -441,15 +408,10 @@ async function deliveryExitExtras(opts: ReadyToSendOpts | undefined): Promise<Ex
   // so (a null check time), never "nothing to finish".
   if (opts?.readyOnly) return { needsFinishing: [], notTold: [], followUpChecks: { needsFinishing: null, notTold: null } };
   const { projectId, recordFollowUpHealth: recordHealth = false, includeNoticeIncidents = false, excludeClientIds } = opts ?? {};
-  // The week-long "delivered via the content program" rows are read only on
-  // request (audit B6): no screen has shown them since the Oct 19 redesign.
-  const [base, portalDelivered] = await Promise.all([
-    deliveryFollowUps(projectId, recordHealth, excludeClientIds),
-    opts?.withPortalDelivered
-      ? portalDeliveredRows(projectId, excludeClientIds).catch((e) => { console.warn("[delivery] portal-delivered rows unavailable", e); return [] as PortalDelivered[]; })
-      : Promise.resolve(undefined),
-  ]);
-  const followUps = { ...base, ...(portalDelivered ? { portalDelivered } : {}) };
+  // Oct 21 2026 (Jordan): the week-long "delivered via the content program,
+  // waiting for sign-up" rows are gone. No screen had shown them since the
+  // Oct 19 redesign; the portal itself and the program watch say it.
+  const followUps = await deliveryFollowUps(projectId, recordHealth, excludeClientIds);
   if (!includeNoticeIncidents) return followUps;
   try {
     const { deliveryNoticeIncidents } = await import("@/lib/deliveryNoticeIncidents");
@@ -460,73 +422,6 @@ async function deliveryExitExtras(opts: ReadyToSendOpts | undefined): Promise<Ex
 }
 
 const HOUR = 3_600_000;
-
-// ---------------------------------------------------------------------------
-// DELIVERED VIA THE CONTENT PROGRAM — the informational row (see PortalDelivered).
-// The list is every portal handoff (monthlyFinal's monthly-portal-handoff
-// audit row) in the last PORTAL_DELIVERED_SHOW_DAYS days (and since Oct 12),
-// minus any a person closed with the retired "Mark as completed" button
-// (monthly-portal-followup). Nothing here reaches a client or Aryeo: Download
-// hands Kyle the checked file and the Aryeo button opens the listing.
-// ---------------------------------------------------------------------------
-export const PORTAL_FOLLOW_UP_SINCE = new Date("2026-10-12T04:00:00Z");
-/** How long a portal-delivered branding video stays on the home card as information. */
-export const PORTAL_DELIVERED_SHOW_DAYS = 7;
-export const portalFollowUpId = (submissionId: string) => `monthly-portal-followup:${submissionId}`;
-
-async function portalDeliveredRows(projectId?: string, excludeClientIds?: string[]): Promise<PortalDelivered[]> {
-  const showFrom = new Date(Math.max(PORTAL_FOLLOW_UP_SINCE.getTime(), Date.now() - PORTAL_DELIVERED_SHOW_DAYS * 24 * HOUR));
-  const handoffs = await prisma.auditLog.findMany({ where: { action: "monthly_portal_handoff", createdAt: { gte: showFrom } }, select: { target: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 300 });
-  const ids = [...new Set(handoffs.map((h) => h.target).filter((t): t is string => !!t))];
-  if (!ids.length) return [];
-  const done = new Set((await prisma.auditLog.findMany({ where: { id: { in: ids.map(portalFollowUpId) } }, select: { target: true } })).map((r) => r.target));
-  const open = ids.filter((id) => !done.has(id));
-  if (!open.length) return [];
-  const subs = await prisma.reviewSubmission.findMany({
-    where: {
-      id: { in: open }, status: "APPROVED", sentToClientAt: { not: null },
-      ...(projectId ? { projectId } : {}),
-      project: { contentMonthId: { not: null }, status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...(excludeClientIds?.length ? { clientId: { notIn: excludeClientIds } } : {}) },
-    },
-    select: { ...CANDIDATE_SELECT, sentToClientAt: true },
-  });
-  if (!subs.length) return [];
-  // The Review Room's namer, and its rule that a version being redone (a newer
-  // round) drops out: the client asked for changes, so there is nothing to
-  // upload or close for this one.
-  const states = await videoStatesFor([...new Set(subs.map((s) => s.projectId))]);
-  const named = new Map([...states.values()].flatMap((v) => v.cuts).map((c) => [c.submissionId, c] as const));
-  const monthIds = [...new Set(subs.map((s) => s.project.contentMonthId).filter((id): id is string => !!id))];
-  const outputIds = [...new Set(subs.map((s) => s.outputId).filter((id): id is string => !!id))];
-  const [months, outputs, access, settings] = await Promise.all([
-    prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }),
-    outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
-    monthlyOwnerAccess(monthIds).catch(() => new Map()),
-    topazSettings().catch(() => null),
-  ]);
-  const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((id): id is string => !!id))];
-  const topics = topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }) : [];
-  const rows: PortalDelivered[] = [];
-  for (const sub of subs) {
-    const cut = named.get(sub.id);
-    if (!cut || cut.status !== "APPROVED") continue;
-    const file = fileFor(sub, settings);
-    const monthId = sub.project.contentMonthId!;
-    const topicId = sub.outputId ? outputs.find((o) => o.id === sub.outputId)?.topicId ?? null : null;
-    rows.push({
-      submissionId: sub.id, projectId: sub.projectId, clientName: cut.clientName, street: cut.street, cutLabel: cut.cutLabel, round: sub.round,
-      monthKey: months.find((m) => m.id === monthId)?.monthKey ?? null,
-      topicTitle: topicId ? topics.find((t) => t.id === topicId)?.title?.trim() || null : null,
-      deliveredAtISO: sub.sentToClientAt!.toISOString(),
-      waitingForSignUp: !access.get(monthId)?.ok,
-      file: file ? { fileName: file.fileName, downloadHref: file.downloadHref } : null,
-      downloadedAtISO: sub.downloadedAt?.toISOString() ?? null,
-      aryeoUrl: aryeoJobUrl(sub.project),
-      aryeoTitle: aryeoJobTitle(sub.project),
-    });
-  }
-  return rows.sort((a, b) => a.deliveredAtISO.localeCompare(b.deliveredAtISO));
-}
 
 /** "5642 Limeport Rd, Coopersburg, PA" -> "5642 Limeport Rd". */
 const streetOf = (title: string | null | undefined): string => (title ?? "").split(",")[0].trim();
@@ -988,8 +883,6 @@ type ReadyToSendOpts = {
   excludeClientIds?: string[];
   /** Only `ready` and `rendering` are wanted (the delivery alerts): the follow-up lanes are skipped. */
   readyOnly?: boolean;
-  /** Also the week-long "delivered via the content program" information rows. */
-  withPortalDelivered?: boolean;
 };
 
 /**
@@ -1068,11 +961,10 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   const { uploadsFor } = await import("@/lib/deliveryUploads");
   const { loadCuts, sourceFingerprint } = await import("@/lib/finalRendition");
   const { aryeoDestinationsFor, canChooseAryeo, destinationFingerprint } = await import("@/lib/videoDeliveryDestination");
-  const [months, outputs, monthlyAccess, monthlyChecks, s, asks, uploads, uploadCuts, publicationFailures] = await Promise.all([
+  const [months, outputs, monthlyAccess, s, asks, uploads, uploadCuts, publicationFailures] = await Promise.all([
     monthIds.length ? prisma.contentMonth.findMany({ where: { id: { in: monthIds } }, select: { id: true, monthKey: true } }) : Promise.resolve([]),
     outputIds.length ? prisma.deliverableOutput.findMany({ where: { id: { in: outputIds } }, select: { id: true, topicId: true } }) : Promise.resolve([]),
     monthlyOwnerAccess(monthIds).catch(() => new Map()),
-    monthIds.length ? prisma.finalRenditionCheck.findMany({ where: { submissionId: { in: winners.filter((s) => s.project.contentMonthId).map((s) => s.id) }, destination: "client-portal" }, select: { submissionId: true } }) : Promise.resolve([]),
     winners.some((s) => !s.topazJob) || winners.some((s) => s.project.contentMonthId) ? topazSettings().catch(() => null) : Promise.resolve(null),
     clientChangeRequestsFor(winners.map((w) => w.projectId)),
     uploadsFor(winners.map((w) => w.id)),
@@ -1150,7 +1042,6 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
       topicTitle: sub.outputId ? topicById.get(outputById.get(sub.outputId)?.topicId ?? "")?.trim() || null : null,
       monthlyPortalReleased: Boolean(sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED", portalPublicationRequiredAt: publicationRequiredAt({ ...sub, status: "APPROVED" }, true) })),
       monthlyPortalAccess: monthlyAccessOk,
-      monthlyFinalCheckRecorded: monthlyChecks.some((c) => c.submissionId === sub.id),
       topazJobId: sub.topazJob?.id ?? null,
       street: cut.street,
       clientName: cut.clientName,
@@ -1183,11 +1074,14 @@ export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   // Where the hub's own Aryeo upload and delivery stands (Oct 19 2026): only
   // ever a run somebody started with Upload to Aryeo and send. A row whose
   // upload a person recorded says so (never "the hub sends it"). A failed
-  // read leaves the row as it always was: by hand.
-  const listingRows = ready.filter((v) => v.deliveryDestination === "aryeo-listing" && !v.monthlyProgram);
+  // read leaves the row as it always was: by hand. A branding video the
+  // office switched to Aryeo (Oct 21 2026, ChooseAryeoDelivery) is one of
+  // these too: the same button, the same press.
+  const listingRows = ready.filter((v) => v.deliveryDestination === "aryeo-listing");
   if (listingRows.length) {
     const uploadedBy = new Map(listingRows.filter((v) => v.uploaded).map((v) => [v.submissionId, v.uploaded!.by]));
-    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId), { uploadedBy })).catch((e) => {
+    const aryeoChosen = new Set(listingRows.filter((v) => v.monthlyProgram).map((v) => v.submissionId));
+    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId), { uploadedBy, aryeoChosen })).catch((e) => {
       console.warn("[delivery] upload status unavailable", e);
       return null;
     });

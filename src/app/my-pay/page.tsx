@@ -238,7 +238,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
             ))}
             <span className="ml-2 text-muted">{fmtKey(period.startKey)} – {fmtKey(period.endKey)}</span>
           </div>
-          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${paysToday ? "bg-success text-white" : "bg-success/10 font-medium text-success"}`}>
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${paysToday ? "bg-success-action text-white" : "bg-success/10 font-medium text-success"}`}>
             {paysToday ? "Pays TODAY" : `Pays ${fmtKey(period.payoutKey, { weekday: "short", month: "short", day: "numeric" })}`}
           </span>
         </div>

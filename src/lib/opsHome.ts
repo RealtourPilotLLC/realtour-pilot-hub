@@ -1079,7 +1079,9 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
       lead: `${me.weekOld} of your items`,
       text: "are over a week old",
       owner: "You · your list",
-      action: { label: "Open", href: isOwner ? "/tasks?tab=work" : `${CHECKLIST_PATH}#earlier` },
+      // The owner's own list on the checklist (Oct 21 2026, audit A9: one
+      // home for earlier items, not /tasks); everyone else's is the default.
+      action: { label: "Open", href: isOwner ? `${CHECKLIST_PATH}?who=me#earlier` : `${CHECKLIST_PATH}#earlier` },
     });
   }
   const opsOld = isOwner && !viewerIsOps ? person(opts.ops.key) : null;
@@ -1089,7 +1091,7 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
       tone: "warn",
       lead: `${opsOld.weekOld} of ${opts.ops.name}'s items`,
       text: "are over a week old",
-      owner: `${opts.ops.name} · his list`,
+      owner: `${opts.ops.name} · their list`,
       action: { label: "Open", href: `${CHECKLIST_PATH}#earlier` },
     });
   }

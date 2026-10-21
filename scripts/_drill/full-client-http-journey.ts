@@ -120,7 +120,8 @@ async function main() {
     const { assignmentReceiptStates } = await import("@/lib/editorBriefReceipt");
     const { checkContextForSlot } = await import("@/lib/selfCheckStore");
     const { itemsFor } = await import("@/lib/selfCheck");
-    const { FINAL_CHECK_KEYS } = await import("@/lib/finalRendition");
+    // The retired final-check form's keys (lib/finalRendition's flow was deleted Oct 21 2026).
+    const FINAL_CHECK_KEYS = ["identity", "playback", "audio", "frames", "title", "access"] as const;
     const { mediaToken } = await import("@/lib/portalMedia");
     const { portalPlanning } = await import("@/lib/portal");
     const monthKey = etMonthKey(new Date());

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  Camera, Brain, Coffee, AlertTriangle, Inbox, TrendingUp, Users2, Video,
+  Camera, Brain, Coffee, AlertTriangle, Inbox, Users2, Video,
   CalendarOff, Mic, ChevronRight, Clock, Sun,
 } from "lucide-react";
 import { QuickAdd } from "@/components/day/QuickAdd";
@@ -15,11 +15,7 @@ import { meetingsForReview } from "@/lib/meetings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { buildDayPlan, ownerTodoLists, ownerMemberId, calendarAhead } from "@/lib/ownerDay";
-import { ownerPulse } from "@/lib/ownerPulse";
 import { etDayKey } from "@/lib/datetime";
-// "-$1,995", never "$-1,995": the dashboard's rule for an overdrawn figure
-// (money.usd0Signed), here too (Oct 20 2026, audit A12).
-import { usd0Signed as usd0 } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 
@@ -37,8 +33,9 @@ export const dynamic = "force-dynamic";
 //    work, accent is a real commitment. Everything else is plain foreground —
 //    grey is for labels, never for content he has to read.
 //  · ONE QUESTION PER BLOCK, with a heading that answers it in plain words.
-//  · Reference material (the week, the money) sits at the bottom and stays out
-//    of the way of the doing.
+//  · Reference material (the week) sits at the bottom and stays out of the
+//    way of the doing. The money lives on the dashboard only (Jordan, Oct 21
+//    2026, audit A12): this page links there instead of repeating it.
 
 const hhmm = (d: Date) =>
   d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
@@ -86,10 +83,9 @@ export default async function MyDayPage() {
 
   const todayKey = etDayKey(new Date());
   const myMemberId = await ownerMemberId(me?.teamMemberId);
-  const [plan, lists, pulse, meetings, week] = await Promise.all([
+  const [plan, lists, meetings, week] = await Promise.all([
     buildDayPlan(todayKey, { memberId: myMemberId }),
     ownerTodoLists(),
-    ownerPulse().catch(() => null),
     meetingsForReview().catch(() => []),
     calendarAhead(7, { memberId: myMemberId }).catch(() => null),
   ]);
@@ -358,8 +354,8 @@ export default async function MyDayPage() {
       <FinishedList rows={lists.finished} />
 
       {/* ── REFERENCE ──────────────────────────────────────────────────────
-          The week and the money. Deliberately last and deliberately quiet —
-          neither is something to act on right now. */}
+          The week. Deliberately last and deliberately quiet: it is not
+          something to act on right now. */}
       {week?.calendarOk && (
         <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
           <WeekCalendar
@@ -387,54 +383,12 @@ export default async function MyDayPage() {
         </div>
       )}
 
-      {pulse && (
-        <Block
-          title="Where the business is"
-          icon={TrendingUp}
-          action={<span className="text-sm text-muted-2">{pulse.monthLabel}</span>}
-        >
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Stat label="Revenue" value={usd0(pulse.revenueMonth)} sub={`${usd0(pulse.revenueYtd)} this year${pulse.revenueNote ? " · QuickBooks not synced, see below" : ""}`} />
-            <Stat
-              label="Profit"
-              value={usd0(pulse.profitMonth)}
-              sub={pulse.marginPct != null ? `${Math.round(pulse.marginPct)}% margin` : undefined}
-              tone={pulse.profitMonth >= 0 ? "good" : "bad"}
-            />
-            <Stat
-              label="In the bank"
-              value={pulse.bankBalance == null ? "—" : usd0(pulse.bankBalance)}
-              sub={pulse.bankLabel ?? "not connected"}
-              tone={pulse.bankBalance != null && pulse.bankBalance < 0 ? "bad" : undefined}
-            />
-            <Stat label="Owed to you" value={usd0(pulse.owedToYou)} sub={`${pulse.owedCount} unpaid`} tone={pulse.owedToYou > 0 ? "bad" : undefined} />
-            <Stat label="Shoots this week" value={String(pulse.shootsThisWeek)} sub={`${pulse.deliveredThisMonth} delivered this month`} />
-            <Stat
-              label="Team tasks"
-              value={String(pulse.openTasks)}
-              sub={`${pulse.overdueTasks} overdue`}
-              tone={pulse.overdueTasks > 0 ? "bad" : undefined}
-            />
-          </div>
-          {pulse.revenueNote && <p data-quickbooks-note className="mt-3 text-sm text-warning">{pulse.revenueNote}</p>}
-          <div className="mt-3 flex gap-4 text-sm">
-            <Link href="/trends" className="font-medium text-brand hover:underline">Trends →</Link>
-            <Link href="/sales" className="font-medium text-brand hover:underline">Finance →</Link>
-          </div>
-        </Block>
-      )}
-    </div>
-  );
-}
-
-function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
-  return (
-    <div className="rounded-xl border border-border bg-surface-2/40 p-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-2">{label}</div>
-      <div className={`mt-1 text-2xl font-bold tabular-nums ${tone === "good" ? "text-success" : tone === "bad" ? "text-danger" : ""}`}>
-        {value}
-      </div>
-      {sub && <div className="mt-0.5 text-sm text-muted">{sub}</div>}
+      {/* The money (revenue, profit, the bank, what is owed) is the dashboard's
+          (Oct 21 2026): one place, never two copies that can disagree. */}
+      <p className="text-sm text-muted">
+        Revenue, profit, the bank and what you&rsquo;re owed are on the{" "}
+        <Link href="/" className="inline-flex min-h-11 items-center font-medium text-brand hover:underline">dashboard</Link>.
+      </p>
     </div>
   );
 }

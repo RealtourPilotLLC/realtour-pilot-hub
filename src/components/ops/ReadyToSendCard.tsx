@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send, UploadCloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, FileVideo, Files, Loader2, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkDelivered } from "@/components/ops/MarkDelivered";
@@ -15,12 +15,13 @@ import { CorrectUpload } from "@/components/ops/CorrectUpload";
 import { RetryRender } from "@/components/ops/RetryRender";
 import { HeldRender } from "@/components/ops/HeldRender";
 import { PortalNextStep } from "@/components/ops/PortalNextStep";
+import { ChooseAryeoDelivery } from "@/components/ops/ChooseAryeoDelivery";
 import { NotTold } from "@/components/ops/NotTold";
 import { SaveStatus } from "@/components/ui/SaveStatus";
 import { undoVideoUploadAction } from "@/app/ops/actions";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
-import type { PortalDelivered, ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
+import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
 import type { DeliveryNoticeIncident } from "@/lib/deliveryNoticeIncidents";
 
 // ---------------------------------------------------------------------------
@@ -98,9 +99,9 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
   const [sent, setSent] = useState<Map<string, string | null | undefined>>(() => new Map());
   const { needsFinishing } = board;
   // Oct 12 2026 (Jordan): branding content is delivered through the portal,
-  // everything else through Aryeo — so the card no longer offers "send this
-  // monthly video to Aryeo instead". A branding video can still go up on Aryeo
-  // AFTER the portal has it (PortalDeliveredList).
+  // everything else through Aryeo. Oct 21 2026: a branding video can be
+  // switched to Aryeo before it publishes, from the Video Review Room's portal
+  // row (DeliveryFollowUps, ChooseAryeoDelivery).
   const rendering = board.rendering;
   // UNDO, AT ONCE (Oct 5 2026): an undone upload is back in "Ready for upload"
   // the moment it is pressed; the server's answer only has to agree with it.
@@ -172,7 +173,6 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
         <NeedsFinishing rows={needsFinishing ?? []} />
         <NotTold rows={notTold} />
         <DeliveryTextIncidents rows={board.noticeIncidents ?? []} includeTest={includeTest} />
-        <PortalDeliveredList rows={board.portalDelivered ?? []} />
         <Rendering rows={rendering} />
       </div>
     );
@@ -188,7 +188,6 @@ export function ReadyToSendCard({ board, includeTest = false }: { board: ReadyBo
         { title: "Portal delivery needs attention", rows: ready.filter(usesPortal) },
       ].map((group) => group.rows.length > 0 && <section key={group.title} className="space-y-2"><h4 className="font-semibold">{group.title} <span className="text-muted">({group.rows.length})</span></h4>{group.rows.map((v) => <ReadyRow key={v.submissionId} v={v} onUploaded={(delivered) => uploaded(v, delivered)} />)}</section>)}
       {uploadedGroups.length > 0 && <section className="space-y-2" aria-label="On Aryeo, waiting for delivery"><h4 className="font-semibold">On Aryeo, waiting for delivery <span className="text-muted">({uploadedGroups.length})</span></h4>{uploadedGroups.map(group => <UploadedRow key={group.projectId} group={group} onSent={sentGroup} onUndo={undoUpload} undoErrors={undoErrors} />)}</section>}
-      <PortalDeliveredList rows={board.portalDelivered ?? []} />
       <Rendering rows={rendering} />
     </div>
   );
@@ -229,6 +228,33 @@ export function DeliveryFollowUps({ board, includeTest = false }: { board: Pick<
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * BRANDING VIDEOS ON THEIR WAY TO THE PORTAL (Oct 21 2026). Still in the
+ * 1080p pass, so the portal does not have them yet, and the moment the pass
+ * finishes the hub publishes them there: this is when the office can still
+ * send one to Aryeo instead. Information, not work: never counted, and shown
+ * in the Video Review Room beside "Finishing the 1080p pass", not under
+ * "Needs a follow-up".
+ */
+export function PortalFinishing({ rows }: { rows: RenderingVideo[] }) {
+  if (!rows.length) return null;
+  return (
+    <section className="space-y-2" aria-label="Branding videos going to the client's portal">
+      <h4 className="text-sm font-semibold">Going to the client&rsquo;s portal <span className="font-normal text-muted">({rows.length}) · after the 1080p pass</span></h4>
+      {rows.map((r) => (
+        <div key={r.submissionId} className="min-w-0 rounded-xl border border-border px-3.5 py-2.5 text-sm">
+          <p className="leading-snug">
+            <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.clientName}</Link>
+            <span className="text-muted"> · {r.cutLabel} · version {r.round}</span>
+          </p>
+          <p className="mt-1 text-muted">{r.says} Destination: the client&rsquo;s portal.</p>
+          {r.destinationFingerprint && <ChooseAryeoDelivery submissionId={r.submissionId} fingerprint={r.destinationFingerprint} />}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -389,7 +415,13 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
       {/* A portal video: exactly what stands between it and the client, and
           the one button that moves it (Oct 5 2026). */}
       {usesPortal(v) && v.portalStep
-        ? <PortalNextStep submissionId={v.submissionId} street={v.street} clientName={v.clientName} step={v.portalStep} dropboxUrl={v.file.dropboxUrl} />
+        ? <>
+          <PortalNextStep submissionId={v.submissionId} street={v.street} clientName={v.clientName} step={v.portalStep} dropboxUrl={v.file.dropboxUrl} />
+          {/* A branding video can go to Aryeo instead (Oct 21 2026, Jordan:
+              "possibly sometimes"): the press only switches its destination;
+              it then waits in Ready to send for a person's press. */}
+          {v.canChooseAryeo && v.destinationFingerprint && <ChooseAryeoDelivery submissionId={v.submissionId} fingerprint={v.destinationFingerprint} />}
+        </>
         : !usesPortal(v) && v.listingMissing
           // The upload can't be recorded against a listing the job doesn't
           // have, so the button would only ever be refused (Oct 5 2026).
@@ -553,61 +585,6 @@ function ReadyRow({ v, onUploaded }: { v: ReadyVideo; onUploaded?: (sent?: boole
       </div>
         {v.uploaded && <CorrectUpload submissionId={v.submissionId} receiptId={v.uploaded.id} />}
       </section>
-    </div>
-  );
-}
-
-/**
- * DELIVERED VIA THE CONTENT PROGRAM (Jordan, Oct 12 2026): "branding content
- * should go straight to the portal once its approved and ran through topaz.
- * Then, on the home screen, it should say that it was delivered via the
- * content program, with the option to upload it to Aryeo".
- * Oct 13 2026 (Jordan): INFORMATION, NOT WORK. These are already delivered, so
- * they close by themselves: no "Mark as completed", no count on the card, and
- * each row drops off a week after delivery. "Upload to Aryeo" stays optional.
- * Nothing here reaches the client: the portal already has the video.
- */
-function PortalDeliveredList({ rows }: { rows: PortalDelivered[] }) {
-  if (!rows.length) return null;
-  return (
-    <section className="space-y-2" aria-label="Delivered via the content program">
-      <h4 className="font-semibold">Delivered via the content program <span className="font-normal text-muted">· in the client&rsquo;s portal, nothing to do</span></h4>
-      {rows.map((r) => <PortalDeliveredRow key={r.submissionId} r={r} />)}
-    </section>
-  );
-}
-
-const quietBtn = "inline-flex min-h-11 min-w-11 max-w-full items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
-
-function PortalDeliveredRow({ r }: { r: PortalDelivered }) {
-  const [aryeo, setAryeo] = useState(false);
-  return (
-    <div className="min-w-0 rounded-xl border border-border px-3.5 py-2.5">
-      <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm leading-snug">
-        <Link href={`/projects/${r.projectId}`} className="font-semibold hover:text-brand">{r.clientName}</Link>
-        <span className="text-muted">· {r.monthKey ? monthName(r.monthKey) : "Month link unverified"}</span>
-        <span className="min-w-0 font-medium">· {r.topicTitle ?? r.cutLabel}</span>
-        <span className="rounded bg-success/15 px-1.5 py-0.5 text-ui-status font-semibold text-success">In the portal</span>
-      </div>
-      <p className="mt-1 text-sm text-muted"><span className="font-medium text-foreground">{r.cutLabel} · version {r.round}</span></p>
-      <p className="mt-1 text-sm text-foreground/85">
-        Delivered via the content program {etDateTime(new Date(r.deliveredAtISO))}.
-        {r.waitingForSignUp ? ` It's waiting in ${r.clientName}'s portal for their review until they sign up.` : ` ${r.clientName} can review it in their portal now.`}
-      </p>
-      {aryeo ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2" aria-label="Upload to Aryeo">
-          {r.file ? <DownloadFile href={r.file.downloadHref} taken={Boolean(r.downloadedAtISO)} /> : <span className="text-sm text-warning">The hub has no copy of this file to download. Open the job to find it.</span>}
-          {r.aryeoUrl
-            ? <a href={r.aryeoUrl} target="_blank" rel="noreferrer" title={r.aryeoTitle} className={quietBtn}><ExternalLink className="size-3.5" /> Aryeo listing</a>
-            : <span className="text-sm text-warning"><Link href={`/projects/${r.projectId}`} className="underline underline-offset-2 hover:text-brand">No Aryeo listing is linked to this job.</Link> Open the job and press Refresh from Aryeo.</span>}
-        </div>
-      ) : (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => setAryeo(true)} className={quietBtn}>
-            <UploadCloud className="size-3.5" /> Upload to Aryeo (optional)
-          </button>
-        </div>
-      )}
     </div>
   );
 }

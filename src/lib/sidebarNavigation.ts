@@ -1,6 +1,7 @@
 /** Presentation groups for destinations that Sidebar has already authorized. */
 const SIDEBAR_GROUPS = [
-  { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/tasks", "/schedule", "/communications"] },
+  // "/ops/checklist" is Your list (Oct 21 2026): first under More → Lists.
+  { id: "daily", title: "Daily work", frequent: true, paths: ["/", "/ops/checklist", "/tasks", "/schedule", "/communications"] },
   // Oct 19 2026: photo delivery and the Shoots board (owner and office). The
   // office's own logins see these as doors of the six-door menu below.
   { id: "operations", title: "Operations", frequent: true, paths: ["/jobs", "/ops/photo-delivery", "/day"] },
@@ -67,7 +68,7 @@ export function officeMenuDestinations<T extends Destination & { label: string }
   // More keeps the usual groups (Jordan: "the menu should be organized still
   // when you click more"): the same headings, in the same order, inside the fold.
   // What is left of "Daily work" and "Operations" once the six doors are out
-  // (Tasks, My Day) reads as one "Lists" heading, first.
+  // (Your list, Tasks, My Day) reads as one "Lists" heading, first.
   const grouped = groupSidebarDestinations(items.filter((item) => !isPrimary(item)), pathname);
   const lists = grouped.filter((g) => g.id === "daily" || g.id === "operations").flatMap((g) => g.items);
   const restGroups = [

@@ -402,12 +402,12 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                     />
                     <span className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/30 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
                     {alreadyFlagged && (
-                      <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-0.5 rounded bg-warning px-1 py-0.5 text-[10px] font-semibold text-white"><Flag className="size-2.5" /> flagged</span>
+                      <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-0.5 rounded bg-warning-action px-1 py-0.5 text-[10px] font-semibold text-white"><Flag className="size-2.5" /> flagged</span>
                     )}
                     {verdict && (
                       <span className={cn(
                         "absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-white",
-                        verdict === "APPROVED" ? "bg-success" : "bg-brand-action",
+                        verdict === "APPROVED" ? "bg-success-action" : "bg-brand-action",
                       )}>
                         {verdict === "APPROVED" ? <Check className="size-2.5" /> : <Pencil className="size-2.5" />}
                         {verdict === "APPROVED" ? "approved" : "needs work"}
@@ -502,7 +502,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                 {vVerdict && (
                   <span className={cn(
                     "absolute left-1.5 top-1.5 z-10 inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-white",
-                    vVerdict === "APPROVED" ? "bg-success" : "bg-brand-action",
+                    vVerdict === "APPROVED" ? "bg-success-action" : "bg-brand-action",
                   )}>
                     {vVerdict === "APPROVED" ? <Check className="size-2.5" /> : <Pencil className="size-2.5" />}
                     {vVerdict === "APPROVED" ? "approved" : "needs work"}
@@ -554,7 +554,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                     onClick={() => toggleVerdict(lbAssetUrl, "APPROVED")}
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium",
-                      lbVerdict === "APPROVED" ? "bg-success text-white" : "bg-white/10 text-white hover:bg-white/20",
+                      lbVerdict === "APPROVED" ? "bg-success-action text-white" : "bg-white/10 text-white hover:bg-white/20",
                     )}
                   >
                     <Check className="size-4" /> {lbVerdict === "APPROVED" ? "Approved" : "Approve"}
@@ -575,7 +575,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                   onClick={() => { setLbPanel((v) => !v); setLbMsg(null); }}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium",
-                    lbPanel ? "bg-warning text-white" : currentFlagged ? "bg-warning/25 text-warning ring-1 ring-warning/40" : "bg-white/10 text-white hover:bg-white/20",
+                    lbPanel ? "bg-warning-action text-white" : currentFlagged ? "bg-warning/25 text-warning ring-1 ring-warning/40" : "bg-white/10 text-white hover:bg-white/20",
                   )}
                 >
                   <Flag className="size-4" /> {currentFlagged ? "Flagged" : "Flag"}
@@ -658,7 +658,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                       onClick={() => toggleTag(t)}
                       className={cn(
                         "rounded-full border px-2.5 py-1 text-xs font-medium",
-                        lbTags.has(t) ? "border-warning bg-warning text-white" : "border-border bg-surface hover:bg-surface-2",
+                        lbTags.has(t) ? "border-warning-action bg-warning-action text-white" : "border-border bg-surface hover:bg-surface-2",
                       )}
                     >
                       {t}
@@ -676,7 +676,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                   <button
                     onClick={submitLbFlag}
                     disabled={busy || (lbTags.size === 0 && !lbNote.trim())}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-warning px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-warning-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                   >
                     {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Flag className="size-3.5" />} Flag for Kyle (24h)
                   </button>

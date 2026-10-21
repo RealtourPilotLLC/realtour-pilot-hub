@@ -28,7 +28,7 @@ export function PayBonusButton({ memberId, name, amount, quarter }: {
             router.refresh();
           })
         }
-        className="inline-flex items-center gap-1 rounded-lg bg-success px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
+        className="inline-flex items-center gap-1 rounded-lg bg-success-action px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-3 animate-spin" /> : <Trophy className="size-3" />} Confirm {m} to {name}
       </button>

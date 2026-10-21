@@ -503,102 +503,9 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
   return tasks.map((t) => mapTask(t, startToday));
 }
 
-// ---------------------------------------------------------------------------
-// Stuck jobs: project-level lateness, past deliveryDue, stuck in revision 2+
-// days (same threshold as getProactiveFlags' stale-revision branch), or shot
-// 48h+ ago and still not delivered. No screen renders it any more: the
-// dashboard's Stuck jobs panel was removed (Oct 20 2026, audit A19), and only
-// its drill (c14-home-windows) calls it.
-// ---------------------------------------------------------------------------
-export type StuckJob = {
-  id: string;
-  title: string;
-  reason: string; // "3 days late" · "revision stuck 4d" · "shot 3d ago, not delivered"
-  stage: string; // pipeline status (SHOT / EDITING / REVISION / ...)
-  daysLate: number; // whole days behind, for sorting/AC display
-};
-
-export async function getStuckJobs(opts: { excludeClientIds?: string[] } = {}): Promise<StuckJob[]> {
-  const now = new Date();
-  const DAY = 86400000;
-  const projects = await prisma.project.findMany({
-    where: {
-      ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}),
-      // "Active" = anything not finished — cancelled/delivered can't be stuck.
-      // Neither can a job that was never shot (BOOKED, no shoot date) nor one
-      // parked by decision (ON_HOLD): both headlined Kyle's fire panel as
-      // "51 / 39 days late" off a deliveryDue left behind by a cancelled slot
-      // (audit5 F2, Sep 8 2026 — 2705 Graystone Rd, 56 Hillview Rd).
-      status: { notIn: ["CANCELLED", "DELIVERED", "ON_HOLD", "BOOKED"] },
-      OR: [
-        // Past the delivery promise — which only counts once the shoot has
-        // happened and while nothing has gone out. A job delivered on time
-        // and then reopened for a revision is "revision stuck Nd" (next
-        // branch), not "N days late": 750 E Marshall St read "4 days late"
-        // a day after the client had the gallery (audit5 skeptic).
-        // …against the promise the job was SOLD under where one is pinned
-        // (Sep 18). Both columns are matched here because the pin and the
-        // recomputed column can now differ: the row is filtered again in JS
-        // below on whichever of the two actually governs.
-        { deliveryDue: { lt: now }, shootDate: { lte: now }, deliveredAt: null },
-        { promisedDueAt: { lt: now }, shootDate: { lte: now }, deliveredAt: null },
-        // Stale revision — 2+ days without closure (a fresh revision is step 1
-        // on /today, not a fire; flagging at minute zero triple-listed them).
-        { status: "REVISION", revisionRequestedAt: { lte: new Date(now.getTime() - 2 * DAY) } },
-        // Shot 48h+ ago and the content still hasn't gone out.
-        { status: { in: ["SHOT", "EDITING"] }, deliveredAt: null, shootDate: { lt: new Date(now.getTime() - 2 * DAY) } },
-      ],
-    },
-    select: {
-      id: true, title: true, status: true,
-      deliveryDue: true, promisedDueAt: true, revisionRequestedAt: true, shootDate: true, deliveredAt: true,
-    },
-  });
-
-  // A project can match several reasons — dedupe to ONE row with the WORST
-  // reason (most days gone) so the row reads as bad as reality.
-  const jobs = projects
-    .map((p) => {
-      const candidates: { reason: string; days: number }[] = [];
-      // Mirrors the deliveryDue branch of the WHERE above — a row that matched
-      // on the revision branch must not pick up a "days late" reason here.
-      // The pinned promise governs when it exists: "3 days late" has to be
-      // counted from the date the client was actually given, not from one a
-      // settings change produced this morning.
-      // …and never a pin left behind by a visit that was RESCHEDULED (review,
-      // Sep 18). This read the raw column while the delivery board, the QC
-      // card, the owner's dial and the photographer bonus all went through
-      // livePromise, so a rebooked job could have headlined Kyle's fire panel
-      // as "N days late" against a deadline quoted for the visit before —
-      // which is the same 2705 Graystone / 56 Hillview failure the WHERE
-      // clause above already guards against from the other side. The two
-      // readings now agree by construction.
-      const promisedDue = pinnedPromise(p) ?? p.deliveryDue;
-      if (promisedDue && promisedDue < now && !p.deliveredAt && p.shootDate && p.shootDate <= now) {
-        const d = (now.getTime() - promisedDue.getTime()) / DAY;
-        const whole = Math.floor(d);
-        candidates.push({
-          // Under a day late still deserves the panel — say it in hours.
-          reason: whole >= 1 ? `${whole} day${whole === 1 ? "" : "s"} late` : `${Math.max(1, Math.floor(d * 24))}h late`,
-          days: d,
-        });
-      }
-      if (p.status === "REVISION" && p.revisionRequestedAt && now.getTime() - p.revisionRequestedAt.getTime() >= 2 * DAY) {
-        const d = (now.getTime() - p.revisionRequestedAt.getTime()) / DAY;
-        candidates.push({ reason: `revision stuck ${Math.floor(d)}d`, days: d });
-      }
-      if ((p.status === "SHOT" || p.status === "EDITING") && !p.deliveredAt && p.shootDate && now.getTime() - p.shootDate.getTime() >= 2 * DAY) {
-        const d = (now.getTime() - p.shootDate.getTime()) / DAY;
-        candidates.push({ reason: `shot ${Math.floor(d)}d ago, not delivered`, days: d });
-      }
-      const worst = candidates.sort((a, b) => b.days - a.days)[0];
-      return worst ? { id: p.id, title: p.title, reason: worst.reason, stage: p.status as string, days: worst.days } : null;
-    })
-    .filter((j): j is NonNullable<typeof j> => j !== null)
-    .sort((a, b) => b.days - a.days); // worst fires first (sorted on raw days)
-
-  return jobs.map(({ days, ...j }) => ({ ...j, daysLate: Math.floor(days) }));
-}
+// Stuck jobs (getStuckJobs) were deleted on Oct 21 2026 (Jordan's decisions):
+// the dashboard's Stuck jobs panel went on Oct 20 (audit A19) and only a drill
+// still called it. Late jobs live on the Shoots board and the Video Review Room.
 
 // ---------------------------------------------------------------------------
 // Owner pulse — "is the machine healthy?" in four numbers: on-time delivery %,
@@ -849,9 +756,9 @@ export async function getOwnerPulse(opts: TaskClientScope = {}): Promise<OwnerPu
 //     jobs the /editing "Video SLA" panel ranks. Aggregated here to ONE pair of
 //     counts — how many videos are in editing, how many are past their delivery
 //     window — so the owner sees the editing-bench heat as a single line without
-//     the full table. NOTE these jobs mostly ALSO appear in getStuckJobs (shot
-//     48h+ undelivered / past deliveryDue), so we never re-list them as fires —
-//     we show a compact roll-up line that links into the /editing queue.
+//     the full table. These jobs are already on the Shoots board as late, so
+//     they are never re-listed as fires — a compact roll-up line links into
+//     the /editing queue.
 //   • QC quality: revision-after-delivery rate + misses per pass, over the QC
 //     passes A HUMAN ACTUALLY WORKED. See ownerQcDial below for why that
 //     qualifier is the whole point. qcPasses === 0 → the page shows its
@@ -1464,9 +1371,12 @@ export async function getDeliveryHistory(days = 45, opts: TaskClientScope & Hist
 }
 
 // ---------------------------------------------------------------------------
-// Proactive flags — "what to worry about" without being asked. Surfaces the
-// STRATEGIC risks the tactical Needs-Attention panel misses: aging receivables,
-// VIP clients gone quiet, and stale revisions. Rule-based + fast.
+// Proactive flags: the shape the old owner's radar used (aging receivables,
+// VIP clients gone quiet, stale revisions). The radar itself
+// (getProactiveFlags) was deleted on Oct 21 2026: no screen had shown it since
+// the dashboard's money strip took getTopAr (audit A4), and only a drill
+// called it. The type stays because lib/deliveryExceptions shapes its rows
+// on it.
 // ---------------------------------------------------------------------------
 export type ProactiveFlag = {
   id: string;
@@ -1478,9 +1388,9 @@ export type ProactiveFlag = {
 };
 
 /** The single largest unpaid balance, by client, for the owner's money strip
- *  on the dashboard. The strip used to run the whole getProactiveFlags below
- *  (delivery exceptions, the VIP comms groupBy, stale revisions) and render
- *  none of it, only this one figure (Oct 20 2026, audit A4). Same grouping. */
+ *  on the dashboard. The strip used to run the whole radar (delivery
+ *  exceptions, the VIP comms groupBy, stale revisions) and render none of it,
+ *  only this one figure (Oct 20 2026, audit A4). */
 export async function getTopAr(opts: { excludeClientIds?: string[] } = {}): Promise<{ name: string; total: number } | null> {
   const { rows } = await getBillingRows(opts);
   const byClient = new Map<string, { name: string; total: number }>();
@@ -1491,124 +1401,6 @@ export async function getTopAr(opts: { excludeClientIds?: string[] } = {}): Prom
     else byClient.set(key, { name: r.clientName ?? "Unknown", total: r.outstanding });
   }
   return [...byClient.values()].sort((a, b) => b.total - a.total)[0] ?? null;
-}
-
-// Returns the top ≤3 freshest flags (not a 12-row wall — freshness is the MVP
-// mechanism, do not raise the cap back up) plus the single largest AR balance
-// for the owner's money strip (computed here so /billing isn't queried twice).
-export async function getProactiveFlags(opts: { excludeClientIds?: string[] } = {}): Promise<{
-  flags: ProactiveFlag[];
-  topAr: { name: string; total: number } | null;
-}> {
-  const flags: ProactiveFlag[] = [];
-  let topAr: { name: string; total: number } | null = null;
-  const now = Date.now();
-  const daysSince = (d: Date | string | null | undefined): number | null =>
-    d ? Math.floor((now - new Date(d).getTime()) / 86400000) : null;
-  const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
-
-  // 0) A DELIVERY NOBODY CAN CONFIRM. First, and ahead of money, because it is
-  // the only flag here about a client who may be waiting on something they paid
-  // for and never got. The reconciliation writes these against live Aryeo reads
-  // — never the cached evidence blob, which is stale on delivered jobs and was
-  // the whole Sep 17 wrong answer — and it only ever raises a flag: it never
-  // changes a status, never re-sends a file and never contacts anybody. Clearing
-  // one is a person's job.
-  try {
-    const { deliveryExceptionFlags } = await import("@/lib/deliveryExceptions");
-    for (const f of await deliveryExceptionFlags(2, opts)) flags.push(f);
-  } catch {
-    /* a flag source that cannot be read must not take the panel down */
-  }
-
-  // 1) Aging accounts receivable — group delivered+unpaid jobs by client.
-  try {
-    const { rows } = await getBillingRows(opts);
-    const byClient = new Map<string, { name: string; total: number; oldest: number; count: number }>();
-    for (const r of rows) {
-      const age = daysSince(r.deliveredAt) ?? 0;
-      const key = r.clientName ?? r.id;
-      const cur = byClient.get(key);
-      if (!cur) byClient.set(key, { name: r.clientName ?? "Unknown", total: r.outstanding, oldest: age, count: 1 });
-      else { cur.total += r.outstanding; cur.oldest = Math.max(cur.oldest, age); cur.count += 1; }
-    }
-    const balances = [...byClient.values()];
-    const biggest = balances.slice().sort((a, b) => b.total - a.total)[0];
-    if (biggest) topAr = { name: biggest.name, total: biggest.total };
-    // FRESH risk first (30-60d), not the same ancient zombie balance headlining
-    // every day — those are already visible (and nudgeable) on /billing.
-    const aged = balances.filter((c) => c.oldest >= 30).sort((a, b) => a.oldest - b.oldest).slice(0, 5);
-    for (const c of aged) {
-      flags.push({
-        id: `ar-${c.name}`,
-        severity: c.oldest >= 60 ? "high" : "medium",
-        kind: "ar",
-        title: `${c.name} owes ${money(c.total)}`,
-        detail: `${c.count} delivered job${c.count > 1 ? "s" : ""} unpaid · oldest ${c.oldest} days`,
-        href: "/billing",
-      });
-    }
-  } catch { /* non-fatal */ }
-
-  // 2) VIP / high-volume clients who have gone quiet (no comms in 21+ days).
-  try {
-    const vips = await prisma.client.findMany({
-      where: { segment: { in: ["vip", "heavy"] }, ...(opts.excludeClientIds?.length ? { id: { notIn: opts.excludeClientIds } } : {}) },
-      select: { id: true, name: true, segment: true },
-      take: 60,
-    });
-    if (vips.length) {
-      const ids = vips.map((v) => v.id);
-      const lastComm = await prisma.commLog.groupBy({ by: ["clientId"], where: { clientId: { in: ids } }, _max: { occurredAt: true } });
-      const lastMap = new Map(lastComm.map((l) => [l.clientId, l._max.occurredAt]));
-      const quiet = vips
-        .map((v) => ({ v, ago: daysSince(lastMap.get(v.id) ?? null) }))
-        .filter((x) => x.ago === null || x.ago >= 21)
-        // Freshest quietness first — a VIP who JUST crossed 21 days is a save;
-        // one silent for a year is a churn statistic.
-        .sort((a, b) => (a.ago ?? 99999) - (b.ago ?? 99999))
-        .slice(0, 4);
-      for (const q of quiet) {
-        flags.push({
-          id: `vip-${q.v.id}`,
-          severity: (q.ago ?? 999) >= 45 ? "high" : "medium",
-          kind: "vip-quiet",
-          title: `${q.v.name} has gone quiet`,
-          detail: q.ago === null
-            ? `${(q.v.segment ?? "vip").toUpperCase()} client · no comms on record`
-            : `${(q.v.segment ?? "vip").toUpperCase()} client · no contact in ${q.ago} days`,
-          href: `/clients/${q.v.id}`,
-        });
-      }
-    }
-  } catch { /* non-fatal */ }
-
-  // 3) STALE revisions only — a revision the team is actively working is not a
-  // risk (it's step 1 on /today); it becomes one after 2+ days without closure.
-  // (Flagging from minute zero triple-listed every fresh revision across the
-  // dashboard.)
-  try {
-    const revs = await prisma.project.findMany({
-      where: { status: "REVISION", revisionRequestedAt: { lte: new Date(now - 2 * 86400000) }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
-      select: { id: true, title: true, revisionRequestedAt: true },
-      orderBy: { revisionRequestedAt: "desc" },
-      take: 5,
-    });
-    for (const r of revs) {
-      const ago = daysSince(r.revisionRequestedAt);
-      flags.push({
-        id: `rev-${r.id}`,
-        severity: (ago ?? 0) >= 3 ? "high" : "medium",
-        kind: "revision",
-        title: `${r.title.split(",")[0]} is stuck in revision`,
-        detail: ago != null ? `Requested ${ago} day${ago === 1 ? "" : "s"} ago` : "Revision in progress",
-        href: `/projects/${r.id}`,
-      });
-    }
-  } catch { /* non-fatal */ }
-
-  const rank = { high: 0, medium: 1, low: 2 };
-  return { flags: flags.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 3), topAr };
 }
 
 // ---------------------------------------------------------------------------

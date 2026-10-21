@@ -339,7 +339,7 @@ export function CutReviewPanel({
         <p className="mt-2 text-sm">{approvalWarning}</p>
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button type="button" data-modal-initial-focus className="min-h-11 rounded-lg border border-border px-4 text-sm font-medium" onClick={() => setApprovalWarning(null)}>Cancel</button>
-          <button type="button" disabled={pending || needsReload || !!closing} className="min-h-11 rounded-lg bg-success px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => {
+          <button type="button" disabled={pending || needsReload || !!closing} className="min-h-11 rounded-lg bg-success-action px-4 text-sm font-semibold text-white disabled:opacity-50" onClick={() => {
             setApprovalWarning(null);
             decide("approve", () => approveCut(submission.id, { verifyIssueIds: verifiedFixIds(fixesToCheck, notFixed), approveUncheckedFixes: true }));
           }}>Approve anyway</button>
@@ -466,7 +466,7 @@ export function CutReviewPanel({
               onClick={requestApproval}
               disabled={pending || needsReload}
               title={notFixed.size > 0 ? "Review the missing ticks before approving anyway" : undefined}
-              className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-success px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 sm:flex-none"
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-success-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50 sm:flex-none"
             >
               <ThumbsUp className="size-4" /> Approve cut
             </button>

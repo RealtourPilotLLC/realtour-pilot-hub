@@ -133,7 +133,7 @@ async function main() {
 
     const { ReadyToSendCard } = await import("../../src/components/ops/ReadyToSendCard");
     const ready: ReadyVideo = {
-      submissionId: props.submissionId, projectId: "fixture-project", monthlyProgram: true, monthKey: "2026-10", topicTitle: "Exact topic", monthlyPortalReleased: true, monthlyPortalAccess: true, monthlyFinalCheckRecorded: false,
+      submissionId: props.submissionId, projectId: "fixture-project", monthlyProgram: true, monthKey: "2026-10", topicTitle: "Exact topic", monthlyPortalReleased: true, monthlyPortalAccess: true,
       topazJobId: null, street: props.street, clientName: "Fixture Grove Client", clientAvatarUrl: null, cutLabel: "Output 2", round: 3, approvedAtISO: "2026-10-01T15:00:00Z", approvedBy: "James", waitingHours: 1, overdue: false,
       file: { source: "editor-dropbox", fileName: "exact-v3.mp4", downloadHref: "/api/review/cut/fixture-exact-cut/final", watchHref: "/api/review/cut/fixture-exact-cut/stream", dropboxPath: "/fixture/final/exact-v3.mp4", dropboxUrl: "https://www.dropbox.com/home/fixture?preview=exact-v3.mp4", says: "Exact approved file", why: null },
       alsoOnFile: [], aryeoUrl: "https://example.test/listing", aryeoTitle: "Listing", reviewHref: "/review/fixture-project?cut=fixture-exact-cut", downloadedAtISO: null, downloadedBy: null, downloadedHoursAgo: null, listing: null,

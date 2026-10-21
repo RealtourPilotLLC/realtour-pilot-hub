@@ -344,7 +344,7 @@ function Item({
         title={canTick ? (isDone ? "Reopen this one" : "Mark done") : "Only the editor on this job can tick these off"}
         className={cn(
           "mt-0.5 grid size-4 shrink-0 place-items-center rounded border transition-colors",
-          isDone ? "border-success bg-success text-white" : "border-border bg-surface-2 hover:border-brand",
+          isDone ? "border-success-action bg-success-action text-white" : "border-border bg-surface-2 hover:border-brand",
           !canTick && "cursor-not-allowed opacity-60",
         )}
       >

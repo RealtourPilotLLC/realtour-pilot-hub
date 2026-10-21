@@ -62,7 +62,7 @@ export function SavingsPlan({ items }: { items: SavingsItemView[] }) {
               <button
                 disabled={pending}
                 onClick={() => set(i.id, i.status === "DONE" ? "PENDING" : "DONE")}
-                className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border ${i.status === "DONE" ? "border-success bg-success text-white" : "border-border bg-surface-2 hover:border-success"}`}
+                className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border ${i.status === "DONE" ? "border-success-action bg-success-action text-white" : "border-border bg-surface-2 hover:border-success"}`}
                 title={i.status === "DONE" ? "Mark not done" : "Mark done"}
               >
                 {i.status === "DONE" && <Check className="size-3.5" />}

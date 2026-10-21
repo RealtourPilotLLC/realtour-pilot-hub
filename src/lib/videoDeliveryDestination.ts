@@ -74,6 +74,6 @@ export async function chooseAryeoDelivery(id: string, fingerprint: string, actor
       detail: JSON.stringify({ submissionId: id, destinationFingerprint: fingerprint, sourceFingerprint: sourceFingerprint(cut), listingId: cut.project.aryeoListingId,
         destination: "aryeo-listing", actorId: actor.id, chosenAt: new Date().toISOString() }) } });
     await tx.activity.create({ data: { projectId: cut.projectId, type: "SYSTEM", body: `Branding video v${cut.round}: ${actor.name} chose Aryeo instead of portal delivery. The final Dropbox backup is retained. No upload or client message was sent.`.slice(0, 500) } });
-    return { ok: true, fingerprint, message: "Aryeo selected. Upload this finished version there, then mark it uploaded." };
+    return { ok: true, fingerprint, message: "Aryeo chosen. It's in the Video Review Room's Ready to send: press Upload to Aryeo and send there, or upload it by hand." };
   }, { isolationLevel: "Serializable" });
 }

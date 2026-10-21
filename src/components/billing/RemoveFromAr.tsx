@@ -68,7 +68,7 @@ export function RemoveFromAr({ projectId }: { projectId: string }) {
         <button
           disabled={busy}
           onClick={submit}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 ${paidMode ? "bg-success" : "bg-danger"}`}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 ${paidMode ? "bg-success-action" : "bg-danger"}`}
         >
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : paidMode ? <BadgeCheck className="size-3.5" /> : <Trash2 className="size-3.5" />}
           {paidMode ? "Mark paid" : "Remove"}

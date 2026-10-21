@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { photoDeliverySettings, type AryeoPushMode } from "./settings";
 import { logJobEvent } from "./jobState";
+import { closeMediaCheckForPhotos } from "./mediaCheck";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
@@ -304,15 +305,20 @@ export async function approveJob(jobId: string, by: string, opts: { deliver: boo
     if (job.stage !== "DELIVERING") {
       const { deliveryGate } = await import("./delivery");
       const gate = await deliveryGate(jobId);
-      if (!gate.canDeliver) return { ok: false, started: false, message: gate.blockedForOverride ?? `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
+      if (!gate.canDeliver) return { ok: false, started: false, message: gate.blockedForOverride ?? `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok && !c.advisory).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
     }
     if (run && !run.deliveredAt && (run.state === "WAITING" || run.state === "DONE") && !(await changedSince(jobId, run))) {
       const r = await approvePushDelivery(jobId, by);
+      if (r.ok) await closeMediaCheckForPhotos(jobId, { by, reason: "Photos approved in Photo Delivery", human: true });
       return { ok: r.ok, started: r.ok, message: r.message };
     }
   }
   const r = await requestPush(jobId, { by, then: opts.deliver ? "deliver" : "stop", anyway: opts.anyway, approvedBy: by });
-  if (r.started) await logJobEvent(jobId, by, opts.deliver ? "approved: deliver" : "approved: upload to Aryeo");
+  if (r.started) {
+    await logJobEvent(jobId, by, opts.deliver ? "approved: deliver" : "approved: upload to Aryeo");
+    // Kyle checked the photos here: the shoot's media check closes with them (audit C11, Oct 21 2026).
+    await closeMediaCheckForPhotos(jobId, { by, reason: "Photos approved in Photo Delivery", human: true });
+  }
   return r;
 }
 
@@ -549,7 +555,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
         const gate = await deliveryGate(jobId);
         if (!r.approvedBy && !gate.passed) {
           r.state = "WAITING";
-          r.note = `Not delivered by itself: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400);
+          r.note = `Not delivered by itself: the checklist has open items (${gate.checks.filter((c) => !c.ok && !c.advisory).map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400);
           return r;
         }
         // Audit C3 (Oct 20 2026): the upload takes several passes, so a client
@@ -711,7 +717,10 @@ export async function drivePushes(opts: { budgetMs?: number } = {}): Promise<{ s
       const r = await requestPush(j.id, { by: "aryeo-push", then: "deliver", approvedBy: cur?.approvedBy ?? null }).catch(() => null);
       if (r?.started) {
         started.push(j.id);
-        if (j.stage === "READY" && !cur) await logJobEvent(j.id, "aryeo-push", "same-day order, every check passes: approved by the hub, uploading and delivering");
+        if (j.stage === "READY" && !cur) {
+          await logJobEvent(j.id, "aryeo-push", "same-day order, every check passes: approved by the hub, uploading and delivering");
+          await closeMediaCheckForPhotos(j.id, { by: "the hub", reason: "Photos approved in Photo Delivery (same-day order, every check passed)", human: false });
+        }
       } else if (r && !r.ok) await noteRefusal(j.id, r.message);
     }
     // A run a person approved that stopped on the hub's Aryeo login: again once its wait is over.

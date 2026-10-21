@@ -3,6 +3,7 @@
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker, portFree } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 import { createRequire } from "node:module";
 installNextStubs();
 const fence = fenceFetch(() => null);
@@ -22,9 +23,12 @@ async function main() {
     const uploads = await import("@/lib/deliveryUploads");
     const grouped = await import("@/lib/projectDelivery");
     const { readyToSend, clientNotToldYet } = await import("@/lib/readyToSend");
+    const route = await import("@/app/api/ops/video-destination/route");
+    const { DeliveryFollowUps } = await import("@/components/ops/ReadyToSendCard");
     const shell = await buildContentMonth(prisma, { name: "Branding destination TEST", package: "Starter" });
     const projectId = shell.projectId!, listingId = "isolated-branding-listing";
     const owner = await prisma.appUser.create({ data: { name: "Owner fixture", email: "branding-owner@fixture.test", role: "OWNER", status: "ACTIVE", passwordHash: "unused" } });
+    const editor = await prisma.appUser.create({ data: { name: "Editor fixture", email: "branding-editor@fixture.test", role: "EDITOR", status: "ACTIVE", passwordHash: "unused" } });
     const actor = { id: owner.id, name: owner.name! };
     const fp = async (id: string) => sourceFingerprint((await loadCut(id))!)!;
     const choiceFp = async (id: string) => destination.destinationFingerprint((await loadCut(id))!);
@@ -48,14 +52,36 @@ async function main() {
     await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { videoStyle: "standard_cinematic" } });
     c.ok("non-branding video does not gain the monthly Aryeo exception", !(await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), actor)).ok);
     await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { videoStyle: "personal_branding" } });
-    // Oct 20 2026 (audit H13): the office API (/api/ops/video-destination)
-    // and its "Upload to Aryeo instead?" button were deleted; no screen has
-    // offered the choice since Oct 13 (branding goes through the portal). The
-    // choice is still read everywhere, so it is made here through the domain
-    // call the API wrapped, and everything after it is checked as before.
+    // Oct 21 2026 (Jordan: branding videos "possibly sometimes" go to Aryeo):
+    // the office API (/api/ops/video-destination) and its "Upload to Aryeo
+    // instead" button are back, on the Video Review Room's portal row.
+    const portalRows = async () => (await readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false })).ready.filter((v) => v.deliveryDestination === "client-portal");
+    const roomHtml = async () => renderToStaticMarkup(createElement(DeliveryFollowUps, { board: { needsFinishing: [], notTold: [], noticeIncidents: [], followUpChecks: { needsFinishing: "now", notTold: "now" }, noticeIncidentCheck: "now", portal: await portalRows() } }));
+    const offered = await roomHtml();
+    c.ok("the room's portal row for a branding video offers Upload to Aryeo instead", (offered.match(/Upload to Aryeo instead/g) ?? []).length === 2 && offered.includes("Portal delivery needs attention"));
+    const post = (id = first.id, f = destinationId, origin = "http://fixture.local") => route.POST(new Request("http://fixture.local/api/ops/video-destination", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify({ submissionId: id, fingerprint: f }) }));
+    c.ok("unsigned destination change is denied", (await post()).status === 403);
+    await setSession({ uid: editor.id, email: editor.email, role: editor.role });
+    c.ok("editor cannot change delivery destination", (await post()).status === 403);
+    await setSession({ uid: owner.id, email: owner.email, role: owner.role, actingAs: editor.id });
+    c.ok("view-as mode cannot change delivery destination", (await post()).status === 403);
     await setSession({ uid: owner.id, email: owner.email, role: owner.role });
-    const saved = await destination.chooseAryeoDelivery(first.id, destinationId, actor);
-    c.ok("the domain call records the exact choice once", saved.ok && await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id } }) === 1);
+    c.ok("cross-origin choice is denied", (await post(first.id, destinationId, "http://other.local")).status === 403);
+    c.ok("no choice was written by a refused press", await prisma.auditLog.count({ where: { action: "video_delivery_destination" } }) === 0);
+    const saved = await post();
+    c.ok("actual office API confirms exact committed choice in response headers", saved.status === 200 && saved.headers.get("Cache-Control") === "private, no-store" && !!saved.headers.get("X-RTP-Video-Destination"));
+    const get = await route.GET(new Request(`http://fixture.local/api/ops/video-destination?submissionId=${first.id}&fingerprint=${destinationId}`));
+    c.ok("read-only recovery confirms the saved exact choice", (await get.json()).ok && await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id } }) === 1);
+    // The press switches the destination and nothing else: no upload run, no receipt, no send.
+    c.ok("the press starts nothing: no Aryeo upload run, no upload receipt, nothing sent", await prisma.appSetting.count({ where: { key: { startsWith: "video_aryeo_push:" } } }) === 0 && !(await uploads.uploadReceiptStatus(first.id, fingerprint)).recorded && !(await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: first.id } })).sentToClientAt);
+    c.ok("the switched video leaves the portal row; its sibling keeps the offer", !(await portalRows()).some((v) => v.submissionId === first.id) && ((await roomHtml()).match(/Upload to Aryeo instead/g) ?? []).length === 1);
+    const chosenRow = (await readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false })).ready.find((v) => v.submissionId === first.id);
+    c.ok("the switched video gets the room's Upload to Aryeo and send (a person's press, never by itself)", chosenRow?.deliveryDestination === "aryeo-listing" && chosenRow.push?.canStart === true && !chosenRow.push.state && !chosenRow.push.handledByHub, JSON.stringify(chosenRow?.push));
+    // The Video Review Room's own board (test clients are hidden there, so the fixture is renamed for this read).
+    await prisma.client.update({ where: { id: shell.clientId }, data: { name: "Branding destination fixture" } });
+    const room = await (await import("@/lib/videoDelivery")).videoDeliveryBoard({ fresh: true, followUps: true });
+    await prisma.client.update({ where: { id: shell.clientId }, data: { name: "Branding destination TEST" } });
+    c.ok("the board puts the switched video in Ready to send and keeps the sibling on the portal row only", room.lanes.sending.some((r) => r.submissionId === first.id) && !Object.values(room.lanes).flat().some((r) => r.submissionId === sibling.id) && !!room.followUps?.portal.some((v) => v.submissionId === sibling.id), JSON.stringify(Object.fromEntries(Object.entries(room.lanes).map(([k, v]) => [k, v.map((r) => r.key)]))));
     await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), { ...actor, name: "Later fixture" });
     c.ok("retry preserves first choice attribution and activity", await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id, actor: actor.name } }) === 1 && await prisma.activity.count({ where: { projectId, body: { contains: "chose Aryeo" } } }) === 1);
     const selected = await loadCut(first.id);
@@ -100,6 +126,10 @@ async function main() {
     const processingChoice = await choiceFp(processing.id);
     const processingBoard = await readyToSend({ projectId, recordFollowUpHealth: false, includeNoticeIncidents: false });
     c.ok("processing branding row offers a choice before automatic portal publication", processingBoard.rendering.find(r => r.submissionId === processing.id)?.canChooseAryeo === true);
+    // Oct 21 2026: the room shows it beside "Finishing the 1080p pass", with the same button.
+    const { PortalFinishing } = await import("@/components/ops/ReadyToSendCard");
+    const finishingHtml = renderToStaticMarkup(createElement(PortalFinishing, { rows: processingBoard.rendering.filter((r) => r.deliveryDestination === "client-portal" && r.canChooseAryeo) }));
+    c.ok("the room lists the branding video still in the 1080p pass with Upload to Aryeo instead", finishingHtml.includes("Going to the client") && (finishingHtml.match(/Upload to Aryeo instead/g) ?? []).length === 1);
     c.ok("choice can be saved while Topaz has no finished file yet", (await destination.chooseAryeoDelivery(processing.id, processingChoice, actor)).ok && await destination.usesAryeoDelivery((await loadCut(processing.id))!));
     await prisma.topazJob.update({ where: { id: processingJob.id }, data: { state: "done", finalPath: "/fixture/branding/05-Final-Video/Branding-3-FINAL (Topaz).mp4", savedAt: new Date(), outputCheck: "verified" } });
     c.ok("Topaz completion preserves destination choice while creating a new byte-bound upload identity", await choiceFp(processing.id) === processingChoice && await destination.usesAryeoDelivery((await loadCut(processing.id))!) && !!await fp(processing.id));

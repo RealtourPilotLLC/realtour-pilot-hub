@@ -58,7 +58,6 @@ async function main() {
     const { prisma } = await import("@/lib/prisma");
     const { setSession } = await import("@/lib/auth/session");
     // Oct 21 2026 (audit wave 2): the final-check server action had no screen left and was deleted; its library records the check here.
-    const { FINAL_CHECK_KEYS, recordListingCheck } = await import("@/lib/finalRendition");
     const { markVideoSentAction } = await import("@/app/ops/actions");
     const { proveListingNow } = await import("@/lib/aryeoDelivery");
     const { setSmartTaskStatus } = await import("@/app/actions");
@@ -142,15 +141,9 @@ async function main() {
         output.currentSubmissionId === cut.id && output.approvedSubmissionId === cut.id);
     };
 
-    c.head("Signed final-file check and manual delivery on a mixed listing");
+    // Oct 21 2026: the manual final-file check was deleted (no screen reached it); the send rests on the upload receipt.
+    c.head("Manual delivery on a mixed listing");
     const manual = await mixedJob("manual");
-    const checked = await recordListingCheck({
-      submissionId: manual.cut.id, mediaId: manual.mediaId, checks: [...FINAL_CHECK_KEYS],
-      metadata: { duration: 62, width: 1920, height: 1080 }, actor: { id: user.id, name: user.name ?? "Kyle Mixed TEST" },
-    });
-    const check = await prisma.finalRenditionCheck.findFirst({ where: { submissionId: manual.cut.id } });
-    c.ok("final-file check records signed staff and the exact video identity on this mixed listing",
-      checked.ok && check?.checkedByUserId === user.id && check.destinationMediaId === manual.mediaId);
     const { recordUploaded } = await import("@/lib/deliveryUploads");
     const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
     await recordUploaded(manual.cut.id, { id: user.id, name: user.name! }, sourceFingerprint((await loadCut(manual.cut.id))!)!);
@@ -210,7 +203,9 @@ async function main() {
     c.ok("photo completion cannot stamp the current video delivered", !cut.sentToClientAt && !output.deliveredAt && !output.sentSubmissionId);
     c.ok("photo completion preserves current and approved video version pointers", output.currentSubmissionId === cut.id && output.approvedSubmissionId === cut.id);
     c.ok("photo completion retains the project revision and outstanding QC", project.status === "REVISION" && project.revisionRequestedAt?.getTime() === askedAt.getTime() && qc.status === "OPEN");
-    c.ok("manual path used fake listing reads and no provider request escaped the fence", reads.manual > 0 && fence.blocked.length === 0);
+    // Oct 21 2026: the manual path no longer reads the listing (its final-file
+    // check was deleted); it rests on the upload receipt alone.
+    c.ok("no provider request escaped the fence", fence.blocked.length === 0);
     c.summary();
   } finally {
     fence.restore();

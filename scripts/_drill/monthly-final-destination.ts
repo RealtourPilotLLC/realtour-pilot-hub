@@ -2,14 +2,13 @@
 // Actual signed monthly final-file actions/routes; isolated Postgres and fake
 // Dropbox/media only. No production records, sends, bookings or activation.
 import { createRequire } from "node:module";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker, portFree } from "./_harness";
 const ORIGINAL = Buffer.from("ORIGINAL exact approved cut bytes"), PROCESSED = Buffer.from("PROCESSED exact portal rendition"), WRONG = Buffer.from("different file at the expected path");
 const contentHash = (bytes: Buffer) => createHash("sha256").update(createHash("sha256").update(bytes).digest()).digest("hex");
 type File = { bytes: Buffer; id: string; rev: string };
 const files = new Map<string, File>(), sources = new Map<string, Buffer>(), calls: { op: string; args: Record<string, string> }[] = [];
 let mode: "complete" | "pending" | "lost" | "wrong" = "complete", jobDone = false, moveFails = false, seq = 0;
-let metadataHook: (() => Promise<void>) | null = null;
 let linkReplacement = false, replaceAfterAck = false;
 const put = (path: string, bytes: Buffer) => files.set(path, { bytes, id: `id:fixture${++seq}`, rev: `rev${seq}` });
 interceptModule((r) => r === "@/lib/integrations/dropbox" || /[\\/]src[\\/]lib[\\/]integrations[\\/]dropbox(\.ts)?$/.test(r), (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, { get(t, k) {
@@ -28,7 +27,6 @@ interceptModule((r) => r === "@/lib/integrations/dropbox" || /[\\/]src[\\/]lib[\
     }
     if (op === "files/save_url/check_job_status") return { ".tag": jobDone ? "complete" : "in_progress" };
     if (op === "files/get_metadata") {
-      const hook = metadataHook; metadataHook = null; if (hook) await hook();
       const f = files.get(args.path); if (!f) return fail("path/not_found");
       return { ".tag": "file", id: f.id, rev: f.rev, content_hash: contentHash(f.bytes), size: f.bytes.length, path_display: args.path };
     }
@@ -69,7 +67,6 @@ async function main() {
     await saveSecret("dropbox", "isolated-refresh-token");
     const { startDropboxCopy, checkDropboxCopy, streamUrlFor } = await import("@/lib/reviewCuts");
     const { monthlyFinalSnapshot, monthlyOwnerAccess } = await import("@/lib/monthlyFinal");
-    const { manualFinalCheckReady, FINAL_CHECK_KEYS, finalChoices, recordFinalCheck, finalCheckReceipt } = await import("@/lib/finalRendition");
     const { GET: finalPreview } = await import("@/app/api/review/cut/[id]/final/route");
     const { GET: reviewOriginal } = await import("@/app/api/review/cut/[id]/stream/route");
     const { markVideoSent, readyToSend } = await import("@/lib/readyToSend");
@@ -80,19 +77,14 @@ async function main() {
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { NextRequest } = createRequire(__filename)("next/server") as typeof import("next/server");
     const kyle = await prisma.appUser.create({ data: { email: "kyle-monthly@example.test", name: "Kyle TEST", role: "ADMIN", status: "ACTIVE" } });
-    // Oct 21 2026 (audit wave 2): the staff final-check server actions
-    // (ops/finalRenditionActions) had no screen left and were deleted. These
-    // drive the library they wrapped, as Kyle, with the same form and answers.
-    const finalFileChoicesAction = (id: string) => finalChoices(id);
-    const readFinalFileCheckReceiptAction = (id: string, attemptId: string) => finalCheckReceipt(id, attemptId, kyle.id);
-    const recordFinalFileCheckAction = async (data: FormData): Promise<{ ok: boolean; message: string; outcome: "confirmed" | "refused" | "unknown" }> => {
-      try {
-        const r = await recordFinalCheck({ submissionId: String(data.get("submissionId") ?? ""), mediaId: String(data.get("mediaId") ?? ""), attemptId: String(data.get("attemptId") ?? ""),
-          checks: FINAL_CHECK_KEYS.filter((k) => data.get(k) === "yes"), metadata: null, actor: { id: kyle.id, name: kyle.name ?? "Office" } });
-        return { ...r, outcome: r.ok ? "confirmed" : "refused" };
-      } catch {
-        return { ok: false, outcome: "unknown", message: "The final-check save is unconfirmed." };
-      }
+    // Oct 21 2026 (Jordan's decisions): the manual final-check flow
+    // (finalChoices, recordFinalCheck, finalCheckReceipt, manualFinalCheckReady)
+    // was deleted: no screen reached it. The exact portal file a person can
+    // play is the snapshot's own preview, read here directly; the attestation
+    // steps went with the flow.
+    const finalFileChoicesAction = async (id: string) => {
+      const s = await monthlyFinalSnapshot(id);
+      return s.ok ? { ok: true, message: "", choices: [{ id: s.fingerprint, url: s.previewUrl }] } : { ok: false, message: s.message, choices: [] as { id: string; url: string }[] };
     };
     const editor = await prisma.appUser.create({ data: { email: "editor-monthly@example.test", name: "Editor TEST", role: "EDITOR", editorKey: "john", status: "ACTIVE" } });
     const owner = await prisma.appUser.create({ data: { email: "owner-monthly@example.test", name: "Owner TEST", role: "OWNER", status: "ACTIVE" } });
@@ -112,7 +104,6 @@ async function main() {
       else await prisma.deliverableOutput.create({ data: { projectId: project.id, deliverableId: d.id, slot, category: "VIDEO", currentSubmissionId: cut.id, approvedSubmissionId: cut.id } });
       return cut;
     };
-    const form = (id: string, choice: string, attemptId = randomUUID()) => { const f = new FormData(); f.set("submissionId", id); f.set("mediaId", choice); f.set("attemptId", attemptId); FINAL_CHECK_KEYS.forEach((key) => f.set(key, "yes")); return f; };
     await setSession({ uid: kyle.id, email: kyle.email, role: kyle.role });
     const prior = await makeCut(1, 1), original = await makeCut(1, 2), sibling = await makeCut(2);
     const oldPath = "/isolated/monthly/05-Final-Video/prior-v1.mp4", siblingPath = "/isolated/monthly/05-Final-Video/sibling-v1.mp4";
@@ -127,14 +118,8 @@ async function main() {
     c.ok("failed prior move preserves historical real path and completion; sibling untouched", old?.finalPath === oldPath && old.completedAt?.getTime() === oldAt.getTime() && files.has(oldPath) && (await prisma.reviewSubmission.findUnique({ where: { id: sibling.id } }))?.finalPath === siblingPath);
     const read = await finalFileChoicesAction(original.id);
     c.ok("monthly final choice targets portal canonical preview with no Aryeo requirement", read.ok && read.choices.length === 1 && read.choices[0].url.includes("/final?f="));
-    c.ok("unattested monthly delivery refused despite release, owner seat and copied path", !(await manualFinalCheckReady(original.id)).ok);
-    const attemptId = randomUUID(), saved = await recordFinalFileCheckAction(form(original.id, read.choices[0].id, attemptId));
-    const checked = await prisma.finalRenditionCheck.findUnique({ where: { id: `final-check:${attemptId}` } });
-    c.ok("actual signed staff monthly attestation binds exact file/access and actor atomically", saved.ok && saved.outcome === "confirmed" && checked?.destination === "client-portal" && checked.checkedByUserId === kyle.id && await prisma.activity.count({ where: { projectId: project.id, body: { startsWith: "Final portal video checked" } } }) === 1);
-    c.ok("exact attempt receipt reconciles response loss without another write", (await readFinalFileCheckReceiptAction(original.id, attemptId)).ok && (await recordFinalFileCheckAction(form(original.id, read.choices[0].id, attemptId))).ok && await prisma.finalRenditionCheck.count({ where: { submissionId: original.id } }) === 1);
-    c.ok("monthly dispatcher accepts checked portal + final Dropbox without listing", (await manualFinalCheckReady(original.id)).ok);
     const board = await readyToSend({ projectId: project.id, recordFollowUpHealth: false, includeNoticeIncidents: false });
-    c.ok("released portal row keeps handoff visible with exact access/check facts instead of seat inference", board.ready.some((r) => r.submissionId === original.id && r.monthlyPortalAccess && r.monthlyFinalCheckRecorded));
+    c.ok("released portal row keeps handoff visible with exact access facts instead of seat inference", board.ready.some((r) => r.submissionId === original.id && r.monthlyPortalAccess));
     const preview = await finalPreview(new NextRequest(`http://fixture.local${read.choices[0].url}`), { params: Promise.resolve({ id: original.id }) });
     c.ok("original final preview streams approved original, with private no-store and no delivery stamp", preview.status === 200 && await preview.text() === ORIGINAL.toString() && preview.headers.get("cache-control")?.includes("no-store") === true && !(await prisma.reviewSubmission.findUnique({ where: { id: original.id } }))?.sentToClientAt);
     const bad = await makeCut(3); mode = "wrong";
@@ -168,8 +153,8 @@ async function main() {
     await prisma.client.update({ where: { id: client.id }, data: { name: "Monthly Destination TEST" } });
     const processedPath = "/isolated/monthly/05-Final-Video/topic-1-v2-1080p.mp4"; put(processedPath, PROCESSED);
     await prisma.topazJob.create({ data: { projectId: project.id, submissionId: original.id, fileName: original.fileName!, state: "done", finalPath: processedPath, savedAt: new Date(), outputCheck: "verified" } });
-    c.ok("new processed rendition invalidates prior original attestation", !(await manualFinalCheckReady(original.id)).ok);
     const processed = await finalFileChoicesAction(original.id);
+    c.ok("a new processed rendition is a different final file than the original", processed.ok && processed.choices[0]?.id !== read.choices[0].id);
     const actualFinal = await finalPreview(new NextRequest(`http://fixture.local${processed.choices[0].url}`), { params: Promise.resolve({ id: original.id }) });
     const staffOriginal = await reviewOriginal(new NextRequest(`http://fixture.local/api/review/cut/${original.id}/stream`), { params: Promise.resolve({ id: original.id }) });
     const normalClient = await reviewOriginal(new NextRequest(`http://fixture.local/api/review/cut/${original.id}/stream?m=${encodeURIComponent(mediaToken(original.id, { kind: "membership", id: seat.id }))}`), { params: Promise.resolve({ id: original.id }) });
@@ -184,15 +169,10 @@ async function main() {
     put(processedPath, PROCESSED);
     const refreshedProcessed = await finalFileChoicesAction(original.id);
     c.ok("stale preview fingerprint cannot serve replacement final bytes", (await finalPreview(new NextRequest(`http://fixture.local${read.choices[0].url}`), { params: Promise.resolve({ id: original.id }) })).status === 409);
-    const processedSaved = await recordFinalFileCheckAction(form(original.id, refreshedProcessed.choices[0].id));
-    c.ok("exact processed final backup/check allows monthly handoff independently of client verdict", processedSaved.ok && (await manualFinalCheckReady(original.id)).ok && !(await prisma.reviewSubmission.findUnique({ where: { id: original.id } }))?.clientApprovedDecisionId);
     put(processedPath, WRONG);
-    c.ok("changed Dropbox bytes/revision invalidate saved final check", !(await manualFinalCheckReady(original.id)).ok);
+    c.ok("changed Dropbox bytes/revision change the final file's identity", (await finalFileChoicesAction(original.id)).choices[0]?.id !== refreshedProcessed.choices[0].id);
     put(processedPath, PROCESSED);
-    const currentChoice = await finalFileChoicesAction(original.id);
-    metadataHook = async () => { await makeCut(1, 3); };
-    const stale = await recordFinalFileCheckAction(form(original.id, currentChoice.choices[0].id));
-    c.ok("newer cut entered during provider read refuses old attestation without mutation", !stale.ok && stale.outcome === "refused" && await prisma.finalRenditionCheck.count({ where: { submissionId: original.id } }) === 2);
+    await makeCut(1, 3);
     const beforePrune = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: lost.id } });
     await prisma.reviewSubmission.update({ where: { id: lost.id }, data: { blobUrl: null, blobPathname: null, assetPath: beforePrune.finalPath } });
     c.ok("verified exact backup survives normal source retention without timestamp-only trust", (await monthlyFinalSnapshot(lost.id)).ok);
@@ -216,8 +196,6 @@ async function main() {
     for (const target of [pending, lost]) {
       const choice = await finalFileChoicesAction(target.id);
       if (!choice.ok) throw new Error(choice.message);
-      const checkedTarget = await recordFinalFileCheckAction(form(target.id, choice.choices[0].id));
-      if (!checkedTarget.ok) throw new Error(checkedTarget.message);
     }
     const replacedClaim = await raceClaim(pending.id, async () => { const next = await makeCut(4, 2); await prisma.reviewSubmission.update({ where: { id: next.id }, data: { status: "PENDING" } }); });
     c.ok("real request captured proof before newer entered cut, then atomic first claim refuses stale send", !replacedClaim.ok && !(await prisma.reviewSubmission.findUnique({ where: { id: pending.id } }))?.sentToClientAt);
@@ -257,8 +235,6 @@ async function main() {
     const pilotCopy = await startDropboxCopy(pilotCut.id, { inline: false });
     const pilotChoice = await finalFileChoicesAction(pilotCut.id);
     if (!pilotCopy.complete || !pilotChoice.ok) throw new Error("Normal named-pilot fixture final file was not ready");
-    const pilotCheck = await recordFinalFileCheckAction(form(pilotCut.id, pilotChoice.choices[0].id));
-    if (!pilotCheck.ok) throw new Error(pilotCheck.message);
     const withdrawn = await raceClaim(pilotCut.id, async () => { await prisma.appSetting.update({ where: { key: PROGRAM_ROLLOUT_SETTING_KEY }, data: { value: serializeProgramRollout(CLOSED_ROLLOUT) } }); });
     c.ok("named-pilot scope withdrawal after captured final proof prevents first delivery stamp", !withdrawn.ok && !(await prisma.reviewSubmission.findUnique({ where: { id: pilotCut.id } }))?.sentToClientAt);
     // New approvals are explicitly publication-gated. Processing and failed
@@ -285,8 +261,6 @@ async function main() {
     const earlyPub = await cv.publishApprovedCutToLibrary(early.id);
     const earlyCut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: early.id } });
     c.ok("no one can sign in yet: the checked video still goes to the portal", earlyPub.published && !!earlyCut.clientReleasedAt && !!earlyCut.sentToClientAt, JSON.stringify(earlyPub));
-    const homeRows = async () => (await readyToSend({ projectId: project.id, recordFollowUpHealth: false, includeNoticeIncidents: false, withPortalDelivered: true })).portalDelivered ?? [];
-    c.ok("…and the home screen lists it as delivered via the content program, waiting for sign-up", (await homeRows()).find((r) => r.submissionId === early.id)?.waitingForSignUp === true);
     await windows.repairReviewWindows();
     c.ok("…with no review window or deadline while nobody can sign in", !(await prisma.contentReviewWindow.findUnique({ where: { submissionId: early.id } })) && !(await windows.openReviewWindow(early.id)));
     await prisma.clientMembership.update({ where: { id: seat.id }, data: { revokedAt: null } });
@@ -299,18 +273,6 @@ async function main() {
     const publishedCut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } });
     const publishedWindow = await prisma.contentReviewWindow.findUnique({ where: { submissionId: gated.id } });
     c.ok("verified Topaz auto-publishes exact version without fake human checks", publication.published && !!publishedCut.clientReleasedAt && !!publishedCut.sentToClientAt && beforeChecks === 0 && await prisma.finalRenditionCheck.count({ where: { submissionId: gated.id } }) === 0, JSON.stringify(publication));
-    // Oct 12 2026 (Jordan): the home screen says it was delivered via the
-    // content program, with an optional Upload to Aryeo (Download + Aryeo listing).
-    const deliveredRow = (await homeRows()).find((r) => r.submissionId === gated.id);
-    c.ok("the home screen lists the published video as delivered via the content program", !!deliveredRow && !!deliveredRow.file?.downloadHref && deliveredRow.deliveredAtISO === publishedCut.sentToClientAt?.toISOString() && deliveredRow.waitingForSignUp === false, JSON.stringify(deliveredRow));
-    // Oct 13 2026 (Jordan): these close by themselves. No "Mark as completed";
-    // the row is information for a week after delivery, then drops off.
-    const handoffRow = await prisma.auditLog.findUnique({ where: { id: `monthly-portal-handoff:${gated.id}` } });
-    await prisma.auditLog.update({ where: { id: handoffRow!.id }, data: { createdAt: new Date(Date.now() - 8 * 24 * 3_600_000) } });
-    c.ok("…and a week after delivery it leaves the home screen by itself", !(await homeRows()).some((r) => r.submissionId === gated.id));
-    await prisma.auditLog.update({ where: { id: handoffRow!.id }, data: { createdAt: new Date() } });
-    await prisma.auditLog.create({ data: { id: `monthly-portal-followup:${gated.id}`, actor: "Kyle TEST", action: "monthly_portal_followup", target: gated.id, detail: "{}" } });
-    c.ok("…and one somebody closed with the retired button stays hidden", !(await homeRows()).some((r) => r.submissionId === gated.id));
     c.ok("review clock starts at actual publication, not earlier approval", !!publishedWindow && publishedWindow.openedAt.getTime() === publishedCut.clientReleasedAt?.getTime() && publishedWindow.openedAt > approvedBeforeProcessing);
     await cv.publishApprovedCutToLibrary(gated.id);
     const repeatedPublication = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: gated.id } });
@@ -347,7 +309,7 @@ async function main() {
     await prisma.project.update({ where: { id: project.id }, data: { aryeoListingId: "isolated-monthly-routing-race" } });
     await (await import("@/lib/contentVideos")).syncEnrollmentVideos({ id: enrollment.id, clientId: client.id });
     const routingChoice = await finalFileChoicesAction(routingRace.id);
-    if (!routingChoice.ok || !(await recordFinalFileCheckAction(form(routingRace.id, routingChoice.choices[0].id))).ok) throw new Error("Routing-race portal proof setup failed");
+    if (!routingChoice.ok) throw new Error("Routing-race portal proof setup failed");
     const routing = await import("@/lib/videoDeliveryDestination");
     const racedPortalClaim = await raceClaim(routingRace.id, async () => {
       const chosen = await routing.chooseAryeoDelivery(routingRace.id, routing.destinationFingerprint((await loadCut(routingRace.id))!), { id: kyle.id, name: "Kyle fixture" });
