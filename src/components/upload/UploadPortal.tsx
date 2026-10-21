@@ -387,6 +387,7 @@ export function UploadPortal({
   handoffFolders,
   submission,
   viewerIsOffice,
+  payHidden = true,
   payGateFromMs,
   sessionTopics,
   topicsUnavailable = false,
@@ -510,6 +511,9 @@ export function UploadPortal({
   topicsUnavailable?: boolean;
   /** owner/admin — the reopen button reads "Edit this upload" for them */
   viewerIsOffice: boolean;
+  /** Oct 20 2026 (audit G): this viewer's pay view is paused (payHiddenFor), so
+   *  the page never says "payroll" or "My Pay" to them. Unset = hidden. */
+  payHidden?: boolean;
   /** DEBRIEF_PAY_GATE_FROM (lib/payroll is server-only, so the page passes
    *  the number): shoots from this instant on are done only on the SUBMIT */
   payGateFromMs: number;
@@ -1909,7 +1913,8 @@ export function UploadPortal({
           ) : (
             <p className="mt-1 text-sm text-foreground/80">
               Nothing else is needed from you on this shoot. Your notes are on the editor brief.{" "}
-              {filesSentence} <strong>This shoot is on your payroll</strong> — you&rsquo;ll see it in My Pay.
+              {filesSentence}{" "}
+              {payHidden ? <strong>This shoot is done.</strong> : <><strong>This shoot is on your payroll</strong> — you&rsquo;ll see it in My Pay.</>}
             </p>
           )}
           {handoffReceipt()}
@@ -2740,8 +2745,8 @@ export function UploadPortal({
         {!done && !ask && (
           <p className="mb-2.5 text-[13px] font-medium text-brand">
             {splitMode
-              ? "Submit the photos and the video each when they're ready. The shoot is added to your payroll once both are in."
-              : "Once submitted, this shoot is added to your payroll."}
+              ? `Submit the photos and the video each when they're ready. ${payHidden ? "The shoot is done once both are in." : "The shoot is added to your payroll once both are in."}`
+              : payHidden ? "Once submitted, this shoot is done." : "Once submitted, this shoot is added to your payroll."}
           </p>
         )}
         {!ask && (splitMode ? (

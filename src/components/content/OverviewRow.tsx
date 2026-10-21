@@ -34,7 +34,7 @@ export function BlockedChip({ blocked, closed = false }: { blocked: Row["nextAct
   if (closed) return <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted">nothing owed</span>;
   // "We owe work" and "waiting on the client" are different problems and must
   // never be one amber blob (Jordan's rule).
-  if (blocked === "client") return <span className="shrink-0 rounded-full bg-[#8b93e6]/20 px-2 py-0.5 text-[10px] font-semibold text-[#8b93e6]">waiting on them</span>;
+  if (blocked === "client") return <span className="shrink-0 rounded-full bg-waiting-soft px-2 py-0.5 text-[10px] font-semibold text-waiting">waiting on them</span>;
   if (blocked === "us") return <span className="shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">we owe this</span>;
   return <span className="shrink-0 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold text-success">on track</span>;
 }
@@ -123,7 +123,7 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
 
         <Cell icon={FileText} label="Topics & scripts">
           <div>{r.work.topicsSelected} topic{r.work.topicsSelected === 1 ? "" : "s"} selected{r.work.topicsNeeded > 0 ? ` · ${r.work.topicsNeeded} still to pick` : ""}</div>
-          {r.work.answersOutstanding > 0 && <div className="text-[#8b93e6]">{r.work.answersOutstanding} waiting on their answers</div>}
+          {r.work.answersOutstanding > 0 && <div className="text-waiting">{r.work.answersOutstanding} waiting on their answers</div>}
           <div className="text-muted">
             scripts: {r.work.scriptsReviewNeeded} need approval · {r.work.scriptsApproved} approved
           </div>

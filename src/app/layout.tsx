@@ -33,7 +33,9 @@ export default async function RootLayout({
 }>) {
   const cu = await getCurrentUser();
   // Serializable subset for the client Shell/Sidebar.
-  const payHidden = cu ? await import("@/lib/settings").then((m) => m.payHiddenFor(cu)).catch(() => false) : false;
+  // Fail CLOSED (audit G, Oct 20 2026): a settings hiccup must not label the
+  // menu "My Pay" for someone whose page then shows My Performance.
+  const payHidden = cu ? await import("@/lib/settings").then((m) => m.payHiddenFor(cu)).catch(() => true) : true;
   const user = cu
     ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName, payHidden }
     : null;

@@ -56,9 +56,21 @@ export type QueueJob =
   /** "Draft script" on one topic, and a topic-path owed draft (call excerpts or the topic alone). */
   | { job: "script_topic"; topicId: string; monthId: string; callRecordId?: string | null; selectedOnCall?: boolean }
   /** An owed draft from the client's written answers. */
-  | { job: "script_interview"; topicId: string; monthId: string; interviewId: string }
+  | {
+      job: "script_interview"; topicId: string; monthId: string; interviewId: string;
+      /** Default true: a script that appeared since the click stops it. False is a person's "New draft from the changed answers", the next version of the script the topic already has (Oct 20 2026). */
+      onlyIfUnscripted?: boolean;
+      /** With onlyIfUnscripted false: the script the new version lands on, where the page shows the job. */
+      scriptId?: string;
+    }
   /** "Ask AI to revise" and "Tighten" on a script — a new version; the current one is kept. */
-  | { job: "script_revise"; scriptId: string; instruction: string; label: "revise" | "tighten"; /** Oct 14 2026: "Keep exactly" sections, copied back by code. */ lockSections?: string[] }
+  | {
+      job: "script_revise"; scriptId: string; instruction: string; label: "revise" | "tighten"; /** Oct 14 2026: "Keep exactly" sections, copied back by code. */ lockSections?: string[];
+      /** Oct 20 2026: CLIENT_REQUEST when the words are a portal request ("Apply with AI"). Default REVISION. */
+      source?: "REVISION" | "CLIENT_REQUEST";
+      /** "Apply with AI": the request this revision applies. Stamped APPLIED (by AI, with the version) once the version lands; opened again if the job stops first. */
+      suggestionId?: string;
+    }
   /** "Draft from the discovery call". */
   | { job: "strategy_draft"; callRecordId: string };
 
@@ -206,13 +218,20 @@ async function runClaimed(row: ClaimedRow, checkDeadline: number | null = null):
       }
       case "script_interview": {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
-        await generateScriptFromInterview(scope.interviewId, by, { unattended: false, onlyIfUnscripted: true, claimedRun: claimed, checkDeadline });
+        await generateScriptFromInterview(scope.interviewId, by, { unattended: false, onlyIfUnscripted: scope.onlyIfUnscripted ?? true, claimedRun: claimed, checkDeadline });
         break;
       }
       case "script_revise": {
         const { reviseScript } = await import("@/lib/contentGeneration");
         const { asLockSections } = await import("@/lib/contentPolicy");
-        await reviseScript(scope.scriptId, scope.instruction, by, "REVISION", { claimedRun: claimed, lockSections: asLockSections(scope.lockSections) });
+        const v = await reviseScript(scope.scriptId, scope.instruction, by, scope.source ?? "REVISION", { claimedRun: claimed, lockSections: asLockSections(scope.lockSections) });
+        // "Apply with AI" (Oct 20 2026): the request is kept on the card as
+        // APPLIED by AI, pointing at the version it became. Best effort: the
+        // version is written, so a failure here must not read as the job's.
+        if (scope.suggestionId) {
+          const { settleAiApply } = await import("@/lib/scriptRequests");
+          await settleAiApply(scope.suggestionId, v.versionId, by).catch((e) => console.error("[aiQueue] could not mark the request applied:", e));
+        }
         break;
       }
       case "strategy_draft": {
@@ -230,6 +249,11 @@ async function runClaimed(row: ClaimedRow, checkDeadline: number | null = null):
     // The queue took the row back (its lease ran out) or another run replaced
     // it — that run does the work; this one writes nothing.
     if (name === "LeaseLostError") return "lost";
+    // "Apply with AI" stopped before a version: the request is open again (its words untouched).
+    if (scope?.job === "script_revise" && scope.suggestionId) {
+      const { releaseAiApply } = await import("@/lib/scriptRequests");
+      await releaseAiApply(scope.suggestionId).catch(() => {});
+    }
     const msg = ((e instanceof Error ? e.message : String(e)).split("\n")[0] || "unknown error").slice(0, 600);
     const already = name === "AlreadyDraftedError";
     const now = new Date();
@@ -309,7 +333,7 @@ export type QueueItemUi = {
   error: string | null;
   /** When the job was asked for (ISO). */
   at: string;
-  /** script_revise: "revise" | "tighten". */
+  /** script_revise: "revise" | "tighten"; a re-draft from changed answers: "redraft". */
   label?: string | null;
 };
 export type QueueStateUi = {
@@ -342,7 +366,10 @@ export async function queueStateFor(enrollmentId: string, opts: { monthId?: stri
     let s: StoredScope | null = null;
     try { s = r.scopeJson ? (JSON.parse(r.scopeJson) as StoredScope) : null; } catch { s = null; }
     if (!s) continue;
-    const subject = s.job === "script_revise" ? `script:${s.scriptId}` : s.job === "strategy_draft" ? "strategy" : `topic:${s.topicId}:${s.monthId}`;
+    // A re-draft from changed answers shows on its script, like a revision (it is that script's next version).
+    const onScript = s.job === "script_revise" ? s.scriptId : s.job === "script_interview" && s.onlyIfUnscripted === false ? s.scriptId ?? null : null;
+    const topic = s.job === "script_topic" || s.job === "script_interview" ? { topicId: s.topicId, monthId: s.monthId } : null;
+    const subject = onScript ? `script:${onScript}` : topic ? `topic:${topic.topicId}:${topic.monthId}` : "strategy";
     if (seen.has(subject)) continue;
     seen.add(subject);
     const state: QueueItemUi["state"] | null =
@@ -352,10 +379,10 @@ export async function queueStateFor(enrollmentId: string, opts: { monthId?: stri
       : r.status === "SUCCEEDED" && !r.outputRef && r.error && !/^Already drafted/.test(r.error) ? "failed"
       : null;
     if (!state) continue;
-    const item: QueueItemUi = { state, runId: r.id, error: state === "failed" ? r.error ?? "It stopped without saying why." : null, at: r.createdAt.toISOString(), label: s.job === "script_revise" ? s.label : null };
-    if (s.job === "script_revise") out.scripts[s.scriptId] = item;
+    const item: QueueItemUi = { state, runId: r.id, error: state === "failed" ? r.error ?? "It stopped without saying why." : null, at: r.createdAt.toISOString(), label: s.job === "script_revise" ? s.label : onScript ? "redraft" : null };
+    if (onScript) out.scripts[onScript] = item;
+    else if (topic) { if (!opts.monthId || topic.monthId === opts.monthId) out.topics[topic.topicId] = item; }
     else if (s.job === "strategy_draft") out.strategy = item;
-    else if (!opts.monthId || s.monthId === opts.monthId) out.topics[s.topicId] = item;
   }
   return out;
 }
@@ -374,6 +401,27 @@ export async function activeQueueRuns(enrollmentId: string): Promise<string[]> {
   return [...jobs.map((r) => r.id), ...refreshes.map((r) => `refresh:${r.id}`)].sort();
 }
 
+/**
+ * Portal requests whose "Apply with AI" is still queued or running (Oct 20
+ * 2026). Their APPLYING claim is live however long the queue takes, so the
+ * ten-minute reopen of a dead claim (scriptRequests) leaves them alone.
+ */
+export async function suggestionsInFlight(ids: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!ids.length) return out;
+  const rows = await prisma.programAiRun.findMany({
+    where: { status: { in: ["QUEUED", "RUNNING"] }, scopeJson: { contains: VIA }, OR: ids.map((id) => ({ scopeJson: { contains: `"suggestionId":${JSON.stringify(id)}` } })) },
+    select: { scopeJson: true },
+  });
+  for (const r of rows) {
+    try {
+      const s = JSON.parse(r.scopeJson ?? "") as StoredScope;
+      if (s.job === "script_revise" && s.suggestionId && ids.includes(s.suggestionId)) out.add(s.suggestionId);
+    } catch { /* unreadable scope: not a live claim */ }
+  }
+  return out;
+}
+
 /** The stored request of a queued run — what "Try again" re-asks for. */
 export async function queuedJobOf(runId: string): Promise<{ job: QueueJob; enrollmentId: string | null; clientId: string | null; title: string | null; status: string } | null> {
   const r = await prisma.programAiRun.findUnique({ where: { id: runId }, select: { scopeJson: true, enrollmentId: true, clientId: true, status: true } });
@@ -388,8 +436,11 @@ export async function queuedJobOf(runId: string): Promise<{ job: QueueJob; enrol
 function jobOf(s: StoredScope): QueueJob | null {
   switch (s.job) {
     case "script_topic": return { job: s.job, topicId: s.topicId, monthId: s.monthId, callRecordId: s.callRecordId ?? null, selectedOnCall: s.selectedOnCall ?? true };
-    case "script_interview": return { job: s.job, topicId: s.topicId, monthId: s.monthId, interviewId: s.interviewId };
-    case "script_revise": return { job: s.job, scriptId: s.scriptId, instruction: s.instruction, label: s.label, ...(Array.isArray(s.lockSections) && s.lockSections.length ? { lockSections: s.lockSections } : {}) };
+    case "script_interview": return { job: s.job, topicId: s.topicId, monthId: s.monthId, interviewId: s.interviewId, ...(s.onlyIfUnscripted === false ? { onlyIfUnscripted: false, ...(s.scriptId ? { scriptId: s.scriptId } : {}) } : {}) };
+    case "script_revise": return {
+      job: s.job, scriptId: s.scriptId, instruction: s.instruction, label: s.label, ...(Array.isArray(s.lockSections) && s.lockSections.length ? { lockSections: s.lockSections } : {}),
+      ...(s.source ? { source: s.source } : {}), ...(s.suggestionId ? { suggestionId: s.suggestionId } : {}),
+    };
     case "strategy_draft": return { job: s.job, callRecordId: s.callRecordId };
     default: return null;
   }

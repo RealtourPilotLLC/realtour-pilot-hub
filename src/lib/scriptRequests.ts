@@ -212,6 +212,24 @@ export async function applyRequestWords(suggestionId: string, how: "HERS" | "EDI
   }
 }
 
+// "Apply with AI" runs on the AI queue (Oct 20 2026), so the request is
+// settled when the job lands, not when the button is pressed. The client's
+// words stay on the card either way.
+
+/** The queued revision made a version: APPLIED by AI, pointing at that version. */
+export async function settleAiApply(suggestionId: string, versionId: string, by: string): Promise<void> {
+  // OPEN too: a claim reopened while the job waited is still the request this version applies.
+  await prisma.scriptSuggestion.updateMany({
+    where: { id: suggestionId, status: { in: ["APPLYING", "OPEN"] } },
+    data: { status: "APPLIED", appliedHow: "AI", appliedVersionId: versionId, resolvedAt: new Date(), resolvedBy: by },
+  });
+}
+
+/** The queued revision stopped before it made a version: the request is open again. */
+export async function releaseAiApply(suggestionId: string): Promise<void> {
+  await prisma.scriptSuggestion.updateMany({ where: { id: suggestionId, status: "APPLYING" }, data: { status: "OPEN", originalBody: null, resolvedAt: null } });
+}
+
 /**
  * The client edits the words of a script that is waiting on their OK (Oct 20
  * 2026, Jordan: "I also want them to be able to edit the scripts on their
@@ -276,11 +294,21 @@ export async function loadScriptRequestsForMonth(monthId: string): Promise<Scrip
   if (!scripts.length) return [];
   const since = new Date(Date.now() - 60 * 86_400_000);
   // A claim left behind by a function that was killed mid-apply (audit D8):
-  // APPLYING stamps resolvedAt when claimed; ten minutes later it is open again.
-  await prisma.scriptSuggestion.updateMany({
+  // APPLYING stamps resolvedAt when claimed; ten minutes later it is open again,
+  // unless its "Apply with AI" is still on the AI queue (Oct 20 2026): that
+  // claim is live however long the queue takes, and the job settles it.
+  const stale = await prisma.scriptSuggestion.findMany({
     where: { scriptId: { in: scripts.map((s) => s.id) }, status: "APPLYING", OR: [{ resolvedAt: null }, { resolvedAt: { lt: new Date(Date.now() - 10 * 60_000) } }] },
-    data: { status: "OPEN", resolvedAt: null },
-  }).catch(() => {});
+    select: { id: true },
+  }).catch(() => []);
+  if (stale.length) {
+    const { suggestionsInFlight } = await import("@/lib/aiQueue");
+    const live = await suggestionsInFlight(stale.map((r) => r.id)).catch(() => null);
+    const dead = live ? stale.filter((r) => !live.has(r.id)).map((r) => r.id) : [];
+    if (dead.length) {
+      await prisma.scriptSuggestion.updateMany({ where: { id: { in: dead }, status: "APPLYING" }, data: { status: "OPEN", resolvedAt: null } }).catch(() => {});
+    }
+  }
   const reqs = await prisma.scriptSuggestion.findMany({
     where: { scriptId: { in: scripts.map((s) => s.id) }, OR: [{ status: { in: ["OPEN", "APPLYING"] } }, { resolvedAt: { gte: since } }, { createdAt: { gte: since } }] },
     orderBy: { createdAt: "asc" },

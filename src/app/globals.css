@@ -38,6 +38,11 @@
   --danger: #f87171;
   --danger-action: #b91c1c;
   --danger-soft: rgba(248, 113, 113, 0.14);
+  /* Waiting on the client (Oct 20 2026): the periwinkle the content screens
+     hard-coded as #8b93e6, now one token with a light-theme counterpart.
+     Dark: 4.8:1 on its own soft tint. */
+  --waiting: #8b93e6;
+  --waiting-soft: rgba(139, 147, 230, 0.2);
 
   /* Chip ink — hex-colored chips mix their hue toward this so the text clears
      the tinted background in BOTH themes. Dark: lift toward white (Badge keeps
@@ -83,6 +88,9 @@ html.light {
   --danger: #dc2626;
   --danger-action: #b91c1c;
   --danger-soft: rgba(220, 38, 38, 0.1);
+  /* #8b93e6 is 2.8:1 on white; this indigo is 6:1 on white, 5:1 on its tint. */
+  --waiting: #5157c4;
+  --waiting-soft: rgba(81, 87, 196, 0.12);
 
   /* Chip text sinks toward near-black on the light canvas (see :root note). */
   --chip-ink: #1f1f1f;
@@ -115,6 +123,8 @@ html.light {
   --danger: #dc2626;
   --danger-action: #b91c1c;
   --danger-soft: rgba(220, 38, 38, 0.1);
+  --waiting: #5157c4;
+  --waiting-soft: rgba(81, 87, 196, 0.12);
   --chip-ink: #1f1f1f;
   --chip-ink-mix: 50%;
   --hue-ink-mix: 40%;
@@ -141,6 +151,8 @@ html.light {
   --color-danger: var(--danger);
   --color-danger-action: var(--danger-action);
   --color-danger-soft: var(--danger-soft);
+  --color-waiting: var(--waiting);
+  --color-waiting-soft: var(--waiting-soft);
   --font-sans: var(--font-inter);
   --font-display: var(--font-sora);
   --font-mono: var(--font-geist-mono);

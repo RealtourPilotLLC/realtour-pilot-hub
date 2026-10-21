@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc, etAt } from "@/lib/datetime";
 import { liveHandoffCategories, videoHalfClock } from "@/lib/handoff";
 import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
+import { ownsShootWhere } from "@/lib/shoot";
 
 // ---------------------------------------------------------------------------
 // PHOTOGRAPHER KPI TRACKER + QUARTERLY BONUS  (Jordan, Sep 2026)
@@ -297,12 +298,10 @@ export function assembleScorecard(
 
 // ------------------------------- The reads ---------------------------------
 
-/** A shoot belongs to a photographer if they're the project's photographer OR
- *  the appointment assignee — the same OR every other shoot surface uses. Some
- *  jobs are only ever assigned through the appointment. */
-function ownsShoot(memberId: string) {
-  return { OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }] };
-}
+// A shoot belongs to a photographer if they're the project's photographer OR
+// the (live) appointment assignee: ownsShootWhere, the same rule every other
+// shoot surface uses. Oct 20 2026 (audit C): this used its own copy, which
+// counted a CANCELLED appointment toward the scorecard.
 
 /**
  * Score one photographer over one quarter. Reads only; nothing here writes.
@@ -315,7 +314,7 @@ export async function scoreQuarter(opts: {
 }): Promise<QuarterScorecard> {
   const now = opts.now ?? new Date();
   const q = opts.quarter ?? quarterFor(etDayKey(now));
-  const scope = ownsShoot(opts.memberId);
+  const scope = ownsShootWhere(opts.memberId);
   // Work that has HAPPENED — a shoot already on next week's calendar is not
   // part of this quarter's performance yet.
   const windowEnd = now < q.end ? now : q.end;

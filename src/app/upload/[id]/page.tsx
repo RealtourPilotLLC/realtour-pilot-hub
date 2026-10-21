@@ -38,6 +38,7 @@ import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
 import { submissionTrail, UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
+import { payHiddenFor } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -180,6 +181,8 @@ export default async function UploadProjectPage({
   // as the office, the same way the list page does; under enforcement a null
   // viewer never gets this far (audit C2).
   const viewerIsOffice = (!viewer && !authEnforced()) || viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  // Oct 20 2026 (audit G): a paused pay view (Harrison, James) reads no payroll copy.
+  const payHidden = await payHiddenFor(viewer);
 
   const street = streetOf(project.title);
   const addOns: ShootAddOn[] = addOnTasks.map((t) => ({
@@ -523,6 +526,7 @@ export default async function UploadProjectPage({
           files: project.uploads.map((u) => ({ name: u.originalName, size: u.size })),
         }}
         viewerIsOffice={viewerIsOffice}
+        payHidden={payHidden}
         payGateFromMs={DEBRIEF_PAY_GATE_FROM}
         draft={draft}
         draftRevision={draftRevision}

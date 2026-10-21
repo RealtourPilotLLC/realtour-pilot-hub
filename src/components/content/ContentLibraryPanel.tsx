@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { CalendarClock, Clapperboard, Eye, EyeOff, Film, Layers, TriangleAlert } from "lucide-react";
 import { Section } from "@/components/ui/Section";
-import { badgeColors } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { ReviewMutationControls } from "@/components/content/ReviewMutationControls";
 import { LibraryIdentityEditor } from "@/components/content/LibraryIdentityEditor";
@@ -94,7 +93,7 @@ const when = (isoStr: string | null) => (isoStr ? `${new Date(isoStr).toLocaleSt
 
 const STATUS_TONE: Record<string, string> = {
   PLANNED: "bg-surface-2 text-muted", FILMED: "bg-brand-soft text-brand", EDITING: "bg-brand-soft text-brand",
-  CLIENT_REVIEW: "", APPROVED: "bg-success/15 text-success", DELIVERED: "bg-success/15 text-success", ARCHIVED: "bg-surface-2 text-muted",
+  CLIENT_REVIEW: "bg-waiting-soft text-waiting", APPROVED: "bg-success/15 text-success", DELIVERED: "bg-success/15 text-success", ARCHIVED: "bg-surface-2 text-muted",
 };
 
 export function ContentLibraryPanel({
@@ -164,7 +163,7 @@ export function ContentLibraryPanel({
               <details key={v.id} className="group">
                 <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 px-5 py-3 hover:bg-surface-2/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand">
                   <span className="min-w-0 flex-1 basis-40 break-words text-ui-body font-medium">{v.title}</span>
-                  <span className={cn("max-w-full rounded-full px-2 py-0.5 text-ui-status font-semibold break-words", STATUS_TONE[v.status] ?? "bg-surface-2 text-muted")} style={v.status === "CLIENT_REVIEW" ? badgeColors("#8b93e6") : undefined}>{v.status.toLowerCase().replace(/_/g, " ")}</span>
+                  <span className={cn("max-w-full rounded-full px-2 py-0.5 text-ui-status font-semibold break-words", STATUS_TONE[v.status] ?? "bg-surface-2 text-muted")}>{v.status.toLowerCase().replace(/_/g, " ")}</span>
                   {v.kind !== "PROGRAM" && <span className="max-w-full rounded-full bg-surface-2 px-2 py-0.5 text-ui-status text-muted break-words">{v.kind.toLowerCase()}</span>}
                   {!v.countsTowardAllowance && <span className="max-w-full rounded-full bg-surface-2 px-2 py-0.5 text-ui-status text-muted">extra — not against the allowance</span>}
                   <span className="max-w-full text-ui-status text-muted">{v.monthKey ?? "no month"}{v.identity?.section === "PREVIOUS" ? " · previous content" : ""}</span>

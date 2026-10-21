@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc } from "@/lib/datetime";
 import { livePromise } from "@/lib/turnaround";
+import { ownsShootWhere } from "@/lib/shoot";
 
 // ---------------------------------------------------------------------------
 // QUARTERLY PERFORMANCE BONUS ENGINE
@@ -100,15 +101,9 @@ const TARGETS = {
 // whoever already leads, which demotivates exactly the people it should move.
 const WEIGHTS = { onTime: 40, improve: 15, capture: 25, rating: 20 };
 
-/** Projects this member owns in the window (project link OR appointment assignment). */
-function ownsShoot(memberId: string) {
-  return {
-    OR: [
-      { photographerId: memberId },
-      { appointments: { some: { assignedToId: memberId } } },
-    ],
-  };
-}
+// Projects this member owns in the window: ownsShootWhere (project link OR a
+// live appointment assignment). Oct 20 2026 (audit C): this used its own copy,
+// which counted a CANCELLED appointment toward the bonus.
 
 function scale(v: number, floor: number, target: number): number {
   if (target === floor) return v >= target ? 1 : 0;
@@ -124,7 +119,7 @@ export async function scorecardFor(
   opts: { memberId?: string | null; name: string; basis: "OWN" | "TEAM" },
 ): Promise<Scorecard> {
   const { memberId, name, basis } = opts;
-  const scope = memberId ? ownsShoot(memberId) : {};
+  const scope = memberId ? ownsShootWhere(memberId) : {};
 
   // Shoots in window. shootDate is the anchor (that's when the work happened).
   const shoots = await prisma.project.findMany({

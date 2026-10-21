@@ -544,14 +544,14 @@ export async function dismissSignupReview(formData: FormData): Promise<void> {
 // drops back to INTERNAL_REVIEW so a human re-approves before the portal
 // shows the new version.
 // ---------------------------------------------------------------------------
-export async function applyScriptSuggestion(suggestionId: string): Promise<Result> {
+export async function applyScriptSuggestion(suggestionId: string): Promise<QueueResult> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const sugg = await prisma.scriptSuggestion.findUnique({
     where: { id: suggestionId },
     select: { id: true, scriptId: true, enrollmentId: true, body: true, status: true },
   });
   if (!sugg || sugg.status !== "OPEN") return { ok: false, message: "That suggestion was already handled." };
-  const script = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { body: true, historical: true } });
+  const script = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { body: true, historical: true, title: true, enrollmentId: true, clientId: true } });
   if (!script) return { ok: false, message: "That script no longer exists." };
   // A historical import is the record of what was filmed — the client's note is
   // kept as a suggestion to read, never an AI rewrite of history.
@@ -566,28 +566,30 @@ export async function applyScriptSuggestion(suggestionId: string): Promise<Resul
     data: { status: "APPLYING", originalBody: script.body, resolvedAt: new Date() },
   });
   if (claimed.count !== 1) return { ok: false, message: "That suggestion is being applied already." };
+  const release = () => prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", originalBody: null, resolvedAt: null } }).catch(() => {});
+  // ON THE AI QUEUE (Oct 20 2026), like "Ask AI to revise": the click answers
+  // at once and the rewrite runs in the background. The request stays on the
+  // card (the client's words are never lost); the job marks it APPLIED by AI
+  // with the version it became, or opens it again if it stops first
+  // (aiQueue runClaimed → scriptRequests settleAiApply / releaseAiApply).
   try {
-    const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
     const me = await actor();
-    await reviseScriptWithInstructions(
-      sugg.scriptId,
-      `The client sent this suggestion from their portal — apply it faithfully, keeping everything they didn't mention:\n"${sugg.body}"`,
-      { requestedBy: me.email, source: "CLIENT_REQUEST" },
-    );
+    const { enqueueAiJob } = await import("@/lib/aiQueue");
+    const q = await enqueueAiJob({
+      job: {
+        job: "script_revise", scriptId: sugg.scriptId, label: "revise", source: "CLIENT_REQUEST", suggestionId: sugg.id,
+        instruction: `The client sent this suggestion from their portal — apply it faithfully, keeping everything they didn't mention:\n"${sugg.body}"`,
+      },
+      enrollmentId: script.enrollmentId, clientId: script.clientId, requestedBy: me.email, title: script.title,
+    });
+    if (!q.ok) { await release(); return { ok: false, message: q.message, runId: q.runId ?? undefined }; }
+    kickQueue("click");
+    revalidatePath("/content");
+    return { ok: true, message: "Sent to the AI with their request. The new version appears on the script when it's ready (the current one is kept), and the request is marked applied then.", runId: q.runId };
   } catch (e) {
-    await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", originalBody: null, resolvedAt: null } }).catch(() => {});
+    await release();
     return fail(e);
   }
-  // Oct 20 2026: the request stays on the card (the client's words are never lost),
-  // with how it was handled and the version the rewrite became.
-  const after = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { currentVersionId: true } });
-  const me2 = await actor();
-  await prisma.scriptSuggestion.update({
-    where: { id: sugg.id },
-    data: { status: "APPLIED", resolvedAt: new Date(), appliedHow: "AI", appliedVersionId: after?.currentVersionId ?? null, resolvedBy: me2.email },
-  });
-  revalidatePath("/content");
-  return { ok: true, message: "Rewritten with their suggestion. Review and approve the new version below." };
 }
 
 // Oct 20 2026 (Jordan: "take what she wrote and apply it, or take what she
@@ -1551,31 +1553,30 @@ export async function draftScriptFromInterview(interviewId: string): Promise<Res
     const me = await actor();
     const { submitInterview } = await import("@/lib/contentInterview");
     await submitInterview(interviewId, { staffUserId: me.email }).catch(() => {}); // a draft can be made mid-way; gaps say what's missing
-    // THE FIRST DRAFT GOES ON THE QUEUE (Oct 20 2026, audit D11): the click
-    // answers at once and the draft is written in the background, under the
-    // queue's in-flight checks, like every other "Draft" button. A NEW draft
-    // from changed answers is a further version of an existing script, which
-    // the queued job refuses on purpose (one script per video), so that one
-    // still runs here.
+    // THE DRAFT GOES ON THE QUEUE (Oct 20 2026, audit D11): the click answers
+    // at once and the draft is written in the background, under the queue's
+    // in-flight checks, like every other "Draft" button. A NEW draft from
+    // changed answers is the next version of the script the topic already
+    // has: queued too, with onlyIfUnscripted off (the first draft's job keeps
+    // it on, so one video never gets two scripts), and shown on that script.
     const iv = await prisma.contentInterview.findUnique({ where: { id: String(interviewId ?? "") }, select: { id: true, topicId: true, monthId: true, enrollmentId: true, clientId: true } });
     if (!iv) return { ok: false, message: "That interview is gone — reload the page." };
-    const scripted = await prisma.contentScript.findFirst({ where: { OR: [{ interviewId: iv.id }, { topicId: iv.topicId, monthId: iv.monthId, historical: false }] }, select: { id: true } });
-    if (!scripted) {
-      const { assertWeWriteFor } = await import("@/lib/programStyle");
-      await assertWeWriteFor(iv.enrollmentId);
-      const { enqueueAiJob, settleStaleRuns } = await import("@/lib/aiQueue");
-      await settleStaleRuns();
-      const topic = await prisma.contentTopic.findUnique({ where: { id: iv.topicId }, select: { title: true } });
-      const q = await enqueueAiJob({ job: { job: "script_interview", topicId: iv.topicId, monthId: iv.monthId, interviewId: iv.id }, enrollmentId: iv.enrollmentId, clientId: iv.clientId, requestedBy: me.email, title: topic?.title ?? null });
-      if (!q.ok) return { ok: false, message: q.message };
-      kickQueue("click");
-      revalidatePath("/content");
-      return { ok: true, message: `Sent for scripting${topic?.title ? ` — ${topic.title}` : ""}. The draft appears on the Scripts tab when it's ready, with its gaps listed (never filled in).` };
-    }
-    const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
-    const r = await generateScriptFromInterview(interviewId, me.email);
+    // The script the generator writes onto (contentGeneration generateScriptFromInterview's own order).
+    const scripted =
+      (await prisma.contentScript.findFirst({ where: { interviewId: iv.id }, select: { id: true } })) ??
+      (await prisma.contentScript.findFirst({ where: { topicId: iv.topicId, monthId: iv.monthId, historical: false }, orderBy: { createdAt: "asc" }, select: { id: true } }));
+    const { assertWeWriteFor } = await import("@/lib/programStyle");
+    await assertWeWriteFor(iv.enrollmentId);
+    const { enqueueAiJob, settleStaleRuns } = await import("@/lib/aiQueue");
+    await settleStaleRuns();
+    const topic = await prisma.contentTopic.findUnique({ where: { id: iv.topicId }, select: { title: true } });
+    const job = { job: "script_interview" as const, topicId: iv.topicId, monthId: iv.monthId, interviewId: iv.id, ...(scripted ? { onlyIfUnscripted: false, scriptId: scripted.id } : {}) };
+    const q = await enqueueAiJob({ job, enrollmentId: iv.enrollmentId, clientId: iv.clientId, requestedBy: me.email, title: topic?.title ?? null });
+    if (!q.ok) return { ok: false, message: q.message };
+    kickQueue("click");
     revalidatePath("/content");
-    return { ok: true, message: `Draft ready — ${r.ok ? "passes the format check" : "has format findings"}, ${r.gaps} gap${r.gaps === 1 ? "" : "s"} listed for you (never filled in).` };
+    if (scripted) return { ok: true, message: `Sent for a new draft from these answers${topic?.title ? ` — ${topic.title}` : ""}. It appears on the Scripts tab as the script's next version when it's ready; the current one is kept.` };
+    return { ok: true, message: `Sent for scripting${topic?.title ? ` — ${topic.title}` : ""}. The draft appears on the Scripts tab when it's ready, with its gaps listed (never filled in).` };
   } catch (e) { return fail(e); }
 }
 
@@ -1783,9 +1784,12 @@ export async function retryAiJobAction(runId: string): Promise<QueueResult> {
     let r: QueueResult;
     if (j.job === "script_topic") r = await queueTopicDraft(j.topicId, j.monthId, me.email);
     else if (j.job === "strategy_draft") return queueStrategyDraftAction(prev.enrollmentId);
+    // "Apply with AI" again: the request is claimed again (its stopped job opened it).
+    else if (j.job === "script_revise" && j.suggestionId) return applyScriptSuggestion(j.suggestionId);
     else if (j.job === "script_revise") return queueScriptRevisionAction(j.scriptId, j.label === "tighten" ? "tighten" : "revise", j.instruction, j.lockSections ?? []);
     else {
-      if (await prisma.contentScript.findFirst({ where: { topicId: j.topicId, monthId: j.monthId, historical: false }, select: { id: true } })) return { ok: false, message: "It already has a script — it's on the Scripts tab." };
+      // A re-draft from changed answers is meant for a script that exists.
+      if (j.onlyIfUnscripted !== false && await prisma.contentScript.findFirst({ where: { topicId: j.topicId, monthId: j.monthId, historical: false }, select: { id: true } })) return { ok: false, message: "It already has a script — it's on the Scripts tab." };
       const q = await enqueueAiJob({ job: j, enrollmentId: prev.enrollmentId, clientId: prev.clientId, requestedBy: me.email, title: prev.title });
       r = q.ok ? { ok: true, message: `Sent for scripting — ${prev.title ?? "the topic"}. It'll appear on the Scripts tab when it's ready.`, runId: q.runId } : { ok: false, message: q.message, runId: q.runId ?? undefined };
     }

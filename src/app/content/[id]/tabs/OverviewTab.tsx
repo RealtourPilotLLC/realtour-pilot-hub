@@ -235,7 +235,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
             <ul className="space-y-1.5 text-[13px]">
               {work.map((w, i) => (
                 <li key={i} className="flex items-start gap-2">
-                  <span className={w.tone === "client" ? "mt-0.5 shrink-0 rounded bg-[#8b93e6]/20 px-1.5 text-[10px] font-semibold text-[#8b93e6]" : w.tone === "approval" ? "mt-0.5 shrink-0 rounded bg-brand-soft px-1.5 text-[10px] font-semibold text-brand" : "mt-0.5 shrink-0 rounded bg-warning/15 px-1.5 text-[10px] font-semibold text-warning"}>
+                  <span className={w.tone === "client" ? "mt-0.5 shrink-0 rounded bg-waiting-soft px-1.5 text-[10px] font-semibold text-waiting" : w.tone === "approval" ? "mt-0.5 shrink-0 rounded bg-brand-soft px-1.5 text-[10px] font-semibold text-brand" : "mt-0.5 shrink-0 rounded bg-warning/15 px-1.5 text-[10px] font-semibold text-warning"}>
                     {w.tone === "client" ? "them" : w.tone === "approval" ? "approve" : "us"}
                   </span>
                   <Link href={w.href} className="hover:text-brand hover:underline">{w.text}</Link>

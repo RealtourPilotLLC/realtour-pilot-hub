@@ -448,6 +448,31 @@ async function main() {
       const tight = await A.queueScriptRevisionAction(s1.id, "tighten");
       c.ok("Tighten on a short script refuses at once (nothing queued)", !tight.ok && /UNDER the 30–50 s target/.test(tight.message) && pendingAfter.length === 0, tight.message);
 
+      // "Apply with AI" on a portal request (Oct 20 2026): queued like "Ask AI to revise".
+      const { loadScriptRequestsForMonth } = await import("@/lib/scriptRequests");
+      const ask = await prisma.scriptSuggestion.create({ data: { scriptId: s1.id, enrollmentId: F.enrollmentId, body: "Mention the spring market in the close." } });
+      const callsBefore = modelCalls.length;
+      const applied = await A.applyScriptSuggestion(ask.id);
+      const askRow = await prisma.programAiRun.findFirstOrThrow({ where: { dedupeKey: `revise:${s1.id}`, status: "QUEUED" } });
+      const askScope = JSON.parse(askRow.scopeJson ?? "{}") as { source?: string; suggestionId?: string };
+      c.ok("\"Apply with AI\" answers at once: the request is APPLYING, one QUEUED client-request revision names it, no model call yet", applied.ok && /^Sent to the AI/.test(applied.message) && (await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask.id } })).status === "APPLYING" && askScope.source === "CLIENT_REQUEST" && askScope.suggestionId === ask.id && modelCalls.length === callsBefore, applied.message);
+      await prisma.scriptSuggestion.update({ where: { id: ask.id }, data: { resolvedAt: new RealDate(RealDate.now() - 11 * 60_000) } });
+      await loadScriptRequestsForMonth(F.monthId);
+      c.ok("…a claim older than ten minutes stays APPLYING while its job is still queued", (await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask.id } })).status === "APPLYING");
+      await flushAfter();
+      const askDone = await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask.id } });
+      const askV = await prisma.contentScriptVersion.findFirstOrThrow({ where: { scriptId: s1.id }, orderBy: { versionNo: "desc" } });
+      c.ok("…the job lands: a CLIENT_REQUEST version, and the request APPLIED by AI pointing at it (their words kept)", askV.source === "CLIENT_REQUEST" && askDone.status === "APPLIED" && askDone.appliedHow === "AI" && askDone.appliedVersionId === askV.id && askDone.body === "Mention the spring market in the close.", `${askV.source} ${askDone.status} ${askDone.appliedHow}`);
+      const ask2 = await prisma.scriptSuggestion.create({ data: { scriptId: s1.id, enrollmentId: F.enrollmentId, body: "Shorter hook please." } });
+      failScripts = 1;
+      const applied2 = await A.applyScriptSuggestion(ask2.id);
+      await flushAfter();
+      c.ok("…a job that fails opens the request again, words untouched", applied2.ok && (await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask2.id } })).status === "OPEN" && (await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask2.id } })).body === "Shorter hook please.");
+      const failedAsk = (await loadScriptsTab(F.enrollmentId, { id: F.monthId })).revising[s1.id];
+      const retryAsk = failedAsk ? await A.retryAiJobAction(failedAsk.runId) : null;
+      await flushAfter();
+      c.ok("…and its Try again applies the same request (APPLIED by AI)", !!retryAsk?.ok && (await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask2.id } })).appliedHow === "AI", retryAsk?.message);
+
       // "Draft from the discovery call".
       const S = await buildContentMonth(prisma, { name: "Sam Strategy TEST", package: "Accelerator", project: false, owner: false });
       const none = await A.queueStrategyDraftAction(S.enrollmentId);
@@ -536,7 +561,9 @@ async function main() {
       c.ok("the format check reports one that gets through: a WARNING naming where (never a block)", !!f && f.severity === "warn" && /hook, talking point 3/.test(f.message) && val.ok, f?.message);
       const uploadSrc = fs.readFileSync(path.join(REPO, "src/lib/scriptUpload.ts"), "utf8");
       const actionsSrc = fs.readFileSync(path.join(REPO, "src/app/content/actions.ts"), "utf8");
-      c.ok("the upload and an applied client suggestion write through the same choke point (createScriptVersion / reviseScript)", /createScriptVersion\(\{/.test(uploadSrc) && /reviseScriptWithInstructions\(sugg\.scriptId|reviseScriptWithInstructions\(/.test(actionsSrc));
+      // Oct 20 2026: "Apply with AI" is a queued script_revise job (CLIENT_REQUEST), which runs reviseScript.
+      const queueSrc = fs.readFileSync(path.join(REPO, "src/lib/aiQueue.ts"), "utf8");
+      c.ok("the upload and an applied client suggestion write through the same choke point (createScriptVersion / reviseScript)", /createScriptVersion\(\{/.test(uploadSrc) && /job: "script_revise"[^}]*source: "CLIENT_REQUEST", suggestionId: sugg\.id/.test(actionsSrc) && /await reviseScript\(scope\.scriptId, scope\.instruction, by, scope\.source/.test(queueSrc));
     }
 
     // =========================================================================
