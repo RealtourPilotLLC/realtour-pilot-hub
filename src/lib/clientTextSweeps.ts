@@ -496,8 +496,10 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: projects.length, notes: ["OpenPhone not connected"] };
   const { confirmationMessage } = await import("@/lib/delivery");
-  const { textTemplates } = await import("@/lib/settings");
-  const tpl = await textTemplates();
+  // The wording (Settings → Text messages, Oct 21 2026): a saved change, the
+  // old Text wording box's, or the default.
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const words = await loadTextTemplates();
 
   let sent = 0, skipped = 0;
   for (const p of projects) {
@@ -590,7 +592,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
     const body = confirmationMessage({
       title: p.title, city: p.city, shootDate: p.shootDate,
       client: { name: p.client.name }, photographer: p.photographer, deliverables: p.deliverables,
-    }, tpl.confirmation);
+    }, words);
     // LAST LOOK BEFORE THE SEND (review, Sep 16). The atomic task claim that used
     // to sit on this line is gone — the outbox holds the claim now, and it holds
     // it against the /tasks panel and every other cron. What it does NOT yet
@@ -750,7 +752,10 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
 
   const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: clients.length, notes: ["OpenPhone not connected"] };
-  const { applyTemplate } = await import("@/lib/delivery");
+  // The wording (Settings → Text messages, Oct 21 2026): a saved change, the
+  // old welcome box's, or the default.
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const words = await loadTextTemplates();
 
   let sent = 0, skipped = 0;
   for (const c of clients) {
@@ -776,7 +781,7 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
     // this text) and written again once the provider has answered.
     const marker = `auto-welcome-${c.id}`;
     if (await alreadyMarked(marker)) { skipped++; continue; } // sent, or held after an unconfirmed send
-    const body = applyTemplate(rules.welcome.message, {
+    const body = words.render("client_welcome", {
       first: (c.name || "there").trim().split(/\s+/)[0] || "there",
       strategyCallLink: rules.welcome.strategyCallUrl,
       website: PUBLIC_WEBSITE,
@@ -1006,8 +1011,9 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
   const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: tasks.length, notes: ["OpenPhone not connected"] };
   const { deliveryMessage } = await import("@/lib/delivery");
-  const { textTemplates, DEFAULT_DELIVERY_FEEDBACK_TEXT } = await import("@/lib/settings");
-  const tpl = await textTemplates();
+  const { textTemplates } = await import("@/lib/settings");
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const [tpl, words] = await Promise.all([textTemplates(), loadTextTemplates()]);
 
   // The hold reason, onto the task. Diff-before-write so an unchanged hold does
   // not churn updatedAt every hour (the CANCELLED path reads updatedAt as "when
@@ -1202,12 +1208,12 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
         .catch(() => {});
       continue;
     }
-    // The wording: whatever Jordan typed into Settings → Text templates →
-    // "Delivery text" wins; a blank box falls back to the built-in feedback ask
-    // (lib/settings DEFAULT_DELIVERY_FEEDBACK_TEXT) rather than to the older
-    // "everything has been delivered" announcement. The partial variant is
-    // never reached from here — the gate above guarantees nothing is missing.
-    const body = deliveryMessage(project, { ...tpl, deliveryAll: tpl.deliveryAll.trim() || DEFAULT_DELIVERY_FEEDBACK_TEXT });
+    // The wording: the feedback ask, client_delivery_feedback (Settings → Text
+    // messages, Oct 21 2026: a saved change, the old Text wording box's, or the
+    // default) rather than the older "everything has been delivered"
+    // announcement. The partial variant is never reached from here — the gate
+    // above guarantees nothing is missing.
+    const body = deliveryMessage(project, { deliveryPartial: tpl.deliveryPartial }, words);
     // LAST LOOK BEFORE THE SEND (review, Sep 16) — same reason as the
     // confirmation sweep: the per-card Send button (app/actions.ts
     // sendDeliveryText) still texts OpenPhone directly and then completes this
@@ -1450,7 +1456,10 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
   // Kyle our office hours would be absurd, and it is the shape of a loop.
   const team = await prisma.teamMember.findMany({ where: { phone: { not: null } }, select: { phone: true } });
   const excluded = new Set<string>([...ourKeys, ...team.map((t) => phoneKey(t.phone ?? "")).filter((k) => k.length === 10)]);
-  const { applyTemplate } = await import("@/lib/delivery");
+  // The wording (Settings → Text messages, Oct 21 2026): a saved change, the
+  // one saved in the old Automated texts rule, or the default.
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const words = await loadTextTemplates();
 
   // One reply per CLIENT, to their latest number (they may have written from a
   // second line mid-period).
@@ -1511,7 +1520,7 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
     if (await alreadyMarked(marker)) { skipped++; continue; }
     // Greet the human who wrote in (msg.name), falling back to the account.
     const name = (msg.name || client?.name || "").trim();
-    const body = applyTemplate(rules.afterHours.message, {
+    const body = words.render("client_after_hours", {
       first: name.split(/\s+/)[0] || "there",
       hours: officeHoursLabel(rules.afterHours.openHour, rules.afterHours.closeHour),
       nextDay: nextWorkingMorning(now, rules.afterHours.openHour),

@@ -9,14 +9,17 @@ import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, eveningHoursOffSchedule, textTemplates, reviewRoomRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, eveningHoursOffSchedule, reviewRoomRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
+import { textTemplateRows } from "@/lib/textTemplateStore";
+import { templatesVisibleTo } from "@/lib/textTemplates";
+import { TextMessagesSettings } from "@/components/settings/TextMessagesSettings";
 import { commsCoachingSettings } from "@/lib/commsCoaching";
 import { CoachingSettings } from "@/components/coaching/CoachingSettings";
 import { ARYEO_MANUAL_NOTE } from "@/lib/integrations/topaz";
 import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
-import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
+import { TurnaroundSettings, InternalAlertSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
@@ -168,12 +171,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // of six real people, and "0 of 0" automations against thirteen keys; null
   // prints the same honest note the reminders card has always used, and the
   // Section badge is left off rather than asserting a number nobody read.
-  const [rules, textRules, turns, alerts, eveningOff, templates, reviewRoom, notifyRows, topaz, automations, reminders, coaching, emailMonitor] = await Promise.all([
+  const [rules, textRules, turns, alerts, eveningOff, textRows, reviewRoom, notifyRows, topaz, automations, reminders, coaching, emailMonitor] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(),
     // A saved evening hour the cron can't fire at (Oct 21 2026): the card
     // shows the real time it goes out and says what was saved.
     eveningHoursOffSchedule(),
-    textTemplates(), reviewRoomRules(),
+    // Every automatic text's wording (Oct 21 2026). Null, never the defaults,
+    // on a failed read: a card that shows "default" for wording it could not
+    // read would be a lie about what clients are getting.
+    textTemplateRows().catch(() => null),
+    reviewRoomRules(),
     // Team notifications (Jordan, Sep 15) — every active person, the owner
     // included; the Sep 11 owner-only "Text me" card folded into this matrix.
     teamNotifyRows().catch(() => null),
@@ -194,6 +201,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // reads as the default (on, to info@), and the card says so.
     clientEmailMonitor(),
   ]);
+  // The payday text is about pay: the owner's alone, so Kyle's page never
+  // carries it (he never sees dollar amounts).
+  const textShown = textRows ? templatesVisibleTo(textRows, isOwner) : null;
 
   // THE CARDS, BY NAME (11-settings-grouping). Each is exactly the card it was
   // before the grouping, with its own id and anchor where it had one; the only
@@ -224,10 +234,20 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <AutoTextSettings initial={textRules} />
       </Section>),
 
+    // TEXT MESSAGES (Oct 21 2026: "add settings to customize all text
+    // templates"). Every automatic text, client and team, in one card; it
+    // replaced the three-box "Text wording" card (lib/textTemplates).
+    // Jordan edits, Kyle reads.
     "text-wording": card("text-wording",
-      <Section icon={MessageSquareText} title="Text wording">
-        <TextTemplateSettings initial={templates} />
-      </Section>),
+      <Section
+        icon={MessageSquareText}
+        title="Text messages"
+        count={textShown ? (textShown.some((r) => r.source !== "default") ? `${textShown.filter((r) => r.source !== "default").length} edited` : "defaults") : undefined}
+      >
+        {textShown
+          ? <TextMessagesSettings rows={textShown} isOwner={isOwner} />
+          : <p className="text-sm text-muted">The text wording could not be read just now, so nothing can be edited. Reload to try again. Every text still goes out with its saved or default words.</p>}
+      </Section>, "text-messages"),
 
     turnaround: card("turnaround",
       <Section icon={Clock} title="Turnaround promises">

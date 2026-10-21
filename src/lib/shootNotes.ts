@@ -1,7 +1,8 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { clip, noDashes } from "@/lib/text";
+import { clip, noDashes, scrubMoney } from "@/lib/text";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // A CLIENT'S ACCESS NOTE GOES ON THE SHOOT BRIEF (Oct 14 2026 comms audit).
@@ -34,6 +35,12 @@ const SHOOT_WORDS =
   /\b(please (?:shoot|photograph|capture|get|include|skip|avoid|focus)|make sure (?:to|you) (?:get|shoot|capture|include)|(?:don'?t|do not) (?:shoot|photograph|capture|include|show)|shot list|(?:focus|highlight) on|twilight|drone shots?|aerials?)\b/i;
 // …and the brain has to have FILED it as one (its title/detail for the to-do).
 const NOTE_FILING = /\b(access|lock\s?-?box|codes?|alarm|keys?|gate|parking|park|entry|pets?|dogs?|vacant|occupied|tenants?|sellers?|homeowners?|shoot|photographer|brief|instructions?|shot list)\b/i;
+
+/** The photographer's text about a client note: the shoot_note template
+ *  (Settings → Text messages, Oct 21 2026), no long dashes, no amounts. Pure. */
+export function shootNoteText(o: { street: string; when: string; note: string; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  return noDashes(scrubMoney(t.render("shoot_note", o)));
+}
 
 /** Does a note say how to get in (a code, a key, who is home, where to park)? Pure. */
 export function mentionsAccess(text: string): boolean {
@@ -138,13 +145,11 @@ export async function fileClientShootNote(opts: {
         .catch(() => false);
       if (claimed) {
         const { notifyStaffSms } = await import("@/lib/notify");
-        const { scrubMoney } = await import("@/lib/text");
         const { etDateTime } = await import("@/lib/datetime");
         const { appBase } = await import("@/lib/appUrl");
+        const { loadTextTemplates } = await import("@/lib/textTemplateStore");
         const street = (p.title ?? "").split(",")[0].trim() || "your shoot";
-        const text = noDashes(scrubMoney(
-          `Note from the client for ${street} (${etDateTime(p.shootDate)}): "${clip(opts.text, 300)}". It is on your shoot screen: ${appBase()}/shoot/${p.id}`,
-        ));
+        const text = shootNoteText({ street, when: etDateTime(p.shootDate), note: clip(opts.text, 300), link: `${appBase()}/shoot/${p.id}` }, await loadTextTemplates());
         const out = await notifyStaffSms([p.photographerId], text, "shoot_note");
         pinged = out.some((o) => o.outcome === "slack" || o.outcome === "sent" || o.outcome === "held" || o.outcome === "deferred");
       }

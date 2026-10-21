@@ -1907,9 +1907,19 @@ export async function requestCutChanges(submissionId: string, opts?: { notFixedI
               if (outsideEditor && officeToTell.length) {
                 const { notifyStaffSms } = await import("@/lib/notify");
                 const { appBase } = await import("@/lib/appUrl");
+                // The review_relay template (Settings → Text messages, Oct 21 2026).
+                const { loadTextTemplates } = await import("@/lib/textTemplateStore");
                 await notifyStaffSms(
                   officeToTell.map((o) => o.id),
-                  `↩︎ Relay to ${outsideEditor}: ${authorName ?? "The review desk"} sent back ${street} (version ${submission.round}) with ${open.length} note${s}. They're on the edit card as round ${submission.round + 1} — ${appBase()}${editHref}`,
+                  (await loadTextTemplates()).render("review_relay", {
+                    editor: outsideEditor,
+                    reviewer: authorName ?? "The review desk",
+                    street,
+                    round: String(submission.round),
+                    notes: `${open.length} note${s}`,
+                    nextRound: String(submission.round + 1),
+                    link: `${appBase()}${editHref}`,
+                  }),
                   "review_changes",
                 );
               }

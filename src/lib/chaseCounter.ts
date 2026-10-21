@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { etDateTime, etDayKey } from "@/lib/datetime";
 import { noDashes, scrubMoney } from "@/lib/text";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // THE CHASE COUNTER (Oct 15 2026). A management report's top ask, after
@@ -32,6 +33,12 @@ export const CHASE_PREFIX = "chase:";
 export const CHASE_WINDOW_DAYS = 14;
 export const CHASE_TASK_TYPE = "client_chase";
 const DAY = 86_400_000;
+
+/** The owner's text on the third chase: the chase_owner template (Settings →
+ *  Text messages, Oct 21 2026), no long dashes, no amounts. Pure. */
+export function chaseOwnerText(o: { clientName: string; count: number; what: string; promise: string; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  return noDashes(scrubMoney(t.render("chase_owner", { clientName: o.clientName, count: String(o.count), days: String(CHASE_WINDOW_DAYS), what: o.what, promise: o.promise, link: o.link })));
+}
 
 export type ChaseResult = {
   /** false = this message was already counted (nothing else happened) */
@@ -168,9 +175,8 @@ export async function recordChase(input: {
     const { ownerDeskId } = await import("@/lib/eveningPush");
     const owner = await ownerDeskId().catch(() => null);
     if (owner) {
-      const text = noDashes(scrubMoney(
-        `${input.clientName} has asked for an update ${count} times in ${CHASE_WINDOW_DAYS} days (${what}). ${promise} Kyle has a HIGH task for it: ${appBase()}/tasks?task=${taskId}`,
-      ));
+      const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+      const text = chaseOwnerText({ clientName: input.clientName, count, what, promise, link: `${appBase()}/tasks?task=${taskId}` }, await loadTextTemplates());
       await notifyStaffSms([owner], text, CHASE_TASK_TYPE).catch(() => null);
     }
     return { recorded: true, count, escalated: "owner", taskId };

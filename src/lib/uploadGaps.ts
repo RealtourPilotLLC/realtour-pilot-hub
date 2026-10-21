@@ -4,6 +4,7 @@ import { etTime } from "@/lib/datetime";
 import { noDashes } from "@/lib/text";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
@@ -148,12 +149,14 @@ const listWords = (kinds: GapKind[]) => {
   return w.length <= 1 ? w[0] ?? "" : `${w.slice(0, -1).join(", ")} and ${w[w.length - 1]}`;
 };
 
-/** The creative's text (pure). No dashes; the upload page linked. */
-export function composeGapText(o: { firstName: string; street: string; shotWhen: string; counts: UploadCounts; sure: GapKind[]; alsoEmpty: GapKind[]; link: string }): string {
-  const also = o.alsoEmpty.length ? ` Also not there yet: ${listWords(o.alsoEmpty)}.` : "";
+/** The creative's text (pure). No dashes; the upload page linked. The words are
+ *  the upload_gap template (Settings → Text messages, Oct 21 2026); the hub
+ *  marker stays in front. `t` = saved wording, else default. */
+export function composeGapText(o: { firstName: string; street: string; shotWhen: string; counts: UploadCounts; sure: GapKind[]; alsoEmpty: GapKind[]; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  const also = o.alsoEmpty.length ? `Also not there yet: ${listWords(o.alsoEmpty)}.` : "";
   const missing = listWords(o.sure);
   return noDashes(
-    `${HUB_SMS_PREFIX}: Hi ${o.firstName}, ${o.street} (shot ${o.shotWhen}). Dropbox only has ${heldWords(o.counts)} for it. Missing: ${missing}.${also} Can you upload them? Upload page: ${o.link}`,
+    `${HUB_SMS_PREFIX}: ${t.render("upload_gap", { firstName: o.firstName, street: o.street, shotWhen: o.shotWhen, held: heldWords(o.counts), missing, alsoMissing: also, link: o.link })}`,
   );
 }
 
@@ -396,11 +399,13 @@ async function textCreatives(o: { projectId: string; street: string; startAt: Da
   const { ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
   const { sendThroughOutbox } = await import("@/lib/outbox");
   const ours = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const words = await loadTextTemplates();
   for (const m of members) {
     const num = staffTextNumber(m.phone);
     if (!m.active || !num) { out.notSent.push(`${m.name}: ${!m.active ? "not active" : "no phone"}`); continue; }
     if (ours.has(num.key)) { out.notSent.push(`${m.name}: their number is our own office line`); continue; }
-    const body = composeGapText({ firstName: firstName(m.name), street: o.street, shotWhen: shotWhen(o.startAt, o.now), counts: o.counts, sure: o.sure, alsoEmpty: o.alsoEmpty, link: o.link });
+    const body = composeGapText({ firstName: firstName(m.name), street: o.street, shotWhen: shotWhen(o.startAt, o.now), counts: o.counts, sure: o.sure, alsoEmpty: o.alsoEmpty, link: o.link }, words);
     try {
       // A team text: their quiet time does not hold it (anyone on the team can
       // be pinged any hour), and the key makes it once per job, person and gap.

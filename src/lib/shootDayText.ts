@@ -6,6 +6,7 @@ import { aryeoCustomerNote } from "@/lib/shoot";
 import { isAccessNote } from "@/lib/specialRequests";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // THE SPECIAL REQUESTS, TEXTED AT THE SHOOT (Oct 19 2026). Jordan: "if there
@@ -119,10 +120,12 @@ export function shootDayRequests(src: ShootDaySources): string[] {
   return out.slice(0, MAX_ITEMS);
 }
 
-/** "104 Carlton Ct, 2:30 PM. Special requests for this shoot: 1) … 2) … Shoot screen: <link>" */
-export function composeShootDayText(o: { street: string; startAt: Date; requests: string[]; link: string }): string {
+/** "104 Carlton Ct, 2:30 PM. Special requests for this shoot: 1) … 2) … Shoot screen: <link>"
+ *  The words are the shoot_day_requests template (Settings → Text messages,
+ *  Oct 21 2026); the hub marker stays in front. `t` = saved wording, else default. */
+export function composeShootDayText(o: { street: string; startAt: Date; requests: string[]; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
   const items = o.requests.map((r, i) => `${i + 1}) ${r}`).join(" ");
-  return noDashes(`${HUB_SMS_PREFIX}: ${o.street}, ${etTime(o.startAt)}. Special requests for this shoot: ${items} Shoot screen: ${o.link}`);
+  return noDashes(`${HUB_SMS_PREFIX}: ${t.render("shoot_day_requests", { street: o.street, time: etTime(o.startAt), requestList: items, link: o.link })}`);
 }
 
 /** The appointment can still happen at its time: not cancelled, not postponed without a slot. */
@@ -187,6 +190,8 @@ export async function shootDayCandidates(now: Date = new Date()): Promise<ShootD
 
   const { shootDayKey } = await import("@/lib/outbox");
   const { appBase } = await import("@/lib/appUrl");
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const words = await loadTextTemplates();
   const rows = [...groups.values()].map(({ a, teamMemberId }) => {
     const shootDay = etDayKey(a.startAt!);
     return { a, teamMemberId, shootDay, dedupeKey: shootDayKey(a.project.id, teamMemberId, shootDay) };
@@ -225,7 +230,7 @@ export async function shootDayCandidates(now: Date = new Date()): Promise<ShootD
       jobLines: jobLines.filter((l) => l.projectId === a.project.id).map((l) => l.body),
       clientAsks: asksOf.get(a.project.id) ?? [],
     });
-    const text = requests.length ? composeShootDayText({ street: base.street, startAt: base.startAt, requests, link: `${appBase()}/shoot/${a.project.id}` }) : null;
+    const text = requests.length ? composeShootDayText({ street: base.street, startAt: base.startAt, requests, link: `${appBase()}/shoot/${a.project.id}` }, words) : null;
     const skip = !requests.length ? "nothing special" : !m || !m.active ? "not an active team member" : !num ? "no phone" : null;
     return { ...base, requests, text, skip };
   });

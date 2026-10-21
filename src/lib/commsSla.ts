@@ -5,6 +5,8 @@ import { notifyInApp, notifyStaffSms, notifyUrgent, opsAlert } from "@/lib/notif
 import { coverageRules, coveredHoursBetween, withinCoverageAt } from "@/lib/coverage";
 import { hasStrongComplaint } from "@/lib/comms";
 import { getSetting, putSetting } from "@/lib/settings";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
+import { loadTextTemplates } from "@/lib/textTemplateStore";
 
 // ---------------------------------------------------------------------------
 // Reply-SLA escalation for inbound client comms, and the count behind Kyle's
@@ -108,6 +110,16 @@ async function pageOnCall(onCallId: string | null, line: string): Promise<void> 
   await notifyStaffSms([onCallId], line, "reply_sla", { urgency: "urgent" }).catch((e) =>
     console.warn("on-call page failed (ops alert already went)", e),
   );
+}
+
+/** The on-call page's words: on_call_unhappy / on_call_still (Settings → Text
+ *  messages, Oct 21 2026). The ops-channel Slack lines keep their own. Pure. */
+export function onCallPageText(
+  key: "on_call_unhappy" | "on_call_still",
+  w: { isVip: boolean; clientName: string; age: string; snippet: string },
+  t: TextTemplateSet = DEFAULT_TEXTS,
+): string {
+  return t.render(key, { vip: w.isVip ? "(VIP)" : "", clientName: w.clientName, age: w.age, snippet: w.snippet });
 }
 
 function fmtAge(min: number): string {
@@ -278,7 +290,7 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
           dedupeKey: tier1Key,
         });
         await opsAlert(`💬 Unanswered text${vipTag} — ${w.clientName} waiting ${age}: "${w.snippet}"`);
-        if (!inHours) await pageOnCall(onCall, `Unhappy client unanswered${vipTag} — ${w.clientName}, ${age}: "${w.snippet}"`);
+        if (!inHours) await pageOnCall(onCall, onCallPageText("on_call_unhappy", { isVip: w.isVip, clientName: w.clientName, age, snippet: w.snippet }, await loadTextTemplates()));
         counts.tier1++;
       }
 
@@ -305,7 +317,7 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
           await notifyUrgent(`Client still unanswered${vipTag} — ${w.clientName}, ${age}: "${w.snippet}"`, href);
           // Tier 2 IS the urgency (see urgencyOf) — out of cover it goes to
           // the named on-call as well as to the ops channel.
-          if (!inHours) await pageOnCall(onCall, `Client still unanswered${vipTag} — ${w.clientName}, ${age}: "${w.snippet}"`);
+          if (!inHours) await pageOnCall(onCall, onCallPageText("on_call_still", { isVip: w.isVip, clientName: w.clientName, age, snippet: w.snippet }, await loadTextTemplates()));
           counts.tier2++;
         }
       }

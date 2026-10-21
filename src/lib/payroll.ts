@@ -3,6 +3,7 @@ import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { driveBetween } from "@/lib/travel";
 import { etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // Creative payroll engine.
@@ -764,6 +765,18 @@ export async function computePayroll(
 // queued-SMS path as every other photographer ping (batching + quiet hours),
 // deduped once per payout day.
 // ---------------------------------------------------------------------------
+
+/** The payday line: the `payday` template (Settings → Text messages, Oct 21
+ *  2026). `t` = saved wording, else default. Pure. */
+export function paydayText(p: { total: number; jobs: number; startKey: string; endKey: string; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  return t.render("payday", {
+    amount: `$${p.total.toFixed(2)}`,
+    shoots: `${p.jobs} shoot${p.jobs === 1 ? "" : "s"}`,
+    period: `${p.startKey.slice(5)}–${p.endKey.slice(5)}`,
+    link: p.link,
+  });
+}
+
 export async function paydayPings(now: Date = new Date()): Promise<{ pinged: number } | { skipped: string }> {
   const todayKey = etDayKey(now);
   // The most recent CLOSED period paying today.
@@ -793,11 +806,12 @@ export async function paydayPings(now: Date = new Date()): Promise<{ pinged: num
       (await prisma.appUser.findMany({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } })).map((u) => u.teamMemberId),
     );
     let pinged = 0;
+    const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+    const words = await loadTextTemplates();
     for (const person of people) {
       if (person.total <= 0) continue;
       if (!owners.has(person.member.id)) continue;
-      const jobs = person.jobs.length;
-      const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${appBase()}/my-pay`;
+      const line = paydayText({ total: person.total, jobs: person.jobs.length, startKey: period.startKey, endKey: period.endKey, link: `${appBase()}/my-pay` }, words);
       await prisma.pendingSms.create({ data: { teamMemberId: person.member.id, line } }).catch(() => {});
       pinged++;
     }

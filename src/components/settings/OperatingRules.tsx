@@ -2,12 +2,11 @@
 
 import { useEffect, useId, useState, useTransition } from "react";
 import { Check, Loader2 } from "lucide-react";
-import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates } from "@/app/settings/actions";
+import { saveTurnarounds, saveInternalAlerts, saveReviewRoomRules, loadOnCallCandidates } from "@/app/settings/actions";
 import { loadCutReviewerSeats, setCutReviewerAway } from "@/app/review/actions";
 import type { ReviewerSeat } from "@/components/review/reviewerTypes";
-import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
+import type { TurnaroundRules, InternalAlertRules, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
-import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
 import { EmailSlaSettings } from "@/components/settings/EmailSlaSettings";
 import { NotificationSchedule } from "@/components/settings/NotificationSchedule";
 import { useSettingsDraft } from "@/components/settings/useSettingsDraft";
@@ -431,42 +430,8 @@ export function InternalAlertSettings({
   );
 }
 
-const TPL_FIELDS: { key: keyof TextTemplates; label: string; hint: string; vars: string[] }[] = [
-  { key: "confirmation", label: "Shoot confirmation", hint: "sent before the shoot", vars: ["{first}", "{street}", "{when}", "{items}"] },
-  { key: "deliveryAll", label: "Delivery — everything shipped", hint: "", vars: ["{first}", "{street}", "{feedbackUrl}"] },
-  { key: "deliveryPartial", label: "Delivery — part still in production", hint: "", vars: ["{first}", "{street}", "{delivered}", "{remaining}", "{feedbackUrl}"] },
-];
-
-export function TextTemplateSettings({ initial }: { initial: TextTemplates }) {
-  const { value: t, setValue: setT, busy, feedback, dirty, save } = useSettingsDraft(initial);
-  return (
-    <div className="space-y-3">
-      <p className="text-[13px] text-muted">
-        Leave a box empty to use the hub&rsquo;s built-in wording. Placeholders are filled in automatically — an unknown
-        one is left as-is rather than sent blank.
-      </p>
-      {TPL_FIELDS.map((f) => (
-        <div key={f.key}>
-          <label className="text-[13px] font-medium">
-            {f.label}
-            {f.hint && <span className="font-normal text-muted"> — {f.hint}</span>}
-          </label>
-          <textarea
-            value={t[f.key] ?? ""}
-            onChange={(e) => { setT((p) => ({ ...p, [f.key]: e.target.value })); }}
-            rows={3}
-            placeholder={BUILTIN_TEMPLATE_TEXT[f.key]}
-            aria-label={f.label}
-            className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-          />
-          <p className="mt-1 text-[11px] text-muted-2">Placeholders: {f.vars.join(" · ")}</p>
-        </div>
-      ))}
-      <SaveRow busy={busy} feedback={feedback} dirty={dirty} label="Save text wording" onSave={() => save(saveTextTemplates)} />
-    </div>
-  );
-}
-
+// The "Text wording" card (three client boxes) lived here until Oct 21 2026;
+// Settings → Text messages (TextMessagesSettings, lib/textTemplates) replaced it.
 
 // ---- Review Room ------------------------------------------------------------
 type SeatKey = "creativeApproverTeamMemberId" | "backupReviewerTeamMemberId" | "fallbackReviewerTeamMemberId";

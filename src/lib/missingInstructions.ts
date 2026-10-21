@@ -7,6 +7,7 @@ import { noDashes } from "@/lib/text";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { categoryHandoffAt, liveHandoffCategories } from "@/lib/handoff";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
@@ -111,20 +112,23 @@ const firstName = (n: string) => n.trim().split(/\s+/)[0] || n;
 const streetOf = (title: string, addressLine: string | null) =>
   (addressLine?.trim() && !/^\[No address/i.test(addressLine) ? addressLine.trim() : title.split(",")[0].trim()) || "Your shoot";
 
-/** The photographer's text. No dashes; their upload page linked. */
-export function composeNudgeText(o: { firstName: string; street: string; shotOn: Date; missing: MissingInstructions; link: string; again?: boolean }): string {
+/** The photographer's text. No dashes; their upload page linked. The words are
+ *  the instructions_missing_photographer template (Settings → Text messages,
+ *  Oct 21 2026); the hub marker stays in front. `t` = saved wording, else default. */
+export function composeNudgeText(o: { firstName: string; street: string; shotOn: Date; missing: MissingInstructions; link: string; again?: boolean }, t: TextTemplateSet = DEFAULT_TEXTS): string {
   const waitingFor = o.missing.video.length ? "before editing can start" : "before the photos can go out";
   return noDashes(
-    `${HUB_SMS_PREFIX}: Hi ${o.firstName}, ${o.street} (shot ${shotDay(o.shotOn)}) is ${o.again ? "still " : ""}waiting on you ${waitingFor}: ${listWords(allItems(o.missing))}. Finish it here: ${o.link}`,
+    `${HUB_SMS_PREFIX}: ${t.render("instructions_missing_photographer", { firstName: o.firstName, street: o.street, shotDay: shotDay(o.shotOn), still: o.again ? "still" : "", waitingFor, missingList: listWords(allItems(o.missing)), link: o.link })}`,
   );
 }
 
-/** The creative manager's heads-up (their bell row's sentence, and their text). */
-export function composeManagerLine(o: { photographerFirst: string; street: string; shotOn: Date; missing: MissingInstructions; unreachable?: string | null; again?: boolean }): string {
+/** The creative manager's heads-up (their bell row's sentence, and their text):
+ *  the instructions_missing_manager template. */
+export function composeManagerLine(o: { photographerFirst: string; street: string; shotOn: Date; missing: MissingInstructions; unreachable?: string | null; again?: boolean }, t: TextTemplateSet = DEFAULT_TEXTS): string {
   const waiting = o.missing.video.length ? "Editing is waiting." : "The photos are waiting.";
-  const unreachable = o.unreachable ? ` ${o.photographerFirst} could not be texted (${o.unreachable}).` : "";
+  const unreachable = o.unreachable ? `${o.photographerFirst} could not be texted (${o.unreachable}).` : "";
   return noDashes(
-    `Heads up: ${o.photographerFirst} ${o.again ? "still " : ""}hasn't sent the instructions for ${o.street} (shot ${etMonthDay(o.shotOn)}) yet: ${listWords(allItems(o.missing))}. ${waiting}${unreachable}`,
+    t.render("instructions_missing_manager", { photographerFirst: o.photographerFirst, still: o.again ? "still" : "", street: o.street, shotDay: etMonthDay(o.shotOn), missingList: listWords(allItems(o.missing)), waiting, unreachable }),
   );
 }
 
@@ -273,6 +277,9 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
 
   const { liveAppointment } = await import("@/lib/shootDayText");
   const { holdFor } = await import("@/lib/notifySchedule");
+  // The wording (Settings → Text messages, Oct 21 2026).
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const words = await loadTextTemplates();
   let managers: { id: string; name: string }[] | null = null;
   let ours: Set<string> | null = null;
 
@@ -314,7 +321,7 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
 
     // 1. The photographer's text.
     const { appBase } = await import("@/lib/appUrl");
-    const text = composeNudgeText({ firstName: firstName(ph.name), street, shotOn: shotAt, missing, link: `${appBase()}/upload/${p.id}`, again: mornings > 0 });
+    const text = composeNudgeText({ firstName: firstName(ph.name), street, shotOn: shotAt, missing, link: `${appBase()}/upload/${p.id}`, again: mornings > 0 }, words);
     let out: TextOutcome;
     const num = staffTextNumber(ph.phone);
     if (!ph.active) out = { kind: "not_sent", why: "not an active team member" };
@@ -363,7 +370,7 @@ export async function sweepMissingInstructions(now: Date = new Date()): Promise<
     const told: string[] = [];
     if (copy.length) {
       const href = `/projects/${p.id}`;
-      const line = composeManagerLine({ photographerFirst: firstName(ph.name), street, shotOn: shotAt, missing, unreachable: out.kind === "not_sent" ? out.why : null, again: mornings > 0 });
+      const line = composeManagerLine({ photographerFirst: firstName(ph.name), street, shotOn: shotAt, missing, unreachable: out.kind === "not_sent" ? out.why : null, again: mornings > 0 }, words);
       try {
         const { notifyInApp } = await import("@/lib/notify");
         await notifyInApp({

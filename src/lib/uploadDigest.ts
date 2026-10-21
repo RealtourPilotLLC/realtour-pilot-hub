@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
 import { logComm } from "@/lib/commLog";
 import { etDayBoundsUtc, etDayKey, etHour } from "@/lib/datetime";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
+import { loadTextTemplates } from "@/lib/textTemplateStore";
 
 // ---------------------------------------------------------------------------
 // The 7 PM shoot digest (Jordan, Sep 1 2026): every evening, each creative
@@ -41,13 +43,11 @@ const etDayWindow = (): { start: Date; end: Date } => etDayBoundsUtc(etDayKey(ne
 // starting today" intro retired Oct 21 2026 (Jordan: "That was the first run
 // and now it's in effect."): it showed to anyone the hub never saw agree to
 // the process, which kept the owner on the launch copy every night.
-export function digestText(firstName: string, streets: string[]): string {
+// The words are the upload_digest template (Settings → Text messages, Oct 21
+// 2026); the numbered list stays here. `t` = the saved wording, else default.
+export function digestText(firstName: string, streets: string[], t: TextTemplateSet = DEFAULT_TEXTS): string {
   const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
-  return (
-    `Hi ${firstName}, Realtour Pilot here.\n\n` +
-    `Tonight's shoots to upload:\n${list}\n\n` +
-    `Upload to Dropbox, then finish each shoot's checklist here:\n${APP_URL}/upload`
-  );
+  return t.render("upload_digest", { firstName, shootList: list, uploadLink: `${APP_URL}/upload` });
 }
 
 // The one-time launch announcement (Jordan approves the copy, then the blast
@@ -112,27 +112,20 @@ export type SplitNag = { street: string; url: string };
 /** ONE split notice per job, ever — the chaser and the late-evening send
  *  (sendSplitNoticeIfChaserPassed) both claim it, so it never goes twice. */
 export const splitNoticeKey = (projectId: string) => `upload-split-${projectId}`;
-export function nagText(firstName: string, streets: string[], split: SplitNag[] = []): string {
-  const parts: string[] = [`Hi ${firstName}, Realtour Pilot here.`];
+// Four templates (Settings → Text messages, Oct 21 2026), one per part, joined
+// with a blank line as before: the greeting, the shoots still waiting, and one
+// or several videos missing. `t` = the saved wording, else the default.
+export function nagText(firstName: string, streets: string[], split: SplitNag[] = [], t: TextTemplateSet = DEFAULT_TEXTS): string {
+  const parts: string[] = [t.render("upload_chaser_greeting", { firstName })];
   if (streets.length > 0) {
     const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
-    parts.push(
-      `Still waiting on today's upload page${streets.length === 1 ? "" : "s"}:\n${list}\n\n` +
-        `Finish tonight — files in Dropbox + the page submitted. The shoot is added to your payroll when you submit:\n` +
-        `${APP_URL}/upload`,
-    );
+    parts.push(t.render("upload_chaser_shoots", { pages: streets.length === 1 ? "page" : "pages", shootList: list, uploadLink: `${APP_URL}/upload` }));
   }
   if (split.length === 1) {
-    parts.push(
-      `Photos are uploaded for ${split[0].street}, but the video is not. Please upload the video and submit it before 8:00 AM tomorrow:\n${split[0].url}\n\n` +
-        `A video that comes in after 8:00 AM counts as a late upload on your KPIs.`,
-    );
+    parts.push(t.render("upload_chaser_video_one", { street: split[0].street, videoLink: split[0].url }));
   } else if (split.length > 1) {
     const list = split.map((s, i) => `${i + 1}. ${s.street}: ${s.url}`).join("\n");
-    parts.push(
-      `Photos are uploaded but the video is not for:\n${list}\n\n` +
-        `Please upload each video and submit it before 8:00 AM tomorrow. A video that comes in after 8:00 AM counts as a late upload on your KPIs.`,
-    );
+    parts.push(t.render("upload_chaser_video_many", { videoList: list }));
   }
   return parts.join("\n\n");
 }
@@ -202,6 +195,7 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
 
   const from = await defaultOpenPhoneNumber();
   if (!from) return { sent: 0, skipped: byMember.size, notes: ["OpenPhone not connected"] };
+  const words = await loadTextTemplates();
 
   let sent = 0, skipped = 0;
   for (const [memberId, m] of byMember) {
@@ -228,7 +222,7 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
       skipped++;
       continue;
     }
-    const text = nagText(m.name.split(" ")[0], m.streets, split);
+    const text = nagText(m.name.split(" ")[0], m.streets, split, words);
     // Their quiet time: the same text waits in the staff queue; the night's
     // claim and the split claims stay taken, so it still goes once.
     const heldUntil = await heldForQuietTime(memberId, text, "upload_nag");
@@ -303,7 +297,7 @@ export async function sendSplitNoticeIfChaserPassed(projectId: string, now: Date
     } catch {
       return { sent: false, reason: "already told" };
     }
-    const text = nagText(p.photographer.name.split(" ")[0], [], [{ street: p.title.split(",")[0], url: `${APP_URL}/upload/${p.id}` }]);
+    const text = nagText(p.photographer.name.split(" ")[0], [], [{ street: p.title.split(",")[0], url: `${APP_URL}/upload/${p.id}` }], await loadTextTemplates());
     // Their quiet time: the text waits in the staff queue; the job's claim
     // stays taken, so it still goes once.
     const heldUntil = await heldForQuietTime(p.photographer.id, text, "upload_nag", now);
@@ -360,6 +354,7 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
 
   const from = await defaultOpenPhoneNumber();
   if (!from) return { sent: 0, skipped: byMember.size, notes: ["OpenPhone not connected"] };
+  const words = await loadTextTemplates();
 
   let sent = 0, skipped = 0;
   for (const [memberId, m] of byMember) {
@@ -375,7 +370,7 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       skipped++; // already claimed (today's text went out or is in flight)
       continue;
     }
-    const text = digestText(m.name.split(" ")[0], m.streets);
+    const text = digestText(m.name.split(" ")[0], m.streets, words);
     // Their quiet time (the owner's Saturday until 7:30 PM): the same list
     // waits in the staff queue and goes when the window ends. The day's claim
     // stays taken, so the 8 PM EDT firing and tomorrow cannot send it again.

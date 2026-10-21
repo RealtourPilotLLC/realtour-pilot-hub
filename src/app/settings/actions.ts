@@ -5,9 +5,9 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { requireAdmin } from "@/lib/auth/guards";
 import {
   editorRouting, putSetting, ROUTABLE_EDITORS, autoTextRules, DEFAULT_AUTO_TEXTS,
-  turnaroundRules, internalAlertRules, textTemplates,
+  turnaroundRules, internalAlertRules,
   type EditorRoutingRules, type AutoTextRules, type TurnaroundRules,
-  type InternalAlertRules, type TextTemplates,
+  type InternalAlertRules,
   reviewRoomRules, type ReviewRoomRules, EVENING_SEND_HOURS,
   topazSettings, saveTopazSettings, type TopazSettings,
 } from "@/lib/settings";
@@ -60,6 +60,12 @@ export async function saveAutoTextRules(input: AutoTextRules): Promise<{ ok: boo
     const me = await requireSettingsActor();
     const from = Math.min(23, Math.max(0, Math.round(input.sendFromHour)));
     const until = Math.min(24, Math.max(from + 1, Math.round(input.sendUntilHour)));
+    // THE WORDING IS NOT THIS FORM'S (Oct 21 2026). The welcome and after-hours
+    // words are edited in Settings → Text messages now; whatever the rules row
+    // already holds for them is carried through untouched, so a rules save
+    // from a page loaded before a reset there cannot put the old words back.
+    const { storedAutoTextMessages } = await import("@/lib/textTemplateStore");
+    const kept = await storedAutoTextMessages();
     const rules: AutoTextRules = {
       enabled: !!input.enabled,
       sendFromHour: from,
@@ -79,16 +85,15 @@ export async function saveAutoTextRules(input: AutoTextRules): Promise<{ ok: boo
       // field, so anything omitted here is silently dropped on every save.
       ...(input.sendUntilMinute != null ? { sendUntilMinute: Math.min(59, Math.max(0, Math.round(input.sendUntilMinute))) } : {}),
       ...(input.weekdaysOnly != null ? { weekdaysOnly: !!input.weekdaysOnly } : {}),
-      ...(input.afterHours ? { afterHours: input.afterHours } : {}),
-      // The welcome text (Jordan, Sep 7). Stored trimmed and bounded; a blank
-      // message is saved as blank on purpose, because autoTextRules() reads an
-      // empty box as "use the built-in wording" rather than as an empty text.
+      ...(input.afterHours ? { afterHours: { ...input.afterHours, message: kept.afterHours } } : {}),
+      // The welcome text (Jordan, Sep 7): the switch and the booking link. A
+      // blank message (the usual case now) reads as the default wording.
       ...(input.welcome
         ? {
             welcome: {
               enabled: !!input.welcome.enabled,
               strategyCallUrl: String(input.welcome.strategyCallUrl ?? "").trim().slice(0, 300),
-              message: String(input.welcome.message ?? "").slice(0, 1000),
+              message: kept.welcome,
             },
           }
         : {}),
@@ -470,29 +475,9 @@ export async function loadCreativeApproverCandidates(): Promise<
 }
 
 // ---- Client text wording ---------------------------------------------------
-export async function saveTextTemplates(input: TextTemplates): Promise<{ ok: boolean; message: string }> {
-  // A box that still reads exactly the built-in wording is not an override —
-  // store it empty so the built-in composer (which can also drop " for
-  // {items}" on a job with none) stays in charge (Jordan, Sep 7: the boxes
-  // now SHOW the current wording instead of sitting empty).
-  const { BUILTIN_TEMPLATE_TEXT } = await import("@/lib/settings");
-  for (const key of ["confirmation", "deliveryAll", "deliveryPartial"] as const) {
-    if ((input as Record<string, unknown>)[key] === BUILTIN_TEMPLATE_TEXT[key]) (input as Record<string, unknown>)[key] = "";
-  }
-
-  try {
-    const me = await requireSettingsActor();
-    await putSetting("text_templates", input, me?.email ?? null);
-    revalidatePath("/settings");
-    return { ok: true, message: "Saved — the next automated text uses this wording." };
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
-  }
-}
-export async function loadTextTemplates(): Promise<TextTemplates> {
-  await requireSettingsActor();
-  return textTemplates();
-}
+// saveTextTemplates / loadTextTemplates (the old three-box "Text wording" card)
+// retired Oct 21 2026: every automatic text's wording is saved through
+// app/settings/textTemplateActions.ts now, owner only.
 
 // ---- The 1080p video pass (Topaz) -----------------------------------------
 // Owner or admin, like every other rule on this page. The real guard is not the

@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { EditorKey } from "@/lib/editors";
+import { TEXT_TEMPLATES } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // Platform settings — the /settings page's storage (owner + admin).
@@ -159,18 +160,16 @@ export type ResolvedAutoTextRules = Omit<AutoTextRules, "sendUntilMinute" | "wee
 // experience"). It only goes out once the WHOLE job has landed — see the gate
 // in lib/clientTextSweeps sweepDeliveryTexts.
 //
-// This is the built-in wording. The owner-editable version is Settings → Text
-// templates → "Delivery text" (TextTemplates.deliveryAll below): anything typed
-// there wins, so the copy can change without a deploy. Placeholders: {first},
-// {street}, {feedbackUrl}. Jordan's voice — no em dashes, no emojis.
-export const DEFAULT_DELIVERY_FEEDBACK_TEXT =
-  "Hi {first}! Now that {street} is wrapped up, how did everything go? The shoot, the turnaround, the content. Quick feedback here helps us make sure you are getting a great experience and keep making it better: {feedbackUrl} If anything is not right, just reply and we will jump on it.";
+// This is the built-in wording. Since Oct 21 2026 the words live in
+// lib/textTemplates (client_delivery_feedback), edited in Settings → Text
+// messages; this name stays for the readers that use it. Placeholders:
+// {first}, {street}, {feedbackUrl}. Jordan's voice: no em dashes, no emojis.
+export const DEFAULT_DELIVERY_FEEDBACK_TEXT: string = TEXT_TEMPLATES.client_delivery_feedback.body;
 
 // The weekend / after-hours auto-reply (Jordan, Sep 2 2026). Says the hours,
 // promises the next working morning, and points at the portal so an agent who
 // needs something at 9pm on a Saturday is not stuck waiting on us.
-export const DEFAULT_AFTER_HOURS_REPLY =
-  "Hi {first}, thanks for reaching out! Our office hours are {hours}, so we will get back to you first thing {nextDay}. In the meantime you can log in at {portal} to place an order, reschedule an appointment, and grab your content and invoices.";
+export const DEFAULT_AFTER_HOURS_REPLY: string = TEXT_TEMPLATES.client_after_hours.body;
 
 // THE WELCOME TEXT (Jordan, Sep 7 2026, near enough verbatim): "Hey, first
 // name, welcome to Realtour Pilot. We're excited to work with you and get to
@@ -179,12 +178,12 @@ export const DEFAULT_AFTER_HOURS_REPLY =
 // call here anytime: [Strategy call link]… and maybe including our website for
 // general."
 //
-// Placeholders: {first} {strategyCallLink} {website} {portal}. An empty box in
-// Settings falls back to this wording, so the text can never send blank.
-export const DEFAULT_WELCOME_TEXT =
-  // Jordan, Sep 7: "The welcome text should mention the portal - they can access
-  // their account there, view invoices, content, and place orders, and reschedule."
-  "Hey {first}, welcome to Realtour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. Your client portal is {portal}: that's your account, where you can see invoices and your content, place orders and reschedule. You can also book a free strategy call any time: {strategyCallLink}. Everything about what we do is at {website}.";
+// Placeholders: {first} {strategyCallLink} {website} {portal}. Jordan, Sep 7:
+// "The welcome text should mention the portal - they can access their account
+// there, view invoices, content, and place orders, and reschedule." The words
+// live in lib/textTemplates (client_welcome) since Oct 21 2026, edited in
+// Settings → Text messages; this name stays for the readers that use it.
+export const DEFAULT_WELCOME_TEXT: string = TEXT_TEMPLATES.client_welcome.body;
 
 // Jordan, Oct 1 2026: the general welcome offers this strategy call. Monthly
 // content planning keeps its dedicated event type in integrations/calendly.
@@ -659,13 +658,14 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
   };
 }
 
-// Client text wording. Placeholders are substituted by lib/delivery — an empty
-// string means "use the built-in wording", so a blank box can never send a
-// blank text.
+// Client text wording from the old "Text wording" card. Since Oct 21 2026 it is
+// only READ: lib/textTemplateStore sends a saved confirmation / deliveryAll
+// exactly as before until that template is saved or reset in Settings → Text
+// messages (which empties the field here). deliveryPartial still shapes the
+// part-delivered draft on a delivery task (lib/delivery deliveryMessage); no
+// automatic text sends it. An empty string means "use the built-in wording".
 export type TextTemplates = { confirmation: string; deliveryAll: string; deliveryPartial: string };
 export const DEFAULT_TEMPLATES: TextTemplates = { confirmation: "", deliveryAll: "", deliveryPartial: "" };
-export { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
-export const TEMPLATE_PLACEHOLDERS = ["{first}", "{street}", "{when}", "{items}", "{delivered}", "{remaining}", "{feedbackUrl}"];
 
 export async function textTemplates(): Promise<TextTemplates> {
   const t = await getSetting<TextTemplates>("text_templates", DEFAULT_TEMPLATES);

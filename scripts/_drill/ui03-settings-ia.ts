@@ -139,12 +139,20 @@ async function renderChild() {
   // still renders exactly as BASE did: its own <Section title="Photographer pay
   // view"> heading (which section 0 asserts) is the page's markup, not the
   // component's, and is untouched.
+  //
+  // THE RETIRED "TEXT WORDING" BOXES (Oct 21 2026). BASE renders
+  // <TextTemplateSettings> from OperatingRules; Settings → Text messages
+  // replaced it and the component is gone from this tree. Same treatment: a
+  // local stand-in, and the page's own <Section title="Text wording"> heading
+  // (section 0 asserts it) is untouched.
   const oldSrc = show("src/app/settings/page.tsx")
     .replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)
     .replace(/\bpayVisibilityRules, /, "")
     .replace(/import \{ PayVisibilitySettings \} from "[^"]+";\n/, "const PayVisibilitySettings = (_p: { initial: unknown; isOwner: boolean }) => null;\n")
-    .replace("payVisibilityRules()", "Promise.resolve({ photographerPayPaused: true, pausedAt: null as string | null, pausedBy: null as string | null })");
+    .replace("payVisibilityRules()", "Promise.resolve({ photographerPayPaused: true, pausedAt: null as string | null, pausedBy: null as string | null })")
+    .replace(/\bTextTemplateSettings, (ReviewRoomSettings \} from "[^"]+";\n)/, "$1const TextTemplateSettings = (_p: { initial: unknown }) => null;\n");
   if (/payVisibilityRules\(|components\/settings\/PayVisibility/.test(oldSrc)) throw new Error("ui03: BASE page still reaches the retired pay switch");
+  if (/TextTemplateSettings, ReviewRoomSettings/.test(oldSrc)) throw new Error("ui03: BASE page still imports the retired Text wording boxes");
   fs.writeFileSync(oldFile, 'import React from "react";\nvoid React;\n' + oldSrc);
   const OldPage = ((await import(oldFile)) as { default: () => Promise<unknown> }).default;
   const NewPage = ((await import("@/app/settings/page")) as { default: (p: { searchParams: Promise<Record<string, string>> }) => Promise<unknown> }).default;
@@ -382,7 +390,9 @@ async function parent() {
       });
       c.ok(`${role}: every card sits inside exactly one group — the one SETTINGS_LAYOUT names`, misplaced.length === 0, misplaced.map((e) => e.attrs["data-settings-card"]).join(","));
       // Oct 19 2026: the Review Room card is titled "Video Review Room" now (the OLD page keeps its old title).
-      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, k === "review-room" ? "Video Review Room" : cardTitle[k]) === 1));
+      // Oct 21 2026: "Text wording" became "Text messages", every automatic text's wording (lib/textTemplates).
+      const newTitle = (k: string) => (k === "review-room" ? "Video Review Room" : k === "text-wording" ? "Text messages" : cardTitle[k]);
+      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, newTitle(k)) === 1), expected.filter((k) => h2Count(root, newTitle(k)) !== 1).join(","));
       c.ok(`${role}: no pay switch card under either of its names`, h2Count(root, NEW_PAY_TITLE) === 0 && h2Count(root, "Photographer pay view") === 0);
       const groups = all(root, (e) => "data-settings-group" in e.attrs);
       c.ok(`${role}: every group states its effect in a sentence under its heading`, groups.length > 0 && groups.every((g) => {
