@@ -37,7 +37,7 @@ export function AutohdrConnectForm({ developerUrl }: { developerUrl: string }) {
             Checked by signing in and reading your credit balance. That spends nothing. A pair AutoHDR rejects is not saved. The secret is encrypted before it is stored and is never shown again.
           </p>
           <div className="flex gap-2">
-            <button type="submit" disabled={pending} className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
+            <button type="submit" disabled={pending} className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
               {pending && <Loader2 className="size-4 animate-spin" />}
               Test &amp; save
             </button>

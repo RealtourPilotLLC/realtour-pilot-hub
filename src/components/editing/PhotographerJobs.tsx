@@ -172,7 +172,7 @@ function JobCard({ job }: { job: PhotographerJob }) {
             <button
               onClick={save}
               disabled={pending || !dirty}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />} Save
             </button>
@@ -206,7 +206,7 @@ export function PhotographerJobs({ jobs }: { jobs: PhotographerJob[] }) {
             onClick={() => setTab(r.id)}
             className={cn(
               "rounded-lg px-3 py-1.5 text-sm font-medium",
-              tab === r.id ? "bg-brand text-white" : "bg-surface-2 text-muted hover:text-foreground",
+              tab === r.id ? "bg-brand-action text-white" : "bg-surface-2 text-muted hover:text-foreground",
             )}
           >
             {r.label}{" "}

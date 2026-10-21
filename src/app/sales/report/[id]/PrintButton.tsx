@@ -13,7 +13,7 @@ export function ReportToolbar() {
       </Link>
       <button
         onClick={() => window.print()}
-        className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white"
+        className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-medium text-white"
       >
         <Download className="size-4" /> Download PDF
       </button>

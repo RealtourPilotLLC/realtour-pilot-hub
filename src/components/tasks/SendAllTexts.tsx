@@ -165,7 +165,7 @@ export function SendAllTexts({ count, includeTest = false }: { count: number; in
               <button
                 onClick={sendAll}
                 disabled={sending || ticked.length === 0}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3.5 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
               >
                 {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 {sending ? "Sending…" : `Send ${ticked.length} text${ticked.length === 1 ? "" : "s"} now`}

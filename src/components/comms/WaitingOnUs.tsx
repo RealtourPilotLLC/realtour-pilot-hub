@@ -84,7 +84,7 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
                       </p>
                       {latest && <p className="mt-0.5 truncate text-[13px] text-muted">&ldquo;{clean(latest.subject ? `${latest.subject}: ${latest.snippet}` : latest.snippet)}&rdquo;</p>}
                     </div>
-                    <Link href={waitingRowReplyHref(w, includeTest)} className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand px-3 text-sm font-semibold text-white hover:opacity-90">Reply</Link>
+                    <Link href={waitingRowReplyHref(w, includeTest)} className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90">Reply</Link>
                     <HandledButton clientId={w.group.clientId} family={w.family} groupKey={w.group.groupKey} />
                   </div>
                   {/* Everything they sent since our last answer, so the row can

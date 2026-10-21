@@ -29,7 +29,7 @@ export function BlockDayButton({ dayKey, pending }: { dayKey: string; pending: n
           })
         }
         disabled={busy}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+        className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
       >
         {busy ? <Loader2 className="size-3 animate-spin" /> : <CalendarCheck className="size-3" />}
         Block {pending} on my calendar
@@ -77,7 +77,7 @@ export function BlockRowControls({
               else setErr(r.error ?? "Didn't move.");
             })
           }
-          className="rounded bg-brand px-1.5 py-0.5 text-[10px] font-semibold text-white"
+          className="rounded bg-brand-action px-1.5 py-0.5 text-[10px] font-semibold text-white"
         >
           Move
         </button>

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { contentHref } from "@/lib/contentNav";
 import { Button } from "@/components/ui/Action";
 import { SaveStatus } from "@/components/ui/SaveStatus";
+import { Switch } from "@/components/ui/Switch";
 import {
   ONBOARDING_MESSAGES, STEP3_TOGGLES, SWITCH_WOULD, dayET, messageOf, toggleOf, whenET,
   type OnboardingChannel, type OnboardingLogEntry, type OnboardingStep, type OnboardingToggle, type StepStatus,
@@ -222,15 +223,7 @@ function SwitchLine({ v }: { v: OnboardingToggleView }) {
 function ToggleRow({ t, v, disabled, onChange }: { t: OnboardingToggle; v: OnboardingToggleView; disabled: boolean; onChange: (on: boolean) => void }) {
   return (
     <li data-toggle={t.key} data-toggle-on={v.on ? "1" : "0"} className="flex items-start gap-3 py-2">
-      <button
-        type="button" role="switch" aria-checked={v.on} aria-label={`${t.label} for this client`} disabled={disabled}
-        onClick={() => onChange(!v.on)}
-        className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50"
-      >
-        <span aria-hidden className={cn("relative h-6 w-11 rounded-full transition-colors", v.on ? "bg-success" : "bg-surface-2 ring-1 ring-border")}>
-          <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", v.on ? "left-[22px]" : "left-0.5")} />
-        </span>
-      </button>
+      <Switch checked={v.on} onChange={onChange} aria-label={`${t.label} for this client`} disabled={disabled} />
       <div className="min-w-0 flex-1">
         <p className="font-medium">{t.label}</p>
         <p className="text-[13px] text-muted">{t.words}</p>

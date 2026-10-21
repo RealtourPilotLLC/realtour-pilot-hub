@@ -113,7 +113,7 @@ export function PlaidConnect({
             <button
               onClick={startConnect}
               disabled={busy === "link"}
-              className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
             >
               {busy === "link" ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
               Connect a bank
@@ -213,7 +213,7 @@ function CredsForm({ onSaved, defaultEnv }: { onSaved: () => void; defaultEnv: s
       </label>
       {error && <p className="text-xs text-danger">{error}</p>}
       <button type="submit" disabled={pending}
-        className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
+        className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
         {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Save keys
       </button>
     </form>

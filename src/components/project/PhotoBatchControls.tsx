@@ -65,7 +65,7 @@ export function PhotoBatchControls({ projectId, canRecordRerun }: { projectId: s
             className="w-full rounded-lg border bg-surface px-2.5 py-1.5 text-sm"
           />
           <div className="flex gap-2">
-            <button type="submit" disabled={pending || reason.trim().length < 3} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+            <button type="submit" disabled={pending || reason.trim().length < 3} className="rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
               {pending ? "Checking Dropbox…" : "Record the re-run"}
             </button>
             <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3 py-1.5 text-xs text-muted hover:bg-surface-2">

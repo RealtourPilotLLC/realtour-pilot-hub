@@ -214,7 +214,7 @@ export function Gallery() {
             )}
             {index != null && <span className="rounded-md bg-black/65 px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-white">{String(index + 1).padStart(2, "0")}</span>}
             {isHero && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-brand px-1.5 py-0.5 text-[12px] font-semibold text-white">
+              <span className="inline-flex items-center gap-1 rounded-md bg-brand-action px-1.5 py-0.5 text-[12px] font-semibold text-white">
                 <Star aria-hidden className="size-3 fill-current" /> Hero
               </span>
             )}

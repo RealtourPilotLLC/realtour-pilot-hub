@@ -547,7 +547,7 @@ export function MusicCard({
                   onClick={() => download(pick.trackId, pick.title)}
                   disabled={!canAct || busyId === pick.trackId}
                   title={canAct ? "Pull the MP3 into the job's RAW-Video/Music folder" : "Read-only preview"}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
                 >
                   {busyId === pick.trackId ? <Loader2 className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
                   Download to the job folder
@@ -579,7 +579,7 @@ export function MusicCard({
             <button
               type="submit"
               disabled={searching}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
             >
               {searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />} Search
             </button>
@@ -597,7 +597,7 @@ export function MusicCard({
                   key={v}
                   type="button"
                   onClick={() => setVocals(v)}
-                  className={cn("px-2.5 py-1 font-medium", vocals === v ? "bg-brand text-white" : "bg-surface text-muted hover:text-foreground")}
+                  className={cn("px-2.5 py-1 font-medium", vocals === v ? "bg-brand-action text-white" : "bg-surface text-muted hover:text-foreground")}
                 >
                   {label}
                 </button>
@@ -768,7 +768,7 @@ function TrackRow({
           onClick={() => onDownload(t.id, t.title)}
           disabled={!canAct || busy || inDropbox || t.previewOnly}
           title={t.previewOnly ? "Preview only on our agreement" : canAct ? "Pull the MP3 into the job's RAW-Video/Music folder" : "Read-only preview"}
-          className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-3 animate-spin" /> : <CloudDownload className="size-3" />}
           {inDropbox ? "In Dropbox" : "Download"}

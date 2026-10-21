@@ -41,7 +41,7 @@ export function AddTask({ assignees }: { assignees?: { key: string; name: string
       <div className="flex items-center gap-3">
         <button
           onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
         >
           <Plus className="size-4" /> Add a task
         </button>
@@ -100,7 +100,7 @@ export function AddTask({ assignees }: { assignees?: { key: string; name: string
           <button
             onClick={submit}
             disabled={pending || !title.trim()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Add task
           </button>

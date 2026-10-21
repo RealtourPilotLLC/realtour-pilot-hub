@@ -92,7 +92,7 @@ export function JobNoteEditor({
         <button
           onClick={save}
           disabled={saving}
-          className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
         >
           {saving && <Loader2 className="size-3 animate-spin" />}
           Save

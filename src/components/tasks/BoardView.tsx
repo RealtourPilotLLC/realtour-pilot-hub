@@ -102,7 +102,7 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
       href={href}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
-        active ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
+        active ? "border-brand bg-brand-action text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
       )}
     >
       {label}

@@ -55,7 +55,7 @@ export function ReelScriptEditor({ projectId, script }: { projectId: string; scr
         <button
           onClick={save}
           disabled={pending || !draft.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-[13px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-[13px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
         >
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Save script
         </button>

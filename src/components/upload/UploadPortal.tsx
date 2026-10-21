@@ -276,7 +276,7 @@ function StepCard({
         <span
           className={cn(
             "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full text-sm font-bold",
-            done ? "bg-success/15 text-success" : "bg-brand text-white",
+            done ? "bg-success/15 text-success" : "bg-brand-action text-white",
           )}
         >
           {done ? <Check className="size-4.5" /> : n}
@@ -1624,7 +1624,7 @@ export function UploadPortal({
                             aria-pressed={on}
                             className={`flex w-full items-start gap-2.5 rounded-lg border px-3 py-2 text-left ${on ? "border-brand bg-brand-soft" : "border-border bg-surface-2"} ${elsewhere ? "cursor-not-allowed opacity-60" : recorded ? "cursor-default" : ""}`}
                           >
-                            <span className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${on ? "border-brand bg-brand text-white" : "border-border"}`}>
+                            <span className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border ${on ? "border-brand bg-brand-action text-white" : "border-border"}`}>
                               {on ? <Check className="size-3" /> : null}
                             </span>
                             <span className="min-w-0">
@@ -1850,7 +1850,7 @@ export function UploadPortal({
           <div className="mt-2.5 flex flex-wrap gap-2">
             {draftConflict.submitted ? (
               <>
-                <button onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
+                <button onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
                   Reload to see what went in
                 </button>
                 <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
@@ -1859,7 +1859,7 @@ export function UploadPortal({
               </>
             ) : (
               <>
-                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">
+                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">
                   Keep this page&rsquo;s answers
                 </button>
                 <button onClick={takeTheirsAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
@@ -1926,7 +1926,7 @@ export function UploadPortal({
               </a>
             )}
             <Link href={`/projects/${project.id}`}
-              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg hover:opacity-90">
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-brand-fg hover:opacity-90">
               View project
             </Link>
           </div>
@@ -2729,7 +2729,7 @@ export function UploadPortal({
                   }
                   else applyToggle(a.id, a.next, a.prevReason);
                 }}
-                className="rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+                className="rounded-lg bg-brand-action px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
               >
                 {isPending ? "Submitting…" : ask.review && checkingRaw ? "Checking files…" : ask.yes}
               </button>
@@ -2772,7 +2772,7 @@ export function UploadPortal({
                     disabled={isPending || !!pendingAttempt}
                     className={cn(
                       "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50",
-                      at ? "border border-border bg-surface text-foreground" : "bg-brand text-brand-fg",
+                      at ? "border border-border bg-surface text-foreground" : "bg-brand-action text-brand-fg",
                     )}
                   >
                     {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
@@ -2799,7 +2799,7 @@ export function UploadPortal({
         <button
           onClick={() => finalize()}
           disabled={isPending || !!pendingAttempt}
-          className="inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-5 py-2.5 text-sm font-semibold text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
           {done ? "Re-submit to editors" : "Everything's uploaded — submit"}
@@ -2908,7 +2908,7 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
                       </>
                     )}
                     <div className="flex gap-2">
-                      <button disabled={pending} onClick={() => plan(g.id)} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Save plan</button>
+                      <button disabled={pending} onClick={() => plan(g.id)} className="rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Save plan</button>
                       <button onClick={() => setPlanFor(null)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
                     </div>
                   </div>
@@ -2917,7 +2917,7 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
                   <div className="mt-2 space-y-1.5">
                     <input value={closeNote} onChange={(e) => setCloseNote(e.target.value)} placeholder="How it was settled — this note is the record" className={input} />
                     <div className="flex flex-wrap gap-2">
-                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "RESOLVED")} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Recovered</button>
+                      <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "RESOLVED")} className="rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-brand-fg disabled:opacity-50">Recovered</button>
                       <button disabled={pending || !closeNote.trim()} onClick={() => close(g.id, "CANCELLED")} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium disabled:opacity-50">No longer needed</button>
                       <button onClick={() => setCloseFor(null)} className="rounded-lg px-2 py-1.5 text-sm text-muted">Cancel</button>
                     </div>

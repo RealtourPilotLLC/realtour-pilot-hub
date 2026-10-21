@@ -47,7 +47,7 @@ export type LateSessionControlProps = {
 };
 
 const control = "inline-flex min-h-11 max-w-full items-center justify-center gap-1.5 rounded-lg border border-border-strong px-3 py-2 text-sm font-medium text-muted whitespace-normal hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
-const primary = "inline-flex min-h-11 max-w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white whitespace-normal hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
+const primary = "inline-flex min-h-11 max-w-full items-center justify-center gap-1.5 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-white whitespace-normal hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 const quiet = "inline-flex min-h-11 items-center gap-1.5 text-[13px] font-medium text-muted hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 const fmt = (iso: string | null) => { if (!iso) return ""; const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : ""; };
 const stateWords = (s: State, at: string | null) => s === "BOOKED" ? `booked${at ? ` for ${fmt(at)}` : ""}` : s === "REQUESTED" ? "requested, waiting on Kyle to confirm" : "not booked yet";

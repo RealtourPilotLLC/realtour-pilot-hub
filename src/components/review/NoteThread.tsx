@@ -118,7 +118,7 @@ export function NoteThread({
             onClick={sendReply}
             disabled={busy || !reply.trim()}
             aria-label="Send reply"
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand text-white disabled:opacity-50"
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-action text-white disabled:opacity-50"
           >
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
           </button>

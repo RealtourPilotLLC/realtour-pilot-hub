@@ -179,7 +179,7 @@ export default async function ContentClientPage({
                 aria-current={on ? "page" : undefined}
                 className={cn(
                   "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-sm sm:justify-start sm:px-3.5",
-                  on ? "bg-brand font-semibold text-white" : "border border-border font-medium text-muted hover:bg-surface-2 hover:text-foreground",
+                  on ? "bg-brand-action font-semibold text-white" : "border border-border font-medium text-muted hover:bg-surface-2 hover:text-foreground",
                 )}
               >
                 <Icon className="size-4 shrink-0" aria-hidden />

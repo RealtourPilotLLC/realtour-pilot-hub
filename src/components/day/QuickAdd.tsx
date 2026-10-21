@@ -64,7 +64,7 @@ export function QuickAdd() {
         <button
           onClick={submit}
           disabled={pending || !title.trim()}
-          className="shrink-0 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+          className="shrink-0 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
         >
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : "Add"}
         </button>

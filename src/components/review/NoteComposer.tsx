@@ -77,7 +77,7 @@ export function NoteComposer({
               onClick={() => setChoice(i)}
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium",
-                i === choice ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2",
+                i === choice ? "border-brand bg-brand-action text-white" : "border-border bg-surface hover:bg-surface-2",
               )}
             >
               <Icon className="size-3" /> {c.label}
@@ -100,7 +100,7 @@ export function NoteComposer({
         <button
           onClick={save}
           disabled={saving || !body.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {saving ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />} Save note
         </button>

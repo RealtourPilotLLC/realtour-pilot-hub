@@ -176,7 +176,7 @@ export function ChatPanel({
             <Fragment key={it.id}>
             {daySep}
             <div className={cn("flex", out ? "justify-end" : "justify-start")}>
-              <div className={cn("max-w-[80%] rounded-2xl px-3 py-2 text-sm", out ? "rounded-br-sm bg-brand text-white" : "rounded-bl-sm bg-surface-2 text-foreground")}>
+              <div className={cn("max-w-[80%] rounded-2xl px-3 py-2 text-sm", out ? "rounded-br-sm bg-brand-action text-white" : "rounded-bl-sm bg-surface-2 text-foreground")}>
                 {senderName && <div className="mb-0.5 text-[11px] font-semibold text-brand">{senderName}</div>}
                 {it.media?.map((m, i) => (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -231,7 +231,7 @@ export function ChatPanel({
             {drafting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4 text-brand" />}
           </button>
           <button onClick={send} disabled={sending || (!body.trim() && !attach)} aria-label="Send"
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand text-white disabled:opacity-50">
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-action text-white disabled:opacity-50">
             {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </button>
         </div>

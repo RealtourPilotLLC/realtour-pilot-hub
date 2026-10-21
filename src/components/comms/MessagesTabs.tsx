@@ -36,7 +36,7 @@ export function MessagesTabs({ tab, counts, test = false }: { tab: MessagesTab; 
             data-tab={t.key}
             className={cn(
               "inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium",
-              active ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2",
+              active ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2",
             )}
           >
             <Icon aria-hidden className="mr-1.5 size-3.5" />

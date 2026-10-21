@@ -221,7 +221,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
         <aside className="max-h-[46dvh] w-full shrink-0 overflow-y-auto border-t border-border p-3 lg:max-h-none lg:w-[27rem] lg:border-l lg:border-t-0 lg:p-4">
           <h2 className="text-base font-semibold">
             {photoTitle(photo)} <span className="font-normal text-muted">· {photo.roomLabel}</span>
-            {isHero && <span className="ml-2 rounded bg-brand px-1.5 py-0.5 text-[12px] font-semibold text-white">Hero</span>}
+            {isHero && <span className="ml-2 rounded bg-brand-action px-1.5 py-0.5 text-[12px] font-semibold text-white">Hero</span>}
           </h2>
           {excluded && photo.excludeReason && <p className="text-[13px] text-warning">Left out: {photo.excludeReason}</p>}
           {findings.length === 0 ? (

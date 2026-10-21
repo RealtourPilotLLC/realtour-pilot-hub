@@ -61,7 +61,7 @@ export function PayFlag({ projectId, street, periodStartKey, already, general }:
             className="w-full rounded-xl border border-border bg-surface-2/50 p-2.5 text-sm"
           />
           <span className="flex items-center gap-2">
-            <button onClick={send} disabled={busy || !text.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+            <button onClick={send} disabled={busy || !text.trim()} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
               {busy && <Loader2 className="size-3 animate-spin" />} Send to Jordan
             </button>
             <button onClick={() => setOpen(false)} className="text-xs text-muted hover:text-foreground">Cancel</button>

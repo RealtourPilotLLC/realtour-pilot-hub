@@ -92,7 +92,7 @@ export function ReworkCostForm({ projectId, candidates }: { projectId: string; c
       </label>
       <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-sm" />
       <div className="flex gap-2">
-        <button type="submit" disabled={pending || !amount} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+        <button type="submit" disabled={pending || !amount} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
           {pending && <Loader2 className="size-3.5 animate-spin" />} Record
         </button>
         <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3 py-1.5 text-xs text-muted hover:bg-surface-2">Cancel</button>

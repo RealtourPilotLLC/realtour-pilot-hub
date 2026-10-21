@@ -49,9 +49,10 @@ export const LANE_CHOICES: { lane: ReviewLane; kind: ReviewKind; label: string }
 ];
 
 // Pin/dot fill per status: open = brand orange, fixed = green (awaiting
-// re-review), resolved = grey (kept only as history).
+// re-review), resolved = grey (kept only as history). Open uses the darker
+// brand-action shade because pins carry a white note number.
 export const STATUS_BG: Record<ReviewStatus, string> = {
-  OPEN: "bg-brand",
+  OPEN: "bg-brand-action",
   FIXED: "bg-success",
   RESOLVED: "bg-muted-2",
 };

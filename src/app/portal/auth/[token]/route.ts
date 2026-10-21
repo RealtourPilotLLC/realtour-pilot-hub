@@ -51,7 +51,7 @@ function continuePage(action: string, next: string): string {
 <meta name="referrer" content="same-origin">
 <title>Sign in | Realtour Pilot</title>
 <style>
-  :root { --bg: #f6f7f9; --card: #ffffff; --text: #111827; --muted: #4b5563; --brand: #ea580c; --brand-fg: #ffffff; --border: #e5e7eb; }
+  :root { --bg: #f6f7f9; --card: #ffffff; --text: #111827; --muted: #4b5563; --brand: #b94008; --brand-fg: #ffffff; --border: #e5e7eb; }
   @media (prefers-color-scheme: dark) { :root { --bg: #0b0f14; --card: #131a22; --text: #f3f4f6; --muted: #9ca3af; --brand: #f97316; --brand-fg: #111827; --border: #263040; } }
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }

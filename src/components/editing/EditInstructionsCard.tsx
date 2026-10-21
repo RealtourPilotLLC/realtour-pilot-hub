@@ -176,7 +176,7 @@ export function EditInstructionsCard({
               className="mt-1 w-full rounded-lg border border-border bg-bg p-2.5 text-sm outline-none focus:border-brand"
             />
           </label>
-          <button onClick={save} disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
+          <button onClick={save} disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
             {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Save
           </button>
           {note && <p className="text-xs text-muted">{note}</p>}

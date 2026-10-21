@@ -332,7 +332,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           product overrides the automatic parser everywhere (the fix for phantom floor
           plans and ghost videos).
         </p>
-        <Link href="/settings/products" className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+        <Link href="/settings/products" className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
           Open the product map <ArrowRight className="size-3.5" />
         </Link>
       </Section>),

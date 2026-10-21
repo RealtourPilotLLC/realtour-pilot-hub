@@ -71,7 +71,7 @@ async function main() {
   try {
     card.render(); await new Promise((resolve) => setTimeout(resolve, 10));
     click("Everything's uploaded"); await until(() => button("Submit to editors")?.disabled === false || !!button("Confirm handoff"));
-    const confirm = elements(card.render(), "button").find((p) => p.className && String(p.className).includes("bg-brand px-3.5"))!;
+    const confirm = elements(card.render(), "button").find((p) => p.className && String(p.className).includes("bg-brand-action px-3.5"))!;
     (confirm.onClick as () => void)(); (confirm.onClick as () => void)();
     await until(() => submissions.length === 1);
     c.ok("same-tick repeated confirm starts only one exact request", submissions.length === 1);

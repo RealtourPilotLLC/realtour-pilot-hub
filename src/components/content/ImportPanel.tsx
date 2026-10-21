@@ -81,7 +81,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { e
               ))}
             </div>
             <div className="mt-2 flex gap-1.5">
-              <button disabled={busy || (preview.kind !== "STRATEGY" && !/^\d{4}-\d{2}$/.test(monthKey))} onClick={() => start(async () => { const r = await applyImportAction(preview, { monthKey: preview.kind === "STRATEGY" ? null : monthKey, modes, pillarMap }); setNote(r.message); if (r.ok) setPreview(null); })} className={`${btn} bg-brand text-white`}>Apply {preview.items.length} item{preview.items.length === 1 ? "" : "s"} as history</button>
+              <button disabled={busy || (preview.kind !== "STRATEGY" && !/^\d{4}-\d{2}$/.test(monthKey))} onClick={() => start(async () => { const r = await applyImportAction(preview, { monthKey: preview.kind === "STRATEGY" ? null : monthKey, modes, pillarMap }); setNote(r.message); if (r.ok) setPreview(null); })} className={`${btn} bg-brand-action text-white`}>Apply {preview.items.length} item{preview.items.length === 1 ? "" : "s"} as history</button>
               <button onClick={() => setPreview(null)} className={quiet}>Discard preview</button>
             </div>
           </div>

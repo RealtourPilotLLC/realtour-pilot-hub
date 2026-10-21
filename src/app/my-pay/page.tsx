@@ -231,7 +231,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
               <Link
                 key={t.key}
                 href={`/my-pay?p=${t.key}${asSuffix}`}
-                className={`rounded-lg px-3 py-1.5 font-medium ${period.startKey === t.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
+                className={`rounded-lg px-3 py-1.5 font-medium ${period.startKey === t.key ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2"}`}
               >
                 {t.label}
               </Link>

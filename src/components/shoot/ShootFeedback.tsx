@@ -90,7 +90,7 @@ export function ShootFeedback({ notes: initial, readOnly, replyOnly, photographe
           <button
             onClick={share}
             disabled={sharing}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
             title={`Text ${firstName} a link to this feedback`}
           >
             {sharing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Text {firstName} the feedback
@@ -231,7 +231,7 @@ export function NoteCard({ note, readOnly, replyOnly, patch }: {
               <button
                 onClick={markFixed}
                 disabled={fixing}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
               >
                 {fixing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark fixed
               </button>

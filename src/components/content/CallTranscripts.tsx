@@ -96,7 +96,7 @@ export function CallTranscriptItem({ call, variant = "card", showCall = true, sh
 
   const canRun = c.canAnalyze && (c.state === "in" || c.state === "failed" || c.state === "analyzed");
   const label = c.state === "analyzed" ? "Re-analyze" : c.state === "failed" ? "Try again" : "Analyze the call";
-  const primary = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
+  const primary = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
   const quiet = "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:opacity-50";
 
   return (

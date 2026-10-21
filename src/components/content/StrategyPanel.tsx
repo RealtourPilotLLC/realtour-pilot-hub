@@ -161,7 +161,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
               ))}
             </div>
             <div className="mt-2 flex gap-1.5">
-              <button disabled={busy} onClick={() => run(async () => { const r = await saveStrategyBackfill(enrollmentId, preview.sections ?? {}, preview.rawText ?? "", preview.sourceFile ?? "upload"); if (r.ok) setPreview(null); return r; })} className={`${btn} bg-brand text-white`}>Save as the next version</button>
+              <button disabled={busy} onClick={() => run(async () => { const r = await saveStrategyBackfill(enrollmentId, preview.sections ?? {}, preview.rawText ?? "", preview.sourceFile ?? "upload"); if (r.ok) setPreview(null); return r; })} className={`${btn} bg-brand-action text-white`}>Save as the next version</button>
               <button onClick={() => setPreview(null)} className={quiet}>Discard</button>
             </div>
           </div>
@@ -211,7 +211,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                     {/* Only a version that WAS in force can be put back; a draft replaced by a later edit is history. */}
                     {v.status === "SUPERSEDED" && v.approvedAt && <button disabled={busy} onClick={() => { if (window.confirm(`Put v${v.versionNo} back in force? Newer approved versions go back to "needs your OK".`)) run(() => approveStrategy(v.id)); }} className={quiet}>Put v{v.versionNo} back in force</button>}
                     {v.status === "APPROVED" && !v.releasedAt && isOwner && (
-                      <button disabled={busy} onClick={() => run(() => releaseStrategy(v.id))} className={`${btn} bg-brand text-white`}>Release to the portal</button>
+                      <button disabled={busy} onClick={() => run(() => releaseStrategy(v.id))} className={`${btn} bg-brand-action text-white`}>Release to the portal</button>
                     )}
                     {/* The four lifted v1s were approved before pillar creation existed — this creates the document's pillars on demand (idempotent). */}
                     {v.status === "APPROVED" && v.pillarNames.some((n) => !pillars.some((p) => p.name.toLowerCase() === n.toLowerCase() || p.aliases.some((a) => a.toLowerCase() === n.toLowerCase()))) && (
@@ -295,7 +295,7 @@ function DiscoveryStrip({ d, busy, isOwner, hasVersions, sending = false, onDraf
       <span className="min-w-0 flex-1">{line}</span>
       {t && <div className="basis-full"><CallTranscriptItem call={t} variant="inline" showCall={false} /></div>}
       {ready && !d.draftedVersionNo && !d.waived && (drafting ? (
-        <button disabled aria-busy="true" className={`${btn} inline-flex items-center bg-brand text-white`} title="Runs in the background — the draft appears under Strategy versions when it's ready.">
+        <button disabled aria-busy="true" className={`${btn} inline-flex items-center bg-brand-action text-white`} title="Runs in the background — the draft appears under Strategy versions when it's ready.">
           <Loader2 className="mr-1 size-3 animate-spin" />Drafting the strategy…
         </button>
       ) : failed ? (
@@ -303,7 +303,7 @@ function DiscoveryStrip({ d, busy, isOwner, hasVersions, sending = false, onDraf
           <AlertTriangle className="mr-1 size-3" />Drafting failed — Try again
         </button>
       ) : (
-        <button disabled={busy} onClick={onDraft} className={`${btn} bg-brand text-white`} title="One AI draft in the house format, from the confirmed transcript. It lands as a draft for you to edit and approve.">
+        <button disabled={busy} onClick={onDraft} className={`${btn} bg-brand-action text-white`} title="One AI draft in the house format, from the confirmed transcript. It lands as a draft for you to edit and approve.">
           <Wand2 className="mr-1 inline size-3" />Draft from the discovery call
         </button>
       ))}
@@ -333,7 +333,7 @@ function SectionEdit({ section, approved, last, busy, onSave, onRemove }: { sect
       <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={4} aria-label={`Text of ${section.heading}`} className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs leading-relaxed" />
       <p className="text-[11px] text-muted-2">Keep the labels (“Core Values:”, “Pillar 2: …”, “Purpose:”) and bullets — they are what the formatting reads.</p>
       <div className="flex gap-1.5">
-        <button disabled={busy || !text.trim() || text.trim() === section.text.trim()} onClick={() => { onSave(text); setEditing(false); }} className={`${btn} bg-brand text-white`}>Save as a new version</button>
+        <button disabled={busy || !text.trim() || text.trim() === section.text.trim()} onClick={() => { onSave(text); setEditing(false); }} className={`${btn} bg-brand-action text-white`}>Save as a new version</button>
         <button onClick={() => setEditing(false)} className={quiet}>Cancel</button>
       </div>
     </div>
@@ -368,7 +368,7 @@ function ReviseBox({ versionNo, approved, suggestions, busy, onRevise }: { versi
         </div>
       )}
       <div className="flex gap-1.5">
-        <button disabled={busy || (!notes.trim() && picked.length === 0)} onClick={() => { onRevise(notes, picked); setOpen(false); setNotes(""); setPicked([]); }} className={`${btn} bg-brand text-white`}>
+        <button disabled={busy || (!notes.trim() && picked.length === 0)} onClick={() => { onRevise(notes, picked); setOpen(false); setNotes(""); setPicked([]); }} className={`${btn} bg-brand-action text-white`}>
           <Wand2 className="mr-1 inline size-3" />Revise
         </button>
         <button onClick={() => setOpen(false)} className={quiet}>Cancel</button>
@@ -427,7 +427,7 @@ function PrioritiesCard({ month, busy, onSave }: { month: { label: string; prior
   return (
     <Section icon={Compass} title={`${month.label} priorities`} action={<span className="text-[11px] text-muted-2">{month.sourceRef ? `from ${month.sourceRef.split(":")[0]}` : "this month only — the brand foundation is above"}</span>}>
       <AutoTextarea value={t} onChange={(e) => setT(e.target.value)} minRows={2} placeholder="One priority per line — e.g. 'Lead with the November anniversary'" className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs" />
-      <button disabled={busy || t === month.priorities.join("\n")} onClick={() => onSave(t)} className={`${btn} mt-1.5 bg-brand text-white`}>Save priorities</button>
+      <button disabled={busy || t === month.priorities.join("\n")} onClick={() => onSave(t)} className={`${btn} mt-1.5 bg-brand-action text-white`}>Save priorities</button>
     </Section>
   );
 }
@@ -449,7 +449,7 @@ function PillarItem({ p, busy, onRename, onEmphasis }: { p: PillarRowUi; busy: b
     <div role="group" aria-label={`Emphasis for ${p.name}`} className="mt-1 inline-flex overflow-hidden rounded-md border border-border text-[11px]">
       {EMPHASIS_OPTIONS.map((o) => (
         <button key={o.value} type="button" title={o.hint} aria-pressed={p.emphasis === o.value} disabled={busy || p.emphasis === o.value} onClick={() => onEmphasis(o.value)}
-          className={`px-2 py-0.5 ${p.emphasis === o.value ? (o.value === "LEAD" ? "bg-brand font-semibold text-white" : o.value === "LIGHT" ? "bg-surface-2 font-semibold text-muted" : "bg-surface-2 font-semibold") : "text-muted hover:bg-surface-2"} disabled:cursor-default`}>
+          className={`px-2 py-0.5 ${p.emphasis === o.value ? (o.value === "LEAD" ? "bg-brand-action font-semibold text-white" : o.value === "LIGHT" ? "bg-surface-2 font-semibold text-muted" : "bg-surface-2 font-semibold") : "text-muted hover:bg-surface-2"} disabled:cursor-default`}>
           {o.label}
         </button>
       ))}
@@ -460,7 +460,7 @@ function PillarItem({ p, busy, onRename, onEmphasis }: { p: PillarRowUi; busy: b
       {edit ? (
         <div className="flex gap-1.5">
           <input value={n} onChange={(e) => setN(e.target.value)} className="flex-1 rounded border border-border bg-surface-2 px-2 py-1 text-sm" />
-          <button disabled={busy || !n.trim()} onClick={() => { onRename(n); setEdit(false); }} className={`${btn} bg-brand text-white`}>Rename</button>
+          <button disabled={busy || !n.trim()} onClick={() => { onRename(n); setEdit(false); }} className={`${btn} bg-brand-action text-white`}>Rename</button>
           <button onClick={() => { setN(p.name); setEdit(false); }} className={quiet}>Cancel</button>
         </div>
       ) : (
@@ -488,7 +488,7 @@ function AddPillar({ busy, onAdd }: { busy: boolean; onAdd: (n: string, purpose:
       <input value={pu} onChange={(e) => setPu(e.target.value)} placeholder="Purpose" className="w-full rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
       <input value={fa} onChange={(e) => setFa(e.target.value)} placeholder="Focus areas" className="w-full rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
       <div className="flex gap-1.5">
-        <button disabled={busy || !n.trim()} onClick={() => { onAdd(n, pu, fa); setN(""); setPu(""); setFa(""); setOpen(false); }} className={`${btn} bg-brand text-white`}>Add</button>
+        <button disabled={busy || !n.trim()} onClick={() => { onAdd(n, pu, fa); setN(""); setPu(""); setFa(""); setOpen(false); }} className={`${btn} bg-brand-action text-white`}>Add</button>
         <button onClick={() => setOpen(false)} className={quiet}>Cancel</button>
       </div>
     </div>
@@ -510,7 +510,7 @@ function MappingItem({ m, pillars, busy, onConfirm, onDismiss }: { m: MappingRow
           <option value="">— choose a pillar —</option>
           {pillars.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === m.proposedPillarId ? ` (proposed, ${Math.round(m.confidence * 100)}%)` : ""}</option>)}
         </select>
-        <button disabled={busy || !pick} onClick={() => onConfirm(pick)} className={`${btn} bg-brand text-white`}>Confirm</button>
+        <button disabled={busy || !pick} onClick={() => onConfirm(pick)} className={`${btn} bg-brand-action text-white`}>Confirm</button>
         <button disabled={busy} onClick={onDismiss} className={quiet}>Not a pillar</button>
       </div>
     </div>

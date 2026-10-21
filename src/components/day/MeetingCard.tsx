@@ -88,7 +88,7 @@ export function MeetingCard({ m }: { m: MeetingCardData }) {
               })
             }
             disabled={busy}
-            className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
           >
             {busy ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
             Accept {keeping > 0 ? keeping : ""}
@@ -114,7 +114,7 @@ export function MeetingCard({ m }: { m: MeetingCardData }) {
                 className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-surface-2 ${off ? "opacity-40" : ""}`}
               >
                 <span
-                  className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded border ${off ? "border-border" : "border-brand bg-brand text-white"}`}
+                  className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded border ${off ? "border-border" : "border-brand bg-brand-action text-white"}`}
                 >
                   {!off && <Check className="size-2.5" />}
                 </span>

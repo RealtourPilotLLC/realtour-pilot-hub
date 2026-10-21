@@ -102,7 +102,7 @@ export function TrendsAdvisor() {
         <button
           onClick={() => send()}
           disabled={busy || !input.trim()}
-          className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand text-white disabled:opacity-40"
+          className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-action text-white disabled:opacity-40"
         >
           <Send className="size-4" />
         </button>

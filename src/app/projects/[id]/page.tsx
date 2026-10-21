@@ -765,7 +765,7 @@ export default async function ProjectPage({
                       )}
                       {project.paymentUrl && project.balanceAmount != null && project.balanceAmount > 0 && (
                         <a href={project.paymentUrl} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 text-xs font-medium text-brand-fg hover:opacity-90">
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 text-xs font-medium text-brand-fg hover:opacity-90">
                           <ExternalLink className="size-3.5" /> Payment link
                         </a>
                       )}

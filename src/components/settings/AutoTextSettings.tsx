@@ -5,6 +5,7 @@ import { MessageSquareText, Send, Loader2, Check } from "lucide-react";
 import { saveAutoTextRules } from "@/app/settings/actions";
 import type { AutoTextRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/Switch";
 
 // Every automated CLIENT text, what it does, when it fires, and the switches —
 // Jordan (Sep 1): "I want to see exactly what automations there are, what time
@@ -23,24 +24,6 @@ const hhmm = (h: number, m = 0) => {
   return `${v}:${String(m).padStart(2, "0")} ${am ? "AM" : "PM"}`;
 };
 const hour12 = (h: number) => hhmm(h);
-
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      onClick={() => onChange(!on)}
-      className={cn(
-        "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-        on ? "bg-success" : "bg-surface-2 ring-1 ring-border",
-      )}
-    >
-      <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", on ? "left-[22px]" : "left-0.5")} />
-    </button>
-  );
-}
 
 function Num({ value, onChange, min, max, suffix }: { value: number; onChange: (n: number) => void; min: number; max: number; suffix: string }) {
   return (
@@ -117,7 +100,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
                 : "Off — the hub will not text any client automatically. Drafted texts still wait for you on Tasks."}
             </p>
           </div>
-          <Toggle on={r.enabled} onChange={(v) => set({ enabled: v })} label="All automated client texts" />
+          <Switch checked={r.enabled} onChange={(v) => set({ enabled: v })} aria-label="All automated client texts" className="-mt-2.5" />
         </div>
         <div className={cn("mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3", !r.enabled && "opacity-50")}>
           <span className="text-[13px] font-medium text-muted">Send window</span>
@@ -138,7 +121,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
             </p>
             <p className="mt-1 text-[13px] text-foreground/80">Sends inside {windowLine}.</p>
           </div>
-          <Toggle on={welcome.enabled} onChange={(v) => setWelcome({ enabled: v })} label="Welcome texts" />
+          <Switch checked={welcome.enabled} onChange={(v) => setWelcome({ enabled: v })} aria-label="Welcome texts" className="-mt-2.5" />
         </div>
 
         <div className="mt-3 border-t border-border pt-3">
@@ -201,7 +184,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
               Sends <b>{r.confirmation.hoursBefore}h</b> before the shoot, inside {windowLine}.
             </p>
           </div>
-          <Toggle on={r.confirmation.enabled} onChange={(v) => set({ confirmation: { ...r.confirmation, enabled: v } })} label="Confirmation texts" />
+          <Switch checked={r.confirmation.enabled} onChange={(v) => set({ confirmation: { ...r.confirmation, enabled: v } })} aria-label="Confirmation texts" className="-mt-2.5" />
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
           <span className="text-[13px] font-medium text-muted">Lead time</span>
@@ -225,7 +208,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
               Only while the delivery task is under <b>{r.delivery.maxTaskAgeHours}h</b> old, inside {windowLine}.
             </p>
           </div>
-          <Toggle on={r.delivery.enabled} onChange={(v) => set({ delivery: { ...r.delivery, enabled: v } })} label="Delivery texts" />
+          <Switch checked={r.delivery.enabled} onChange={(v) => set({ delivery: { ...r.delivery, enabled: v } })} aria-label="Delivery texts" className="-mt-2.5" />
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
           <span className="text-[13px] font-medium text-muted">Auto-send window</span>
@@ -272,7 +255,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
         <button
           onClick={save}
           disabled={busy}
-          className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save rules
         </button>

@@ -96,7 +96,7 @@ export function ReportBuilder({ reports }: { reports: SavedReport[] }) {
             placeholder={type === "custom" ? "e.g. Compare Q1 vs Q2 revenue and payroll, and tell me if my margin is improving" : "e.g. focus on editing costs"}
             className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-brand" />
         </label>
-        <button onClick={go} disabled={busy || (type === "custom" && !custom.trim())} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+        <button onClick={go} disabled={busy || (type === "custom" && !custom.trim())} className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           {busy ? <><Loader2 className="size-4 animate-spin" /> building your statement…</> : <>Generate report</>}
         </button>
         {err && <p className="text-xs text-danger">{err}</p>}

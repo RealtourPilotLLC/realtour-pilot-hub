@@ -2297,7 +2297,7 @@ export default async function EditBriefPage({
                         {agencyMod.DISPATCH_CHANNELS.map((c) => <option key={c} value={c}>{agencyMod.DISPATCH_CHANNEL_LABEL[c]}</option>)}
                       </select>
                       <input name="note" maxLength={500} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-xs" />
-                      <button type="submit" className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                      <button type="submit" className="rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
                         Record packet v{(agency.latest?.version ?? 0) + 1} as sent
                       </button>
                     </form>

@@ -924,7 +924,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
               target="_blank"
               rel="noopener noreferrer"
               title="Open the Luma Visuals tracker"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90"
             >
               <ExternalLink className="size-3.5" /> Luma tracker
             </a>
@@ -933,7 +933,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
             <>
               <a
                 href={`tel:${leadPhone.startsWith("+") ? leadPhone : `+1${leadPhone}`}`}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90"
                 title="Call this lead back"
               >
                 <Phone className="size-3.5" /> Call back
@@ -952,7 +952,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
               onClick={sendText}
               disabled={sending}
               title="Send via OpenPhone"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
             >
               {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
               Send
@@ -1017,7 +1017,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
             <button
               onClick={saveNote}
               disabled={savingNote || !noteText.trim()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
             >
               {savingNote ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />} Add to project messages
             </button>
@@ -1066,7 +1066,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView, deadlineOf
                     onClick={sendEmail}
                     disabled={emailing || !draftText.trim()}
                     title="Send this reply into the email thread (from the mailbox it arrived on)"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
                   >
                     {emailing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Send email
                   </button>

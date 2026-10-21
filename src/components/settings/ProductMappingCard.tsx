@@ -313,13 +313,13 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
                 <div className="flex overflow-hidden rounded-lg border border-border">
                   <button
                     onClick={() => { const n = new Set(addons); n.delete(t); setAddons(n); setSaved(false); }}
-                    className={!addons.has(t) ? "bg-brand px-2 py-0.5 text-[11px] font-semibold text-white" : "px-2 py-0.5 text-[11px] text-muted hover:bg-surface-2"}
+                    className={!addons.has(t) ? "bg-brand-action px-2 py-0.5 text-[11px] font-semibold text-white" : "px-2 py-0.5 text-[11px] text-muted hover:bg-surface-2"}
                   >
                     At the shoot
                   </button>
                   <button
                     onClick={() => { const n = new Set(addons); n.add(t); setAddons(n); setSaved(false); }}
-                    className={addons.has(t) ? "bg-brand px-2 py-0.5 text-[11px] font-semibold text-white" : "px-2 py-0.5 text-[11px] text-muted hover:bg-surface-2"}
+                    className={addons.has(t) ? "bg-brand-action px-2 py-0.5 text-[11px] font-semibold text-white" : "px-2 py-0.5 text-[11px] text-muted hover:bg-surface-2"}
                   >
                     Post-shoot add-on
                   </button>
@@ -341,7 +341,7 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
             setMsg(r.message);
             if (r.ok) setSaved(true);
           })}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
           Save &amp; apply

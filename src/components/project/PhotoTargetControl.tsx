@@ -46,7 +46,7 @@ export function PhotoTargetControl({
       className={cn(
         "rounded-full px-2.5 py-1 text-xs font-medium ring-1 transition-colors disabled:opacity-50",
         active
-          ? "bg-brand text-white ring-brand"
+          ? "bg-brand-action text-white ring-brand"
           : "bg-surface-2 text-muted ring-transparent hover:bg-surface hover:ring-border",
       )}
     >
@@ -94,7 +94,7 @@ export function PhotoTargetControl({
             <button
               type="submit"
               disabled={pending}
-              className="rounded-full bg-brand px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+              className="rounded-full bg-brand-action px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
             >
               Set
             </button>

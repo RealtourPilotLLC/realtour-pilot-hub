@@ -35,7 +35,7 @@ export function UnlinkedSessionLinker({
           const result = await attachUnlinkedSessionToMonth(projectId, monthId, reason).catch(() => ({ ok: false, message: "The link could not be saved. Try again." }));
           setNotice({ ok: result.ok, text: result.message });
           if (result.ok) { setProjectId(""); setReason(""); router.refresh(); }
-        })} className="rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{busy ? "Linking…" : `Link to ${monthKey}`}</button>
+        })} className="rounded-lg bg-brand-action px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{busy ? "Linking…" : `Link to ${monthKey}`}</button>
       </div>
       {notice && <p role="status" className={`mt-2 text-xs ${notice.ok ? "text-success" : "text-danger"}`}>{notice.text}</p>}
       {jobs.length === 25 && <p className="mt-2 text-xs text-muted">Showing the most recent 25 unlinked video jobs.</p>}

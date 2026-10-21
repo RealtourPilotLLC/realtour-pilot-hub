@@ -97,7 +97,7 @@ export function NudgeActions({ projectId, lastNudgedAt }: { projectId: string; l
                   onClick={send}
                   disabled={sending || !text.trim()}
                   title="Send via OpenPhone"
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
                 >
                   {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
                   Send via OpenPhone

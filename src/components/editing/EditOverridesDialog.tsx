@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useTransition, type ReactNode } from "react";
 import { ModalDialog } from "@/components/ui/ModalDialog";
+import { Switch } from "@/components/ui/Switch";
+import { cn } from "@/lib/utils";
 import { AlertTriangle, Check, Loader2, Pin, PinOff, Send, SlidersHorizontal, X, Zap } from "lucide-react";
 import { escalateRushToJordan, previewPriorityImpact, saveEditOverrides, type RushGate } from "@/app/editing/actions";
 import { etAt, etDateTime } from "@/lib/datetime";
@@ -210,7 +212,6 @@ function diff(init: Draft, d: Draft): { input: EditOverrideInput } | { error: st
   return { input };
 }
 
-const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
 const INPUT = "rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand";
 const SELECT = "cursor-pointer rounded-lg border border-border bg-surface-2 py-1 pl-2 pr-6 text-sm outline-none focus:border-brand";
 
@@ -227,7 +228,7 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className={cx("rounded-xl border px-3 py-2.5", overridden ? "border-brand/40 bg-brand-soft/30" : "border-border")}>
+    <div className={cn("rounded-xl border px-3 py-2.5", overridden ? "border-brand/40 bg-brand-soft/30" : "border-border")}>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">
           {label}
@@ -245,19 +246,6 @@ function Field({
         {hint && <span className="text-muted-2"> · {hint}</span>}
       </div>
     </div>
-  );
-}
-
-// The switch from settings/OperatingRules, same look.
-function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
-  return (
-    <button
-      type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled}
-      onClick={() => onChange(!on)}
-      className={cx("relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50", on ? "bg-success" : "bg-surface-2 ring-1 ring-border")}
-    >
-      <span className={cx("absolute top-0.5 size-4 rounded-full bg-white shadow transition-all", on ? "left-[18px]" : "left-0.5")} />
-    </button>
   );
 }
 
@@ -350,7 +338,7 @@ export function RushPanel({
             maxLength={200}
             placeholder={authority.as === "OWNER" ? "Why — optional; goes on the job's timeline" : "Why — goes on the job's timeline with your name"}
             onChange={(e) => onReason(e.target.value)}
-            className={cx(INPUT, "w-full text-[12px]")}
+            className={cn(INPUT, "w-full text-[12px]")}
           />
         </div>
       ) : (
@@ -510,9 +498,9 @@ function OverridesDialog({
             </select>
             <span className="inline-flex items-center gap-1.5 text-xs text-muted">
               <Switch
-                on={d.pin}
+                checked={d.pin}
                 onChange={(v) => (v ? set({ pin: true }) : set({ pin: false, status: init.status }))}
-                label="Pin the status"
+                aria-label="Pin the status"
                 disabled={!statusKnown && !d.pin}
               />
               {d.pin ? (
@@ -561,7 +549,7 @@ function OverridesDialog({
               value={d.videosOwed}
               placeholder={String(computed.videosOwed)}
               onChange={(e) => set({ videosOwed: e.target.value.replace(/[^\d]/g, "").slice(0, 2) })}
-              className={cx(INPUT, "w-16 tabular-nums")}
+              className={cn(INPUT, "w-16 tabular-nums")}
             />
             <span className="text-xs text-muted">1 to 40</span>
           </Field>}
@@ -587,7 +575,7 @@ function OverridesDialog({
             )}
           </Field>
 
-          <div className={cx("grid gap-2", !rushOnly && "sm:grid-cols-2")}>
+          <div className={cn("grid gap-2", !rushOnly && "sm:grid-cols-2")}>
             {/* PRIORITY — pins the edit card's priority. */}
             <Field
               label="Priority"
@@ -628,7 +616,7 @@ function OverridesDialog({
               maxLength={120}
               placeholder={computed.typeDetail || "e.g. Standard Reel with Agent Intro"}
               onChange={(e) => set({ typeDetail: e.target.value })}
-              className={cx(INPUT, "w-full")}
+              className={cn(INPUT, "w-full")}
             />
           </Field>}
 
@@ -642,7 +630,7 @@ function OverridesDialog({
               maxLength={300}
               placeholder="Why — shows on the row and the job's timeline"
               onChange={(e) => set({ note: e.target.value })}
-              className={cx(INPUT, "mt-1.5 w-full")}
+              className={cn(INPUT, "mt-1.5 w-full")}
             />
           </div>}
         </div>
@@ -668,7 +656,7 @@ function OverridesDialog({
             type="button"
             onClick={save}
             disabled={busy || (displacing && !!gate && !gate.authority.may)}
-            className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
           >
             {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save
           </button>
@@ -772,12 +760,12 @@ export function RushButton({ job, ask = null }: { job: EditOverridesJob; ask?: R
         type="button"
         onClick={() => setOpen(true)}
         title={ask ? "A rush on this job is waiting on approval" : "Rush this job: an earlier due date or a higher priority, with what it pushes back"}
-        className={cx(
+        className={cn(
           "inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium",
           ask ? "border-warning/50 bg-warning-soft/40 text-foreground" : "bg-surface text-muted hover:text-foreground",
         )}
       >
-        <Zap className={cx("size-3.5", ask && "text-warning")} /> {ask ? "Rush asked" : "Rush"}
+        <Zap className={cn("size-3.5", ask && "text-warning")} /> {ask ? "Rush asked" : "Rush"}
       </button>
       {note && (
         // Never wider than a phone's content column (375px, 16px gutters).

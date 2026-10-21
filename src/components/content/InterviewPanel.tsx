@@ -69,7 +69,7 @@ export function InterviewPanel({ iv }: { iv: InterviewUi }) {
           {iv.next.kind === "follow-up" && !editKey && <p className="text-[11px] text-muted-2">a follow-up — asked once, only because something important is missing</p>}
           <AutoTextarea value={text} onChange={(e) => setText(e.target.value)} minRows={2} placeholder="In the client's own words…" className="mt-1 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-xs" />
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            <button disabled={busy || !text.trim()} onClick={() => run(() => answerInterview(iv.interviewId, activeKey, text, "TYPED", activePrompt))} className={`${btn} bg-brand text-white`}>{busy ? <Loader2 className="inline size-3 animate-spin" /> : editKey ? "Save new answer" : "Save answer"}</button>
+            <button disabled={busy || !text.trim()} onClick={() => run(() => answerInterview(iv.interviewId, activeKey, text, "TYPED", activePrompt))} className={`${btn} bg-brand-action text-white`}>{busy ? <Loader2 className="inline size-3 animate-spin" /> : editKey ? "Save new answer" : "Save answer"}</button>
             {!editKey && <button disabled={busy} onClick={() => run(() => answerInterview(iv.interviewId, activeKey, "", "SKIPPED", activePrompt))} className={quiet}>Skip</button>}
             {!editKey && <button disabled={busy} onClick={() => run(() => answerInterview(iv.interviewId, activeKey, "", "DONT_KNOW", activePrompt))} className={quiet}>Don&rsquo;t know</button>}
             {editKey && <button onClick={() => { setEditKey(null); setText(""); }} className={quiet}>Cancel</button>}
@@ -84,7 +84,7 @@ export function InterviewPanel({ iv }: { iv: InterviewUi }) {
       )}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {(iv.next.kind === "done" || iv.answers.length >= 3) && (
-          <button disabled={busy} onClick={() => run(() => draftScriptFromInterview(iv.interviewId))} className={`${btn} inline-flex items-center gap-1 bg-brand text-white`}>
+          <button disabled={busy} onClick={() => run(() => draftScriptFromInterview(iv.interviewId))} className={`${btn} inline-flex items-center gap-1 bg-brand-action text-white`}>
             <Sparkles className="size-3" /> {iv.hasDraft ? (iv.answersChangedSinceDraft ? "New draft from the changed answers" : "Draft again (new version)") : "Draft the script from these answers"}
           </button>
         )}

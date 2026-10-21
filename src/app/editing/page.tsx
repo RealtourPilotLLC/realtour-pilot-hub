@@ -67,7 +67,7 @@ function MessagesButton({ unread }: { unread: number }) {
       <MessageSquare className="size-3.5" />
       Messages
       {unread > 0 && (
-        <span className="rounded-full bg-brand px-1.5 text-[10px] font-bold text-white">{unread}</span>
+        <span className="rounded-full bg-brand-action px-1.5 text-[10px] font-bold text-white">{unread}</span>
       )}
     </Link>
   );

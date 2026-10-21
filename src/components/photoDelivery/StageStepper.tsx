@@ -42,7 +42,7 @@ export function StageStepper({ stage, holdResumeStage }: { stage: string; holdRe
               className={cn(
                 "flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ring-1 ring-inset",
                 done && "bg-success-soft text-success ring-success/30",
-                current && !s?.bad && "bg-brand text-white ring-brand",
+                current && !s?.bad && "bg-brand-action text-white ring-brand",
                 current && s?.bad && "bg-danger-action text-white ring-danger",
                 !done && !current && "bg-surface-2 text-muted ring-border",
               )}

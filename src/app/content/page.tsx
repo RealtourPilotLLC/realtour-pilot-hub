@@ -219,7 +219,7 @@ export default async function ContentProgramPage({
               href={hrefFor({ month: k === etMonthKey() ? null : k })}
               className={cn(
                 "rounded-lg px-2.5 py-1 text-xs font-medium",
-                selectedMonth === k ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                selectedMonth === k ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
               )}
             >
               {monthLabel(k)}
@@ -230,7 +230,7 @@ export default async function ContentProgramPage({
             title="every month that still carries an obligation — an August shortfall does not vanish because September started"
             className={cn(
               "rounded-lg px-2.5 py-1 text-xs font-medium",
-              allOpenView ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+              allOpenView ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
             )}
           >
             All open months

@@ -349,7 +349,7 @@ function DropboxConnectForm({ authorizeUrl }: { authorizeUrl?: string }) {
         <button
           type="submit"
           disabled={pending}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending && <Loader2 className="size-4 animate-spin" />}
           Connect Dropbox
@@ -396,7 +396,7 @@ function AryeoActions({
     return (
       <button
         onClick={onExpand}
-        className="w-full rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+        className="w-full rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
       >
         {expanded ? "Cancel" : "Connect Aryeo"}
       </button>
@@ -409,7 +409,7 @@ function AryeoActions({
         <button
           onClick={() => startTransition(async () => setMsg(await syncAryeoNow()))}
           disabled={pending}
-          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
           Sync orders
@@ -464,7 +464,7 @@ function AryeoConnectForm() {
       <button
         type="submit"
         disabled={pending}
-        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
       >
         {pending && <Loader2 className="size-4 animate-spin" />}
         Test &amp; connect
@@ -553,7 +553,7 @@ function AryeoWebhookSecret({ signed }: { signed: boolean }) {
         <button
           type="submit"
           disabled={pending}
-          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending && <Loader2 className="size-4 animate-spin" />}
           Save this secret
@@ -595,7 +595,7 @@ function GmailActions({
     return (
       <a
         href={authorizeUrl}
-        className="block w-full rounded-lg bg-brand px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
+        className="block w-full rounded-lg bg-brand-action px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
       >
         Connect Gmail
       </a>
@@ -607,7 +607,7 @@ function GmailActions({
         <button
           onClick={() => startTransition(async () => setMsg(await syncGmailNow()))}
           disabled={pending}
-          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
           Scan recent emails
@@ -643,7 +643,7 @@ function QuickBooksActions({ connected, deployed }: { connected: boolean; deploy
         <button
           onClick={() => startTransition(async () => setMsg(await syncQuickBooksNow()))}
           disabled={pending}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending ? <Loader2 className="size-4 animate-spin" /> : "Sync the books"}
         </button>
@@ -668,7 +668,7 @@ function QuickBooksActions({ connected, deployed }: { connected: boolean; deploy
   return (
     <a
       href="/api/quickbooks/connect"
-      className="block w-full rounded-lg bg-brand px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
+      className="block w-full rounded-lg bg-brand-action px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
     >
       Connect QuickBooks
     </a>
@@ -696,7 +696,7 @@ function GenericApiKeyActions({
     return (
       <button
         onClick={onExpand}
-        className="w-full rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+        className="w-full rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
       >
         {expanded ? "Cancel" : `Connect ${provider.name}`}
       </button>
@@ -709,7 +709,7 @@ function GenericApiKeyActions({
           <>
             <Link
               href="/communications"
-              className="flex flex-1 items-center justify-center rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+              className="flex flex-1 items-center justify-center rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
             >
               View communications
             </Link>
@@ -742,7 +742,7 @@ function GenericApiKeyActions({
           <button
             onClick={() => startTransition(async () => setMsg(await syncDropboxFoldersNow()))}
             disabled={pending}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : "Check folders → update status"}
           </button>
@@ -754,7 +754,7 @@ function GenericApiKeyActions({
             onClick={() => startTransition(async () => setMsg(await testEpidemicSoundNow()))}
             disabled={pending}
             title="Re-check the key and what the partner agreement reaches (moods, collections, catalogue search)"
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : "Test connection"}
           </button>
@@ -768,7 +768,7 @@ function GenericApiKeyActions({
             onClick={() => startTransition(async () => setMsg(await testTopazNow()))}
             disabled={pending}
             title="Reads your Topaz credit balance. It starts nothing and spends nothing."
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : "Check credits"}
           </button>
@@ -803,7 +803,7 @@ function GenericApiKeyForm({ provider }: { provider: ProviderDef }) {
       <button
         type="submit"
         disabled={pending}
-        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
       >
         {pending && <Loader2 className="size-4 animate-spin" />}
         Test &amp; connect

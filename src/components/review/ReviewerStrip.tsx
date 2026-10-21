@@ -64,7 +64,7 @@ function Row({ row, data }: { row: ReviewerStripRow; data: ReviewerStripData }) 
               onClick={() => run(() => claimCutReview(row.submissionId, { cover: row.coverOffered }))}
               className={
                 row.coverOffered
-                  ? "inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+                  ? "inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
                   : "inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
               }
             >

@@ -152,7 +152,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
                 </p>
               </div>
               {!selfLink && (
-                <Link href={row.nextAction.href} className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90">
+                <Link href={row.nextAction.href} className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90">
                   {row.nextAction.cta}
                 </Link>
               )}

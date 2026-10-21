@@ -353,7 +353,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
             <label className="mt-1.5 block text-[11px] font-medium text-muted">Filming notes <span className="font-normal text-muted-2">(staff and the shoot only, never the client; reference links go here)</span></label>
             <AutoTextarea value={notes} onChange={(e) => setNotes(e.target.value)} minRows={2} className="mt-0.5 w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs leading-relaxed" />
             <div className="mt-1.5 flex gap-1.5">
-              <button disabled={busy} onClick={() => run(() => saveScriptText(s.id, body, { baseVersionId: baseId, filmingNotes: notes }), (r) => { if (r.ok) setMode("read"); })} className={`${btn} bg-brand text-white`}>Save as a new version</button>
+              <button disabled={busy} onClick={() => run(() => saveScriptText(s.id, body, { baseVersionId: baseId, filmingNotes: notes }), (r) => { if (r.ok) setMode("read"); })} className={`${btn} bg-brand-action text-white`}>Save as a new version</button>
               <button onClick={() => setMode("read")} className={quiet}>Cancel</button>
             </div>
           </div>
@@ -376,7 +376,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
               ))}
             </div>
             <div className="mt-1.5 flex gap-1.5">
-              <button disabled={revBusy || !instr.trim()} onClick={() => { rev?.onRevise("revise", instr, locks); setInstr(""); setLocks([]); setMode("read"); }} className={`${btn} inline-flex items-center gap-1 bg-brand text-white`}><Sparkles className="size-3" /> Regenerate as new version</button>
+              <button disabled={revBusy || !instr.trim()} onClick={() => { rev?.onRevise("revise", instr, locks); setInstr(""); setLocks([]); setMode("read"); }} className={`${btn} inline-flex items-center gap-1 bg-brand-action text-white`}><Sparkles className="size-3" /> Regenerate as new version</button>
               <button onClick={() => setMode("read")} className={quiet}>Cancel</button>
             </div>
           </div>
@@ -510,7 +510,7 @@ function OwedScripts({ owed, drafting = {}, sending = false, onDraft }: { owed: 
         <span className="flex flex-wrap items-center gap-2">
           {(draftingNow > 0 || sending) && <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Loader2 className="size-3 animate-spin" />Drafting{draftingNow ? ` ${draftingNow}` : ""}…</span>}
           {ready.length > 0 && (
-            <button disabled={sending} onClick={() => onDraft(false)} className={`${btn} bg-brand text-white`}>
+            <button disabled={sending} onClick={() => onDraft(false)} className={`${btn} bg-brand-action text-white`}>
               <Sparkles className="mr-1 inline size-3" />Draft what&rsquo;s ready ({ready.length})
             </button>
           )}

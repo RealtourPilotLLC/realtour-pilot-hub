@@ -106,7 +106,7 @@ export function SelfCheckSettings({ profiles }: { profiles: SelfCheckProfile[] }
           type="button"
           disabled={pending}
           onClick={() => start(async () => { const r = await saveSelfCheckProfile(current.styleKey, list); setMsg(r.message); })}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
         >
           {pending && <Loader2 className="size-3 animate-spin" />} Save as a new version
         </button>

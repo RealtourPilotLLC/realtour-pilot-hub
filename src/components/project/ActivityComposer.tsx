@@ -145,7 +145,7 @@ export function ActivityComposer({ projectId, readOnly = false }: { projectId: s
           type="button"
           onClick={submit}
           disabled={isPending || !value.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           <Send className="size-3.5" />
           {type === ActivityType.SPECIAL_REQUEST ? "Post request" : "Post"}

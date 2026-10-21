@@ -298,7 +298,7 @@ export function TeamMessagesPanel({
             {!readOnly && <ThreadCloseButton projectId={selected.id} closed={selected.closed} />}
             <Link
               href={`${open.pathname}/${selected.id}#messages`}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
             >
               {open.label} <ExternalLink className="size-3" />
             </Link>

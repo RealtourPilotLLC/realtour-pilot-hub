@@ -176,7 +176,7 @@ export function MergeWork({
                   router.refresh();
                 })
               }
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
             >
               <GitMerge className="size-3.5" /> {busy ? "Moving" : "Move the work"}
             </button>

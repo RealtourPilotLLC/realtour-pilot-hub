@@ -71,7 +71,7 @@ export function PaySettings(props: Props) {
           <button
             onClick={save}
             disabled={saving}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
           >
             {saving ? <Loader2 className="size-3.5 animate-spin" /> : null} Save
           </button>

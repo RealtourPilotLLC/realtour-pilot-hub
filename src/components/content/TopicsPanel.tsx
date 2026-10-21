@@ -149,7 +149,7 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
               {capacity.overflow > 0 ? <span className="text-[12px] text-warning">{capacity.overflow} over capacity — kept, not deleted</span> : capacity.selected >= capacity.owed && capacity.owed > 0 ? <span className="text-[12px] text-success">at capacity</span> : null}
               {/* The carry-over, by hand: always a dry run first. */}
               {carryPreview ? (
-                <button disabled={busy} onClick={doCarry} className={`${btn} bg-brand text-white`}>Carry these {carryPreview}</button>
+                <button disabled={busy} onClick={doCarry} className={`${btn} bg-brand-action text-white`}>Carry these {carryPreview}</button>
               ) : (
                 <button disabled={busy} onClick={checkCarry} className="text-xs font-medium text-brand hover:underline disabled:opacity-50">Check carry-over</button>
               )}
@@ -180,7 +180,7 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
               </dl>
               <ClientReason s={s} busy={busy} run={run} />
               <div className="mt-1.5 flex gap-1.5">
-                <button disabled={busy || !month} onClick={() => run(() => suggestionAction(s.id, "ACCEPT", { monthId: month?.id }))} className={`${btn} bg-brand text-white`}>Select for {month?.short ?? "the month"}</button>
+                <button disabled={busy || !month} onClick={() => run(() => suggestionAction(s.id, "ACCEPT", { monthId: month?.id }))} className={`${btn} bg-brand-action text-white`}>Select for {month?.short ?? "the month"}</button>
                 <button disabled={busy} onClick={() => run(() => suggestionAction(s.id, "ARCHIVE"))} className={quiet}>Dismiss</button>
               </div>
             </div>
@@ -317,7 +317,7 @@ function DraftButton({ t, draft }: { t: TopicUi; draft: DraftCtl }) {
   if (state === "drafting") {
     const queued = draft.server?.state === "queued";
     return (
-      <button disabled aria-busy="true" title={queued ? "Waiting its turn — up to three drafts run at once; this one starts when a slot frees up." : "The AI is writing it — usually under a minute."} className={`${btn} inline-flex items-center bg-brand text-white`}>
+      <button disabled aria-busy="true" title={queued ? "Waiting its turn — up to three drafts run at once; this one starts when a slot frees up." : "The AI is writing it — usually under a minute."} className={`${btn} inline-flex items-center bg-brand-action text-white`}>
         <Loader2 className="mr-1 size-3 animate-spin" />Drafting…
       </button>
     );
@@ -325,7 +325,7 @@ function DraftButton({ t, draft }: { t: TopicUi; draft: DraftCtl }) {
   if (state === "failed") {
     return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center border border-danger/40 text-danger hover:bg-danger-soft`}><AlertTriangle className="mr-1 size-3" />Drafting failed — Try again</button>;
   }
-  return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center bg-brand text-white`}><Sparkles className="mr-1 size-3" />Draft script</button>;
+  return <button onClick={draft.onDraft} className={`${btn} inline-flex items-center bg-brand-action text-white`}><Sparkles className="mr-1 size-3" />Draft script</button>;
 }
 
 function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, run, draft }: { t: TopicUi; idx?: number; busy: boolean; month: { id: string; short: string } | null; pillars: { id: string; name: string }[]; history: EventUi[]; interview: InterviewUi | null; inMonth?: boolean; run: (fn: () => Promise<{ ok: boolean; message: string }>) => void; draft?: DraftCtl }) {
@@ -393,13 +393,13 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           <input value={form.audienceNeed} onChange={(e) => setForm({ ...form, audienceNeed: e.target.value })} placeholder="audience need" className="rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
           <input value={form.businessGoal} onChange={(e) => setForm({ ...form, businessGoal: e.target.value })} placeholder="business goal" className="rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
           <input value={form.intendedMessage} onChange={(e) => setForm({ ...form, intendedMessage: e.target.value })} placeholder="intended message" className="rounded border border-border bg-surface-2 px-2 py-1 text-xs sm:col-span-2" />
-          <div className="flex gap-1.5 sm:col-span-2"><button disabled={busy} onClick={() => { run(() => editTopic(t.id, { title: form.title, concept: form.concept || null, pillarId: form.pillarId || null, audienceNeed: form.audienceNeed || null, businessGoal: form.businessGoal || null, intendedMessage: form.intendedMessage || null })); setOpen("none"); }} className={`${btn} bg-brand text-white`}>Save</button><button onClick={() => setOpen("none")} className={quiet}>Cancel</button></div>
+          <div className="flex gap-1.5 sm:col-span-2"><button disabled={busy} onClick={() => { run(() => editTopic(t.id, { title: form.title, concept: form.concept || null, pillarId: form.pillarId || null, audienceNeed: form.audienceNeed || null, businessGoal: form.businessGoal || null, intendedMessage: form.intendedMessage || null })); setOpen("none"); }} className={`${btn} bg-brand-action text-white`}>Save</button><button onClick={() => setOpen("none")} className={quiet}>Cancel</button></div>
         </div>
       )}
       {open === "discuss" && (
         <div className="mt-2 flex gap-1.5">
           <input value={disc} onChange={(e) => setDisc(e.target.value)} placeholder="What was said (goes on the history, changes no status)" className="flex-1 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
-          <button disabled={busy || !disc.trim()} onClick={() => { run(() => discussTopicAction(t.id, disc)); setDisc(""); setOpen("none"); }} className={`${btn} bg-brand text-white`}>Note</button>
+          <button disabled={busy || !disc.trim()} onClick={() => { run(() => discussTopicAction(t.id, disc)); setDisc(""); setOpen("none"); }} className={`${btn} bg-brand-action text-white`}>Note</button>
         </div>
       )}
       {open === "history" && (
@@ -422,7 +422,7 @@ function ClientReason({ s, busy, run }: { s: SuggestionUi; busy: boolean; run: (
       {editing ? (
         <div className="flex flex-wrap items-center gap-1.5">
           <input value={text} onChange={(e) => setText(e.target.value)} maxLength={200} aria-label="What the client reads about why" placeholder="One plain sentence the client reads" className="min-w-0 flex-1 rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
-          <button disabled={busy} onClick={() => { run(() => setSuggestionReasonAction(s.id, text)); setEditing(false); }} className={`${btn} bg-brand text-white`}>Save</button>
+          <button disabled={busy} onClick={() => { run(() => setSuggestionReasonAction(s.id, text)); setEditing(false); }} className={`${btn} bg-brand-action text-white`}>Save</button>
           <button onClick={() => { setText(s.clientReason ?? ""); setEditing(false); }} className={quiet}>Cancel</button>
         </div>
       ) : (
@@ -473,7 +473,7 @@ function AddTopic({ enrollmentId, pillars, busy, run }: { enrollmentId: string; 
       <input value={f.businessGoal} onChange={(e) => setF({ ...f, businessGoal: e.target.value })} placeholder="business goal" className="rounded border border-border bg-surface-2 px-2 py-1 text-xs" />
       <input value={f.intendedMessage} onChange={(e) => setF({ ...f, intendedMessage: e.target.value })} placeholder="intended message" className="rounded border border-border bg-surface-2 px-2 py-1 text-xs sm:col-span-2" />
       <div className="flex gap-1.5 sm:col-span-2">
-        <button disabled={busy || !f.title.trim()} onClick={() => { run(() => addTopic(enrollmentId, { title: f.title, concept: f.concept, pillarId: f.pillarId || null, audienceNeed: f.audienceNeed || null, businessGoal: f.businessGoal || null, intendedMessage: f.intendedMessage || null })); setF({ title: "", concept: "", pillarId: "", audienceNeed: "", businessGoal: "", intendedMessage: "" }); setOpen(false); }} className={`${btn} bg-brand text-white`}>Add to the bank</button>
+        <button disabled={busy || !f.title.trim()} onClick={() => { run(() => addTopic(enrollmentId, { title: f.title, concept: f.concept, pillarId: f.pillarId || null, audienceNeed: f.audienceNeed || null, businessGoal: f.businessGoal || null, intendedMessage: f.intendedMessage || null })); setF({ title: "", concept: "", pillarId: "", audienceNeed: "", businessGoal: "", intendedMessage: "" }); setOpen(false); }} className={`${btn} bg-brand-action text-white`}>Add to the bank</button>
         <button onClick={() => setOpen(false)} className={quiet}>Cancel</button>
       </div>
     </div>
