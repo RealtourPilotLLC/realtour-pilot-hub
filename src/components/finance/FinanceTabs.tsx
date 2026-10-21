@@ -4,7 +4,9 @@ import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, S
 // Tab bar for the merged Finance page, styled to match CommsTabs: brand pill =
 // active, bordered pill = idle. Which tabs render depends on the viewer's role —
 // everything except Unpaid is owner-only — so the caller passes the allowed tabs.
-export type FinanceTab = "overview" | "money" | "personal" | "people" | "jobs" | "spending" | "revenue" | "unpaid" | "payroll" | "advisor" | "budget" | "bonus";
+// ("money" and "revenue" left the type Oct 20 2026, audit G11: the page maps
+// those old ?tab= links to Overview before a FinanceTab is ever chosen.)
+export type FinanceTab = "overview" | "personal" | "people" | "jobs" | "spending" | "unpaid" | "payroll" | "advisor" | "budget" | "bonus";
 
 const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt }[] = [
   { key: "overview", label: "Overview", href: "/sales?tab=overview", icon: LayoutDashboard },
@@ -22,11 +24,15 @@ const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt
   { key: "bonus", label: "Bonus", href: "/sales?tab=bonus", icon: Trophy },
 ];
 
+// On a phone the ten pills used to wrap into three or four rows above every
+// tab (audit G19); they now sit on one row that scrolls sideways, edge to edge
+// inside the page's p-4 gutter, and wrap as before from sm up.
 export function FinanceTabs({ tab, show }: { tab: FinanceTab; show: FinanceTab[] }) {
-  const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
-  const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
+  const pill = "inline-flex min-h-9 shrink-0 items-center whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium sm:min-h-0";
+  const active = `${pill} bg-brand-action text-white`;
+  const idle = `${pill} border border-border text-muted hover:bg-surface-2`;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
+    <div className="-mx-4 mb-4 flex items-center gap-1.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0 sm:pb-0">
       {TABS.filter((t) => show.includes(t.key)).map((t) => {
         const Icon = t.icon;
         return (

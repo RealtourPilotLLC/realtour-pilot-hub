@@ -3,6 +3,17 @@ import { isPublicRoute } from "@/lib/publicRoutes";
 import type { NextRequest } from "next/server";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { canAccess, homeFor, PAGES, type PageKey } from "@/lib/auth/access";
+import { authEnforcedNow } from "@/lib/auth/enforced";
+
+// THE AUTH PROXY (Next 16's name for what used to be src/middleware.ts).
+// Oct 20 2026 (audit G4/H22): Next 16 deprecates the `middleware` file and
+// builds it for the EDGE runtime, where Prisma cannot run, so the live-row
+// re-check on the deny path below always threw and fell back to the stale
+// login claim (a fresh page grant kept bouncing its holder for up to 7 days).
+// `proxy` always runs on Node (it cannot be configured otherwise; see
+// node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md),
+// which is what that re-check needs. Matcher, config and the public list are
+// unchanged by the rename.
 
 // Which page-key (if any) a path belongs to — for role/permission gating. Only
 // top-level nav pages are gated; contextual detail routes (/projects/[id], etc.)
@@ -25,7 +36,6 @@ function pathKey(pathname: string): PageKey | null {
 // the pages/DAL, not here. PUBLIC paths below must never be gated — they include
 // the auth + OAuth callbacks, inbound webhooks, cron jobs, and the client-facing
 // feedback form.
-// /api/health = read-only integration diagnostics (no secrets in responses).
 // /api/activity = the usage beacon: it self-authenticates (204 on no session),
 // and gating it here would 307 stale-cookie beacons into pointless /login
 // renders on every navigation.
@@ -36,29 +46,26 @@ function pathKey(pathname: string): PageKey | null {
 // to open them without signing in.
 // NOTE: /api/quickbooks is deliberately NOT public. The Intuit consent + callback
 // both run in the owner's own browser, so the session cookie carries them through
-// the gate. Opening the prefix would bypass middleware auth
-// on /connect, whose own guard only fires when AUTH_ENFORCE is explicitly "true".
+// the gate. Opening the prefix would bypass the proxy's auth on /connect and
+// /callback (both also check for the owner themselves since Oct 20 2026).
 // /portal/<token> = the client-facing content page (unguessable token is the gate).
 // /api/portal = the client portal's upload endpoint — token-authenticated
 // inside the route itself, exactly like the /portal pages it serves.
-// The list itself lives in src/lib/publicRoutes.ts — middleware and the app
+// The list itself lives in src/lib/publicRoutes.ts — this proxy and the app
 // shell must never disagree about it (see that file).
 
 const isPublic = isPublicRoute;
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (isPublic(pathname)) return NextResponse.next();
 
   // Gate is OFF only in local dev (no AUTH_ENFORCE, not production, not Vercel).
   // In production / on Vercel the gate is ALWAYS on regardless of AUTH_ENFORCE —
   // losing the env var must fail CLOSED, never silently open every page against
-  // the shared prod database (audit crack #26).
-  const enforced =
-    process.env.AUTH_ENFORCE === "true" ||
-    process.env.NODE_ENV === "production" ||
-    Boolean(process.env.VERCEL);
-  if (!enforced) return NextResponse.next();
+  // the shared prod database (audit crack #26). Same rule as every server
+  // action guard (lib/auth/enforced), so the two can never drift.
+  if (!authEnforcedNow()) return NextResponse.next();
 
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
   if (!session) {
@@ -78,7 +85,7 @@ export async function middleware(req: NextRequest) {
     // The permissions CLAIM was minted at login and goes stale the moment the
     // owner grants a page — James's fresh `mypay` grant kept bouncing him to
     // /tasks until re-login (Aug 25). This file runs on the Node runtime
-    // (Next 16 proxy), so on this rare DENY path re-read the live row and
+    // (Next 16 proxy, see the note at the top), so on this rare DENY path re-read the live row and
     // re-evaluate; allowed requests never touch the DB. A DB hiccup falls
     // back to the claim — fail toward the stricter answer, never open.
     try {

@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 
-// Edge-safe session token helpers (no next/headers, no node-only APIs) so this
-// module can be imported by both middleware (edge) and server code. The session
+// Session token helpers with no next/headers dependency, so this module can be
+// imported by both the auth proxy (src/proxy.ts) and server code. The session
 // is a stateless JWT in an httpOnly cookie, signed with the existing APP_SECRET.
 
 export const SESSION_COOKIE = "rtp_session";

@@ -328,6 +328,7 @@ async function parent() {
     calendly: "Calendly & content-program calls", "product-categories": "Product categories",
   };
   const h2Count = (root: El, title: string) => all(root, (e) => e.tag === "h2" && decode(textOf(e)).trim() === title).length;
+  const NEW_PAY_TITLE = "Team pay view"; // the OLD page's "Photographer pay view", renamed Oct 20 2026 (audit G7)
 
   // =========================================================================
   c.head("0 · OLD (3de6023): one flat column, the pay view for an admin, a doubled anchor");
@@ -364,7 +365,8 @@ async function parent() {
       });
       c.ok(`${role}: every card sits inside exactly one group — the one SETTINGS_LAYOUT names`, misplaced.length === 0, misplaced.map((e) => e.attrs["data-settings-card"]).join(","));
       // Oct 19 2026: the Review Room card is titled "Video Review Room" now (the OLD page keeps its old title).
-      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, k === "review-room" ? "Video Review Room" : cardTitle[k]) === 1));
+      // Oct 20 2026 (audit G7): the pay card is "Team pay view" now; it covers every login but the owner.
+      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, k === "review-room" ? "Video Review Room" : k === "pay-view" ? NEW_PAY_TITLE : cardTitle[k]) === 1));
       const groups = all(root, (e) => "data-settings-group" in e.attrs);
       c.ok(`${role}: every group states its effect in a sentence under its heading`, groups.length > 0 && groups.every((g) => {
         const def = SETTINGS_GROUPS.find((d) => d.id === g.attrs["data-settings-group"]);
@@ -380,12 +382,12 @@ async function parent() {
     const groupsIn = (root: El) => all(root, (e) => "data-settings-group" in e.attrs).map((e) => e.attrs["data-settings-group"]);
     c.ok("OWNER: all seven groups, in order", groupsIn(NEW.OWNER.root).join() === SETTINGS_GROUPS.map((g) => g.id).join());
     c.ok("ADMIN: the financial group is absent (and only it)", groupsIn(NEW.ADMIN.root).join() === SETTINGS_GROUPS.filter((g) => !g.ownerOnly).map((g) => g.id).join() && !groupsIn(NEW.ADMIN.root).includes("financial"));
-    c.ok("ADMIN: no pay view, no payroll link, no bank-feeds link anywhere on the page", h2Count(NEW.ADMIN.root, "Photographer pay view") === 0 && !/href="\/sales\?tab=payroll"/.test(NEW.ADMIN.raw) && !/href="\/connections\/banks"/.test(NEW.ADMIN.raw));
+    c.ok("ADMIN: no pay view, no payroll link, no bank-feeds link anywhere on the page", h2Count(NEW.ADMIN.root, NEW_PAY_TITLE) === 0 && h2Count(NEW.ADMIN.root, "Photographer pay view") === 0 &&!/href="\/sales\?tab=payroll"/.test(NEW.ADMIN.raw) && !/href="\/connections\/banks"/.test(NEW.ADMIN.raw));
     c.ok("OWNER: the pay view, the payroll link and the bank-feeds link are in the financial group", (() => {
       const fin = all(NEW.OWNER.root, (e) => e.attrs["data-settings-group"] === "financial")[0];
       if (!fin) return false;
       const links = all(fin, (e) => e.tag === "a").map((e) => e.attrs.href);
-      return h2Count(fin, "Photographer pay view") === 1 && links.includes("/sales?tab=payroll") && links.includes("/connections/banks");
+      return h2Count(fin, NEW_PAY_TITLE) === 1 && links.includes("/sales?tab=payroll") && links.includes("/connections/banks");
     })());
     c.ok("the chip for the financial group only for the OWNER", /href="#financial"/.test(NEW.OWNER.raw) && !/href="#financial"/.test(NEW.ADMIN.raw));
     c.ok("ADMIN: no link to the owner-only Connections page; the logins tab is the owner's too", !/href="\/connections"/.test(NEW.ADMIN.raw) && /href="\/users\?tab=team"/.test(NEW.ADMIN.raw) && !/href="\/users\?tab=logins"/.test(NEW.ADMIN.raw));

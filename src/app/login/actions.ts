@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { verifyPassword, hashPassword, passwordProblem } from "@/lib/auth/password";
 import { establishSession } from "@/lib/auth/session";
 import { homeFor } from "@/lib/auth/access";
+import { safeNextOr } from "@/lib/auth/safeNext";
+import { inviteTokenExpired, INVITE_EXPIRED_MESSAGE } from "@/lib/auth/inviteToken";
 
 export type AuthResult = { ok: true; redirect: string } | { ok: false; message: string };
 
@@ -46,14 +48,22 @@ export async function loginWithPassword(formData: FormData): Promise<AuthResult>
   }
 
   attempts.delete(email);
+  // A password that works proves the account is set up, so any set-password
+  // link still outstanding for it is retired (audit G15): a reset link left in
+  // an old text must not be able to change the password later.
+  if (user.inviteToken) {
+    await prisma.appUser.update({ where: { id: user.id }, data: { inviteToken: null } }).catch(() => {});
+  }
   await establishSession(user.id);
-  const dest = next.startsWith("/") && !next.startsWith("//") && next !== "/" ? next : homeFor(user.role);
+  // Same-origin paths only; anything else lands on their home (audit G3).
+  const dest = safeNextOr(next, homeFor(user.role));
   return { ok: true, redirect: dest };
 }
 
 // Set (or reset) a password from a valid invite/reset link, then sign in. The
 // token identifies the user; the email is never trusted from the client. Works
-// for INVITED (first-time) and ACTIVE (reset) users; DISABLED is refused.
+// for INVITED (first-time) and ACTIVE (reset) users; DISABLED is refused, and so
+// is a link older than INVITE_TTL_DAYS (audit G15, lib/auth/inviteToken).
 export async function setPasswordFromToken(formData: FormData): Promise<AuthResult> {
   const token = String(formData.get("token") ?? "");
   const password = String(formData.get("password") ?? "");
@@ -65,6 +75,7 @@ export async function setPasswordFromToken(formData: FormData): Promise<AuthResu
   if (!user || user.status === "DISABLED") {
     return { ok: false, message: "This link has already been used or was revoked. Ask the owner for a new one." };
   }
+  if (inviteTokenExpired(user.invitedAt)) return { ok: false, message: INVITE_EXPIRED_MESSAGE };
 
   const passwordHash = await hashPassword(password);
   // Consume the one-time token as we set the password (so the link can't be

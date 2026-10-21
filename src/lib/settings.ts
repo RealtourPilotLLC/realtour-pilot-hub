@@ -239,26 +239,28 @@ export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
 // just make it look like an error loading the shoot pay page."
 //
 // WHAT IT PAUSES AND WHAT IT DOES NOT. It is a VIEW switch and nothing else:
-// payroll still computes, KPIs still score, bonuses still accrue, /payouts is
-// untouched, and the owner and the office still see every number. The only
-// thing that changes is what a PHOTOGRAPHER login is shown — /my-pay, and the
-// per-shoot pay card on their shoot screen, which shows the same dollars and
-// would otherwise leak straight through the pause.
-//
-// ONE DELIBERATE OMISSION. The screen is styled as a failure because that is
-// what Jordan asked for, but it does NOT print a fabricated "Reference:" code
-// the way the real error screen does. A made-up log id is the one detail that
-// turns a quiet pause into somebody spending an afternoon searching for a
-// trace that was never written.
+// payroll still computes, KPIs still score, bonuses still accrue, Finance →
+// Payroll is untouched, and the owner still sees every number. Since Oct 14
+// 2026 it covers EVERY login but the owner (Harrison and James included):
+// /my-pay becomes My Performance (the quarterly scorecard and bonus), and the
+// per-shoot pay card leaves their shoot screens, which would otherwise leak the
+// same dollars straight through the pause. The Sep 18 "looks like an error"
+// screen is gone; nobody is shown a fake failure any more.
 // ---------------------------------------------------------------------------
 export type PayVisibilityRules = {
-  /** true = a PHOTOGRAPHER login sees the failure screen instead of their pay */
+  /** true = every login but the owner sees My Performance instead of their pay */
   photographerPayPaused: boolean;
   /** when it was paused, so the settings card can say how long it has been */
   pausedAt: string | null;
   pausedBy: string | null;
 };
-export const DEFAULT_PAY_VISIBILITY: PayVisibilityRules = { photographerPayPaused: false, pausedAt: null, pausedBy: null };
+// FAILS CLOSED (Oct 20 2026, audit G6). "Harrison and James never see pay" is a
+// standing rule, and this switch is the only thing enforcing it. getSetting
+// hands back this default both when the row is missing AND when the read
+// throws, so a default of "not paused" meant one settings hiccup showed every
+// non-owner their dollars. The default is now "hidden": only a saved row that
+// explicitly says "not paused" shows pay to anyone but the owner.
+export const DEFAULT_PAY_VISIBILITY: PayVisibilityRules = { photographerPayPaused: true, pausedAt: null, pausedBy: null };
 export async function payVisibilityRules(): Promise<PayVisibilityRules> {
   const r = await getSetting<PayVisibilityRules>("pay_visibility", DEFAULT_PAY_VISIBILITY);
   return {
@@ -278,7 +280,11 @@ export async function payHiddenFor(user: { realRole?: string; role?: string } | 
   // with his own pay view (mypay override), and the old PHOTOGRAPHER-only test
   // let his pay straight through. The owner (and an owner previewing with
   // view-as, whose realRole stays OWNER) still sees every number.
-  if (!role || role === "OWNER") return false;
+  //
+  // Unknown viewer = hidden (audit G6): a page that could not resolve who is
+  // looking must never fall through to the dollars.
+  if (role === "OWNER") return false;
+  if (!role) return true;
   return (await payVisibilityRules().catch(() => DEFAULT_PAY_VISIBILITY)).photographerPayPaused;
 }
 

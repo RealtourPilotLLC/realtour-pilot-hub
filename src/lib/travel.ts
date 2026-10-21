@@ -13,7 +13,10 @@ export const HOME_RADIUS_MI = 35; // unpaid radius around home (each way)
 
 const M_PER_MILE = 1609.344;
 
-export type DriveInfo = { miles: number; minutes: number; cost: number };
+// `estimated` = the router did not answer and this is the straight-line guess
+// (Oct 20 2026, audit G2). Mileage PAY must know the difference: a guess is
+// shown as one and never cached as if the router had said it.
+export type DriveInfo = { miles: number; minutes: number; cost: number; estimated?: boolean };
 
 // Straight-line miles (fallback when routing is unavailable).
 export function haversineMiles(aLat: number, aLng: number, bLat: number, bLng: number): number {
@@ -50,10 +53,11 @@ export async function driveBetween(
     const miles = r.distance / M_PER_MILE;
     return { miles, minutes: r.duration / 60, cost: miles * MILEAGE_RATE };
   } catch {
-    // Fall back to straight-line distance with a rough road factor.
+    // Fall back to straight-line distance with a rough road factor, LABELLED
+    // as a guess so payroll can say so and try the router again next time.
     const miles = haversineMiles(aLat, aLng, bLat, bLng) * 1.25;
     if (!isFinite(miles)) return null;
-    return { miles, minutes: (miles / 35) * 60, cost: miles * MILEAGE_RATE };
+    return { miles, minutes: (miles / 35) * 60, cost: miles * MILEAGE_RATE, estimated: true };
   }
 }
 

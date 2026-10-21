@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireOwner } from "@/lib/auth/guards";
+import { requireOwner, requireRole } from "@/lib/auth/guards";
 import { allAutomations, setAutomation, isAutomationKey, type AutomationState } from "@/lib/programAutomation";
 import { AUTOMATION_EFFECTS } from "@/lib/programAutomationCopy";
 
@@ -27,7 +27,13 @@ import { AUTOMATION_EFFECTS } from "@/lib/programAutomationCopy";
 type Result = { ok: boolean; message: string };
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
 
+// GUARDED (audit G21, Oct 20 2026): an exported "use server" function is a
+// public POST endpoint, and this one had no check, so any signed-in login
+// could read every automation's config and last error. Owner and admin only
+// (the Settings audience); a read, so a view-as preview may still call it. The
+// settings page itself now reads allAutomations() from the lib while it renders.
 export async function loadAutomations(): Promise<AutomationState[]> {
+  await requireRole(["OWNER", "ADMIN"], { allowImpersonation: true });
   return allAutomations();
 }
 

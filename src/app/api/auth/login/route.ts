@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { loginAuthorizeUrl, loginConfigured } from "@/lib/auth/google";
+import { safeNextPath } from "@/lib/auth/safeNext";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,8 +11,8 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   if (!loginConfigured()) return NextResponse.redirect(new URL("/login?error=config", req.url));
 
-  const nextParam = req.nextUrl.searchParams.get("next") || "/";
-  const next = nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/";
+  // Same-origin paths only (audit G3: "/\\evil.com" used to pass a startsWith check).
+  const next = safeNextPath(req.nextUrl.searchParams.get("next")) ?? "/";
   const invite = req.nextUrl.searchParams.get("invite") || "";
   const state = randomUUID();
 

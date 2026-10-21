@@ -9,11 +9,11 @@ import path from "path";
 // screenshots nobody can act on. Anything that lands on the old host is bounced
 // to the real one.
 //
-// WHY next.config redirects and not the auth proxy (src/middleware.ts):
+// WHY next.config redirects and not the auth proxy (src/proxy.ts):
 // Next's routing order is headers → next.config redirects → proxy → filesystem,
 // so this fires BEFORE the login gate ever runs. It cannot be broken by the
 // gate, it cannot break the gate, and it costs zero proxy invocations. Doing it
-// in middleware would put host rewriting inside the file that decides who may
+// in the proxy would put host rewriting inside the file that decides who may
 // see what — the last place to add a second job.
 //
 // The host is matched EXACTLY (Next anchors a `has` value as ^…$), so it hits
@@ -29,8 +29,8 @@ import path from "path";
 //     rather than following it — redirecting these silently drops real events.
 //   · /api/cron/*      Vercel's scheduler invokes cron paths on the deployment's
 //     own hostname and marks a non-2xx run failed.
-//   · /api/health      the read-only integration probe: the one URL an uptime
-//     monitor is allowed to keep hitting on either host.
+// (/api/health was carved out too, for a probe route that never existed; it
+// was dropped Oct 20 2026, audit H25, so nothing unbuilt stays on the old host.)
 //
 // 307, not 308: a permanent redirect is cached in every browser forever, and
 // the old host still has a job to do (above) while providers are repointed.
@@ -41,7 +41,7 @@ const NEW_ORIGIN = "https://hub.realtourpilot.com";
 // Prefixes that stay on the old host. Written as a negative lookahead on the
 // captured path, because `has`/`missing` can only test host/header/cookie/query
 // — never the path.
-const STAYS_ON_OLD_HOST = "api/webhooks|api/cron|api/health";
+const STAYS_ON_OLD_HOST = "api/webhooks|api/cron";
 
 const nextConfig: NextConfig = {
   // Pin the workspace root to this folder so the bundler ignores the stray

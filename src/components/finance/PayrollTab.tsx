@@ -44,7 +44,8 @@ export async function PayrollTab({ show, start }: { show: FinanceTab[]; start?: 
   return (
     <div>
       <PageHeader
-        title="Finance"
+        eyebrow="Finance"
+        title="Payroll"
         subtitle="Photographer shoot pay + mileage, calculated from your rates"
         actions={
           flagCount > 0
@@ -52,7 +53,7 @@ export async function PayrollTab({ show, start }: { show: FinanceTab[]; start?: 
             : <Badge soft="var(--surface-2)">{isCurrent ? "Current period" : "Past period"}</Badge>
         }
       />
-      <div className="space-y-6 p-4 sm:p-6">
+      <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
         <FinanceTabs tab="payroll" show={show} />
         {/* Period nav */}
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -100,7 +101,7 @@ export async function PayrollTab({ show, start }: { show: FinanceTab[]; start?: 
 
         {people.length === 0 ? (
           <div className="rounded-2xl border border-dashed bg-surface p-10 text-center text-sm text-muted">
-            No shoots in this period. Use the date range above to pick a pay period.
+            No shoots in this period. Use Prev and Next above to pick another pay period.
           </div>
         ) : (
           <div className="space-y-4">

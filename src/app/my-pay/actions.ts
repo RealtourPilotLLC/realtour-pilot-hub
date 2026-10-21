@@ -47,7 +47,7 @@ export async function flagPay(input: {
       data: {
         taskType: "todo",
         title: `Pay question — ${first} · ${about.split(",")[0]}`.slice(0, 120),
-        summary: `${first} flagged their pay for ${about.split(",")[0]}: “${comment.slice(0, 220)}”. Review it on Payouts and reply to them.`.slice(0, 500),
+        summary: `${first} flagged their pay for ${about.split(",")[0]}: “${comment.slice(0, 220)}”. Review it on Finance → Payroll and reply to them.`.slice(0, 500),
         description: comment.slice(0, 2000),
         reasonCreated: "Photographer flagged a pay line on My Pay",
         source: "team",
@@ -66,7 +66,7 @@ export async function flagPay(input: {
       kind: "system",
       title: `Pay question — ${first} · ${about.split(",")[0]}`,
       body: comment,
-      href: "/payouts",
+      href: "/sales?tab=payroll", // /payouts is a retired redirect stub (audit G18)
       targets: [{ roles: ["OWNER"] }],
     });
   } catch { /* bell is best-effort */ }

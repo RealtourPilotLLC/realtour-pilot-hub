@@ -516,10 +516,12 @@ export async function loadTopazRules(): Promise<TopazSettings> {
   return topazSettings();
 }
 
-// ---- Pause the photographers' pay view -------------------------------------
-// Jordan, Sep 18 2026: a salary transition he has not announced yet, and he
-// wants the page to go quiet without going quiet in a way that announces it.
-// OWNER only: it is a compensation decision, not an operations one.
+// ---- Pay view: My Pay vs My Performance -------------------------------------
+// Jordan, Sep 18 2026 (salary transition), widened Oct 14 to every login but
+// the owner. While paused, everyone but Jordan gets My Performance (scorecard
+// and bonus) and no pay figures. OWNER only: it is a compensation decision,
+// not an operations one. Copy rewritten Oct 20 2026 (audit G7): it still
+// described the old "page hit a problem" screen and photographers only.
 export async function savePayVisibility(paused: boolean): Promise<{ ok: boolean; message: string }> {
   try {
     const me = await requireSettingsActor();
@@ -542,8 +544,8 @@ export async function savePayVisibility(paused: boolean): Promise<{ ok: boolean;
     return {
       ok: true,
       message: paused
-        ? "Paused. A photographer opening My Pay now sees the page-hit-a-problem screen, and the pay card is off their shoot screens."
-        : "Back on. Photographers can see their pay again.",
+        ? "Pay hidden. Everyone but you now sees My Performance (their scorecard and bonus), and the pay card is off their shoot screens."
+        : "Pay showing. Every login with a My Pay page, Harrison and James included, can see their own dollar pay again.",
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };

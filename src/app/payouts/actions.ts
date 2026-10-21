@@ -280,11 +280,30 @@ export async function setMileageOverride(
 // computation on the next payout load. Owner corrections SURVIVE a recompute:
 // override rows just get their route signature cleared so the computed figure
 // refreshes underneath the override.
-export async function recomputeMileage(memberId?: string): Promise<ActionResult> {
+//
+// `periodStartISO` scopes the clear to that one pay period's days (audit G13,
+// Oct 20 2026). Without it, pressing Recompute on one period card wiped the
+// person's whole mileage history, and the next Finance or My Pay load had to
+// re-route every day they ever drove, which can run past the 60-second limit.
+export async function recomputeMileage(memberId?: string, periodStartISO?: string): Promise<ActionResult> {
   await requireOwner();
-  const scope = memberId ? { teamMemberId: memberId } : {};
+  let days: { dayKey?: { gte: string; lte: string } } = {};
+  if (periodStartISO) {
+    const at = new Date(periodStartISO);
+    if (isNaN(at.getTime())) return { ok: false, message: "Bad pay period." };
+    const { payPeriodFor } = await import("@/lib/payroll");
+    const { etDayKey } = await import("@/lib/datetime");
+    const p = payPeriodFor(etDayKey(at));
+    days = { dayKey: { gte: p.startKey, lte: p.endKey } };
+  }
+  const scope = { ...(memberId ? { teamMemberId: memberId } : {}), ...days };
   await prisma.mileageDay.deleteMany({ where: { ...scope, overrideMiles: null } });
   await prisma.mileageDay.updateMany({ where: { ...scope, overrideMiles: { not: null } }, data: { sig: null } });
   revalidatePath("/sales");
-  return { ok: true, message: "Mileage cleared — will recompute on reload (your adjustments kept)." };
+  return {
+    ok: true,
+    message: periodStartISO
+      ? "This period's mileage cleared. It recomputes on reload (your adjustments kept)."
+      : "Mileage cleared. It recomputes on reload (your adjustments kept).",
+  };
 }

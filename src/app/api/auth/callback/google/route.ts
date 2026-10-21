@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { exchangeLoginCode } from "@/lib/auth/google";
 import { signSession, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/auth/jwt";
 import { homeFor } from "@/lib/auth/access";
+import { safeNextOr } from "@/lib/auth/safeNext";
+import { inviteTokenExpired } from "@/lib/auth/inviteToken";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,7 +39,9 @@ export async function GET(req: NextRequest) {
   // Invite acceptance: the link carried a token; activate only if the email matches.
   if (!user && invite) {
     const invited = await prisma.appUser.findUnique({ where: { inviteToken: invite } });
-    if (invited && invited.email.toLowerCase() === info.email) user = invited;
+    // A lapsed link accepts nothing (audit G15); an allowlisted email still
+    // signs in through the lookup above without it.
+    if (invited && invited.email.toLowerCase() === info.email && !inviteTokenExpired(invited.invitedAt)) user = invited;
   }
   if (!user || user.status === "DISABLED") return fail("denied");
 
@@ -60,7 +64,9 @@ export async function GET(req: NextRequest) {
   // With no explicit destination, land each role on its WORK surface (admin →
   // /today, editor → /editing, photographer → /shoot) instead of a generic "/"
   // that middleware would bounce anyway (double-hop).
-  const dest = nextRaw.startsWith("/") && !nextRaw.startsWith("//") && nextRaw !== "/" ? nextRaw : homeFor(user.role);
+  // The cookie was set by /api/auth/login, but it is re-checked here anyway:
+  // same-origin paths only (audit G3).
+  const dest = safeNextOr(nextRaw, homeFor(user.role));
   const r = NextResponse.redirect(new URL(dest, req.url));
   r.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

@@ -5,14 +5,16 @@ import { NudgeActions } from "@/components/billing/NudgeActions";
 import { RemoveFromAr } from "@/components/billing/RemoveFromAr";
 import { RestoreToAr } from "@/components/billing/RestoreToAr";
 import { getBillingRows, getClearedArRows, type BillingRow } from "@/lib/queries";
-import { formatMoney } from "@/lib/utils";
+import { usd } from "@/lib/money";
 import { etDate } from "@/lib/datetime";
 import { FinanceTabs, type FinanceTab } from "./FinanceTabs";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 
-// Unpaid tab = the old Billing AR page, unchanged (aging buckets + nudge
-// actions). Admin-visible. Runs its own getBillingRows() query — the Revenue +
-// Payroll tabs never do.
+// Unpaid tab = the old Billing AR page (aging buckets + nudge actions). The
+// owner's by default; a non-owner sees it only through a per-person `sales`
+// grant (ADMIN's default page set has no "sales" since Sep 2). Runs its own
+// getBillingRows() query — the other tabs never do. Amounts print with cents
+// (audit G18), the same figure the reminder text quotes.
 const STATUS_TONE: Record<string, string> = {
   UNPAID: "bg-danger/10 text-danger",
   PARTIALLY_PAID: "bg-warning/10 text-warning",
@@ -75,9 +77,9 @@ function BillingCard({ r }: { r: BillingRow }) {
         {/* Right: money */}
         <div className="text-right">
           <div className="text-[11px] text-muted-2">Outstanding</div>
-          <div className="text-lg font-semibold text-warning">{formatMoney(r.outstanding)}</div>
+          <div className="text-lg font-semibold text-warning">{usd(r.outstanding)}</div>
           {r.invoiceTotal != null && (
-            <div className="text-[11px] text-muted-2">of {formatMoney(r.invoiceTotal)} invoice</div>
+            <div className="text-[11px] text-muted-2">of {usd(r.invoiceTotal)} invoice</div>
           )}
         </div>
       </div>
@@ -129,8 +131,8 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
 
   return (
     <div>
-      <PageHeader title="Finance" subtitle="Delivered Aryeo jobs that still owe — your outstanding accounts receivable." />
-      <div className="space-y-5 p-4 sm:p-6">
+      <PageHeader eyebrow="Finance" title="Unpaid" subtitle="Delivered Aryeo jobs that still owe — your outstanding accounts receivable." />
+      <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
         <FinanceTabs tab="unpaid" show={show} />
         {/* Outstanding total */}
         <div className="flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-border bg-surface p-5 panel-shadow">
@@ -138,13 +140,13 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
             <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted">
               <Receipt className="size-3.5" /> Total outstanding
             </div>
-            <div className="mt-1 text-3xl font-semibold tracking-tight text-warning">{formatMoney(totalOutstanding)}</div>
+            <div className="mt-1 text-3xl font-semibold tracking-tight text-warning">{usd(totalOutstanding)}</div>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-right text-sm text-muted">
             {/* Aging at a glance */}
             {grouped.filter((g) => g.items.length > 0 && g.key !== "0").map((g) => (
               <span key={g.key} className={`text-xs font-medium ${g.color}`}>
-                {g.label}: {formatMoney(g.subtotal)}
+                {g.label}: {usd(g.subtotal)}
               </span>
             ))}
             <span>
@@ -166,7 +168,7 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
                     <CalendarClock className="size-3.5" /> {g.label}
                   </h2>
                   <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${g.chip}`}>
-                    {g.items.length} · {formatMoney(g.subtotal)}
+                    {g.items.length} · {usd(g.subtotal)}
                   </span>
                 </div>
                 {g.items.map((r) => (
@@ -176,16 +178,16 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
             ),
           )
         )}
-      </div>
 
       {/* Rows no longer counted as owed — marked paid, or removed as junk.
-          Collapsed but never invisible, and both are undoable (review HIGH). */}
+          Collapsed but never invisible, and both are undoable (review HIGH).
+          Inside the page container now, so it lines up with the rest. */}
       {cleared.length > 0 && (
-        <details className="mt-6 rounded-2xl border border-border bg-surface">
+        <details className="rounded-2xl border border-border bg-surface">
           <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-muted hover:text-foreground">
             Cleared from AR · {cleared.length}
             <span className="ml-2 text-xs text-muted-2">
-              {formatMoney(cleared.reduce((n, r) => n + r.outstanding, 0))} no longer counted as owed
+              {usd(cleared.reduce((n, r) => n + r.outstanding, 0))} no longer counted as owed
             </span>
           </summary>
           <div className="space-y-2 border-t border-border p-3">
@@ -201,7 +203,7 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
                 <Link href={`/projects/${r.id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:text-brand">
                   {r.title}
                 </Link>
-                <span className="shrink-0 text-xs text-muted">{r.clientName} · {formatMoney(r.outstanding)}</span>
+                <span className="shrink-0 text-xs text-muted">{r.clientName} · {usd(r.outstanding)}</span>
                 {r.note && <span className="w-full text-[11px] text-muted-2">{r.note}</span>}
                 <RestoreToAr projectId={r.id} />
               </div>
@@ -209,6 +211,7 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
           </div>
         </details>
       )}
+      </div>
     </div>
   );
 }

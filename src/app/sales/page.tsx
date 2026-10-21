@@ -24,13 +24,13 @@ export const maxDuration = 60;
 // communications pattern) — the heavy payroll computation never runs for a
 // Revenue view, the AR pull never runs for a Payroll view.
 //
-// PER-TAB GATING mirrors exactly what the three separate routes did before:
-//   • Revenue  — owner-only  (admins never saw the Sales Tracker)
-//   • Unpaid   — admin-visible (old /billing was in ADMIN's page set)
-//   • Payroll  — owner-only  (old /payouts was owner-only in ROLE_PAGES)
-// A non-owner who deep-links ?tab=revenue or ?tab=payroll is redirected to the
-// tab they CAN see (their default) — same net effect as the old middleware
-// bounce on /sales and /payouts, but scoped to the tab instead of the page.
+// PER-TAB GATING:
+//   • every tab but Unpaid — owner-only
+//   • Unpaid — the one tab a NON-owner can open, and only with a per-person
+//     `sales` grant: ADMIN's default page set has had no "sales" since Sep 2
+//     ("full ops access, no money"), so Kyle never reaches this page at all.
+//     (Corrected Oct 20 2026, audit G12: this used to say "admin-visible".)
+// A non-owner who deep-links any other ?tab= is redirected to Unpaid.
 export default async function FinancePage({
   searchParams,
 }: {
@@ -38,8 +38,9 @@ export default async function FinancePage({
 }) {
   // Same guard shape as the Tasks hub: getCurrentUser() is null sessionless
   // (local dev = owner view, gate off) and never redirects on its own; we only
-  // bounce a signed-in user who lacks "sales" access (owner + admin have it;
-  // creatives are already stopped by middleware). No user ⇒ owner-view default.
+  // bounce a signed-in user who lacks "sales" access (the owner, plus anyone
+  // holding a per-person grant; the auth proxy already stops everyone else).
+  // No user ⇒ owner-view default.
   const me = await getCurrentUser().catch(() => null);
   // Transient session/DB failure must not render owner finance to a stale tab —
   // bounce to login (middleware guarantees a session exists in prod, so a null
@@ -55,7 +56,7 @@ export default async function FinancePage({
   const sp = await searchParams;
   const requested = sp.tab;
 
-  // Which tabs this viewer may see (owner: all; admin: Unpaid only).
+  // Which tabs this viewer may see (owner: all; a `sales` grant holder: Unpaid only).
   // "money" + "revenue" retired Aug 25 (audit) — Money duplicated Overview and
   // its entry forms were never used; Revenue reported Aryeo-price figures that
   // contradicted the processor-truth engine. Old ?tab= deep links fall through

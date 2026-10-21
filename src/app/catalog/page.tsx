@@ -1,4 +1,5 @@
 import { requirePageAccess } from "@/lib/auth/guards";
+import { getCurrentUser } from "@/lib/auth/user";
 import { Package, Sun, Plus, Camera, Home, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
@@ -38,8 +39,20 @@ function bucketsFor(p: Product): string[] {
   return matched.length ? matched : ["Real Estate"];
 }
 
+// One malformed variants row used to throw inside render and take the whole
+// catalog down with it (audit G19); a row that won't parse shows no tiers.
+function variantsOf(p: Product): Variant[] {
+  if (!p.variants) return [];
+  try {
+    const v = JSON.parse(p.variants) as unknown;
+    return Array.isArray(v) ? (v as Variant[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function ProductCard({ p }: { p: Product }) {
-  const variants: Variant[] = p.variants ? JSON.parse(p.variants) : [];
+  const variants = variantsOf(p);
   const from = p.minPrice != null ? formatMoney(p.minPrice / 100) : null;
   const range = p.minPrice != null && p.maxPrice != null && p.minPrice !== p.maxPrice;
 
@@ -91,7 +104,12 @@ function ProductCard({ p }: { p: Product }) {
 
 export default async function CatalogPage() {
   await requirePageAccess("catalog");
-  const products = await prisma.product.findMany({ orderBy: [{ title: "asc" }] });
+  const [products, me] = await Promise.all([
+    prisma.product.findMany({ orderBy: [{ title: "asc" }] }),
+    getCurrentUser().catch(() => null),
+  ]);
+  // Connections is owner-only, so only the owner is pointed at it (audit G18).
+  const canSync = me ? me.role === "OWNER" : true;
 
   // Build the four fixed groups.
   const grouped = new Map<string, Product[]>(SECTIONS.map((s) => [s.key, []]));
@@ -102,12 +120,16 @@ export default async function CatalogPage() {
   return (
     <div>
       <PageHeader title="Service Catalog" subtitle={`${products.length} products & packages synced from Aryeo`} />
-      <div className="space-y-8 p-6">
+      <div className="space-y-8 p-4 sm:p-6">
         {products.length === 0 ? (
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <Camera className="mx-auto mb-2 size-6 text-muted-2" />
             <p className="text-sm text-muted">
-              No products yet. Go to <strong>Connections → Aryeo → Sync catalog</strong> to import.
+              {canSync ? (
+                <>No products yet. Go to <strong>Connections → Aryeo → Sync catalog</strong> to import.</>
+              ) : (
+                <>No products yet. Ask Jordan to sync the catalog from Aryeo.</>
+              )}
             </p>
           </div>
         ) : (
