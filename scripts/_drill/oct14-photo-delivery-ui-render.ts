@@ -147,9 +147,11 @@ async function main() {
     c.ok("board: AutoHDR not connected, said plainly", /AutoHDR API not connected/.test(tb));
     c.ok("table view renders rows with a caption", /Photo jobs, sorted by when they are due/.test(table) && /9 Render Row/.test(text(table)));
     const tj = text(jobHtml);
+    const barOf0 = (h: string) => ((h.split('aria-label="Deliver"')[1] ?? "").replace(/^[^>]*>/, "").split("</section>")[0]).split('id="pd-deliver-body"')[0];
     c.ok("job: header facts (stage stepper, Aryeo links, verdict, credits spent)", /Review/.test(tj) && /realtourpilot\.aryeo\.com\/admin\/listings\/lst-render\/edit/.test(jobHtml) && /Needs a decision/.test(tj) && /3 AutoHDR credits spent/.test(tj));
     c.ok("job: groups first, with the privacy chip and the low-confidence drawer", /Trash or recycling bin/.test(tj) && /Privacy/.test(tj) && /Low confidence/.test(tj));
-    c.ok("job: the deliver panel with the advisory badge and the steps", /Delivery checklist: \d+ of \d+ pass/.test(tj) && /Advisory/.test(tj) && /Mark as delivering/.test(tj) && /Copy message/.test(tj));
+    // Oct 20 2026 (audit C7): the seeded privacy critical holds delivery even in shadow mode; the panel says why instead of offering Mark as delivering.
+    c.ok("job: the deliver panel with the advisory badge and the steps", /Delivery checklist: \d+ of \d+ pass/.test(tj) && /Advisory/.test(tj) && /A privacy or wrong-property issue is open/.test(tj) && !/Mark as delivering/.test(text(barOf0(jobHtml))) && /Copy message/.test(tj));
     c.ok("job: Replace these on the Aryeo listing, with the download", /Replace these on the Aryeo listing/.test(tj) && /href="\/api\/photo-fixes\/[a-z0-9]+"/.test(jobHtml));
     c.ok("job: images use the staff route with the content hash", /\/api\/photo-delivery\/img\/[a-z0-9]+\/thumb768\?v=h-A\.jpg/.test(jobHtml));
     const tc = text(cartHtml);
@@ -209,8 +211,12 @@ async function main() {
     const mains = (h: string) => (deliverOf(h).match(/<(?:button|a)\b[^>]*bg-brand-action[^>]*>[\s\S]*?<\/(?:button|a)>/g) ?? []).map((b) => text(b).trim());
     const folderUrl = "https://www.dropbox.com/home/render/06-Ready-for-Aryeo";
     type Push = typeof asAdmin.aryeoPush;
+    // The seeded privacy critical holds delivery even in shadow mode (audit C7):
+    // these frames show the bar once it is decided, the checklist otherwise as seeded.
+    const decidedGate = { ...asAdmin.gate!, canDeliver: true, overrideAllowed: true, blockedForOverride: null };
     const withStage = (stage: string, aryeoPush: Push, extra: Partial<typeof asAdmin.header> = {}) => ({
       ...asAdmin,
+      gate: decidedGate,
       header: { ...asAdmin.header, stage, ...extra },
       steps: { ...asAdmin.steps!, listingUrl: asAdmin.steps!.listingUrl ?? "https://realtourpilot.aryeo.com/admin/listings/lst-render/edit", ready: { folderUrl, files: 3, expected: 3, ready: true, stagedAt: null } },
       aryeoPush,
@@ -223,7 +229,7 @@ async function main() {
       all[`deliver bar: ${label}`] = h;
       return h;
     };
-    c.ok("the seeded checklist lets Kyle deliver (shadow mode advises)", asAdmin.gate?.canDeliver === true, JSON.stringify(asAdmin.gate?.checks.map((x) => x.ok)));
+    c.ok("the seeded checklist with an open privacy critical does NOT let Kyle deliver, even in shadow mode, and says why (audit C7)", asAdmin.gate?.advisory === true && asAdmin.gate?.canDeliver === false && /privacy or wrong-property/.test(asAdmin.gate?.blockedForOverride ?? ""), JSON.stringify(asAdmin.gate?.checks.map((x) => x.ok)));
     const readyOn = frame("READY, hub on", withStage("READY", hubOn));
     c.ok("Ready to review with the hub's upload on: Approve and deliver is the main button, Approve and upload to Aryeo beside it, no Mark as delivering (Jordan, Oct 15)", JSON.stringify(mains(readyOn)) === '["Approve and deliver"]' && /Approve and upload to Aryeo/.test(text(barOf(readyOn))) && !/Mark as delivering|Send to Aryeo/.test(text(deliverOf(readyOn))), mains(readyOn).join(" | "));
     c.ok("... the steps by hand wait behind Do it by hand instead, and the copy no longer says the hub can't upload", /<summary[^>]*>\s*Do it by hand instead/.test(deliverOf(readyOn)) && /Copy message/.test(text(deliverOf(readyOn).split("Do it by hand instead")[1] ?? "")) && !/can.t upload/.test(text(deliverOf(readyOn))));

@@ -54,7 +54,8 @@ async function syncFixTask(projectId: string, flaggedBy?: string | null) {
   }
 
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  // The delivery owner's roster row, never a guess by name (audit C10, Oct 20 2026).
+  const kyle = await import("@/lib/kyleNotice").then((m) => m.kyleDesk()).catch(() => null);
 
   // Aggregate the tags + notes across all flagged images.
   const tagCounts = new Map<string, number>();

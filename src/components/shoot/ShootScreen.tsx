@@ -28,6 +28,10 @@ import {
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
+// Oct 20 2026 (audit C12): the third status button only TEXTS the client; it
+// was labelled "Shoot complete", the same words as row 2's Done, which is the
+// one that marks the shoot complete. The button says what it does.
+const STATUS_BUTTON_LABEL: Partial<Record<ShootStatusKind, string>> = { complete: "Text: wrapped" };
 
 // What the photographer actually needs to CAPTURE on-site for each ordered
 // deliverable — so the checklist tells them exactly what the job requires, not
@@ -81,7 +85,7 @@ export function captureGuideFor(
 const POST_PRODUCTION_TYPES = new Set<string>(["VIRTUAL_STAGING"]);
 
 export function ShootScreen({
-  view, pay, map, briefRead = null, whenText, timing, media, chat = null, backHref = "/shoot",
+  view, pay, map, briefRead = null, whenText, timing, media, chat = null, backHref = "/shoot", sentStatusKinds = [],
 }: {
   view: ShootView;
   pay: React.ReactNode;
@@ -94,6 +98,8 @@ export function ShootScreen({
   /** The job's team chat (Sep 16) — server-rendered, sits under the editor notes. */
   chat?: React.ReactNode;
   backHref?: string;
+  /** Status texts already sent to the client today (audit C12): the ticks survive a reload. */
+  sentStatusKinds?: ShootStatusKind[];
 }) {
   const { project, appointment, client, segment, profile, deliverables } = view;
 
@@ -199,7 +205,7 @@ export function ShootScreen({
             </div>
           ))}
         {isVideo && <AocPlaybookCard context="shoot" />}
-        <CustomerCard client={client} segment={segment} profile={profile} />
+        <CustomerCard client={client} segment={segment} profile={profile} projectId={project.id} flash={flash} />
         {/* Under everything it refers to: access, checklist, scripts and the
             client's own words are all above it (Oct 5). */}
         {briefRead}
@@ -218,6 +224,8 @@ export function ShootScreen({
         view={view}
         projectId={project.id}
         initialCompletedISO={appointment?.completedAtISO ?? null}
+        appointmentId={appointment?.id ?? null}
+        initialSent={sentStatusKinds}
         total={captureables.length}
         captured={capturedCount}
         flash={flash}
@@ -467,14 +475,20 @@ function SendSheet({
 // call/text/email — and the full profile (dos/donts, shoot notes) is one tap
 // away when it matters.
 function CustomerCard({
-  client, segment, profile,
+  client, segment, profile, projectId, flash,
 }: {
   client: ShootView["client"];
   segment: ShootView["segment"];
   profile: ShootView["profile"];
+  projectId: string;
+  flash: (k: "ok" | "err", t: string) => void;
 }) {
   const isVip = segment?.key === "vip";
   const [open, setOpen] = useState(false);
+  // Oct 20 2026 (audit C17): Text opens the company-line message sheet (logged
+  // to the job, the comms memory and the reply engine), not the phone's own
+  // texting app, whose messages the office never sees.
+  const [msgOpen, setMsgOpen] = useState(false);
   // F18: the client's own portal words count as "more to show" too — a
   // client with no office note and no AI profile can still have typed exactly
   // how they want to be filmed.
@@ -503,8 +517,8 @@ function CustomerCard({
         <div className="flex shrink-0 items-center gap-1.5">
           {client.phoneE164 && (
             <>
-              <a href={`tel:${client.phoneE164}`} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Call"><Phone className="size-4" /></a>
-              <a href={`sms:${client.phoneE164}`} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Text"><MessageSquare className="size-4" /></a>
+              <a href={`tel:${client.phoneE164}`} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Call from your own phone" aria-label="Call from your own phone"><Phone className="size-4" /></a>
+              <button type="button" onClick={() => setMsgOpen(true)} className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-surface text-brand hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand" title="Text from the company line" aria-label="Text the client from the company line"><MessageSquare className="size-4" /></button>
             </>
           )}
           {client.email && (
@@ -596,6 +610,7 @@ function CustomerCard({
           ) : null}
         </div>
       )}
+      {msgOpen && <MessageSheet projectId={projectId} noPhone={!client.phoneE164} onClose={() => setMsgOpen(false)} flash={flash} />}
     </section>
   );
 }
@@ -921,9 +936,11 @@ function NotesCard({ projectId, initial, flash, contentSession = false }: { proj
     setFailure(null);
     start(async () => {
       try {
-        const r = await saveShootNote(projectId, text);
-        if (!r?.ok) { setFailure("Not saved. Your notes are still here — tap Save notes to try again."); return; }
-        setSaved(text);
+        // `saved` is what the server held when this screen loaded (or last
+        // saved): a newer brief from the office is refused, never overwritten.
+        const r = await saveShootNote(projectId, text, saved);
+        if (!r?.ok) { setFailure(r?.message ?? "Not saved. Your notes are still here. Tap Save notes to try again."); return; }
+        setSaved(text.trim().slice(0, 4000));
         flash("ok", "Notes saved for editors");
       } catch {
         setFailure("Not saved — the connection dropped. Your notes are still here; tap Save notes to try again.");
@@ -985,11 +1002,14 @@ function MediaCard({ media, uploaded }: { media: React.ReactNode; uploaded: bool
 //     text for review) + the free-form message sheet
 //   · capture progress + the primary Mark-complete → Upload flow
 function ActionBar({
-  view, projectId, initialCompletedISO, total, captured, flash,
+  view, projectId, initialCompletedISO, appointmentId, initialSent, total, captured, flash,
 }: {
   view: ShootView;
   projectId: string;
   initialCompletedISO: string | null;
+  /** The visit this screen is about (audit C5): Done stamps THIS appointment. */
+  appointmentId: string | null;
+  initialSent: ShootStatusKind[];
   total: number;
   captured: number;
   flash: (k: "ok" | "err", t: string) => void;
@@ -998,7 +1018,7 @@ function ActionBar({
   const [completed, setCompleted] = useState(initialCompletedISO != null);
   const [sheet, setSheet] = useState<{ kind: ShootStatusKind; text: string } | null>(null);
   const [msgOpen, setMsgOpen] = useState(false);
-  const [sent, setSent] = useState<Set<ShootStatusKind>>(new Set());
+  const [sent, setSent] = useState<Set<ShootStatusKind>>(() => new Set(initialSent));
   const [pending, start] = useTransition();
   const noPhone = !client.phoneE164;
   // WEAK SIGNAL (Oct 5): why the last status text did not go — shown in the
@@ -1046,8 +1066,14 @@ function ActionBar({
     setCompleteFailure(null);
     start(async () => {
       try {
-        const r = await completeShoot(projectId);
-        if (r.ok) { setCompleted(true); flash("ok", "Shoot marked complete"); }
+        const r = await completeShoot(projectId, appointmentId);
+        if (r.ok) {
+          setCompleted(true);
+          flash("ok", "Shoot marked complete");
+          // Offer the wrap-up text to the client (audit C12): the drafted text
+          // opens for review; nothing is sent until Send text is pressed.
+          if (!noPhone && !sent.has("complete")) openStatus("complete");
+        }
         else setCompleteFailure(`Not marked complete: ${r.message} Tap Done to try again.`);
       } catch {
         setCompleteFailure("Not marked complete — the connection dropped. Tap Done to try again.");
@@ -1083,14 +1109,14 @@ function ActionBar({
                 key={kind}
                 onClick={() => openStatus(kind)}
                 disabled={noPhone}
-                title={noPhone ? "No phone number on file for this client" : `Text the client: ${SHOOT_STATUS_META[kind].label}`}
+                title={noPhone ? "No phone number on file for this client" : `Text the client: ${SHOOT_STATUS_META[kind].label}${done ? " (sent today)" : ""}`}
                 className={cn(
                   "inline-flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-lg border px-1.5 py-2 text-sm font-medium transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                   done ? "border-success/40 bg-success-soft/40 text-success" : "bg-surface hover:bg-surface-2",
                 )}
               >
                 {done ? <CheckCircle2 className="size-3.5 shrink-0" /> : kind === "complete" ? <Check className="size-3.5 shrink-0 text-muted" /> : <Navigation className="size-3.5 shrink-0 text-brand" />}
-                <span className="min-w-0 break-words leading-snug">{SHOOT_STATUS_META[kind].label}</span>
+                <span className="min-w-0 break-words leading-snug">{STATUS_BUTTON_LABEL[kind] ?? SHOOT_STATUS_META[kind].label}</span>
               </button>
             );
           })}

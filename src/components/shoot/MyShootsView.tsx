@@ -232,9 +232,9 @@ export function MyShootsView({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-2">Photographers</span>
             <div className="flex items-center gap-2.5 text-xs">
               {meId && photographers.some((p) => p.key === meId) && (
-                <button onClick={onlyMine} className="font-medium text-brand hover:underline">Only mine</button>
+                <button onClick={onlyMine} className="inline-flex min-h-9 items-center rounded-lg px-2 font-medium text-brand hover:bg-surface-2 hover:underline">Only mine</button>
               )}
-              <button onClick={showAll} className="text-muted hover:text-foreground">All</button>
+              <button onClick={showAll} className="inline-flex min-h-9 items-center rounded-lg px-2 text-muted hover:bg-surface-2 hover:text-foreground">All</button>
             </div>
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -245,7 +245,7 @@ export function MyShootsView({
                   key={p.key}
                   onClick={() => togglePhotog(p.key)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all",
+                    "inline-flex min-h-9 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all",
                     on ? "bg-surface-2 text-foreground" : "border-dashed text-muted-2 opacity-55",
                   )}
                 >
@@ -266,14 +266,14 @@ export function MyShootsView({
         <div className="mb-2 flex items-center justify-between px-1">
           <div className="text-sm font-semibold">{MONTHS[cursor.m]} {cursor.y}</div>
           <div className="flex items-center gap-1">
-            <button onClick={() => shiftMonth(-1)} className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground" aria-label="Previous month"><ChevronLeft className="size-4" /></button>
+            <button onClick={() => shiftMonth(-1)} className="flex size-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground" aria-label="Previous month"><ChevronLeft className="size-5" /></button>
             <button
               onClick={() => { const [y, mo] = todayKey.split("-").map(Number); setCursor({ y, m: mo - 1 }); }}
-              className="rounded-lg px-2 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+              className="inline-flex min-h-11 items-center rounded-lg px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
             >
               Today
             </button>
-            <button onClick={() => shiftMonth(1)} className="flex size-7 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground" aria-label="Next month"><ChevronRight className="size-4" /></button>
+            <button onClick={() => shiftMonth(1)} className="flex size-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground" aria-label="Next month"><ChevronRight className="size-5" /></button>
           </div>
         </div>
         <div className="grid grid-cols-7 gap-0.5 text-center">
@@ -313,7 +313,7 @@ export function MyShootsView({
 
       {/* Selected-day banner */}
       {selected && (
-        <button onClick={() => setSelected(null)} className="inline-flex items-center gap-1.5 text-sm text-brand hover:underline">
+        <button onClick={() => setSelected(null)} className="inline-flex min-h-11 items-center gap-1.5 text-sm text-brand hover:underline">
           <X className="size-3.5" /> Showing {etFullDate(selected + "T12:00:00Z")} · show all
         </button>
       )}
@@ -339,7 +339,7 @@ export function MyShootsView({
               {etFullDate(day + "T12:00:00Z")} · {items.length}
             </div>
             <div className="space-y-2">
-              {items.map((r) => <ShootRowCard key={r.id} r={r} showWho={showWho} as={viewAs?.id ?? null} />)}
+              {items.map((r) => <ShootRowCard key={r.key ?? r.id} r={r} showWho={showWho} as={viewAs?.id ?? null} />)}
             </div>
           </section>
         );
@@ -350,10 +350,32 @@ export function MyShootsView({
 
 function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as: string | null }) {
   const types = r.deliverableTypes.map((t) => DELIVERABLE_META[t]?.label ?? t).slice(0, 4);
+  // Oct 20 2026 (audit C20): "Complete" used to be the last word on a row, but
+  // the upload page is the step that hands the shoot to the editor. While it
+  // is unsubmitted the row says so, with its own link (a link can't sit
+  // inside the row's link, so it sits under it). Previews only read.
+  if (r.uploadPageOpen && !as) {
+    return (
+      <div className="rounded-2xl border border-warning/40 bg-surface transition-colors hover:border-brand/40">
+        <ShootRowLink r={r} showWho={showWho} as={as} types={types} className="rounded-t-2xl hover:bg-surface-2/50" />
+        <Link
+          href={`/upload/${r.id}`}
+          className="flex min-h-11 items-center justify-between gap-2 rounded-b-2xl border-t border-warning/30 bg-warning/5 px-3 text-sm font-medium text-warning hover:bg-warning/10 sm:px-4"
+        >
+          <span className="flex items-center gap-1.5"><UploadIcon className="size-4" /> Finish the upload page</span>
+          <ChevronRight className="size-4" />
+        </Link>
+      </div>
+    );
+  }
+  return <ShootRowLink r={r} showWho={showWho} as={as} types={types} className="rounded-2xl border bg-surface hover:border-brand/40 hover:bg-surface-2/50" />;
+}
+
+function ShootRowLink({ r, showWho, as, types, className }: { r: MyShootRow; showWho: boolean; as: string | null; types: string[]; className: string }) {
   return (
     <Link
       href={as ? `/shoot/${r.id}?as=${as}` : `/shoot/${r.id}`}
-      className="flex items-center gap-3 rounded-2xl border bg-surface p-3 transition-colors hover:border-brand/40 hover:bg-surface-2/50 sm:p-4"
+      className={cn("flex items-center gap-3 p-3 transition-colors sm:p-4", className)}
     >
       {/* Property thumbnail: Street View of the address until the photos are
           live on Aryeo, then the listing's first image (server-side swap). */}
@@ -374,6 +396,7 @@ function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as:
           <span className="text-xs font-medium text-brand">{r.whenISO ? etTime(r.whenISO) : "—"}</span>
           {r.completed && <Badge color={PALETTE.green}><CheckCircle2 className="mr-0.5 inline size-3" /> Complete</Badge>}
           {!r.completed && r.uploaded && <Badge color={PALETTE.blue}><UploadIcon className="mr-0.5 inline size-3" /> Uploaded</Badge>}
+          {r.uploadPageOpen && as && <Badge color={PALETTE.gold}>Upload page not submitted</Badge>}
           {r.hasScripts && <Badge color={PALETTE.violet}><ScrollText className="mr-0.5 inline size-3" /> Scripts</Badge>}
         </div>
         <div className="mt-0.5 truncate font-semibold">{r.street}</div>

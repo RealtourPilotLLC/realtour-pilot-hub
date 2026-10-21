@@ -1,7 +1,6 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { getSetting, putSetting } from "@/lib/settings";
 import { ruleById, type RuleOverride } from "./registry";
 
 // ---------------------------------------------------------------------------
@@ -21,9 +20,48 @@ import { ruleById, type RuleOverride } from "./registry";
 export type HouseRule = { ruleId: string; reason: string; by: string; at: string };
 const KEY = "photo_delivery:house_rules";
 
+async function readList(): Promise<{ raw: string | null; rules: HouseRule[] }> {
+  const row = await prisma.appSetting.findUnique({ where: { key: KEY }, select: { value: true } });
+  if (!row) return { raw: null, rules: [] };
+  let parsed: { rules?: unknown } = {};
+  try {
+    parsed = JSON.parse(row.value) as { rules?: unknown };
+  } catch {
+    /* an unreadable row reads as an empty list; the next change replaces it */
+  }
+  const rules = (Array.isArray(parsed.rules) ? (parsed.rules as HouseRule[]) : []).filter((r) => r && typeof r.ruleId === "string");
+  return { raw: row.value, rules };
+}
+
+/**
+ * The list, read fresh (audit C19, Oct 20 2026): a check switched off applies
+ * on the next QC everywhere, not a minute later. A read that fails is an empty
+ * list, as before: it must never break a QC run.
+ */
 export async function houseRules(): Promise<HouseRule[]> {
-  const raw = await getSetting<{ rules?: HouseRule[] }>(KEY, {});
-  return (Array.isArray(raw.rules) ? raw.rules : []).filter((r) => r && typeof r.ruleId === "string");
+  return (await readList().catch(() => null))?.rules ?? [];
+}
+
+/**
+ * One compare-and-swap on the list (audit C19): two quick presses never drop
+ * each other's rule. `change` answers null when there is nothing to change.
+ */
+async function changeList(by: string, change: (list: HouseRule[]) => HouseRule[] | null): Promise<boolean> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { raw, rules } = await readList();
+    const next = change(rules);
+    if (!next) return false;
+    const value = JSON.stringify({ rules: next });
+    const updatedBy = by.slice(0, 120);
+    if (raw == null) {
+      const made = await prisma.appSetting.create({ data: { key: KEY, value, updatedBy } }).then(() => true, () => false);
+      if (made) return true;
+      continue; // someone else wrote the first rule a moment ago: read again
+    }
+    const r = await prisma.appSetting.updateMany({ where: { key: KEY, value: raw }, data: { value, updatedBy } });
+    if (r.count === 1) return true;
+  }
+  throw new Error("The list of switched-off checks kept changing. Try again in a moment.");
 }
 
 /** As rule overrides (disabled), for the engines. */
@@ -46,11 +84,12 @@ export async function stopRule(ruleId: string, reason: string, by: string): Prom
   if (ruleId === "OTHER_DEFECT") return { ok: false, message: "The catch-all check can't be switched off; ignore those one by one.", setAside: 0 };
   // Oct 14 2026 (huddle): an AI fix that changed the house is never hidden house-wide.
   if (ruleId === "FIX_DAMAGE_AI_EDIT") return { ok: false, message: "This one can't be switched off: it is how the hub says an AI fix changed a house. Restore the photo, or decide it one by one.", setAside: 0 };
+  // Audit C19 (Oct 20 2026): what the house fixes on every shoot (trash cans
+  // above all: always wanted) is never switched off for every shoot.
+  const { ALWAYS_FIX } = await import("./fixPolicy");
+  if (ALWAYS_FIX.has(ruleId)) return { ok: false, message: "This one can't be switched off: the hub fixes it on every shoot (trash cans, cars, camera mistakes, lens distortion). Decide it one by one instead.", setAside: 0 };
   const why = reason.trim().slice(0, 300) || "Jordan does not need to know about this";
-  const list = await houseRules();
-  if (!list.some((r) => r.ruleId === ruleId)) {
-    await putSetting(KEY, { rules: [...list, { ruleId, reason: why, by: by.slice(0, 120), at: new Date().toISOString() }] }, by);
-  }
+  await changeList(by, (list) => (list.some((r) => r.ruleId === ruleId) ? null : [...list, { ruleId, reason: why, by: by.slice(0, 120), at: new Date().toISOString() }]));
   const r = await prisma.photoQcFinding.updateMany({
     where: { ruleId, status: "OPEN" },
     data: { status: "IGNORED", statusReason: `Not checked any more: ${why}`.slice(0, 300), decidedBy: by.slice(0, 120), decidedAt: new Date() },
@@ -60,8 +99,7 @@ export async function stopRule(ruleId: string, reason: string, by: string): Prom
 
 /** Check it again from the next QC on. Findings set aside stay decided. */
 export async function resumeRule(ruleId: string, by: string): Promise<{ ok: boolean; message: string }> {
-  const list = await houseRules();
-  if (!list.some((r) => r.ruleId === ruleId)) return { ok: false, message: "That check is already on." };
-  await putSetting(KEY, { rules: list.filter((r) => r.ruleId !== ruleId) }, by);
+  const changed = await changeList(by, (list) => (list.some((r) => r.ruleId === ruleId) ? list.filter((r) => r.ruleId !== ruleId) : null));
+  if (!changed) return { ok: false, message: "That check is already on." };
   return { ok: true, message: `"${ruleById(ruleId)?.shortLabel ?? ruleId}" is checked again from the next QC on.` };
 }

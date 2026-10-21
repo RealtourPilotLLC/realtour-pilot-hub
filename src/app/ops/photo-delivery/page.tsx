@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { Avatar } from "@/components/ui/Avatar";
 import { photoQcCards, type QueuePhotoQc } from "@/lib/reviewRoom";
+import { prisma } from "@/lib/prisma";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
 import { GlobalStrip } from "@/components/photoDelivery/GlobalStrip";
@@ -28,14 +29,20 @@ export const dynamic = "force-dynamic";
 // photoQcCards).
 // ---------------------------------------------------------------------------
 
-function MediaChecks({ cards }: { cards: QueuePhotoQc[] }) {
+function MediaChecks({ cards, jobByProject }: { cards: QueuePhotoQc[]; jobByProject: Map<string, string> }) {
   if (!cards.length) return null;
+  // Oct 20 2026 (audit C11): a card whose shoot has a photo job opens that
+  // job, where the gallery is checked, instead of the project page.
+  const hrefOf = (t: QueuePhotoQc) => {
+    const job = t.projectId ? jobByProject.get(t.projectId) : undefined;
+    return job ? `/ops/photo-delivery/${job}` : t.projectId ? `/projects/${t.projectId}` : "/tasks";
+  };
   return (
     <Section icon={ClipboardCheck} title="Media checks to finish" count={cards.length}>
       <ul className="divide-y divide-border">
         {cards.map((t) => (
           <li key={t.taskId}>
-            <Link href={t.projectId ? `/projects/${t.projectId}` : "/tasks"} className="flex min-h-11 items-center justify-between gap-3 py-2.5 hover:text-brand">
+            <Link href={hrefOf(t)} className="flex min-h-11 items-center justify-between gap-3 py-2.5 hover:text-brand">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm font-medium">{t.street}</span>
                 {t.clientName && (
@@ -86,6 +93,13 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
     }),
   ]);
 
+  const checkProjects = [...new Set(mediaChecks.map((t) => t.projectId).filter((x): x is string => !!x))];
+  const jobByProject = new Map(
+    checkProjects.length
+      ? (await prisma.photoJob.findMany({ where: { projectId: { in: checkProjects } }, select: { id: true, projectId: true } }).catch(() => [])).map((j) => [j.projectId, j.id] as const)
+      : [],
+  );
+
   const decision = queue?.columns.find((c) => c.key === "decision")?.cards.length ?? 0;
   const ready = queue?.columns.find((c) => c.key === "ready")?.cards.length ?? 0;
   const atRisk = queue ? queue.columns.reduce((n, c) => n + c.cards.filter((x) => x.atRisk).length, 0) : 0;
@@ -98,7 +112,7 @@ export default async function PhotoDeliveryQueuePage({ searchParams }: { searchP
       <PageHeader eyebrow="Operations" title="Photo Delivery" subtitle={subtitle} />
       <div className="mx-auto max-w-[120rem] space-y-4 p-4 pb-16 sm:p-6">
         <GlobalStrip strip={strip} current="queue" />
-        <MediaChecks cards={mediaChecks} />
+        <MediaChecks cards={mediaChecks} jobByProject={jobByProject} />
         {!queue ? (
           <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">The queue could not be read. Refresh to try again.</p>
         ) : queue.total === 0 ? (

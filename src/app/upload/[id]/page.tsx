@@ -1,6 +1,8 @@
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
+import { canAccess, homeFor } from "@/lib/auth/access";
 import { photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import {
   Image as ImageIcon,
@@ -58,6 +60,12 @@ export default async function UploadProjectPage({
 
   // A photographer can only open the upload page for their OWN shoot.
   const viewer = await getCurrentUser();
+  // Oct 20 2026 (audit C2): fail CLOSED on a null user under enforcement, the
+  // same shape as /shoot/<id>. A disabled account's stale JWT still passes the
+  // middleware, and null used to skip the ownership check below and read as
+  // the office: any job's client, address and brief.
+  if (!viewer && authEnforced()) redirect(`/login?next=${encodeURIComponent(`/upload/${id}`)}`);
+  if (viewer && !canAccess(viewer, "upload")) redirect(homeFor(viewer.role));
   if (viewer?.role === "PHOTOGRAPHER") {
     // New-process acknowledgment first (one time), then ownership.
     if (viewer.email) {
@@ -169,8 +177,9 @@ export default async function UploadProjectPage({
   );
   // The office edits a record; the photographer finishes a job — the portal
   // words its reopen button for each (Sep 15). OPEN mode (no session) reads
-  // as the office, the same way the list page does.
-  const viewerIsOffice = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
+  // as the office, the same way the list page does; under enforcement a null
+  // viewer never gets this far (audit C2).
+  const viewerIsOffice = (!viewer && !authEnforced()) || viewer?.role === "OWNER" || viewer?.role === "ADMIN";
 
   const street = streetOf(project.title);
   const addOns: ShootAddOn[] = addOnTasks.map((t) => ({

@@ -519,8 +519,3 @@ export async function intakeGallery(projectId: string): Promise<{ shootId: numbe
   }
   return out;
 }
-
-/** Batches for the pages (newest first). */
-export async function intakeBatchesFor(projectId: string) {
-  return prisma.photoIntakeBatch.findMany({ where: { projectId }, orderBy: { batchNo: "desc" }, select: { batchNo: true, state: true, fileCount: true, expectedPhotos: true, address: true, photoshootId: true, sentAt: true, doneAt: true, imageCount: true, lastError: true } });
-}

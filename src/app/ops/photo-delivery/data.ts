@@ -10,6 +10,7 @@ import { photoDeliverySettings } from "@/lib/photoDelivery/settings";
 import { creditAlertState, creditView, type CreditView } from "@/lib/photoDelivery/credits";
 import { buildFixCart } from "@/lib/photoDelivery/fixes";
 import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
+import { ALWAYS_FIX } from "@/lib/photoDelivery/fixPolicy";
 import { deliveryGate, deliverySteps } from "@/lib/photoDelivery/delivery";
 import { checkEveryMs } from "@/lib/photoDelivery/verifySweep";
 import { RULES, ruleById } from "@/lib/photoDelivery/registry";
@@ -534,6 +535,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       status: f.status,
       statusReason: f.statusReason,
       planNote: f.planNote,
+      alwaysFixed: ALWAYS_FIX.has(f.ruleId),
       decidedBy: f.decidedBy,
       decidedAt: iso(f.decidedAt),
       arbitration: f.arbitration,

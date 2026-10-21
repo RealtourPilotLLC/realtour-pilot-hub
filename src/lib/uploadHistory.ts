@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { etDayStartUtc, etAddDays } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
+import { ownsShootWhere } from "@/lib/shoot";
 import type { DeliverableType, ProjectStatus } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import {
@@ -144,7 +145,8 @@ export const OWES_AN_ADDITIONAL_SHOOT: Prisma.ProjectWhereInput = {
  *  chip and the chip counts all use this one predicate, so a chip's count is
  *  exactly what clicking it lists. */
 export function ownedBy(memberId: string): Prisma.ProjectWhereInput {
-  return { OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }] };
+  // A cancelled visit is not ownership (audit C4): lib/shoot's one predicate.
+  return ownsShootWhere(memberId);
 }
 
 /** The start (UTC instant) of the ET day 7 days ago — the boundary between
@@ -269,7 +271,7 @@ export async function historyPhotographers(scope: UploadViewerScope, now = new D
   if (!scope.office) return [];
   const jobs = await prisma.project.findMany({
     where: historyWhere(scope, {}, now),
-    select: { photographerId: true, appointments: { select: { assignedToId: true } } },
+    select: { photographerId: true, appointments: { where: { status: { not: "CANCELED" } }, select: { assignedToId: true } } },
   });
   const counts = new Map<string, number>();
   for (const j of jobs) {

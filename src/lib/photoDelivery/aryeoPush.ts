@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { photoDeliverySettings, type AryeoPushMode } from "./settings";
 import { logJobEvent } from "./jobState";
+import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
 // THE PHOTOS INTO ARYEO, BY THE HUB (Oct 14 2026).
@@ -278,6 +279,9 @@ export async function approvePushDelivery(jobId: string, by: string): Promise<{ 
   return { ok: true, message: "Delivering in Aryeo now. The listing's customers get Aryeo's usual delivery email." };
 }
 
+/** The stages Kyle's approval is taken from: Ready to review, or a job already past it. */
+const APPROVE_FROM = new Set(["READY", "DELIVERING", "DELIVERY_MISMATCH", "REVISION_REQUESTED"]);
+
 /**
  * Kyle's approval of a job that is Ready to review (Oct 15, Jordan: "click
  * approve and deliver or approve and upload to Aryeo"). Deliver: photos
@@ -290,12 +294,17 @@ export async function approveJob(jobId: string, by: string, opts: { deliver: boo
   if (settings.aryeoPush === "off") return { ok: false, started: false, message: "The hub's Aryeo upload is switched off (Photo Delivery settings)." };
   const { run } = await load(jobId);
   if (run && ACTIVE.includes(run.state)) return { ok: true, started: false, message: "Already working in Aryeo." };
+  // Audit C22 (Oct 20 2026): only a job that is Ready to review (or already
+  // past it) is approved. A stale page can no longer push a job that is still
+  // editing, in QC or waiting on a decision onto the listing.
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
+  if (!job) return { ok: false, started: false, message: "That job no longer exists." };
+  if (!APPROVE_FROM.has(job.stage)) return { ok: false, started: false, message: "This job is not ready to review yet. Reload the page." };
   if (opts.deliver) {
-    const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
-    if (job?.stage !== "DELIVERING") {
+    if (job.stage !== "DELIVERING") {
       const { deliveryGate } = await import("./delivery");
       const gate = await deliveryGate(jobId);
-      if (!gate.canDeliver) return { ok: false, started: false, message: `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
+      if (!gate.canDeliver) return { ok: false, started: false, message: gate.blockedForOverride ?? `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
     }
     if (run && !run.deliveredAt && (run.state === "WAITING" || run.state === "DONE") && !(await changedSince(jobId, run))) {
       const r = await approvePushDelivery(jobId, by);
@@ -317,7 +326,9 @@ export async function sameDayBlocker(jobId: string): Promise<string | null> {
   if (!job || job.stage !== "READY") return "not ready to review";
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { deliverables: { select: { label: true, productTitle: true } }, orderItems: { where: { isCanceled: false }, select: { title: true } } },
+    // Owed lines only (audit C3, Oct 20 2026): a same-day line pulled from the
+    // order no longer lets the job approve itself.
+    select: { deliverables: { where: OWED_DELIVERABLE_WHERE, select: { label: true, productTitle: true } }, orderItems: { where: { isCanceled: false }, select: { title: true } } },
   });
   const { sameDayAddOns } = await import("@/lib/tasks");
   if (!project || !sameDayAddOns(project.deliverables, project.orderItems).photos) return "not a same-day order";
@@ -329,12 +340,27 @@ export async function sameDayBlocker(jobId: string): Promise<string | null> {
   const holding = await import("@/lib/clientAsks").then((m) => m.openAsksHolding(job.projectId, "photo")).catch(() => null);
   if (holding === null) return "the client's open asks could not be read";
   if (holding.length) return `${holding.length} client ask${holding.length === 1 ? "" : "s"} to confirm first`;
-  const busy = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
+  const flagged = await openPhotoFlags(job.projectId);
+  if (flagged) return flagged;
+  const busy =await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
   if (busy) return "fixes still running";
   const { deliveryGate } = await import("./delivery");
   const gate = await deliveryGate(jobId);
   if (!gate.passed) return "the checklist has open items";
   return null;
+}
+
+/**
+ * A photo someone flagged for a fix (the lightbox's Flag, lib/imageFlags)
+ * holds the hub's OWN delivery (audit C10, Oct 20 2026): the flags were a
+ * second fix list Photo Delivery never read, so a same-day order could go out
+ * with "Sign in the yard" still open. Kyle's own approval is not blocked by it.
+ * Answers why it holds, or null. A read that fails holds.
+ */
+async function openPhotoFlags(projectId: string): Promise<string | null> {
+  const n = await prisma.imageFlag.count({ where: { projectId, status: "OPEN" } }).catch(() => null);
+  if (n === null) return "the photo flags could not be read";
+  return n ? `${n} flagged photo${n === 1 ? "" : "s"} to fix first` : null;
 }
 
 /** Same-day orders, for the job page: is this one, and will the hub approve it by itself. */
@@ -343,7 +369,7 @@ export async function isSameDayJob(jobId: string): Promise<boolean> {
   if (!job) return false;
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { deliverables: { select: { label: true, productTitle: true } }, orderItems: { where: { isCanceled: false }, select: { title: true } } },
+    select: { deliverables: { where: OWED_DELIVERABLE_WHERE, select: { label: true, productTitle: true } }, orderItems: { where: { isCanceled: false }, select: { title: true } } },
   });
   const { sameDayAddOns } = await import("@/lib/tasks");
   return !!project && sameDayAddOns(project.deliverables, project.orderItems).photos;
@@ -502,7 +528,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
     }
     if (r.state === "DELIVERING") {
       // The same gate as Mark as delivering: a held or failing job is not delivered by the hub.
-      const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } });
+      const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, projectId: true } });
       if (job?.stage === "ON_HOLD") {
         r.state = "WAITING";
         r.note = "Not delivered: the job is on hold. Release the hold, then press Deliver in Aryeo.";
@@ -525,6 +551,25 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
           r.state = "WAITING";
           r.note = `Not delivered by itself: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}). Look at them, then press Deliver in Aryeo or Mark as delivering.`.slice(0, 400);
           return r;
+        }
+        // Audit C3 (Oct 20 2026): the upload takes several passes, so a client
+        // ask that came in while the photos went up holds the hub's own
+        // delivery too (the same rule as sameDayBlocker). A failed read holds.
+        if (!r.approvedBy) {
+          const holding = await import("@/lib/clientAsks").then((m) => m.openAsksHolding(job.projectId, "photo")).catch(() => null);
+          if (!holding || holding.length) {
+            r.state = "WAITING";
+            r.note = holding
+              ? `Not delivered by itself: ${holding.length} client ask${holding.length === 1 ? "" : "s"} to confirm first. Confirm, then press Deliver in Aryeo or Mark as delivering.`
+              : "Not delivered by itself: the client's open asks could not be read. Look at the job, then press Deliver in Aryeo or Mark as delivering.";
+            return r;
+          }
+          const flagged = await openPhotoFlags(job.projectId);
+          if (flagged) {
+            r.state = "WAITING";
+            r.note = `Not delivered by itself: ${flagged}. Fix them, then press Deliver in Aryeo or Mark as delivering.`;
+            return r;
+          }
         }
         const g = await startDelivery(jobId, r.approvedBy ?? r.by ?? "aryeo-push");
         if (!g.ok) {

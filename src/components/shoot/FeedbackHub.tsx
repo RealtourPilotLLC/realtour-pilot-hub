@@ -165,6 +165,29 @@ export function FeedbackHubView({ hub, readOnly }: { hub: FeedbackHub; readOnly:
         </div>
       )}
 
+      {/* Photo coaching notes Jordan approved and texted (audit C18, Oct 20
+          2026): kept here too, so a text that scrolled away is not lost. */}
+      {(hub.photoCoaching?.length ?? 0) > 0 && (
+        <div className="rounded-2xl border border-border bg-surface p-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <GraduationCap className="size-4 text-sky-400 light:text-sky-600" /> Photo coaching notes
+          </h2>
+          <ul className="mt-2.5 space-y-3">
+            {hub.photoCoaching!.map((c) => (
+              <li key={`${c.projectId}-${c.at}`} className="text-sm leading-snug">
+                <p className="text-[11px] text-muted-2">{c.street} · {etFullDate(c.at)}</p>
+                <p className="mt-0.5 whitespace-pre-line text-foreground/90">{c.note}</p>
+                {c.reminders.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5 text-[13px] text-muted">
+                    {c.reminders.map((r, i) => <li key={i}>· {r}</li>)}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Open feedback, grouped by shoot */}
       {hub.active.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border bg-surface p-8 text-center">

@@ -27,7 +27,8 @@ export async function acknowledgeShootBrief(projectId: string, expectedDigest: s
 
   const { assetRegistry } = await import("@/lib/clientAssets");
   const { shootBriefLines, briefSnapshot, briefDigest } = await import("@/lib/shootBriefRead");
-  const view = await getShoot(projectId);
+  // The same visit the page showed this person (audit C5): its access notes are in the brief.
+  const view = await getShoot(projectId, { viewerMemberId: shooterId });
   if (!view) return { ok: false, message: "Shoot not found." };
   // A released session read that failed must not become a false all-clear.
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true } });
@@ -308,9 +309,30 @@ export async function setDeliverableCaptured(
 
 // Save the photographer's on-site notes. These flow straight into the editor
 // brief the upload portal uses (Project.editorBrief), so nothing is re-typed.
-export async function saveShootNote(projectId: string, note: string): Promise<{ ok: boolean }> {
+// Oct 20 2026 (audit C6): `expected` is the brief as the screen loaded it. A
+// field tab left open no longer overwrites what the Editing Room or the upload
+// page saved since: the save is refused with a reload message, the words stay
+// in the box. Capped at 4000 like every other brief write, and the change goes
+// on the job's timeline.
+export async function saveShootNote(projectId: string, note: string, expected?: string | null): Promise<{ ok: boolean; message?: string; conflict?: boolean }> {
   await requireShootAccess(projectId);
-  await prisma.project.update({ where: { id: projectId }, data: { editorBrief: note.trim() || null } });
+  const next = note.trim().slice(0, 4000) || null;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { editorBrief: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? "").trim() === (b ?? "").trim();
+  const stale = "Someone changed these notes since you opened this screen. Your words are still here: copy them, reload to see the new version, then add yours.";
+  if (expected !== undefined && !same(p.editorBrief, expected)) return { ok: false, conflict: true, message: stale };
+  if (same(p.editorBrief, next)) return { ok: true };
+  // Compare-and-swap on the value just read: a save landing in between loses nothing.
+  const r = await prisma.project.updateMany({ where: { id: projectId, editorBrief: p.editorBrief }, data: { editorBrief: next } });
+  if (r.count !== 1) return { ok: false, conflict: true, message: stale };
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const u = await getCurrentUser().catch(() => null);
+    const tm = u?.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } }).catch(() => null) : null;
+    const who = tm?.name?.trim() || u?.name?.trim() || u?.email || "the photographer";
+    await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: `Shoot brief for the editor updated by ${who} (shoot screen).`, authorId: u?.teamMemberId ?? null } });
+  } catch { /* the timeline line is a courtesy; the save above stands */ }
   revalShoot(projectId);
   return { ok: true };
 }
@@ -352,7 +374,7 @@ export async function recordShootPreference(
 // SHOT (so the pipeline + Kyle see it’s captured), and drops a clear note in the
 // project’s team thread. Does NOT text the client — that’s the separate "Shoot
 // complete" status button the photographer reviews.
-export async function completeShoot(projectId: string): Promise<{ ok: boolean; message: string }> {
+export async function completeShoot(projectId: string, appointmentId?: string | null): Promise<{ ok: boolean; message: string }> {
   await requireShootAccess(projectId);
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -362,17 +384,27 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
       appointments: {
         where: { status: { not: "CANCELED" } },
         orderBy: { startAt: "asc" },
-        select: { id: true },
-        take: 1,
+        select: { id: true, startAt: true, assignedToId: true, completedAt: true },
       },
     },
   });
   if (!project) return { ok: false, message: "Shoot not found." };
 
-  const appt = project.appointments[0];
+  // WHO PRESSED DONE, AND FOR WHICH VISIT (audit C5, Oct 20 2026). The visit the
+  // screen showed (a return visit's own appointment), else the one the screen
+  // would pick for this person; the credit goes to the person pressing it (James
+  // on a second visit), the project's photographer only when the session has
+  // no roster row. A preview ("view as") is never the person who did it.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const { photographerMemberId, pickVisit } = await import("@/lib/shoot");
+  const myId = me && !me.impersonating ? await photographerMemberId(me).catch(() => null) : null;
+  const appt = (appointmentId ? project.appointments.find((a) => a.id === appointmentId) : null) ?? pickVisit(project.appointments, myId);
   if (appt) {
     await prisma.appointment.update({ where: { id: appt.id }, data: { completedAt: new Date() } });
   }
+  const meMember = myId ? await prisma.teamMember.findUnique({ where: { id: myId }, select: { id: true, name: true } }).catch(() => null) : null;
+  const author = meMember ?? project.photographer ?? null;
 
   // Captured → advance to SHOT (unless already further along the pipeline).
   // The photographer's word is a human status write, and a human write ends
@@ -403,7 +435,7 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
     } catch { /* the hourly sweep is the backstop */ }
   }
 
-  const who = project.photographer?.name ?? "The photographer";
+  const who = author?.name ?? "The photographer";
   const street = (project.title || "the property").split(",")[0].trim();
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Shoot marked complete on-site by ${who}.` },
@@ -422,7 +454,7 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
     .create({
       data: {
         projectId,
-        authorId: project.photographer?.id ?? null,
+        authorId: author?.id ?? null,
         authorName: who,
         body: `Shoot complete at ${street}. Ready to upload content.`,
       },
