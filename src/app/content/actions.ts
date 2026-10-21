@@ -1551,6 +1551,27 @@ export async function draftScriptFromInterview(interviewId: string): Promise<Res
     const me = await actor();
     const { submitInterview } = await import("@/lib/contentInterview");
     await submitInterview(interviewId, { staffUserId: me.email }).catch(() => {}); // a draft can be made mid-way; gaps say what's missing
+    // THE FIRST DRAFT GOES ON THE QUEUE (Oct 20 2026, audit D11): the click
+    // answers at once and the draft is written in the background, under the
+    // queue's in-flight checks, like every other "Draft" button. A NEW draft
+    // from changed answers is a further version of an existing script, which
+    // the queued job refuses on purpose (one script per video), so that one
+    // still runs here.
+    const iv = await prisma.contentInterview.findUnique({ where: { id: String(interviewId ?? "") }, select: { id: true, topicId: true, monthId: true, enrollmentId: true, clientId: true } });
+    if (!iv) return { ok: false, message: "That interview is gone — reload the page." };
+    const scripted = await prisma.contentScript.findFirst({ where: { OR: [{ interviewId: iv.id }, { topicId: iv.topicId, monthId: iv.monthId, historical: false }] }, select: { id: true } });
+    if (!scripted) {
+      const { assertWeWriteFor } = await import("@/lib/programStyle");
+      await assertWeWriteFor(iv.enrollmentId);
+      const { enqueueAiJob, settleStaleRuns } = await import("@/lib/aiQueue");
+      await settleStaleRuns();
+      const topic = await prisma.contentTopic.findUnique({ where: { id: iv.topicId }, select: { title: true } });
+      const q = await enqueueAiJob({ job: { job: "script_interview", topicId: iv.topicId, monthId: iv.monthId, interviewId: iv.id }, enrollmentId: iv.enrollmentId, clientId: iv.clientId, requestedBy: me.email, title: topic?.title ?? null });
+      if (!q.ok) return { ok: false, message: q.message };
+      kickQueue("click");
+      revalidatePath("/content");
+      return { ok: true, message: `Sent for scripting${topic?.title ? ` — ${topic.title}` : ""}. The draft appears on the Scripts tab when it's ready, with its gaps listed (never filled in).` };
+    }
     const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
     const r = await generateScriptFromInterview(interviewId, me.email);
     revalidatePath("/content");
@@ -1860,6 +1881,39 @@ export async function approveAndSendScriptAction(versionId: string, note?: strin
     const r = await shareApprovedScript(versionId, { email: me.email, appUserId: me.id }, { note: note?.trim() || null });
     path(v.enrollmentId);
     return { ok: true, message: r.message };
+  } catch (e) { return fail(e); }
+}
+
+/**
+ * "Approve & send selected" (Oct 20 2026, audit D5): the scripts a person
+ * ticked in the review queue, each approved at the exact version shown and
+ * shared, ONE email batch per client (scriptShare.shareApprovedScripts). A
+ * script that needs a written reason (a format finding) or is not this
+ * person's to approve is left in the queue and named.
+ */
+export async function approveAndSendScriptsAction(versionIds: string[]): Promise<Result & { done?: number; failed?: number }> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const ids = [...new Set((Array.isArray(versionIds) ? versionIds : []).filter((x): x is string => typeof x === "string" && /^[a-z0-9]{10,40}$/i.test(x)))].slice(0, 50);
+  if (!ids.length) return { ok: false, message: "Tick the scripts to approve and send first." };
+  try {
+    const me = await actor();
+    const versions = await prisma.contentScriptVersion.findMany({ where: { id: { in: ids } }, select: { id: true, enrollmentId: true, scriptId: true, title: true } });
+    const heads = await prisma.contentScript.findMany({ where: { id: { in: versions.map((v) => v.scriptId) } }, select: { id: true, monthId: true } });
+    const monthOf = new Map(heads.map((h) => [h.id, h.monthId]));
+    const allowed: string[] = [];
+    const refused: string[] = [];
+    for (const v of versions) {
+      try { await assertDutyOwner("SCRIPTS", v.enrollmentId, monthOf.get(v.scriptId) ?? null, me); allowed.push(v.id); }
+      catch (e) { refused.push(`"${v.title}": ${e instanceof Error ? e.message : String(e)}`); }
+    }
+    const { shareApprovedScripts } = await import("@/lib/scriptShare");
+    const r = allowed.length ? await shareApprovedScripts(allowed, { email: me.email, appUserId: me.id }) : { results: [], errors: [] as { versionId: string; error: string }[] };
+    const titleOf = new Map(versions.map((v) => [v.id, v.title]));
+    const problems = [...refused, ...r.errors.map((x) => `"${titleOf.get(x.versionId) ?? "A script"}": ${x.error}`)];
+    for (const enrollmentId of new Set(versions.map((v) => v.enrollmentId))) path(enrollmentId);
+    const done = r.results.length;
+    const head = done ? `Approved and sent ${done} script${done === 1 ? "" : "s"} to the client${done === 1 ? "" : "s"}. ${r.results[0]?.emailNote ?? ""}`.trim() : "Nothing was sent.";
+    return { ok: problems.length === 0, done, failed: problems.length, message: problems.length ? `${head} Left in the queue: ${problems.join(" · ")}` : head };
   } catch (e) { return fail(e); }
 }
 

@@ -122,11 +122,15 @@ export async function setBillingTermsAction(enrollmentId: string, terms: { type:
   } catch (e) { return fail(e); }
 }
 
-export async function setWorkflowFlagsAction(enrollmentId: string, flags: { clientSuppliesTopics?: boolean; timezone?: string | null; notes?: string | null }): Promise<Result> {
+export async function setWorkflowFlagsAction(enrollmentId: string, flags: { timezone?: string | null; notes?: string | null }): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
-    await setWorkflowFlags(enrollmentId, flags, me.email);
+    // Oct 20 2026 (audit D13): time zone and notes only. "The client plans
+    // their own content" has ONE setter, Program style's (setProgramStyleAction
+    // → programStyle.setClientPlanned); a flag posted here is ignored.
+    const { timezone, notes } = flags ?? {};
+    await setWorkflowFlags(enrollmentId, { ...(timezone !== undefined ? { timezone } : {}), ...(notes !== undefined ? { notes } : {}) }, me.email);
     touch(enrollmentId);
     return { ok: true, message: "Saved." };
   } catch (e) { return fail(e); }

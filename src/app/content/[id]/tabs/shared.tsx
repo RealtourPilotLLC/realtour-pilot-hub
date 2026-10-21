@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { monthLabel } from "@/lib/contentProgram";
 import { catchUpHref, contentHref, type StaffTab } from "@/lib/contentNav";
 import { etMonthKeyOf } from "@/lib/forfeit";
-import type { MonthProgress } from "@/lib/monthProgress";
+import type { MonthProgress, staffMonthView } from "@/lib/monthProgress";
 import { MonthPicker, SkipMonthButton } from "@/components/content/MonthControls";
 
 // What every tab of the client file is handed by the page shell (UI-02). The
@@ -21,6 +21,8 @@ export type TabCtx = {
   /** Plan / Production sub-view */
   view: string | null;
   progress: MonthProgress | null;
+  /** The shell's staffMonthView of `progress` (host journey included), read once and reused by the tabs (Oct 20 2026, audit D15). */
+  pview?: ReturnType<typeof staffMonthView> | null;
   me: { id: string; role: string; name: string | null } | null;
   /** OWNER (or open local dev) — money, billing, the portal mirror */
   ownerEyes: boolean;

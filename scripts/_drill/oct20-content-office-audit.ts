@@ -15,16 +15,22 @@
 //   5. D9/D10 the Dashboard's Monthly content card: a DRAFT script counts as
 //      "to approve"; an earlier open month with a script waiting shows; a
 //      paused client does not.
+//   6. D11 "Draft the script from these answers" queues a first draft (the
+//      click answers at once; a second click is refused while it waits).
 //
 // ISOLATION: PGlite via the shared harness; no message leaves.
 // ---------------------------------------------------------------------------
 import type { PrismaClient } from "@prisma/client";
-import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { bootDrillDb, installNextStubs, interceptModule, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 const PORT = Number(process.env.DRILL_PORT ?? 6991);
 installNextStubs();
 const fence = fenceFetch(async () => null);
+// after(): captured and never run — the background work (a recalc, a queued
+// AI draft) is not what these checks are about, and no model is called.
+const pendingAfter: (() => Promise<unknown> | unknown)[] = [];
+interceptModule((r) => r === "next/server", (loaded) => ({ ...(loaded as Record<string, unknown>), after: (fn: () => Promise<unknown> | unknown) => { pendingAfter.push(fn); } }));
 
 const monthBefore = (key: string) => {
   const [y, m] = key.split("-").map(Number);
@@ -102,6 +108,17 @@ async function main() {
       c.ok("Approve & send: one press approves and shares this exact version", sent.ok && w.approvedVersionId === w1.versionId && w.sharedVersionId === w1.versionId && w.releaseState === "released", sent.message);
       c.ok("…with the email suppressed while its switch is off", /suppressed/i.test(sent.message), sent.message);
 
+      // Approve & send SELECTED: the ticked versions, each at its exact version.
+      const { createPillar } = await import("@/lib/contentPillars");
+      const pillarId = await createPillar({ enrollmentId: S.enrollmentId, clientId: S.clientId, name: "Pricing", createdBy: owner.email });
+      const bulkTopics = await Promise.all(["Bulk one", "Bulk two"].map((title) => prisma.contentTopic.create({ data: { enrollmentId: S.enrollmentId, clientId: S.clientId, title, status: "SELECTED", source: "staff" } })));
+      const b1 = await scripts.createScriptVersion({ enrollmentId: S.enrollmentId, monthId: S.monthId, topicId: bulkTopics[0].id, source: "AI", status: "INTERNAL_REVIEW", createdBy: "ai", parts: { ...parts("Bulk one, a hook with a pillar."), title: "Bulk one", pillarId, categoryLabel: "Pricing" } });
+      const b2 = await scripts.createScriptVersion({ enrollmentId: S.enrollmentId, monthId: S.monthId, topicId: bulkTopics[1].id, source: "AI", status: "DRAFT", createdBy: "ai", parts: { ...parts("Bulk two, a hook with no pillar."), title: "Bulk two" } });
+      const bulk = await A.approveAndSendScriptsAction([b1.versionId, b2.versionId]);
+      const [h1, h2] = await Promise.all([b1, b2].map((b) => prisma.contentScript.findUniqueOrThrow({ where: { id: b.scriptId } })));
+      c.ok("Approve & send selected: a clean script is approved and shared", h1.sharedVersionId === b1.versionId && h1.releaseState === "released", bulk.message);
+      c.ok("…one that needs a written reason stays in the queue and is named", !h2.approvedVersionId && !h2.sharedVersionId && /Bulk two/.test(bulk.message) && /Format check/.test(bulk.message) && bulk.done === 1 && bulk.failed === 1, bulk.message);
+
       // =====================================================================
       c.head("3 · D6 pulling a script off the client's portal takes a reason");
       const noWhy = await A.returnScriptAction(w1.scriptId, " ");
@@ -140,6 +157,20 @@ async function main() {
       c.ok("an earlier open month with a DRAFT waiting reaches the card", !!earlier && earlier.monthKey === E.monthKey, JSON.stringify(card.rows.map((r) => [r.clientName, r.monthKey])));
       c.ok("…and the DRAFT reads as a script to approve, never a draft to finish", !!earlier?.items.some((i) => i.key === "approve" && /1 script to approve/.test(i.words)) && !earlier?.items.some((i) => i.key === "drafting"), JSON.stringify(earlier?.items));
       c.ok("a paused client is not on the card", !card.rows.some((r) => r.clientName === "Paused Client TEST"));
+    }
+
+    // =======================================================================
+    c.head("6 · D11 a first draft from written answers goes on the queue");
+    {
+      const W = await buildContentMonth(db, { name: "Written Answers TEST", package: "Starter", topics: [{ title: "Written topic", selection: "SELECTED" }] });
+      const { getOrCreateInterview } = await import("@/lib/contentInterview");
+      const ivId = await getOrCreateInterview(W.topicIds[0], W.monthId, { staffUserId: owner.email });
+      const r = await A.draftScriptFromInterview(ivId);
+      const runs = await prisma.programAiRun.findMany({ where: { enrollmentId: W.enrollmentId } });
+      c.ok("the click answers at once: one QUEUED written-answer draft, no script written yet", r.ok && /Sent for scripting/.test(r.message) && runs.length === 1 && runs[0].status === "QUEUED" && /"job":"script_interview"/.test(runs[0].scopeJson ?? "") && !(await prisma.contentScript.count({ where: { enrollmentId: W.enrollmentId } })), `${r.message} · ${runs.map((x) => x.status).join(",")}`);
+      c.ok("…and the worker waits in after(), the model untouched", pendingAfter.length > 0);
+      const again = await A.draftScriptFromInterview(ivId);
+      c.ok("a second click is refused while it is queued", !again.ok && (await prisma.programAiRun.count({ where: { enrollmentId: W.enrollmentId } })) === 1, again.message);
     }
 
     c.ok("no call left the drill", fence.blocked.length === 0, fence.blocked.join(", "));

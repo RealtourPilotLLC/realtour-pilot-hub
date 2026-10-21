@@ -110,7 +110,7 @@ export default async function ContentClientPage({
 
   const ctx: TabCtx = {
     id, client, enrollment: { package: enrollment.package, status: enrollment.status, videosPerMonth: enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth, strategyCallRequired: enrollment.strategyCallRequired, portalToken: enrollment.portalToken },
-    months, month, activeKey, view: nav.view, progress,
+    months, month, activeKey, view: nav.view, progress, pview,
     me: me ? { id: me.id, role: me.role, name: me.name } : null,
     ownerEyes, staffEyes,
     // Oct 8 2026: a forfeited month's "Approve a catch-up" link names the month to pick.

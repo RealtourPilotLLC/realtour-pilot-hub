@@ -7,7 +7,6 @@ import { parseStoredSections, openStrategyProposals, strategyVersions, monthPrio
 import { listPillars, pillarMappingProposal, dismissedPillarLabels } from "@/lib/contentPillars";
 import { topicBankByPillar, pendingSuggestions, refreshRuns, monthCapacity, bankStock, heldSuggestions } from "@/lib/contentTopics";
 import { interviewState, interviewsForMonth, answersChangedSinceLastDraft } from "@/lib/contentInterview";
-import { scriptsAwaitingReview } from "@/lib/contentScripts";
 import { readAngle, readJudge, judgeLine, judgeFlagged } from "@/lib/scriptJudgeRecord";
 import { factsForReview, factCounts } from "@/lib/clientFacts";
 import { importBatches, importReviewItems } from "@/lib/contentImport";
@@ -139,22 +138,31 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
   // Histories for the month's topics + proposed (the bank rows load theirs lazily through the same map when small).
   const histTopicIds = [...monthTopics.map((t) => t.id), ...proposed.map((p) => p.topic.id), ...groups.flatMap((g) => g.topics.slice(0, 15).map((t) => t.id))];
   const events = histTopicIds.length ? await prisma.contentTopicEvent.findMany({ where: { topicId: { in: histTopicIds } }, orderBy: { createdAt: "asc" } }) : [];
-  const monthKeys = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
+  // The month keys read above (audit D15: they were read twice).
   const histories: Record<string, EventUi[]> = {};
-  for (const e of events) (histories[e.topicId] ??= []).push({ kind: e.kind, actorKind: e.actorKind, note: e.note, createdAt: e.createdAt.toISOString(), monthKey: e.monthId ? monthKeys.get(e.monthId) ?? null : null });
-  // Interviews on the month.
+  for (const e of events) (histories[e.topicId] ??= []).push({ kind: e.kind, actorKind: e.actorKind, note: e.note, createdAt: e.createdAt.toISOString(), monthKey: e.monthId ? monthKeyOfId.get(e.monthId) ?? null : null });
+  // Interviews on the month — each one's four reads together, and the
+  // interviews side by side (audit D15: about four awaited reads per
+  // interview, one interview after another).
   const interviews: Record<string, InterviewUi> = {};
   if (month) {
-    for (const iv of await interviewsForMonth(month.id)) {
-      const st = await interviewState(iv.id);
+    const read = await Promise.all((await interviewsForMonth(month.id)).map(async (iv) => {
+      const [st, draftCount, plan, changed] = await Promise.all([
+        interviewState(iv.id),
+        prisma.contentScriptVersion.count({ where: { interviewId: iv.id } }),
+        interviewPlanningContext(iv.id).catch(() => null),
+        answersChangedSinceLastDraft(iv.id),
+      ]);
+      return { iv, st, hasDraft: draftCount > 0, tailored: plan?.hasPlan ?? false, changed };
+    }));
+    for (const { iv, st, hasDraft, tailored, changed } of read) {
       const t = monthTopics.find((x) => x.id === iv.topicId) ?? proposed.find((p) => p.topic.id === iv.topicId)?.topic;
-      const hasDraft = (await prisma.contentScriptVersion.count({ where: { interviewId: iv.id } })) > 0;
       interviews[iv.topicId] = {
         interviewId: iv.id, topicId: iv.topicId, topicTitle: t?.title ?? "", status: st.status, answeredCount: st.answeredCount, nextKey: st.nextKey,
-        tailored: (await interviewPlanningContext(iv.id).catch(() => null))?.hasPlan ?? false,
+        tailored,
         next: st.next.kind === "done" ? { kind: "done" } : { kind: st.next.kind, prompt: st.next.prompt, label: st.next.question.id, condition: st.next.kind === "follow-up" ? st.next.condition : undefined, substantive: st.next.question.substantive },
         sufficiency: st.sufficiency, answers: st.answers.map((a) => ({ questionKey: a.questionKey, questionText: a.questionText, answerText: a.answerText, answerKind: a.answerKind, version: a.version })),
-        answersChangedSinceDraft: await answersChangedSinceLastDraft(iv.id), hasDraft,
+        answersChangedSinceDraft: changed, hasDraft,
       };
     }
   }
@@ -162,9 +170,9 @@ export async function loadTopicsTab(enrollmentId: string, month: { id: string; m
 }
 
 export async function loadScriptsTab(enrollmentId: string, month: { id: string } | null) {
-  const [scripts, queue, owners, pillars, strategyVs, policies] = await Promise.all([
+  const [scripts, owners, pillars, strategyVs, policies] = await Promise.all([
     prisma.contentScript.findMany({ where: { enrollmentId, ...(month ? { monthId: month.id } : {}) }, orderBy: { createdAt: "asc" } }),
-    scriptsAwaitingReview(enrollmentId), ownersFor(enrollmentId, month?.id), listPillars(enrollmentId, { includeRetired: true }),
+    ownersFor(enrollmentId, month?.id), listPillars(enrollmentId, { includeRetired: true }),
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId }, select: { id: true, versionNo: true } }), prisma.programGenerationPolicyVersion.findMany({ select: { id: true, versionNo: true } }),
   ]);
   const versions = scripts.length ? await prisma.contentScriptVersion.findMany({ where: { scriptId: { in: scripts.map((s) => s.id) } }, orderBy: { versionNo: "desc" } }) : [];
@@ -201,10 +209,11 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
   });
   // 6.5: the client changed an answer after this script was drafted — nothing
   // redrafts on its own, so the reviewer is told here.
-  for (const row of rows) {
+  // Side by side (audit D15: one script after another).
+  await Promise.all(rows.map(async (row) => {
     const iv = scripts.find((x) => x.id === row.id)?.interviewId;
     if (iv && !row.historical) row.answersChanged = await answersChangedSinceLastDraft(iv).catch(() => false);
-  }
+  }));
   // What the month still OWES, and why each one is or is not ready to draft
   // (F07/F08). Read-only; the doing lives in src/lib/contentDrafting.ts.
   const owed = month ? await scriptWorkForMonth(month.id).catch(() => []) : [];
@@ -218,7 +227,10 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
     if (item.state === "failed" && newest && newest > item.at) continue;
     revising[scriptId] = item;
   }
-  return { scripts: rows, queueCount: queue.filter((q) => !month || q.monthId === month.id).length, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active };
+  // The review queue's count is the rows the panel lists under it (audit D15):
+  // counted from the scripts already loaded, never every script of the client.
+  const queueCount = rows.filter((r) => !r.historical && (r.versions[0]?.status === "DRAFT" || r.versions[0]?.status === "INTERNAL_REVIEW")).length;
+  return { scripts: rows, queueCount, scriptOwner: owners.SCRIPTS.label, owed: owed.filter((o) => o.readiness !== "HAS_SCRIPT"), revising, drafting: aq.topics, queueActive: aq.active };
 }
 
 export async function loadFactsTab(clientId: string, enrollmentId: string) {

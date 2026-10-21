@@ -15,12 +15,13 @@ import { ScriptView } from "@/components/script/ScriptView";
 // (Oct 6 2026: prompts.ts's prior-scripts line, once a "20–30 s" literal, now
 // reads the policy too.)
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
-import { approveAndSendScriptAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
+import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
 // version trail per script (regenerate/revise/edit never erase — they add a
-// version), explicit attributable approve, release as a separate act, and
+// version), explicit attributable approve, release as its own act or in the
+// same press ("Approve & send", Oct 20 2026; never on its own), and
 // the validator's findings + the generator's gaps shown, never filled.
 //
 // Oct 12 2026: the AI buttons here answer at once and work in the background
@@ -104,6 +105,8 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   useAiQueueWatch(enrollmentId, queueActive);
   // Per-script "sending": a revision click never takes the panel's shared busy.
   const [sending, setSending] = useState<Set<string>>(new Set());
+  // Oct 20 2026 (audit D5): the queue's ticked versions, for "Approve & send N".
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const mark = (id: string, on: boolean) => setSending((cur) => { const next = new Set(cur); if (on) next.add(id); else next.delete(id); return next; });
   const send = async (id: string, fn: () => Promise<QueueResult>) => {
     mark(id, true);
@@ -131,8 +134,35 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
       <OwedScripts owed={owed} drafting={drafting} sending={sending.has("owed")} onDraft={(includeThin) => void send("owed", () => queueOwedScriptsAction(owed[0]?.monthId ?? "", includeThin))} />
       <Section icon={FileText} title="Review queue" count={queueCount} flush action={<span className="text-[11px] text-muted-2">approval owner: {scriptOwner} · call-derived and written-answer drafts land here alike</span>}>
+        {/* Oct 20 2026 (audit D5): tick the scripts you have read, then one
+            press approves and sends them (one email batch per client). */}
+        {queue.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2 text-[12px]">
+            <span className="text-muted">{picked.size ? `${picked.size} ticked` : "Tick the scripts you've read to approve and send them together."}</span>
+            {picked.size > 0 && (
+              <button disabled={busy} onClick={() => run(() => approveAndSendScriptsAction([...picked]), (r) => { if (r.ok) setPicked(new Set()); })} className={`${btn} min-h-9 bg-brand-action text-white`}>
+                <Send className="mr-1 inline size-3" />Approve &amp; send {picked.size} to the client
+              </button>
+            )}
+            {picked.size > 0 && <button onClick={() => setPicked(new Set())} className={`${quiet} min-h-9`}>Clear</button>}
+          </div>
+        )}
         <div className="divide-y divide-border">
-          {queue.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} rev={revCtl(s)} open />)}
+          {queue.map((s) => {
+            const vid = s.versions[0]?.id ?? null;
+            const pickable = queue.length > 1 && !!vid && !vid.startsWith("legacy:");
+            return (
+              <div key={s.id} className="flex items-start">
+                {pickable && (
+                  <label className="flex min-h-11 shrink-0 items-start pl-4 pt-3.5" title="Tick to approve and send with the others">
+                    <span className="sr-only">Tick {s.title}</span>
+                    <input type="checkbox" className="size-4" checked={picked.has(vid!)} onChange={(e) => setPicked((cur) => { const next = new Set(cur); if (e.target.checked) next.add(vid!); else next.delete(vid!); return next; })} />
+                  </label>
+                )}
+                <div className="min-w-0 flex-1"><ScriptItem s={s} busy={busy} run={run} rev={revCtl(s)} open /></div>
+              </div>
+            );
+          })}
           {queue.length === 0 && <p className="px-5 py-4 text-sm text-muted">Nothing waiting on you.</p>}
         </div>
       </Section>

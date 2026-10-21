@@ -128,7 +128,11 @@ export function StrategyCallCard({
         </div>
       ) : cur === "COMPLETED" ? (
         <div className="mt-1.5">
-          {analyzed ? (
+          {/* Oct 20 2026 (audit D11): ONE analyze button per call. When the
+              call's own transcript is on file, its queued "Analyze the call"
+              (in the list above) is that button, and the month-transcript
+              analysis below is not offered beside it. */}
+          {analyzed && !linkedOnFile ? (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <button disabled={busy} onClick={() => start(async () => {
                 setNote("Re-reading the call…");
@@ -140,7 +144,7 @@ export function StrategyCallCard({
               <span className="text-muted-2">·</span>
               <button onClick={() => setShowPaste(true)} className={quietLink}>Replace transcript</button>
             </div>
-          ) : onFile ? (
+          ) : onFile && !linkedOnFile ? (
             <button disabled={busy} onClick={() => start(async () => {
               setNote("Reading the call — this takes a moment…");
               const r = await analyzeTranscript(monthId);
