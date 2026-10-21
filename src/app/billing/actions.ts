@@ -10,8 +10,11 @@ import { ActivityType } from "@prisma/client";
 // AR follow-up actions for /billing (audit crack #17): $25k of real receivables
 // had no in-app way to chase. Draft-then-send, same contract as the rest of the
 // hub: the AI produces a TEXT DRAFT, a human reviews it and taps Send — nothing
-// here ever auto-sends. /billing is owner/admin (ADMIN has the billing page in
-// the access matrix), so these guard with requireAdmin.
+// here ever auto-sends. These guard with requireAdmin. The page they serve
+// (Finance → Unpaid) is the owner's by default and reaches a non-owner only
+// through a per-person `sales` grant; whether an admin should be able to call
+// them at all (they return dollar amounts) is an open owner decision (audit
+// G12, Oct 20 2026), so the guard is left as it was.
 
 export type NudgeDraft = { ok: boolean; text?: string; error?: string };
 
@@ -166,7 +169,8 @@ export async function sendPaymentNudge(
     await stampCommActor({ externalId: `op-${sentId}`, wrote: "the hub" }).catch(() => {});
   }
 
-  // Stamp the chase (best-effort until the lastNudgedAt migration lands).
+  // Stamp the chase. Best-effort: the text already went out, so a failed
+  // stamp must not report the send as failed.
   await prisma.project.update({ where: { id: projectId }, data: { lastNudgedAt: new Date() } }).catch(() => {});
 
   revalidatePath("/sales");
@@ -181,7 +185,9 @@ export async function markBillingNudged(projectId: string): Promise<{ ok: boolea
   try {
     await prisma.project.update({ where: { id: projectId }, data: { lastNudgedAt: new Date() } });
   } catch {
-    return { ok: false, message: "Couldn't save — the follow-up column isn't migrated yet." };
+    // (The column has existed since the AR work landed; the old "isn't
+    // migrated yet" wording was stale, audit G16.)
+    return { ok: false, message: "Couldn't save the follow-up. Try again." };
   }
   await prisma.activity
     .create({ data: { projectId, type: "NOTE", body: "Marked as followed up on the outstanding balance (billing)." } })

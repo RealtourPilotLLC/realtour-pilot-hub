@@ -288,3 +288,72 @@ export function splitPool(pool: number, cards: Scorecard[]): Record<string, numb
   for (const c of scored) out[c.memberId] = round2(pool * ((c.score ?? 0) / total));
   return out;
 }
+
+// --- The whole quarter, computed ONCE for both the page and the Pay button ---
+//
+// Oct 20 2026 (audit G1). Finance → Bonus computed the split here-and-there in
+// the tab, and the Pay button then sent that figure back to payQuarterlyBonus,
+// which paid whatever number the browser handed it. The money path now calls
+// this same function on the server and pays ITS figure; the browser's number
+// is only a "this is what I saw" check. (Which engine is canonical, this one or
+// the kpi.ts scorecard photographers see on My Performance, is Jordan's call;
+// this keeps today's behaviour, which is that Finance pays from this file.)
+
+const BONUS_DEFAULTS = { threshold: 15000, percent: 0.15, cap: 5000 };
+
+export type BonusSettings = { threshold: number; percent: number; cap: number | null };
+
+export async function bonusSettings(): Promise<BonusSettings> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { in: ["bonus-threshold", "bonus-percent", "bonus-cap"] } } });
+  const get = (k: string) => rows.find((r) => r.key === k)?.value;
+  return {
+    threshold: Number(get("bonus-threshold") ?? BONUS_DEFAULTS.threshold),
+    percent: Number(get("bonus-percent") ?? BONUS_DEFAULTS.percent),
+    cap: get("bonus-cap") === "none" ? null : Number(get("bonus-cap") ?? BONUS_DEFAULTS.cap),
+  };
+}
+
+export type QuarterBonus = {
+  q: QuarterRef;
+  settings: BonusSettings;
+  pool: PoolMath;
+  cards: Scorecard[]; // memberId = the TeamMember id, TEAM basis included
+  split: Record<string, number>; // TeamMember id -> dollars
+};
+
+export async function quarterBonus(q: QuarterRef): Promise<QuarterBonus> {
+  const { revenueByProcessor } = await import("@/lib/bookkeeping");
+  const { categoryBreakdown } = await import("@/lib/financeCategories");
+  // The quarter's money — same engines as Overview (processor revenue,
+  // categorized business cost).
+  const [settings, rev, cats, members] = await Promise.all([
+    bonusSettings(),
+    revenueByProcessor(q.startKey, q.endKey),
+    categoryBreakdown(q.startKey, q.endKey),
+    prisma.teamMember.findMany({
+      where: { active: true, role: { in: ["PHOTOGRAPHER", "MANAGER"] } },
+      select: { id: true, name: true, creativeManager: true, role: true },
+    }),
+  ]);
+  const pool = poolMath({
+    revenue: rev.total,
+    cost: cats.businessTotal,
+    threshold: settings.threshold,
+    poolPercent: settings.percent,
+    poolCap: settings.cap,
+  });
+
+  // Who's scored: active shooting creatives (OWN basis) + the creative manager
+  // (TEAM basis — accountable for everyone's results). Ops managers aren't in
+  // the shoot bonus, and the owner shoots too but is not in his own pool (his
+  // card diluted every creative's split and offered a pay-himself button).
+  const eligible = members.filter((tm) => !(tm.role === "MANAGER" && !tm.creativeManager) && !/^jordan\b/i.test(tm.name));
+  // Scored side by side (audit G13): each card is a few independent reads.
+  const cards = await Promise.all(
+    eligible.map((tm) => {
+      const basis = tm.creativeManager ? "TEAM" : "OWN";
+      return scorecardFor(q, { memberId: basis === "TEAM" ? null : tm.id, name: tm.name, basis }).then((c) => ({ ...c, memberId: tm.id }));
+    }),
+  );
+  return { q, settings, pool, cards, split: splitPool(pool.pool, cards) };
+}

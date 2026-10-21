@@ -13,13 +13,15 @@ import { BooksReview } from "@/components/finance/BooksReview";
 import { listFlaggedQbo } from "@/app/sales/booksReviewActions";
 import { SavingsPlan, type SavingsItemView } from "@/components/finance/SavingsPlan";
 import { MoneyExceptionsCard } from "@/components/finance/MoneyExceptionsCard";
-import { getCashPosition, getMonthlyPnl, monthBounds } from "@/lib/finance";
+import { getCashPosition, monthBounds } from "@/lib/finance";
 import { prisma } from "@/lib/prisma";
-import { etDate , etYearStartKey } from "@/lib/datetime";
+import { etDate, etDayKey, etYear, etYearStartKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-const YEAR_START = etYearStartKey(); // ET year — never frozen at a hard-coded 2026 (audit)
+// The ET year is read per render, never once at module load: a server that
+// stays up across New Year would otherwise keep summing the old year (audit
+// G10, Oct 20 2026, which also caught the hard-coded "vs 2025" comparison).
 
 // Rounded-dollar money format. Negative → en-dash prefix. Null → em-dash.
 const m0 = (n: number | null | undefined) =>
@@ -45,7 +47,7 @@ const RAIL = {
 // most recent transaction the books actually contain — and `bankSince` counts
 // the bank lines that have posted after it, i.e. the work still to be entered.
 async function booksHealth() {
-  const from = new Date(`${YEAR_START}T00:00:00Z`);
+  const from = new Date(`${etYearStartKey()}T00:00:00Z`);
   const [grouped, needsReview, total, last, newest] = await Promise.all([
     prisma.qboTransaction.groupBy({ by: ["category"], where: { txnDate: { gte: from } }, _count: true, _sum: { amount: true } }),
     prisma.qboTransaction.count({ where: { txnDate: { gte: from }, needsReview: true } }),
@@ -75,24 +77,28 @@ const BOOKS_STALE_DAYS = 7;
 
 // The owner's financial command center: revenue counted at the processor, the
 // true (categorized) P&L, cash & runway, business-vs-personal, and how clean the
-// books are — everything, at a glance. Read-only; the working forms live on Money.
+// books are — everything, at a glance. Read-only.
 export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const now = new Date();
-  const endKey = now.toISOString().slice(0, 10);
-  const monthStartKey = `${monthBounds(0).key}-01`; // yyyy-mm-01 for the current ET month
+  const YEAR_START = etYearStartKey();
+  const prevYearN = etYear() - 1;
+  const endKey = etDayKey(now); // today, Eastern time (UTC ran a day ahead each evening)
+  const month = monthBounds(0);
+  const monthStartKey = `${month.key}-01`; // yyyy-mm-01 for the current ET month
 
-  const [rev, prevYear, cats, monthCats, cash, month, monthRev, health, coverage, fresh, flagged] = await Promise.all([
+  // No getMonthlyPnl here any more (audit G8, Oct 20 2026): of everything it
+  // computes (the payroll engine and its route lookups, a second revenue and
+  // ledger pass) this page printed only the month's label and payroll, and
+  // both come straight off monthCats below.
+  const [rev, prevYear, cats, monthCats, cash, monthRev, health, coverage, fresh, flagged] = await Promise.all([
     revenueByProcessor(YEAR_START, endKey),
-    revenueByProcessor("2025-01-01", "2025-12-31"),
+    revenueByProcessor(`${prevYearN}-01-01`, `${prevYearN}-12-31`),
     // ONE SOURCE OF TRUTH: the audited bank+card+Venmo ledger the Categories
     // tab uses — Overview, Personal and Categories all show the SAME numbers.
     categoryBreakdown(YEAR_START, endKey),
     categoryBreakdown(monthStartKey, endKey),
     getCashPosition(),
-    getMonthlyPnl(0),
-    // This-month revenue must count ALL THREE processor rails — the cash-basis
-    // getMonthlyPnl counts Stripe alone, which silently drops every QuickBooks
-    // Payments sale (e.g. the $9k SalesReceipt) and understates the month badly.
+    // This-month revenue counts ALL THREE processor rails.
     revenueByProcessor(monthStartKey, endKey),
     booksHealth(),
     // Coverage, not recency: a single trickle transaction used to make the
@@ -122,7 +128,11 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   // This month, all three rails — profit from the same audited ledger.
   const monthRevenue = monthRev.total;
   const monthProfit = monthRevenue - monthCats.businessTotal;
-  const monthPayrollPct = monthRevenue > 0 ? month.allPayroll / monthRevenue : null;
+  // Everyone paid this month, off the same ledger rows getMonthlyPnl used.
+  const monthPayroll = monthCats.business
+    .filter((b) => ["Creative specialist pay", "Video editing", "Photo editing", "Consulting (Paul)"].includes(b.category))
+    .reduce((a, b) => a + b.sum, 0);
+  const monthPayrollPct = monthRevenue > 0 ? monthPayroll / monthRevenue : null;
 
   const rails = [
     { key: "quickbooks", amount: rev.quickbooks, ...RAIL.quickbooks },
@@ -191,13 +201,13 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           </div>
         )}
 
-        {/* HERO — the four numbers that matter most, 2026 year-to-date */}
+        {/* HERO — the four numbers that matter most, year-to-date (ET year) */}
         <KpiCards
           items={[
             {
               key: "revenue", icon: <CircleDollarSign className="size-4" />, accent: "#5cb98a",
-              label: "Revenue · 2026 YTD", value: m0(revenue),
-              sub: growth != null ? `${pct(growth)} vs 2025 · ${m0(annualized)} annualized` : `${m0(annualized)} annualized`,
+              label: `Revenue · ${YEAR_START.slice(0, 4)} YTD`, value: m0(revenue),
+              sub: growth != null ? `${pct(growth)} vs ${prevYearN} · ${m0(annualized)} annualized` : `${m0(annualized)} annualized`,
               detailTitle: "Revenue by processor rail",
               details: [
                 { label: "Stripe (per-shoot card payments)", value: m0(rev.stripe) },
@@ -325,6 +335,13 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /><span>{rev.venmoNote}</span>
             </p>
           )}
+          {/* Same contract for the QuickBooks rail (audit H3): it only knows
+              what the last pull brought in, and says so when that has stopped. */}
+          {rev.quickbooksNote && (
+            <p className="mb-4 flex gap-2 rounded-xl bg-warning-soft/40 p-3 text-xs leading-relaxed text-foreground/85">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /><span>{rev.quickbooksNote}</span>
+            </p>
+          )}
           <Donut total={revenue} rails={rails} />
         </section>
 
@@ -332,7 +349,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
         <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
           <div className="mb-1 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm font-semibold">
-              <Receipt className="size-4 text-brand" /> Profit &amp; loss · 2026 YTD
+              <Receipt className="size-4 text-brand" /> Profit &amp; loss · {YEAR_START.slice(0, 4)} YTD
             </div>
             <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${profit < 0 ? "bg-danger/10 text-danger" : "bg-success/10 text-success"}`}>
               {m0(profit)} {profit < 0 ? "loss" : "profit"}
@@ -390,7 +407,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             </span>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            <Stat label="Ledger transactions" value={health.total.toLocaleString("en-US")} sub="classified in 2026" />
+            <Stat label="Ledger transactions" value={health.total.toLocaleString("en-US")} sub={`classified in ${YEAR_START.slice(0, 4)}`} />
             <Stat label="Need review" value={health.needsReview.toLocaleString("en-US")}
               tone={health.needsReview > 0 ? "warning" : "success"} sub="flagged, not guessed" />
             <Stat
@@ -444,7 +461,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label={`${month.label} revenue`} value={m0(monthRevenue)} sub="collected · all 3 rails" tone="success" />
-            <Stat label="This month payroll" value={m0(month.allPayroll)} sub="everyone paid" tone="muted" />
+            <Stat label="This month payroll" value={m0(monthPayroll)} sub="everyone paid" tone="muted" />
             <Stat label={`${month.label} profit`} value={m0(monthProfit)} sub="after all business costs" tone={monthProfit < 0 ? "danger" : "success"} />
             <Stat label="Payroll % of rev" value={monthPayrollPct == null ? "—" : `${Math.round(monthPayrollPct * 100)}%`} sub="~30–45% normal" tone={monthPayrollPct != null && monthPayrollPct > 0.5 ? "warning" : "muted"} />
           </div>
@@ -502,7 +519,7 @@ function JumpLink({ href, icon: Icon, label }: { href: string; icon: LucideIcon;
 // (stacked circles, stroke-dasharray). Total in the center.
 function Donut({ total, rails }: { total: number; rails: { key: string; label: string; color: string; sub: string; amount: number }[] }) {
   if (total <= 0 || rails.length === 0) {
-    return <div className="flex h-40 items-center justify-center text-sm text-muted">No revenue recorded yet for 2026.</div>;
+    return <div className="flex h-40 items-center justify-center text-sm text-muted">No revenue recorded yet for {etYear()}.</div>;
   }
   const r = 42, cx = 60, cy = 60, C = 2 * Math.PI * r;
   // Each arc starts where the ones before it ended — computed up front, since
@@ -521,7 +538,7 @@ function Donut({ total, rails }: { total: number; rails: { key: string; label: s
           {abbr(total)}
         </text>
         <text x={cx} y={cy + 12} textAnchor="middle" className="fill-muted" style={{ fontSize: 7, letterSpacing: 0.5 }}>
-          2026 YTD
+          {etYear()} YTD
         </text>
       </svg>
       <div className="grid w-full gap-2">

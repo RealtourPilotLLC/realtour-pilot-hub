@@ -77,7 +77,15 @@ export async function payHistoryFor(memberId: string): Promise<PayHistory> {
     null as string | null,
   );
   const earliestActivity = [firstJobKey, firstAdjKey].filter(Boolean).sort()[0] ?? HISTORY_FLOOR_KEY;
-  const startFrom = payPeriodFor(earliestActivity < HISTORY_FLOOR_KEY ? earliestActivity : HISTORY_FLOOR_KEY);
+  const wanted = payPeriodFor(earliestActivity < HISTORY_FLOOR_KEY ? earliestActivity : HISTORY_FLOOR_KEY);
+  // NEVER WALK BEFORE THE LOADED WINDOW (audit G10, Oct 20 2026). The payroll
+  // pass above starts at the period holding Jan 1 of THIS year, but the walk
+  // started at the 2026 floor, so from January 2027 every 2026 period would
+  // have listed "0 shoots · $0.00" (the pass never loaded them). Periods the
+  // pass did not load are left off rather than shown as zero; Finance →
+  // Payroll keeps every period for the owner.
+  const yearFirstPeriod = payPeriodFor(yearFirstKey);
+  const startFrom = wanted.startKey < yearFirstPeriod.startKey ? yearFirstPeriod : wanted;
 
   const periods: PayPeriodSummary[] = [];
   let p = startFrom;

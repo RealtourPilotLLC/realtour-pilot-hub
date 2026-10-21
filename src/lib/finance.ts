@@ -6,12 +6,18 @@ import { etDayStartUtc, etDayKey } from "@/lib/datetime";
 import { getBillingRows } from "@/lib/queries";
 
 // ---------------------------------------------------------------------------
-// The real MONEY engine — the P&L Jordan never had: revenue in, minus EVERYONE
-// he pays (photographers via computePayroll + editors/ops via PayrollEntry) and
-// every cost, = actual profit. CASH BASIS throughout — "what left / entered my
-// account this month" — because that's the number a cash-strapped owner watches.
-// Every figure reads from the same trusted sources as the drill-down tabs so
-// nothing can contradict.
+// The real MONEY engine — the P&L Jordan never had: revenue in (counted at the
+// processor, bookkeeping.revenueByProcessor), minus every cost on the audited
+// ledger (financeCategories.categoryBreakdown), = actual profit. CASH BASIS
+// throughout — "what left / entered my account this month" — because that's the
+// number a cash-strapped owner watches. Every figure reads from the same trusted
+// sources as the drill-down tabs so nothing can contradict.
+//
+// Oct 20 2026 (audit G11): the leftovers of the Money tab retired Aug 25 are
+// gone: the hand-entered PayrollEntry "team cost" (nothing could write it any
+// more, so it fed the advisor a stale $0), the CashSnapshot bank fallback (same),
+// the Stripe-only revenue path and the unused payroll-trend helper. The ledger
+// engine is the only P&L.
 // ---------------------------------------------------------------------------
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -57,47 +63,14 @@ async function photographerCost(start: Date, end: Date): Promise<number> {
   return round2(total);
 }
 
-// Editor/ops cost paid during the month (Kim, Remar, Kyle — the invisible half).
-async function teamCost(start: Date, end: Date): Promise<number> {
-  const agg = await prisma.payrollEntry.aggregate({
-    where: { payDate: { gte: start, lte: end } },
-    _sum: { amount: true },
-  });
-  return round2(agg._sum.amount ?? 0);
-}
-
-// Money IN. Stripe is the truth once its data covers the month; older months fall
-// back to Aryeo delivered revenue, flagged as an estimate. We sum GROSS for the
-// top line and fees SEPARATELY, so the P&L subtracts the card fee exactly once
-// (revenue = gross; profit = gross − fees − payroll − expenses). Refunds carry a
-// negative gross, so summing gross nets them out automatically.
-async function revenueForMonth(start: Date, end: Date) {
-  // A month is "Stripe-covered" once the synced window reaches it — so a real $0
-  // collected month reads as $0, but months BEFORE Stripe was ever synced fall
-  // back to the Aryeo estimate instead of a false authoritative $0.
-  const earliest = await prisma.stripeTransaction.aggregate({ _min: { createdAt: true } });
-  const firstTxn = earliest._min.createdAt;
-  const stripeConnected = firstTxn != null && end >= firstTxn;
-
-  const txns = await prisma.stripeTransaction.findMany({
-    where: {
-      createdAt: { gte: start, lte: end },
-      // Money in + its reversals (charge/payment) and refunds for both integration
-      // styles; payouts/transfers/fees are excluded so we never double-count.
-      type: { in: ["charge", "payment", "refund", "payment_refund", "adjustment"] },
-    },
-    select: { gross: true, fee: true },
-  });
-  const stripeGross = round2(txns.reduce((s, t) => s + t.gross, 0));
-  const stripeFees = round2(txns.reduce((s, t) => s + t.fee, 0));
-
+// What Aryeo says was DELIVERED in the month — the "booked vs collected"
+// secondary line only, never revenue (revenue is counted at the processor).
+async function aryeoDeliveredForMonth(start: Date, end: Date): Promise<number> {
   const delivered = await prisma.project.findMany({
     where: { status: "DELIVERED", deliveredAt: { gte: start, lte: end } },
     select: { payableInvoice: true, price: true },
   });
-  const aryeoDelivered = round2(delivered.reduce((s, p) => s + (p.payableInvoice ?? p.price ?? 0), 0));
-
-  return { stripeConnected, stripeGross, stripeFees, aryeoDelivered };
+  return round2(delivered.reduce((s, p) => s + (p.payableInvoice ?? p.price ?? 0), 0));
 }
 
 export type MonthlyPnl = {
@@ -113,7 +86,6 @@ export type MonthlyPnl = {
   photographerPay: number; // from the LEDGER — what actually left the accounts
   teamPay: number; // ditto (editors, Kim, Remar, Paul)
   accruedPhotographerPay: number; // what the payroll engine says they EARNED
-  accruedTeamPay: number;
   allPayroll: number;
   cardFees: number;
   expenses: number; // business expenses (personal excluded)
@@ -122,8 +94,10 @@ export type MonthlyPnl = {
   payrollPctOfRevenue: number | null;
 };
 
-// Request-memoized: MoneyTab + getCashPosition + getPayrollTrend all ask for the
-// same months in one render, so cache() collapses the repeated (heavy) computes.
+// Request-memoized. Its one caller now is the Finance advisor's monthly_pnl
+// tool (Overview reads the light ledger figures directly: audit G8, Oct 20
+// 2026), so the accrual pass below (the payroll engine, with its route
+// lookups) only ever runs when someone asks the advisor for a month.
 export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
   const { start, end, label, key } = monthBounds(back);
   // Revenue at the PROCESSOR across all three rails — same canonical source as
@@ -134,11 +108,10 @@ export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
   const startKey = `${key}-01`;
   const endKey = etDayKey(new Date(end.getTime() - 1000));
   const { categoryBreakdown } = await import("@/lib/financeCategories");
-  const [rp, rev, photographerPay, teamPay, monthCats] = await Promise.all([
+  const [rp, aryeoDelivered, photographerPay, monthCats] = await Promise.all([
     revenueByProcessor(startKey, endKey),
-    revenueForMonth(start, end), // kept only for the Aryeo "invoiced/delivered" line
+    aryeoDeliveredForMonth(start, end), // the Aryeo "invoiced/delivered" line only
     photographerCost(start, end),
-    teamCost(start, end),
     // The audited bank-truth ledger — the SAME source as the Overview and
     // Categories tabs, so every finance page shows the same month profit.
     categoryBreakdown(startKey, endKey),
@@ -167,17 +140,17 @@ export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
     key, label, revenue,
     // Counted at the processor, so normally a record rather than an estimate —
     // but the Venmo rail is a manual statement import and CAN go stale or fall
-    // back to a guess. revenueByProcessor now says which; pass it straight
+    // back to a guess, and the QuickBooks rail only knows what the last pull
+    // brought in (audit H3). revenueByProcessor says which; pass it straight
     // through rather than hard-coding honesty we can't guarantee.
     revenueIsEstimate: rp.venmoIsEstimate,
-    revenueNote: rp.venmoNote,
-    invoiced: rev.aryeoDelivered,
+    revenueNote: [rp.quickbooksNote, rp.venmoNote].filter(Boolean).join(" "),
+    invoiced: aryeoDelivered,
     photographerPay: ledgerPhotographerPay,
     teamPay: ledgerTeamPay,
     // What the payroll engine says creatives EARNED this month — shown as
     // context, never mixed into the cost arithmetic above.
     accruedPhotographerPay: photographerPay,
-    accruedTeamPay: teamPay,
     allPayroll, cardFees, expenses, profit,
     margin: revenue > 0 ? round4(profit / revenue) : null,
     payrollPctOfRevenue: revenue > 0 ? round4(allPayroll / revenue) : null,
@@ -187,9 +160,7 @@ export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
 export type CashPosition = {
   bankBalance: number | null;
   bankAsOf: string | null;
-  bankLive: boolean; // true = read straight from the connected bank (Plaid), not hand-typed
-  stripeAvailable: number | null;
-  stripePending: number | null;
+  bankLive: boolean; // true = read straight from the connected bank (Plaid)
   arOutstanding: number; // delivered + unpaid (money owed to us)
   comingIn30: number; // typical monthly money IN (trailing 3-mo audited ledger)
   goingOut30: number; // typical monthly money OUT (trailing 3-mo audited ledger)
@@ -268,9 +239,11 @@ export async function getCashPosition(): Promise<CashPosition> {
   // cheap month — which is the failure this whole fix exists to stop, just
   // moved one ledger to the left. So check for it explicitly.
   const sampledMonths = Array.from({ length: CASH_MONTHS }, (_, i) => monthBounds(CASH_MONTHS - i));
-  const [snap, ar, outAgg, inAgg, plaidBiz, monthCounts] = await Promise.all([
-    // Latest reading; createdAt breaks ties so a same-day correction wins.
-    prisma.cashSnapshot.findFirst({ orderBy: [{ asOf: "desc" }, { createdAt: "desc" }], select: { balance: true, asOf: true } }),
+  // No live Stripe balance call and no hand-typed CashSnapshot fallback any
+  // more (audit G8/G11, Oct 20 2026): the Stripe figures were never shown and
+  // the call had no timeout, and the snapshot could no longer be updated by
+  // anyone, so it could only ever show a stale number.
+  const [ar, outAgg, inAgg, plaidBiz, monthCounts] = await Promise.all([
     getBillingRows().then((b) => b.totalOutstanding).catch(() => 0),
     prisma.plaidTransaction.groupBy({ by: ["financeKind"], where: { date: window, amount: { gt: 0 } }, _sum: { amount: true }, _count: true }),
     prisma.plaidTransaction.groupBy({ by: ["financeKind"], where: { date: window, amount: { lt: 0 } }, _sum: { amount: true }, _count: true }),
@@ -285,14 +258,6 @@ export async function getCashPosition(): Promise<CashPosition> {
       prisma.plaidTransaction.count({ where: { date: { gte: m.start, lte: m.end }, amount: { gt: 0 } } }),
     )),
   ]);
-  let stripeAvailable: number | null = null;
-  let stripePending: number | null = null;
-  try {
-    const { stripeBalance } = await import("@/lib/integrations/stripe");
-    const bal = await stripeBalance();
-    if (bal) { stripeAvailable = bal.available; stripePending = bal.pending; }
-  } catch { /* not connected — degrade */ }
-
   // null financeKind = synced but never classified. It still left the account,
   // so it counts as spend — and it counts toward the "can we even tell?" test.
   const debit = (k: string | null) => outAgg.find((g) => g.financeKind === k)?._sum.amount ?? 0;
@@ -309,15 +274,14 @@ export async function getCashPosition(): Promise<CashPosition> {
   const goingOut30 = round2(spend3 / CASH_MONTHS);
   const comingIn30 = round2(income3 / CASH_MONTHS);
 
-  // Live Plaid balance wins over the hand-typed snapshot; the manual entry
-  // remains the fallback for accounts that aren't connected.
+  // The live Plaid balance of the accounts tagged Business, or nothing.
   const liveBank = plaidBiz.length > 0 ? round2(plaidBiz.reduce((s, a) => s + (a.currentBalance ?? 0), 0)) : null;
   const liveAsOf = plaidBiz.reduce<Date | null>(
     (m, a) => (a.item.lastSyncedAt && (!m || a.item.lastSyncedAt > m) ? a.item.lastSyncedAt : m),
     null,
   );
   const bankLive = liveBank != null;
-  const bankBalance = liveBank ?? snap?.balance ?? null;
+  const bankBalance = liveBank;
 
   const sampledFrom = etDayKey(m3.start);
   const sampledTo = etDayKey(m1.end);
@@ -339,7 +303,7 @@ export async function getCashPosition(): Promise<CashPosition> {
     basis = "unknown";
     reason = `${Math.round((unclassified3 / spendGross) * 100)}% of the money that left your accounts between ${sampledFrom} and ${sampledTo} hasn't been classified yet ($${Math.round(unclassified3).toLocaleString("en-US")}). That is too much unknown spend to project a balance from — sort those rows and the number comes back.`;
   } else if (bankBalance == null) {
-    reason = "No bank balance yet — connect an account on /connections/banks, or enter one on the Money tab, and this projects forward.";
+    reason = "No bank balance yet. Connect an account on /connections/banks (and tag it Business) and this projects forward.";
   }
 
   const projected = basis === "ledger" && bankBalance != null
@@ -383,9 +347,8 @@ export async function getCashPosition(): Promise<CashPosition> {
 
   return {
     bankBalance,
-    bankAsOf: bankLive ? (liveAsOf ? etDayKey(liveAsOf) : null) : snap?.asOf ? etDayKey(snap.asOf) : null,
+    bankAsOf: bankLive && liveAsOf ? etDayKey(liveAsOf) : null,
     bankLive,
-    stripeAvailable, stripePending,
     arOutstanding: round2(ar),
     comingIn30,
     goingOut30,
@@ -398,12 +361,4 @@ export async function getCashPosition(): Promise<CashPosition> {
     })),
     sampledFrom, sampledTo,
   };
-}
-
-// Payroll-as-%-of-revenue trend — the "am I overpaying?" answer, a few months back.
-export async function getPayrollTrend(months = 4): Promise<{ key: string; label: string; revenue: number; allPayroll: number; pct: number | null }[]> {
-  // The four month computations are independent — run them together (was a
-  // serial loop on the Overview render path — audit).
-  const pnls = await Promise.all(Array.from({ length: months }, (_, i) => getMonthlyPnl(months - 1 - i)));
-  return pnls.map((p) => ({ key: p.key, label: p.label, revenue: p.revenue, allPayroll: p.allPayroll, pct: p.payrollPctOfRevenue }));
 }

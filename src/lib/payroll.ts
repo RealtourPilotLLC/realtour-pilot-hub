@@ -85,8 +85,10 @@ const SHOOT_HAPPENED_STATUSES = new Set(["SHOT", "EDITING", "REVIEW", "REVISION"
 type Stop = { lat: number; lng: number; at: number };
 
 // Total drive miles for a day: home → stops (in time order) → home.
-async function routeMiles(home: { lat: number; lng: number }, stops: Stop[]): Promise<number> {
-  if (stops.length === 0) return 0;
+// `estimated` = at least one leg is NOT the router's answer (it timed out or
+// returned no route), so the figure is a straight-line guess (audit G2).
+async function routeMiles(home: { lat: number; lng: number }, stops: Stop[]): Promise<{ miles: number; estimated: boolean }> {
+  if (stops.length === 0) return { miles: 0, estimated: false };
   const ordered = [...stops].sort((a, b) => a.at - b.at).map((s) => ({ lat: s.lat, lng: s.lng }));
   const points = [home, ...ordered, home];
   // Each leg is independent — route them in parallel (was serial, so a multi-stop
@@ -95,7 +97,7 @@ async function routeMiles(home: { lat: number; lng: number }, stops: Stop[]): Pr
     points.slice(0, -1).map((p, i) => driveBetween(p.lat, p.lng, points[i + 1].lat, points[i + 1].lng)),
   );
   const miles = legs.reduce((sum, d) => sum + (d?.miles ?? 0), 0);
-  return r2(miles);
+  return { miles: r2(miles), estimated: legs.some((d) => d == null || d.estimated === true) };
 }
 
 export type DayMiles = {
@@ -103,7 +105,14 @@ export type DayMiles = {
   computedMiles: number; // what the router said (kept for reference under an override)
   overrideMiles: number | null; // owner correction, when set
   overrideNote: string | null;
+  /** true = pay rests on a straight-line GUESS (router down, no override). */
+  estimated: boolean;
 };
+
+// The cached MileageDay columns dailyMiles reads. computePayroll fetches every
+// row it needs in ONE query and hands each day its row (audit G13: it used to
+// read them one day at a time per person).
+type MileageRow = { teamMemberId: string; dayKey: string; miles: number; sig: string | null; overrideMiles: number | null; overrideNote: string | null };
 
 // Cached daily miles (recomputes if the day's stop count changed). An owner
 // override (MileageDay.overrideMiles) always wins over the computed figure;
@@ -116,18 +125,26 @@ async function dailyMiles(
   home: { lat: number; lng: number } | null,
   stops: Stop[],
   // Creative-eyes payroll drops gated lines, so its stop set can differ from
-  // the owner view's on mixed days. It must READ the cache but never write it,
-  // or the two views ping-pong the sig and re-hit OSRM forever (review).
+  // the owner view's on mixed days. It must not OVERWRITE the cache, or the two
+  // views ping-pong the sig and re-hit OSRM forever (review). It may still
+  // create a day's FIRST row (audit G13): otherwise a day only My Pay ever
+  // looked at was re-routed on every single load.
   readOnlyCache = false,
+  // The day's cached row, when the caller already fetched it (undefined = read it here).
+  prefetched?: MileageRow | null,
 ): Promise<DayMiles> {
-  const cached = await prisma.mileageDay.findUnique({
-    where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
-  });
-  const withOverride = (computed: number): DayMiles => ({
+  const cached = prefetched !== undefined
+    ? prefetched
+    : await prisma.mileageDay.findUnique({
+        where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
+      });
+  // An owner override is a person's figure, never a guess, so it clears the flag.
+  const withOverride = (computed: number, estimated = false): DayMiles => ({
     miles: cached?.overrideMiles ?? computed,
     computedMiles: computed,
     overrideMiles: cached?.overrideMiles ?? null,
     overrideNote: cached?.overrideNote ?? null,
+    estimated: estimated && cached?.overrideMiles == null,
   });
   if (!home) return withOverride(0);
   // Signature of the day's route (home + the stop coords, order-independent). ANY
@@ -138,17 +155,25 @@ async function dailyMiles(
     ...stops.map((s) => `${s.lat.toFixed(5)},${s.lng.toFixed(5)}`).sort(),
   ].join("|");
   if (cached && cached.sig === sig) return withOverride(cached.miles);
-  const miles = await routeMiles(home, stops);
+  const { miles, estimated } = await routeMiles(home, stops);
   // The upsert never touches the override columns — a recompute (route change,
   // cache clear) must not eat an owner correction.
-  if (!readOnlyCache) {
+  //
+  // A GUESS IS NEVER LOCKED IN (audit G2, Oct 20 2026). One slow or
+  // rate-limited router reply used to fall back to straight-line × 1.25 and be
+  // cached under the real signature, so that day's mileage pay was the guess
+  // for good and nobody could tell. An estimated day is saved with NO
+  // signature, so the next load asks the router again, and the pay card says
+  // the figure is an estimate (see the issue raised in computePayroll).
+  if (!readOnlyCache || !cached) {
+    const savedSig = estimated ? null : sig;
     await prisma.mileageDay.upsert({
       where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
-      create: { teamMemberId: memberId, dayKey, miles, stops: stops.length, sig },
-      update: { miles, stops: stops.length, sig, computedAt: new Date() },
+      create: { teamMemberId: memberId, dayKey, miles, stops: stops.length, sig: savedSig },
+      update: { miles, stops: stops.length, sig: savedSig, computedAt: new Date() },
     });
   }
-  return withOverride(miles);
+  return withOverride(miles, estimated);
 }
 
 export type PayrollJob = {
@@ -183,6 +208,8 @@ export type PayrollDay = {
   payableMiles: number;
   mileagePay: number;
   jobs: number; // jobs sharing the mileage
+  /** true = the miles are a straight-line guess (router down); retried next load. */
+  estimated?: boolean;
 };
 
 export type PayrollIssue = { level: "warn" | "info"; message: string; projectId?: string };
@@ -514,6 +541,27 @@ export async function computePayroll(
   const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys(), ...removedByMember.keys()]);
   if (opts?.memberId) for (const id of [...outMemberIds]) if (id !== opts.memberId) outMemberIds.delete(id);
 
+  // Every cached mileage row this pass can need, in ONE read (audit G13): each
+  // pay day's row, plus any owner correction inside the window (for the
+  // orphaned-override rows below). It used to be one query per person per day.
+  const rangeFromKey = etDayKey(start);
+  const rangeToKey = etDayKey(end);
+  const allDayKeys = new Set<string>();
+  for (const id of outMemberIds) for (const b of linesByMember.get(id) ?? []) if (b.dayKey !== "unknown") allDayKeys.add(b.dayKey);
+  const mileageRows: MileageRow[] = outMemberIds.size
+    ? await prisma.mileageDay.findMany({
+        where: {
+          teamMemberId: { in: [...outMemberIds] },
+          OR: [
+            ...(allDayKeys.size ? [{ dayKey: { in: [...allDayKeys] } }] : []),
+            { overrideMiles: { not: null }, dayKey: { gte: rangeFromKey, lte: rangeToKey } },
+          ],
+        },
+        select: { teamMemberId: true, dayKey: true, miles: true, sig: true, overrideMiles: true, overrideNote: true },
+      })
+    : [];
+  const mileageRowOf = new Map(mileageRows.map((r) => [`${r.teamMemberId}|${r.dayKey}`, r]));
+
   const out: PayrollPerson[] = [];
   for (const memberId of outMemberIds) {
     const m = memberMap.get(memberId);
@@ -532,7 +580,7 @@ export async function computePayroll(
             .filter((b) => b.hasCoords)
             .map((b) => { const c = coordsByProject.get(b.projectId)!; return { lat: c!.lat, lng: c!.lng, at: b._at }; })
         : [];
-      const dm = await dailyMiles(memberId, dayKey, home, stops, !!opts?.forCreativeEyes);
+      const dm = await dailyMiles(memberId, dayKey, home, stops, !!opts?.forCreativeEyes, mileageRowOf.get(`${memberId}|${dayKey}`) ?? null);
       const payableMiles = Math.max(dm.miles - freeMiles, 0);
       const share = mileageJobs.length > 0 ? r2((payableMiles * (m?.mileageRate ?? 0.65)) / mileageJobs.length) : 0;
       for (const b of mileageJobs) { b.mileageShare = share; b.jobTotal = r2(b.shootPay + share); }
@@ -548,6 +596,7 @@ export async function computePayroll(
         // when no job takes mileage — so the row can never show unpaid dollars.
         mileagePay: r2(share * mileageJobs.length),
         jobs: mileageJobs.length,
+        ...(dm.estimated ? { estimated: true } : {}),
       });
     }
 
@@ -555,14 +604,10 @@ export async function computePayroll(
     // rescheduled/reassigned/cancelled after the adjustment): surface them as
     // zero-job rows so they're visible and resettable — an invisible override
     // would silently re-apply if a shoot ever lands back on that day.
-    const orphanOverrides = await prisma.mileageDay.findMany({
-      where: {
-        teamMemberId: memberId,
-        overrideMiles: { not: null },
-        dayKey: { gte: etDayKey(start), lte: etDayKey(end), notIn: dayKeys },
-      },
-      select: { dayKey: true, miles: true, overrideMiles: true, overrideNote: true },
-    });
+    const orphanOverrides = mileageRows.filter(
+      (r) => r.teamMemberId === memberId && r.overrideMiles != null &&
+        r.dayKey >= rangeFromKey && r.dayKey <= rangeToKey && !dayKeys.includes(r.dayKey),
+    );
     for (const o of orphanOverrides) {
       // A day that only LOOKS empty because its shoot was debrief-dropped from
       // this creative view must not render a confusing zero-job override row.
@@ -610,6 +655,15 @@ export async function computePayroll(
           });
         }
         continue;
+      }
+      // A guessed day says so (audit G2): the router did not answer, so the
+      // figure is straight-line distance with a road factor. It is not cached,
+      // so the next load asks the router again.
+      if (d.estimated) {
+        issues.push({
+          level: "warn",
+          message: `Mileage on ${dayLabel} is an estimate (${d.miles.toFixed(0)} mi): the route server didn't answer, so this is straight-line distance. It re-checks on the next load. Adjust the day by hand if it stays.`,
+        });
       }
       if (d.miles > 350 || (d.jobs > 0 && d.miles / d.jobs > 200)) {
         issues.push({

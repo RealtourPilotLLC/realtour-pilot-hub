@@ -1,12 +1,22 @@
 import "server-only";
-
-
-
-
-
-
-
 import { prisma } from "@/lib/prisma";
+import { etDayStartUtc } from "@/lib/datetime";
+
+// ---------------------------------------------------------------------------
+// ONE WINDOW RULE FOR THE STRIPE RAIL (Oct 20 2026, audit G9).
+//
+// Bank, card, Venmo and QuickBooks rows are DATE-ONLY (stored at noon UTC so
+// their ET day is unambiguous), so a UTC-midnight window is exact for them.
+// Stripe rows carry the real instant of the charge, and a UTC window moved
+// every evening Eastern-time sale on the last day of a month (after 8 PM EDT,
+// 7 PM EST) into the NEXT month. Stripe reads now use the ET calendar days.
+// ---------------------------------------------------------------------------
+export function stripeWindow(startKey: string, endKey: string): { from: Date; to: Date } {
+  const from = etDayStartUtc(new Date(`${startKey}T12:00:00Z`));
+  const dayAfterEnd = new Date(Date.parse(`${endKey}T12:00:00Z`) + 86_400_000);
+  const to = new Date(etDayStartUtc(dayAfterEnd).getTime() - 1);
+  return { from, to };
+}
 
 // ---------------------------------------------------------------------------
 // Finance categorization — turns raw bank/card transactions into the "where the
@@ -428,8 +438,10 @@ export async function categoryBreakdown(startKey: string, endKey: string): Promi
   // Stripe-Connect contractor pay + ALL Stripe fees (business, off the bank
   // rail). Fees = charge fees + instant-payout fees + standalone stripe_fee
   // rows — the audit found $1,399 was missing when only charge fees counted.
+  // ET days, like the Stripe revenue they are netted against (stripeWindow).
+  const sw = stripeWindow(startKey, endKey);
   const stripe = await prisma.stripeTransaction.findMany({
-    where: { createdAt: { gte: from, lte: to }, type: { in: ["transfer", "charge", "payout", "stripe_fee"] } },
+    where: { createdAt: { gte: sw.from, lte: sw.to }, type: { in: ["transfer", "charge", "payout", "stripe_fee"] } },
     select: { type: true, gross: true, fee: true },
   });
   const stripeTransfers = stripe.filter((s) => s.type === "transfer").reduce((a, s) => a + Math.abs(s.gross), 0);

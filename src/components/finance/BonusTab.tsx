@@ -3,9 +3,7 @@ import { Trophy, TrendingUp, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { prisma } from "@/lib/prisma";
-import { quarterFor, scorecardFor, poolMath, splitPool, type Scorecard } from "@/lib/bonus";
-import { revenueByProcessor } from "@/lib/bookkeeping";
-import { categoryBreakdown } from "@/lib/financeCategories";
+import { quarterFor, quarterBonus } from "@/lib/bonus";
 import { PayBonusButton } from "@/components/finance/PayBonusButton";
 
 export const dynamic = "force-dynamic";
@@ -16,58 +14,18 @@ const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 // real Q2 numbers but wired to nothing. Self-funding: the pool is a share of
 // profit ABOVE a threshold — a quarter that misses the bar pays $0 by
 // construction. This page COMPUTES; the owner's Pay button is the only thing
-// that moves money (a PayoutAdjustment per person, visible on Payroll).
-const DEFAULTS = { threshold: 15000, percent: 0.15, cap: 5000 };
-
-async function bonusSettings() {
-  const rows = await prisma.appSetting.findMany({ where: { key: { in: ["bonus-threshold", "bonus-percent", "bonus-cap"] } } });
-  const get = (k: string) => rows.find((r) => r.key === k)?.value;
-  return {
-    threshold: Number(get("bonus-threshold") ?? DEFAULTS.threshold),
-    percent: Number(get("bonus-percent") ?? DEFAULTS.percent),
-    cap: get("bonus-cap") === "none" ? null : Number(get("bonus-cap") ?? DEFAULTS.cap),
-  };
-}
-
+// that moves money (a PayoutAdjustment per person, visible on Payroll), and
+// the server recomputes the amount with this same quarterBonus() before it
+// pays (audit G1, Oct 20 2026).
 export async function BonusTab({ show, back = 0 }: { show: FinanceTab[]; back?: number }) {
   const q = quarterFor(undefined, back);
-  const settings = await bonusSettings();
-
-  // The quarter's money — same engines as Overview (processor revenue,
-  // categorized business cost).
-  const [rev, cats] = await Promise.all([
-    revenueByProcessor(q.startKey, q.endKey),
-    categoryBreakdown(q.startKey, q.endKey),
+  const [{ settings, pool, cards, split }, already] = await Promise.all([
+    quarterBonus(q),
+    prisma.payoutAdjustment.findMany({
+      where: { label: { startsWith: `Quarterly bonus ${q.quarter}` } },
+      select: { teamMemberId: true, amount: true },
+    }),
   ]);
-  const pool = poolMath({
-    revenue: rev.total,
-    cost: cats.businessTotal,
-    threshold: settings.threshold,
-    poolPercent: settings.percent,
-    poolCap: settings.cap,
-  });
-
-  // Who's scored: active shooting creatives (OWN basis) + the creative manager
-  // (TEAM basis — accountable for everyone's results).
-  const members = await prisma.teamMember.findMany({
-    where: { active: true, role: { in: ["PHOTOGRAPHER", "MANAGER"] } },
-    select: { id: true, name: true, creativeManager: true, role: true },
-  });
-  const cards: Scorecard[] = [];
-  for (const tm of members) {
-    const basis = tm.creativeManager ? "TEAM" : "OWN";
-    if (tm.role === "MANAGER" && !tm.creativeManager) continue; // ops managers aren't in the shoot bonus
-    // The owner shoots too but is not in his own bonus pool (review: his card
-    // diluted every creative's split and offered a pay-himself button).
-    if (/^jordan\b/i.test(tm.name)) continue;
-    cards.push(await scorecardFor(q, { memberId: basis === "TEAM" ? null : tm.id, name: tm.name, basis }).then((c) => ({ ...c, memberId: tm.id })));
-  }
-  const split = splitPool(pool.pool, cards);
-
-  const already = await prisma.payoutAdjustment.findMany({
-    where: { label: { startsWith: `Quarterly bonus ${q.quarter}` } },
-    select: { teamMemberId: true, amount: true },
-  });
   const paidTo = new Map(already.map((a) => [a.teamMemberId, a.amount]));
 
   return (

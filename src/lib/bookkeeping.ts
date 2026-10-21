@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { vendorName, STRIPE_CONNECT_ACCOUNTS } from "@/lib/financeCategories";
+import { vendorName, STRIPE_CONNECT_ACCOUNTS, stripeWindow } from "@/lib/financeCategories";
 import { etDayKey } from "@/lib/datetime";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -550,6 +550,34 @@ export async function venmoCoverageEnd(): Promise<Date | null> {
   return newest?.date ?? null;
 }
 
+/**
+ * When the QuickBooks rail was last brought up to date: the last SUCCESSFUL
+ * pull (Connection.lastSyncedAt is stamped only when syncQuickBooks finishes),
+ * else, for an environment whose rows arrived some other way, the newest row
+ * write. null = nothing has ever been pulled, so there is no coverage end.
+ */
+export async function quickbooksCoverageEnd(): Promise<Date | null> {
+  const conn = await prisma.connection.findUnique({ where: { provider: "quickbooks" }, select: { lastSyncedAt: true } });
+  if (conn?.lastSyncedAt) return conn.lastSyncedAt;
+  const newest = await prisma.qboTransaction.aggregate({ _max: { syncedAt: true } });
+  return newest._max.syncedAt ?? null;
+}
+
+/**
+ * Stripe balance-transaction rows that ARE revenue or reverse it — the one
+ * list every revenue reader uses (audit G9, Oct 20 2026). This used to be
+ * charge|payment|refund here while the old month engine also counted
+ * payment_refund and disputes, so a non-card refund or a lost chargeback
+ * never reduced the top line. `adjustment` is taken only when Stripe labels it
+ * a chargeback or dispute; other adjustments (and Capital movements) are not
+ * sales and stay out.
+ */
+export const STRIPE_REVENUE_WHERE = [
+  { type: { in: ["charge", "payment", "refund", "payment_refund"] } },
+  { type: "adjustment", description: { contains: "chargeback", mode: "insensitive" as const } },
+  { type: "adjustment", description: { contains: "dispute", mode: "insensitive" as const } },
+];
+
 export const VENMO_CHARGES: { date: string; amount: number; note: string }[] = [
   { date: "2026-01-05", amount: 600, note: "2308 Christian St — photos, video, drone" },
   { date: "2026-01-12", amount: 600, note: "449 Delmar + 7331 E Walnut" },
@@ -598,21 +626,50 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   // Rail 1 — QuickBooks Payments: customer money recorded in QuickBooks itself.
   // Payment = settles an invoice, SalesReceipt = paid at point of sale (bundles,
   // prepaid packages). Together they are every dollar QuickBooks collected.
-  const qboRows = await prisma.qboTransaction.findMany({
-    where: { type: { in: ["Payment", "SalesReceipt"] }, txnDate: { gte: from, lte: to } },
-  });
+  //
+  // COUNTED ONLY THROUGH THE LAST PULL (Oct 20 2026, audit H3). The hub only
+  // knows the QuickBooks payments its last successful pull brought in, and the
+  // scheduled pull was stopped on Oct 13, so every QuickBooks payment after it
+  // was silently missing from month-to-date and year-to-date. Same rule as the
+  // Venmo rail below: the days after the coverage end are UNKNOWN, so they are
+  // capped and reported (quickbooksNote), never presented as $0.
+  const qboCoverEnd = await quickbooksCoverageEnd();
+  const qboCoverKey = qboCoverEnd ? etDayKey(qboCoverEnd) : null;
+  const qboTo = qboCoverKey && qboCoverKey < endKey ? new Date(`${qboCoverKey}T23:59:59Z`) : to;
+  const qboRows = qboTo >= from
+    ? await prisma.qboTransaction.findMany({
+        where: { type: { in: ["Payment", "SalesReceipt"] }, txnDate: { gte: from, lte: qboTo } },
+      })
+    : [];
   let quickbooks = qboRows.reduce((s, r) => s + r.amount, 0);
   // 2026-02-13 VIDEO PRO $1,999 payment was clawed back on 2026-05-07 (bank
   // shows "*7828 DEPOSIT INTUIT" debit; owner confirmed it was a refund). The
   // QBO Payment row still exists, so subtract it whenever the window covers it.
-  if (from <= new Date("2026-02-13T23:59:59Z") && to >= new Date("2026-02-13T00:00:00Z")) {
+  if (from <= new Date("2026-02-13T23:59:59Z") && qboTo >= new Date("2026-02-13T00:00:00Z")) {
     quickbooks -= 1999;
   }
+  let quickbooksGapFrom: string | null = null;
+  let quickbooksGapDays = 0;
+  if (qboCoverKey && qboCoverKey < endKey) {
+    const dayAfter = etDayKey(new Date(Date.parse(`${qboCoverKey}T12:00:00Z`) + 864e5));
+    const gapKey = dayAfter > startKey ? dayAfter : startKey;
+    quickbooksGapFrom = gapKey;
+    quickbooksGapDays = Math.round((Date.parse(`${endKey}T00:00:00Z`) - Date.parse(`${gapKey}T00:00:00Z`)) / 864e5) + 1;
+  }
+  // One day behind is just a daily pull that hasn't run yet today; two or more
+  // is a rail that has stopped, and that is worth a sentence.
+  const quickbooksNote = quickbooksGapDays >= 2 && qboCoverKey
+    ? `QuickBooks was last synced on ${qboCoverKey}. QuickBooks payments from ${quickbooksGapFrom} onward (${quickbooksGapDays} days) are NOT counted in this figure. Press Sync on Connections → QuickBooks to bring them in.`
+    : "";
 
   // Rail 2 — Stripe: charges net of refunds, GROSS of fees. Fees are a cost and
   // belong in expenses; netting them here would understate the top line.
+  // ET calendar days (stripeWindow) and every revenue-reversing type, so a
+  // late-evening sale stays in its own month and a non-card refund or a lost
+  // dispute reduces revenue (audit G9, Oct 20 2026).
+  const sw = stripeWindow(startKey, endKey);
   const stripeRows = await prisma.stripeTransaction.findMany({
-    where: { type: { in: ["charge", "payment", "refund"] }, createdAt: { gte: from, lte: to } },
+    where: { createdAt: { gte: sw.from, lte: sw.to }, OR: STRIPE_REVENUE_WHERE },
   });
   const stripe = stripeRows.reduce((s, r) => s + r.gross, 0);
   const stripeFees = stripeRows.reduce((s, r) => s + r.fee, 0);
@@ -753,6 +810,10 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
     venmoIsEstimate: venmoSource === "bank-estimate" || venmoSource === "transcribed-list",
     venmoCoverageThrough: coverEnd ? etDayKey(coverEnd) : null,
     venmoGapFrom, venmoGapDays, venmoGapCashOut, venmoNote,
+    // The QuickBooks rail's coverage (audit H3): same contract as venmoNote,
+    // print it beside `quickbooks` (or `total`) whenever it is non-empty.
+    quickbooksCoverageThrough: qboCoverKey,
+    quickbooksGapFrom, quickbooksGapDays, quickbooksNote,
     total: r2(quickbooks + stripe + venmo),
   };
 }
