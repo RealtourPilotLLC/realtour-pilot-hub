@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useState, useTransition, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { useToast } from "@/components/ui/Toast";
 import {
   decideFindingsAction, setHeroAction, setPhotoExcludedAction, stopFlaggingAction, type ActionResult,
@@ -52,7 +53,12 @@ type Ctx = {
   notify: (kind: "ok" | "err", text: string) => void;
   /** Is this finding at or above the display floor (plan 7.5)? */
   shown: (f: FindingView) => boolean;
+  /** Oct 21 2026: the photo open in Straighten and crop (PhotoEditor), from the lightbox or a geometry finding. */
+  openEditor: (photoId: string | null) => void;
 };
+
+// Oct 21 2026: loaded when first opened (its canvas code is only needed then).
+const PhotoEditor = dynamic(() => import("./PhotoEditor"), { ssr: false });
 
 const JobCtx = createContext<Ctx | null>(null);
 
@@ -83,6 +89,7 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
   const [tab, setTab] = useState<TabKey>(initialTab);
   const [cartOpen, setCartOpen] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(initialPhoto);
+  const [editing, setEditing] = useState<string | null>(null);
 
   const photoById = useMemo(() => new Map(data.photos.map((p) => [p.id, p])), [data.photos]);
   const findingsByPhoto = useMemo(() => {
@@ -270,10 +277,12 @@ export function JobProvider({ data, viewer, mode, initialTab = "issues", initial
     promptOpen,
     notify: show,
     shown: (f) => f.confidence >= data.displayFloor,
+    openEditor: setEditing,
   };
   return (
     <JobCtx.Provider value={value}>
       {children}
+      {editing && <PhotoEditor photoId={editing} onClose={() => setEditing(null)} />}
       {dialog}
       {toast}
     </JobCtx.Provider>

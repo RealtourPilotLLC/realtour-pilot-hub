@@ -144,12 +144,14 @@ async function currentSet(jobId: string) {
 }
 
 /** Links for the photos to copy: one free AutoHDR call per shoot (re-downloads), Aryeo's own link, or a Dropbox path. */
-async function linksFor(items: ReadyItem[]): Promise<Map<string, { url?: string; dropboxPath?: string; bytes?: number | null; error?: string }>> {
-  const out = new Map<string, { url?: string; dropboxPath?: string; bytes?: number | null; error?: string }>();
-  const photos = await prisma.photoAsset.findMany({ where: { id: { in: items.map((i) => i.photoId) } }, select: { id: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true } });
+async function linksFor(items: ReadyItem[]): Promise<Map<string, { url?: string; dropboxPath?: string; hubEdit?: string; bytes?: number | null; error?: string }>> {
+  const out = new Map<string, { url?: string; dropboxPath?: string; hubEdit?: string; bytes?: number | null; error?: string }>();
+  const photos = await prisma.photoAsset.findMany({ where: { id: { in: items.map((i) => i.photoId) } }, select: { id: true, sourceKind: true, sourceUrl: true, sourceRef: true, dropboxPath: true, contentHash: true } });
   const byShoot = new Map<number, { photoId: string; uuid: string }[]>();
   for (const p of photos) {
-    if (p.sourceKind === "DROPBOX" && p.dropboxPath) out.set(p.id, { dropboxPath: p.dropboxPath });
+    // Oct 21 2026: the hub's own edit (straighten, crop) is the photo now: its file comes from the hub's store (photoEdit.ts).
+    if (p.contentHash?.startsWith("hub-")) out.set(p.id, { hubEdit: p.contentHash });
+    else if (p.sourceKind === "DROPBOX" && p.dropboxPath) out.set(p.id, { dropboxPath: p.dropboxPath });
     else if (p.sourceKind === "ARYEO" && p.sourceUrl) out.set(p.id, { url: p.sourceUrl });
     else if (p.sourceKind === "AUTOHDR") {
       const [shoot, uuid] = (p.sourceRef ?? "").split("/");
@@ -234,9 +236,17 @@ async function step(jobId: string, run: ReadyRun): Promise<ReadyRun | null> {
           it.state = "DONE"; it.error = null;
           return;
         }
-        const res = await fetch(l.url!, { cache: "no-store", signal: AbortSignal.timeout(60_000) });
-        if (!res.ok) throw new Error(`the photo link answered ${res.status}`);
-        const bytes = new Uint8Array(await res.arrayBuffer());
+        let bytes: Uint8Array;
+        if (l.hubEdit) {
+          const { hubEditBytes } = await import("./photoEdit");
+          const b = await hubEditBytes({ id: it.photoId, contentHash: l.hubEdit });
+          if (!b) throw new Error("the hub's edited copy could not be read");
+          bytes = new Uint8Array(b);
+        } else {
+          const res = await fetch(l.url!, { cache: "no-store", signal: AbortSignal.timeout(60_000) });
+          if (!res.ok) throw new Error(`the photo link answered ${res.status}`);
+          bytes = new Uint8Array(await res.arrayBuffer());
+        }
         if (bytes.length < 1024) throw new Error(`the photo came back ${bytes.length} bytes`);
         const up = await dropboxUpload(path, bytes, { overwrite: true, autorename: false });
         if (up.size != null && up.size !== bytes.length) throw new Error(`Dropbox stored ${up.size} bytes of ${bytes.length}`);

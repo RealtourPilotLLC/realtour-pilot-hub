@@ -52,7 +52,7 @@ const LEASE_MS = 45_000;
 const MAX_TRIES = 3;
 const CHECK_FOR_MS = 20 * 60_000;
 
-export type PushItem = { photoId: string; name: string; path: string; uuid: string | null; tries: number; error: string | null; already: boolean; rev?: string | null };
+export type PushItem = { photoId: string; name: string; path: string; uuid: string | null; tries: number; error: string | null; already: boolean; rev?: string | null; /** Oct 21 2026: Update on Aryeo sends the hub's edited file from its private store, not 06-Ready-for-Aryeo. */ blob?: { pathname: string } | null };
 /** A photo the hub put on the listing: which photo, and which version of it. */
 type Listed = { name: string; photoId: string; rev: string | null };
 export type PushState = "PREPARING" | "SENDING" | "ADDING" | "CHECKING" | "ORDERING" | "WAITING" | "DELIVERING" | "CONFIRMING" | "DONE" | "FAILED";
@@ -88,8 +88,16 @@ export type PushRun = {
   retryAfter?: string | null;
   /** The person who approved it (their delivery uses the usual gate). Null: the hub's own (same-day, or a job already marked as delivering). */
   approvedBy?: string | null;
+  /** Oct 21 2026: "update" = Update on Aryeo, replacing photos the hub edited on a listing (requestListingUpdate). */
+  mode?: "update";
+  /** Update: the listing images being replaced (taken off before the new ones go on). */
+  replaceIds?: string[];
+  /** Update: the listing's order before it (lower-case names), kept after. */
+  keepOrder?: string[];
+  /** Update: the job's run before it, as JSON text (a string, so the cron's text filters never read its state), put back when it ends. */
+  prev?: string | null;
 };
-export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean; changed: boolean };
+export type PushProgress = { state: PushState; active: boolean; total: number; sent: number; already: number; note: string | null; startedAt: string; finishedAt: string | null; deliveredAt: string | null; waitingForApproval: boolean; changed: boolean; update?: boolean };
 
 // ---- the run record ---------------------------------------------------------------------------
 
@@ -132,6 +140,7 @@ export function progressOf(run: PushRun): PushProgress {
     deliveredAt: run.deliveredAt,
     waitingForApproval: run.state === "WAITING",
     changed: run.note === CHANGED,
+    update: run.mode === "update",
   };
 }
 
@@ -259,6 +268,144 @@ export async function requestPush(jobId: string, opts: { by?: string | null; the
   const swap = remove.length ? `, taking ${remove.length} old one${remove.length === 1 ? "" : "s"} off first` : "";
   await logJobEvent(jobId, opts.by ?? "aryeo-push", `sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${already ? ` (${already} already there)` : ""}${swap}${tail}`);
   return { ok: true, started: true, message: all ? "Every photo is already on the listing. Checking the order." : `Sending ${items.length - already} photo${items.length - already === 1 ? "" : "s"} to the Aryeo listing${swap}. The panel shows the progress.` };
+}
+
+// ---- Update on Aryeo (Oct 21 2026) ------------------------------------------------------------
+//
+// Kyle straightened or cropped a photo in the hub (photoEdit.ts) that already
+// sits on the Aryeo listing: delivered, or a listing AutoHDR's own Aryeo link
+// filled. One press replaces just those photos: the edited file goes up under
+// the listing image's own name, the old image comes off, the listing keeps
+// its order. Nothing is delivered again and no email is sent (the run stops
+// at the order). It is a push run in update mode, so the usual lease, the
+// progress poll and the cron move it on; when it ends the job's run from
+// before is put back, so the Deliver panel is exactly as it was. Never
+// automatic: only requestListingUpdate starts one, from a person's press.
+
+const UPDATE_KEY = (jobId: string) => `photo_aryeo_update:${jobId}`;
+export type ListingUpdateOutcome = { at: string; ok: boolean; note: string; photoIds: string[]; by: string | null };
+
+/** The last Update on Aryeo of a job: when, which photos, and how it ended. */
+export async function lastListingUpdate(jobId: string): Promise<ListingUpdateOutcome | null> {
+  const row = await prisma.appSetting.findUnique({ where: { key: UPDATE_KEY(jobId) }, select: { value: true } });
+  try {
+    return row ? (JSON.parse(row.value) as ListingUpdateOutcome) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An edited file from the hub's private store. */
+async function storedBytes(pathname: string): Promise<Buffer> {
+  const { readDerivativeBytes } = await import("./blob");
+  const b = await readDerivativeBytes({ pathname, url: "" }, 80 * 1024 * 1024);
+  if (!b) throw new Error("the edited photo could not be read from the hub's store");
+  return b;
+}
+
+/** Kyle's Update on Aryeo for photos whose current version is the hub's own edit. */
+export async function requestListingUpdate(jobId: string, photoIds: string[], by: string): Promise<{ ok: boolean; started: boolean; message: string }> {
+  const settings = await photoDeliverySettings();
+  if (settings.aryeoPush === "off") return { ok: false, started: false, message: "The hub's Aryeo upload is switched off (Photo Delivery settings). Download the edited photo from the lightbox and replace it on the listing by hand." };
+  const W = await import("@/lib/integrations/aryeoWeb");
+  if (!(await W.aryeoWebCredentials())) return { ok: false, started: false, message: "The hub's Aryeo login is not set up yet. Jordan adds it on Connections → Aryeo hub login." };
+  const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true, stage: true } });
+  if (!job) return { ok: false, started: false, message: "That job no longer exists." };
+  const project = await prisma.project.findUnique({ where: { id: job.projectId }, select: { aryeoListingId: true } });
+  if (!project?.aryeoListingId) return { ok: false, started: false, message: "This job has no Aryeo listing linked, so there is nothing to update." };
+  const { run, raw } = await load(jobId);
+  if (run && ACTIVE.includes(run.state)) return { ok: false, started: false, message: "The hub is already working on this listing in Aryeo. Try again when it finishes." };
+  const ids = [...new Set(photoIds.filter((x) => typeof x === "string"))].slice(0, 50);
+  const photos = await prisma.photoAsset.findMany({ where: { id: { in: ids }, jobId }, select: { id: true, name: true, sourceKind: true, sourceRef: true, contentHash: true } });
+  if (!photos.length || photos.length !== ids.length) return { ok: false, started: false, message: "Those photos are not on this job. Reload the page." };
+  // The hub's own upload, not delivered yet, replaces a changed photo itself (Approve again).
+  if (run && !run.deliveredAt && (run.state === "WAITING" || run.state === "DONE") && job.stage !== "DELIVERED" && photos.some((p) => run.listed?.some((l) => l.photoId === p.id))) {
+    return { ok: false, started: false, message: "These photos went up with the hub's upload, which is not delivered yet: press Approve again in the Deliver panel and the upload replaces them." };
+  }
+  const { currentHubEdit } = await import("./photoEdit");
+  const files = new Map<string, string>();
+  for (const p of photos) {
+    const cur = await currentHubEdit(p);
+    if (!cur?.meta.file) return { ok: false, started: false, message: `${p.name} has no hub edit waiting to go on the listing. Save it in Straighten first.` };
+    files.set(p.id, cur.meta.file.pathname);
+  }
+  let page: Awaited<ReturnType<typeof W.listingPage>>;
+  try {
+    page = await W.listingPage(project.aryeoListingId);
+  } catch (e) {
+    return { ok: false, started: false, message: `Aryeo could not be read: ${(e as Error).message.slice(0, 200)}` };
+  }
+  // Which listing image is each photo: its own (an Aryeo photo), else the names the hub gave it.
+  const [{ readyNamesFor }, { deliveryOrderFor }] = await Promise.all([import("./handoff"), import("./delivery")]);
+  const [ready, order] = await Promise.all([readyNamesFor(jobId).catch(() => new Map<string, string>()), deliveryOrderFor(jobId).catch(() => [])]);
+  const fileOf = (i: { filename: string; filename_extension: string }) => `${i.filename}.${i.filename_extension}`;
+  const items: PushItem[] = [];
+  const replaceIds: string[] = [];
+  const missing: string[] = [];
+  for (const p of photos) {
+    const names = [
+      ...(run?.listed ?? []).filter((l) => l.photoId === p.id).map((l) => l.name),
+      ...[...ready].filter(([, id]) => id === p.id).map(([n]) => n),
+      ...order.filter((o) => o.photoId === p.id).map((o) => o.deliveryName),
+      p.name,
+    ].map(lower);
+    const img = (p.sourceKind === "ARYEO" && p.sourceRef ? page.images.find((i) => i.id === p.sourceRef) : undefined) ?? page.images.find((i) => names.includes(lower(fileOf(i))));
+    if (!img || replaceIds.includes(img.id)) {
+      missing.push(p.name);
+      continue;
+    }
+    replaceIds.push(img.id);
+    items.push({ photoId: p.id, name: fileOf(img), path: "", uuid: null, tries: 0, error: null, already: false, rev: p.contentHash, blob: { pathname: files.get(p.id)! } });
+  }
+  if (missing.length) return { ok: false, started: false, message: `${missing.join(", ")} could not be found on the Aryeo listing, so nothing was sent. Download the edited photo from the lightbox and replace it on the listing by hand.` };
+  const now = new Date().toISOString();
+  const next: PushRun = {
+    id: randomBytes(4).toString("hex"), listingId: project.aryeoListingId, state: "SENDING", then: "stop", items, groupId: null, addedAt: null, ordered: false,
+    deliveredAt: run?.deliveredAt ?? null, by, startedAt: now, updatedAt: now, finishedAt: null, note: null, lease: null, anyway: true, fingerprint: null,
+    listed: run?.listed ?? [], remove: [], removedAt: null, approvedBy: by, mode: "update", replaceIds, keepOrder: page.images.map((i) => lower(fileOf(i))), prev: raw,
+  };
+  if (!(await save(jobId, next, raw))) return { ok: false, started: false, message: "Someone started something in Aryeo a moment ago. Try again." };
+  const names = items.map((i) => i.name).join(", ");
+  await logJobEvent(jobId, by, `updating ${items.length} photo${items.length === 1 ? "" : "s"} on the Aryeo listing with the hub's edit (${names}); nothing is delivered again`, { photoIds: items.map((i) => i.photoId), replaceIds });
+  return { ok: true, started: true, message: `Replacing ${names} on the Aryeo listing with the edited version. Nothing is delivered again and no email goes out.` };
+}
+
+/** An Update on Aryeo ended: carry the photos over to their new listing images, record it, put the job's run before it back. */
+async function finishListingUpdate(jobId: string, r: PushRun, raw: string | null): Promise<PushRun | null> {
+  const ok = r.state === "DONE";
+  let prev: PushRun | null = null;
+  try {
+    prev = r.prev ? (JSON.parse(r.prev) as PushRun) : null;
+  } catch {
+    prev = null;
+  }
+  let carried = 0;
+  if (ok) {
+    const { listingGallery } = await import("./jobs");
+    const { adoptListedEdit } = await import("./photoEdit");
+    const listing = await listingGallery(r.listingId);
+    const old = new Set(r.replaceIds ?? []);
+    for (const it of r.items) {
+      const e = listing?.entries.find((x) => lower(x.name) === lower(it.name) && (!x.sourceRef || !old.has(x.sourceRef)));
+      if (!e || !it.rev) continue;
+      if (await adoptListedEdit(it.photoId, it.rev, e, r.by ?? "aryeo-push").catch(() => false)) {
+        carried++;
+        if (prev?.listed) prev.listed = prev.listed.map((l) => (l.photoId === it.photoId ? { ...l, rev: e.contentHash } : l));
+      }
+    }
+    if (prev?.fingerprint) prev.fingerprint = await (await import("./handoff")).readyFingerprintFor(jobId);
+  }
+  const now = new Date().toISOString();
+  const names = r.items.map((i) => i.name).join(", ");
+  const outcome: ListingUpdateOutcome = { at: now, ok, note: ok ? `Updated on the Aryeo listing: ${names}.` : `Not updated on Aryeo: ${r.note ?? "it stopped"}`, photoIds: r.items.map((i) => i.photoId), by: r.by };
+  const back = prev ? JSON.stringify({ ...prev, lease: null, updatedAt: now }) : null;
+  const put = back
+    ? await prisma.appSetting.updateMany({ where: { key: KEY(jobId), value: raw ?? "" }, data: { value: back, updatedBy: "aryeo-push" } })
+    : await prisma.appSetting.deleteMany({ where: { key: KEY(jobId), value: raw ?? "" } });
+  if (put.count !== 1) return null; // someone else changed the record: theirs stands
+  await prisma.appSetting.upsert({ where: { key: UPDATE_KEY(jobId) }, create: { key: UPDATE_KEY(jobId), value: JSON.stringify(outcome), updatedBy: "aryeo-push" }, update: { value: JSON.stringify(outcome), updatedBy: "aryeo-push" } });
+  await logJobEvent(jobId, "aryeo-push", ok ? `updated on the Aryeo listing with the hub's edit: ${names}${carried ? "" : " (the listing images could not be matched back; the next sync reads them)"}` : `updating on the Aryeo listing stopped: ${r.note ?? "unknown"}`, { photoIds: outcome.photoIds });
+  return prev;
 }
 
 /** Kyle's "Deliver in Aryeo" on a push that is waiting for it (or a finished upload-only push). */
@@ -431,7 +578,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       }
       for (const it of batch) {
         try {
-          const bytes = await download(it.path);
+          const bytes = it.blob ? await storedBytes(it.blob.pathname) : await download(it.path);
           if (bytes.length < 1024) throw new Error(`the file in 06-Ready-for-Aryeo is only ${bytes.length} bytes`);
           it.uuid = await W.uploadcareUpload(new Uint8Array(bytes), it.name);
           it.error = null;
@@ -445,10 +592,11 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
     }
     if (r.state === "ADDING") {
       // 0. The hub's own photos that changed or left the set come off first (read, then delete what is still there).
-      if (r.remove?.length && !r.removedAt) {
-        const gone = new Set(r.remove);
+      if ((r.remove?.length || r.replaceIds?.length) && !r.removedAt) {
+        const gone = new Set(r.remove ?? []);
+        const replace = new Set(r.replaceIds ?? []);
         const page = await W.listingPage(r.listingId);
-        const ids = page.images.filter((i) => gone.has(lower(`${i.filename}.${i.filename_extension}`))).map((i) => i.id);
+        const ids = page.images.filter((i) => replace.has(i.id) || gone.has(lower(`${i.filename}.${i.filename_extension}`))).map((i) => i.id);
         if (ids.length) await W.deleteImages(r.listingId, ids);
         r.removedAt = new Date().toISOString();
         return r;
@@ -492,10 +640,12 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       const { listingGallery } = await import("./jobs");
       const listing = await listingGallery(r.listingId);
       if (!listing) return null; // Aryeo's API had a bad minute: next pass
-      const names = new Set(listing.entries.map((e) => lower(e.name)));
+      // Update on Aryeo: the new image under the old name, and the old one gone (its id, since the name is the same).
+      const old = new Set(r.replaceIds ?? []);
+      const names = new Set(listing.entries.filter((e) => !e.sourceRef || !old.has(e.sourceRef)).map((e) => lower(e.name)));
       const wanted = new Set(r.items.map((i) => lower(i.name)));
       const missing = r.items.filter((i) => !names.has(lower(i.name)));
-      const lingering = (r.remove ?? []).filter((n) => !wanted.has(n) && names.has(n));
+      const lingering = [...(r.remove ?? []).filter((n) => !wanted.has(n) && names.has(n)), ...listing.entries.filter((e) => e.sourceRef && old.has(e.sourceRef)).map((e) => lower(e.name))];
       if (!missing.length && !lingering.length) {
         r.state = "ORDERING";
         r.note = null;
@@ -513,7 +663,7 @@ async function step(jobId: string, r0: PushRun): Promise<PushRun | null> {
       const { listingGallery } = await import("./jobs");
       const listing = await listingGallery(r.listingId);
       if (!listing) return null;
-      const wantOrder = r.items.map((i) => lower(i.name));
+      const wantOrder = r.keepOrder?.length ? r.keepOrder : r.items.map((i) => lower(i.name));
       const ours = listing.entries.map((e) => lower(e.name)).filter((n) => wantOrder.includes(n));
       const inOrder = ours.join("\n") === wantOrder.join("\n") && listing.entries.slice(0, wantOrder.length).every((e, k) => lower(e.name) === wantOrder[k]);
       if (!inOrder && !r.ordered) {
@@ -637,6 +787,11 @@ export async function advancePush(jobId: string, opts: { budgetMs?: number } = {
     const before = run.state;
     const next = await step(jobId, run);
     if (!next) break; // waiting on Aryeo: the next pass looks again
+    // Update on Aryeo ended: the photos carried over, the job's run before it put back.
+    if (run.mode === "update" && (next.state === "DONE" || next.state === "FAILED")) {
+      const ended = await finishListingUpdate(jobId, next, raw);
+      return ended ? progressOf(ended) : null;
+    }
     next.lease = ACTIVE.includes(next.state) ? { token, until: Date.now() + LEASE_MS } : null;
     const saved = await save(jobId, next, raw);
     if (!saved) break; // someone else took it over

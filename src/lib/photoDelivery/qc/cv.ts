@@ -1023,6 +1023,26 @@ export function lineGeometry(l: Uint8Array, w: number, h: number): LineGeometry 
   };
 }
 
+/**
+ * Oct 21 2026 (the hub's straighten tool, Auto): the long, clean
+ * near-vertical lines lineGeometry's tilt is measured from, one by one: the
+ * slope (x per row: a top leaning right is negative), the line's centre and
+ * its length. Same chains, same filters. Pure.
+ */
+export function verticalLineFits(l: Uint8Array, w: number, h: number): { slope: number; x: number; y: number; len: number }[] {
+  const T = GEOMETRY_THRESHOLDS;
+  const minSpan = Math.max(40, Math.round(T.minSpan * h));
+  const out: { slope: number; x: number; y: number; len: number }[] = [];
+  for (const ch of verticalChains(l, w, h)) {
+    const len = ch.lastY - ch.firstY + 1;
+    if (len < minSpan || ch.xs.length < minSpan * 0.8) continue;
+    const f = fitChain(ch.xs, ch.ys);
+    if (f.qRms > T.maxRmsPx || f.rms > T.maxRmsPx * 2) continue;
+    out.push({ slope: f.slope, x: ch.xs.reduce((s, x) => s + x, 0) / ch.xs.length, y: ch.ys.reduce((s, y) => s + y, 0) / ch.ys.length, len });
+  }
+  return out;
+}
+
 /** The measurement in plain words, for a finding's explanation. */
 export function geometryWords(g: LineGeometry): string {
   const parts: string[] = [];

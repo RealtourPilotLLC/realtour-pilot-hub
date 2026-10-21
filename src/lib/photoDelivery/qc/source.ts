@@ -30,6 +30,8 @@ export type PhotoSourceRow = {
   sourceUrl: string | null;
   sourceRef: string | null;
   dropboxPath: string | null;
+  /** Oct 21 2026: a "hub-…" hash is the hub's own edit (photoEdit.ts): its file is in the private store. */
+  contentHash?: string | null;
 };
 
 export type SourceFailure = "transient" | "gone" | "refused" | "unsupported";
@@ -185,6 +187,13 @@ export function __setPhotoBytesLoaderForTests(fn: ((p: PhotoSourceRow) => Promis
 
 /** The photo's full-resolution file. Throws PhotoSourceError. */
 export async function loadPhotoBytes(p: PhotoSourceRow): Promise<Buffer> {
+  // Oct 21 2026: the hub's own edit (straighten, crop) is the photo now: its file, never the source's.
+  if (p.contentHash?.startsWith("hub-")) {
+    const { hubEditBytes } = await import("../photoEdit");
+    const bytes = await hubEditBytes({ id: p.id, contentHash: p.contentHash }).catch(() => null);
+    if (!bytes?.length) throw new PhotoSourceError("hub edit file unreadable", "transient", "the hub's edited copy could not be read just now");
+    return bytes;
+  }
   if (testLoader) return testLoader(p);
   const kind = (p.sourceKind ?? "DROPBOX").toUpperCase();
   if (kind === "DROPBOX") {

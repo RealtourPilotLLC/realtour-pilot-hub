@@ -17,6 +17,7 @@ import { RULES, isExteriorFinding, ruleById } from "@/lib/photoDelivery/registry
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { AUTOHDR_BILLING_URL } from "@/lib/integrations/autohdr";
 import { prettyRoom } from "@/components/photoDelivery/format";
+import { HUB_EDIT, hubMeta, isHubEditHash } from "@/lib/photoDelivery/photoEdit";
 import type { RuleOverride } from "@/lib/photoDelivery/registry";
 import type {
   CartView, ClientProfileView, CoverageCounts, CreditStripView, CreditsPageData, CvMetric, EventView, ExpectedView, FindingView, FixBatchView, VersionView,
@@ -490,7 +491,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     height: p.height ?? cvFullSize(p.cvJson)?.h ?? null,
     contentHash: p.contentHash,
     sourceKind: p.sourceKind,
-    sourceUrl: p.sourceKind === "ARYEO" ? p.sourceUrl : null,
+    // Oct 21 2026: a photo straightened in the hub never falls back to the listing's old copy.
+    sourceUrl: p.sourceKind === "ARYEO" && !isHubEditHash(p.contentHash) ? p.sourceUrl : null,
     dropboxPath: p.dropboxPath,
     isAerial: p.isAerial,
     isTwilight: p.isTwilight,
@@ -502,6 +504,7 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
     position: p.status === "ACTIVE" ? position.get(p.id) ?? null : null,
     deliveryName: p.status === "ACTIVE" ? deliveryNameOf.get(p.id) ?? null : null,
     fixing: fixingPhotos.has(p.id),
+    hubEdit: hubEditView(versionsByPhoto.get(p.id) ?? [], p, job.stage),
   }));
   const rank = (p: PhotoView) => (p.status === "ACTIVE" ? p.position ?? 9_000 + p.sequence : p.status === "EXCLUDED" ? 20_000 + p.sequence : 40_000 + p.sequence);
   photoViews.sort((a, b) => rank(a) - rank(b));
@@ -881,12 +884,20 @@ function versionViews(
       byUuid.set(v.autohdrVersionUuid, v);
     }
   }
+  // Oct 21 2026: the hub's own edit (photoEdit.ts) and the photo's own file under it.
+  const curHub = isHubEditHash(p.contentHash) ? [...rows].reverse().find((v) => v.source === HUB_EDIT && v.contentHash === p.contentHash) : undefined;
+  const hubBase = curHub ? hubMeta(curHub.derivJson).hub?.base ?? null : null;
+  const ownHash = curHub ? hubBase?.sourceHash ?? null : p.contentHash;
   return out.map((v) => {
     const m = meta(v.derivJson);
     // The hub's own AutoHDR photo IS its current AutoHDR version; a photo read from the Aryeo listing (or
     // Dropbox) is the file there, and its AutoHDR versions are the ones that can be restored.
     const current = p.sourceKind === "AUTOHDR" && v.autohdrVersionUuid && p.autohdrVersionUuid ? v.autohdrVersionUuid === p.autohdrVersionUuid : !!p.contentHash && v.contentHash === p.contentHash;
+    const hm = v.source === HUB_EDIT ? hubMeta(v.derivJson) : null;
+    const restorable = !!v.autohdrVersionUuid || (!!hm?.file && !!hm.hub && (hm.hub.base.sourceHash ?? null) === (ownHash ?? null)) || (!!hubBase && !!v.contentHash && v.contentHash === hubBase.sourceHash);
     return {
+      restorable,
+      hubEdit: v.source === HUB_EDIT,
       id: v.id,
       label: v.label,
       source: v.source,
@@ -903,6 +914,30 @@ function versionViews(
   });
 }
 
+/**
+ * Oct 21 2026: the photo's current version when it is the hub's own edit
+ * (straighten, keystone, crop): its settings (the editor reopens on them),
+ * and whether the Aryeo listing still has the old file (a photo that lives
+ * on the listing, or a delivered job): Update on Aryeo replaces it.
+ */
+function hubEditView(
+  rows: { id: string; label: string; source: string; contentHash: string | null; derivJson: string | null }[],
+  p: { contentHash: string | null; sourceKind: string },
+  stage: string,
+): import("@/components/photoDelivery/types").HubEditView | null {
+  if (!isHubEditHash(p.contentHash)) return null;
+  const row = [...rows].reverse().find((v) => v.source === HUB_EDIT && v.contentHash === p.contentHash);
+  const m = row ? hubMeta(row.derivJson) : null;
+  if (!row || !m?.hub) return null;
+  return {
+    versionId: row.id,
+    label: row.label,
+    params: m.hub.params,
+    needsListingUpdate: p.sourceKind !== "AUTOHDR" || stage === "DELIVERED" || stage === "DELIVERY_MISMATCH",
+    downloadUrl: m.file ? `/api/photo-fixes/${row.id}` : null,
+  };
+}
+
 /** When the sweep (every 5 minutes, verifySweep.checkEveryMs) next asks Aryeo about a DELIVERING job. */
 function nextDeliveryCheck(startedAt: Date | null, checkedAt: Date | null): string {
   const now = Date.now();
@@ -915,11 +950,12 @@ function nextDeliveryCheck(startedAt: Date | null, checkedAt: Date | null): stri
 
 /** The Deliver panel's Aryeo row: the stage, whether the hub's login is saved, and the last push. */
 async function aryeoPushView(jobId: string): Promise<import("@/components/photoDelivery/types").AryeoPushView> {
-  const [settings, conn, progress, sameDay] = await Promise.all([
+  const [settings, conn, progress, sameDay, lastUpdate] = await Promise.all([
     photoDeliverySettings(),
     prisma.connection.findUnique({ where: { provider: "aryeo_web" }, select: { secretEncrypted: true } }).catch(() => null),
     import("@/lib/photoDelivery/aryeoPush").then((m) => m.pushProgress(jobId)).catch(() => null),
     import("@/lib/photoDelivery/aryeoPush").then((m) => m.isSameDayJob(jobId)).catch(() => false),
+    import("@/lib/photoDelivery/aryeoPush").then((m) => m.lastListingUpdate(jobId)).catch(() => null),
   ]);
-  return { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, progress, sameDayAuto: sameDay && settings.sameDayAutoDeliver };
+  return { mode: settings.aryeoPush, connected: !!conn?.secretEncrypted, progress, sameDayAuto: sameDay && settings.sameDayAutoDeliver, lastUpdate };
 }

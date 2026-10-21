@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink, Eye, EyeOff, Layers, Star, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Crop, ExternalLink, Eye, EyeOff, Layers, Star, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import { PhotoImg } from "./PhotoImg";
 import { BoxOverlay } from "./BoxOverlay";
 import { FindingActions } from "./FindingActions";
+import { HubEditPanel, ReeditBox, StraightenButtons } from "./EditTools";
 import { photoTitle, useJob } from "./JobContext";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SEVERITY_ORDER, photoSrc } from "./format";
 import { loadVersionsAction, restoreVersionAction } from "@/app/ops/photo-delivery/actions";
@@ -65,7 +66,7 @@ export function PhotoFacts({ photo }: { photo: PhotoView }) {
 }
 
 export function Lightbox() {
-  const { data, lightbox, openLightbox, findingsByPhoto, excludePhoto, makeHero, pending, promptOpen, shown } = useJob();
+  const { data, lightbox, openLightbox, findingsByPhoto, excludePhoto, makeHero, pending, promptOpen, shown, openEditor } = useJob();
   const photos = useMemo(() => data.photos.filter((p) => p.status !== "GONE"), [data.photos]);
   const idx = photos.findIndex((p) => p.id === lightbox);
   const photo = idx >= 0 ? photos[idx] : null;
@@ -191,6 +192,11 @@ export function Lightbox() {
             <button type="button" aria-pressed={overlays} onClick={() => setOverlays((v) => !v)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <Layers aria-hidden className="size-3.5" /> Boxes {overlays ? "on" : "off"} <kbd className="text-[11px] text-muted">O</kbd>
             </button>
+            {photo.status !== "GONE" && (
+              <button type="button" disabled={pending || photo.fixing} onClick={() => openEditor(photo.id)} title={photo.fixing ? "An AI fix is running on this photo" : "Straighten, fix the vertical perspective or crop (free, exact)"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 bg-brand-soft px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
+                <Crop aria-hidden className="size-3.5" /> Straighten and crop
+              </button>
+            )}
             <a href={photoSrc(photo.id, "qc2048", photo.contentHash)} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <ExternalLink aria-hidden className="size-3.5" /> Full size
             </a>
@@ -225,13 +231,18 @@ export function Lightbox() {
                       </p>
                     )}
                     <FindingActions findings={[f]} className="mt-2" />
+                    <StraightenButtons findings={[f]} className="mt-1.5" />
                   </li>
                 ))}
               </ol>
             )}
           </section>
 
+          <HubEditPanel photo={photo} />
+
           <VersionsStrip photo={photo} showingId={showing?.id ?? null} currentId={current?.id ?? null} onShow={(id) => setView({ photoId: photo.id, versionId: id })} />
+
+          <ReeditBox photo={photo} />
 
           <PhotoFacts photo={photo} />
         </aside>
@@ -262,7 +273,9 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
   const restore = async (v: VersionView) => {
     const ok = await confirm({
       title: `Make "${versionName(v, versions)}" the current version?`,
-      body: "AutoHDR switches to it (free). The hub, its downloads and the 06-Ready-for-Aryeo folder use it from now on. Every other version stays here, so you can switch back.",
+      body: v.inAutohdr
+        ? "AutoHDR switches to it (free). The hub, its downloads and the 06-Ready-for-Aryeo folder use it from now on. Every other version stays here, so you can switch back."
+        : "The hub uses it from now on (its downloads and the 06-Ready-for-Aryeo folder too). Every other version stays here, so you can switch back.",
       confirmLabel: "Restore this version",
     });
     if (!ok) return;
@@ -308,12 +321,12 @@ function VersionsStrip({ photo, showingId, currentId, onShow }: { photo: PhotoVi
       )}
       {showing && !showing.current && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          {showing.inAutohdr ? (
+          {showing.inAutohdr || showing.restorable ? (
             <button type="button" disabled={pending} onClick={() => void restore(showing)} className="inline-flex min-h-10 items-center rounded-lg bg-brand-action px-3 text-[13px] font-semibold text-brand-fg hover:brightness-95 disabled:opacity-50">
               Restore this version
             </button>
           ) : (
-            <p className="text-[12px] text-muted">This version is not in AutoHDR, so it cannot be restored from here.</p>
+            <p className="text-[12px] text-muted">This version can&apos;t be made current from here{showing.hubEdit ? ": the photo's own file changed since it was made. Open Straighten and crop to make it again." : ", because it is not in AutoHDR."}</p>
           )}
           <button type="button" onClick={() => onShow(null)} className="inline-flex min-h-10 items-center rounded-lg border border-border-strong px-3 text-[13px] hover:bg-surface-2">
             Back to the current one
