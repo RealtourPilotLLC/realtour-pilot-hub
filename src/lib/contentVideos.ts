@@ -502,6 +502,12 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // its 1080p pass is never cached as the client's downloadable final.
   const clientFiles = subs.length ? await clientCutFiles(subs.map((s) => s.id)) : new Map();
   for (const { videoId, cuts, project: p, filmed } of pendingChains) {
+    // An ARCHIVED row stays archived (Oct 21 2026: Jordan had three stale
+    // August review rows taken off Mike Ciunci's portal; this sweep runs on
+    // every portal render and used to re-status them from their old cuts).
+    // Archiving is a person's decision, never undone by a sync; flipping the
+    // status back restores the row.
+    if (cachedById.get(videoId)?.status === "ARCHIVED") continue;
     const e = decideEntitlement({
       chain: cuts, approvals, changeRequests, priorApprovals,
       projectDelivered: p.status === "DELIVERED", projectDeliveredAt: p.deliveredAt,
