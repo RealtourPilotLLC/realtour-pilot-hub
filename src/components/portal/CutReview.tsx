@@ -297,7 +297,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               {/* Asked for changes on this version? Its approval is the NEW
                   version's to give — the server refuses both verdicts on one cut. */}
               {perms.approve && !requested && !approved && (
-                <button type="button" onClick={() => setApproving(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                <button type="button" onClick={() => setApproving(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                   <ThumbsUp className="size-3.5" /> Approve this version
                 </button>
               )}
@@ -338,7 +338,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
                 </fieldset>
               )}
               <div className="flex items-center gap-2">
-                <button type="button" onClick={approve} disabled={busy || (open.length > 0 && choice === null)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Yes, approve</button>
+                <button type="button" onClick={approve} disabled={busy || (open.length > 0 && choice === null)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-success-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Yes, approve</button>
                 <button type="button" onClick={() => setApproving(false)} className="min-h-11 rounded-lg border border-border px-3 py-2 text-sm text-muted hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Not yet</button>
               </div>
             </div>

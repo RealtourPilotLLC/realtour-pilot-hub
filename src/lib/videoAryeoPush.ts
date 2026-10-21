@@ -20,7 +20,9 @@ import type { UploadReceipt } from "@/lib/deliveryUploads";
 // aryeoPush) is still read so nothing that reads it breaks, but it no longer
 // starts anything, and a started run always uploads AND delivers. Monthly and
 // personal-branding videos go to the client's portal and are never touched
-// here.
+// here, unless the office switched that one version to Aryeo (Oct 21 2026,
+// "Upload to Aryeo instead", lib/videoDeliveryDestination): then it is a
+// listing video like any other, sent only on a person's press.
 //
 // ONE RUN PER APPROVED CUT, kept in AppSetting "video_aryeo_push:<cut id>",
 // moved on by the press itself and then by the 1080p cron (driveVideoPushes) a
@@ -352,7 +354,6 @@ function heldReason(json: string | null): string | null {
 async function gates(submissionId: string, opts: { asks: boolean; sound: boolean; soundCheckedFp?: string | null }): Promise<Verdict> {
   const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: CUT_SELECT });
   if (!cut) return { ok: false, kind: "never", why: "That video no longer exists." };
-  if (cut.project.contentMonthId) return { ok: false, kind: "never", why: "A content-program video: it goes to the client's portal, never to Aryeo by the hub." };
   if (cut.sentToClientAt) return { ok: false, kind: "sent", why: `Delivered${cut.sentToClientBy ? ` (recorded by ${cut.sentToClientBy})` : ""}.` };
   if (cut.status !== "APPROVED") return { ok: false, kind: "stale", why: "This version is no longer approved, so the hub stopped." };
   if (cut.project.status === "CANCELLED") return { ok: false, kind: "never", why: "The job was cancelled." };
@@ -360,8 +361,13 @@ async function gates(submissionId: string, opts: { asks: boolean; sound: boolean
   const { loadCut, currentApproved, sourceFingerprint } = await import("@/lib/finalRendition");
   const full = await loadCut(submissionId);
   if (!full || !(await currentApproved(full))) return { ok: false, kind: "stale", why: "A newer version of this video replaced this one, so the hub stopped." };
+  // A content-program video goes to the client's portal unless the office
+  // chose Aryeo for this exact version (Oct 21 2026): the destination reader
+  // answers both, and a replaced version or a changed listing loses the choice.
   const { usesAryeoDelivery } = await import("@/lib/videoDeliveryDestination");
-  if (!(await usesAryeoDelivery(full))) return { ok: false, kind: "never", why: "This video does not go to Aryeo." };
+  if (!(await usesAryeoDelivery(full))) {
+    return { ok: false, kind: "never", why: cut.project.contentMonthId ? "A content-program video: it goes to the client's portal, never to Aryeo by the hub." : "This video does not go to Aryeo." };
+  }
   if (!cut.project.aryeoListingId) return { ok: false, kind: "hold", gate: "listing", why: "This job has no Aryeo listing linked yet. Open the job and press Refresh from Aryeo." };
   const j = cut.topazJob;
   if (!j) return { ok: false, kind: "manual", why: "No 1080p pass ran for this video, so the hub does not send it on its own. Upload it by hand." };
@@ -1530,8 +1536,10 @@ export function lineFor(run: VideoPushRun | null, ctx: { eligible: boolean; uplo
   };
 }
 
-/** The push line for each cut (readyToSend's rows, the Video Review Room). Two queries. */
-export async function pushLinesFor(submissionIds: string[], opts: { uploadedBy?: Map<string, string> } = {}): Promise<Map<string, VideoPushLine>> {
+/** The push line for each cut (readyToSend's rows, the Video Review Room). Two queries.
+ *  `aryeoChosen`: content-program cuts the office switched to Aryeo (the caller
+ *  read the choice); every other program cut gets no line. */
+export async function pushLinesFor(submissionIds: string[], opts: { uploadedBy?: Map<string, string>; aryeoChosen?: Set<string> } = {}): Promise<Map<string, VideoPushLine>> {
   const out = new Map<string, VideoPushLine>();
   if (!submissionIds.length) return out;
   const [runs, subs] = await Promise.all([
@@ -1539,7 +1547,7 @@ export async function pushLinesFor(submissionIds: string[], opts: { uploadedBy?:
     prisma.reviewSubmission.findMany({ where: { id: { in: submissionIds } }, select: { id: true, project: { select: { contentMonthId: true, aryeoListingId: true } }, topazJob: { select: { state: true, outputCheck: true, savedAt: true, finalPath: true } } } }),
   ]);
   for (const s of subs) {
-    if (s.project.contentMonthId) continue;
+    if (s.project.contentMonthId && !opts.aryeoChosen?.has(s.id)) continue;
     const run = runs.get(s.id) ?? null;
     const eligible = !!s.project.aryeoListingId && s.topazJob?.state === "done" && !!s.topazJob.savedAt && !!s.topazJob.finalPath && VERIFIED.has(s.topazJob.outputCheck ?? "");
     const line = lineFor(run, { eligible, uploadedBy: opts.uploadedBy?.get(s.id) ?? null });

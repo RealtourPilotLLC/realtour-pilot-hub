@@ -22,7 +22,7 @@ import { BeforeYouSend } from "@/components/jobs/BeforeYouSend";
 import { MarkSent } from "@/components/ops/MarkSent";
 import { MarkDelivered } from "@/components/ops/MarkDelivered";
 import { HeldRender } from "@/components/ops/HeldRender";
-import { DeliveryFollowUps } from "@/components/ops/ReadyToSendCard";
+import { DeliveryFollowUps, PortalFinishing } from "@/components/ops/ReadyToSendCard";
 import { PushControls } from "@/components/videoDelivery/PushControls";
 import { SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
@@ -462,6 +462,13 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
                 <span className="font-medium text-foreground">Finishing the 1080p pass ({finishing.length}):</span>{" "}
                 {finishing.map((r) => `${r.street}${r.late ? " (late)" : ""}`).join(", ")}. They show up above when the file is back.
               </p>
+            )}
+            {/* Branding videos still in the 1080p pass, which can still go to
+                Aryeo instead of the portal (Oct 21 2026). */}
+            {fu && fu.portalFinishing.length > 0 && (
+              <div className="border-t border-border px-5 py-3">
+                <PortalFinishing rows={fu.portalFinishing} />
+              </div>
             )}
             {/* The delivery card's follow-up lanes (here since Home stopped
                 showing the card), one compact fold, only when there are any. */}

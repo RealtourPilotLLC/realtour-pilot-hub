@@ -1,4 +1,5 @@
-// C14: source queries for Home fires and week strip exclude synthetic clients.
+// C14: the week strip's source query excludes synthetic clients. (The Home
+// fires reader, getStuckJobs, was deleted on Oct 21 2026: no screen used it.)
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
 import { NEVER_SYNTHETIC_CLIENT_IDS } from "../../src/lib/testClients";
 
@@ -10,7 +11,7 @@ async function main() {
   const c = makeChecker();
   try {
     const { prisma } = await import("@/lib/prisma");
-    const { getStuckJobs, getShootWindow } = await import("@/lib/queries");
+    const { getShootWindow } = await import("@/lib/queries");
     const now = Date.now();
     const real = await prisma.client.create({ data: { name: "Real Agent" }, select: { id: true } });
     const synthetic = await prisma.client.create({ data: { name: "Avery TEST" }, select: { id: true } });
@@ -24,10 +25,6 @@ async function main() {
     const realJobs = await make(real.id, "123 TEST Avenue", 1);
     const syntheticJobs = await make(synthetic.id, "456 Main Street", 2);
     const protectedJobs = await make(protectedReal.id, "789 TEST Road", 3);
-    const normalStuck = await getStuckJobs({ excludeClientIds: [synthetic.id] });
-    c.ok("normal fires keep real and protected clients, not synthetic", normalStuck.length === 2 && normalStuck.some((j) => j.id === realJobs.stuck) && normalStuck.some((j) => j.id === protectedJobs.stuck) && !normalStuck.some((j) => j.id === syntheticJobs.stuck), normalStuck.map((j) => j.title).join(", "));
-    const allStuck = await getStuckJobs();
-    c.ok("full fire reader retains the fixture", allStuck.length === 3 && allStuck.some((j) => j.id === syntheticJobs.stuck));
     const normalWeek = await getShootWindow({ excludeClientIds: [synthetic.id] });
     c.ok("normal week strip omits synthetic appointment at source", normalWeek.week.length === 2 && normalWeek.week.some((a) => a.id === realJobs.future) && normalWeek.week.some((a) => a.id === protectedJobs.future) && !normalWeek.week.some((a) => a.id === syntheticJobs.future), `${normalWeek.week.length} upcoming`);
     const allWeek = await getShootWindow();

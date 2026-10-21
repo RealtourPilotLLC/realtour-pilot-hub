@@ -524,7 +524,7 @@ async function main() {
     c.ok("…the video ready to send with a client request to check, Kyle's to send", item("send:")?.lead === "v-send Video Ave video:" && item("send:")?.text.startsWith("check the client's request, then send it") === true && item("send:")?.owner === "Kyle · 1 client request" && item("send:")?.action.label === "Check & send" && item("send:")?.action.href === `/review/${pEdit.id}?cut=v-send`, JSON.stringify(item("send:")));
     const oldTeam = await aging.listOldItems(new Date(), { excludeClientIds: [fixture.id] });
     const jordanWeekOld = oldTeam.people.find((p) => p.key === "jordan")?.weekOld ?? 0;
-    c.ok("…then Jordan's own week-old items; Kyle's week-old items fold into 'more' past the five", jordanWeekOld === 1 && item("old-mine")?.lead === "1 of your items" && !item("old-ops") && att.more >= 1, `${att.items.map((i) => i.key).join(",")} more=${att.more}`);
+    c.ok("…then Jordan's own week-old items; Kyle's week-old items fold into 'more' past the five", jordanWeekOld === 1 && item("old-mine")?.lead === "1 of your items" && item("old-mine")?.action.href === "/ops/checklist?who=me#earlier" && !item("old-ops") && att.more >= 1, `${att.items.map((i) => i.key).join(",")} more=${att.more}`);
     const kylesWeekOld = oldTeam.people.find((p) => p.key === "kyle")?.weekOld ?? 0;
     // With the videos, shoots and requests quiet, the owner's list has room for Kyle's old items.
     const savedJobs = jobsOverride;
@@ -534,7 +534,7 @@ async function main() {
     jobsOverride = savedJobs;
     videoLanes = lanes;
     const quietOps = quietDash.attention.items.find((i) => i.key === "old-ops");
-    c.ok("…with room, Kyle's week-old items are on the owner's list ('N of Kyle's items', his list)", kylesWeekOld > 0 && quietOps?.lead === `${kylesWeekOld} of Kyle's items` && quietOps.owner === "Kyle · his list" && quietOps.action.href === "/ops/checklist#earlier" && quietDash.health.onTime?.tone === "ok" && quietDash.jobs.rows.length === 0, JSON.stringify(quietDash.attention.items.map((i) => i.key)));
+    c.ok("…with room, Kyle's week-old items are on the owner's list ('N of Kyle's items', his list)", kylesWeekOld > 0 && quietOps?.lead === `${kylesWeekOld} of Kyle's items` && quietOps.owner === "Kyle · their list" && quietOps.action.href === "/ops/checklist#earlier" && quietDash.health.onTime?.tone === "ok" && quietDash.jobs.rows.length === 0, JSON.stringify(quietDash.attention.items.map((i) => i.key)));
     c.ok("…and a quiet board says so: no shoots in progress, nothing late", quietDash.health.onTime?.late === 0 && quietDash.attention.items.every((i) => !i.key.startsWith("late:") && !i.key.startsWith("send:")));
 
     // ---- Kyle's day, shoot issues, today's shoots, week, money ----
@@ -642,13 +642,17 @@ async function main() {
     }
     const ownerMenu = menu({ name: "Jordan", email: owner.email, role: "OWNER" });
     const kyleMenu = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
+    const listsOf = (html: string) => html.match(/data-sidebar-subgroup="lists"[^>]*>([\s\S]*?)<\/div><\/div>/)?.[1] ?? "";
+    c.ok("Your list is the first door under More → Lists for the office (the owner's reads Daily checklist)", hrefs(listsOf(kyleMenu))[0] === "/ops/checklist" && labels(listsOf(kyleMenu))[0] === "Your list" && hrefs(listsOf(ownerMenu))[0] === "/ops/checklist" && labels(listsOf(ownerMenu))[0] === "Daily checklist", `${hrefs(listsOf(kyleMenu)).join()} / ${labels(listsOf(kyleMenu)).join()} / ${labels(listsOf(ownerMenu)).join()}`);
     c.ok("money stays the owner's: Finance and Trends under the owner's More only; My Day too", ["/sales", "/trends", "/day"].every((h) => hrefs(section(ownerMenu, "more")).includes(h)) && !["/sales", "/trends", "/day"].some((h) => hrefs(kyleMenu).includes(h)));
     c.ok("reporting a hub issue stays one click away outside the fold", section(kyleMenu, "more").indexOf('href="/feedback"') > section(kyleMenu, "more").indexOf("</details>"));
     const editorMenu = menu({ name: "Kim", email: "kim@oct19.invalid", role: "EDITOR" });
     const photographerMenu = menu({ name: "Harrison", email: "harrison@oct19.invalid", role: "PHOTOGRAPHER" });
-    c.ok("editors and photographers keep their menus (groups, no dashboard, no six doors, 'Video Review Room' for the photographer)", [editorMenu, photographerMenu].every((html) => !html.includes('data-sidebar-group="work"') && !html.includes('data-sidebar-group="more"') && !hrefs(html).includes("/") && !hrefs(html).includes("/jobs")) && hrefs(editorMenu).includes("/editing") && hrefs(photographerMenu).includes("/shoot") && photographerMenu.includes("Video Review Room"));
+    c.ok("editors and photographers keep their menus (groups, no dashboard, no six doors, 'Video Review Room' for the photographer)", [editorMenu, photographerMenu].every((html) => !html.includes('data-sidebar-group="work"') && !html.includes('data-sidebar-group="more"') && !hrefs(html).includes("/") && !hrefs(html).includes("/jobs")) && hrefs(editorMenu).includes("/editing") && hrefs(photographerMenu).includes("/shoot") && photographerMenu.includes("Video Review Room") && ![editorMenu, photographerMenu].some((html) => hrefs(html).includes("/ops/checklist")));
     pathname = "/ops/checklist";
-    c.ok("on Kyle's list no door claims to be lit (it is reached from the dashboard)", (menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" }).match(/aria-current="page"/g) ?? []).length === 0);
+    // Oct 21 2026 (Jordan, audit A9): Your list has its own door under More → Lists.
+    const onList = menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" });
+    c.ok("on Kyle's list the Your list door is lit, and only it", (onList.match(/aria-current="page"/g) ?? []).length === 1 && /<a[^>]*href="\/ops\/checklist"[^>]*aria-current="page"|<a[^>]*aria-current="page"[^>]*href="\/ops\/checklist"/.test(onList));
     pathname = "/jobs/abc";
     c.ok("on a Shoots page the Shoots door is lit", /<a[^>]*href="\/jobs"[^>]*aria-current="page"|<a[^>]*aria-current="page"[^>]*href="\/jobs"/.test(menu({ name: "Kyle Smith", email: kyle.email, role: "ADMIN" })));
     pathname = "/";

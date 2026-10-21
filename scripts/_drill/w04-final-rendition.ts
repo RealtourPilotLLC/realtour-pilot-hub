@@ -1,18 +1,22 @@
-// W04 listing-final check: isolated database, signed sessions with auth enforced,
+// W04 listing delivery: isolated database, signed sessions with auth enforced,
 // and fake Aryeo listing reads. Client sends and provider writes stay fenced.
+// Oct 21 2026: the manual final-file check (listingChoices, recordListingCheck,
+// manualListingCheckReady) was deleted with no screen left to reach it; what
+// stays checked is the send itself: who may press it, and that it rests on the
+// upload receipt.
 import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker } from "./_harness";
 
 let delivered = false;
 let listingReads = 0;
-let playback = "https://example.test/listing/video-a.mp4";
+const playback = "https://example.test/listing/video-a.mp4";
 const v7 = (at: number) => {
   const hex = at.toString(16).padStart(12, "0");
   return `${hex.slice(0, 8)}-${hex.slice(8)}-7000-8000-000000000000`;
 };
 const currentId = v7(Date.now() - 30 * 60_000);
 const secondId = v7(Date.now() - 20 * 60_000);
-let providerVideoId = currentId;
+const providerVideoId = currentId;
 interceptModule(
   (r) => r === "@/lib/integrations/aryeo" || /[\\/]src[\\/]lib[\\/]integrations[\\/]aryeo(\.ts)?$/.test(r),
   (loaded) => new Proxy(loaded as Record<string | symbol, unknown>, {
@@ -39,10 +43,6 @@ async function main() {
   const c = makeChecker();
   try {
     const { prisma } = await import("@/lib/prisma");
-    // Oct 21 2026 (audit wave 2): the staff final-check server actions
-    // (ops/finalRenditionActions) had no screen left and were deleted; the
-    // checks below drive the library they wrapped, as Kyle.
-    const { manualListingCheckReady, FINAL_CHECK_KEYS, listingChoices, recordListingCheck } = await import("@/lib/finalRendition");
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { signClientSession, CLIENT_COOKIE } = await import("@/lib/auth/clientSession");
     const { resolvePortalViewer } = await import("@/lib/portal");
@@ -72,11 +72,6 @@ async function main() {
       try { const result = await act(); return result?.ok === false && reason.test(result.message); }
       catch (e) { return e instanceof Error && reason.test(e.message); }
     };
-    const checkForm = (submissionId: string, mediaId: string, checks: readonly (typeof FINAL_CHECK_KEYS)[number][] = FINAL_CHECK_KEYS, metadata = false) => ({
-      submissionId, mediaId, checks: [...checks],
-      metadata: metadata ? { duration: 62, width: 1920, height: 1080 } : null,
-      actor: { id: kyle.id, name: kyle.name ?? "Kyle TEST" },
-    });
     await asKyle();
     const project = await prisma.project.create({ data: { clientId: client.id, title: "W04 TEST Address", status: "REVIEW", aryeoListingId: "fake-listing" } });
     const d = await prisma.deliverable.create({ data: { projectId: project.id, type: "VIDEO", quantity: 2 } });
@@ -86,40 +81,17 @@ async function main() {
     const other = await prisma.reviewSubmission.create({ data: { projectId: project.id, deliverableId: d.id, slot: 2, round: 1, status: "APPROVED",
       blobUrl: "https://example.test/other.mp4", decidedAt: new Date(Date.now() - 86_400_000) } });
     await prisma.deliverableOutput.create({ data: { projectId: project.id, deliverableId: d.id, slot: 2, category: "VIDEO", currentSubmissionId: other.id, approvedSubmissionId: other.id } });
-    const choices = await listingChoices(cut.id);
-    c.ok("choice excludes older Aryeo video and names the two new media identities", choices.ok && choices.choices.length === 2 && choices.choices.some((x) => x.id === providerVideoId));
-    c.ok("unchecked final file cannot be manually delivered", !(await manualListingCheckReady(cut.id)).ok);
     const { markVideoSentAction } = await import("@/app/ops/actions");
     const blockedAction = await markVideoSentAction(cut.id, "not-yet");
     c.ok("staff send action leaves unchecked cut unsent", !blockedAction.ok && !(await prisma.reviewSubmission.findUnique({ where: { id: cut.id } }))?.sentToClientAt);
-    c.ok("partial checklist refused without a record", !(await recordListingCheck(checkForm(cut.id, providerVideoId, ["identity"]))).ok && await prisma.finalRenditionCheck.count() === 0);
-    c.ok("unknown provider video refused", !(await recordListingCheck(checkForm(cut.id, "missing"))).ok);
-    const saved = await recordListingCheck(checkForm(cut.id, providerVideoId, FINAL_CHECK_KEYS, true));
-    const row = await prisma.finalRenditionCheck.findFirst({ where: { submissionId: cut.id } });
-    c.ok("signed Kyle's exact-version attestation saved with his user id", saved.ok && row?.checkedBy === kyle.name && row.checkedByUserId === kyle.id && row.destinationMediaId === providerVideoId && !!row.sourceFingerprint && !!row.metadataJson);
-    c.ok("one video's check cannot certify sibling output", !(await manualListingCheckReady(other.id)).ok);
-    c.ok("provider listing not yet delivered blocks manual send", !(await manualListingCheckReady(cut.id)).ok);
     delivered = true;
-    c.ok("same provider file on delivered listing allows manual record", (await manualListingCheckReady(cut.id)).ok);
     for (const who of deniedActors) {
       await who.signIn();
       const readsBefore = listingReads;
       c.ok(`${who.label} cannot mark the verified delivered cut sent`, await refused(() => markVideoSentAction(cut.id, "not-yet"), who.reason));
-      c.ok(`${who.label} leaves check/send records and provider reads unchanged`, await prisma.finalRenditionCheck.count() === 1 && !(await prisma.reviewSubmission.findUnique({ where: { id: cut.id } }))?.sentToClientAt && listingReads === readsBefore);
+      c.ok(`${who.label} leaves send records and provider reads unchanged`, !(await prisma.reviewSubmission.findUnique({ where: { id: cut.id } }))?.sentToClientAt && listingReads === readsBefore);
     }
     await asKyle();
-    playback = "https://example.test/replaced.mp4";
-    c.ok("changed provider playback invalidates check", !(await manualListingCheckReady(cut.id)).ok);
-    playback = "https://example.test/listing/video-a.mp4";
-    providerVideoId = v7(Date.now() - 20 * 60_000);
-    c.ok("changed provider identity invalidates check", !(await manualListingCheckReady(cut.id)).ok);
-    providerVideoId = currentId;
-    await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { blobUrl: "https://example.test/source-replaced.mp4" } });
-    c.ok("changed source bytes pointer invalidates check", !(await manualListingCheckReady(cut.id)).ok);
-    await prisma.reviewSubmission.update({ where: { id: cut.id }, data: { blobUrl: "https://example.test/source-v2.mp4" } });
-    const newer = await prisma.reviewSubmission.create({ data: { projectId: project.id, deliverableId: d.id, slot: 1, round: 3, status: "PENDING", blobUrl: "https://example.test/v3.mp4" } });
-    c.ok("newer round invalidates old approval", !(await manualListingCheckReady(cut.id)).ok);
-    await prisma.reviewSubmission.update({ where: { id: newer.id }, data: { status: "WITHDRAWN", withdrawnAt: new Date() } });
     const { recordUploaded } = await import("@/lib/deliveryUploads");
     const { loadCut, sourceFingerprint } = await import("@/lib/finalRendition");
     await recordUploaded(cut.id, { id: kyle.id, name: kyle.name! }, sourceFingerprint((await loadCut(cut.id))!)!);
@@ -134,8 +106,6 @@ async function main() {
     const { setSmartTaskStatus } = await import("@/app/actions");
     const blockedTask = await setSmartTaskStatus(task.id, "COMPLETED");
     c.ok("Topaz task completion refuses missing final-file check", blockedTask?.ok === false && (await prisma.smartTask.findUnique({ where: { id: task.id } }))?.status === "OPEN");
-    c.ok("second output cannot claim first Aryeo video", !(await recordListingCheck(checkForm(other.id, currentId))).ok);
-    const checkedSecond = await recordListingCheck(checkForm(other.id, secondId));
     for (const who of deniedActors) {
       await who.signIn();
       const readsBefore = listingReads;
@@ -148,7 +118,7 @@ async function main() {
     const topazAfter = await prisma.topazJob.findUnique({ where: { id: topaz.id } });
     const taskAfter = await prisma.smartTask.findUnique({ where: { id: task.id } });
     const outputAfter = await prisma.deliverableOutput.findFirst({ where: { projectId: project.id, deliverableId: d.id, slot: 2 } });
-    c.ok("verified Topaz task records cut, output, render and task together", checkedSecond.ok && taskDone?.ok === true && !!topazAfter?.deliveredAt && taskAfter?.status === "COMPLETED" && outputAfter?.sentSubmissionId === other.id);
+    c.ok("verified Topaz task records cut, output, render and task together", taskDone?.ok === true && !!topazAfter?.deliveredAt && taskAfter?.status === "COMPLETED" && outputAfter?.sentSubmissionId === other.id);
     c.ok("no provider request escaped fake listing", fence.blocked.length === 0);
     c.summary();
   } finally { fence.restore(); await db.stop(); }

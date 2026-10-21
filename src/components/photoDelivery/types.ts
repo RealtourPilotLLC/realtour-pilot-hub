@@ -218,7 +218,8 @@ export type CartView = {
   usdPerCredit: number | null;
 };
 
-export type GateCheckView = { key: string; label: string; ok: boolean; detail?: string };
+/** `advisory`: information on the checklist, never a hold (open photo flags). `href`: where its work is. */
+export type GateCheckView = { key: string; label: string; ok: boolean; detail?: string; advisory?: boolean; href?: string };
 export type GateView = { checks: GateCheckView[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null };
 
 export type ReplacementView = { photoId: string; photoName: string; versionId: string; downloadUrl: string; label: string; at: string };

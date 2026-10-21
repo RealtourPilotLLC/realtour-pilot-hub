@@ -4,12 +4,11 @@
 //
 //   board  — deliveryBoard.outstandingPromise (turnaround.pinnedPromise)
 //   queue  — editOverrides.effectiveDue        (was the raw column)
-//   fires  — queries.getStuckJobs              (was the raw column)
+//   fires  — queries.getStuckJobs              (deleted Oct 21 2026; its old reading is recomputed below)
 //   dial   — queries.ownerPulse / bonus.ts     (already guarded)
 import { PrismaClient } from "@prisma/client";
 import { effectiveDue } from "../../../src/lib/editOverrides";
 import { pinnedPromise } from "../../../src/lib/turnaround";
-import { getStuckJobs } from "../../../src/lib/queries";
 import { etDateTime } from "../../../src/lib/datetime";
 
 const prisma = new PrismaClient();
@@ -49,12 +48,9 @@ async function main() {
   }
   console.log(`effectiveDue vs the board's reading — disagreements: ${disagree} of ${rows.length}`);
 
-  // getStuckJobs, through the real query, and the old reading recomputed beside
-  // it on the same rows.
+  // The old fires reading (getStuckJobs, deleted Oct 21 2026), recomputed on
+  // the same rows.
   const now = new Date();
-  const fires = await getStuckJobs();
-  console.log(`\ngetStuckJobs(): ${fires.length} fire(s)`);
-  for (const f of fires) console.log(`   ${f.title.slice(0, 40).padEnd(42)} ${f.reason.padEnd(28)} ${f.stage}`);
   const DAY = 86_400_000;
   const wouldHaveFired = rows.filter(
     (p) => !p.deliveredAt && p.shootDate && p.shootDate <= now && p.promisedDueAt! < now &&

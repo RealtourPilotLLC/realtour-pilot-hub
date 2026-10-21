@@ -45,7 +45,11 @@ import type { VideoPushMode } from "@/lib/videoDeliverySettings";
 // readyToSend = the sending lane. CONTENT-PROGRAM videos (monthly, the
 // client's portal) are not on this board: they publish to the portal by
 // themselves, and the Dashboard's program watch tracks them (Oct 20 2026,
-// audit B6: the board's unread program section was removed).
+// audit B6: the board's unread program section was removed). The one
+// exception (Oct 21 2026): a branding video the office switched to Aryeo
+// ("Upload to Aryeo instead") is a listing video from then on, so its
+// approved version sits in Ready to send (or finishing / held) like any other;
+// the program's other videos stay off the board.
 // ---------------------------------------------------------------------------
 
 export type VideoDeliveryCounts = JobCounts & {
@@ -141,6 +145,9 @@ export type VideoFollowUps = Pick<ReadyBoard, "needsFinishing" | "followUpChecks
   notTold: NonNullable<ReadyBoard["notTold"]>;
   noticeIncidents: NonNullable<ReadyBoard["noticeIncidents"]>;
   portal: ReadyVideo[];
+  /** Branding videos still in the 1080p pass, on their way to the portal, that
+   *  can still be switched to Aryeo (Oct 21 2026). Information, never counted. */
+  portalFinishing: import("@/lib/readyToSend").RenderingVideo[];
 };
 
 const HOUR = 3_600_000;
@@ -231,14 +238,19 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   if (board.unavailable) throw new Error("The delivery board could not be read.");
   const jobs = [...board.today, ...board.tomorrow, ...board.upcoming, ...board.delivered];
   const jobById = new Map(jobs.map((j) => [j.id, j]));
-  const readyRows = ready.ready.filter((v) => v.deliveryDestination !== "client-portal" && !v.monthlyProgram);
-  const renderingRows = ready.rendering.filter((v) => v.deliveryDestination !== "client-portal" && !v.monthlyProgram);
+  // Listing videos, plus a branding video the office switched to Aryeo (its
+  // destination says aryeo-listing; every other program video says portal).
+  const onBoard = (v: { deliveryDestination?: "client-portal" | "aryeo-listing"; monthlyProgram?: boolean }) => v.deliveryDestination === "aryeo-listing" || (!v.deliveryDestination && !v.monthlyProgram);
+  const readyRows = ready.ready.filter(onBoard);
+  const renderingRows = ready.rendering.filter(onBoard);
+  // The program jobs that are here only for those switched versions.
+  const switchedJobIds = new Set([...readyRows, ...renderingRows].filter((v) => v.monthlyProgram).map((v) => v.projectId));
 
   const candidateIds = [...new Set([...jobs.map((j) => j.id), ...readyRows.map((v) => v.projectId), ...renderingRows.map((v) => v.projectId), ...deliveredRecently.map((d) => d.projectId)])];
   const projects = candidateIds.length
     ? await prisma.project.findMany({
-        where: { id: { in: candidateIds }, contentMonthId: null, ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) },
-        select: { id: true, title: true, status: true, promisedDueAt: true, shootDate: true, aryeoListingId: true, aryeoOrderId: true, client: { select: { name: true } } },
+        where: { id: { in: candidateIds }, OR: [{ contentMonthId: null }, { id: { in: [...switchedJobIds] } }], ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) },
+        select: { id: true, title: true, status: true, promisedDueAt: true, shootDate: true, aryeoListingId: true, aryeoOrderId: true, contentMonthId: true, client: { select: { name: true } } },
       })
     : [];
   const projectById = new Map(projects.map((p) => [p.id, p]));
@@ -306,7 +318,10 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
       promiseISO: promise?.toISOString() ?? null, aryeoUrl: aryeoJobUrl(p),
     };
     const settledJob = !!job?.settled || p.status === "DELIVERED";
-    const cuts = st?.cuts ?? [];
+    // A program job is here only for its switched versions: nothing else of it
+    // (its other videos, its uncut ones) belongs on this board.
+    const programJob = !!p.contentMonthId;
+    const cuts = (st?.cuts ?? []).filter((c) => !programJob || readyBySub.has(c.submissionId) || renderingBySub.has(c.submissionId));
     for (const c of cuts) {
       const common = { ...base, key: c.submissionId, submissionId: c.submissionId, label: c.cutLabel, round: c.round, reviewHref: `/review/${pid}?cut=${c.submissionId}`, cutStatus: c.status, sinceISO: c.sinceISO, heldRender: null, send: null };
       if (c.status === "APPROVED") {
@@ -369,7 +384,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
       });
     }
     // Videos owed with no cut yet.
-    if (!settledJob && st) {
+    if (!settledJob && st && !programJob) {
       const missing = Math.max(0, st.owed - cuts.length);
       const stage = ["BOOKED", "SCHEDULED"].includes(p.status) ? "Not shot yet"
         : st.stage === "editing" ? "Editing"
@@ -421,6 +436,8 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
         boardUnavailable: ready.boardUnavailable,
         // Monthly / branding videos whose portal step needs a person (the delivery card's "Portal delivery needs attention").
         portal: ready.ready.filter((v) => v.deliveryDestination === "client-portal").map((v) => ({ ...v, file: { ...v.file, why: v.file.why ? scrubMoney(v.file.why) : null } })),
+        // Branding videos still in the 1080p pass that can still go to Aryeo instead (Oct 21 2026).
+        portalFinishing: ready.rendering.filter((v) => v.deliveryDestination === "client-portal" && v.canChooseAryeo && !!v.destinationFingerprint).map((v) => ({ ...v, says: scrubMoney(v.says) })),
       }
     : null;
   // The room's "Before you send" boxes (Oct 21 2026, audit B9): every Ready to

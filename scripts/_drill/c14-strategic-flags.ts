@@ -1,4 +1,6 @@
 // C14: Home radar sources filter fixture clients before their caps and ranking.
+// Oct 21 2026: the radar itself (getProactiveFlags) was deleted; its delivery
+// exception source and the money strip's top balance (getTopAr) remain.
 // Disposable PGlite only; no provider calls or production writes.
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
 import { isSyntheticClientRow, NEVER_SYNTHETIC_CLIENT_IDS } from "../../src/lib/testClients";
@@ -11,7 +13,7 @@ async function main() {
   const c = makeChecker();
   try {
     const { prisma } = await import("@/lib/prisma");
-    const { getProactiveFlags, getBillingRows } = await import("@/lib/queries");
+    const { getTopAr, getBillingRows } = await import("@/lib/queries");
     const { deliveryExceptionFlags } = await import("@/lib/deliveryExceptions");
     const now = Date.now();
     const real = await prisma.client.create({ data: { name: "Real Agent" } });
@@ -24,33 +26,16 @@ async function main() {
     const exceptions = await deliveryExceptionFlags(3, await scope());
     c.ok("delivery exceptions keep real TEST addresses and protected clients ahead of cap", exceptions.length === 2 && exceptions.some((f) => f.id.endsWith(realJob.id)) && exceptions.some((f) => f.id.endsWith(protectedJob.id)));
     c.ok("full exception reader retains fixture rows", (await deliveryExceptionFlags()).length === 3 && (await deliveryExceptionFlags()).every((f) => f.title.startsWith("Fixture")));
-    const normalRadar = await getProactiveFlags(await scope());
-    c.ok("Home radar uses the same scoped delivery source", normalRadar.flags.length === 2 && normalRadar.flags.every((f) => exceptions.some((e) => e.id === f.id)));
 
     await prisma.project.updateMany({ data: { deliveryExceptionAt: null } });
     await prisma.project.update({ where: { id: realJob.id }, data: { status: "DELIVERED", deliveredAt: new Date(now - 40 * 86_400_000), balanceAmount: 10_000 } });
     await prisma.project.update({ where: { id: protectedJob.id }, data: { status: "DELIVERED", deliveredAt: new Date(now - 40 * 86_400_000), balanceAmount: 20_000 } });
     const fixtureAr = await prisma.project.create({ data: { clientId: fixture.id, title: "Synthetic invoice", status: "DELIVERED", deliveredAt: new Date(now - 40 * 86_400_000), balanceAmount: 100_000 } });
     const billing = await getBillingRows(await scope());
-    const ar = await getProactiveFlags(await scope());
-    c.ok("normal AR total and radar exclude synthetic balances", billing.totalOutstanding === 300 && billing.rows.length === 2 && ar.topAr?.total === 200 && ar.topAr.name === protectedReal.name && ar.flags.length === 2);
-    c.ok("full billing and radar preserve explicit fixture access", (await getBillingRows()).rows.some((r) => r.id === fixtureAr.id) && (await getProactiveFlags()).topAr?.total === 1000);
+    const topAr = await getTopAr(await scope());
+    c.ok("normal AR total and the top balance exclude synthetic balances", billing.totalOutstanding === 300 && billing.rows.length === 2 && topAr?.total === 200 && topAr.name === protectedReal.name);
+    c.ok("full billing and top balance preserve explicit fixture access", (await getBillingRows()).rows.some((r) => r.id === fixtureAr.id) && (await getTopAr())?.total === 1000);
 
-    await prisma.project.updateMany({ data: { balanceAmount: 0 } });
-    await prisma.project.update({ where: { id: realJob.id }, data: { status: "REVISION", revisionRequestedAt: new Date(now - 4 * 86_400_000) } });
-    await prisma.project.update({ where: { id: protectedJob.id }, data: { status: "REVISION", revisionRequestedAt: new Date(now - 4 * 86_400_000) } });
-    await prisma.project.updateMany({ where: { clientId: fixture.id }, data: { status: "REVISION", revisionRequestedAt: new Date(now - 3 * 86_400_000) } });
-    const revisions = await getProactiveFlags(await scope());
-    c.ok("stale real revisions survive a newer synthetic pile beyond the cap", revisions.flags.length === 2 && revisions.flags.some((f) => f.id === `rev-${realJob.id}`) && revisions.flags.some((f) => f.id === `rev-${protectedJob.id}`));
-    c.ok("full radar still includes synthetic revisions", (await getProactiveFlags()).flags.length === 3);
-
-    await prisma.project.updateMany({ data: { status: "DELIVERED", revisionRequestedAt: null } });
-    await prisma.client.createMany({ data: Array.from({ length: 65 }, (_, i) => ({ name: `VIP TEST ${i}`, segment: "vip" })) });
-    const quietReal = await prisma.client.create({ data: { name: "Quiet real client", segment: "vip" } });
-    await prisma.client.update({ where: { id: protectedReal.id }, data: { segment: "vip" } });
-    const vip = await getProactiveFlags(await scope());
-    c.ok("quiet real clients survive more synthetic VIPs than the source cap", vip.flags.length === 2 && vip.flags.some((f) => f.id === `vip-${quietReal.id}`) && vip.flags.some((f) => f.id === `vip-${protectedReal.id}`));
-    c.ok("full radar retains synthetic VIP rows", (await getProactiveFlags()).flags.some((f) => f.title.startsWith("VIP TEST")));
     c.ok("provider fence stayed closed", fence.blocked.length === 0, fence.blocked.join(", "));
     c.summary();
   } finally { fence.restore(); await db.stop(); }

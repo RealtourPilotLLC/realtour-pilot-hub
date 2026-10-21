@@ -12,6 +12,7 @@ import {
   Images,
   SlidersHorizontal,
   LayoutDashboard,
+  ListChecks,
   ListTodo,
   CalendarDays,
   Camera,
@@ -113,6 +114,12 @@ const SECTIONS: NavSection[] = [
       // "Messages" in the six-door menu) and Shoots & exceptions (/ops, now
       // the dashboard) that night.
       { label: "Photo delivery", href: "/ops/photo-delivery", icon: Images, key: "ops" },
+      // YOUR LIST (Jordan, Oct 21 2026; audit A9): the daily checklist
+      // (/ops/checklist) gets a door of its own under More → Lists. Same key
+      // the page checks (`ops`), and only for owner and office logins, who
+      // are the only ones the page lets in (filtered below). An office login
+      // sees their own list; the owner sees Kyle's, as on the dashboard card.
+      { label: "Your list", href: "/ops/checklist", icon: ListChecks, key: "ops" },
       // The owner's own list and day plan (ownerOnly PageKey "day").
       { label: "My Day", href: "/day", icon: Sun, key: "day" },
       // Feedback about the WORK: what clients said (the delivery-text form +
@@ -254,6 +261,10 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     }
     // Client activity is the owner's and admin's view (the page redirects anyone else).
     if (user && user.role !== "OWNER" && user.role !== "ADMIN") items = items.filter((i) => i.href !== "/content/activity");
+    // So is Your list (Oct 21 2026): the checklist page sends anyone else home.
+    if (user && user.role !== "OWNER" && user.role !== "ADMIN") items = items.filter((i) => i.href !== "/ops/checklist");
+    // The owner's door opens Kyle's list (the page's default for the owner), so it isn't "Your list" there.
+    if (!user || user.role === "OWNER") items = items.map((i) => (i.href === "/ops/checklist" ? { ...i, label: "Daily checklist" } : i));
     // "My Pay" is a person's own payout view. Photographers always have it;
     // owner/admin see it ONLY with an explicit mypay:true override (James:
     // admin powers for the creative-manager role, his own pay visible, the

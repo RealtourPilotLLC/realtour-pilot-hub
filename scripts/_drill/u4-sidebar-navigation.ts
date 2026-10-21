@@ -56,8 +56,9 @@ async function main() {
       // destinations added since BASE. Oct 19 2026 (night): the Shoots board
       // (/jobs, ops PageKey) and the owner's My Day (/day, which left the
       // dashboard). /ops (now a redirect to the dashboard) and /ops/messages
-      // (merged into /communications) are no destinations any more.
-      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day"]);
+      // (merged into /communications) are no destinations any more. Oct 21
+      // 2026: Your list (/ops/checklist, owner + office) under More → Lists.
+      const ADDED = new Set(["/content/activity", "/ops/photo-delivery", "/jobs", "/day", "/ops/checklist"]);
       check(`${name}: same authorized destinations as before grouping`, JSON.stringify(hrefs(before)) === JSON.stringify(hrefs(after).filter((h) => !ADDED.has(h))));
       check(`${name}: every destination still appears once`, hrefs(after).length === new Set(hrefs(after)).size);
     }

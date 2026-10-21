@@ -78,7 +78,7 @@ export function YourTasksCard({ tasks, readOnly }: {
                   className={cn(
                     "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border transition-colors",
                     isDone
-                      ? "border-success bg-success text-white"
+                      ? "border-success-action bg-success-action text-white"
                       : "border-border text-transparent hover:border-success hover:text-success",
                   )}
                 >

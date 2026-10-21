@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, FlaskConical, Loader2, RefreshCw, Send, ShieldCheck, Truck, UploadCloud } from "lucide-react";
+import Link from "next/link";
+import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, Flag, FlaskConical, Loader2, RefreshCw, Send, ShieldCheck, Truck, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -51,7 +52,7 @@ const btn = "inline-flex min-h-11 shrink-0 items-center justify-center gap-1.5 w
 const cardBtn = "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-50";
 const primary = "bg-brand-action text-brand-fg hover:brightness-95";
 const secondary = "border border-border-strong hover:bg-surface-2";
-const TONE = { muted: "text-muted", busy: "text-muted", good: "text-success", bad: "text-danger" } as const;
+const TONE = { muted: "text-muted", busy: "text-muted", good: "text-success", warn: "text-warning", bad: "text-danger" } as const;
 
 export function DeliverPanel() {
   const { data, viewer, jobId, run, ask, pending, photoById, notify } = useJob();
@@ -74,8 +75,13 @@ export function DeliverPanel() {
   };
   const preparing = !!bar?.active;
   const stage = header.stage;
-  const passing = gate?.checks.filter((c) => c.ok).length ?? 0;
-  const total = gate?.checks.length ?? 0;
+  // The count is the checks that decide; an advisory line (open photo flags)
+  // is shown on its own and never counted (Oct 21 2026).
+  const deciding = gate?.checks.filter((c) => !c.advisory) ?? [];
+  const passing = deciding.filter((c) => c.ok).length;
+  const total = deciding.length;
+  const flags = gate?.checks.find((c) => c.advisory && !c.ok) ?? null;
+  const flagWords = flags?.detail ? `${flags.detail[0].toUpperCase()}${flags.detail.slice(1)}` : "Photo flags are open";
   const canStage = START_FROM.has(stage);
   const canStart = !!gate && canStage && gate.canDeliver;
   const startWhy = !gate ? "The checklist could not be read." : !canStage ? STAGE_WHY[stage] ?? "Not from this stage." : !gate.canDeliver ? gate.blockedForOverride ?? "The checklist has open items." : null;
@@ -133,6 +139,8 @@ export function DeliverPanel() {
   else if (hubOn && steps && !steps.listingUrl) lines.push({ text: "No Aryeo listing linked yet.", tone: "muted" });
   else if (!hubOn && !lines.length) lines.push({ text: "Steps for Aryeo inside", tone: "muted" });
   if (checkLine) lines.push({ text: checkLine.text, tone: checkLine.bad ? "bad" : "muted" });
+  // Open photo flags, on the bar itself so Kyle sees them before he approves (they never hold his approval).
+  if (flags && !delivered) lines.push({ text: `${flagWords}. They don't hold your approval.`, tone: "warn" });
 
   const override = async () => {
     const reason = await ask({
@@ -303,7 +311,7 @@ export function DeliverPanel() {
               <p className="mt-1 text-[13px] text-warning">{data.gateError ?? "The checklist could not be read."}</p>
             ) : (
               <ul className="mt-1.5 space-y-1 text-sm">
-                {gate.checks.map((c) => (
+                {gate.checks.filter((c) => !c.advisory).map((c) => (
                   <li key={c.key} className="flex items-start gap-2">
                     {c.ok ? <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />}
                     <span>
@@ -314,6 +322,19 @@ export function DeliverPanel() {
                   </li>
                 ))}
               </ul>
+            )}
+            {/* Open photo flags (Oct 21 2026): Kyle sees them here and on the
+                bar. The hub's own same-day delivery waits for them; Kyle's
+                approval does not. */}
+            {flags && (
+              <p className="mt-2 flex items-start gap-2 text-sm">
+                <Flag aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+                <span>
+                  <span className="font-medium">{flagWords}.</span>{" "}
+                  <span className="text-muted">The hub won&rsquo;t deliver a same-day order with them open; your approval isn&rsquo;t held.</span>{" "}
+                  {flags.href && <Link href={flags.href} className="inline-flex min-h-9 items-center font-medium text-brand underline underline-offset-2 hover:no-underline">Open the flags</Link>}
+                </span>
+              </p>
             )}
             {gate && !gate.canDeliver && gate.blockedForOverride && <p className="mt-2 text-[13px] text-danger">{gate.blockedForOverride}</p>}
             <p className="mt-2 text-[13px] text-muted">The hub confirms delivery on its own once Aryeo does.</p>

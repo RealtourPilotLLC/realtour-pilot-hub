@@ -28,7 +28,10 @@ import { appBase } from "@/lib/appUrl";
 // still being calibrated against his manual review.
 // ---------------------------------------------------------------------------
 
-export type GateCheck = { key: string; label: string; ok: boolean; detail?: string };
+/** `advisory`: shown on the checklist, never counted in `passed` and never
+ *  holding a person's delivery (open photo flags, Oct 21 2026). `href`: where
+ *  the line's own work is. */
+export type GateCheck = { key: string; label: string; ok: boolean; detail?: string; advisory?: boolean; href?: string };
 export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null };
 
 export async function deliveryGate(jobId: string): Promise<GateResult> {
@@ -76,8 +79,13 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // order, e.g. only drone photos came in. Delivering the edits of half a
     // shoot is the one thing this gate must not wave through.
     ...(await uploadCheck(job.projectId)),
+    // Oct 21 2026 (Jordan; audit C10): open photo flags, as a line Kyle sees.
+    // They already hold the hub's own same-day delivery (aryeoPush
+    // openPhotoFlags); here they are information only, never a hold on his
+    // Approve and deliver.
+    ...(await flagsCheck(job.projectId)),
   ];
-  const passed = checks.every((c) => c.ok);
+  const passed = checks.every((c) => c.ok || c.advisory);
   // The house setting decides (audit, Oct 15): a job's own qcShadow only records
   // how its last check ran, and kept a job advisory after shadow mode was off.
   const advisory = settings.qcShadow;
@@ -107,6 +115,14 @@ async function uploadCheck(projectId: string | null): Promise<GateCheck[]> {
     return [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: "the upload check could not be read, it runs again on the next pass" }];
   }
   return gaps ? [{ key: "upload", label: "Everything ordered was uploaded", ok: false, detail: gaps.words }] : [];
+}
+
+async function flagsCheck(projectId: string | null): Promise<GateCheck[]> {
+  if (!projectId) return [];
+  const href = `/projects/${projectId}#flags`;
+  const n = await prisma.imageFlag.count({ where: { projectId, status: "OPEN" } }).catch(() => null);
+  if (n === null) return [{ key: "flags", label: "Photo flags", ok: false, advisory: true, href, detail: "the photo flags could not be read just now" }];
+  return n ? [{ key: "flags", label: "Photo flags", ok: false, advisory: true, href, detail: `${n} photo flag${n === 1 ? "" : "s"} still open` }] : [];
 }
 
 async function roomsCheck(on: boolean, run: { trigger: string; checksJson: string | null } | null, coverageJson: string | null, activeIds: string[]): Promise<GateCheck[]> {
@@ -359,6 +375,10 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryDiffJson: JSON.stringify(diff) } });
   if (job.stage !== "DELIVERED") {
     await setStage(jobId, "any", "DELIVERED", by, { why: `verified: ${aryeoCount} photos on the listing`, extra: { deliveredAt: project.deliveredAt ?? new Date(), deliveredBy: by } });
+    // A delivery nobody approved in the hub (Mark as delivering, Deliver in
+    // Aryeo by hand) still settles the shoot's media check (Oct 21 2026).
+    const { closeMediaCheckForPhotos } = await import("./mediaCheck");
+    await closeMediaCheckForPhotos(jobId, { by, reason: "Photos delivered through Photo Delivery", human: false });
   }
   await logJobEvent(jobId, by, `delivery verified: ${aryeoCount} on the listing, ${approved} approved${extra ? `, ${extra} extra` : ""}`);
   return { ok: true, message: `Verified: ${aryeoCount} photos on the Aryeo listing (${approved} approved${extra ? `, ${extra} extra` : ""}).`, aryeoCount, approved };

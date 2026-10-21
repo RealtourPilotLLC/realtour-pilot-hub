@@ -12,6 +12,8 @@ import {
   RefreshCw,
   Calendar,
   CalendarClock, GitMerge,
+  ChevronDown,
+  ClipboardList,
   Clock,
   Mail,
   Phone,
@@ -30,6 +32,7 @@ import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
 import { ProjectBriefCard } from "@/components/project/ProjectBriefCard";
+import { DetailsHashOpener } from "@/components/project/DetailsHashOpener";
 import { projectBrief } from "@/lib/projectBrief";
 import { MergeWork } from "@/components/project/MergeWork";
 import { mergeFrom, mergedInto } from "@/lib/projectMerge";
@@ -392,22 +395,146 @@ export default async function ProjectPage({
         {/* Main column — the work, in workflow order:
             status → tasks → order → logistics → output → money → collaboration */}
         <div className="min-w-0 space-y-6 lg:col-span-2">
-          {/* ONE SUMMARY, FIRST (R08). The cards below are in workflow order,
-              which is right for doing the job and wrong for answering a
-              question about it. Same facts, same engines, said once. */}
-          {brief && <ProjectBriefCard brief={brief} />}
+          {/* THE JOB SAYS ITS STATUS ONCE (Jordan, Oct 21 2026; audit A24).
+              The stage pill in the header and the Photos and Video cards at
+              the top say where the job is. The three longer reads of the same
+              thing (the summary, the status cross-check and the ordered
+              deliverables with their own status select) are folded here,
+              closed by default: nothing is removed, it is one tap away. It
+              opens by itself after a Not required press (its notice) and on
+              a link to #deliverables (DetailsHashOpener). */}
+          <details id="job-details" open={!!notice} className="group/details panel-shadow rounded-2xl border border-border bg-surface">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2.5 rounded-2xl px-5 py-3.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
+                <ClipboardList aria-hidden className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-base font-semibold leading-snug">Details</span>
+                <span className="block text-sm text-muted">Where this job is, the status check and the ordered deliverables</span>
+              </span>
+              <ChevronDown aria-hidden className="size-4 shrink-0 text-muted transition-transform group-open/details:rotate-180 motion-reduce:transition-none" />
+            </summary>
+            <div className="space-y-6 border-t border-border p-4 sm:p-5">
+              {/* ONE SUMMARY (R08). The cards below are in workflow order,
+                  which is right for doing the job and wrong for answering a
+                  question about it. Same facts, same engines, said once. */}
+              {brief && <ProjectBriefCard brief={brief} />}
 
-          {/* Smart status cross-check */}
-          <StatusEvidenceCard
-            status={project.status}
-            evidence={project.statusEvidence}
-            checkedAt={project.statusCheckedAt}
-            projectId={project.id}
-            revisionNote={project.revisionNote ? scrub(project.revisionNote) || HELD_BACK : project.revisionNote}
-            revisionRequestedAt={project.revisionRequestedAt}
-            dropboxLinks={dropboxLinks}
-            dropboxRootUrl={dropboxWebUrl(folders.listing)}
-          />
+              {/* Smart status cross-check */}
+              <StatusEvidenceCard
+                status={project.status}
+                evidence={project.statusEvidence}
+                checkedAt={project.statusCheckedAt}
+                projectId={project.id}
+                revisionNote={project.revisionNote ? scrub(project.revisionNote) || HELD_BACK : project.revisionNote}
+                revisionRequestedAt={project.revisionRequestedAt}
+                dropboxLinks={dropboxLinks}
+                dropboxRootUrl={dropboxWebUrl(folders.listing)}
+              />
+
+            {/* Ordered deliverables — retired rows (item removed from the Aryeo
+                order) stay visible, dimmed, with why: retire-not-delete only
+                pays off if a human can see what happened. */}
+            {/* "Not required on this job" (Sep 16, Kyle call) — the office's
+                waiver. Retired-by-Aryeo and waived-by-us are different facts and
+                read differently here: a package still implies the floor plan
+                195 Woodhill's client was never charged for, so only a human can
+                say it isn't owed. The row stays, with who said so and why. */}
+            <div id="deliverables" className="scroll-mt-20">
+            <Section icon={Package} title="Ordered deliverables" count={project.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt).length || null} flush>
+              <div className="divide-y">
+                {/* What the last press actually did (or why it didn't). */}
+                {notice && (
+                  <p className="bg-surface-2/60 px-5 py-2.5 text-xs text-muted">{notice}</p>
+                )}
+                {project.deliverables.length === 0 && (
+                  <p className="px-5 py-4 text-sm text-muted">Nothing ordered yet.</p>
+                )}
+                {project.deliverables.map((d) => (
+                  <div key={d.id} className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt || d.waivedAt ? "opacity-60" : ""}`}>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
+                        <Package className="size-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className={`flex flex-wrap items-center gap-2 text-sm font-medium ${d.removedFromOrderAt || d.waivedAt ? "line-through decoration-muted-2" : ""}`}>
+                          {refinedDeliverableLabel(d.type, d.label)}
+                          {d.quantity > 1 && (
+                            <span className="text-muted"> ×{d.quantity}</span>
+                          )}
+                          <VendorBadge type={d.type} label={d.label} />
+                          {d.manual && (
+                            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="Added by hand in the hub — not from the Aryeo order">manual</span>
+                          )}
+                          {d.waivedAt && (
+                            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="The office said this isn't required on this job — nothing counts it as owed">not required</span>
+                          )}
+                        </div>
+                        {d.removedFromOrderAt && (
+                          <div className="text-xs text-warning">
+                            Removed from the order {new Date(d.removedFromOrderAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
+                            {d.removedFromOrderNote ? ` — ${d.removedFromOrderNote}` : ""}
+                          </div>
+                        )}
+                        {/* The waiver, in the words of whoever made the call. */}
+                        {d.waivedAt && (
+                          <div className="text-xs text-muted">
+                            Not required — {d.waivedBy ?? "the office"}
+                            {d.waivedNote ? `, ${d.waivedNote}` : ""}
+                            {" · "}
+                            {new Date(d.waivedAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
+                          </div>
+                        )}
+                        {/* What the photographer said on the upload page. Kyle's
+                            one-press answer is the form on the right. */}
+                        {!d.waivedAt && !d.removedFromOrderAt && d.notCompletedReason && (
+                          <div className="text-xs text-warning">
+                            Photographer couldn&rsquo;t complete it: {scrub(d.notCompletedReason) || HELD_BACK}
+                          </div>
+                        )}
+                        {d.notes && <div className="text-xs text-muted">{scrub(d.notes) || HELD_BACK}</div>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!d.removedFromOrderAt && !d.waivedAt && <DeliverableStatusSelect id={d.id} status={d.status} />}
+                      {!d.removedFromOrderAt && canWaive && (
+                        d.waivedAt ? (
+                          <form action={unwaive}>
+                            <input type="hidden" name="id" value={d.id} />
+                            <button type="submit" className="inline-flex min-h-11 items-center rounded-lg border px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                              It is owed after all
+                            </button>
+                          </form>
+                        ) : (
+                          <details className="group">
+                            <summary className="inline-flex min-h-11 cursor-pointer list-none items-center rounded-lg border px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                              Not required
+                            </summary>
+                            <form action={waive} className="mt-2 flex flex-wrap items-center gap-2">
+                              <input type="hidden" name="id" value={d.id} />
+                              <input
+                                name="note"
+                                required
+                                maxLength={300}
+                                placeholder={d.notCompletedReason ? d.notCompletedReason.slice(0, 60) : "Why isn't it required? (kept on the job)"}
+                                className="min-h-11 w-64 max-w-full rounded-lg border bg-surface-2/50 px-2.5 text-base sm:text-xs"
+                              />
+                              <button type="submit" className="inline-flex min-h-11 items-center rounded-lg bg-brand-action px-2.5 text-xs font-semibold text-white">
+                                Mark not required
+                              </button>
+                            </form>
+                          </details>
+                        )
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+            </div>
+            </div>
+          </details>
+          <DetailsHashOpener detailsId="job-details" anchors={["deliverables"]} />
 
           {/* Open tasks for this job */}
           {project.smartTasks.length > 0 && (
@@ -447,107 +574,6 @@ export default async function ProjectPage({
               </p>
             </div>
           )}
-
-          {/* Ordered deliverables — retired rows (item removed from the Aryeo
-              order) stay visible, dimmed, with why: retire-not-delete only
-              pays off if a human can see what happened. */}
-          {/* "Not required on this job" (Sep 16, Kyle call) — the office's
-              waiver. Retired-by-Aryeo and waived-by-us are different facts and
-              read differently here: a package still implies the floor plan
-              195 Woodhill's client was never charged for, so only a human can
-              say it isn't owed. The row stays, with who said so and why. */}
-          <div id="deliverables" className="scroll-mt-20">
-          <Section icon={Package} title="Ordered deliverables" count={project.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt).length || null} flush>
-            <div className="divide-y">
-              {/* What the last press actually did (or why it didn't). */}
-              {notice && (
-                <p className="bg-surface-2/60 px-5 py-2.5 text-xs text-muted">{notice}</p>
-              )}
-              {project.deliverables.length === 0 && (
-                <p className="px-5 py-4 text-sm text-muted">Nothing ordered yet.</p>
-              )}
-              {project.deliverables.map((d) => (
-                <div key={d.id} className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt || d.waivedAt ? "opacity-60" : ""}`}>
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
-                      <Package className="size-4" />
-                    </span>
-                    <div className="min-w-0">
-                      <div className={`flex flex-wrap items-center gap-2 text-sm font-medium ${d.removedFromOrderAt || d.waivedAt ? "line-through decoration-muted-2" : ""}`}>
-                        {refinedDeliverableLabel(d.type, d.label)}
-                        {d.quantity > 1 && (
-                          <span className="text-muted"> ×{d.quantity}</span>
-                        )}
-                        <VendorBadge type={d.type} label={d.label} />
-                        {d.manual && (
-                          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="Added by hand in the hub — not from the Aryeo order">manual</span>
-                        )}
-                        {d.waivedAt && (
-                          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="The office said this isn't required on this job — nothing counts it as owed">not required</span>
-                        )}
-                      </div>
-                      {d.removedFromOrderAt && (
-                        <div className="text-xs text-warning">
-                          Removed from the order {new Date(d.removedFromOrderAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
-                          {d.removedFromOrderNote ? ` — ${d.removedFromOrderNote}` : ""}
-                        </div>
-                      )}
-                      {/* The waiver, in the words of whoever made the call. */}
-                      {d.waivedAt && (
-                        <div className="text-xs text-muted">
-                          Not required — {d.waivedBy ?? "the office"}
-                          {d.waivedNote ? `, ${d.waivedNote}` : ""}
-                          {" · "}
-                          {new Date(d.waivedAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
-                        </div>
-                      )}
-                      {/* What the photographer said on the upload page. Kyle's
-                          one-press answer is the form on the right. */}
-                      {!d.waivedAt && !d.removedFromOrderAt && d.notCompletedReason && (
-                        <div className="text-xs text-warning">
-                          Photographer couldn&rsquo;t complete it: {scrub(d.notCompletedReason) || HELD_BACK}
-                        </div>
-                      )}
-                      {d.notes && <div className="text-xs text-muted">{scrub(d.notes) || HELD_BACK}</div>}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!d.removedFromOrderAt && !d.waivedAt && <DeliverableStatusSelect id={d.id} status={d.status} />}
-                    {!d.removedFromOrderAt && canWaive && (
-                      d.waivedAt ? (
-                        <form action={unwaive}>
-                          <input type="hidden" name="id" value={d.id} />
-                          <button type="submit" className="inline-flex min-h-11 items-center rounded-lg border px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-                            It is owed after all
-                          </button>
-                        </form>
-                      ) : (
-                        <details className="group">
-                          <summary className="inline-flex min-h-11 cursor-pointer list-none items-center rounded-lg border px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-                            Not required
-                          </summary>
-                          <form action={waive} className="mt-2 flex flex-wrap items-center gap-2">
-                            <input type="hidden" name="id" value={d.id} />
-                            <input
-                              name="note"
-                              required
-                              maxLength={300}
-                              placeholder={d.notCompletedReason ? d.notCompletedReason.slice(0, 60) : "Why isn't it required? (kept on the job)"}
-                              className="min-h-11 w-64 max-w-full rounded-lg border bg-surface-2/50 px-2.5 text-base sm:text-xs"
-                            />
-                            <button type="submit" className="inline-flex min-h-11 items-center rounded-lg bg-brand-action px-2.5 text-xs font-semibold text-white">
-                              Mark not required
-                            </button>
-                          </form>
-                        </details>
-                      )
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Section>
-          </div>
 
           {/* Appointments (from Aryeo) */}
           {project.appointments.length > 0 && (

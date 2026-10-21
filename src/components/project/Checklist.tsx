@@ -57,7 +57,7 @@ export function Checklist({ items }: { items: Item[] }) {
               <span
                 className={cn(
                   "flex size-5 shrink-0 items-center justify-center rounded-md border transition-colors",
-                  item.done ? "border-success bg-success text-white" : "border-border-strong",
+                  item.done ? "border-success-action bg-success-action text-white" : "border-border-strong",
                 )}
               >
                 {item.done && <Check className="size-3.5" strokeWidth={3} />}

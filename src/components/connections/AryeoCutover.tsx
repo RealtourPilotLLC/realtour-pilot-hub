@@ -424,7 +424,7 @@ function Step({ n, title, done, children }: { n: number; title: string; done: bo
       <div className="mb-1.5 flex items-center gap-2">
         <span
           className={`grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold ${
-            done === true ? "bg-success text-white" : "bg-surface-2 text-muted"
+            done === true ? "bg-success-action text-white" : "bg-surface-2 text-muted"
           }`}
         >
           {done === true ? "✓" : n}

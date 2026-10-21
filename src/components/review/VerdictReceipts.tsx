@@ -79,7 +79,7 @@ function ReceiptCard({ r }: { r: VerdictReceipt }) {
                 <button
                   type="button"
                   onClick={r.approveAnyway}
-                  className="inline-flex min-h-11 items-center rounded-lg bg-success px-3 text-sm font-semibold text-white hover:opacity-90"
+                  className="inline-flex min-h-11 items-center rounded-lg bg-success-action px-3 text-sm font-semibold text-white hover:opacity-90"
                 >
                   Approve anyway
                 </button>

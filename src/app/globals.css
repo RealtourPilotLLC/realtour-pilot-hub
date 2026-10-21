@@ -35,6 +35,11 @@
   --success-soft: rgba(52, 211, 153, 0.14);
   --warning: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.14);
+  /* White text on green or amber (Oct 21 2026, audit W2C): bg-success and
+     bg-warning stay for dots, bars and fills; a chip or button with white
+     text uses these. White on #34d399 / #fbbf24 is about 1.9:1 / 1.7:1. */
+  --success-action: #047857; /* white text: 5.48:1 */
+  --warning-action: #a16207; /* white text: 4.92:1 */
   --danger: #f87171;
   --danger-action: #b91c1c;
   --danger-soft: rgba(248, 113, 113, 0.14);
@@ -85,6 +90,8 @@ html.light {
   --success-soft: rgba(5, 150, 105, 0.12);
   --warning: #b45309;
   --warning-soft: rgba(180, 83, 9, 0.14);
+  --success-action: #047857; /* white text: 5.48:1 (#059669 is 3.77:1) */
+  --warning-action: #b45309; /* white text: 5.02:1 */
   --danger: #dc2626;
   --danger-action: #b91c1c;
   --danger-soft: rgba(220, 38, 38, 0.1);
@@ -120,6 +127,8 @@ html.light {
   --success-soft: rgba(5, 150, 105, 0.12);
   --warning: #b45309;
   --warning-soft: rgba(180, 83, 9, 0.14);
+  --success-action: #047857;
+  --warning-action: #b45309;
   --danger: #dc2626;
   --danger-action: #b91c1c;
   --danger-soft: rgba(220, 38, 38, 0.1);
@@ -146,8 +155,10 @@ html.light {
   --color-accent: var(--accent);
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
+  --color-success-action: var(--success-action);
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
+  --color-warning-action: var(--warning-action);
   --color-danger: var(--danger);
   --color-danger-action: var(--danger-action);
   --color-danger-soft: var(--danger-soft);
