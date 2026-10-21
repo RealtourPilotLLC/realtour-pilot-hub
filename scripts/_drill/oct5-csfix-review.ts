@@ -43,6 +43,7 @@ import { createElement, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 const PORT = Number(process.env.DRILL_PORT ?? 6750);
@@ -59,9 +60,9 @@ const fence = fenceFetch(async (url, init) => {
   if (u.hostname === "gmail.googleapis.com" && u.pathname.endsWith("/messages/send")) {
     const { raw } = JSON.parse(String(init?.body ?? "{}")) as { raw: string };
     const text = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const [head, ...rest] = text.split("\r\n\r\n");
+    const [head] = text.split("\r\n\r\n");
     const subj = /^Subject: =\?UTF-8\?B\?(.+)\?=$/m.exec(head)?.[1] ?? "";
-    sent.push({ channel: "email", to: /^To: (.+)$/m.exec(head)?.[1] ?? "", subject: Buffer.from(subj, "base64").toString("utf8"), body: rest.join("\r\n\r\n") });
+    sent.push({ channel: "email", to: /^To: (.+)$/m.exec(head)?.[1] ?? "", subject: Buffer.from(subj, "base64").toString("utf8"), body: plainTextOfMime(text) });
     return json({ id: `gm-${sent.length}` });
   }
   if (url.startsWith("https://api.openphone.com/v1/phone-numbers")) return json({ data: [{ id: "PNdrill", number: "+12155550000", name: "Office" }] });

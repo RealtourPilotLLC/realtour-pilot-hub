@@ -8,6 +8,8 @@ import type { TabCtx } from "./shared";
 import { CreativeGuardEditor } from "@/components/clientCare/CreativeGuardEditor";
 import { EntitlementsCard } from "@/components/clientCare/EntitlementsCard";
 import { ClientIssuesCard } from "@/components/clientCare/ClientIssuesCard";
+import { ProgramEmailsCard } from "@/components/content/ProgramEmailsCard";
+import { programEmailsState } from "@/lib/portalAccess";
 
 // ---------------------------------------------------------------------------
 // SETTINGS (UI-02) — package and allowance, status, the call requirement, who
@@ -60,6 +62,8 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
         packageHandledAbove={ctx.staffEyes} />
       {/* W1-A: link status, seats and visits — self-guarded to OWNER. */}
       <PortalAccessCard enrollmentId={ctx.id} />
+      {/* Oct 21 2026: sign-in emails, "Also email" copies, resend the welcome. Owner only. */}
+      {ctx.ownerEyes && <ProgramEmailsCard enrollmentId={ctx.id} initial={await programEmailsState(ctx.id).catch(() => null)} />}
     </div>
   );
 }

@@ -35,6 +35,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors, interceptModule } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 
 const PORT = Number(process.env.DRILL_PORT ?? 5623);
 const REPO = path.resolve(__dirname, "../..");
@@ -93,11 +94,11 @@ const fence = fenceFetch(async (url, init) => {
   if (url === "https://gmail.googleapis.com/gmail/v1/users/me/messages/send") {
     const raw = (JSON.parse(String(init?.body ?? "{}")) as { raw?: string }).raw ?? "";
     const mime = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const [head, ...rest] = mime.split("\r\n\r\n");
+    const [head] = mime.split("\r\n\r\n");
     const hdr = (n: string) => new RegExp(`^${n}: (.*)$`, "m").exec(head)?.[1] ?? "";
     const subj = hdr("Subject");
     const b64 = /^=\?UTF-8\?B\?(.*)\?=$/.exec(subj)?.[1];
-    gmailSent.push({ to: hdr("To"), subject: b64 ? Buffer.from(b64, "base64").toString("utf8") : subj, body: rest.join("\r\n\r\n") });
+    gmailSent.push({ to: hdr("To"), subject: b64 ? Buffer.from(b64, "base64").toString("utf8") : subj, body: plainTextOfMime(mime) });
     return json({ id: `gm-${gmailSent.length}` });
   }
   const cal = /^https:\/\/www\.googleapis\.com\/calendar\/v3\/calendars\/primary\/events\/([^?/]+)/.exec(url);

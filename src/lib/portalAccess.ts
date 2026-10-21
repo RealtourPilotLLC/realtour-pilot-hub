@@ -312,7 +312,7 @@ export async function inviteClientUser(
   }
   const { sendThroughOutbox, portalInviteKey } = await import("@/lib/outbox");
   const { renderPortalInviteEmail } = await import("@/lib/welcomeEmail");
-  const body = renderPortalInviteEmail({ firstName: (name ?? "").split(/\s+/)[0] || "there", clientName: target.name, signInUrl: `${appBase()}/portal/login` });
+  const body = renderPortalInviteEmail({ firstName: (name ?? "").split(/\s+/)[0] || "there", clientName: target.name, signInUrl: `${appBase()}/portal/login`, signInEmail: email });
   const r = await sendThroughOutbox({
     channel: "email", toRef: email, body,
     dedupeKey: portalInviteKey(membership.id, new Date()),
@@ -608,7 +608,7 @@ async function queueWelcome(input: {
   }
   // Composed NOW, not when access was first owed: a held welcome released
   // later reads the discovery booking as it stands at that moment (CP-14).
-  const body = await composeWelcomeEmail({ name: input.name, clientName: input.clientName, reason: input.reason, clientId: input.clientId });
+  const body = await composeWelcomeEmail({ name: input.name, clientName: input.clientName, reason: input.reason, clientId: input.clientId, email: input.email });
   const { sendThroughOutbox, TestClientSendRefusedError } = await import("@/lib/outbox");
   let r: Awaited<ReturnType<typeof sendThroughOutbox>>;
   try {
@@ -643,12 +643,14 @@ async function queueWelcome(input: {
  * still need one, and the rest is what the portal is for, for how THEIR month
  * runs. The words are lib/welcomeEmail's (pure); this reads the facts.
  */
-export async function composeWelcomeEmail(input: { name: string | null; clientName: string; reason: "welcome" | "teammate"; clientId?: string | null }): Promise<string> {
+export async function composeWelcomeEmail(input: { name: string | null; clientName: string; reason: "welcome" | "teammate"; clientId?: string | null; email?: string | null }): Promise<string> {
   const { renderWelcomeEmail, renderTeammateWelcomeEmail } = await import("@/lib/welcomeEmail");
   const firstName = (input.name ?? "").trim().split(/\s+/)[0] || "there";
   const signInUrl = `${appBase()}/portal/login`;
-  if (input.reason === "teammate") return renderTeammateWelcomeEmail({ firstName, clientName: input.clientName, signInUrl });
-  return renderWelcomeEmail({ firstName, signInUrl, ...(await welcomeFactsFor(input.clientId ?? null, new Date())) });
+  // Oct 21 2026: the sign-in line names the seat's address when it is known.
+  const signInEmail = input.email?.trim().toLowerCase() || null;
+  if (input.reason === "teammate") return renderTeammateWelcomeEmail({ firstName, clientName: input.clientName, signInUrl, signInEmail });
+  return renderWelcomeEmail({ firstName, signInUrl, ...(await welcomeFactsFor(input.clientId ?? null, new Date())), signInEmail });
 }
 
 /**
@@ -1127,4 +1129,294 @@ export async function portalAccessSummary(enrollmentId: string): Promise<PortalA
     visits,
     switches: { invites, loginEmail },
   };
+}
+
+// ---------------------------------------------------------------------------
+// PROGRAM EMAILS (Oct 21 2026). Jordan, about Arielle Roemer: "can you please
+// add a second email to her content program account so we can email her on
+// both emails and add a way for me to do that? I think her Fox and Roach email
+// should be the one with access to her account. We should resend the
+// onboarding email to her."
+//
+// Three owner tools on the content Settings tab (components/content/
+// ProgramEmailsCard, actions in app/content/emailActions.ts):
+//   · changeSeatEmail: the address a seat SIGNS IN with. One ClientUser row
+//     keeps its id, so the seat, its role and everything it did stay; any
+//     unused sign-in link is cleared; an AuditLog row says who changed what.
+//     A portal session is bound to the ClientUser id, not the address
+//     (auth/clientSession + portal.resolvePortalViewer read `cu` only), so a
+//     person already signed in stays signed in; their next sign-in link goes
+//     to the new address.
+//   · changeAlsoEmails: extra addresses that get a copy of every email the hub
+//     sends this client (overridesJson `alsoEmails`; how the copy travels is
+//     clientEmailMonitor.planAlsoEmail).
+//   · resendPortalWelcome: the welcome again, to the OWNER seat, under a FRESH
+//     identity (portalWelcomeResendKey), through the same gates as the first.
+// ---------------------------------------------------------------------------
+
+/**
+ * A resend of a seat's welcome. A new identity, so it is a new message rather
+ * than a duplicate of the one-for-ever welcome (portalWelcomeKey), that still
+ * reads as the welcome everywhere: the kind is portal_invite (outbox
+ * outboxKind); it ends ":welcome" (subjectFor's "Welcome to your Realtour
+ * Pilot content portal", clientActivity's "Welcome email sent"); segment 1 is
+ * the seat (the dispatch gate's live-seat check) and segment 2 is "welcome"
+ * (the gate's TEST-client welcome to Jordan's own inbox). The stamp carries no
+ * colon, so none of those segments move.
+ */
+export const portalWelcomeResendKey = (membershipId: string, at: Date) =>
+  `portal_invite:${membershipId}:welcome:${at.toISOString().replace(/[-:.]/g, "")}:welcome`;
+
+export type ProgramEmailsGate = { ok: true } | { ok: false; why: string };
+
+/** May the welcome go to this address now? The rule queueWelcome applies, in words. */
+async function welcomeGateFor(clientId: string, email: string, isTest: boolean): Promise<ProgramEmailsGate> {
+  if (isTest) {
+    return isVerifiedTestDestinationEmail(email)
+      ? { ok: true }
+      : { ok: false, why: "This is a TEST client, so its welcome can only go to one of Jordan's verified test inboxes." };
+  }
+  if (!(await isAutomationEnabled("portal_invites"))) return { ok: false, why: "Client invitations are switched off (the portal_invites program automation), so no welcome can go out." };
+  const reach = await programReach("portal_invites", clientId);
+  if (!reach.ok) return { ok: false, why: `This client is not in the program rollout for portal accounts (${reach.reason}). Add them in ${SCOPE_HOME} first.` };
+  return { ok: true };
+}
+
+export type ProgramEmailsState = {
+  enrollmentId: string;
+  clientName: string;
+  isTestClient: boolean;
+  /** Live seats: who signs in, and whether they have yet. */
+  seats: { membershipId: string; email: string; name: string | null; role: PortalRole; signedIn: boolean; lastLoginAtISO: string | null; disabled: boolean }[];
+  alsoEmails: string[];
+  welcome: {
+    /** The OWNER seat the welcome goes to, or null when there is none. */
+    to: { membershipId: string; email: string } | null;
+    gate: ProgramEmailsGate;
+    /** The welcomes on record, newest first. */
+    sent: { atISO: string; to: string; state: string; resend: boolean }[];
+  };
+};
+
+const liveSeatRows = (enrollmentId: string) =>
+  prisma.clientMembership.findMany({ where: { enrollmentId, revokedAt: null }, orderBy: { invitedAt: "asc" }, select: { id: true, clientUserId: true, clientId: true, role: true, acceptedAt: true } });
+
+export async function programEmailsState(enrollmentId: string): Promise<ProgramEmailsState | null> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { id: true, clientId: true, overridesJson: true, accessRevokedAt: true } });
+  if (!e) return null;
+  const [client, seatRows, sent] = await Promise.all([
+    prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true } }),
+    liveSeatRows(enrollmentId),
+    prisma.outboxMessage.findMany({
+      where: { clientId: e.clientId, OR: [{ dedupeKey: { startsWith: "portal_invite:", endsWith: ":welcome" } }, { dedupeKey: { startsWith: `onboarding:welcome:${e.clientId}:` } }] },
+      orderBy: { createdAt: "desc" }, take: 5,
+      select: { toRef: true, state: true, createdAt: true, acceptedAt: true, dedupeKey: true },
+    }),
+  ]);
+  const people = seatRows.length ? await prisma.clientUser.findMany({ where: { id: { in: seatRows.map((s) => s.clientUserId) } }, select: { id: true, email: true, name: true, status: true, lastLoginAt: true } }) : [];
+  const byId = new Map(people.map((p) => [p.id, p]));
+  const seats = seatRows.flatMap((s) => {
+    const p = byId.get(s.clientUserId);
+    if (!p) return [];
+    return [{
+      membershipId: s.id, email: p.email, name: p.name, role: isPortalRole(s.role) ? s.role : ("VIEWER" as PortalRole),
+      signedIn: !!(p.lastLoginAt || s.acceptedAt), lastLoginAtISO: p.lastLoginAt?.toISOString() ?? null, disabled: p.status === "DISABLED",
+    }];
+  });
+  const clientName = client?.name ?? "";
+  const isTestClient = isSyntheticClientRow({ id: e.clientId, name: clientName });
+  const owner = seats.find((s) => s.role === "OWNER" && !s.disabled) ?? null;
+  const gate: ProgramEmailsGate = e.accessRevokedAt
+    ? { ok: false, why: "This program's portal access is revoked." }
+    : !owner
+      ? { ok: false, why: "No one signs in to this portal as its owner yet, so there is nobody to welcome. Invite them in Portal access first." }
+      : await welcomeGateFor(e.clientId, owner.email, isTestClient);
+  const { alsoEmailsFromOverrides } = await import("@/lib/clientEmailMonitor");
+  return {
+    enrollmentId, clientName, isTestClient, seats,
+    alsoEmails: alsoEmailsFromOverrides(e.overridesJson),
+    welcome: {
+      to: owner ? { membershipId: owner.membershipId, email: owner.email } : null,
+      gate,
+      sent: sent.map((r) => ({ atISO: (r.acceptedAt ?? r.createdAt).toISOString(), to: r.toRef, state: r.state, resend: /:welcome:[^:]+:welcome$/.test(r.dedupeKey ?? "") })),
+    },
+  };
+}
+
+type EmailsResult = { ok: boolean; message: string };
+
+/**
+ * Write the program's "Also email" list: compare-and-swap on the whole
+ * overrides bag (the creative guard, video style and catch-up records share
+ * it), ledgered like every other program setting. `next` answers the new
+ * list, or a refusal in words.
+ */
+async function writeAlsoEmails(
+  enrollmentId: string,
+  next: (current: string[]) => { list: string[]; reason: string } | { refuse: string } | null,
+  actor: string | null,
+): Promise<EmailsResult & { changed?: boolean }> {
+  const { alsoEmailsFromOverrides, ALSO_EMAILS_KEY } = await import("@/lib/clientEmailMonitor");
+  const { readOverrides, recordEnrollmentChange } = await import("@/lib/enrollmentChanges");
+  const { etMonthKey } = await import("@/lib/datetime");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
+    if (!e) return { ok: false, message: "That program no longer exists." };
+    const current = alsoEmailsFromOverrides(e.overridesJson);
+    const decided = next(current);
+    if (!decided) return { ok: true, changed: false, message: "Nothing to change." };
+    if ("refuse" in decided) return { ok: false, message: decided.refuse };
+    const bag = { ...readOverrides(e.overridesJson) };
+    if (decided.list.length) bag[ALSO_EMAILS_KEY] = decided.list;
+    else delete bag[ALSO_EMAILS_KEY];
+    const json = Object.keys(bag).length ? JSON.stringify(bag) : null;
+    const w = await prisma.contentEnrollment.updateMany({ where: { id: enrollmentId, overridesJson: e.overridesJson }, data: { overridesJson: json } });
+    if (!w.count) continue; // another write to the bag landed first: read it again
+    const now = new Date();
+    await recordEnrollmentChange({
+      enrollmentId, clientId: e.clientId, field: "overrides", from: { [ALSO_EMAILS_KEY]: current }, to: { [ALSO_EMAILS_KEY]: decided.list },
+      effectiveAt: now, effectiveMonthKey: etMonthKey(now), changedBy: actor, appliedAt: now, reason: decided.reason,
+    });
+    return { ok: true, changed: true, message: decided.reason };
+  }
+  return { ok: false, message: "The client file changed while saving. Try again." };
+}
+
+/** Add or remove one "Also email" address. */
+export async function changeAlsoEmails(enrollmentId: string, change: { add?: string | null; remove?: string | null }, actor: string | null): Promise<EmailsResult> {
+  const { cleanMonitorAddress, ALSO_EMAILS_MAX } = await import("@/lib/clientEmailMonitor");
+  const { canonicalInbox } = await import("@/lib/testClients");
+  if (change.add != null) {
+    const email = cleanMonitorAddress(change.add);
+    if (!email) return { ok: false, message: "That doesn't look like an email address." };
+    const target = await testClientOf(enrollmentId);
+    if (!target) return { ok: false, message: "That program no longer exists." };
+    if (target.isTest && !isVerifiedTestDestinationEmail(email)) return { ok: false, message: "This is a TEST client, so its copies can only go to one of Jordan's verified test inboxes." };
+    const seats = await liveSeatRows(enrollmentId);
+    const seatEmails = seats.length ? (await prisma.clientUser.findMany({ where: { id: { in: seats.map((s) => s.clientUserId) } }, select: { email: true } })).map((p) => p.email) : [];
+    if (seatEmails.some((s) => canonicalInbox(s) === canonicalInbox(email))) return { ok: false, message: `${email} already signs in to this portal, so it gets these emails already.` };
+    return writeAlsoEmails(enrollmentId, (current) => {
+      if (current.some((a) => canonicalInbox(a) === canonicalInbox(email))) return { refuse: `${email} is already on the list.` };
+      if (current.length >= ALSO_EMAILS_MAX) return { refuse: `A program can copy at most ${ALSO_EMAILS_MAX} extra addresses.` };
+      return { list: [...current, email], reason: `Also email: ${email} added (Program emails).` };
+    }, actor);
+  }
+  if (change.remove != null) {
+    const key = canonicalInbox(change.remove);
+    return writeAlsoEmails(enrollmentId, (current) => {
+      const kept = current.filter((a) => canonicalInbox(a) !== key);
+      if (kept.length === current.length) return { refuse: `${change.remove} is not on the list.` };
+      return { list: kept, reason: `Also email: ${current.find((a) => canonicalInbox(a) === key)} removed (Program emails).` };
+    }, actor);
+  }
+  return { ok: false, message: "Nothing to change." };
+}
+
+/** Change the address one seat signs in with. */
+export async function changeSeatEmail(input: { enrollmentId: string; membershipId: string; email: string; actor: string | null }): Promise<EmailsResult & { changed?: boolean }> {
+  const { cleanMonitorAddress } = await import("@/lib/clientEmailMonitor");
+  const { canonicalInbox } = await import("@/lib/testClients");
+  const email = cleanMonitorAddress(input.email);
+  if (!email) return { ok: false, message: "That doesn't look like an email address." };
+  const seat = await prisma.clientMembership.findUnique({ where: { id: input.membershipId }, select: { id: true, enrollmentId: true, clientId: true, clientUserId: true, role: true, revokedAt: true } });
+  if (!seat || seat.enrollmentId !== input.enrollmentId) return { ok: false, message: "That seat isn't on this program." };
+  if (seat.revokedAt) return { ok: false, message: "That seat's access was revoked. Invite the new address in Portal access instead." };
+  const person = await prisma.clientUser.findUnique({ where: { id: seat.clientUserId }, select: { id: true, email: true } });
+  if (!person) return { ok: false, message: "That seat has no sign-in on file." };
+  if (person.email === email) return { ok: true, changed: false, message: `${email} already signs in to this seat.` };
+  const target = await testClientOf(input.enrollmentId);
+  if (target?.isTest && !isStaffControlledEmail(email) && !isVerifiedTestDestinationEmail(email)) {
+    return { ok: false, message: "This is a TEST client, so its portal people use a staff-controlled address (for example info+name@realtourpilot.com)." };
+  }
+  // ONE ClientUser per address across every client: a person seated on
+  // another client's program is not ours to re-address from this one.
+  const elsewhere = await prisma.clientMembership.findFirst({ where: { clientUserId: person.id, revokedAt: null, clientId: { not: seat.clientId } }, select: { id: true } });
+  if (elsewhere) return { ok: false, message: `${person.email} also signs in to another client's portal, so its sign-in email can't be changed from here. Invite ${email} to this program in Portal access instead.` };
+  const taken = await prisma.clientUser.findUnique({ where: { email }, select: { id: true } });
+  const takenMessage = async (id: string) => {
+    const where = await prisma.clientMembership.findFirst({ where: { clientUserId: id, revokedAt: null }, select: { enrollmentId: true } });
+    const whose = !where ? "with no seat on any program" : where.enrollmentId === input.enrollmentId ? "with its own seat on this program" : "with a seat on another client's program";
+    return `${email} already belongs to another portal account (${whose}). Two accounts can't share one sign-in email, so nothing was changed.`;
+  };
+  if (taken && taken.id !== person.id) return { ok: false, message: await takenMessage(taken.id) };
+  try {
+    await prisma.$transaction([
+      // The id stays, so the seat, its role, its sign-ins and everything it did
+      // stay with it. An unused sign-in link was minted for the OLD address:
+      // cleared, so nothing sent there still opens the account.
+      prisma.clientUser.update({ where: { id: person.id }, data: { email, loginTokenHash: null, loginTokenExpiresAt: null } }),
+      prisma.auditLog.create({
+        data: {
+          actor: input.actor ?? "unknown", action: "portal_sign_in_email_change", target: seat.clientId,
+          detail: `Sign-in email for the ${seat.role.toLowerCase()} seat ${seat.id} changed from ${person.email} to ${email}. Any unused sign-in link was cleared; the seat, its access and its history are unchanged.`,
+        },
+      }),
+    ]);
+  } catch (e) {
+    if ((e as { code?: string })?.code === "P2002") {
+      const now = await prisma.clientUser.findUnique({ where: { email }, select: { id: true } });
+      return { ok: false, message: now ? await takenMessage(now.id) : `${email} already belongs to another portal account. Nothing was changed.` };
+    }
+    throw e;
+  }
+  // The new sign-in address no longer needs a copy of its own emails.
+  await writeAlsoEmails(input.enrollmentId, (current) => {
+    const kept = current.filter((a) => canonicalInbox(a) !== canonicalInbox(email));
+    return kept.length === current.length ? null : { list: kept, reason: `Also email: ${email} removed (it signs in to the portal now).` };
+  }, input.actor).catch(() => null);
+  return {
+    ok: true, changed: true,
+    message: `${email} now signs in to this seat. Anyone already signed in stays signed in; the next sign-in link goes to ${email}.`,
+  };
+}
+
+export type ResendWelcomeResult = { ok: boolean; outcome: "sent" | "held" | "failed" | "unknown"; message: string };
+
+/**
+ * The welcome again, to the OWNER seat's sign-in address. The words are the
+ * welcome's, composed now; the client's "Also email" addresses are copied by
+ * the outbox (a Cc: the welcome carries the durable sign-in page, never a
+ * one-use link). Same gates as the first welcome (queueWelcome): the
+ * portal_invites switch and the rollout scope, or a TEST client writing to one
+ * of Jordan's verified inboxes; then the outbox's TEST floor and dispatch gate.
+ * Not the "welcome already sent from onboarding" check: a resend is a person
+ * asking for a second one on purpose.
+ */
+export async function resendPortalWelcome(enrollmentId: string, by: { appUserId: string | null; actor: string | null }): Promise<ResendWelcomeResult> {
+  const held = (message: string): ResendWelcomeResult => ({ ok: false, outcome: "held", message });
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, accessRevokedAt: true } });
+  if (!e) return held("That program no longer exists.");
+  if (e.accessRevokedAt) return held("This program's portal access is revoked, so no welcome was sent.");
+  const target = await testClientOf(enrollmentId);
+  if (!target) return held("That program no longer exists.");
+  const seats = await liveSeatRows(enrollmentId);
+  const people = seats.length ? await prisma.clientUser.findMany({ where: { id: { in: seats.map((s) => s.clientUserId) } }, select: { id: true, email: true, name: true, status: true } }) : [];
+  const seat = seats.find((s) => s.role === "OWNER" && people.some((p) => p.id === s.clientUserId && p.status !== "DISABLED"));
+  const person = seat ? people.find((p) => p.id === seat.clientUserId) : null;
+  if (!seat || !person) return held("No one signs in to this portal as its owner yet, so there is nobody to welcome. Invite them in Portal access first.");
+  const gate = await welcomeGateFor(e.clientId, person.email, target.isTest);
+  if (!gate.ok) return held(`Not sent: ${gate.why}`);
+  const { alsoEmailsFromOverrides, planAlsoEmailWith } = await import("@/lib/clientEmailMonitor");
+  const body = await composeWelcomeEmail({ name: person.name, clientName: target.name, reason: "welcome", clientId: e.clientId, email: person.email });
+  const overrides = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const copies = planAlsoEmailWith({ kind: "portal_invite", to: person.email, body, alsoEmails: alsoEmailsFromOverrides(overrides?.overridesJson ?? null), synthetic: target.isTest });
+  const copied = copies.cc.length ? ` (copy to ${copies.cc.join(", ")})` : "";
+  const { sendThroughOutbox, TestClientSendRefusedError } = await import("@/lib/outbox");
+  let r: Awaited<ReturnType<typeof sendThroughOutbox>>;
+  try {
+    r = await sendThroughOutbox({ channel: "email", toRef: person.email, body, dedupeKey: portalWelcomeResendKey(seat.id, new Date()), clientId: e.clientId, requestedBy: by.appUserId });
+  } catch (err) {
+    if (err instanceof TestClientSendRefusedError) return held(`Not sent: ${err.message}`);
+    throw err;
+  }
+  const result: ResendWelcomeResult =
+    r.outcome === "accepted" ? { ok: true, outcome: "sent", message: `Welcome sent to ${person.email}${copied}.` }
+    : r.outcome === "failed" && r.refused ? held(`Not sent: ${r.error.replace(/^refused before send: /, "")}.`)
+    : r.outcome === "failed" ? { ok: false, outcome: "failed", message: `The welcome did not send (${r.error}). Nothing went out; try again.` }
+    : r.outcome === "unknown" ? { ok: false, outcome: "unknown", message: "The welcome may have gone out. It is held on Connections for a person to confirm, so don't press again." }
+    : { ok: false, outcome: "unknown", message: "A welcome to this seat is already being sent. Refresh in a minute." };
+  await prisma.auditLog.create({
+    data: { actor: by.actor ?? "unknown", action: "portal_welcome_resent", target: e.clientId, detail: `Welcome resend to ${person.email}${copied}: ${result.outcome}. ${result.message}`.slice(0, 4000) },
+  }).catch(() => {});
+  return result;
 }

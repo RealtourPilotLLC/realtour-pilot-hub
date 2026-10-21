@@ -56,6 +56,8 @@ export type WelcomeFacts = {
   firstName: string;
   /** The durable sign-in page (never a one-time link). */
   signInUrl: string;
+  /** Oct 21 2026: the address that signs in, named in the sign-in line when known. */
+  signInEmail?: string | null;
   discovery: WelcomeDiscovery;
   /** The brand discovery Calendly page, when one is mapped. */
   discoveryUrl: string | null;
@@ -171,6 +173,18 @@ function monthlySteps(f: WelcomeFacts): string[] {
 
 const numbered = (steps: string[]) => steps.map((t, i) => `${i + 1}. ${t}`);
 
+/**
+ * The sign-in paragraph (Oct 21 2026). The link sits on its own line, so the
+ * branded email (lib/emailHtml) makes it an "Open your portal" button, and the
+ * line names the address that signs in when it is known: a copy of this email
+ * can now go to a client's other address too ("Also email"), and "this email
+ * address" would send that reader to one with no account.
+ */
+const signInLines = (url: string, email: string | null | undefined, ending: string): string[] => [
+  `To sign in, open the page below and enter ${email?.trim() ? email.trim() : "this email address"}. We'll email you a one-time link, so there's ${ending}.`,
+  url,
+];
+
 /** The welcome for the person who signed up (or the client's own first seat). */
 export function renderWelcomeEmail(f: WelcomeFacts): string {
   const status: string[] = [];
@@ -192,7 +206,7 @@ export function renderWelcomeEmail(f: WelcomeFacts): string {
       ? "Welcome to your Realtour Pilot content portal. It's where your content program lives: your plans for each month, your filming dates and every finished video."
       : "Welcome to your Realtour Pilot content portal. It's where your content program lives: your strategy, your video topics, your scripts, your filming dates and every finished video.",
     "",
-    `To sign in, go to ${f.signInUrl} and enter this email address. We'll email you a one-time link, so there's no password to set up.`,
+    ...signInLines(f.signInUrl, f.signInEmail, "no password to set up"),
     "",
     ...status,
     ...(once.length
@@ -206,13 +220,13 @@ export function renderWelcomeEmail(f: WelcomeFacts): string {
 }
 
 /** The welcome for a teammate the client added (an assistant, a partner). */
-export function renderTeammateWelcomeEmail(f: { firstName: string; clientName: string; signInUrl: string }): string {
+export function renderTeammateWelcomeEmail(f: { firstName: string; clientName: string; signInUrl: string; signInEmail?: string | null }): string {
   return [
     `Hi ${f.firstName},`,
     "",
     `${f.clientName} added you to their Realtour Pilot content portal, so you can work on the program with them: video topics, scripts, filming dates, and reviewing the videos when they're ready.`,
     "",
-    `To sign in, go to ${f.signInUrl} and enter this email address. We'll email you a one-time link, so there's no password to set up.`,
+    ...signInLines(f.signInUrl, f.signInEmail, "no password to set up"),
     "",
     "Anything you do in there shows up under your own name, so the team always knows who asked for what.",
     "",
@@ -223,13 +237,13 @@ export function renderTeammateWelcomeEmail(f: { firstName: string; clientName: s
 }
 
 /** A staff invitation to an existing client portal (portalAccess.inviteClientUser). */
-export function renderPortalInviteEmail(f: { firstName: string; clientName: string; signInUrl: string }): string {
+export function renderPortalInviteEmail(f: { firstName: string; clientName: string; signInUrl: string; signInEmail?: string | null }): string {
   return [
     `Hi ${f.firstName},`,
     "",
     `You now have access to the ${f.clientName} content portal with Realtour Pilot. The strategy, video topics, scripts, filming dates and finished videos are all in one place.`,
     "",
-    `To sign in, go to ${f.signInUrl} and enter this email address. We'll email you a one-time link, so there's no password to remember.`,
+    ...signInLines(f.signInUrl, f.signInEmail, "no password to remember"),
     "",
     "Questions? Just reply to this email and it comes straight to us.",
     "",

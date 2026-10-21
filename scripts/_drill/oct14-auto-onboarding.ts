@@ -29,6 +29,7 @@
 // answered in-process at the HTTP fence; every other outbound call is blocked.
 // ---------------------------------------------------------------------------
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 
 const PORT = Number(process.env.DRILL_PORT ?? 6687);
 
@@ -43,9 +44,9 @@ const fence = fenceFetch(async (url, init) => {
   if (u.hostname === "gmail.googleapis.com" && u.pathname.endsWith("/messages/send")) {
     const { raw } = JSON.parse(String(init?.body ?? "{}")) as { raw: string };
     const text = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const [head, ...rest] = text.split("\r\n\r\n");
+    const [head] = text.split("\r\n\r\n");
     const subj = /^Subject: =\?UTF-8\?B\?(.+)\?=$/m.exec(head)?.[1] ?? "";
-    sent.push({ to: /^To: (.+)$/m.exec(head)?.[1] ?? "", subject: Buffer.from(subj, "base64").toString("utf8"), body: rest.join("\r\n\r\n") });
+    sent.push({ to: /^To: (.+)$/m.exec(head)?.[1] ?? "", subject: Buffer.from(subj, "base64").toString("utf8"), body: plainTextOfMime(text) });
     return json({ id: `gm-${sent.length}` });
   }
   return null;
