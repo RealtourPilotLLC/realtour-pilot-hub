@@ -191,7 +191,8 @@ async function main() {
 
     const qb = text.get(path.join(SRC, "lib/integrations/quickbooks.ts")) ?? "";
     const posts = (qb.match(/method:\s*["']POST["']/g) ?? []).length;
-    const tokenPosts = (qb.match(/fetch\(TOKEN_URL,\s*\{\s*method:\s*["']POST["']/g) ?? []).length;
+    // Oct 21 2026 (audit H7): the reads and token calls go through fetchWithTimeout.
+    const tokenPosts = (qb.match(/fetch(?:WithTimeout)?\(TOKEN_URL,\s*\{\s*method:\s*["']POST["']/g) ?? []).length;
     c.ok("QuickBooks POSTs only to its OAuth token endpoint", posts > 0 && posts === tokenPosts, `${posts} POST, ${tokenPosts} to TOKEN_URL`);
   }
 
