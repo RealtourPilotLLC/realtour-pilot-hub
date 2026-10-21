@@ -1,5 +1,6 @@
-import { requirePageAccess } from "@/lib/auth/guards";
+import { requirePageAccess, authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { canSeeMoney } from "@/lib/auth/access";
 import { Package, Sun, Plus, Camera, Home, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
@@ -51,9 +52,13 @@ function variantsOf(p: Product): Variant[] {
   }
 }
 
-function ProductCard({ p }: { p: Product }) {
+// PRICES ARE MONEY (Jordan, Oct 21 2026: admins don't see prices in the
+// Catalog). Kyle opens this page by default as an ADMIN and still sees every
+// product, its tiers and its badges; the dollar figures render only for a
+// viewer canSeeMoney allows (the owner).
+function ProductCard({ p, money }: { p: Product; money: boolean }) {
   const variants = variantsOf(p);
-  const from = p.minPrice != null ? formatMoney(p.minPrice / 100) : null;
+  const from = money && p.minPrice != null ? formatMoney(p.minPrice / 100) : null;
   const range = p.minPrice != null && p.maxPrice != null && p.minPrice !== p.maxPrice;
 
   return (
@@ -85,14 +90,16 @@ function ProductCard({ p }: { p: Product }) {
 
       {variants.length > 1 && (
         <details className="mt-3 border-t pt-2 [&_summary]:list-none">
-          <summary className="cursor-pointer text-xs font-medium text-brand">View {variants.length} price tiers</summary>
+          <summary className="cursor-pointer text-xs font-medium text-brand">View {variants.length} {money ? "price tiers" : "tiers"}</summary>
           <div className="mt-2 space-y-1">
             {variants.map((v, i) => (
               <div key={i} className="flex items-center justify-between text-xs">
                 <span className="text-foreground/80">{v.title ?? `Tier ${i + 1}`}</span>
-                <span className="font-medium">
-                  {typeof v.price_amount === "number" ? formatMoney(v.price_amount / 100) : "—"}
-                </span>
+                {money && (
+                  <span className="font-medium">
+                    {typeof v.price_amount === "number" ? formatMoney(v.price_amount / 100) : "—"}
+                  </span>
+                )}
               </div>
             ))}
           </div>
@@ -110,6 +117,8 @@ export default async function CatalogPage() {
   ]);
   // Connections is owner-only, so only the owner is pointed at it (audit G18).
   const canSync = me ? me.role === "OWNER" : true;
+  // The previewed role under "view as", so a preview as Kyle shows no prices.
+  const money = me ? canSeeMoney(me.role) : !authEnforced();
 
   // Build the four fixed groups.
   const grouped = new Map<string, Product[]>(SECTIONS.map((s) => [s.key, []]));
@@ -145,7 +154,7 @@ export default async function CatalogPage() {
                 </div>
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {items.map((p) => (
-                    <ProductCard key={`${key}-${p.id}`} p={p} />
+                    <ProductCard key={`${key}-${p.id}`} p={p} money={money} />
                   ))}
                 </div>
               </section>

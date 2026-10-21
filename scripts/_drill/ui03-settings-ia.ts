@@ -22,10 +22,12 @@
 //      the Photographer pay view card rendered for an ADMIN; the content
 //      program anchor was written twice (page wrapper + panel), and the
 //      notification schedule had no anchor at all.
-//   1. NEW: every one of the 14 cards renders exactly once, inside exactly
-//      one group, and in the group SETTINGS_LAYOUT gives it.
+//   1. NEW: every card renders exactly once, inside exactly one group, and in
+//      the group SETTINGS_LAYOUT gives it. Since Oct 21 2026 that is the OLD
+//      page's 14 less the retired Team pay view (only Jordan sees pay,
+//      permanently; there is no switch left to place).
 //   2. The financial group is absent for an ADMIN and present for the OWNER
-//      (pay view and the payroll / bank-feed links with it); an EDITOR is
+//      (the payroll / bank-feed links, and no pay switch); an EDITOR is
 //      redirected away, and with enforcement on nobody signed in (a client
 //      has no hub login) is sent to /login.
 //   3. Anchors: #coaching, #topaz, #program-automations, #program-reminders,
@@ -130,7 +132,20 @@ async function renderChild() {
   const oldFile = path.join(baseDir, "settings-page.base.tsx");
   // `import React` first: outside the repo, the transform may be the classic
   // one that needs React in scope; under the automatic one it is unused.
-  fs.writeFileSync(oldFile, 'import React from "react";\nvoid React;\n' + show("src/app/settings/page.tsx").replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`));
+  //
+  // THE RETIRED PAY SWITCH (Oct 21 2026). BASE's page reads payVisibilityRules()
+  // and renders <PayVisibilitySettings>; both are gone from this tree (only
+  // Jordan sees pay, permanently). The OLD page gets two local stand-ins so it
+  // still renders exactly as BASE did: its own <Section title="Photographer pay
+  // view"> heading (which section 0 asserts) is the page's markup, not the
+  // component's, and is untouched.
+  const oldSrc = show("src/app/settings/page.tsx")
+    .replace(/(["'])@\/([^"']+)\1/g, (_m, q: string, p: string) => `${q}${path.join(REPO, "src", p)}${q}`)
+    .replace(/\bpayVisibilityRules, /, "")
+    .replace(/import \{ PayVisibilitySettings \} from "[^"]+";\n/, "const PayVisibilitySettings = (_p: { initial: unknown; isOwner: boolean }) => null;\n")
+    .replace("payVisibilityRules()", "Promise.resolve({ photographerPayPaused: true, pausedAt: null as string | null, pausedBy: null as string | null })");
+  if (/payVisibilityRules\(|components\/settings\/PayVisibility/.test(oldSrc)) throw new Error("ui03: BASE page still reaches the retired pay switch");
+  fs.writeFileSync(oldFile, 'import React from "react";\nvoid React;\n' + oldSrc);
   const OldPage = ((await import(oldFile)) as { default: () => Promise<unknown> }).default;
   const NewPage = ((await import("@/app/settings/page")) as { default: (p: { searchParams: Promise<Record<string, string>> }) => Promise<unknown> }).default;
 
@@ -328,7 +343,7 @@ async function parent() {
     calendly: "Calendly & content-program calls", "product-categories": "Product categories",
   };
   const h2Count = (root: El, title: string) => all(root, (e) => e.tag === "h2" && decode(textOf(e)).trim() === title).length;
-  const NEW_PAY_TITLE = "Team pay view"; // the OLD page's "Photographer pay view", renamed Oct 20 2026 (audit G7)
+  const NEW_PAY_TITLE = "Team pay view"; // the OLD page's "Photographer pay view", renamed Oct 20 2026 (audit G7), retired Oct 21 2026
 
   // =========================================================================
   c.head("0 · OLD (3de6023): one flat column, the pay view for an admin, a doubled anchor");
@@ -349,13 +364,15 @@ async function parent() {
   // =========================================================================
   {
     const layoutKeys = Object.values(SETTINGS_LAYOUT).flat();
-    c.ok("SETTINGS_LAYOUT places each of the 14 cards exactly once", layoutKeys.length === SETTINGS_CARD_KEYS.length && SETTINGS_CARD_KEYS.every((k) => layoutKeys.filter((x) => x === k).length === 1));
-    c.ok("…and those are the same 14 cards the OLD page had", SETTINGS_CARD_KEYS.length === 14 && SETTINGS_CARD_KEYS.every((k) => h2Count(OLD.OWNER.root, cardTitle[k]) === 1));
+    c.ok("SETTINGS_LAYOUT places each card exactly once", layoutKeys.length === SETTINGS_CARD_KEYS.length && SETTINGS_CARD_KEYS.every((k) => layoutKeys.filter((x) => x === k).length === 1));
+    // Oct 21 2026: the Team pay view switch is retired (only Jordan sees pay, permanently).
+    c.ok("…and those are the OLD page's 14 cards less the retired pay view: 13", SETTINGS_CARD_KEYS.length === 13 && SETTINGS_CARD_KEYS.every((k) => h2Count(OLD.OWNER.root, cardTitle[k]) === 1) && !(SETTINGS_CARD_KEYS as readonly string[]).includes("pay-view"));
     const groupOf = new Map<string, string>(Object.entries(SETTINGS_LAYOUT).flatMap(([g, ks]) => ks.map((k) => [k, g] as const)));
     for (const role of ["OWNER", "ADMIN"] as const) {
       const root = NEW[role].root;
       const cards = all(root, (e) => "data-settings-card" in e.attrs);
-      const expected = SETTINGS_CARD_KEYS.filter((k) => role === "OWNER" || k !== "pay-view");
+      // No owner-only card is left since the pay view retired (Oct 21 2026): both roles get all of them.
+      const expected = [...SETTINGS_CARD_KEYS];
       const counts = new Map<string, number>();
       for (const e of cards) counts.set(e.attrs["data-settings-card"], (counts.get(e.attrs["data-settings-card"]) ?? 0) + 1);
       c.ok(`${role}: each of its ${expected.length} cards renders exactly once`, expected.every((k) => counts.get(k) === 1) && cards.length === expected.length, [...counts].map(([k, n]) => `${k}:${n}`).join(" "));
@@ -365,8 +382,8 @@ async function parent() {
       });
       c.ok(`${role}: every card sits inside exactly one group — the one SETTINGS_LAYOUT names`, misplaced.length === 0, misplaced.map((e) => e.attrs["data-settings-card"]).join(","));
       // Oct 19 2026: the Review Room card is titled "Video Review Room" now (the OLD page keeps its old title).
-      // Oct 20 2026 (audit G7): the pay card is "Team pay view" now; it covers every login but the owner.
-      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, k === "review-room" ? "Video Review Room" : k === "pay-view" ? NEW_PAY_TITLE : cardTitle[k]) === 1));
+      c.ok(`${role}: each card still carries its own title, once`, expected.every((k) => h2Count(root, k === "review-room" ? "Video Review Room" : cardTitle[k]) === 1));
+      c.ok(`${role}: no pay switch card under either of its names`, h2Count(root, NEW_PAY_TITLE) === 0 && h2Count(root, "Photographer pay view") === 0);
       const groups = all(root, (e) => "data-settings-group" in e.attrs);
       c.ok(`${role}: every group states its effect in a sentence under its heading`, groups.length > 0 && groups.every((g) => {
         const def = SETTINGS_GROUPS.find((d) => d.id === g.attrs["data-settings-group"]);
@@ -383,11 +400,11 @@ async function parent() {
     c.ok("OWNER: all seven groups, in order", groupsIn(NEW.OWNER.root).join() === SETTINGS_GROUPS.map((g) => g.id).join());
     c.ok("ADMIN: the financial group is absent (and only it)", groupsIn(NEW.ADMIN.root).join() === SETTINGS_GROUPS.filter((g) => !g.ownerOnly).map((g) => g.id).join() && !groupsIn(NEW.ADMIN.root).includes("financial"));
     c.ok("ADMIN: no pay view, no payroll link, no bank-feeds link anywhere on the page", h2Count(NEW.ADMIN.root, NEW_PAY_TITLE) === 0 && h2Count(NEW.ADMIN.root, "Photographer pay view") === 0 &&!/href="\/sales\?tab=payroll"/.test(NEW.ADMIN.raw) && !/href="\/connections\/banks"/.test(NEW.ADMIN.raw));
-    c.ok("OWNER: the pay view, the payroll link and the bank-feeds link are in the financial group", (() => {
+    c.ok("OWNER: the payroll link and the bank-feeds link are in the financial group, with no pay switch (retired Oct 21 2026)", (() => {
       const fin = all(NEW.OWNER.root, (e) => e.attrs["data-settings-group"] === "financial")[0];
       if (!fin) return false;
       const links = all(fin, (e) => e.tag === "a").map((e) => e.attrs.href);
-      return h2Count(fin, NEW_PAY_TITLE) === 1 && links.includes("/sales?tab=payroll") && links.includes("/connections/banks");
+      return h2Count(fin, NEW_PAY_TITLE) === 0 && links.includes("/sales?tab=payroll") && links.includes("/connections/banks");
     })());
     c.ok("the chip for the financial group only for the OWNER", /href="#financial"/.test(NEW.OWNER.raw) && !/href="#financial"/.test(NEW.ADMIN.raw));
     c.ok("ADMIN: no link to the owner-only Connections page; the logins tab is the owner's too", !/href="\/connections"/.test(NEW.ADMIN.raw) && /href="\/users\?tab=team"/.test(NEW.ADMIN.raw) && !/href="\/users\?tab=logins"/.test(NEW.ADMIN.raw));

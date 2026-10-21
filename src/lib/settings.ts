@@ -225,69 +225,43 @@ export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
   onePerClientPerRun: true,
 };
 
+// ---------------------------------------------------------------------------
+// ONLY JORDAN SEES PAY, PERMANENTLY (Jordan, Oct 21 2026).
+//
+// This used to be a switch: "Team pay view" in Settings → Financial, saved as
+// the `pay_visibility` AppSetting (Sep 18 2026: "I want to be able to pause the
+// page"; widened Oct 14 to every login but the owner: "shut down the my pay
+// for both Harrison and James ... It should just be their performance tracking
+// page. And tracking their bonus"). A switch can be flipped, and a settings
+// read that fails had to be made to fail closed (audit G6). Jordan made it the
+// rule instead: the switch, its card and its save action are gone, and the
+// `pay_visibility` row is simply no longer read (it is left in the database
+// untouched).
+//
+// WHAT IT HIDES AND WHAT IT DOES NOT. A view rule and nothing else: payroll
+// still computes, KPIs still score, bonuses still accrue, Finance → Payroll is
+// untouched. Everyone but the owner gets My Performance on /my-pay (their
+// quarterly scorecard and the bonus it is tracking toward, never shoot pay or
+// mileage), and the per-shoot pay card stays off their shoot screens.
+// ---------------------------------------------------------------------------
+
+/** Is pay hidden from THIS viewer? The gate every pay surface asks, so a new
+ *  surface cannot forget the rule. True for everyone but the owner.
+ *
+ *  "View as" follows the person being previewed: an owner previewing Harrison
+ *  is shown what Harrison sees (`role` is the previewed role, `realRole` the
+ *  owner's), so a preview never puts dollars on a screen its subject would not
+ *  get. An unknown viewer is hidden. Async only because every caller already
+ *  awaits it. */
+export async function payHiddenFor(user: { realRole?: string; role?: string } | null): Promise<boolean> {
+  return (user?.role ?? "").toUpperCase() !== "OWNER";
+}
+
 // ---- Review Room ------------------------------------------------------------
 // Cuts reach the room by UPLOAD through the editor portal (Jordan, Sep 1:
 // "going off what's in Dropbox can get messy"). Folder discovery — minting a
 // review row for every video file that appears in 05-Final-Video — stays as
 // an opt-in fallback, off by default.
-// ---------------------------------------------------------------------------
-// PAUSE THE PHOTOGRAPHERS' PAY VIEW (Jordan, Sep 18 2026).
-//
-// "I want to have a setting in my account where I can turn off the My Pay view
-// for the photographers. I'm going to be transitioning to Salary with them and
-// still tracking KPI's and bonuses, but I want to be able to pause the page and
-// just make it look like an error loading the shoot pay page."
-//
-// WHAT IT PAUSES AND WHAT IT DOES NOT. It is a VIEW switch and nothing else:
-// payroll still computes, KPIs still score, bonuses still accrue, Finance →
-// Payroll is untouched, and the owner still sees every number. Since Oct 14
-// 2026 it covers EVERY login but the owner (Harrison and James included):
-// /my-pay becomes My Performance (the quarterly scorecard and bonus), and the
-// per-shoot pay card leaves their shoot screens, which would otherwise leak the
-// same dollars straight through the pause. The Sep 18 "looks like an error"
-// screen is gone; nobody is shown a fake failure any more.
-// ---------------------------------------------------------------------------
-export type PayVisibilityRules = {
-  /** true = every login but the owner sees My Performance instead of their pay */
-  photographerPayPaused: boolean;
-  /** when it was paused, so the settings card can say how long it has been */
-  pausedAt: string | null;
-  pausedBy: string | null;
-};
-// FAILS CLOSED (Oct 20 2026, audit G6). "Harrison and James never see pay" is a
-// standing rule, and this switch is the only thing enforcing it. getSetting
-// hands back this default both when the row is missing AND when the read
-// throws, so a default of "not paused" meant one settings hiccup showed every
-// non-owner their dollars. The default is now "hidden": only a saved row that
-// explicitly says "not paused" shows pay to anyone but the owner.
-export const DEFAULT_PAY_VISIBILITY: PayVisibilityRules = { photographerPayPaused: true, pausedAt: null, pausedBy: null };
-export async function payVisibilityRules(): Promise<PayVisibilityRules> {
-  const r = await getSetting<PayVisibilityRules>("pay_visibility", DEFAULT_PAY_VISIBILITY);
-  return {
-    photographerPayPaused: r.photographerPayPaused === true,
-    pausedAt: typeof r.pausedAt === "string" && r.pausedAt ? r.pausedAt : null,
-    pausedBy: typeof r.pausedBy === "string" && r.pausedBy ? r.pausedBy : null,
-  };
-}
-
-/** Is THIS viewer's pay view paused? The gate every pay surface asks, so a new
- *  surface cannot forget the rule and leak the numbers around the pause. */
-export async function payHiddenFor(user: { realRole?: string; role?: string } | null): Promise<boolean> {
-  const role = (user?.realRole ?? user?.role ?? "").toUpperCase();
-  // Oct 14 2026 (Jordan: "shut down the my pay for both Harrison and James ...
-  // It should just be their performance tracking page. And tracking their
-  // bonus"). The pause now covers EVERY login but the owner: James is an ADMIN
-  // with his own pay view (mypay override), and the old PHOTOGRAPHER-only test
-  // let his pay straight through. The owner (and an owner previewing with
-  // view-as, whose realRole stays OWNER) still sees every number.
-  //
-  // Unknown viewer = hidden (audit G6): a page that could not resolve who is
-  // looking must never fall through to the dollars.
-  if (role === "OWNER") return false;
-  if (!role) return true;
-  return (await payVisibilityRules().catch(() => DEFAULT_PAY_VISIBILITY)).photographerPayPaused;
-}
-
 export type ReviewRoomRules = {
   /** mint review rows from files found in the job's Dropbox Final folder */
   discoverFromDropbox: boolean;
@@ -519,8 +493,10 @@ export async function turnaroundRules(): Promise<TurnaroundRules> {
 }
 
 export type InternalAlertRules = {
-  uploadReminder: { enabled: boolean; hour: number };   // "did you submit the upload page?"
-  uploadChaser: { enabled: boolean; hour: number };     // second nudge, later that night
+  /** "did you submit the upload page?" — hour is always one of EVENING_SEND_HOURS */
+  uploadReminder: { enabled: boolean; hour: number };
+  /** second nudge, later that night — hour is always one of EVENING_SEND_HOURS */
+  uploadChaser: { enabled: boolean; hour: number };
   photosUndelivered: {
     enabled: boolean;
     fromHour: number;
@@ -592,8 +568,43 @@ export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
   coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null },
 };
 
+// ---------------------------------------------------------------------------
+// THE TWO REAL EVENING HOURS (Oct 21 2026, audit H23).
+//
+// The upload reminder and the late-night chaser are sent by /api/cron/evening,
+// which vercel.json fires at 23:00, 00:00, 02:00 and 03:00 UTC. Vercel cron
+// cannot follow daylight saving, so those land on 7, 8, 10 and 11 PM Eastern
+// in summer (EDT) and on 6, 7, 9 and 10 PM in winter (EST). The only Eastern
+// hours reached in EVERY season are 7 PM and 10 PM; any other hour sends for
+// half the year at best (8 PM, 11 PM, 6 PM, 9 PM) or never (anything else).
+// Settings used to accept any hour from 0 to 23 and echo it back as if it
+// were true. Now it offers exactly these two, and a stored hour that is not
+// one of them is read as the nearest one, so the screen and the cron agree.
+// ---------------------------------------------------------------------------
+export const EVENING_SEND_HOURS = [19, 22] as const;
+
+/** The real firing hour nearest `h` on the 24-hour clock (an hour after
+ *  midnight is nearer 10 PM than 7 PM). Not a whole hour 0-23: `fallback`. */
+export function eveningSendHour(h: unknown, fallback: number): number {
+  if (typeof h !== "number" || !Number.isInteger(h) || h < 0 || h > 23) return fallback;
+  const gap = (x: number) => Math.min(Math.abs(h - x), 24 - Math.abs(h - x));
+  return EVENING_SEND_HOURS.reduce((best, x) => (gap(x) < gap(best) ? x : best), EVENING_SEND_HOURS[0] as number);
+}
+
+const readInternalAlerts = () => getSetting<InternalAlertRules>("internal_alerts", DEFAULT_INTERNAL_ALERTS);
+
+/** For the Settings card only: a SAVED evening hour that is not a real firing
+ *  time (null when it is). internalAlertRules() has already moved it to the
+ *  nearest real hour; this lets the card say what was saved and why it moved. */
+export async function eveningHoursOffSchedule(): Promise<{ uploadReminder: number | null; uploadChaser: number | null }> {
+  const r = await readInternalAlerts();
+  const off = (v: unknown) =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 23 && !(EVENING_SEND_HOURS as readonly number[]).includes(v) ? v : null;
+  return { uploadReminder: off(r.uploadReminder?.hour), uploadChaser: off(r.uploadChaser?.hour) };
+}
+
 export async function internalAlertRules(): Promise<InternalAlertRules> {
-  const r = await getSetting<InternalAlertRules>("internal_alerts", DEFAULT_INTERNAL_ALERTS);
+  const r = await readInternalAlerts();
   const hr = (v: unknown, fallback: number) =>
     typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 23 ? v : fallback;
   const d = DEFAULT_INTERNAL_ALERTS;
@@ -612,8 +623,10 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
     onCallTeamMemberId: typeof r.coverage?.onCallTeamMemberId === "string" && r.coverage.onCallTeamMemberId ? r.coverage.onCallTeamMemberId : null,
   };
   return {
-    uploadReminder: { enabled: r.uploadReminder?.enabled !== false, hour: hr(r.uploadReminder?.hour, d.uploadReminder.hour) },
-    uploadChaser: { enabled: r.uploadChaser?.enabled !== false, hour: hr(r.uploadChaser?.hour, d.uploadChaser.hour) },
+    // Always a real firing hour (EVENING_SEND_HOURS), so the evening cron, the
+    // split-notice check in uploadDigest and the Settings card read the same time.
+    uploadReminder: { enabled: r.uploadReminder?.enabled !== false, hour: eveningSendHour(r.uploadReminder?.hour, d.uploadReminder.hour) },
+    uploadChaser: { enabled: r.uploadChaser?.enabled !== false, hour: eveningSendHour(r.uploadChaser?.hour, d.uploadChaser.hour) },
     photosUndelivered: {
       enabled: r.photosUndelivered?.enabled !== false,
       fromHour: windowOk ? from : d.photosUndelivered.fromHour,

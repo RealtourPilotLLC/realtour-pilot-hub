@@ -12,7 +12,6 @@ import { payHistoryFor } from "@/lib/payHistory";
 import { pendingWrapUpShoots } from "@/lib/shoot";
 import { etDayKey } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
-import { homeFor } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +20,11 @@ export const dynamic = "force-dynamic";
 // platform default does to a page that touches this engine.
 export const maxDuration = 60;
 
+// Since Oct 14 2026 (permanent Oct 21) this full pay view is the OWNER's
+// alone: Jordan's own shoot pay, or one person's via ?as=. Everyone else is shown
+// MyPerformance at the bottom of this file. The notes below date from when a
+// photographer saw this page, and still describe what it shows.
+//
 // A photographer's OWN pay — nothing else. Shoot pay + mileage per job with
 // period totals; no other people, no client pricing. The invoice shown per job
 // is the ELIGIBLE-services invoice their % is applied to (payableInvoice —
@@ -58,55 +62,38 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   const sp = await searchParams;
   const me = await getCurrentUser().catch(() => null);
 
-  // Photographers see THEIR pay. Owner/admin who ALSO shoot (a linked
-  // TeamMember with a pay rate — Jordan shoots at his own 40%) see THEIR OWN
-  // pay here too; the whole-team payroll stays on Finance → Payroll. Owner/
-  // admin without a shoot rate belong on /payouts. ?as=<memberId> is an
-  // EXPLICIT owner preview (read-only, the flag action refuses for unlinked
-  // callers). Editors have no payroll here.
-  //
   // NOBODY's pay ever renders as a guess: the old "first photographer"
   // local-dev fallback put James's page in front of the owner twice and is
-  // gone for good. No session → login (prod) or the empty state (open dev).
-  // A missing session is settled FIRST: the pay gate below now treats an
-  // unknown viewer as hidden (audit G6), and a signed-out visitor belongs on
-  // the login page, not on a blank scorecard.
+  // gone for good. A missing session is settled FIRST: the pay gate below
+  // treats an unknown viewer as hidden (audit G6), and a signed-out visitor
+  // belongs on the login page, not on a blank scorecard.
   if (!me && authEnforced()) redirect("/login?next=/my-pay");
-  // PAUSED (Jordan, Sep 18; every non-owner since Oct 14). A view switch,
-  // nothing more: payroll still runs, KPIs still score and bonuses still accrue
-  // behind this screen, and the owner still sees every number. It is asked
-  // FIRST, before any of the work below, so a paused page never spends six
-  // seconds in the OSRM router, and an owner previewing with ?as= still sees
-  // the real thing.
+  // ONLY THE OWNER SEES PAY (Jordan, Oct 14 2026, permanent since Oct 21: the
+  // "Team pay view" switch is retired). Everyone else, Harrison and James
+  // included, gets My Performance: the quarterly scorecard and the bonus it is
+  // tracking toward. Payroll still runs, KPIs still score and bonuses still
+  // accrue behind it. Asked FIRST, before any of the work below, so the page
+  // never spends six seconds in the OSRM router for someone it won't show pay
+  // to. A "view as" preview follows the previewed person (payHiddenFor reads
+  // the previewed role), so previewing Harrison shows Harrison's page.
   const { payHiddenFor } = await import("@/lib/settings");
   if (await payHiddenFor(me)) return <MyPerformance memberId={me?.teamMemberId ?? null} />;
 
-  let memberId: string | null = null;
-  let showTeamLink = false;
-  if (me?.role === "PHOTOGRAPHER") {
-    memberId = me.teamMemberId;
-  } else if (me?.role === "EDITOR") {
-    redirect(homeFor(me.role));
-  } else if (sp.as && (me ? me.realRole === "OWNER" : !authEnforced())) {
-    // Explicit preview of someone else's pay: the OWNER only (audit G6/C8).
-    // It used to accept any ADMIN, and James is an admin holding the mypay
-    // grant, so lifting the pay pause would have opened every photographer's
-    // pay history to him. Only the owner sees other people's money.
+  // Past the gate the viewer IS the owner. Jordan shoots too (on a pay rate), so
+  // My Pay is Jordan's own pay; the whole-team payroll stays on Finance → Payroll, and
+  // an owner without a shoot rate belongs there. ?as=<memberId> is the
+  // owner's explicit preview of one person's pay (read-only: the flag action
+  // refuses for unlinked callers). Only the owner sees other people's money
+  // (audit G6/C8).
+  let memberId: string | null;
+  if (sp.as && me?.realRole === "OWNER") {
     memberId = sp.as;
-  } else if (me) {
-    const tm = me.teamMemberId
+  } else {
+    const tm = me?.teamMemberId
       ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { payPercent: true } })
       : null;
-    if (tm?.payPercent == null) redirect("/payouts");
-    memberId = me.teamMemberId;
-    // The whole-team payroll link only helps people allowed on Finance —
-    // James (admin, sales:false) sees HIS pay with no dead door beside it.
-    const { canAccess } = await import("@/lib/auth/access");
-    showTeamLink = canAccess(me, "sales");
-  } else if (authEnforced()) {
-    // Unauthenticated or a transient session/DB failure — bounce to login; a
-    // healthy session lands right back here on the next request.
-    redirect("/login?next=/my-pay");
+    if (tm?.payPercent == null) redirect("/sales?tab=payroll");
+    memberId = me?.teamMemberId ?? null;
   }
 
   if (!memberId) {
@@ -180,11 +167,11 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         eyebrow="Eastern time"
         title="My Pay"
         subtitle={`${member?.name ? member.name.split(" ")[0] + "'s" : "Your"} shoot pay + mileage — flag anything that looks off`}
-        actions={showTeamLink ? (
+        actions={
           <Link href="/sales?tab=payroll" className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2">
             Team payroll <ChevronRight className="size-3.5" />
           </Link>
-        ) : undefined}
+        }
       />
       <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
         {/* TOTAL PAY THIS YEAR — the number they came to check when they are not
@@ -443,10 +430,11 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
 // MY PERFORMANCE (Oct 14 2026). Jordan: "shut down the my pay for both
 // Harrison and James. They should not be seeing their pay anymore on the
 // shoot page or on the my pay page. It should just be their performance
-// tracking page. And tracking their bonus." While pay is hidden this page is
-// the quarterly scorecard (the KPI areas and the bonus it is tracking toward),
-// this quarter and last, and nothing about shoot pay or mileage. Payroll
-// still runs behind it and the owner still sees every number.
+// tracking page. And tracking their bonus." For every login but the owner
+// (permanent since Oct 21 2026) this page is the quarterly scorecard (the KPI
+// areas and the bonus it is tracking toward, from kpi.ts, the same figure
+// Finance → Bonus pays), this quarter and last, and nothing about shoot pay or
+// mileage. Payroll still runs behind it and the owner still sees every number.
 // ---------------------------------------------------------------------------
 async function MyPerformance({ memberId }: { memberId: string | null }) {
   if (!memberId) {

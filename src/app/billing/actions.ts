@@ -1,6 +1,6 @@
 "use server";
 
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireOwner } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -10,11 +10,14 @@ import { ActivityType } from "@prisma/client";
 // AR follow-up actions for /billing (audit crack #17): $25k of real receivables
 // had no in-app way to chase. Draft-then-send, same contract as the rest of the
 // hub: the AI produces a TEXT DRAFT, a human reviews it and taps Send — nothing
-// here ever auto-sends. These guard with requireAdmin. The page they serve
-// (Finance → Unpaid) is the owner's by default and reaches a non-owner only
-// through a per-person `sales` grant; whether an admin should be able to call
-// them at all (they return dollar amounts) is an open owner decision (audit
-// G12, Oct 20 2026), so the guard is left as it was.
+// here ever auto-sends.
+//
+// OWNER ONLY (Jordan, Oct 21 2026: "A page-access override never grants
+// money"). Every action here reads or writes an outstanding balance, and the
+// nudge draft quotes the dollar amount, so they guard with requireOwner. They
+// used to take requireAdmin, which let anyone holding a per-person `sales`
+// grant chase, mark paid or remove AR rows (audit G12). Finance → Unpaid now
+// shows such a person the list without amounts or these buttons.
 
 export type NudgeDraft = { ok: boolean; text?: string; error?: string };
 
@@ -61,7 +64,7 @@ async function stillOwed(projectId: string): Promise<{ ok: true } | { ok: false;
 }
 
 export async function draftPaymentNudge(projectId: string): Promise<NudgeDraft> {
-  await requireAdmin();
+  await requireOwner();
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -99,7 +102,7 @@ export async function sendPaymentNudge(
   projectId: string,
   body: string,
 ): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireOwner();
   const text = (body || "").trim();
   if (!text) return { ok: false, message: "Nothing to send." };
 
@@ -178,10 +181,10 @@ export async function sendPaymentNudge(
   return { ok: true, message: "Reminder sent." };
 }
 
-// "Followed up" marker — Kyle chased this one outside the hub (a call, an email,
+// "Followed up" marker: someone chased this one outside the hub (a call, an email,
 // in person). Just stamps the row so the list shows when it was last worked.
 export async function markBillingNudged(projectId: string): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireOwner();
   try {
     await prisma.project.update({ where: { id: projectId }, data: { lastNudgedAt: new Date() } });
   } catch {
@@ -200,10 +203,10 @@ export async function markBillingNudged(projectId: string): Promise<{ ok: boolea
  * Take a row off the AR list (Jordan, Sep 1: "some are canceled appointments
  * we never completed or were tests"). Deliberately a FLAG, not a delete: the
  * Aryeo sync would re-import a deleted project on the next pass, and the order
- * history still matters for the books. Owner/admin only; reversible.
+ * history still matters for the books. Owner only (Oct 21 2026); reversible.
  */
 export async function removeFromAr(projectId: string, note: string): Promise<{ ok: boolean; message: string }> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  try { await requireOwner(); } catch (e) { return { ok: false, message: (e as Error).message }; }
   const p = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, balanceAmount: true } });
   if (!p) return { ok: false, message: "That job no longer exists." };
   const { getCurrentUser } = await import("@/lib/auth/user");
@@ -229,7 +232,7 @@ export async function removeFromAr(projectId: string, note: string): Promise<{ o
 
 /** Undo — put a removed job back on the AR list. */
 export async function restoreToAr(projectId: string): Promise<{ ok: boolean; message: string }> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  try { await requireOwner(); } catch (e) { return { ok: false, message: (e as Error).message }; }
   await prisma.project.update({
     where: { id: projectId },
     data: { arRemovedAt: null, arRemovedNote: null, paidMarkedAt: null, paidMarkedNote: null },
@@ -251,7 +254,7 @@ export async function restoreToAr(projectId: string): Promise<{ ok: boolean; mes
  * Distinct from removeFromAr: this one means the money actually came in.
  */
 export async function markArPaid(projectId: string, note: string): Promise<{ ok: boolean; message: string }> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  try { await requireOwner(); } catch (e) { return { ok: false, message: (e as Error).message }; }
   const p = await prisma.project.findUnique({ where: { id: projectId }, select: { balanceAmount: true } });
   if (!p) return { ok: false, message: "That job no longer exists." };
   const { getCurrentUser } = await import("@/lib/auth/user");

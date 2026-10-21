@@ -5,7 +5,10 @@ import { BONUS_BANDS, MAX_QUARTERLY_BONUS, type KpiArea, type QuarterScorecard }
 // ---------------------------------------------------------------------------
 // The photographer's own KPI tracker on /my-pay: where they stand this quarter,
 // which band that puts them in, what it is worth today, and what is pulling it
-// down. Their OWN numbers only — this component is rendered from the same
+// down. Since Oct 21 2026 it is also the figure Finance → Bonus pays (kpi.ts is
+// the only bonus engine), so "worth today" is never a different number from
+// the one Jordan sees. The "Flag it below" line is gone with it: every login
+// but the owner gets this card on My Performance, which has no pay flag. Their OWN numbers only — this component is rendered from the same
 // memberId the rest of My Pay resolves, and knows nothing about anyone else.
 //
 // Everything here is stated, never implied: the weights, the targets, which
@@ -233,8 +236,8 @@ export function QuarterScoreCard({ card, previous }: { card: QuarterScorecard; p
       <p className="border-t border-border px-4 py-3 text-[11px] leading-relaxed text-muted-2">
         Up to {money(MAX_QUARTERLY_BONUS)} a quarter. The weights above add to 100 when every area can be measured; while some
         can&apos;t, the rest are scaled up to fill the gap — so the score always means &ldquo;out of everything we can see&rdquo;.
-        This page works the number out; Jordan approves and pays it, and it shows up as an adjustment on your pay period. Anything
-        here look wrong? Flag it below and it goes straight to him.
+        This is the one bonus figure: the number on this card is the number Jordan pays, once the quarter closes. Anything
+        here look wrong? Tell Jordan.
       </p>
     </div>
   );

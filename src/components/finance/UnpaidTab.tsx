@@ -15,6 +15,13 @@ import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 // grant (ADMIN's default page set has no "sales" since Sep 2). Runs its own
 // getBillingRows() query — the other tabs never do. Amounts print with cents
 // (audit G18), the same figure the reminder text quotes.
+//
+// MONEY IS NOT THE PAGE GRANT (Jordan, Oct 21 2026: "A page-access override
+// never grants money"). `money` is canSeeMoney for the viewer. Without it the
+// tab is a read-only list of which delivered jobs are unpaid and how old they
+// are: no amount, no subtotal, no invoice or payment link (both open pages
+// that print the balance), and no chase, mark-paid, remove or restore button
+// (those actions are owner-only now).
 const STATUS_TONE: Record<string, string> = {
   UNPAID: "bg-danger/10 text-danger",
   PARTIALLY_PAID: "bg-warning/10 text-warning",
@@ -37,7 +44,7 @@ function ageDays(r: BillingRow): number {
   return Math.max(0, Math.floor((Date.now() - new Date(anchor).getTime()) / 86400000));
 }
 
-function BillingCard({ r }: { r: BillingRow }) {
+function BillingCard({ r, money }: { r: BillingRow; money: boolean }) {
   const tone = (r.paymentStatus && STATUS_TONE[r.paymentStatus]) || "bg-danger/10 text-danger";
   return (
     <div className="panel-shadow rounded-2xl border border-border bg-surface p-4">
@@ -74,29 +81,36 @@ function BillingCard({ r }: { r: BillingRow }) {
           )}
         </div>
 
-        {/* Right: money */}
-        <div className="text-right">
-          <div className="text-[11px] text-muted-2">Outstanding</div>
-          <div className="text-lg font-semibold text-warning">{usd(r.outstanding)}</div>
-          {r.invoiceTotal != null && (
-            <div className="text-[11px] text-muted-2">of {usd(r.invoiceTotal)} invoice</div>
-          )}
-        </div>
+        {/* Right: money (owner only) — otherwise how long it has been owed */}
+        {money ? (
+          <div className="text-right">
+            <div className="text-[11px] text-muted-2">Outstanding</div>
+            <div className="text-lg font-semibold text-warning">{usd(r.outstanding)}</div>
+            {r.invoiceTotal != null && (
+              <div className="text-[11px] text-muted-2">of {usd(r.invoiceTotal)} invoice</div>
+            )}
+          </div>
+        ) : (
+          <div className="text-right">
+            <div className="text-[11px] text-muted-2">Unpaid for</div>
+            <div className="text-lg font-semibold text-warning">{ageDays(r)} day{ageDays(r) === 1 ? "" : "s"}</div>
+          </div>
+        )}
       </div>
 
       {/* Actions */}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs">
-        <NudgeActions projectId={r.id} lastNudgedAt={r.lastNudgedAt} />
-        <RemoveFromAr projectId={r.id} />
+        {money && <NudgeActions projectId={r.id} lastNudgedAt={r.lastNudgedAt} />}
+        {money && <RemoveFromAr projectId={r.id} />}
         <Link href={`/projects/${r.id}`} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
           <ListTodo className="size-3.5" /> {r.openTasks} open {r.openTasks === 1 ? "task" : "tasks"}
         </Link>
-        {r.invoiceUrl && (
+        {money && r.invoiceUrl && (
           <a href={r.invoiceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
             <FileText className="size-3.5" /> Invoice
           </a>
         )}
-        {r.paymentUrl && (
+        {money && r.paymentUrl && (
           <a href={r.paymentUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 font-medium text-white hover:opacity-90">
             <CreditCard className="size-3.5" /> Payment link
           </a>
@@ -116,7 +130,7 @@ function BillingCard({ r }: { r: BillingRow }) {
   );
 }
 
-export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
+export async function UnpaidTab({ show, money }: { show: FinanceTab[]; money: boolean }) {
   const [{ rows, totalOutstanding }, cleared] = await Promise.all([getBillingRows(), getClearedArRows()]);
 
   // Group into aging buckets (90+ first — chase the oldest money).
@@ -138,15 +152,16 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
         <div className="flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-border bg-surface p-5 panel-shadow">
           <div>
             <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted">
-              <Receipt className="size-3.5" /> Total outstanding
+              <Receipt className="size-3.5" /> {money ? "Total outstanding" : "Unpaid jobs"}
             </div>
-            <div className="mt-1 text-3xl font-semibold tracking-tight text-warning">{usd(totalOutstanding)}</div>
+            <div className="mt-1 text-3xl font-semibold tracking-tight text-warning">{money ? usd(totalOutstanding) : rows.length}</div>
+            {!money && <p className="mt-1 text-xs text-muted">Amounts and the chase buttons are Jordan&rsquo;s. This list shows which jobs are still owed and for how long.</p>}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-right text-sm text-muted">
             {/* Aging at a glance */}
             {grouped.filter((g) => g.items.length > 0 && g.key !== "0").map((g) => (
               <span key={g.key} className={`text-xs font-medium ${g.color}`}>
-                {g.label}: {usd(g.subtotal)}
+                {g.label}: {money ? usd(g.subtotal) : `${g.items.length} job${g.items.length === 1 ? "" : "s"}`}
               </span>
             ))}
             <span>
@@ -168,11 +183,11 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
                     <CalendarClock className="size-3.5" /> {g.label}
                   </h2>
                   <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${g.chip}`}>
-                    {g.items.length} · {usd(g.subtotal)}
+                    {money ? `${g.items.length} · ${usd(g.subtotal)}` : g.items.length}
                   </span>
                 </div>
                 {g.items.map((r) => (
-                  <BillingCard key={r.id} r={r} />
+                  <BillingCard key={r.id} r={r} money={money} />
                 ))}
               </section>
             ),
@@ -187,7 +202,7 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
           <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-muted hover:text-foreground">
             Cleared from AR · {cleared.length}
             <span className="ml-2 text-xs text-muted-2">
-              {usd(cleared.reduce((n, r) => n + r.outstanding, 0))} no longer counted as owed
+              {money ? `${usd(cleared.reduce((n, r) => n + r.outstanding, 0))} no longer counted as owed` : "no longer counted as owed"}
             </span>
           </summary>
           <div className="space-y-2 border-t border-border p-3">
@@ -203,9 +218,10 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
                 <Link href={`/projects/${r.id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:text-brand">
                   {r.title}
                 </Link>
-                <span className="shrink-0 text-xs text-muted">{r.clientName} · {usd(r.outstanding)}</span>
-                {r.note && <span className="w-full text-[11px] text-muted-2">{r.note}</span>}
-                <RestoreToAr projectId={r.id} />
+                <span className="shrink-0 text-xs text-muted">{r.clientName}{money ? ` · ${usd(r.outstanding)}` : ""}</span>
+                {/* The paid/removed note is free text and often quotes the money. */}
+                {money && r.note && <span className="w-full text-[11px] text-muted-2">{r.note}</span>}
+                {money && <RestoreToAr projectId={r.id} />}
               </div>
             ))}
           </div>

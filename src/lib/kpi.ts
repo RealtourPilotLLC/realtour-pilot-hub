@@ -42,6 +42,15 @@ import { ownsShootWhere } from "@/lib/shoot";
 //  4. THIS FILE COMPUTES, IT NEVER PAYS. Money moves through a PayoutAdjustment
 //     the owner approves, exactly like every other pay surface.
 //
+// THE ONLY BONUS ENGINE (Jordan, Oct 21 2026: "One bonus engine: the scorecard
+// bands"). There used to be a second one, lib/bonus.ts: a pool funded from 15%
+// of quarterly profit above $15k, split by a different score. Finance → Bonus
+// and its Pay button ran on that one while photographers watched this one on
+// My Performance, so the bonus a person saw and the bonus Jordan paid could
+// differ in both the score and the dollars. It is retired. Finance → Bonus,
+// the Pay button's server-side recompute (app/sales/bonusActions.ts), My
+// Performance and the payout line it writes all read scoreQuarter() below.
+//
 // Pure scoring (bands, scaling, assembly) is separated from the database reads
 // so the owner-facing roster view can reuse all of it.
 // ---------------------------------------------------------------------------
@@ -496,7 +505,7 @@ export async function scoreQuarter(opts: {
     notes: [
       ...(confirmed > 0 ? [`You confirmed the cull on the wrap-up for ${confirmed} shoot${confirmed === 1 ? "" : "s"}.`] : []),
       ...(noSqft > 0
-        ? [`${noSqft} of these homes have no square footage on file, so they're judged on the standard tier — a genuinely big house can look over budget. Tell Jordan and he'll set the target on the job.`]
+        ? [`${noSqft} of these homes have no square footage on file, so they're judged on the standard tier — a genuinely big house can look over budget. Tell Jordan, who can set the target on the job.`]
         : []),
       ...(uncounted > 0 ? [`${uncounted} shoot${uncounted === 1 ? "" : "s"} had no raw count (video-only, or the folder wasn't matched) and are left out.`] : []),
     ],
@@ -718,17 +727,39 @@ export async function scoreQuarter(opts: {
 }
 
 /**
- * Every active shooting photographer's scorecard for a quarter — the owner
- * roster view reuses this rather than reimplementing any of the maths.
+ * WHO THE QUARTERLY BONUS COVERS. Active shooting creatives on the roster
+ * (role PHOTOGRAPHER, or a MANAGER flagged as the creative manager), never the
+ * owner: Jordan shoots at his own rate but is not in his own bonus (his card
+ * used to offer a pay-himself button). The owner is recognised by the roster
+ * row his OWNER login is linked to, and by name for a login never linked.
+ *
+ * Oct 21 2026: this is the eligibility rule Finance → Bonus already paid on
+ * (the retired lib/bonus.ts), so nobody joins or leaves the bonus with the
+ * engine change. It deliberately does not ask for a per-shoot pay rate: Jordan
+ * is moving the photographers to salary and keeping the bonus.
+ */
+export async function bonusRoster(): Promise<{ id: string; name: string }[]> {
+  const [members, ownerLogins] = await Promise.all([
+    prisma.teamMember.findMany({
+      where: { active: true, OR: [{ role: "PHOTOGRAPHER" }, { role: "MANAGER", creativeManager: true }] },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.appUser.findMany({ where: { role: "OWNER", teamMemberId: { not: null } }, select: { teamMemberId: true } }),
+  ]);
+  const owner = new Set(ownerLogins.map((u) => u.teamMemberId));
+  return members.filter((m) => !owner.has(m.id) && !/^jordan\b/i.test(m.name.trim()));
+}
+
+/**
+ * Every bonus-eligible creative's scorecard for a quarter (bonusRoster), best
+ * first. Finance → Bonus renders this list, so the owner sees and pays exactly
+ * the card each person sees on My Performance.
  * Sequential on purpose: this runs behind an owner page, not a hot path, and
  * a parallel fan-out over the shared Neon pool starves the request that needs it.
  */
 export async function scoreQuarterRoster(quarter?: QuarterRef, now?: Date): Promise<QuarterScorecard[]> {
-  const members = await prisma.teamMember.findMany({
-    where: { active: true, role: "PHOTOGRAPHER", payPercent: { not: null } },
-    select: { id: true, name: true },
-    orderBy: { name: "asc" },
-  });
+  const members = await bonusRoster();
   const out: QuarterScorecard[] = [];
   for (const m of members) out.push(await scoreQuarter({ memberId: m.id, name: m.name, quarter, now }));
   return out.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name));

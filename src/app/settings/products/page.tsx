@@ -3,6 +3,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
+import { canSeeMoney } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 import { deliverablesForTitle, loadManualProductMap } from "@/lib/integrations/aryeo";
 import { stripHtml } from "@/lib/utils";
@@ -18,6 +19,11 @@ export const dynamic = "force-dynamic";
 export default async function ProductMappingPage() {
   const me = await getCurrentUser().catch(() => null);
   if (authEnforced() && (!me || (me.role !== "OWNER" && me.role !== "ADMIN"))) redirect("/");
+  // PRICES ARE MONEY (Jordan, Oct 21 2026: admins don't see prices in
+  // Settings → Products). Kyle maps products here exactly as before; the price
+  // range on each card is filled in only for a viewer canSeeMoney allows. It
+  // is left null, not hidden, so the figure never reaches the browser at all.
+  const money = me ? canSeeMoney(me.role) : !authEnforced();
 
   await loadManualProductMap(true);
   // How often each product is actually ordered — the map work queue sorts by
@@ -48,7 +54,7 @@ export default async function ProductMappingPage() {
       description: p.description ? stripHtml(p.description).replace(/\s+/g, " ").trim() : null,
       orders: usage.get(p.title.toLowerCase().trim()) ?? 0,
       priceRange:
-        p.minPrice != null
+        money && p.minPrice != null
           ? p.maxPrice != null && p.maxPrice !== p.minPrice
             ? `$${(p.minPrice / 100).toFixed(0)}–$${(p.maxPrice / 100).toFixed(0)}`
             : `$${(p.minPrice / 100).toFixed(0)}`

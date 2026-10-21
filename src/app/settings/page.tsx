@@ -9,7 +9,7 @@ import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, payVisibilityRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, eveningHoursOffSchedule, textTemplates, reviewRoomRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
 import { commsCoachingSettings } from "@/lib/commsCoaching";
 import { CoachingSettings } from "@/components/coaching/CoachingSettings";
 import { ARYEO_MANUAL_NOTE } from "@/lib/integrations/topaz";
@@ -17,12 +17,11 @@ import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
-import { PayVisibilitySettings } from "@/components/settings/PayVisibility";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck, Zap, EyeOff, Bug, Mail, type LucideIcon } from "lucide-react";
+import { CalendarCheck, Zap, Bug, Mail, type LucideIcon } from "lucide-react";
 import { ClientEmailMonitorSettings } from "@/components/settings/ClientEmailMonitorSettings";
 import { clientEmailMonitor } from "@/lib/clientEmailMonitor";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
@@ -169,9 +168,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   // of six real people, and "0 of 0" automations against thirteen keys; null
   // prints the same honest note the reminders card has always used, and the
   // Section badge is left off rather than asserting a number nobody read.
-  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, automations, reminders, coaching, emailMonitor] = await Promise.all([
-    editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
-    payVisibilityRules().then((r) => ({ paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy })),
+  const [rules, textRules, turns, alerts, eveningOff, templates, reviewRoom, notifyRows, topaz, automations, reminders, coaching, emailMonitor] = await Promise.all([
+    editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(),
+    // A saved evening hour the cron can't fire at (Oct 21 2026): the card
+    // shows the real time it goes out and says what was saved.
+    eveningHoursOffSchedule(),
+    textTemplates(), reviewRoomRules(),
     // Team notifications (Jordan, Sep 15) — every active person, the owner
     // included; the Sep 11 owner-only "Text me" card folded into this matrix.
     teamNotifyRows().catch(() => null),
@@ -237,7 +239,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // Notification schedule is in here too (#notification-schedule).
     "internal-alerts": card("internal-alerts",
       <Section icon={BellRing} title="Internal alerts">
-        <InternalAlertSettings initial={alerts} />
+        <InternalAlertSettings initial={alerts} offSchedule={eveningOff} />
       </Section>, "internal-alerts"),
 
     "team-notifications": card("team-notifications",
@@ -266,13 +268,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           : <p className="text-sm text-muted">The coaching rules could not be read just now — reload to try again. Nobody has been added or removed, and nothing has been sent.</p>}
       </Section>, "coaching"),
 
-    // Owner's own switch — read here so the card can say how long it has been
-    // on. In the owner-only Financial group (§11: owner-only financial
-    // controls stay protected).
-    "pay-view": card("pay-view",
-      <Section icon={EyeOff} title="Team pay view">
-        <PayVisibilitySettings initial={payVisibility} isOwner={isOwner} />
-      </Section>),
+    // "Team pay view" (the pay_visibility switch) retired Oct 21 2026: only
+    // the owner sees pay, permanently (lib/settings payHiddenFor). The
+    // Financial group keeps its payroll and bank-feed links below.
 
     "review-room": card("review-room",
       <Section icon={Clapperboard} title="Video Review Room">
@@ -443,9 +441,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     program: `${automations ? `${automations.filter((automation) => automation.enabled).length} of ${automations.length} automation switches on` : "Automation switches could not be read"} · ${reminders ? `reminder policy uses ${reminders.policySource === "stored" ? "saved values" : "defaults"}; its switch is ${reminders.switch.enabled ? "on" : reminders.switch.missing ? "not configured" : "off"}` : "reminder policy could not be read"}.`,
     comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · client email copies ${emailMonitor.enabled ? `to ${emailMonitor.address}` : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
     integrations: <Suspense fallback={<>Reading connection status…</>}><IntegrationSummary report={readiness} /></Suspense>,
-    financial: payVisibility.paused
-      ? "Team pay hidden: everyone but you sees My Performance. Individual access rules still apply."
-      : "Team pay showing: every login with My Pay sees their own dollar pay. Individual access rules still apply.",
+    financial: "Only you see pay. Everyone else gets My Performance: their scorecard and the bonus it tracks, never their shoot pay or mileage.",
   };
   const render = (g: SettingsGroupDef) => (
     <SettingsGroup key={g.id} group={g} snapshot={snapshots[g.id]}>

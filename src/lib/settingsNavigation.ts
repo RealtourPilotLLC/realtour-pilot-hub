@@ -73,7 +73,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     id: "financial",
     title: "Financial",
     short: "Financial",
-    summary: "What photographers are shown about their pay, and where payroll and bank feeds are managed. Only you see this group.",
+    summary: "Where payroll and bank feeds are managed. Pay itself is yours alone: everyone else sees My Performance. Only you see this group.",
     ownerOnly: true,
   },
 ];
@@ -81,15 +81,18 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
 /** Every card the page renders, by the name its wrapper carries (data-settings-card). */
 export const SETTINGS_CARD_KEYS = [
   "editor-routing", "automated-texts", "text-wording", "turnaround", "internal-alerts", "team-notifications", "coaching",
-  "pay-view", "review-room", "topaz", "program-automations", "program-reminders", "calendly", "product-categories",
+  "review-room", "topaz", "program-automations", "program-reminders", "calendly", "product-categories",
 ] as const;
+// "pay-view" (the Team pay view switch) left Oct 21 2026: only the owner sees
+// pay, permanently, so there is no switch to place or search for.
 export type SettingsCardKey = (typeof SETTINGS_CARD_KEYS)[number];
 
 /**
  * Which cards sit in which group, in order — the ONE place a card is placed, so
  * it cannot be dropped or shown twice by editing a group. The ui03 drill checks
  * this list covers every card exactly once. Integrations holds no existing
- * card (its readiness rows are new and read-only); the page adds it.
+ * card (its readiness rows are new and read-only); the page adds it. Financial
+ * holds none either since Oct 21 2026; the page adds its links.
  */
 export const SETTINGS_LAYOUT: Record<SettingsGroupId, readonly SettingsCardKey[]> = {
   team: ["team-notifications", "coaching"],
@@ -99,7 +102,8 @@ export const SETTINGS_LAYOUT: Record<SettingsGroupId, readonly SettingsCardKey[]
   program: ["program-automations", "program-reminders", "calendly"],
   comms: ["automated-texts", "text-wording", "internal-alerts"],
   integrations: [],
-  financial: ["pay-view"],
+  // No card: the Financial group is its payroll and bank-feed links (the page adds them).
+  financial: [],
 };
 
 /** The groups this viewer sees. An owner-only group is left out entirely for anyone else. */
@@ -116,7 +120,6 @@ export const SETTINGS_SEARCH_LABELS: Record<SettingsCardKey, string> = {
   "internal-alerts": "Internal alerts notification schedule coverage hours on call quiet time urgent Slack digests",
   "team-notifications": "Team notifications members mentions project messages bell Slack SMS phone channels",
   coaching: "Comms coaching audited team members report send notes",
-  "pay-view": "Team pay view Photographer pay view visibility paused payroll financial My Performance",
   "review-room": "Review Room reviewer coverage primary backup fallback creative approver offer transfer covered hours upload retention Dropbox discovery",
   topaz: "1080p video pass Topaz upscale enhancement limits credits",
   "program-automations": "Content program automations switches enabled dependencies rollout pilot client scope AI script drafting call transcript discovery monthly",

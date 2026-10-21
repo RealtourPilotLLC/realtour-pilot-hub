@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
-import { canAccess } from "@/lib/auth/access";
+import { canAccess, canSeeMoney } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 import { UnpaidTab } from "@/components/finance/UnpaidTab";
 import { PayrollTab } from "@/components/finance/PayrollTab";
@@ -30,6 +30,10 @@ export const maxDuration = 60;
 //     `sales` grant: ADMIN's default page set has had no "sales" since Sep 2
 //     ("full ops access, no money"), so Kyle never reaches this page at all.
 //     (Corrected Oct 20 2026, audit G12: this used to say "admin-visible".)
+//     A PAGE GRANT IS NOT A MONEY GRANT (Jordan, Oct 21 2026: "A page-access
+//     override never grants money"): such a person sees which delivered jobs
+//     are unpaid, never an amount, and none of the chase / mark-paid buttons
+//     (those actions are owner-only, app/billing/actions.ts).
 // A non-owner who deep-links any other ?tab= is redirected to Unpaid.
 export default async function FinancePage({
   searchParams,
@@ -52,6 +56,9 @@ export default async function FinancePage({
   // account, so in prod `!me` must NOT grant the owner-only Revenue/Payroll
   // tabs to a revoked session still holding a valid 7-day JWT.
   const isOwner = me ? me.role === "OWNER" : !authEnforced();
+  // Dollars follow canSeeMoney (the hub's one money rule), never the page
+  // grant. The previewed role under "view as", so a preview shows the truth.
+  const money = me ? canSeeMoney(me.role) : !authEnforced();
 
   const sp = await searchParams;
   const requested = sp.tab;
@@ -87,7 +94,7 @@ export default async function FinancePage({
     redirect("/sales?tab=unpaid");
   }
 
-  if (tab === "unpaid") return <UnpaidTab show={show} />;
+  if (tab === "unpaid") return <UnpaidTab show={show} money={money} />;
   if (tab === "payroll") return <PayrollTab show={show} start={sp.start} />;
   if (tab === "personal") return <PersonalTab show={show} />;
   if (tab === "people") return <PeopleTab show={show} />;
