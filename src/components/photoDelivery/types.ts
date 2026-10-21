@@ -111,6 +111,21 @@ export type VersionView = {
   sharpness: number | null;
   /** The version lives in AutoHDR, so it can be restored from the hub. */
   inAutohdr: boolean;
+  /** Oct 21 2026: Restore can make it current (an AutoHDR version, a hub edit, or the photo's own file under a hub edit). */
+  restorable?: boolean;
+  /** Oct 21 2026: straightened or cropped in the hub (photoEdit.ts). */
+  hubEdit?: boolean;
+};
+
+/** Oct 21 2026: the photo's current version is the hub's own edit (straighten, keystone, crop). */
+export type HubEditView = {
+  versionId: string;
+  label: string;
+  params: { rotate: number; keystone: number; crop: { x: number; y: number; w: number; h: number }; aspect: "original" | "3:2" | "4:3" | "16:9" | "free" };
+  /** The Aryeo listing still has the photo's old file: Update on Aryeo replaces it. */
+  needsListingUpdate: boolean;
+  /** The edited file, full size (staff only). */
+  downloadUrl: string | null;
 };
 
 export type CvMetric = { label: string; value: string };
@@ -144,6 +159,8 @@ export type PhotoView = {
   deliveryName: string | null;
   /** A fix operation is queued or running on this photo. */
   fixing: boolean;
+  /** Oct 21 2026: the hub's own edit, when that is the current version. */
+  hubEdit?: HubEditView | null;
 };
 
 export type FindingView = {
@@ -439,5 +456,9 @@ export type AryeoPushView = {
     finishedAt: string | null;
     deliveredAt: string | null;
     waitingForApproval: boolean;
+    /** Oct 21 2026: an Update on Aryeo (the hub's edit replacing photos on the listing). */
+    update?: boolean;
   } | null;
+  /** Oct 21 2026: the last Update on Aryeo of this job and how it ended. */
+  lastUpdate?: { at: string; ok: boolean; note: string; photoIds: string[] } | null;
 };

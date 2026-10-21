@@ -150,6 +150,12 @@ export async function captureVersion(photo: PhotoRef, opts: { versionUuid: strin
  * for a check of a photo the hub just changed on purpose.
  */
 export async function adoptVersion(photoId: string, versionUuid: string, sourceKind: string): Promise<void> {
+  // Oct 21 2026: a new AutoHDR version (a fix, a restore, a change in its
+  // editor) replaces the hub's own straighten/crop, which AutoHDR never had:
+  // the photo goes back to its own file first (the edit stays under Versions).
+  const { isHubEditHash, unadoptHubEdit } = await import("./photoEdit");
+  const was = await prisma.photoAsset.findUnique({ where: { id: photoId }, select: { contentHash: true } });
+  if (isHubEditHash(was?.contentHash)) await unadoptHubEdit(photoId, "autohdr", { quiet: true }).catch(() => null);
   if (sourceKind !== "AUTOHDR") {
     await prisma.photoAsset.update({ where: { id: photoId }, data: { autohdrVersionUuid: versionUuid } });
     return;
@@ -184,7 +190,8 @@ export async function syncHeads(jobId: string, opts: { by?: string } = {}): Prom
   const out: { changed: { photoId: string; name: string; label: string }[]; error?: string } = { changed: [] };
   // A photo's history is being copied: its current version is switched for a moment, so not now.
   if (await versionProbeActive(jobId)) return out;
-  const photos = await prisma.photoAsset.findMany({ where: { jobId, status: { in: ["ACTIVE", "EXCLUDED"] } }, select: { id: true, jobId: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, autohdrVersionUuid: true } });
+  const photos = await prisma.photoAsset.findMany({ where: { jobId, status: { in: ["ACTIVE", "EXCLUDED"] } }, select: { id: true, jobId: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, autohdrVersionUuid: true, contentHash: true } });
+  const { hubEditAutohdrBase } = await import("./photoEdit");
   // The job and its shoots are read once for all its photos.
   const cache: RefCache = {};
   const byShoot = new Map<number, { p: (typeof photos)[number]; ref: { shootId: number; imageUuid: string } }[]>();
@@ -205,6 +212,8 @@ export async function syncHeads(jobId: string, opts: { by?: string } = {}): Prom
     for (const { p, ref } of list) {
       const now = head.get(ref.imageUuid);
       if (!now || now === p.autohdrVersionUuid) continue;
+      // Oct 21 2026: the hub's own edit is current, and AutoHDR still shows the version it was made from: nothing changed there.
+      if (!p.autohdrVersionUuid && now === (await hubEditAutohdrBase(p))) continue;
       // A fix in flight sets the head itself; the runner records it.
       const busy = await prisma.photoFixOperation.count({ where: { photoId: p.id, status: { in: ["SUBMITTING", "SUBMITTED"] } } });
       if (busy) continue;
@@ -262,9 +271,18 @@ async function releaseProbe(jobId: string): Promise<void> {
 
 /** Make an earlier version the current one, in AutoHDR and in the hub (free). */
 export async function restoreVersion(photoId: string, versionId: string, by: string): Promise<{ ok: boolean; message: string }> {
-  const photo = await prisma.photoAsset.findUnique({ where: { id: photoId }, select: { id: true, jobId: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, autohdrVersionUuid: true } });
+  const photo = await prisma.photoAsset.findUnique({ where: { id: photoId }, select: { id: true, jobId: true, name: true, sourceKind: true, sourceRef: true, autohdrImageUuid: true, autohdrVersionUuid: true, contentHash: true } });
   const v = await prisma.photoVersion.findUnique({ where: { id: versionId }, select: { id: true, photoId: true, label: true, autohdrVersionUuid: true } });
   if (!photo || !v || v.photoId !== photo.id) return { ok: false, message: "That version is not one of this photo's." };
+  // Oct 21 2026: the hub's own edits (straighten, crop) and the file under one are restored in the hub (photoEdit.ts).
+  const PE = await import("./photoEdit");
+  const hub = await PE.restoreHubVersion(photoId, versionId, by);
+  if (hub) return hub;
+  if (v.autohdrVersionUuid && PE.isHubEditHash(photo.contentHash) && v.autohdrVersionUuid === (await PE.editBaseOf(photo)).autohdrVersionUuid) {
+    // The AutoHDR version the edit was made from: AutoHDR still has it as current, only the hub changes.
+    const r = await PE.unadoptHubEdit(photoId, by);
+    return r.ok ? { ok: true, message: `${photo.name} is back to "${v.label}". The hub, its downloads and the Aryeo folder use it now.` } : r;
+  }
   if (!v.autohdrVersionUuid) return { ok: false, message: "This version is not in AutoHDR, so it can't be made current from the hub. Replace the photo on the listing by hand." };
   if (v.autohdrVersionUuid === photo.autohdrVersionUuid) return { ok: true, message: "That is already the current version." };
   const ref = await autohdrRefOf(photo);

@@ -76,6 +76,8 @@ export function aryeoPushNext(push: AryeoPushView): "approve" | "deliver" | null
 export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted" | "good" | "bad" | "busy" } | null {
   const p = push.progress;
   if (!p) return null;
+  // Oct 21 2026: Update on Aryeo (the hub's edit replacing photos on the listing); the run before it comes back when it ends.
+  if (p.update) return { text: `Updating ${p.total} edited photo${p.total === 1 ? "" : "s"} on the Aryeo listing${p.note ? `: ${p.note}` : "."}`, tone: "busy" };
   if (p.deliveredAt && p.state === "DONE") return { text: `Delivered in Aryeo by the hub ${etMonthDayTime(p.deliveredAt)}.`, tone: "good" };
   if (p.state === "FAILED") return { text: p.note ?? "Sending to Aryeo stopped.", tone: "bad" };
   if (p.state === "PREPARING") return { text: p.note ?? "Getting the photos ready in 06-Ready-for-Aryeo first.", tone: "busy" };

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { PhotoImg } from "./PhotoImg";
 import { FindingActions } from "./FindingActions";
+import { StraightenButtons } from "./EditTools";
 import { photoTitle, useJob } from "./JobContext";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, groupFindings, plural, type FindingGroup } from "./format";
 import type { FindingView } from "./types";
@@ -107,6 +108,7 @@ function GroupCard({ g, low = false }: { g: FindingGroup; low?: boolean }) {
         </p>
       )}
       <FindingActions findings={g.findings} className="mt-2.5" />
+      <StraightenButtons findings={g.findings} className="mt-1.5" />
     </li>
   );
 }

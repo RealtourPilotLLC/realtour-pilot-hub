@@ -21,7 +21,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ versionId:
   }
   const { versionId } = await ctx.params;
   const v = await prisma.photoVersion.findUnique({ where: { id: versionId }, select: { source: true, derivJson: true, photo: { select: { name: true } } } });
-  if (!v || v.source !== "FIX") return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // Oct 21 2026: a photo straightened or cropped in the hub (photoEdit.ts) downloads the same way.
+  if (!v || (v.source !== "FIX" && v.source !== "HUB_EDIT")) return NextResponse.json({ error: "Not found" }, { status: 404 });
   let pathname: string | null = null;
   try {
     pathname = v.derivJson ? ((JSON.parse(v.derivJson) as { file?: { pathname?: string } }).file?.pathname ?? null) : null;

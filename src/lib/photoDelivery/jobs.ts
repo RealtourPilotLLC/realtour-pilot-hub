@@ -475,7 +475,9 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
           data.status = "ACTIVE";
           revived.push(prev.id);
         }
-        if (!ownsVersion && prev.contentHash !== e.contentHash) {
+        // Oct 21 2026: the hub's own edit (straighten, crop) stays the photo while the listing still shows the file it was made from.
+        const hubKeeps = !ownsVersion && !!prev.contentHash?.startsWith("hub-") && (await import("./photoEdit").then((m) => m.hubEditStillOn(prev, e.contentHash)).catch(() => false));
+        if (!ownsVersion && !hubKeeps && prev.contentHash !== e.contentHash) {
           data.contentHash = e.contentHash;
           // Replaced outside the hub's fix flow (an editor's manual fix, a
           // re-import in Aryeo): a new version, and the old findings no longer
