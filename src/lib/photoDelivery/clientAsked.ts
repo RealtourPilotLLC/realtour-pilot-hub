@@ -23,8 +23,9 @@ import { ignoredSummaryLine, photoNumbers, type IgnoredGroup } from "./careRules
 //      wrap-up page. A person (Kyle) can deliver without it only with a typed
 //      reason, kept on the job's activity (WRAPUP_OVERRIDE_ACTION); the hub's
 //      own same-day delivery never goes past it (delivery.ts: an overridden
-//      line never counts as passed). The only existing nudge to the
-//      photographer is the 10 PM upload chaser (uploadDigest); none is added.
+//      line never counts as passed). The photographer is nudged by the 10 PM
+//      upload chaser (uploadDigest) and, from 10 AM the morning after the
+//      shoot, by the missing-instructions text (lib/missingInstructions).
 //   2. CLIENT ASKED: the photo requests on the job are ClientAsks (one state
 //      machine for all of them): the client's own texts, emails and calls,
 //      what staff typed for them, the order's customer notes about the photos
