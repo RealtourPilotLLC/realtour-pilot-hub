@@ -1,6 +1,16 @@
 import "server-only";
 
 import { getSecret } from "./connections";
+import { fetchWithTimeout } from "@/lib/http";
+
+// Time limits (Oct 20 2026, audit H7). The RPC calls already had 25 s (dbx);
+// the token request had none, and every Dropbox call waits on it. A file's
+// upload or download moves real bytes (a photo, a 60 MB endcard), so it gets
+// three minutes: long enough for any file the hub moves, short of the
+// platform's 300 s ceiling, so a stalled transfer ends as an error its caller
+// handles instead of a killed function.
+const DROPBOX_TOKEN_TIMEOUT_MS = 20_000;
+const DROPBOX_CONTENT_TIMEOUT_MS = 180_000;
 
 // ---------------------------------------------------------------------------
 // Dropbox integration (OAuth 2 with offline/refresh tokens).
@@ -32,12 +42,12 @@ export function dropboxAuthorizeUrl() {
 }
 
 async function tokenRequest(params: Record<string, string>): Promise<Record<string, unknown>> {
-  const res = await fetch("https://api.dropbox.com/oauth2/token", {
+  const res = await fetchWithTimeout("https://api.dropbox.com/oauth2/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ ...params, client_id: APP_KEY, client_secret: APP_SECRET }),
     cache: "no-store",
-  });
+  }, DROPBOX_TOKEN_TIMEOUT_MS);
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     throw new DropboxError(
@@ -330,7 +340,7 @@ export async function dropboxSharedLink(path: string): Promise<string | null> {
 // Upload bytes to Dropbox and return a public direct link (for MMS attachments).
 export async function dropboxUploadPublic(path: string, bytes: Uint8Array): Promise<string | null> {
   const token = await dropboxAccessToken();
-  const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
+  const res = await fetchWithTimeout("https://content.dropboxapi.com/2/files/upload", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -340,7 +350,7 @@ export async function dropboxUploadPublic(path: string, bytes: Uint8Array): Prom
     },
     body: new Uint8Array(bytes) as unknown as BodyInit,
     cache: "no-store",
-  });
+  }, DROPBOX_CONTENT_TIMEOUT_MS);
   if (!res.ok) throw new DropboxError(`Dropbox upload failed: ${(await res.text()).slice(0, 160)}`, res.status);
   const j = (await res.json()) as { path_display?: string };
   return dropboxSharedLink(j.path_display ?? path);
@@ -357,7 +367,7 @@ export async function dropboxUpload(
 ): Promise<{ pathDisplay: string; size: number | null }> {
   const token = await dropboxAccessToken();
   const mode = opts.overwrite ? "overwrite" : "add";
-  const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
+  const res = await fetchWithTimeout("https://content.dropboxapi.com/2/files/upload", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -367,7 +377,7 @@ export async function dropboxUpload(
     },
     body: new Uint8Array(bytes) as unknown as BodyInit,
     cache: "no-store",
-  });
+  }, DROPBOX_CONTENT_TIMEOUT_MS);
   if (!res.ok) {
     const t = await res.text();
     throw new DropboxError(`Dropbox upload failed: ${t.slice(0, 160)}`, res.status);
@@ -381,7 +391,7 @@ export async function dropboxUpload(
 // a path/not_found summary) when the file is missing.
 export async function dropboxDownload(path: string): Promise<Buffer> {
   const token = await dropboxAccessToken();
-  const res = await fetch("https://content.dropboxapi.com/2/files/download", {
+  const res = await fetchWithTimeout("https://content.dropboxapi.com/2/files/download", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -389,7 +399,7 @@ export async function dropboxDownload(path: string): Promise<Buffer> {
       "Dropbox-API-Arg": JSON.stringify({ path }),
     },
     cache: "no-store",
-  });
+  }, DROPBOX_CONTENT_TIMEOUT_MS);
   if (!res.ok) {
     const t = await res.text();
     throw new DropboxError(`Dropbox download failed: ${t.slice(0, 160)}`, res.status);

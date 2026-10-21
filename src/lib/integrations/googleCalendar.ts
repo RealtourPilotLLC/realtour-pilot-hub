@@ -1,5 +1,6 @@
 import "server-only";
 import { ownerGoogleToken } from "./google";
+import { fetchWithTimeout } from "@/lib/http";
 
 // ---------------------------------------------------------------------------
 // GOOGLE CALENDAR — read the owner's real day, and write time blocks back.
@@ -30,7 +31,9 @@ export class CalendarNotConnected extends Error {
 async function call<T>(path: string, init?: RequestInit & { token?: string }): Promise<T> {
   const token = init?.token ?? (await ownerGoogleToken());
   if (!token) throw new CalendarNotConnected();
-  const res = await fetch(`${BASE}${path}`, {
+  // 30 s (Oct 20 2026, audit H7): the hourly call-record step links calendar
+  // events through this.
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,

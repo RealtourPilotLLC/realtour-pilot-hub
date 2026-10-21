@@ -1,5 +1,10 @@
 import "server-only";
 import { getSecret, saveSecret, markSynced, markError, getConnection } from "./connections";
+import { fetchWithTimeout } from "@/lib/http";
+
+// Time limits (Oct 20 2026, audit H7): Intuit's token calls 30 s; an API read
+// 60 s, because a report (the P&L) is computed on their side.
+const QBO_READ_TIMEOUT_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // QuickBooks Online (Intuit) — the missing half of the money picture.
@@ -97,7 +102,7 @@ export async function exchangeQuickBooksCode(
   realmId: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!quickbooksConfigured()) return { ok: false, error: "QuickBooks app credentials are not set." };
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: {
       Authorization: `Basic ${basicAuth()}`,
@@ -166,7 +171,7 @@ async function accessToken(): Promise<string> {
   const refresh = await getSecret("quickbooks");
   if (!refresh) throw new QuickBooksError("QuickBooks is not connected.", 401);
   assertEnv(await readMeta());
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: {
       Authorization: `Basic ${basicAuth()}`,
@@ -199,10 +204,10 @@ async function qbo<T>(path: string, opts: { query?: Record<string, string> } = {
   const url = new URL(`${API_BASE}/v3/company/${realmId}${path.startsWith("/") ? path : `/${path}`}`);
   url.searchParams.set("minorversion", "70");
   for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, v);
-  const res = await fetch(url.toString(), {
+  const res = await fetchWithTimeout(url.toString(), {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     cache: "no-store",
-  });
+  }, QBO_READ_TIMEOUT_MS);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     // intuit_tid is Intuit's own request-correlation id. Capturing it turns a

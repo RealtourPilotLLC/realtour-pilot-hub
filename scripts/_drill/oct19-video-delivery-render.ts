@@ -96,14 +96,10 @@ async function main() {
     };
 
     c.head("1 · the old screen redirects; the room renders");
-    const { default: Old } = await import("@/app/ops/video-delivery/page");
-    let to = "";
-    try {
-      Old();
-    } catch (e) {
-      to = e instanceof Redirect ? e.href : String(e);
-    }
-    c.ok("/ops/video-delivery redirects to /review", to === "/review", to);
+    // Oct 20 2026 (audit H18): a next.config redirect now, not a page.
+    const { configRedirect } = await import("./_configRedirect");
+    const to = await configRedirect("/ops/video-delivery");
+    c.ok("/ops/video-delivery redirects to /review", to === "/review", String(to));
     const { default: Page } = await import("@/app/review/page");
     const owner = await render("the Video Review Room (owner, no login in a drill = local owner)", () => Page({ searchParams: Promise.resolve({}) }));
     const t = text(owner);

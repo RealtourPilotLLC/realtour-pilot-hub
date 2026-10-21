@@ -1,5 +1,6 @@
 import "server-only";
 import { getSecret, saveSecret, markSynced, markError, getConnection } from "./connections";
+import { fetchWithTimeout } from "@/lib/http";
 
 // ---------------------------------------------------------------------------
 // Stripe — the AUTHORITATIVE money-in source. Stripe always knows exactly what
@@ -30,7 +31,9 @@ async function stripeGet<T>(path: string, opts: { key?: string; query?: Record<s
     else qs.append(k, String(v));
   }
   const url = `${BASE}${path.startsWith("/") ? path : `/${path}`}${qs.toString() ? `?${qs}` : ""}`;
-  const res = await fetch(url, {
+  // 30 s a request (Oct 20 2026, audit H7): the daily money sync pages through
+  // this, and a hung page used to hold the step until the platform killed it.
+  const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${key}`, "Stripe-Version": "2024-06-20" },
     cache: "no-store",
   });

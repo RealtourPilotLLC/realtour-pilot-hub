@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
     const { deriveWaivedRevenue } = await import("@/lib/reworkCost");
     return deriveWaivedRevenue();
   });
-  // Retire week-old positive/neutral feedback-review tasks.
+  // Housekeeping: webhook and cron-run logs past 30 days, bell rows past 90.
   await step("webhookLogTrimmed", async () => {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const r = await prisma.webhookEvent.deleteMany({ where: { createdAt: { lt: cutoff } } });

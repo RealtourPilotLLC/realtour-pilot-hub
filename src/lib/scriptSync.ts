@@ -49,7 +49,8 @@ import {
 //   · webhook (lib/webhooks/scripting)  → applyStudioSnapshot after a GET
 //   · cron/aryeo every 15 min           → reconcileScripting
 //   · /edit/[id] render                 → autoSyncScript (cheap freshness gate)
-//   · hourly cron "scripts"             → sweepMissingScripts (jobs with none yet)
+//   · hourly cron "scripts"             → sweepMissingScripts (jobs with none
+//                                         yet that the reconcile never matched)
 // ---------------------------------------------------------------------------
 
 const HUB_EDIT = /^Edited in the hub by [^\n]*\n?/;
@@ -183,13 +184,27 @@ export async function autoSyncScript(projectId: string, opts: { force?: boolean 
 // Hourly: scripts appear on queue jobs WITHOUT anyone opening a page — the
 // Editor Queue's Script chip fills itself. Jobs with no script yet: the
 // in-flight queue plus shoots in the next 4 days.
-export async function sweepMissingScripts(limit = 12): Promise<{ pulled: number; checked: number }> {
+//
+// Oct 20 2026 (audit H29): only jobs the 15-minute reconcile has never
+// matched (no scripting id yet). reconcileScripting reads the platform's
+// project list every 15 minutes and re-reads each job it can match (stamping
+// its scripting id the first time), so asking again here about those jobs
+// was the same read twice. What is left is the job the list could not match,
+// asked by Aryeo order and hub id directly.
+//
+// Oct 20 2026 (audit H6): a failed read still stops the sweep (the platform
+// is struggling; the next hour retries), but it is THROWN after the stop, so
+// the cron step records it. It used to `break` and report a normal result.
+// `budgetMs` stops it starting another read once spent.
+export async function sweepMissingScripts(opts: { limit?: number; budgetMs?: number } = {}): Promise<{ pulled: number; checked: number }> {
   if (!scriptingConfigured()) return { pulled: 0, checked: 0 };
+  const started = Date.now();
   const soon = new Date(Date.now() + 4 * 24 * 3600_000);
   const staleBefore = new Date(Date.now() - 55 * 60_000);
   const candidates = await prisma.project.findMany({
     where: {
       reelScript: null,
+      scriptingId: null,
       OR: [
         { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
         { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: new Date(), lte: soon } },
@@ -199,16 +214,20 @@ export async function sweepMissingScripts(limit = 12): Promise<{ pulled: number;
     },
     // Never-checked first, then least-recently-checked — the cursor ROTATES.
     orderBy: { scriptingSyncedAt: { sort: "asc", nulls: "first" } },
-    take: limit,
+    take: opts.limit ?? 12,
     select: { id: true },
   });
   let pulled = 0;
+  let read = 0;
   for (const c of candidates) {
+    if (opts.budgetMs != null && Date.now() - started > opts.budgetMs) break;
     try {
       const r = await pullScriptFromStudio(c.id);
+      read += 1;
       if (r.got.length) pulled += 1;
-    } catch {
-      break; // platform unreachable — stop, next hour retries
+    } catch (e) {
+      // Platform unreachable: stop, and say so (the next hour retries).
+      throw new Error(`Script Writing platform read failed after ${read} of ${candidates.length} jobs (${pulled} pulled): ${e instanceof Error ? e.message : String(e)}`, { cause: e });
     }
   }
   return { pulled, checked: candidates.length };

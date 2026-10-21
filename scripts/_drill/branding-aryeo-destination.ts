@@ -22,11 +22,9 @@ async function main() {
     const uploads = await import("@/lib/deliveryUploads");
     const grouped = await import("@/lib/projectDelivery");
     const { readyToSend, clientNotToldYet } = await import("@/lib/readyToSend");
-    const route = await import("@/app/api/ops/video-destination/route");
     const shell = await buildContentMonth(prisma, { name: "Branding destination TEST", package: "Starter" });
     const projectId = shell.projectId!, listingId = "isolated-branding-listing";
     const owner = await prisma.appUser.create({ data: { name: "Owner fixture", email: "branding-owner@fixture.test", role: "OWNER", status: "ACTIVE", passwordHash: "unused" } });
-    const editor = await prisma.appUser.create({ data: { name: "Editor fixture", email: "branding-editor@fixture.test", role: "EDITOR", status: "ACTIVE", passwordHash: "unused" } });
     const actor = { id: owner.id, name: owner.name! };
     const fp = async (id: string) => sourceFingerprint((await loadCut(id))!)!;
     const choiceFp = async (id: string) => destination.destinationFingerprint((await loadCut(id))!);
@@ -50,18 +48,14 @@ async function main() {
     await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { videoStyle: "standard_cinematic" } });
     c.ok("non-branding video does not gain the monthly Aryeo exception", !(await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), actor)).ok);
     await prisma.deliverable.update({ where: { id: shell.deliverableId! }, data: { videoStyle: "personal_branding" } });
-    const post = (id = first.id, f = destinationId, origin = "http://fixture.local") => route.POST(new Request("http://fixture.local/api/ops/video-destination", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify({ submissionId: id, fingerprint: f }) }));
-    c.ok("unsigned destination change is denied", (await post()).status === 403);
-    await setSession({ uid: editor.id, email: editor.email, role: editor.role });
-    c.ok("editor cannot change delivery destination", (await post()).status === 403);
-    await setSession({ uid: owner.id, email: owner.email, role: owner.role, actingAs: editor.id });
-    c.ok("view-as mode cannot change delivery destination", (await post()).status === 403);
+    // Oct 20 2026 (audit H13): the office API (/api/ops/video-destination)
+    // and its "Upload to Aryeo instead?" button were deleted; no screen has
+    // offered the choice since Oct 13 (branding goes through the portal). The
+    // choice is still read everywhere, so it is made here through the domain
+    // call the API wrapped, and everything after it is checked as before.
     await setSession({ uid: owner.id, email: owner.email, role: owner.role });
-    c.ok("cross-origin choice is denied", (await post(first.id, destinationId, "http://other.local")).status === 403);
-    const saved = await post();
-    c.ok("actual office API confirms exact committed choice in response headers", saved.status === 200 && saved.headers.get("Cache-Control") === "private, no-store" && !!saved.headers.get("X-RTP-Video-Destination"));
-    const get = await route.GET(new Request(`http://fixture.local/api/ops/video-destination?submissionId=${first.id}&fingerprint=${destinationId}`));
-    c.ok("read-only recovery confirms the saved exact choice", (await get.json()).ok && await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id } }) === 1);
+    const saved = await destination.chooseAryeoDelivery(first.id, destinationId, actor);
+    c.ok("the domain call records the exact choice once", saved.ok && await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id } }) === 1);
     await destination.chooseAryeoDelivery(first.id, await choiceFp(first.id), { ...actor, name: "Later fixture" });
     c.ok("retry preserves first choice attribution and activity", await prisma.auditLog.count({ where: { action: "video_delivery_destination", target: first.id, actor: actor.name } }) === 1 && await prisma.activity.count({ where: { projectId, body: { contains: "chose Aryeo" } } }) === 1);
     const selected = await loadCut(first.id);
