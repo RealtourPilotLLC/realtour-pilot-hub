@@ -76,8 +76,8 @@ export function StrategyCallsDesk({ data }: { data: DeskData }) {
       () => assignStrategyCallAction(r.id, clientId, monthKey));
   const unassign = (r: DeskRow) =>
     act(r.id, (x) => ({ ...x, state: "OPEN", assignedBy: null, client: null, month: null }), () => unassignStrategyCallAction(r.id));
-  const ignore = (r: DeskRow) =>
-    act(r.id, (x) => ({ ...x, state: "IGNORED", assignedBy: null, client: null, month: null }), () => ignoreStrategyCallAction(r.id));
+  const ignore = (r: DeskRow, note: string) =>
+    act(r.id, (x) => ({ ...x, state: "IGNORED", assignedBy: null, client: null, month: null }), () => ignoreStrategyCallAction(r.id, note));
 
   const now = new Date(data.nowISO).getTime();
   const live = (r: DeskRow) => r.status !== "cancelled" && r.status !== "rescheduled";
@@ -131,7 +131,7 @@ type RowActions = {
   data: DeskData;
   assign: (r: DeskRow, clientId: string, monthKey: string) => void;
   unassign: (r: DeskRow) => void;
-  ignore: (r: DeskRow) => void;
+  ignore: (r: DeskRow, note: string) => void;
   errors: Record<string, string>;
 };
 
@@ -150,6 +150,8 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
   const [clientId, setClientId] = useState(r.client?.id ?? r.suggestion?.clientId ?? "");
   const [monthKey, setMonthKey] = useState(r.defaultMonthKey ?? r.monthOptions[0] ?? "");
   const [editing, setEditing] = useState(false);
+  const [aside, setAside] = useState(false);
+  const [asideWhy, setAsideWhy] = useState("");
   const live = r.status !== "cancelled" && r.status !== "rescheduled";
   const showPicker = live && (r.state === "OPEN" || editing);
   const pickedName = data.clients.find((c) => c.id === clientId)?.name ?? null;
@@ -215,8 +217,19 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
         {(r.state === "ASSIGNED" || r.state === "IGNORED") && (
           <button type="button" className={quiet} onClick={() => unassign(r)}><Undo2 className="size-4" aria-hidden /> {r.state === "IGNORED" ? "Restore" : "Unassign"}</button>
         )}
-        {r.state !== "IGNORED" && <button type="button" className={quiet} onClick={() => ignore(r)}>Not a program call</button>}
+        {r.state !== "IGNORED" && !aside && <button type="button" className={quiet} onClick={() => { setAsideWhy(""); setAside(true); }}>Not a program call</button>}
       </div>
+      {/* Oct 20 2026 (audit D12): one rule for setting a call aside, here and on
+          Monitoring: a reason is kept on the record, because an unexplained
+          dismissal is how a real call gets lost. */}
+      {aside && r.state !== "IGNORED" && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor={`aside-${r.id}`}>Why it is not a program call</label>
+          <input id={`aside-${r.id}`} value={asideWhy} onChange={(e) => setAsideWhy(e.target.value)} placeholder="Why it isn't a program call" className={cn(field, "flex-1 text-base sm:text-sm")} />
+          <button type="button" disabled={!asideWhy.trim()} onClick={() => { ignore(r, asideWhy.trim()); setAside(false); }} className={cn(btn, "bg-brand-action text-white")}>Set it aside</button>
+          <button type="button" className={quiet} onClick={() => setAside(false)}>Cancel</button>
+        </div>
+      )}
       {err && <p role="alert" className="mt-2 text-sm text-danger">{err}</p>}
     </li>
   );

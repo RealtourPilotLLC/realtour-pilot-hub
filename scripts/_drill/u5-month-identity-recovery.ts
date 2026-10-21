@@ -115,7 +115,7 @@ async function main() {
     await until(() => contains(skip(), "Reopened"));
     c.ok("confirmed reopen changes only confirmed UI state while old props wait", contains(skip(), "Mark skipped") && contains(skip(), "Reopened"));
     skipProps = { monthId: "exact-month", skipped: false }; skip(); staleSkip();
-    c.ok("unknown skip remains held on the exact month with an honest receipt after a context round-trip", button(skip(), "Verify month state").disabled === true && contains(skip(), "request to skip month exact-month was not confirmed"));
+    c.ok("unknown skip remains held on the exact month with an honest receipt after a context round-trip", button(skip(), "Verify month state").disabled === true && contains(skip(), "request to skip this month was not confirmed"));
 
     const options = { enrollmentId: "exact-enrollment", topics: [1, 2, 3].map((n) => ({ id: `topic-${n}`, title: `Topic ${n}`, status: "READY" })), scripts: [1, 2, 3].map((n) => ({ id: `script-${n}`, title: `Script ${n}` })) };
     const identity: LibraryIdentityUi = { section: "PREVIOUS", monthHistorical: true, confirmedAtISO: null, confirmedBy: null, flags: [], files: [{ sourceId: "exact-source", title: "Exact delivered file", externalKey: "file/exact-version.mp4", isFinal: true, matchBasis: "index", legacyKey: false, confirmedAtISO: null, confirmedBy: null }], relinkTargets: [{ id: "target-1", title: "Target 1" }, { id: "target-2", title: "Target 2" }], adoptInto: [{ id: "chain-1", title: "Chain 1" }, { id: "chain-2", title: "Chain 2" }], corrections: [] };
@@ -184,6 +184,9 @@ async function main() {
       contentMonth: { findUnique: async ({ where }: { where: { id: string } }) => where.id === "missing" ? null : { id: where.id, enrollmentId: "exact-enrollment", status: "OPEN", monthKey: "2026-09" }, upsert: async () => { fakeWrites.push("target-month"); return { id: "m2" }; }, update: async () => { fakeWrites.push("skip-month"); } },
       contentEnrollment: { findUnique: async () => ({ id: "exact-enrollment", clientId: "exact-client", videosPerMonth: 4, strategyCallRequired: true }) },
       portalVideo: { updateMany: async () => { fakeWrites.push("library"); if (failLibrary) throw new Error("fixture library follow failure"); } },
+      // Oct 20 2026 (audit D7): the program's video rows move with the session, in one transaction with the job.
+      contentVideo: { updateMany: async () => { fakeWrites.push("videos"); } },
+      $transaction: async (ops: Promise<unknown>[]) => Promise.all(ops),
     } });
     const realWorkspace = await import("../../src/app/content/[id]/workspaceActions");
     const funcs = [() => realWorkspace.correctVideoIdentityAction("exact-enrollment", "exact-video", { title: "New" }, "Exact reason"), () => realWorkspace.confirmPairingAction("exact-enrollment", "exact-source"), () => realWorkspace.relinkDeliveredFileAction("exact-enrollment", "exact-source", "target-1", "Exact reason"), () => realWorkspace.adoptTopicVideoAction("exact-enrollment", "chain-1", "exact-video")];
@@ -208,7 +211,7 @@ async function main() {
     const noop = await realContent.moveSessionToMonth("exact-session", "2026-09");
     c.ok("real month same-month no-op remains confirmed with no write", noop.ok && noop.outcome === "confirmed" && fakeWrites.length === 0);
     failLibrary = true; const partial = await realContent.moveSessionToMonth("exact-session", "2026-10"); failLibrary = false;
-    c.ok("real month partial retains mutation order and reports unconfirmed library after session move", !partial.ok && partial.outcome === "unknown" && partial.message.includes("2026-10") && partial.message.includes("not confirmed") && fakeWrites.join() === "target-month,project,library");
+    c.ok("real month partial retains mutation order and reports unconfirmed library after session move", !partial.ok && partial.outcome === "unknown" && partial.message.includes("2026-10") && partial.message.includes("not confirmed") && fakeWrites.join() === "target-month,project,videos,library");
     const skipConfirmed = await realContent.setMonthSkipped("m1", true);
     c.ok("real skip success is confirmed with the existing exact mutation", skipConfirmed.ok && skipConfirmed.outcome === "confirmed" && fakeWrites.at(-1) === "skip-month");
     c.ok("month/library recovery fixture makes no real DB/model/provider/client-send request", fence.blocked.length === 0);

@@ -53,7 +53,7 @@ export function journeyFromOverview(r: OverviewRow): JourneyInput {
     callStatus: r.planning.callStatus,
     topicsSelected: r.work.topicsSelected,
     scriptsReady: r.work.scriptsApproved,
-    scriptsAwaiting: r.work.scriptsDrafting + r.work.scriptsReviewNeeded,
+    scriptsAwaiting: r.work.scriptsReviewNeeded, // drafts included (audit D9)
     videosOwed: r.production.owed,
     sessionsRequired: r.session.required,
     sessionsConfirmed: r.session.confirmed,

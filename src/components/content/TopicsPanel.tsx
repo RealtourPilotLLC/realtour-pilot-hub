@@ -370,7 +370,7 @@ function TopicRow({ t, idx, busy, month, pillars, history, interview, inMonth, r
           )}
           {inMonth && month && !inProduction && <button disabled={busy} title="Back to the bank" onClick={() => run(() => setTopicStatus(t.id, "SAVED", null))} className={quiet}><X className="size-3" /></button>}
           {inMonth && month && draft && <DraftButton t={t} draft={draft} />}
-          {inMonth && month && !interview && <button disabled={busy} title="The client answers this topic's questions in writing on her portal; its script waits for the answers" onClick={() => run(() => setTopicAnswerRouteAction(t.id, month.id, "WRITTEN"))} className={quiet}>Written answers</button>}
+          {inMonth && month && !interview && <button disabled={busy} title="The client answers this topic's questions in writing on their portal; its script waits for the answers" onClick={() => run(() => setTopicAnswerRouteAction(t.id, month.id, "WRITTEN"))} className={quiet}>Written answers</button>}
           {inMonth && month && interview && !interview.hasDraft && interview.answeredCount === 0 && !["SUBMITTED", "SUBMITTED_WITH_GAPS"].includes(interview.status) && (
             <button disabled={busy} title="Take the written questions back off this topic" onClick={() => run(() => setTopicAnswerRouteAction(t.id, month.id, "CALL"))} className={quiet}><Undo2 className="mr-0.5 inline size-3" />Undo written answers</button>
           )}

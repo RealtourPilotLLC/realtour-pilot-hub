@@ -770,8 +770,12 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const proposed = clientPlanned ? 0 : p.planning?.counts.CONFIRMING ?? 0;
   if (proposed > 0) return { text: `${plural(proposed, "topic")} proposed on the call — keep or drop ${proposed === 1 ? "it" : "them"}`, cta: "Reconcile topics", href: "#topics", owner: o.STRATEGY.label, ownerDuty: "strategy", blocked: "us" };
   if (!scriptsDone) {
-    if (p.scripts.needsJordan > 0) return { text: `${plural(p.scripts.needsJordan, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" };
-    if (p.scripts.drafting > 0) return { text: `${plural(p.scripts.drafting, "draft script")} ${p.scripts.drafting === 1 ? "needs" : "need"} work`, cta: "Open scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "scripts", blocked: "us" };
+    // Oct 20 2026 (audit D9): a DRAFT waits for the same OK as INTERNAL_REVIEW.
+    // Written-answer drafts and hand edits are saved DRAFT, and the Scripts
+    // tab lists both under "needs your OK" with an Approve button, so calling
+    // a finished draft "work" sent Jordan to approve it under another name.
+    const awaitingOk = p.scripts.needsJordan + p.scripts.drafting;
+    if (awaitingOk > 0) return { text: `${plural(awaitingOk, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" };
     return { text: `${p.scripts.ready} of ${owed} scripts ready — the rest are being drafted`, cta: "See the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "scripts", blocked: "us" };
   }
   if (!filmedDone) {

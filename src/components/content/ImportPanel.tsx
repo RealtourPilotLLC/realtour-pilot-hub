@@ -4,7 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { AlertTriangle, FileUp, Loader2, Upload } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { ScriptView } from "@/components/script/ScriptView";
-import { applyImportAction, previewImportUpload, runProgramMigrations } from "@/app/content/actions";
+import { applyImportAction, previewImportUpload } from "@/app/content/actions";
 import type { ImportKind, ImportPreview, ItemMode } from "@/lib/contentImport";
 
 // ---------------------------------------------------------------------------
@@ -21,7 +21,7 @@ const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
 const MODES: ItemMode[] = ["CREATE", "LINK", "UPDATE_PROPOSAL", "SKIP"];
 
-export function ImportPanel({ enrollmentId, batches, reviewItems, pillars, isOwner, migrationDone }: { enrollmentId: string; batches: BatchUi[]; reviewItems: ReviewUi[]; pillars: { id: string; name: string }[]; isOwner: boolean; migrationDone: boolean }) {
+export function ImportPanel({ enrollmentId, batches, reviewItems, pillars }: { enrollmentId: string; batches: BatchUi[]; reviewItems: ReviewUi[]; pillars: { id: string; name: string }[] }) {
   const [kind, setKind] = useState<ImportKind>("SCRIPTS");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [monthKey, setMonthKey] = useState("");
@@ -93,7 +93,7 @@ export function ImportPanel({ enrollmentId, batches, reviewItems, pillars, isOwn
           {reviewItems.map((r, i) => <div key={i} className="px-5 py-2.5"><div className="text-sm font-medium">{r.title}</div><p className="text-[12px] text-muted">{r.detail}</p></div>)}
         </div>
       </Section>
-      <Section icon={FileUp} title="Import batches" count={batches.length} flush action={isOwner ? <button disabled={busy} onClick={() => start(async () => { const r = await runProgramMigrations(); setNote(r.message); })} className="text-xs font-medium text-brand hover:underline disabled:opacity-50">{migrationDone ? "Re-run the one-time lifts (no-op when done)" : "Run the one-time lifts (strategies → v1, imports → historical, notes → facts)"}</button> : undefined}>
+      <Section icon={FileUp} title="Import batches" count={batches.length} flush>
         <div className="divide-y divide-border">
           {batches.length === 0 && <p className="px-5 py-3 text-sm text-muted">No imports through this tool yet.</p>}
           {batches.map((b) => <div key={b.id} className="px-5 py-2 text-[12px]"><span className="font-medium">{b.fileName ?? b.id}</span> · {b.kind.toLowerCase()} · {b.mode.toLowerCase()}{b.proposedMonthKey ? ` · ${b.proposedMonthKey}` : ""}{b.appliedAt ? ` · applied by ${b.appliedBy}` : ""} · {b.created} created / {b.linked} linked / {b.updated} updates / {b.skipped} skipped / {b.conflicts} conflicts</div>)}

@@ -118,7 +118,7 @@ export function makeTopic(partial: Partial<Topic> & { title: string; pillarName:
 // ContentPillar.emphasis is one setting per pillar, set on the Strategy tab:
 //   LEAD   the client's main focus: a full bank, ranked up (x1.5), shown first;
 //   NORMAL as before: a full bank, neutral weight;
-//   LIGHT  supporting only: about a third of the bank (never fewer than 2),
+//   LIGHT  supporting only: a full bank (Oct 20 2026; it was about a third),
 //          ranked down (x0.5), shown last.
 // ---------------------------------------------------------------------------
 

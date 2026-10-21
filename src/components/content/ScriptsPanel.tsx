@@ -15,12 +15,13 @@ import { ScriptView } from "@/components/script/ScriptView";
 // (Oct 6 2026: prompts.ts's prior-scripts line, once a "20–30 s" literal, now
 // reads the policy too.)
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
-import { approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
+import { approveAndSendScriptAction, approveAndSendScriptsAction, approveScriptVersionAction, queueOwedScriptsAction, queueScriptRevisionAction, releaseScriptAction, restoreScriptVersionAction, retryAiJobAction, returnScriptAction, saveScriptText } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
 // version trail per script (regenerate/revise/edit never erase — they add a
-// version), explicit attributable approve, release as a separate act, and
+// version), explicit attributable approve, release as its own act or in the
+// same press ("Approve & send", Oct 20 2026; never on its own), and
 // the validator's findings + the generator's gaps shown, never filled.
 //
 // Oct 12 2026: the AI buttons here answer at once and work in the background
@@ -47,6 +48,9 @@ export type OwedUi = { topicId: string; title: string; monthId: string; readines
 export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null; clientVerdict: "APPROVED" | "CHANGES_REQUESTED" | "STALE" | null; clientVerdictAt: string | null;
   /** 6.5: the client changed an answer after this script was drafted — nothing redrafts on its own. */
   answersChanged?: boolean };
+
+/** A version's status in words (audit D22: staff saw "internal_review"). */
+const VERSION_WORD: Record<string, string> = { DRAFT: "waiting for an OK", INTERNAL_REVIEW: "waiting for an OK", APPROVED: "approved", SHARED: "sent to the client", SUPERSEDED: "replaced", REJECTED: "rejected" };
 
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
@@ -101,6 +105,8 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
   useAiQueueWatch(enrollmentId, queueActive);
   // Per-script "sending": a revision click never takes the panel's shared busy.
   const [sending, setSending] = useState<Set<string>>(new Set());
+  // Oct 20 2026 (audit D5): the queue's ticked versions, for "Approve & send N".
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const mark = (id: string, on: boolean) => setSending((cur) => { const next = new Set(cur); if (on) next.add(id); else next.delete(id); return next; });
   const send = async (id: string, fn: () => Promise<QueueResult>) => {
     mark(id, true);
@@ -128,8 +134,35 @@ export function ScriptsPanel({ enrollmentId = "", scripts, queueCount, scriptOwn
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[12px] text-muted">{busy && <Loader2 className="mr-1 inline size-3 animate-spin" />}{note}</p>}
       <OwedScripts owed={owed} drafting={drafting} sending={sending.has("owed")} onDraft={(includeThin) => void send("owed", () => queueOwedScriptsAction(owed[0]?.monthId ?? "", includeThin))} />
       <Section icon={FileText} title="Review queue" count={queueCount} flush action={<span className="text-[11px] text-muted-2">approval owner: {scriptOwner} · call-derived and written-answer drafts land here alike</span>}>
+        {/* Oct 20 2026 (audit D5): tick the scripts you have read, then one
+            press approves and sends them (one email batch per client). */}
+        {queue.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2 text-[12px]">
+            <span className="text-muted">{picked.size ? `${picked.size} ticked` : "Tick the scripts you've read to approve and send them together."}</span>
+            {picked.size > 0 && (
+              <button disabled={busy} onClick={() => run(() => approveAndSendScriptsAction([...picked]), (r) => { if (r.ok) setPicked(new Set()); })} className={`${btn} min-h-9 bg-brand-action text-white`}>
+                <Send className="mr-1 inline size-3" />Approve &amp; send {picked.size} to the client
+              </button>
+            )}
+            {picked.size > 0 && <button onClick={() => setPicked(new Set())} className={`${quiet} min-h-9`}>Clear</button>}
+          </div>
+        )}
         <div className="divide-y divide-border">
-          {queue.map((s) => <ScriptItem key={s.id} s={s} busy={busy} run={run} rev={revCtl(s)} open />)}
+          {queue.map((s) => {
+            const vid = s.versions[0]?.id ?? null;
+            const pickable = queue.length > 1 && !!vid && !vid.startsWith("legacy:");
+            return (
+              <div key={s.id} className="flex items-start">
+                {pickable && (
+                  <label className="flex min-h-11 shrink-0 items-start pl-4 pt-3.5" title="Tick to approve and send with the others">
+                    <span className="sr-only">Tick {s.title}</span>
+                    <input type="checkbox" className="size-4" checked={picked.has(vid!)} onChange={(e) => setPicked((cur) => { const next = new Set(cur); if (e.target.checked) next.add(vid!); else next.delete(vid!); return next; })} />
+                  </label>
+                )}
+                <div className="min-w-0 flex-1"><ScriptItem s={s} busy={busy} run={run} rev={revCtl(s)} open /></div>
+              </div>
+            );
+          })}
           {queue.length === 0 && <p className="px-5 py-4 text-sm text-muted">Nothing waiting on you.</p>}
         </div>
       </Section>
@@ -180,8 +213,28 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
   // and left a returned-then-shared script with no button at all.
   const approvedLive = !!s.approvedVersionId && s.versions.some((v) => v.id === s.approvedVersionId && (v.status === "APPROVED" || v.status === "SHARED"));
   const releasedLive = approvedLive && !!s.sharedVersionId && s.releaseState !== "withheld";
-  const state = s.historical ? "historical" : releasedLive ? "released to the portal" : approvedLive ? (cur && cur.id !== s.approvedVersionId ? "new draft since approval" : "approved · not released") : "needs your OK";
-  const tone = s.historical ? "bg-surface-2 text-muted" : state.startsWith("needs") || state.startsWith("new draft") ? "bg-brand-soft text-brand" : "bg-success-soft text-success";
+  // Oct 20 2026 (audit D5): approving a new version of a released script keeps
+  // the client's shared version on their portal, so "released" alone no longer
+  // means the approved version is the one they see.
+  const sharedNo = s.sharedVersionId ? s.versions.find((v) => v.id === s.sharedVersionId)?.versionNo ?? null : null;
+  const state = s.historical ? "historical"
+    : releasedLive ? (s.sharedVersionId === s.approvedVersionId ? (cur && cur.id !== s.approvedVersionId ? "new draft since it was sent" : "released to the portal") : `approved · client still sees${sharedNo ? ` v${sharedNo}` : " the earlier version"}`)
+    : approvedLive ? (cur && cur.id !== s.approvedVersionId ? "new draft since approval" : "approved · not released") : "needs your OK";
+  // What the client has on their portal right now (audit D6: taking it off says so and takes a reason).
+  const onPortal = !!s.sharedVersionId && s.releaseState === "released";
+  const canApprove = !!cur && (!approvedLive || cur.id !== s.approvedVersionId);
+  const [override, setOverride] = useState<{ message: string; send: boolean } | null>(null);
+  const [overrideWhy, setOverrideWhy] = useState("");
+  const [pulling, setPulling] = useState(false);
+  const [pullWhy, setPullWhy] = useState("");
+  const approve = (send: boolean) => {
+    if (!cur) return;
+    setOverride(null);
+    run(() => (send ? approveAndSendScriptAction(cur.id) : approveScriptVersionAction(cur.id)), (r) => {
+      if (!r.ok && /^Format check:/.test(r.message)) setOverride({ message: r.message, send });
+    });
+  };
+  const tone = s.historical ? "bg-surface-2 text-muted" : state.startsWith("needs") || state.startsWith("new draft") || state.startsWith("approved · client") ? "bg-brand-soft text-brand" : "bg-success-soft text-success";
   // THE CLIENT'S OWN VERDICT (F09). Separate from every chip above, because our
   // approval and their willingness to say these words on camera are different
   // facts and the second one decides whether this belongs on a call sheet.
@@ -257,7 +310,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
                 </button>
               </p>
             )}
-            {/* No Tighten button on a short script: tightenScriptAI refuses a
+            {/* No Tighten button on a short script: the tighten plan refuses a
                 version that is already at or under the target, and offering a
                 button the server declines is the trap the approve flow already
                 learned to avoid. Shortening is the wrong verb anyway — the
@@ -330,24 +383,45 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
         )}
         {mode === "read" && !s.historical && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {cur && (!approvedLive || cur.id !== s.approvedVersionId) && <button disabled={busy} onClick={() => run(async () => {
-              const r = await approveScriptVersionAction(cur.id);
-              if (!r.ok && /^Format check:/.test(r.message)) {
-                // An overridable finding — a missing pillar link and the like:
-                // the approver may pass it with a written reason, recorded on
-                // the ledger. A "House script format:" failure never reaches
-                // here (audit finding 6, Sep 17): the shape of a script is not
-                // something a reason can argue with, so it is shown as a plain
-                // error rather than an offer the server would refuse.
-                const why = window.prompt(`${r.message}\n\nApprove anyway? Say why (this is recorded):`) ?? "";
-                if (why.trim()) return approveScriptVersionAction(cur.id, why.trim());
-              }
-              return r;
-            })} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{cur.versionNo}</button>}
-            {approvedLive && s.sharedVersionId !== s.approvedVersionId && <button disabled={busy} onClick={() => run(() => releaseScriptAction(s.id))} className={`${btn} bg-brand text-white`}><Send className="mr-1 inline size-3" />Release to the portal</button>}
+            {/* Oct 20 2026 (audit D5): one press approves THIS version and sends
+                it to the client's portal (the Release operation). "Approve only"
+                keeps it in the office. Both are a person's press; nothing sends
+                a script on its own. */}
+            {canApprove && cur && <button disabled={busy} onClick={() => approve(true)} className={`${btn} bg-brand-action text-white`}><Send className="mr-1 inline size-3" />Approve &amp; send v{cur.versionNo} to the client</button>}
+            {canApprove && cur && <button disabled={busy} onClick={() => approve(false)} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve only</button>}
+            {approvedLive && s.sharedVersionId !== s.approvedVersionId && <button disabled={busy} onClick={() => run(() => releaseScriptAction(s.id))} className={`${btn} bg-brand-action text-white`}><Send className="mr-1 inline size-3" />Send v{s.versions.find((v) => v.id === s.approvedVersionId)?.versionNo ?? ""} to the client</button>}
             <button disabled={revBusy} onClick={() => setMode("revise")} className={quiet}><Sparkles className="mr-1 inline size-3" />Ask AI to revise</button>
             <button onClick={startEdit} className={quiet}>Edit myself</button>
-            {(s.approvedVersionId || s.sharedVersionId) && <button disabled={busy} onClick={() => run(() => returnScriptAction(s.id, ""))} className={quiet}><Undo2 className="mr-1 inline size-3" />Back to the queue</button>}
+            {/* Oct 20 2026 (audit D6): taking a script off the client's portal says so and takes a reason. */}
+            {onPortal
+              ? <button disabled={busy} onClick={() => { setPullWhy(""); setPulling(true); }} className={quiet}><Undo2 className="mr-1 inline size-3" />Pull back from the client&rsquo;s portal</button>
+              : (s.approvedVersionId || s.sharedVersionId) && <button disabled={busy} onClick={() => run(() => returnScriptAction(s.id, ""))} className={quiet}><Undo2 className="mr-1 inline size-3" />Back to the queue</button>}
+          </div>
+        )}
+        {mode === "read" && override && cur && (
+          // An overridable format finding (a missing pillar link and the like):
+          // the approver may pass it with a written reason, recorded on the
+          // ledger. A "House script format:" failure never reaches here (audit
+          // finding 6, Sep 17): the shape of a script is not something a reason
+          // can argue with, so it shows as a plain error instead.
+          <div className="mt-2 rounded-lg border border-warning/40 bg-warning-soft px-2.5 py-2 text-[12px]">
+            <p className="text-warning">{override.message}</p>
+            <label className="mt-1.5 block font-medium text-muted" htmlFor={`why-${s.id}`}>Approve anyway? Say why (this is recorded)</label>
+            <AutoTextarea id={`why-${s.id}`} value={overrideWhy} onChange={(e) => setOverrideWhy(e.target.value)} minRows={2} className="mt-0.5 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base sm:text-xs" />
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              <button disabled={busy || !overrideWhy.trim()} onClick={() => { const send = override.send, why = overrideWhy.trim(); run(() => (send ? approveAndSendScriptAction(cur.id, why) : approveScriptVersionAction(cur.id, why)), (r) => { if (r.ok) { setOverride(null); setOverrideWhy(""); } }); }} className={`${btn} min-h-9 bg-brand-action text-white`}>{override.send ? "Approve and send anyway" : "Approve anyway"}</button>
+              <button onClick={() => { setOverride(null); setOverrideWhy(""); }} className={`${quiet} min-h-9`}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {mode === "read" && pulling && onPortal && (
+          <div className="mt-2 rounded-lg border border-border bg-surface-2/50 px-2.5 py-2 text-[12px]">
+            <label className="block font-medium text-muted" htmlFor={`pull-${s.id}`}>Pull &ldquo;{s.title}&rdquo; off the client&rsquo;s portal? It goes back to the review queue. Say why (kept with its history)</label>
+            <AutoTextarea id={`pull-${s.id}`} value={pullWhy} onChange={(e) => setPullWhy(e.target.value)} minRows={2} className="mt-1 w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base sm:text-xs" />
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              <button disabled={busy || !pullWhy.trim()} onClick={() => run(() => returnScriptAction(s.id, pullWhy.trim()), (r) => { if (r.ok) setPulling(false); })} className={`${btn} min-h-9 bg-danger/15 text-danger hover:bg-danger/25`}>Pull it back</button>
+              <button onClick={() => setPulling(false)} className={`${quiet} min-h-9`}>Keep it on their portal</button>
+            </div>
           </div>
         )}
         {s.versions.length > 1 && (
@@ -357,7 +431,7 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
               <ul className="mt-1 space-y-0.5 text-[11px] text-muted">
                 {s.versions.map((v) => (
                   <li key={v.id}>
-                    v{v.versionNo} · {v.status.toLowerCase()} · {v.source.toLowerCase()}{v.basedOnVersionNo ? ` (from v${v.basedOnVersionNo}${v.regeneratedSections.length ? `; changed ${v.regeneratedSections.join(", ")}` : ""})` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}{v.approvedAt ? ` · approved by ${v.approvedBy}` : ""}{v.sharedAt ? " · shared" : ""}{v.id === s.sharedVersionId ? " ← what the client sees" : ""}{v.id === cur?.id ? " · current" : ""}
+                    v{v.versionNo} · {VERSION_WORD[v.status] ?? v.status.toLowerCase().replace(/_/g, " ")} · {v.source.toLowerCase()}{v.basedOnVersionNo ? ` (from v${v.basedOnVersionNo}${v.regeneratedSections.length ? `; changed ${v.regeneratedSections.join(", ")}` : ""})` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}{v.approvedAt ? ` · approved by ${v.approvedBy}` : ""}{v.sharedAt ? " · shared" : ""}{v.id === s.sharedVersionId ? " ← what the client sees" : ""}{v.id === cur?.id ? " · current" : ""}
                     {v.changeSummary ? ` — ${v.changeSummary}` : ""}
                     {v.id !== cur?.id && (
                       <span className="ml-1.5 inline-flex gap-1 align-middle">

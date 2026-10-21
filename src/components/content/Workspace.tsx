@@ -7,7 +7,7 @@ import {
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
-  addContentNote, analyzeTranscript, buildProfile, generateTopicIdeas,
+  addContentNote, analyzeTranscript, buildProfile,
   saveMonthTranscript, saveProfileSection,
   setStrategyCallStatus,
   staffChangePackageAction, staffSetEnrollmentStatusAction,
@@ -110,7 +110,7 @@ export function StrategyCallCard({
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <button onClick={() => setShowPaste(true)} className={quietLink}>Already held it — paste the transcript</button>
             <span className="text-muted-2">·</span>
-            <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month</button>
+            <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month&rsquo;s call</button>
             <span className="text-muted-2">·</span>
             <button disabled={busy} onClick={() => setStatus("NOT_REQUIRED")} className={quietLink}>They don&rsquo;t do calls</button>
           </div>
@@ -123,12 +123,16 @@ export function StrategyCallCard({
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <button onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }} className={quietLink}>Copy booking link</button>
             <span className="text-muted-2">·</span>
-            <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month</button>
+            <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month&rsquo;s call</button>
           </div>
         </div>
       ) : cur === "COMPLETED" ? (
         <div className="mt-1.5">
-          {analyzed ? (
+          {/* Oct 20 2026 (audit D11): ONE analyze button per call. When the
+              call's own transcript is on file, its queued "Analyze the call"
+              (in the list above) is that button, and the month-transcript
+              analysis below is not offered beside it. */}
+          {analyzed && !linkedOnFile ? (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <button disabled={busy} onClick={() => start(async () => {
                 setNote("Re-reading the call…");
@@ -140,7 +144,7 @@ export function StrategyCallCard({
               <span className="text-muted-2">·</span>
               <button onClick={() => setShowPaste(true)} className={quietLink}>Replace transcript</button>
             </div>
-          ) : onFile ? (
+          ) : onFile && !linkedOnFile ? (
             <button disabled={busy} onClick={() => start(async () => {
               setNote("Reading the call — this takes a moment…");
               const r = await analyzeTranscript(monthId);
@@ -476,9 +480,6 @@ export function GenerateButton({ label, busyLabel, run }: { label: string; busyL
   );
 }
 
-export function TopicSeedButton({ enrollmentId }: { enrollmentId: string }) {
-  return <GenerateButton label="Suggest video topics from the strategy" busyLabel="Reading their approved strategy, accepted facts & history…" run={() => generateTopicIdeas(enrollmentId)} />;
-}
 export function ProfileBuildButton({ clientId }: { clientId: string }) {
   return <GenerateButton label="Build from calls & content" busyLabel="Reading calls, strategy & filmed scripts…" run={() => buildProfile(clientId)} />;
 }

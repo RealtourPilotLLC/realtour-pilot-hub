@@ -122,11 +122,15 @@ export async function setBillingTermsAction(enrollmentId: string, terms: { type:
   } catch (e) { return fail(e); }
 }
 
-export async function setWorkflowFlagsAction(enrollmentId: string, flags: { clientSuppliesTopics?: boolean; timezone?: string | null; notes?: string | null }): Promise<Result> {
+export async function setWorkflowFlagsAction(enrollmentId: string, flags: { timezone?: string | null; notes?: string | null }): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
-    await setWorkflowFlags(enrollmentId, flags, me.email);
+    // Oct 20 2026 (audit D13): time zone and notes only. "The client plans
+    // their own content" has ONE setter, Program style's (setProgramStyleAction
+    // → programStyle.setClientPlanned); a flag posted here is ignored.
+    const { timezone, notes } = flags ?? {};
+    await setWorkflowFlags(enrollmentId, { ...(timezone !== undefined ? { timezone } : {}), ...(notes !== undefined ? { notes } : {}) }, me.email);
     touch(enrollmentId);
     return { ok: true, message: "Saved." };
   } catch (e) { return fail(e); }
@@ -317,16 +321,9 @@ export async function registerFolderFileAction(enrollmentId: string, input: { cl
   } catch (e) { return fail(e); }
 }
 
-/**
- * Staff list for the owner pickers. Guarded like every other action in this
- * file: a "use server" export is a reachable endpoint, and this one hands back
- * every active owner/admin's name (or their email when they have no name).
- */
-export async function staffOptions(): Promise<{ id: string; name: string }[]> {
-  await requireAdmin();
-  const users = await prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN"] } }, select: { id: true, name: true, email: true }, orderBy: { name: "asc" } });
-  return users.map((u) => ({ id: u.id, name: u.name ?? u.email }));
-}
+// (staffOptions, a reachable endpoint handing back every owner/admin's name
+// or email, was removed Oct 20 2026, audit D14: the owner pickers read their
+// staff list on the server, in workspaceData.)
 
 // ---- filming sessions: requests, bookings and addresses (CP-04 / CP-05) ---------------
 //

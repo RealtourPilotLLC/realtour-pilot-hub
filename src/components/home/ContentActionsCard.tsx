@@ -7,6 +7,8 @@ import type { ContentActions, ContentActionRow } from "@/lib/contentActions";
 // manager's Dashboard. One line per client and month: "Ashley Brunner ·
 // October", then what is owed on it ("Needs 4 scripts · 2 messages waiting on
 // a reply"), each a link to the tab where it is done. lib/contentActions reads it.
+// Oct 20 2026 (audit D10): an earlier month shows too while a script on it
+// waits on an OK or a client request.
 
 const SHOWN = 6;
 const monthWord = (key: string) => new Date(`${key}-15T12:00:00Z`).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
@@ -41,7 +43,7 @@ export function ContentActionsCard({ data }: { data: ContentActions | null }) {
         <p className="text-sm text-muted">{rows.length ? `${rows.length} ${rows.length === 1 ? "client needs" : "clients need"} something` : "nothing waiting"}</p>
       </div>
       {rows.length === 0 ? (
-        <p className="mt-2 flex items-start gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0" /> Nothing in this month&rsquo;s or next month&rsquo;s content is waiting on you.</p>
+        <p className="mt-2 flex items-start gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0" /> Nothing in the monthly content is waiting on you.</p>
       ) : (
         <>
           <ul className="mt-2 divide-y divide-border">{rows.slice(0, SHOWN).map((r) => <Row key={r.key} r={r} />)}</ul>

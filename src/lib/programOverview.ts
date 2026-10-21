@@ -115,7 +115,9 @@ export type OverviewRow = {
     topicsSelected: number;
     topicsNeeded: number;
     answersOutstanding: number;
+    /** the DRAFT share of scriptsReviewNeeded (Oct 20 2026, audit D9) — never added to it */
     scriptsDrafting: number;
+    /** DRAFT and INTERNAL_REVIEW scripts: everything waiting on the approver */
     scriptsReviewNeeded: number;
     scriptsApproved: number;
     strategyReviewNeeded: number;
@@ -338,7 +340,8 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
     toRead.length ? monthProgressMany(toRead, { now }) : Promise.resolve(new Map<string, MonthProgress>()),
     monthIds.length ? prisma.contentInterview.findMany({ where: { monthId: { in: monthIds } }, select: { monthId: true, status: true, answeredCount: true, submittedAt: true } }) : [],
     monthIds.length ? prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, status: true, historical: true, currentVersionId: true, approvedVersionId: true } }) : [],
-    prisma.contentStrategyVersion.findMany({ where: { enrollmentId: { in: enrollmentIds }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { enrollmentId: true, status: true } }),
+    // Oct 20 2026 (audit D4): the one "waiting for approval" rule (strategyAwaiting.ts) — DRAFT or INTERNAL_REVIEW, newer than the version in force.
+    import("@/lib/contentStrategy").then((m) => m.strategyAwaitingCounts(enrollmentIds)),
     prisma.programCallRecord.findMany({
       where: { enrollmentId: { in: enrollmentIds }, callType: { in: ["MONTHLY_STRATEGY", "BRAND_DISCOVERY"] }, OR: [{ monthId: { in: monthIds.length ? monthIds : ["-"] } }, { targetMonthKey: { in: keysInScope } }] },
       select: { id: true, enrollmentId: true, monthId: true, targetMonthKey: true, callType: true, status: true, scheduledStart: true, scheduledEnd: true, createdAt: true, transcriptState: true, matchState: true, lastError: true, analysisJson: true },
@@ -430,15 +433,21 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
 
     const myScriptsAll = scripts.filter((s) => s.monthId === mid);
     const myScripts = myScriptsAll.filter((s) => !s.historical);
+    // Oct 20 2026 (audit D9): a DRAFT is waiting for approval too. Drafts from
+    // the client's written answers and hand edits are saved DRAFT, call and
+    // topic drafts INTERNAL_REVIEW, and the Scripts tab lists both under
+    // "needs your OK" with an Approve button. Counting only INTERNAL_REVIEW
+    // dropped finished written-answer drafts from "Needs my approval" and
+    // called them "draft scripts need work". `drafting` stays as the DRAFT
+    // share of `reviewNeeded`, for the row's detail line.
     let drafting = 0, reviewNeeded = 0, approved = 0;
     for (const s of myScripts) {
       const v = s.currentVersionId ? versionOf.get(s.currentVersionId) : null;
       const st = v?.status ?? s.status;
-      if (st === "INTERNAL_REVIEW") reviewNeeded++;
-      else if (st === "DRAFT") drafting++;
+      if (st === "INTERNAL_REVIEW" || st === "DRAFT") { reviewNeeded++; if (st === "DRAFT") drafting++; }
       else if (st === "APPROVED" || st === "SHARED" || s.approvedVersionId) approved++;
     }
-    const strategyReviewNeeded = strategyVersions.filter((v) => v.enrollmentId === e.id && v.status === "INTERNAL_REVIEW").length;
+    const strategyReviewNeeded = strategyVersions.get(e.id) ?? 0;
 
     // ---- the monthly call + what we actually hold from it ------------------------
     const myCalls = calls.filter((c) => c.enrollmentId === e.id && (mid ? c.monthId === mid : false) || (c.enrollmentId === e.id && c.targetMonthKey === key));
@@ -678,10 +687,9 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       next = { text: `A strategy version is waiting for ${owner.STRATEGY.label}`, owner: owner.STRATEGY.label, ownerDuty: "strategy approval", blocked: "us", deadlineISO: deadline, href: href("plan", "strategy"), cta: "Review the strategy" };
     } else if (reviewNeeded > 0 && !clientPlanned) {
       next = { text: `${reviewNeeded} script${reviewNeeded === 1 ? "" : "s"} waiting for ${owner.SCRIPTS.label}`, owner: owner.SCRIPTS.label, ownerDuty: "script approval", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Review the scripts" };
-    } else if (!clientPlanned && (drafting > 0 || (approved < production.owed && myScripts.length < production.owed))) {
+    } else if (!clientPlanned && approved < production.owed && myScripts.length < production.owed) {
       const notStarted = Math.max(0, production.owed - myScripts.length);
-      const parts = [drafting > 0 ? `${drafting} draft script${drafting === 1 ? "" : "s"} need work` : null, notStarted > 0 ? `${notStarted} script${notStarted === 1 ? "" : "s"} not started` : null].filter(Boolean);
-      next = { text: parts.join(" · "), owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
+      next = { text: `${notStarted} script${notStarted === 1 ? "" : "s"} not started`, owner: owner.SCRIPTS.label, ownerDuty: "scripts", blocked: "us", deadlineISO: deadline, href: href("plan", "scripts"), cta: "Open scripts" };
     } else if (sessionState === "REQUESTED") {
       next = { text: "They asked for a session — nothing confirmed", owner: owner.SCHEDULING.label, ownerDuty: "scheduling", blocked: "us", deadlineISO: deadline, href: href("production", "sessions"), cta: "Confirm the slot" };
     } else if (lateIn && (sessionState === "NOT_SCHEDULED" || sessionState === "CANCELLED")) {

@@ -405,7 +405,7 @@ export const STRUCTURAL_CODES = new Set([
 export async function approveScriptVersion(versionId: string, actor: { email: string; appUserId?: string | null }, note?: string | null): Promise<{ alreadyApproved: boolean }> {
   const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId } });
   if (!v) throw new Error("Script version not found.");
-  const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId }, select: { historical: true, monthId: true, topicId: true, approvedVersionId: true, clientId: true } });
+  const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId }, select: { historical: true, monthId: true, topicId: true, approvedVersionId: true, clientId: true, sharedVersionId: true, releaseState: true } });
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("Imported scripts are history — they are not approved, filmed or released by an import.");
   // A repeated click is not a second approval — no second ledger row. SHARED
@@ -448,9 +448,17 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
     throw new Error(`Format check: ${blocking.map((f) => f.message).join(" · ")} — fix the script, or approve it anyway with a note saying why.`);
   }
   const now = new Date();
+  // A SCRIPT THE CLIENT ALREADY HAS STAYS ON THEIR PORTAL (Oct 20 2026, audit
+  // D5). Approving a new version of a released script wrote "withheld", and
+  // the portal hides a withheld script, so approving the client's own change
+  // took the script off their page until somebody also pressed Release. The
+  // shared pointer is untouched here: the client keeps seeing exactly the
+  // version they were shown until the new one is released (createScriptVersion
+  // already treats a new draft on a shared script the same way).
+  const keepReleased = !!s.sharedVersionId && s.releaseState === "released";
   await prisma.contentScriptVersion.updateMany({ where: { scriptId: v.scriptId, status: { in: ["APPROVED", "SHARED"] }, id: { not: versionId } }, data: { status: "SUPERSEDED" } });
   await prisma.contentScriptVersion.update({ where: { id: versionId }, data: { status: "APPROVED", approvedBy: actor.email, approvedAt: now } });
-  await prisma.contentScript.update({ where: { id: v.scriptId }, data: { approvedVersionId: versionId, approvedAt: now, approvedBy: actor.email, status: "APPROVED", releaseState: "withheld" } });
+  await prisma.contentScript.update({ where: { id: v.scriptId }, data: { approvedVersionId: versionId, approvedAt: now, approvedBy: actor.email, status: "APPROVED", releaseState: keepReleased ? "released" : "withheld" } });
   await prisma.contentScriptRelease.create({ data: { scriptId: v.scriptId, scriptVersionId: versionId, enrollmentId: v.enrollmentId, clientId: v.clientId, monthId: s.monthId, action: "APPROVE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, note: blocking.length ? `Approved despite format findings (${blocking.map((f) => f.code).join(", ")}): ${note}` : note ?? null } });
   await syncLegacyPointer(v.scriptId, versionId);
   if (s.topicId) await prisma.contentTopic.updateMany({ where: { id: s.topicId, status: { in: ["SELECTED", "SCRIPTED"] } }, data: { status: "SCRIPTED" } });

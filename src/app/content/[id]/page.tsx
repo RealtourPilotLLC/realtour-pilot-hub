@@ -97,7 +97,8 @@ export default async function ContentClientPage({
   const progress = month ? await monthProgress(id, month.id).catch(() => null) : null;
   const pview = progress ? staffMonthView(progress, await (await import("@/lib/monthProgress")).hostJourney(progress).catch(() => null)) : null;
   const [strategyReview, messagesWaiting] = await Promise.all([
-    prisma.contentStrategyVersion.count({ where: { enrollmentId: id, status: "INTERNAL_REVIEW" } }).catch(() => 0),
+    // Oct 20 2026 (audit D4): the one "waiting for approval" rule, as on the Dashboard and the roster.
+    import("@/lib/contentStrategy").then((m) => m.strategyAwaitingCounts([id])).then((m) => m.get(id) ?? 0).catch(() => 0),
     import("@/lib/programMessages").then((m) => m.unansweredCount(id)).catch(() => 0),
   ]);
   const scriptsNeedMe = pview?.needsMe ?? 0;
@@ -109,7 +110,7 @@ export default async function ContentClientPage({
 
   const ctx: TabCtx = {
     id, client, enrollment: { package: enrollment.package, status: enrollment.status, videosPerMonth: enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth, strategyCallRequired: enrollment.strategyCallRequired, portalToken: enrollment.portalToken },
-    months, month, activeKey, view: nav.view, progress,
+    months, month, activeKey, view: nav.view, progress, pview,
     me: me ? { id: me.id, role: me.role, name: me.name } : null,
     ownerEyes, staffEyes,
     // Oct 8 2026: a forfeited month's "Approve a catch-up" link names the month to pick.

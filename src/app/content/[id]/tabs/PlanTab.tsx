@@ -145,7 +145,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
           <p className="text-sm text-muted">No month workspace yet — the call card appears with the month.</p>
         )}
         <Section icon={PhoneCall} title="Every call on record" count={calls.length} flush
-          action={<Link href="/content/monitoring#calls" className="text-[12px] font-medium text-brand hover:underline">Unmatched calls →</Link>}>
+          action={<Link href="/content/calls" className="text-[12px] font-medium text-brand hover:underline">Unmatched calls →</Link>}>
           <div className="divide-y divide-border">
             {calls.length === 0 && <p className="px-5 py-3 text-sm text-muted">No call records for this client yet.</p>}
             {calls.map((c) => (

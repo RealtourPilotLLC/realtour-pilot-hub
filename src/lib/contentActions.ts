@@ -19,12 +19,13 @@ import type { ScriptReadiness } from "@/lib/contentDrafting";
 //   · scripts  — videos with no script that need a person (nothing to draft
 //                from, thin answers, an unsettled plan; never one the hub
 //                drafts itself, never a client who writes their own), drafts
-//                waiting on an OK, drafts to finish, the client's change
-//                requests and suggestions on shared scripts;
+//                waiting on an OK, the client's change requests and
+//                suggestions on shared scripts;
 //   · messages — the client's portal messages nobody has answered;
 //   · strategy — a strategy draft to approve, suggested changes to review,
 //                topic ideas the client suggested.
-// Reads only; no model call.
+// An EARLIER open month joins when a script on it waits on an OK or a client
+// request (audit D10), with only those items. Reads only; no model call.
 // ---------------------------------------------------------------------------
 
 export type ActionItem = { key: string; words: string; tone: "warn" | "brand" | "muted"; href: string };
@@ -39,50 +40,83 @@ export function nextMonthKey(key: string): string {
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
 }
 
+/** The month key `count` months before `key`. */
+function monthsBefore(key: string, count: number): string {
+  const [y, m] = key.split("-").map(Number);
+  const t = y * 12 + (m - 1) - count;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+}
+
+/** How far back an earlier month's waiting approvals and change requests still reach the card. */
+const EARLIER_MONTHS = 6;
+
 export async function monthlyContentActions(opts: { now?: Date; excludeClientIds?: string[] } = {}): Promise<ContentActions> {
   const now = opts.now ?? new Date();
   const thisMonth = etMonthKey(now);
   const keys = [thisMonth, nextMonthKey(thisMonth)];
   const exclude = new Set(opts.excludeClientIds ?? []);
-  const months = await prisma.contentMonth.findMany({
-    where: { historical: false, monthKey: { in: keys }, ...(exclude.size ? { clientId: { notIn: [...exclude] } } : {}) },
-    orderBy: { monthKey: "asc" },
-    select: { id: true, monthKey: true, enrollmentId: true, clientId: true },
-  });
-  if (!months.length) return { rows: [] };
+  const notExcluded = exclude.size ? { clientId: { notIn: [...exclude] } } : {};
+  // Oct 20 2026 (audit D10): an OPEN month only (a skipped or imported month
+  // owes nothing), on an ACTIVE program (a paused or ended client is not
+  // chased for scripts). And an EARLIER open month reaches the card too when
+  // something on it waits on the office: a script to approve or the client's
+  // change request (a late session, a catch-up, last month's scripts
+  // changed). Only its approvals and requests show, never its topics or
+  // missing scripts.
+  const [months, earlier] = await Promise.all([
+    prisma.contentMonth.findMany({
+      where: { historical: false, status: "OPEN", monthKey: { in: keys }, ...notExcluded },
+      orderBy: { monthKey: "asc" },
+      select: { id: true, monthKey: true, enrollmentId: true, clientId: true },
+    }),
+    prisma.contentMonth.findMany({
+      where: { historical: false, status: "OPEN", monthKey: { lt: thisMonth, gte: monthsBefore(thisMonth, EARLIER_MONTHS) }, ...notExcluded },
+      orderBy: { monthKey: "asc" },
+      select: { id: true, monthKey: true, enrollmentId: true, clientId: true },
+    }),
+  ]);
+  const earlierWaiting = await monthsWithScriptsWaiting(earlier);
+  const all = [...earlierWaiting, ...months];
+  if (!all.length) return { rows: [] };
   const enrollments = await prisma.contentEnrollment.findMany({
-    where: { id: { in: [...new Set(months.map((m) => m.enrollmentId))] }, status: { not: "ENDED" } },
+    where: { id: { in: [...new Set(all.map((m) => m.enrollmentId))] }, status: "ACTIVE" },
     select: { id: true, clientId: true, clientSuppliesTopics: true },
   });
   const live = new Map(enrollments.map((e) => [e.id, e]));
-  const owed = months.filter((m) => live.has(m.enrollmentId));
+  const owed = all.filter((m) => live.has(m.enrollmentId));
   if (!owed.length) return { rows: [] };
+  const isEarlier = new Set(earlierWaiting.map((m) => m.id));
   const clientIds = [...new Set(owed.map((m) => m.clientId))];
   const enrollmentIds = [...live.keys()];
 
-  const [{ monthProgressMany, progressKey }, { scriptWorkForMonth }, { unansweredCount }] = await Promise.all([
+  const [{ monthProgressMany, progressKey }, { scriptWorkForMonth }, { strategyAwaitingCounts }] = await Promise.all([
     import("@/lib/monthProgress"),
     import("@/lib/contentDrafting"),
-    import("@/lib/programMessages"),
+    import("@/lib/contentStrategy"),
   ]);
-  const [progress, clients, draftStrategies, proposals, clientTopics, messages] = await Promise.all([
+  const [progress, clients, strategiesWaiting, proposals, clientTopics, messages] = await Promise.all([
     monthProgressMany(owed.map((m) => ({ enrollmentId: m.enrollmentId, monthId: m.id, monthKey: m.monthKey })), { now, owners: true }),
     prisma.client.findMany({ where: { id: { in: clientIds } }, select: { id: true, name: true } }),
-    prisma.contentStrategyVersion.groupBy({ by: ["enrollmentId"], where: { enrollmentId: { in: enrollmentIds }, status: "DRAFT" }, _count: { _all: true } }),
+    // Oct 20 2026 (audit D4): the one "waiting for approval" rule (DRAFT or
+    // INTERNAL_REVIEW, newer than the version in force). This card counted
+    // only DRAFT; the Plan badge and the roster only INTERNAL_REVIEW.
+    strategyAwaitingCounts(enrollmentIds),
     prisma.contentStrategyProposal.groupBy({ by: ["enrollmentId"], where: { enrollmentId: { in: enrollmentIds }, status: "PROPOSED" }, _count: { _all: true } }),
     prisma.contentTopic.groupBy({ by: ["enrollmentId"], where: { enrollmentId: { in: enrollmentIds }, source: "client", approvalState: "PROPOSED" }, _count: { _all: true } }),
-    Promise.all(enrollmentIds.map(async (id) => [id, await unansweredCount(id).catch(() => 0)] as const)),
+    // One grouped read (audit D16): programMessages.unansweredCount's rule, for every client at once.
+    prisma.programMessage.groupBy({ by: ["enrollmentId"], where: { enrollmentId: { in: enrollmentIds }, authorKind: "CLIENT", handledAt: null }, _count: { _all: true } }),
   ]);
   const nameOf = new Map(clients.map((c) => [c.id, c.name]));
   const countBy = (rows: { enrollmentId: string; _count: { _all: number } }[]) => new Map(rows.map((r) => [r.enrollmentId, r._count._all]));
-  const drafts = countBy(draftStrategies), changes = countBy(proposals), ideas = countBy(clientTopics);
-  const waiting = new Map(messages);
+  const changes = countBy(proposals), ideas = countBy(clientTopics), waiting = countBy(messages);
 
-  // Videos that need a person to get a script, per month (six months at a time).
+  // Videos that need a person to get a script, per month (six months at a
+  // time): this month and next only, and never a month the reader mutes
+  // (skipped, imported or forfeited: nothing is owed on it).
   const needScript = new Map<string, number>();
-  for (let i = 0; i < owed.length; i += 6) {
-    await Promise.all(owed.slice(i, i + 6).map(async (m) => {
-      if (live.get(m.enrollmentId)?.clientSuppliesTopics) return;
+  const toCheck = owed.filter((m) => !isEarlier.has(m.id) && !live.get(m.enrollmentId)?.clientSuppliesTopics && !progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted);
+  for (let i = 0; i < toCheck.length; i += 6) {
+    await Promise.all(toCheck.slice(i, i + 6).map(async (m) => {
       const work = await scriptWorkForMonth(m.id).catch(() => []);
       needScript.set(m.id, work.filter((w) => !w.scriptId && NEEDS_A_PERSON.has(w.readiness)).length);
     }));
@@ -92,14 +126,18 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
   const enrollmentDone = new Set<string>();
   for (const m of owed) {
     const p = progress.get(progressKey(m.enrollmentId, m.id, m.monthKey));
+    // A forfeited (or otherwise muted) month owes nothing (Oct 8 2026).
+    if (p?.muted) continue;
     const at = (tab: "plan" | "messages", view?: "topics" | "scripts" | "strategy") => contentHref(m.enrollmentId, { tab, view, month: m.monthKey, now });
     const items: ActionItem[] = [];
     const na = p?.nextAction;
-    if (na && na.blocked === "us" && (na.ownerDuty === "strategy" || na.ownerDuty === "month reconciliation")) items.push({ key: "topics", words: na.text, tone: "warn", href: at("plan", "topics") });
+    if (!isEarlier.has(m.id) && na && na.blocked === "us" && (na.ownerDuty === "strategy" || na.ownerDuty === "month reconciliation")) items.push({ key: "topics", words: na.text, tone: "warn", href: at("plan", "topics") });
     const write = needScript.get(m.id) ?? 0;
     if (write) items.push({ key: "write", words: `Needs ${n(write, "script")}`, tone: "warn", href: at("plan", "scripts") });
-    if (p?.scripts.needsJordan) items.push({ key: "approve", words: `${n(p.scripts.needsJordan, "script")} to approve`, tone: "brand", href: at("plan", "scripts") });
-    if (p?.scripts.drafting) items.push({ key: "drafting", words: `${n(p.scripts.drafting, "draft")} to finish`, tone: "brand", href: at("plan", "scripts") });
+    // Oct 20 2026 (audit D9): a DRAFT waits for the same OK as INTERNAL_REVIEW
+    // (the Scripts tab lists both under "needs your OK"), so it is one count.
+    const toApprove = (p?.scripts.needsJordan ?? 0) + (p?.scripts.drafting ?? 0);
+    if (toApprove) items.push({ key: "approve", words: `${n(toApprove, "script")} to approve`, tone: "brand", href: at("plan", "scripts") });
     if (p?.scripts.changesRequested) items.push({ key: "changes", words: `Changes asked on ${n(p.scripts.changesRequested, "script")}`, tone: "warn", href: at("plan", "scripts") });
     if (p?.scripts.openSuggestions) items.push({ key: "suggestions", words: `${n(p.scripts.openSuggestions, "script suggestion")} from the client`, tone: "brand", href: at("plan", "scripts") });
     // The account-wide ones ride on the client's first row.
@@ -107,7 +145,7 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
       enrollmentDone.add(m.enrollmentId);
       const msgs = waiting.get(m.enrollmentId) ?? 0;
       if (msgs) items.push({ key: "messages", words: `${n(msgs, "message")} waiting on a reply`, tone: "warn", href: at("messages") });
-      if (drafts.get(m.enrollmentId)) items.push({ key: "strategy", words: "Strategy to approve", tone: "brand", href: at("plan", "strategy") });
+      if (strategiesWaiting.get(m.enrollmentId)) items.push({ key: "strategy", words: "Strategy to approve", tone: "brand", href: at("plan", "strategy") });
       const ch = changes.get(m.enrollmentId) ?? 0;
       if (ch) items.push({ key: "proposals", words: `${n(ch, "strategy change")} to review`, tone: "muted", href: at("plan", "strategy") });
       const id = ideas.get(m.enrollmentId) ?? 0;
@@ -116,8 +154,31 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
     if (!items.length) continue;
     rows.push({ key: `${m.enrollmentId}:${m.monthKey}`, clientName: nameOf.get(m.clientId) ?? "A client", monthKey: m.monthKey, href: contentHref(m.enrollmentId, { month: m.monthKey, now }), items });
   }
-  // What needs a person most first: rows with a warning, then this month before next, then by how much is on them.
+  // What needs a person most first: rows with a warning, then the oldest month first, then by how much is on them.
   const warns = (r: ContentActionRow) => r.items.filter((i) => i.tone === "warn").length;
   rows.sort((a, b) => Number(warns(b) > 0) - Number(warns(a) > 0) || a.monthKey.localeCompare(b.monthKey) || b.items.length - a.items.length || a.clientName.localeCompare(b.clientName));
   return { rows };
+}
+
+/**
+ * The earlier months on which a script waits on the approver (its CURRENT
+ * version is DRAFT or INTERNAL_REVIEW) or carries an open client request.
+ * Cheap reads, so only those months go through the progress reader.
+ */
+async function monthsWithScriptsWaiting<M extends { id: string }>(months: M[]): Promise<M[]> {
+  if (!months.length) return [];
+  const scripts = await prisma.contentScript.findMany({
+    where: { monthId: { in: months.map((m) => m.id) }, historical: false },
+    select: { id: true, monthId: true, currentVersionId: true },
+  });
+  if (!scripts.length) return [];
+  const versionIds = scripts.map((x) => x.currentVersionId).filter((x): x is string => !!x);
+  const [openVersions, openRequests] = await Promise.all([
+    versionIds.length ? prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds }, status: { in: ["DRAFT", "INTERNAL_REVIEW"] } }, select: { id: true } }) : Promise.resolve([]),
+    prisma.scriptSuggestion.findMany({ where: { scriptId: { in: scripts.map((x) => x.id) }, status: "OPEN" }, select: { scriptId: true } }),
+  ]);
+  const waitingVersion = new Set(openVersions.map((v) => v.id));
+  const requested = new Set(openRequests.map((r) => r.scriptId));
+  const hit = new Set(scripts.filter((x) => (!!x.currentVersionId && waitingVersion.has(x.currentVersionId)) || requested.has(x.id)).map((x) => x.monthId));
+  return months.filter((m) => hit.has(m.id));
 }

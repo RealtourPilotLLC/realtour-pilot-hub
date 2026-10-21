@@ -43,7 +43,17 @@ export async function confirmCallClientAction(recordId: string, clientId: string
 export async function ignoreCallAction(recordId: string, note: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   if (!note.trim()) return { ok: false, message: "Say why it is being set aside — an unexplained dismissal is how a real call gets lost." };
-  try { await ignoreCallRecord(recordId, await who(), note.trim()); touch(); return { ok: true, message: "Set aside, with your note on the record." }; }
+  try {
+    // Oct 20 2026 (audit D12): the Strategy calls page's rule too — a brand
+    // discovery call is managed on Settings, never set aside from a call queue.
+    const { prisma } = await import("@/lib/prisma");
+    const r = await prisma.programCallRecord.findUnique({ where: { id: recordId }, select: { callType: true } });
+    if (!r) return { ok: false, message: "That call is no longer on file." };
+    if (r.callType === "BRAND_DISCOVERY") return { ok: false, message: "That is a brand discovery call — manage it on Settings → Calendly & calls." };
+    await ignoreCallRecord(recordId, await who(), note.trim());
+    touch();
+    return { ok: true, message: "Set aside, with your note on the record." };
+  }
   catch (e) { return fail(e); }
 }
 
