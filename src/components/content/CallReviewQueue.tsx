@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Link2, Mail, Phone } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import {
-  confirmCallClientAction, ignoreCallAction, setCallMonthAction,
+  confirmCallClientAction, ignoreStrategyCallAction, setCallMonthAction,
   verifyAliasAction, dismissAliasAction, confirmTranscriptAction, rejectTranscriptAction, retryTranscriptJobAction,
-} from "@/app/content/monitoring/actions";
+} from "@/app/content/calls/actions";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,12 @@ import { cn } from "@/lib/utils";
 // Everything is per-row. There is no "accept all": that is the button that
 // files Mike Flatley's call under Gary Mercer Sr and nobody notices for a
 // month.
+//
+// ONE CALL QUEUE (Jordan, Oct 21 2026; audit D12): this sits on Strategy
+// calls (/content/calls) below the desk, which files the strategy calls of
+// the last 30 days and the next 14; Monitoring links here. A call is set
+// aside through the desk's own action, with the one rule: a reason, and never
+// a brand discovery call.
 // ---------------------------------------------------------------------------
 
 export type CallUi = {
@@ -202,11 +208,15 @@ function CallRow({
         <button type="button" className={quiet} disabled={busy || !/^\d{4}-\d{2}$/.test(month) || monthKeys === null} onClick={() => run(() => setCallMonthAction(c.id, month))}>Set month</button>
       </div>
 
-      {/* SET ASIDE — needs a reason. */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <input aria-label="Reason this is not program work" className={`${input} flex-1`} placeholder="Why this is not program work (required to set it aside)" value={why} onChange={(e) => setWhy(e.target.value)} disabled={busy} />
-        <button type="button" className={quiet} disabled={busy || !why.trim()} onClick={() => run(() => ignoreCallAction(c.id, why))}>Set aside</button>
-      </div>
+      {/* SET ASIDE — needs a reason; a brand discovery call is never set aside from a program-call queue. */}
+      {c.callType === "BRAND_DISCOVERY" ? (
+        <p className="mt-1.5 text-[12px] text-muted">A brand discovery call: match the client here. Anything else about it is on Settings → Calendly &amp; calls.</p>
+      ) : (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <input aria-label="Reason this is not program work" className={`${input} flex-1`} placeholder="Why this is not program work (required to set it aside)" value={why} onChange={(e) => setWhy(e.target.value)} disabled={busy} />
+          <button type="button" className={quiet} disabled={busy || !why.trim()} onClick={() => run(() => ignoreStrategyCallAction(c.id, why))}>Set aside</button>
+        </div>
+      )}
 
       {c.transcripts.length > 0 && (
         <div className="mt-1.5 space-y-0.5">

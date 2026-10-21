@@ -39,7 +39,8 @@ export async function loadSettingsTab(enrollmentId: string, ownerEyes: boolean) 
   const settings: SettingsUi = {
     enrollmentId, clientId: e.clientId, pkg: e.package, status: e.status, packageSource: e.packageSource,
     videosPerMonth: e.videosPerMonth, sessionsPerMonth: e.sessionsPerMonth, sessionHours: e.sessionHours,
-    callMode: callModeOf(e), noCallEligible: e.noCallEligible, clientSuppliesTopics: e.clientSuppliesTopics,
+    callMode: callModeOf(e), callModeExplicit: e.callMode === "REQUIRED" || e.callMode === "OPTIONAL_WRITTEN" || e.callMode === "NOT_INCLUDED",
+    noCallEligible: e.noCallEligible, clientSuppliesTopics: e.clientSuppliesTopics,
     timezone: e.timezone, notes: e.notes, overrides: readOverrides(e.overridesJson),
     currentMonthKey: nowKey, currentMonthLabel: monthLabel(nowKey),
     nextMonthKey: nextMonth(nowKey), nextMonthLabel: monthLabel(nextMonth(nowKey)),

@@ -219,9 +219,9 @@ function CallRow({ r, data, assign, unassign, ignore, errors }: { r: DeskRow } &
         )}
         {r.state !== "IGNORED" && !aside && <button type="button" className={quiet} onClick={() => { setAsideWhy(""); setAside(true); }}>Not a program call</button>}
       </div>
-      {/* Oct 20 2026 (audit D12): one rule for setting a call aside, here and on
-          Monitoring: a reason is kept on the record, because an unexplained
-          dismissal is how a real call gets lost. */}
+      {/* Oct 20 2026 (audit D12): one rule for setting a call aside: a reason
+          is kept on the record, because an unexplained dismissal is how a
+          real call gets lost. Since Oct 21 this page is the one call queue. */}
       {aside && r.state !== "IGNORED" && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label className="sr-only" htmlFor={`aside-${r.id}`}>Why it is not a program call</label>

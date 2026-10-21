@@ -123,7 +123,7 @@ export async function failedAutomations(opts: { sinceDays?: number; take?: numbe
   for (const r of reminders) out.push({ kind: "reminder", ref: r.id, enrollmentId: r.enrollmentId, clientId: r.clientId, monthId: r.monthId, title: `Reminder ${r.action} ${r.outcome ?? "failed"}`, error: r.lastError ?? r.outcome ?? "no detail recorded", at: r.updatedAt, retryable: true, href: "/content/monitoring#reminders" });
   for (const s of sessions) out.push({ kind: "session_booking", ref: s.id, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, title: `Session booking needs a person (${s.bookingState.toLowerCase()})`, error: s.lastError ?? "no detail recorded", at: s.updatedAt, retryable: s.bookingState !== "MISMATCH", href: `/content/${s.enrollmentId}#sessions` });
   for (const a of addresses) out.push({ kind: "session_address", ref: a.id, enrollmentId: a.enrollmentId, clientId: a.clientId, monthId: a.monthId, title: a.syncState === "UNKNOWN" ? "Filming address update unconfirmed" : "Filming address not on the booking", error: a.lastError ?? a.syncState.toLowerCase(), at: a.updatedAt, retryable: false, href: `/content/${a.enrollmentId}#sessions` });
-  for (const c of calls) out.push({ kind: "call_record", ref: c.id, enrollmentId: c.enrollmentId, clientId: c.clientId, monthId: c.monthId, title: c.transcriptState === "NEEDS_REVIEW" ? "Call transcript needs a person" : c.transcriptState === "FAILED" ? "Call transcript processing failed" : "Call record error", error: c.lastError ?? `transcript ${c.transcriptState.toLowerCase()}, match ${c.matchState.toLowerCase()}`, at: c.updatedAt, retryable: c.transcriptState === "FAILED", href: "/content/monitoring#calls" });
+  for (const c of calls) out.push({ kind: "call_record", ref: c.id, enrollmentId: c.enrollmentId, clientId: c.clientId, monthId: c.monthId, title: c.transcriptState === "NEEDS_REVIEW" ? "Call transcript needs a person" : c.transcriptState === "FAILED" ? "Call transcript processing failed" : "Call record error", error: c.lastError ?? `transcript ${c.transcriptState.toLowerCase()}, match ${c.matchState.toLowerCase()}`, at: c.updatedAt, retryable: c.transcriptState === "FAILED", href: "/content/calls#review" });
   for (const s of switches) if (s.lastError && s.lastErrorAt && s.lastErrorAt >= since) out.push({ kind: "automation", ref: s.key, enrollmentId: null, clientId: null, monthId: null, title: `Automation "${s.key}" last run failed`, error: s.lastError, at: s.lastErrorAt, retryable: false, href: "/settings#program-automations" });
   for (const p of pubs) out.push({ kind: "publishing", ref: p.id, enrollmentId: p.enrollmentId, clientId: p.clientId, monthId: null, title: "Publishing job failed", error: p.lastError ?? "no detail recorded", at: p.updatedAt, retryable: true, href: "/content/monitoring" });
   for (const c of cuts) out.push({ kind: "cut_transcript", ref: c.id, enrollmentId: null, clientId: null, monthId: null, title: `Cut transcript failed (cut ${c.submissionId.slice(0, 8)}…)`, error: c.lastError ?? "no detail recorded", at: c.updatedAt, retryable: true, href: "/content/monitoring" });
@@ -197,6 +197,31 @@ export async function sessionRequestState(): Promise<{ counts: { status: string;
 }
 
 export type { AutomationState };
+
+/**
+ * LINK-ONLY CLIENTS (Jordan, Oct 21 2026; audit E2b). The shared portal link
+ * can still comment and ask for changes. That can be switched off once every
+ * client has a sign-in, and this count says when: active, real (not test)
+ * programs whose shared link still opens (not revoked, not expired) and that
+ * have no live seat. Display only; nothing here changes what the link may do.
+ */
+export async function linkOnlyClients(now: Date = new Date()): Promise<{ linkOnly: { clientId: string; name: string }[]; active: number }> {
+  const enrollments = await prisma.contentEnrollment.findMany({
+    where: { status: "ACTIVE", accessRevokedAt: null, portalToken: { not: null } },
+    select: { id: true, clientId: true, portalTokenExpiresAt: true },
+  });
+  const linkLive = enrollments.filter((e) => !e.portalTokenExpiresAt || e.portalTokenExpiresAt > now);
+  const [clients, seats] = await Promise.all([
+    prisma.client.findMany({ where: { id: { in: linkLive.map((e) => e.clientId) } }, select: { id: true, name: true } }),
+    prisma.clientMembership.findMany({ where: { enrollmentId: { in: linkLive.map((e) => e.id) }, revokedAt: null }, select: { enrollmentId: true }, distinct: ["enrollmentId"] }),
+  ]);
+  const real = new Map(clients.filter((c) => !isSyntheticClientRow(c)).map((c) => [c.id, c.name]));
+  const seated = new Set(seats.map((s) => s.enrollmentId));
+  const counted = linkLive.filter((e) => real.has(e.clientId));
+  const linkOnly = counted.filter((e) => !seated.has(e.id)).map((e) => ({ clientId: e.clientId, name: real.get(e.clientId) ?? "Client" }));
+  linkOnly.sort((a, b) => a.name.localeCompare(b.name));
+  return { linkOnly, active: counted.length };
+}
 
 // ---- the reminder ledger (§24) --------------------------------------------------------------
 

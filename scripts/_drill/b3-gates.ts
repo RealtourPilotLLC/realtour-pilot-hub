@@ -658,10 +658,11 @@ async function main() {
     // Oct 20 2026 (audit E12/E17): the office line in the Terms is the owner-editable contact, not a typed-out number.
     c.ok("NEW terms: both routes, three business days, the office line inside 24 hours", /at least three business days after your answers are sent or your call ends/.test(terms) && !/72 weekday hours/.test(terms) && /Inside 24 hours, call or text \$\{contact\.name\} at \$\{contact\.display\}/.test(terms) && !/a few business days/.test(terms));
     const choice = code(read("src/components/portal/PlanningChoice.tsx"));
-    const sched = code(read("src/components/portal/tabs/ScheduleTab.tsx"));
+    // Oct 21 2026: the Schedule page's list is ComingUp.tsx (on Home and Your Month).
+    const sched = code(read("src/components/portal/ComingUp.tsx"));
     c.ok("OLD route card / schedule tab: 'opens a few business days after'", /opens a few business days after/.test(show("src/components/portal/PlanningChoice.tsx")) && /opens a few business days after/.test(show("src/components/portal/tabs/ScheduleTab.tsx")));
     // C14 (Oct 13 2026): Schedule is a read-only list now; booking (and its timing words) lives in Your Month.
-    c.ok("NEW: 'as soon as your answers are in' / 'as soon as the call is', three business days, no 'few business days', and Schedule points to Your Month", !/few business days/.test(choice + sched) && /Filming can be booked as soon as the call is/.test(choice) && /three business days/.test(choice) && !/72 weekday hours/.test(choice + sched) && /Book, change or cancel them in \{topicsLabel\}/.test(sched));
+    c.ok("NEW: 'as soon as your answers are in' / 'as soon as the call is', three business days, no 'few business days', and Schedule points to Your Month", !/few business days/.test(choice + sched) && /Filming can be booked as soon as the call is/.test(choice) && /three business days/.test(choice) && !/72 weekday hours/.test(choice + sched) && /Change or cancel/.test(sched) && /Book in \{props\.topicsLabel\}/.test(sched));
     const g04 = read("docs/portal-guides/04-preparing-for-your-session.md");
     const gj = JSON.parse(read("docs/portal-guides/guides.json")) as { guides: { slug: string; body: string }[] };
     const g04j = gj.guides.find((g) => g.slug === "preparing-for-your-filming-session")?.body ?? "";

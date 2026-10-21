@@ -1,5 +1,7 @@
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
-// Actual signed Settings/monitoring SSR with isolated fixtures and injected read failures.
+// Actual signed Settings / Strategy calls / Monitoring SSR with isolated fixtures and injected read failures.
+// Oct 21 2026 (Jordan; audit D12): the call review queue lives on Strategy
+// calls (/content/calls#review) under the desk; Monitoring links there.
 // No provider, domain action, invitation, booking or production database is used.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,20 +21,21 @@ async function main() {
   try {
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { default: MonitoringPage } = await import("@/app/content/monitoring/page");
+    const { default: CallsPage } = await import("@/app/content/calls/page");
     const { default: SettingsPage } = await import("@/app/settings/page");
     const { CallReviewQueue, attemptCallReviewAction } = await import("@/components/content/CallReviewQueue");
     const { CalendlyMappingsPanel } = await import("@/components/settings/CalendlyMappingsPanel");
     const { loadCalendlyPanelState } = await import("@/app/settings/calendlyActions");
     const { prerender } = await import("react-dom/static");
     const html = async (tree: Parameters<typeof prerender>[0]) => new Response((await prerender(tree)).prelude).text();
-    const callsHtml = (body: string) => body.split('id="calls"')[1]?.split('id="transcripts"')[0] ?? "";
+    const callsHtml = (body: string) => body.split('id="review"')[1] ?? "";
     const owner = await prisma.appUser.create({ data: { email: "owner@fixture.invalid", role: "OWNER", status: "ACTIVE" } });
     const admin = await prisma.appUser.create({ data: { email: "admin@fixture.invalid", role: "ADMIN", status: "ACTIVE" } });
     const settingsOnly = await prisma.appUser.create({ data: { email: "settings@fixture.invalid", role: "ADMIN", status: "ACTIVE", permissions: JSON.stringify({ content: false, settings: true }) } });
     const editor = await prisma.appUser.create({ data: { email: "editor@fixture.invalid", role: "EDITOR", status: "ACTIVE" } });
     const as = (user: typeof owner) => setSession({ uid: user.id, email: user.email, role: user.role, permissions: user.permissions });
     await as(owner);
-    const empty = callsHtml(await html(await MonitoringPage()));
+    const empty = callsHtml(await html(await CallsPage()));
     c.ok("successful empty reads retain truthful empty queue feedback", empty.includes("Nothing is in the queue.") && empty.includes("No unlinked transcript is waiting in this review queue.") && !empty.includes("could not be read"));
 
     const client = await prisma.client.create({ data: { name: "Fixture content client", email: "client@fixture.invalid" } });
@@ -50,8 +53,8 @@ async function main() {
       prisma.programAutomation.findMany(), prisma.programTranscriptJob.findMany(), prisma.auditLog.findMany(),
     ]));
     const before = await snapshot();
-    const ready = callsHtml(await html(await MonitoringPage()));
-    c.ok("real readers preserve legacy-month provenance through the monitoring page", ready.includes("Already filed on a content month by the legacy workflow.") && ready.includes("Its call ownership is still unconfirmed.") && ready.includes("Exact legacy transcript title"));
+    const ready = callsHtml(await html(await CallsPage()));
+    c.ok("real readers preserve legacy-month provenance through the call queue", ready.includes("Already filed on a content month by the legacy workflow.") && ready.includes("Its call ownership is still unconfirmed.") && ready.includes("Exact legacy transcript title"));
     c.ok("ranked candidates remain explicit choices without client preselection", ready.includes("Fixture ranked candidate") && ready.includes("fixture possible match") && /<option value="" selected="">pick a client/.test(ready));
     c.ok("operations queue retains manual month entry when existing months are insufficient", ready.includes('<option value="__other__">Another month…</option>'));
     c.ok("all queue buttons provide 44px targets and explicit button type", [...ready.matchAll(/<button\b([^>]*)>/g)].length > 5 && [...ready.matchAll(/<button\b([^>]*)>/g)].every((match) => match[1].includes("min-h-11") && match[1].includes('type="button"')));
@@ -60,7 +63,7 @@ async function main() {
     const originalCalls = prisma.programCallRecord.findMany;
     prisma.programCallRecord.findMany = (async () => { throw new Error("fixture call read failed"); }) as unknown as typeof originalCalls;
     try {
-      const failed = callsHtml(await html(await MonitoringPage()));
+      const failed = callsHtml(await html(await CallsPage()));
       c.ok("failed call reader shows unknown count and reload, never a clean call queue", failed.includes("Calls waiting for review could not be read.") && failed.includes("Reload queue") && !failed.includes("No call is waiting") && !failed.includes("Nothing is in the queue."));
       c.ok("independent successful alias/transcript reads survive call read failure", failed.includes("alias@fixture.invalid") && failed.includes("Exact legacy transcript title"));
     } finally { prisma.programCallRecord.findMany = originalCalls; }
@@ -68,7 +71,7 @@ async function main() {
     const originalAliases = prisma.clientEmailAlias.findMany;
     prisma.clientEmailAlias.findMany = (async () => { throw new Error("fixture review sources failed"); }) as unknown as typeof originalAliases;
     try {
-      const failed = callsHtml(await html(await MonitoringPage()));
+      const failed = callsHtml(await html(await CallsPage()));
       c.ok("failed shared review-source read exposes both unknown sections without empty claims", failed.includes("Email proposals could not be read.") && failed.includes("Transcripts without a confirmed call could not be read.") && !failed.includes("Nothing proposed.") && !failed.includes("No unlinked transcript") && !failed.includes("Nothing is in the queue."));
       c.ok("call evidence remains available during shared review-source failure", failed.includes("Fixture call invitee") && failed.includes('role="alert"'));
     } finally { prisma.clientEmailAlias.findMany = originalAliases; }
@@ -78,7 +81,7 @@ async function main() {
     prisma.contentEnrollment.findMany = (async () => { throw new Error("fixture enrollment options failed"); }) as unknown as typeof originalEnrollment;
     prisma.contentMonth.findMany = (async () => { throw new Error("fixture month options failed"); }) as unknown as typeof originalMonths;
     try {
-      const failed = callsHtml(await html(await MonitoringPage()));
+      const failed = callsHtml(await html(await CallsPage()));
       c.ok("failed option reads are named without concealing known candidate evidence", failed.includes("The enrolled client list could not be read.") && failed.includes("The available content months could not be read.") && failed.includes("fixture possible match"));
       c.ok("unreadable client and month selectors cannot submit misleading empty options", /<select[^>]*aria-label="Client on this call"[^>]*disabled/.test(failed) && /<select[^>]*aria-label="Month this call planned"[^>]*disabled/.test(failed));
     } finally { prisma.contentEnrollment.findMany = originalEnrollment; prisma.contentMonth.findMany = originalMonths; }
@@ -86,23 +89,35 @@ async function main() {
     for (const who of [owner, admin]) {
       await as(who);
       const settings = await html(await SettingsPage({ searchParams: Promise.resolve({}) }));
-      c.ok(`${who.role}: Settings directs matching to the existing authorized operations queue`, settings.includes('href="/content/monitoring#calls"') && settings.includes("Open call review queue") && !settings.includes("Call recovery stays here") && !settings.includes(">Confirm client</button>"));
-      c.ok(`${who.role}: monitoring retains access with signed current-user lookup`, callsHtml(await html(await MonitoringPage())).includes("Fixture call invitee"));
+      c.ok(`${who.role}: Settings directs matching to the one call queue (Strategy calls)`, settings.includes('href="/content/calls#review"') && settings.includes("Open call review queue") && !settings.includes("Call recovery stays here") && !settings.includes(">Confirm client</button>"));
+      c.ok(`${who.role}: Strategy calls holds the queue, with signed current-user lookup`, callsHtml(await html(await CallsPage())).includes("Fixture call invitee"));
+      const mon = await html(await MonitoringPage());
+      c.ok(`${who.role}: Monitoring links to it instead of carrying a second queue`, mon.includes('href="/content/calls#review"') && !mon.includes("Fixture call invitee") && !mon.includes('aria-label="Reason this is not program work"'));
     }
     await as(settingsOnly);
     const settings = await html(await SettingsPage({ searchParams: Promise.resolve({}) }));
     c.ok("settings-only override retains its existing owner-action recovery surface", settings.includes("Call recovery stays here") && settings.includes(">Confirm client</button>") && !settings.includes("Open call review queue"));
+    // requirePageAccess imports next/navigation itself, so its redirect is the
+    // real one (a NEXT_REDIRECT error whose digest carries the target), not the
+    // patched stub above. Both shapes read as "REDIRECT <target>".
+    const redirectOf = (error: unknown) => {
+      const digest = (error as { digest?: unknown } | null)?.digest;
+      return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT;") ? `REDIRECT ${digest.split(";")[2]}` : String(error);
+    };
     let denied = "";
-    try { await MonitoringPage(); } catch (error) { denied = String(error); }
-    c.ok("settings-only override cannot open monitoring via its new deep link", denied.includes("REDIRECT /"));
+    try { await CallsPage(); } catch (error) { denied = redirectOf(error); }
+    c.ok("settings-only override cannot open the call queue via its deep link", denied.includes("REDIRECT /"), denied);
     const state = await loadCalendlyPanelState();
     const unlinkedOnly = renderToStaticMarkup(createElement(CalendlyMappingsPanel, { state: { ...state, reviewRecords: [], queue: { ...state.queue, aliases: [] } }, canOpenOperations: false }));
     c.ok("fallback cannot say nothing is waiting while legacy notes need review", unlinkedOnly.includes("already on a month (legacy)") && !unlinkedOnly.includes("Nothing waiting."));
     await as(editor);
     denied = "";
-    try { await MonitoringPage(); } catch (error) { denied = String(error); }
-    c.ok("editor without a content grant remains refused", denied.includes("REDIRECT /"));
+    try { await CallsPage(); } catch (error) { denied = redirectOf(error); }
+    c.ok("editor without a content grant remains refused", denied.includes("REDIRECT /"), denied);
     await clearSession();
+    denied = "";
+    try { await CallsPage(); } catch (error) { denied = redirectOf(error); }
+    c.ok("an anonymous call-queue request is redirected to login", denied.includes("REDIRECT /login?next="), denied);
     denied = "";
     try { await MonitoringPage(); } catch (error) { denied = String(error); }
     c.ok("anonymous monitoring request remains redirected to login", denied.includes("REDIRECT /login?next=/content/monitoring"));

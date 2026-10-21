@@ -145,7 +145,8 @@ async function main() {
     // =======================================================================
     const expect: Record<string, [string, string | null]> = {
       home: ["home", null], videos: ["library", null], library: ["library", null], topics: ["plan", "bank"], ideas: ["plan", "bank"],
-      strategy: ["plan", "strategy"], schedule: ["schedule", null], resources: ["resources", null], messages: ["messages", null],
+      // Oct 21 2026: the Schedule page is retired; an old ?tab=schedule lands on Your Month.
+      strategy: ["plan", "strategy"], schedule: ["plan", "month"], resources: ["resources", null], messages: ["messages", null],
       profile: ["brand", null], settings: ["team", null], team: ["team", null], terms: ["terms", null], garbage: ["home", null], "": ["home", null],
       plan: ["plan", "month"], brand: ["brand", null], more: ["more", null],
     };
@@ -156,7 +157,7 @@ async function main() {
     const oldKeys = [...Object.keys(HEAD_LEGACY), "garbage", undefined];
     const lost = oldKeys.filter((k) => !nav.PORTAL_DESTS.includes(nav.resolvePortalRoute({ tab: k }).dest));
     c.ok("every key HEAD knew (the ones already in sent emails) lands on a page of the one layout (garbage → Home)", lost.length === 0 && nav.resolvePortalRoute({ tab: "garbage" }).dest === "home", lost.join(",") || `${oldKeys.length} keys`);
-    const dataTabs = new Set(["home", "videos", "topics", "strategy", "schedule", "resources", "messages", "profile", "settings", "terms", "more"]);
+    const dataTabs = new Set(["home", "videos", "topics", "strategy", "resources", "messages", "profile", "settings", "terms", "more"]);
     c.ok("every destination loads a known data block (More loads nothing page-specific)", nav.PORTAL_DESTS.every((d) => dataTabs.has(nav.resolvePortalRoute({ tab: d }).dataTab)) && nav.resolvePortalRoute({ tab: "more" }).dataTab === "more");
     const hrefs = [
       ...nav.PORTAL_DESTS.flatMap((d) => [nav.portalHref("", d), nav.portalHref("e=ckenroll0001", d), nav.portalHref("e=ckenroll0001&month=2026-10", d, "v=abc")]),
@@ -215,7 +216,7 @@ async function main() {
     c.head("3 · every old tab key lands, in the one layout; the old tabs are gone");
     // =======================================================================
     const landing: Record<string, string> = {
-      home: "HomeV2", videos: "LibraryV2", library: "LibraryV2", topics: "PlanTab", ideas: "PlanTab", strategy: "PlanTab", schedule: "ScheduleTab",
+      home: "HomeV2", videos: "LibraryV2", library: "LibraryV2", topics: "PlanTab", ideas: "PlanTab", strategy: "PlanTab", schedule: "PlanTab",
       messages: "MessagesTab", profile: "PortalProfile", brand: "PortalProfile", settings: "SettingsTab", team: "SettingsTab", terms: "TermsCard", more: "MoreTab", garbage: "HomeV2",
     };
     const missed: string[] = [];
@@ -383,7 +384,8 @@ async function main() {
       return { items: items.map((i) => i.dest), rail: shellMore.map((i) => i.dest) };
     };
     const m0 = await moreDests();
-    c.ok("no guide at all → More and the rail list Brand, Messages, Settings & Team, Terms — no Resources", m0.items.join(",") === "brand,messages,team,terms" && m0.rail.join(",") === m0.items.join(","), m0.items.join(","));
+    // Oct 21 2026: Messages moved into the bar; More links to Your Month's filming step ("plan") instead.
+    c.ok("no guide at all → More and the rail list Brand, Filming sessions, Settings & Team, Terms — no Resources, no Messages", m0.items.join(",") === "brand,plan,team,terms" && m0.rail.join(",") === m0.items.join(","), m0.items.join(","));
     await prisma.portalResource.create({ data: { slug: "ui01-draft", groupKey: "YOUR_MONTH", title: "How your month works", body: "Draft", published: false } });
     c.ok("a DRAFT guide does not bring it back", !(await moreDests()).items.includes("resources"));
     await prisma.portalResource.create({ data: { slug: "ui01-live", groupKey: "YOUR_MONTH", title: "Reviewing a cut", body: "Pause, note, approve.", published: true } });
@@ -398,7 +400,7 @@ async function main() {
     const bars: El[] = [];
     walk(expandedShell, (e) => { if (e.type === "nav" && typeof e.props.className === "string" && e.props.className.includes("bottom-0")) bars.push(e); });
     const barLinks = bars.length ? find(bars[0], "Link") : [];
-    c.ok("the phone bar: five items — Home, Plan, Library, Schedule, More", barLinks.length === 5 && barLinks.map((l) => l.props.href).join(",") === "?tab=home,?tab=plan,?tab=library,?tab=schedule,?tab=more", barLinks.map((l) => l.props.href).join(","));
+    c.ok("the phone bar: five items — Home, Month, Library, Messages, More (Oct 21 2026: Messages has Schedule's slot)", barLinks.length === 5 && barLinks.map((l) => l.props.href).join(",") === "?tab=home,?tab=plan,?tab=library,?tab=messages,?tab=more", barLinks.map((l) => l.props.href).join(","));
     c.ok("…each at least 48px tall (min-h-12) with a visible focus ring", barLinks.every((l) => /\bmin-h-12\b/.test(l.props.className) && /focus-visible:outline-2/.test(l.props.className)));
     const allHrefs: string[] = [];
     for (const q of [{ tab: "home" }, { tab: "plan" }, { tab: "plan", pv: "scripts" }, { tab: "library" }, { tab: "schedule" }, { tab: "more" }, { tab: "brand" }, { tab: "team" }, { tab: "terms" }, { tab: "messages" }, { tab: "resources" }]) {
@@ -440,15 +442,14 @@ async function main() {
     c.ok("the v2 bank keeps its bank-only filter keys (an address filter lands on All), shows no filter chips (C14), and points at the month's chosen topics", /BANK_FILTER_KEYS: readonly \(PortalTopicState \| "ALL"\)\[\] = \["ALL", "SUGGESTED", "FILMED"\]/.test(tb) && /!BANK_FILTER_KEYS\.includes\(filter\) \? "ALL" : filter/.test(tb) && /chosenThisMonth/.test(tb) && !/aria-label="Filter topics"/.test(tb));
 
     // Findings 13 / 16 — the v2 pages' words and weight.
+    // Oct 21 2026: the Schedule page is retired. An old ?tab=schedule opens Your Month, and its list is on Home and Your Month (ComingUp.tsx).
     const sched = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "schedule" } });
-    // Batch 2 (Sep 25): the plan is "Your Month", and the route choice lives
-    // there — Schedule links to its route step instead of carrying the buttons.
-    c.ok("v2 Schedule names 'Your Month', not a 'Video Topics' page that is not in the nav, and routes the choice there", find(sched, "ScheduleTab")[0]?.props.topicsLabel === "Your Month" && find(sched, "ScheduleTab")[0]?.props.topicsHref === "?tab=plan");
+    c.ok("an old ?tab=schedule lands on Your Month's month view", find(sched, "PlanTab")[0]?.props.d.view === "month");
     const schedReal = await PortalPage({ viewer: realTokenViewer, path: "/portal/[token]", query: { tab: "schedule" } });
-    c.ok("…and a real client's Schedule says the same (the old 'Video Topics' wording went with the old layout)", find(schedReal, "ScheduleTab")[0]?.props.topicsLabel === "Your Month");
+    c.ok("…for a real client too", find(schedReal, "PlanTab")[0]?.props.d.view === "month");
     const hv2 = find((await homeOf(testOwner)).tree, "AppointmentCards", new Set(["HomeV2"]));
-    // C14 (Oct 13 2026): Home has no appointment cards; the month card lists what is coming up and links to Schedule.
-    c.ok("Home has no appointment cards (C14): the month card's coming-up lines link to Schedule, never a booking button", hv2.length === 0 && !/function AppointmentCards/.test(read("src/components/portal/tabs/HomeTab.tsx")) && /href=\{href\("schedule"\)\}/.test(read("src/components/portal/tabs/HomeTab.tsx")) && !/Book the session/.test(read("src/components/portal/tabs/HomeTab.tsx")));
+    // C14 (Oct 13 2026): Home has no appointment cards; Oct 21 2026: the month card lists what is coming up itself (ComingUp.tsx).
+    c.ok("Home has no appointment cards (C14): the month card's coming-up list, never a booking button or a Schedule link", hv2.length === 0 && !/function AppointmentCards/.test(read("src/components/portal/tabs/HomeTab.tsx")) && /<ComingUpList/.test(read("src/components/portal/tabs/HomeTab.tsx")) && !/href\("schedule"\)/.test(read("src/components/portal/tabs/HomeTab.tsx")) && !/Book the session/.test(read("src/components/portal/tabs/HomeTab.tsx")));
     c.ok("the video-change hint names no page (v1 'My Videos' / v2 'Content Library')", !/My Videos|Content Library/.test((await import("@/lib/programMessages")).VIDEO_CHANGES_HINT));
     const team = await PortalPage({ viewer: testOwner, path: "/portal/[token]", query: { tab: "team" } });
     const st = find(team, "SettingsTab")[0]?.props.d;

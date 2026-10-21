@@ -279,7 +279,7 @@ async function main() {
     const topics = await portal.portalTopics(v.enrollment);
     const ym = text(html(createElement(YourMonth, { d: {
       topics, planning, planningFailed: false, schedule: sOct ?? null, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false,
-      hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" },
+      hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" },
       late: { schedule: sSep ?? null, scripts }, selectedScheduleMonthId: null,
     } })));
     c.ok("Your Month (October) renders the line, both tabs and September's scripts", ym.includes("Your September session still needs booking, and October's too.") && ym.includes("September session (your scripts are ready)") && ym.includes("October session") && ym.includes("Your September scripts (2)") && ym.includes("Spring buyers move fast"), ym.slice(0, 400));
@@ -293,8 +293,9 @@ async function main() {
     // C14 (Oct 13 2026): the line is said once, in Your Month; Home's next step names the September session.
     c.ok("Home offers the September session in its next step (the line itself lives in Your Month)", !homeHtml.includes("Your September session still needs booking, and October's too.") && /Book your September session|Your September session and this month's are both ready to book/.test(homeHtml), homeHtml.slice(0, 300));
     const schedHtml = text(html(await PortalPage({ viewer: v, path: "/portal/x", query: { tab: "schedule" } })));
-    // C14 (Oct 13 2026): Schedule is a read-only list; the September session is still to book, linked to Your Month.
-    c.ok("Schedule lists the September session as still to book (no repeat of the line)", !schedHtml.includes("Your September session still needs booking") && schedHtml.includes("September session (your scripts are ready)") && schedHtml.includes("Still to book"));
+    // CHANGED Oct 21 2026: the Schedule page is retired (Messages has its slot in the bar); an old
+    // ?tab=schedule opens Your Month, where the September session is booked beside October's.
+    c.ok("an old ?tab=schedule opens Your Month, with the September session to book there", schedHtml.includes("Your September session still needs booking, and October's too.") && schedHtml.includes("September session (your scripts are ready)"), schedHtml.slice(0, 300));
     const ha = homeActions({ status: "ACTIVE", readOnly: false, perms: { session: true, suggest: true, request: true, approve: true, profile: true }, review: { count: 0, single: null, soonestDeadlineLabel: null }, scripts: [], unread: 0, planning: null, month: null, toAnswer: [], session: { offerBooking: false, required: 1, missing: 1 }, addressNeeded: 0, setup: null, ready: { count: 0, withFile: false, single: null }, lateSession: { label: "September", open: true } });
     c.ok("(the Home action lands on the late card)", ha.primary?.kind === "BOOK_SESSION" && ha.primary.title === "Book your September session" && ha.primary.href.endsWith("#step-late"), JSON.stringify(ha.primary));
 
@@ -409,7 +410,7 @@ async function main() {
     const pB2 = (await portal.portalPlanning(vB.enrollment, B.monthId))!;
     const ymB = text(html(createElement(YourMonth, { d: {
       topics: await portal.portalTopics(vB.enrollment), planning: pB2, planningFailed: false, schedule: null, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false,
-      hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" },
+      hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" },
       late: { schedule: (await portal.portalScheduleMonths(vB.enrollment)).find((m) => m.monthId === bSep.id) ?? null, scripts: [] },
     } })));
     c.ok("re-applied with 'scripts sent outside the hub' (Jordan emailed them): open, labelled ready, and the card says they were sent directly", bApply2.ok && !gB2.locked && pB2.late?.slotLabel === "September session (your scripts are ready)" && ymB.includes("We sent your September scripts to you directly."), ymB.slice(0, 300));

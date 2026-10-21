@@ -135,7 +135,7 @@ async function main() {
   const yourMonthTree = async (f: ContentMonthFixture) => {
     const v = await viewerOf(f.portalToken);
     const [topics, planning] = await Promise.all([portal.portalTopics(v.enrollment), portal.portalPlanning(v.enrollment, f.monthId)]);
-    return YourMonth({ d: { topics, planning, planningFailed: false, schedule: null, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } });
+    return YourMonth({ d: { topics, planning, planningFailed: false, schedule: null, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" } } });
   };
   const counts = async () => ({ calls: await prisma.programCallRecord.count(), reqs: await prisma.programSessionRequest.count(), sels: await prisma.contentTopicSelection.count(), ivs: await prisma.contentInterview.count(), scripts: await prisma.contentScript.count(), runs: await prisma.programAiRun.count() });
 

@@ -169,55 +169,9 @@ export async function loadClientEmails(
   }
 }
 
-// AI-draft a reply in our voice (for email — Kyle copies/sends from their mail app).
-export async function draftClientReply(
-  clientId: string,
-  channel: "email" | "text",
-  lastMessage: string,
-): Promise<ActionResult> {
-  await requireAdmin();
-  const { getSecret } = await import("@/lib/integrations/connections");
-  if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to draft replies." };
-  const client = await prisma.client.findUnique({
-    where: { id: clientId },
-    select: {
-      name: true, segment: true, socialClient: true, socialPlan: true,
-      projects: { orderBy: { orderedAt: { sort: "desc", nulls: "last" } }, take: 6, select: { title: true, status: true } },
-    },
-  });
-  try {
-    const { relevantPolicies } = await import("@/lib/policies");
-    const { draftReplyWithContext } = await import("@/lib/integrations/ai");
-    // Oct 14 2026 (Jordan: context "any time a response is being drafted"):
-    // the recent conversation both ways, not only the last message.
-    //
-    // Oct 20 2026 (audit F9): the conversation is the source, read here. The
-    // browser's `lastMessage` is only a fallback for a client with no comms
-    // on record; it used to be appended as the client's newest turn, dated
-    // now, whenever it didn't match a turn word for word, and the page's guess
-    // at it could be our own outbound text.
-    const { recentConversation } = await import("@/lib/conversationContext");
-    const lines = await recentConversation(clientId, { limit: 12, clientName: client?.name ?? null });
-    const turns = lines.map((l) => ({ role: l.role, text: l.text, at: l.at.toISOString(), sender: l.role === "us" ? l.who : null }));
-    const fallback = (lastMessage ?? "").trim();
-    if (turns.length === 0 && fallback) turns.push({ role: "client", text: fallback, at: new Date().toISOString(), sender: null });
-    const lastClientWords = [...turns].reverse().find((t) => t.role === "client")?.text ?? fallback;
-    const draft = await draftReplyWithContext({
-      channel,
-      clientName: client?.name,
-      segment: client?.segment ?? null,
-      socialPlan: client?.socialClient ? (client?.socialPlan ?? "yes") : null,
-      propertyAddress: client?.projects[0]?.title ?? null,
-      projects: client?.projects ?? [],
-      transcript: turns.length ? turns : [{ role: "client" as const, text: "(no recent message — write a friendly check-in)", at: null, sender: null }],
-      policies: await relevantPolicies(lastClientWords),
-    });
-    if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "Looks handled — no reply needed here." };
-    return { ok: true, message: "Draft ready. Review before sending.", draft };
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Could not draft a reply." };
-  }
-}
+// Oct 21 2026 (audit F9, Jordan): draftClientReply, the customer-notes card's
+// "Email draft" tab, is gone with that tab. The page keeps one email draft,
+// draftEmailReply below (ClientEmails), which reads the whole Gmail thread.
 
 // Draft an AI reply to a client's most recent EMAIL — reads the whole Gmail
 // thread for context, and when they're asking about availability, pulls real

@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, topicForEnrollment, openMonthForEnrollment, bookableMonthForEnrollment, type PortalViewer } from "@/lib/portal";
 import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/portalAccess";
 import { approveCut, noticeApprovalNotes, requestChangesOnCut, replyToComment, setCommentResolved, isMine, recordLinkComment, type OpenNotesChoice } from "@/lib/clientDecisions";
-import { setPostedByClient, saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
+import { saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
 import { contentHref } from "@/lib/contentNav"; // UI-02: the one builder of staff client-file links
 
@@ -844,32 +844,10 @@ export async function portalUndeclineTopic(auth: PortalAuth, topicId: string): P
   }
 }
 
-/**
- * Swap a carried-over, unfilmed script for another topic (CP-07). The script
- * and its history are kept ("scripted, not filmed"); the new topic takes the
- * slot, so the allowance is never counted twice.
- */
-export async function portalSwapCarriedTopic(auth: PortalAuth, selectionId: string, replacementTopicId: string): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
-  if (typeof v === "string") return fail(v);
-  if (!/^[a-z0-9]{10,40}$/i.test(selectionId ?? "")) return fail("That isn't on your plan.");
-  const sel = await prisma.contentTopicSelection.findUnique({ where: { id: selectionId }, select: { id: true, enrollmentId: true, monthId: true } });
-  if (!sel || sel.enrollmentId !== v.enrollment.id) return fail("That isn't on your plan.");
-  const month = await openMonthForEnrollment(v.enrollment.id, sel.monthId);
-  if (!month) return fail("That month is closed. Send us a message on the Messages page if something needs to change.");
-  const repl = await topicForEnrollment(v.enrollment.id, replacementTopicId);
-  if (!repl) return fail("Pick a topic from your bank to swap in.");
-  const { swapCarriedTopic } = await import("@/lib/contentTopics");
-  try {
-    await swapCarriedTopic(sel.id, repl.id, topicActor(v));
-    const { monthLabel } = await import("@/lib/contentProgram");
-    await ownerBell("portal_topic", `Carried script swapped — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} swapped a carried-over script for "${clip(repl.title, 100)}" in ${month.monthKey}.`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-swap-${sel.id}`);
-    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: `Swapped. "${clip(repl.title, 80)}" is on ${monthLabel(month.monthKey)} now. The earlier script is kept under "Scripted, not filmed".` };
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
-  }
-}
+// Oct 21 2026 (Jordan; audit E9): "swap a carried script"
+// (portalSwapCarriedTopic / contentTopics.swapCarriedTopic) is retired. The
+// Topic bank stopped offering it on Oct 13 and nothing called it; a carried
+// script is changed by the office.
 
 /** Opening a topic for a month starts (or resumes) its guided interview. */
 export async function portalOpenInterview(auth: PortalAuth, topicId: string, monthId: string): Promise<RId> {
@@ -1295,17 +1273,14 @@ export async function portalCancelSessionRequest(auth: PortalAuth, requestId: st
   return { ok: out.ok, message: out.message };
 }
 
-/** "Marked as posted by me" — the client's own note, never a verified publication. */
-export async function portalMarkPosted(auth: PortalAuth, videoId: string, posted: boolean): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
-  if (typeof v === "string") return fail(v);
-  return setPostedByClient(v, videoId, !!posted);
-}
+// Oct 21 2026 (Jordan; audit E9): "Mark as posted" (portalMarkPosted /
+// postingKit.setPostedByClient) is retired. Its button was hidden on Oct 13 and
+// nothing called it; the postedByClientAt column keeps what was recorded.
 
 /**
  * Oct 15 2026, bulk plans: the client ticks a script done (or undoes it).
  * Advisory only — the upload portal decides what was filmed (bulkPlan.ts).
- * Same gate as the posted tick: a seat that may suggest, on a live program,
+ * A seat that may suggest, on a live program,
  * and a script of THEIR plan that is released to them.
  */
 export async function portalMarkScriptDone(auth: PortalAuth, scriptId: string, done: boolean): Promise<R> {

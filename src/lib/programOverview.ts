@@ -654,7 +654,7 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       // A confirmed transcript nobody has analysed opens the month's call card,
       // where "Analyze the call" runs it now (Oct 12 2026); anything else
       // (a failed import, a transcript to confirm) opens the call review queue.
-      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: callEvidence.analyzeHere && !hardCallProblem ? contentHref(e.id, { tab: "plan", view: "calls", month: key, now, anchor: "call" }) : "/content/monitoring#calls", cta: callEvidence.cta };
+      next = { text: blockingCallProblem, owner: owner.STRATEGY.label, ownerDuty: "strategy", blocked: "us", deadlineISO: deadline, href: callEvidence.analyzeHere && !hardCallProblem ? contentHref(e.id, { tab: "plan", view: "calls", month: key, now, anchor: "call" }) : "/content/calls#review", cta: callEvidence.cta };
     } else if ((pp?.awaitingClient ?? 0) > 0) {
       // The entitlement reader, not a stale video status, says these exact
       // cuts are released. Their live decision or send takes priority over

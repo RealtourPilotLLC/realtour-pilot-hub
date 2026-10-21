@@ -222,7 +222,7 @@ export function CalendlyMappingsPanel({ state, canOpenOperations = false }: { st
           <h3 className="flex items-center gap-2 font-medium"><ListChecks className="size-4 text-muted" /> Calls and transcripts needing review</h3>
           <p className="mt-2 text-sm text-muted">Loaded for review: {state.reviewRecords.length} calls · {state.queue.aliases.length} email proposals · {state.queue.unlinkedTranscripts.length} transcripts without a confirmed call.</p>
           <p className="mt-1 text-sm text-muted">Identify clients, confirm transcript ownership, and resolve matching questions in program operations.</p>
-          <Link href="/content/monitoring#calls" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open call review queue <ExternalLink className="size-4" /></Link>
+          <Link href="/content/calls#review" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Open call review queue <ExternalLink className="size-4" /></Link>
         </div>
       ) : <div className="rounded-xl border">
         <p className="px-3 pt-3 text-sm text-muted">Call recovery stays here because this account cannot open program operations.</p>

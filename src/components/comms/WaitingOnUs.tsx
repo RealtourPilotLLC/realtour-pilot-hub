@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, CheckCircle2, Mail, MessageSquare, PhoneCall, Star, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { HandledButton } from "@/components/tasks/ChecklistButtons";
+import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import { LoopActions } from "@/components/ops/LoopActions";
 import { AtRiskUpdates } from "@/components/tasks/AtRiskUpdates";
 import { normalizeSubject } from "@/components/comms/emailThreads";
@@ -17,7 +17,9 @@ import { cn } from "@/lib/utils";
 // the checklist's "Messages to answer" group also read:
 //   · every client waiting on a reply, text and email together, longest wait
 //     first: who, how long, what they sent, Reply (the view on this page that
-//     answers them) and Handled (answered elsewhere, or no reply needed);
+//     answers them) and Dismiss (answered elsewhere, no reply needed, or
+//     spam: Oct 21 2026, the Texts tab's own control and reasons, so this is
+//     the one place a waiting client is cleared, by one path);
 //   · new leads waiting on a call or text back: View, Handled, Not needed;
 //   · promises at risk: work due inside a day or just past, so the client
 //     hears from us before they have to ask (this lived only on the Tasks
@@ -85,7 +87,8 @@ export function WaitingOnUs({ board, now, clean, includeTest, excludeClientIds, 
                       {latest && <p className="mt-0.5 truncate text-[13px] text-muted">&ldquo;{clean(latest.subject ? `${latest.subject}: ${latest.snippet}` : latest.snippet)}&rdquo;</p>}
                     </div>
                     <Link href={waitingRowReplyHref(w, includeTest)} className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90">Reply</Link>
-                    <HandledButton clientId={w.group.clientId} family={w.family} groupKey={w.group.groupKey} />
+                    {/* Oct 21 2026: the Texts tab's Dismiss, with its reasons: one way to clear a waiting client. */}
+                    <CommsDismissButton threadKey={w.group.key} family={w.family} clientId={w.group.clientId} groupKey={w.group.groupKey} />
                   </div>
                   {/* Everything they sent since our last answer, so the row can
                       be read without leaving the list (an email's text too). */}

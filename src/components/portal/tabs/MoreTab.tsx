@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookOpen, ChevronRight, KeyRound, LogOut, MessageSquare, Palette, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, CalendarClock, ChevronRight, KeyRound, LogOut, Palette, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import { signOutPortal } from "@/app/portal/login/actions";
 import type { NavItem, PortalDest } from "@/lib/portalNav";
 import { Card, CountBadge } from "@/components/portal/ui";
@@ -8,16 +8,18 @@ import { Card, CountBadge } from "@/components/portal/ui";
 // MORE — the v2 layout's fifth destination (UI-01, Sep 24 2026). It used to
 // be a <details> popover on the phone bar and an account menu in the corner,
 // which is how Brand Profile ended up somewhere a client never looked. Now it
-// is a real page: Brand Profile, Messages, Resources (only when a guide is
-// published), Settings & Team, Terms, then who you are and signing out. No
-// script, no stale open state. Anything here that needs doing (setup steps,
-// an unread reply) is ALSO on Home — More is never the only way to it.
+// is a real page: Brand Profile, Filming sessions (Your Month's filming
+// step, where a session is requested, changed or cancelled), Resources (only
+// when a guide is published), Settings & Team, Terms, then who you are and
+// signing out. No script, no stale open state. Anything here that needs
+// doing (setup steps) is ALSO on Home — More is never the only way to it.
+// Messages moved from here into the bottom bar on Oct 21 2026.
 //
 // Also the Terms page body, which v2 renders from the same text v1 does
 // (AppSetting `portal-terms`, else PortalPage's DEFAULT_TERMS).
 // ---------------------------------------------------------------------------
 
-const ICON: Partial<Record<PortalDest, LucideIcon>> = { brand: Palette, messages: MessageSquare, resources: BookOpen, team: Settings, terms: ScrollText };
+const ICON: Partial<Record<PortalDest, LucideIcon>> = { brand: Palette, plan: CalendarClock, resources: BookOpen, team: Settings, terms: ScrollText };
 const focus = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 
 export type MoreTabData = {
@@ -41,7 +43,7 @@ export function MoreTab({ d }: { d: MoreTabData }) {
             const Icon = ICON[i.dest] ?? ChevronRight;
             const hint = i.dest === "brand" && d.setupLeft ? `${d.setupLeft} setup step${d.setupLeft === 1 ? "" : "s"} left` : i.hint;
             return (
-              <li key={i.dest}>
+              <li key={`${i.dest}:${i.anchor ?? ""}`}>
                 <Link href={i.href} className={`flex min-h-14 items-center gap-3 rounded-xl px-3 py-2 hover:bg-surface-2/60 ${focus}`}>
                   <Icon className="size-5 shrink-0 text-brand" aria-hidden />
                   <span className="min-w-0 flex-1">

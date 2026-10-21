@@ -1,24 +1,27 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { AlertTriangle, BadgeDollarSign, CalendarClock, History, Lock, Settings2, Users } from "lucide-react";
+import { BadgeDollarSign, History, Lock, Settings2, Users } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import {
-  changePackageAction, setCallModeAction, setEnrollmentStatusAction, setBillingTermsAction,
-  setWorkflowFlagsAction, setOverrideAction, setEnrollmentOwnerAction,
+  setBillingTermsAction, setWorkflowFlagsAction, setOverrideAction, setEnrollmentOwnerAction,
 } from "@/app/content/[id]/workspaceActions";
-import type { CurrentMonthChoice } from "@/lib/enrollmentChanges";
 import { usd0 } from "@/lib/money";
 
 // ---------------------------------------------------------------------------
-// SETTINGS (spec §17). Package, enrollment status, allowances, call
-// requirement, owners, permitted overrides — and billing shown READ-ONLY with
-// its source named.
+// SETTINGS (spec §17). Owners, permitted overrides, workflow — and billing
+// shown READ-ONLY with its source named.
 //
-// Two things this screen is built to make impossible:
+// Oct 21 2026 (audit D13): the package and status are changed on ONE card for
+// Jordan and Kyle alike (Workspace.EnrollmentControls, above this panel), and
+// the call requirement on Program style. This panel shows the package and
+// status read-only, and only to a viewer that card is not shown to.
+//
+// Two things the screen is built to make impossible:
 //   · a silent package rewrite. Changing the package asks for the month it
 //     takes effect and, when that is the month in flight, forces an explicit
-//     choice about this month's obligation before the button will submit.
+//     choice about this month's obligation before the button will submit
+//     (EnrollmentControls).
 //   · the impression that a hub setting moves money. Every money field says
 //     where its value came from and that nothing here bills anyone; the
 //     synchronized truth (a Stripe checkout) is shown beside the typed note
@@ -35,6 +38,8 @@ export type SettingsUi = {
   sessionsPerMonth: number;
   sessionHours: number;
   callMode: "REQUIRED" | "OPTIONAL_WRITTEN" | "NOT_INCLUDED";
+  /** false = no column set: the program default (first call required, later months may be written). */
+  callModeExplicit: boolean;
   noCallEligible: boolean | null;
   clientSuppliesTopics: boolean;
   timezone: string | null;
@@ -61,7 +66,6 @@ export type OwnersUi = { duty: string; word: string; label: string; appUserId: s
 export type HistoryUi = { id: string; field: string; from: string | null; to: string | null; effectiveAtISO: string; effectiveMonthKey: string | null; currentMonthChoice: string | null; reason: string | null; source: string; billingTruth: boolean; changedBy: string | null; appliedAtISO: string | null; createdAtISO: string; superseded: boolean }[];
 
 const btn = "rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50";
-const quiet = "rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50";
 const input = "rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm";
 const money = (n: number | null | undefined) => (n == null ? "—" : usd0(n));
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "—");
@@ -70,8 +74,8 @@ export function SettingsPanel({
   s, billing, owners, history, staff, isOwner, packageHandledAbove = false,
 }: {
   s: SettingsUi; billing: BillingUi | null; owners: OwnersUi; history: HistoryUi; staff: { id: string; name: string }[]; isOwner: boolean;
-  /** Kyle's view: EnrollmentControls above already carries package + status (Jordan, Sep 24), so this panel
-   *  drops its read-only copies — they told him only Jordan could change it, under a card that lets him. */
+  /** EnrollmentControls above carries package + status for the owner and admins (Oct 21 2026), so this
+   *  panel drops its read-only copies for them; any other viewer still reads them here. */
   packageHandledAbove?: boolean;
 }) {
   const [note, setNote] = useState<string | null>(null);
@@ -82,12 +86,7 @@ export function SettingsPanel({
     <div className="space-y-5">
       {note && <p className="rounded-lg border border-border bg-surface px-3 py-2 text-[13px]">{note}</p>}
 
-      {!packageHandledAbove && <PackageCard s={s} isOwner={isOwner} busy={busy} start={start} say={say} />}
-
-      {/* CALL REQUIREMENT — the §19 planning path, per client. */}
-      <Section icon={CalendarClock} title="Planning & call requirement">
-        <CallModeForm s={s} busy={busy} start={start} say={say} />
-      </Section>
+      {!packageHandledAbove && <PackageCard s={s} />}
 
       {/* OWNERS — who is on the hook (§16/§17). */}
       <Section icon={Users} title="Who owns what for this client" flush>
@@ -113,15 +112,10 @@ export function SettingsPanel({
         </div>
       </Section>
 
-      {/* ENROLLMENT STATUS. */}
+      {/* ENROLLMENT STATUS (read-only here; EnrollmentControls changes it). */}
       {!packageHandledAbove && <Section icon={Settings2} title="Enrollment status">
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <span>Currently <span className="font-semibold">{s.status.toLowerCase()}</span>.</span>
-          {isOwner && (["ACTIVE", "PAUSED", "ENDED"] as const).filter((x) => x !== s.status).map((x) => (
-            <button key={x} disabled={busy} className={quiet} onClick={() => start(async () => say(await setEnrollmentStatusAction(s.enrollmentId, x)))}>
-              Mark {x.toLowerCase()}
-            </button>
-          ))}
         </div>
         <p className="mt-2 text-[12px] text-muted">
           Pausing or ending is a hub setting only. It cancels nothing with a payment processor, and the client keeps read-only access
@@ -182,25 +176,10 @@ export function SettingsPanel({
   );
 }
 
-// ---- the package change ---------------------------------------------------------------
+// ---- the package, read-only (Oct 21 2026: EnrollmentControls changes it) ----------------
 
-function PackageCard({
-  s, isOwner, busy, start, say,
-}: { s: SettingsUi; isOwner: boolean; busy: boolean; start: (fn: () => void) => void; say: (r: { ok: boolean; message: string }) => void }) {
-  // Starts from, and compares with, NEXT month's terms (scheduled changes
-  // included) — comparing with today's column left the button armed after a
-  // scheduled change, and a second press used to cancel it (Sep 24).
-  const [pkg, setPkg] = useState(s.nextTerms.pkg);
-  const [when, setWhen] = useState<"now" | "next">("next");
-  const [choice, setChoice] = useState<CurrentMonthChoice | "">("");
-  const [reason, setReason] = useState("");
-  const rule = s.packages.find((p) => p.name === pkg) ?? null;
+function PackageCard({ s }: { s: SettingsUi }) {
   const scheduled = s.nextTerms.pkg !== s.pkg;
-  const changed = when === "next" ? pkg !== s.nextTerms.pkg : pkg !== s.pkg || pkg !== s.nextTerms.pkg;
-  const showWhen = pkg !== s.pkg || pkg !== s.nextTerms.pkg;
-  const needsChoice = changed && when === "now";
-  const ready = changed && (!needsChoice || choice !== "");
-
   return (
     <Section
       icon={Settings2}
@@ -217,112 +196,8 @@ function PackageCard({
           Scheduled from {s.nextMonthLabel}: {s.nextTerms.pkg} — {s.nextTerms.videosPerMonth} videos / {s.nextTerms.sessionsPerMonth} session{s.nextTerms.sessionsPerMonth === 1 ? "" : "s"}.
         </p>
       )}
-
-      {!isOwner ? (
-        <p className="mt-2 text-[12px] text-muted">Jordan or Kyle changes a package — every change is recorded in the history below.</p>
-      ) : (
-        <div className="mt-3 space-y-3 border-t border-border pt-3">
-          <label className="flex flex-wrap items-center gap-2 text-sm">
-            Change to
-            <select className={input} value={pkg} onChange={(e) => setPkg(e.target.value)} disabled={busy}>
-              {s.packages.map((p) => <option key={p.name} value={p.name}>{p.name} — {p.videosPerMonth} videos / {p.sessionsPerMonth} session{p.sessionsPerMonth === 1 ? "" : "s"}</option>)}
-            </select>
-          </label>
-
-          {showWhen && (
-            <>
-              {/* THE EFFECTIVE DATE — never implicit. */}
-              <div className="text-sm">
-                <p className="mb-1 font-medium">From when?</p>
-                <label className="mr-4 inline-flex items-center gap-1.5">
-                  <input type="radio" name="when" checked={when === "next"} onChange={() => { setWhen("next"); setChoice(""); }} />
-                  {s.nextMonthLabel} (next month)
-                </label>
-                <label className="inline-flex items-center gap-1.5">
-                  <input type="radio" name="when" checked={when === "now"} onChange={() => setWhen("now")} />
-                  {s.currentMonthLabel} (this month)
-                </label>
-              </div>
-
-              {!changed && <p className="text-[12px] text-muted-2">{when === "next" ? s.nextMonthLabel : s.currentMonthLabel} already runs on {pkg} — nothing to record.</p>}
-
-              {/* THE CURRENT-MONTH CHOICE — required, and stated in plain words. */}
-              {needsChoice && (
-                <div className="rounded-xl border border-warning/40 bg-warning-soft/40 p-3 text-sm">
-                  <p className="mb-1.5 flex items-center gap-1.5 font-medium text-warning">
-                    <AlertTriangle className="size-4" /> {s.currentMonthLabel} is already underway — what happens to this month?
-                  </p>
-                  <label className="block"><input type="radio" name="choice" checked={choice === "KEEP"} onChange={() => setChoice("KEEP")} />{" "}
-                    Keep {s.currentMonthLabel} as it was minted{s.currentMonthOwed != null ? ` (${s.currentMonthOwed} videos)` : ""} — the new quantity starts {s.nextMonthLabel}.
-                  </label>
-                  <label className="block"><input type="radio" name="choice" checked={choice === "APPLY"} onChange={() => setChoice("APPLY")} />{" "}
-                    Apply {rule ? `${rule.videosPerMonth} videos` : "the new quantity"} to {s.currentMonthLabel} as well.
-                  </label>
-                  <p className="mt-1 text-[11px] text-muted">Months before this one keep the quantities they were minted with, either way.</p>
-                </div>
-              )}
-
-              <input className={`${input} w-full`} placeholder="Why (optional — it goes in the history)" value={reason} onChange={(e) => setReason(e.target.value)} />
-
-              <div className="flex items-center gap-2">
-                <button
-                  disabled={busy || !ready}
-                  className={btn}
-                  onClick={() => start(async () => {
-                    const r = await changePackageAction(s.enrollmentId, {
-                      package: pkg,
-                      effectiveMonthKey: when === "now" ? s.currentMonthKey : s.nextMonthKey,
-                      currentMonthChoice: when === "now" ? (choice as CurrentMonthChoice) : null,
-                      reason: reason.trim() || null,
-                    });
-                    say(r);
-                    if (r.ok) { setReason(""); setChoice(""); setWhen("next"); }
-                  })}
-                >
-                  Record the package change
-                </button>
-                <span className="inline-flex items-center gap-1 text-[11px] text-muted-2"><Lock className="size-3" /> nothing is billed, cancelled or charged</span>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      <p className="mt-2 text-[12px] text-muted">Jordan or Kyle changes a package — every change is recorded in the history below.</p>
     </Section>
-  );
-}
-
-function CallModeForm({
-  s, busy, start, say,
-}: { s: SettingsUi; busy: boolean; start: (fn: () => void) => void; say: (r: { ok: boolean; message: string }) => void }) {
-  const [mode, setMode] = useState(s.callMode);
-  const [eligible, setEligible] = useState<boolean | null>(s.noCallEligible);
-  const MODES = [
-    { key: "REQUIRED" as const, label: "Call required", hint: "the month does not start until the strategy call happens" },
-    { key: "OPTIONAL_WRITTEN" as const, label: "Optional — written answers allowed", hint: "they may plan the month without a call" },
-    { key: "NOT_INCLUDED" as const, label: "No strategy calls", hint: "the same as Program style's Strategy calls off" },
-  ];
-  return (
-    <div className="space-y-2 text-sm">
-      {MODES.map((m) => (
-        <label key={m.key} className="block">
-          <input type="radio" name="callmode" checked={mode === m.key} onChange={() => setMode(m.key)} disabled={busy} />{" "}
-          <span className="font-medium">{m.label}</span> <span className="text-muted-2">— {m.hint}</span>
-        </label>
-      ))}
-      {mode === "OPTIONAL_WRITTEN" && (
-        <label className="ml-5 flex items-center gap-2 text-[13px]">
-          <input type="checkbox" checked={eligible === true} onChange={(e) => setEligible(e.target.checked ? true : false)} disabled={busy} />
-          Offer them the &ldquo;plan without a call&rdquo; choice in the portal
-        </label>
-      )}
-      <button
-        className={btn}
-        disabled={busy || (mode === s.callMode && eligible === s.noCallEligible)}
-        onClick={() => start(async () => say(await setCallModeAction(s.enrollmentId, mode, mode === "OPTIONAL_WRITTEN" ? eligible : null)))}
-      >
-        Save the call requirement
-      </button>
-    </div>
   );
 }
 

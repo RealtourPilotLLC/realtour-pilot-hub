@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // DRILL: CP-07 — the topic bank keeps itself stocked, clients can say "not
-// interested", unfilmed scripts carry forward and can be swapped, a client's
+// interested", unfilmed scripts carry forward and hold their slot, a client's
 // own idea goes straight into the month, and call-extracted ideas stay off the
 // client's page until Jordan approves them (completion audit, Sep 24 2026).
 //
@@ -31,9 +31,9 @@
 //      carries into October with its history; monthCapacity counts it (the
 //      old one did not); the month owes no new script; a second sweep is a
 //      no-op.
-//   9. Swap (portal action): the carried slot goes to another topic, script /
-//      versions / decisions untouched, allowance unchanged; the parked script
-//      is re-used for November without a draft.
+//   9. A full month: the carried scripts hold their slots and show as
+//      carried; one is never pulled into another open month. (The client's
+//      swap was retired Oct 21 2026: no portal action, no library function.)
 //  10. A late filming confirmation undoes a carry (FILMED_LATE).
 //  11. deselect: a call's PROPOSED re-mention of a topic scripted months ago
 //      can be dropped (the old code threw).
@@ -373,7 +373,7 @@ async function main() {
       { title: "Replacement pick", selection: null, topicStatus: "SAVED" },
       { title: "Client pick", selection: null, topicStatus: "SAVED" },
     ] });
-    const [tF1, tF2, tSwap, tLate, tRepl, tPick] = C.topicIds;
+    const [tF1, tF2, tSwap, tLate, , tPick] = C.topicIds;
     // "sep" is LAST month, "oct" THIS month, "nov" NEXT month — named for the
     // audit's example (September → October) so the assertions read as it does.
     const sep = C.monthId;
@@ -424,39 +424,19 @@ async function main() {
     c.ok("a second sweep carries nothing and writes nothing", !("skipped" in again8) && again8.carried === 0 && (await prisma.contentTopicEvent.count()) === ev8 && (await prisma.contentTopicSelection.count()) === sel8);
 
     // ======================================================================
-    c.head("9 · swap — the slot changes hands, the script is kept");
+    c.head("9 · a full month: the carried scripts hold their slots (the client's swap was retired Oct 21 2026)");
     const pick = await ct.selectTopicForMonth(tPick, oct, { source: "client", actor: { kind: "CLIENT", clientUserId: C.clientUserId } });
     c.ok("October is full: 2 carried + 1 pick = 3 of 3", pick.overflow === false && (await ct.monthCapacity(oct)).selected === 3);
-    const before9 = await counts();
-    const sw = await portalActions.portalSwapCarriedTopic({ token: C.portalToken }, carried!.id, tRepl);
-    c.ok("the portal swap succeeds", sw.ok, sw.message);
-    const gone = await prisma.contentTopicSelection.findUnique({ where: { id: carried!.id } });
-    c.ok("carried selection REMOVED, reason SWAPPED, pointing at the replacement", gone?.status === "REMOVED" && gone.removedReason === "SWAPPED" && gone.replacedByTopicId === tRepl);
-    const repl = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: tRepl, monthId: oct } } });
-    c.ok("the replacement is SELECTED and not overflow", repl?.status === "SELECTED" && repl.overflow === false);
-    c.ok("allowance unchanged: 3 of 3, no overflow", JSON.stringify(await ct.monthCapacity(oct)) === JSON.stringify({ owed: 3, selected: 3, overflow: 0 }));
-    c.ok("scripts, versions and decisions identical", JSON.stringify(await counts()) === JSON.stringify(before9));
-    const t9 = await prisma.contentTopic.findUnique({ where: { id: tSwap } });
-    const s9 = await prisma.contentScript.findUnique({ where: { id: scriptOf[tSwap] } });
-    c.ok("the swapped topic is SCRIPTED, on no month; its script parked with its approval", t9?.status === "SCRIPTED" && t9.monthId === null && s9?.monthId === null && s9.clientApprovedVersionId !== null && s9.carriedFromMonthId === sep);
-    const kinds = (await prisma.contentTopicEvent.findMany({ where: { topicId: tSwap }, orderBy: { createdAt: "asc" }, select: { kind: true } })).map((e) => e.kind);
-    c.ok("its history reads … CARRIED, DESELECTED", kinds.includes("CARRIED") && kinds.indexOf("DESELECTED") > kinds.indexOf("CARRIED"), kinds.join(","));
-    c.ok("the replacement's history has SELECTED", (await prisma.contentTopicEvent.count({ where: { topicId: tRepl, kind: "SELECTED" } })) >= 1);
+    c.ok("the portal no longer offers a swap", !("portalSwapCarriedTopic" in portalActions) && !("swapCarriedTopic" in ct));
     const page9 = await portalTopics({ id: C.enrollmentId, clientId: C.clientId });
-    const p9 = page9.groups.flatMap((g) => g.topics).find((t) => t.id === tSwap);
-    c.ok("the client sees it under 'Scripted, not filmed'", !!p9?.scriptedNotFilmed && !p9.carried);
-    const pLate = page9.groups.flatMap((g) => g.topics).find((t) => t.id === tLate);
-    c.ok("the other carried one is shown carried and swappable", !!pLate?.carried && !!pLate.swappable && pLate.scriptedNotFilmed);
+    const carriedOnPage = page9.groups.flatMap((g) => g.topics).filter((t) => t.id === tSwap || t.id === tLate);
+    c.ok("the client sees both carried scripts as carried, scripted and not filmed", carriedOnPage.length === 2 && carriedOnPage.every((t) => !!t.carried && t.scriptedNotFilmed));
     const nov = (await prisma.contentMonth.create({ data: { enrollmentId: C.enrollmentId, clientId: C.clientId, monthKey: NEXT, videosOwed: 3, status: "OPEN" }, select: { id: true } })).id;
-    const calls9 = aiCalls;
-    const scripts9 = await prisma.contentScript.count({ where: { enrollmentId: C.enrollmentId } });
-    const re = await ct.selectTopicForMonth(tSwap, nov, { source: "client", actor: { kind: "CLIENT", clientUserId: C.clientUserId } });
-    c.ok("re-selecting it for November re-uses the parked script", re.outcome === "SELECTED" && (await prisma.contentScript.findUnique({ where: { id: scriptOf[tSwap] } }))?.monthId === nov);
-    c.ok("…no new script, no model call", (await prisma.contentScript.count({ where: { enrollmentId: C.enrollmentId } })) === scripts9 && aiCalls === calls9);
-    c.ok("…and November has it as a SELECTED slot", (await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: tSwap, monthId: nov } } }))?.status === "SELECTED");
+    const before9 = await counts();
     let stolen = "";
-    try { await ct.selectTopicForMonth(tSwap, oct, { source: "staff", actor: STAFF }); } catch (e) { stolen = e instanceof Error ? e.message : String(e); }
-    c.ok("a script planned for an open month is never pulled into another one", /already planned for/.test(stolen) && (await prisma.contentScript.findUnique({ where: { id: scriptOf[tSwap] } }))?.monthId === nov, stolen);
+    try { await ct.selectTopicForMonth(tSwap, nov, { source: "staff", actor: STAFF }); } catch (e) { stolen = e instanceof Error ? e.message : String(e); }
+    c.ok("a script planned for an open month is never pulled into another one", /already planned for/.test(stolen) && (await prisma.contentScript.findUnique({ where: { id: scriptOf[tSwap] } }))?.monthId === oct, stolen);
+    c.ok("…and nothing was written", JSON.stringify(await counts()) === JSON.stringify(before9) && carried?.status === "CARRIED");
 
     // ======================================================================
     c.head("10 · a late filming confirmation undoes a carry");

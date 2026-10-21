@@ -138,10 +138,10 @@ async function main() {
 
     // ======================================================================
     c.head("5 · drafts read the conversation");
-    const { draftClientReply } = await import("@/app/clients/actions");
-    await draftClientReply(f.clientId, "text", "Thanks!");
-    const reply = asked.filter((a) => a.kind === "other").pop()?.prompt ?? "";
-    c.ok("the client-page reply draft read the earlier messages, not only the last one", reply.includes("pick a cover frame") && reply.includes("never mind, the start is fine"), reply.slice(0, 200));
+    // Oct 21 2026 (audit F9): the client page's second email draft
+    // (draftClientReply, the notes card's "Email draft" tab) is gone; the
+    // page's one email draft reads the whole Gmail thread (draftEmailReply).
+    c.ok("the client page has one email-draft tool", !("draftClientReply" in (await import("@/app/clients/actions"))));
     const { draftClientMessage } = await import("@/app/shoot/actions");
     const pol = await draftClientMessage(projectId, "running 10 min late");
     const polish = asked.find((a) => a.kind === "polish")?.prompt ?? "";

@@ -321,12 +321,14 @@ export function NotesCard({
 // Action → enrollmentChanges: a ledger row first, an explicit effective month,
 // and for the month already underway an explicit KEEP-or-APPLY choice (the
 // button stays disabled until one is picked). Its call-requirement and
-// own-topics flags already live on the Settings panel beside it, and billing
-// terms stay the owner's (SettingsPanel, requireOwner) — Jordan's rule.
+// own-topics flags live on Program style above it, and billing terms stay the
+// owner's (SettingsPanel, requireOwner) — Jordan's rule.
 //
-// `packageAndStatus` is false for the owner, whose SettingsPanel already
-// carries those controls; the custom count (the 5-video Accelerators) is shown
-// to both, because SettingsPanel has no field for it.
+// ONE CARD FOR BOTH (Jordan, Oct 21 2026; audit D13). The owner used to get
+// a second package form and status buttons in SettingsPanel, through two
+// owner-only actions that called the same setters; Jordan and Kyle now use
+// this card alike (requireAdmin admits the owner too), with the custom count
+// (the 5-video Accelerators) beside the package.
 //
 // THE FORM STARTS FROM NEXT MONTH'S TERMS (Sep 24 fix). It used to start from
 // today's columns and compare with them — but a scheduled decision does not
@@ -338,13 +340,12 @@ export function NotesCard({
 // the card, and a success resets the form.
 // ---------------------------------------------------------------------------
 export function EnrollmentControls({
-  enrollmentId, pkg, status, videosPerMonth, sessionsPerMonth, nextTerms, packages, currentMonthKey, currentMonthLabel, nextMonthKey, nextMonthLabel, currentMonthOwed, packageAndStatus,
+  enrollmentId, pkg, status, videosPerMonth, sessionsPerMonth, nextTerms, packages, currentMonthKey, currentMonthLabel, nextMonthKey, nextMonthLabel, currentMonthOwed,
 }: {
   enrollmentId: string; pkg: string; status: string; videosPerMonth: number; sessionsPerMonth: number;
   nextTerms: { pkg: string; videosPerMonth: number; sessionsPerMonth: number };
   packages: { name: string; videosPerMonth: number; sessionsPerMonth: number }[];
   currentMonthKey: string; currentMonthLabel: string; nextMonthKey: string; nextMonthLabel: string; currentMonthOwed: number | null;
-  packageAndStatus: boolean;
 }) {
   const [nextPkg, setNextPkg] = useState(nextTerms.pkg);
   const [videos, setVideos] = useState(String(nextTerms.videosPerMonth));
@@ -371,19 +372,17 @@ export function EnrollmentControls({
   const ready = changed && videosOk && (!needsChoice || choice !== "");
 
   return (
-    <Section icon={Settings2} title={packageAndStatus ? "Package, videos & status" : "Custom video count"}
+    <Section icon={Settings2} title="Package, videos & status"
       action={<span className="text-[11px] text-muted-2">every change is recorded in the history below</span>}>
       <div className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-2">
-          {packageAndStatus && (
-            <label className="flex items-center gap-2">
-              <span className="text-xs text-muted">Package</span>
-              <select value={nextPkg} disabled={busy} onChange={(e) => { setNextPkg(e.target.value); const r = packages.find((p) => p.name === e.target.value); if (r) setVideos(String(r.videosPerMonth)); }}
-                className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
-                {packages.map((p) => <option key={p.name} value={p.name}>{p.name} — {p.videosPerMonth} videos / {p.sessionsPerMonth} session{p.sessionsPerMonth === 1 ? "" : "s"}</option>)}
-              </select>
-            </label>
-          )}
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-muted">Package</span>
+            <select value={nextPkg} disabled={busy} onChange={(e) => { setNextPkg(e.target.value); const r = packages.find((p) => p.name === e.target.value); if (r) setVideos(String(r.videosPerMonth)); }}
+              className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
+              {packages.map((p) => <option key={p.name} value={p.name}>{p.name} — {p.videosPerMonth} videos / {p.sessionsPerMonth} session{p.sessionsPerMonth === 1 ? "" : "s"}</option>)}
+            </select>
+          </label>
           <label className="flex items-center gap-2" title="Custom deals (the 5-video clients) set their real number here">
             <span className="text-xs text-muted">Videos a month</span>
             <input value={videos} onChange={(e) => setVideos(e.target.value)} inputMode="numeric" disabled={busy}
@@ -443,20 +442,18 @@ export function EnrollmentControls({
           </div>
         )}
 
-        {packageAndStatus && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-            <span className="text-xs">Currently <span className="font-semibold">{status.toLowerCase()}</span>.</span>
-            {(["ACTIVE", "PAUSED", "ENDED"] as const).filter((x) => x !== status).map((x) => (
-              <button key={x} disabled={busy} onClick={() => start(async () => {
-                if (x === "ENDED" && !window.confirm("End this client's program? Their portal stays open, read-only, on work already released. It is recorded in the history and can be undone by marking them active.")) return;
-                const r = await staffSetEnrollmentStatusAction(enrollmentId, x, reason.trim() || undefined);
-                setNote({ ok: r.ok, text: r.message });
-              })} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
-                {x === "ACTIVE" ? "Mark active" : x === "PAUSED" ? "Pause" : "End"}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <span className="text-xs">Currently <span className="font-semibold">{status.toLowerCase()}</span>.</span>
+          {(["ACTIVE", "PAUSED", "ENDED"] as const).filter((x) => x !== status).map((x) => (
+            <button key={x} disabled={busy} onClick={() => start(async () => {
+              if (x === "ENDED" && !window.confirm("End this client's program? Their portal stays open, read-only, on work already released. It is recorded in the history and can be undone by marking them active.")) return;
+              const r = await staffSetEnrollmentStatusAction(enrollmentId, x, reason.trim() || undefined);
+              setNote({ ok: r.ok, text: r.message });
+            })} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
+              {x === "ACTIVE" ? "Mark active" : x === "PAUSED" ? "Pause" : "End"}
+            </button>
+          ))}
+        </div>
         <p className="text-[11px] text-muted-2">A hub setting only — nothing is billed, cancelled or charged.</p>
         {note && <p className={`text-[11px] ${note.ok ? "text-success" : "text-danger"}`}>{note.ok ? note.text : `Couldn't do that — ${note.text}`}</p>}
       </div>

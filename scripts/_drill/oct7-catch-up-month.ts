@@ -219,7 +219,7 @@ async function main() {
     const topics = await portal.portalTopics(v.enrollment);
     const tm = topics.months.find((m) => m.id === J.monthId);
     c.ok("the topics count is out of 8 (4 chosen, 4 more to choose)", tm?.owed === 8 && tm.selected === 4, JSON.stringify({ owed: tm?.owed, sel: tm?.selected }));
-    const tree = YourMonth({ d: { topics, planning, planningFailed: false, schedule: sched, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts", schedule: "?tab=schedule" } } });
+    const tree = YourMonth({ d: { topics, planning, planningFailed: false, schedule: sched, scheduleFailed: false, slotDays: [], bookingUrl: "https://calendly.invalid", can: { suggest: true, session: true }, readOnly: false, hrefs: { month: "?tab=plan", bank: "?tab=plan&pv=bank", scripts: "?tab=plan&pv=scripts" } } });
     const words = textOf(tree).join(" ");
     c.ok("Your Month renders 'This month includes your September catch-up' and 'of 8 videos'", /This month includes your September catch-up/.test(words) && /of/.test(words) && words.includes("8"), words.slice(0, 300));
     // Same shape as a Pro month: a Pro October with nothing booked.

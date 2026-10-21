@@ -172,7 +172,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
             <div key={v.id} className="px-5 py-3">
               <button onClick={() => setOpen(open === v.id ? null : v.id)} className="flex w-full flex-wrap items-center gap-2 text-left">
                 <span className="text-[15px] font-semibold">v{v.versionNo}</span>
-                <StatusChip status={v.status} released={!!v.releasedAt} everApproved={!!v.approvedAt} stale={strategyStaleDraft(v, inForceNo)} />
+                <StatusChip status={v.status} released={!!v.releasedAt} everApproved={!!v.approvedAt} stale={strategyStaleDraft(v, inForceNo)} isOwner={isOwner} />
                 <span className="text-[12px] text-muted">{v.structureTemplate} · {v.sourceKind.replace("_", " ")}{v.sourceRef ? ` · ${v.sourceRef}` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}</span>
                 {v.approvedAt && v.status === "APPROVED" && <span className="text-[12px] text-success">approved {fmt(v.approvedAt)} by {v.approvedBy}</span>}
                 {v.releasedAt && <span className="text-[12px] text-success">released {fmt(v.releasedAt)}</span>}
@@ -200,7 +200,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                     onRevise={(notes, ids) => run(() => reviseStrategy(v.id, notes, ids))} />}
                   <div className="flex flex-wrap gap-1.5">
                     {v.status !== "APPROVED" && v.status !== "REJECTED" && v.status !== "SUPERSEDED" && !strategyStaleDraft(v, inForceNo) && (
-                      <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{v.versionNo}</button>
+                      <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />{isOwner ? `Approve and release v${v.versionNo}` : `Approve v${v.versionNo}`}</button>
                     )}
                     {/* Oct 13 2026: UNDO. Putting the previous version back sends this one to "needs your OK" (approve it again to redo); nothing newer is ever marked replaced by something older. */}
                     {v.status === "APPROVED" && previousInForce(v.versionNo) && (
@@ -221,6 +221,10 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                       <button disabled={busy} onClick={() => { const n = window.prompt("Why reject this version?") ?? ""; run(() => rejectStrategy(v.id, n)); }} className={quiet}><X className="mr-1 inline size-3" />Reject</button>
                     )}
                   </div>
+                  {/* Oct 21 2026: an admin's approval puts the version in force for scripts; only Jordan's Release puts it in the client's portal. */}
+                  {!isOwner && v.status !== "REJECTED" && v.status !== "SUPERSEDED" && !v.releasedAt && !strategyStaleDraft(v, inForceNo) && (
+                    <p className="text-[12px] text-muted">{v.status === "APPROVED" ? "Approved, waiting for Jordan to release it to their portal." : "Approving puts it in force for their scripts. It reaches their portal when Jordan releases it."}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -258,10 +262,11 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   );
 }
 
-function StatusChip({ status, released, everApproved, stale = false }: { status: string; released: boolean; everApproved: boolean; stale?: boolean }) {
-  const cls = status === "APPROVED" ? "bg-success-soft text-success" : (status === "DRAFT" || status === "INTERNAL_REVIEW") && !stale ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted";
+function StatusChip({ status, released, everApproved, stale = false, isOwner = false }: { status: string; released: boolean; everApproved: boolean; stale?: boolean; isOwner?: boolean }) {
+  const cls = status === "APPROVED" ? (released ? "bg-success-soft text-success" : "bg-warning-soft text-warning") : (status === "DRAFT" || status === "INTERNAL_REVIEW") && !stale ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted";
   // Oct 20 2026 (audit D4): DRAFT and INTERNAL_REVIEW both wait for the OK, unless a newer version is already in force.
-  const label = status === "APPROVED" ? (released ? "in force · released" : "in force")
+  // Oct 21 2026: only Jordan's approval releases; an approved version not yet in the portal waits for his Release.
+  const label = status === "APPROVED" ? (released ? "in force · released" : `Approved, waiting for ${isOwner ? "you" : "Jordan"} to release`)
     : stale ? "older draft, a later version is in force"
     : status === "INTERNAL_REVIEW" || status === "DRAFT" ? "needs your OK"
     : status === "SUPERSEDED" ? (everApproved ? "was in force, replaced by a later version" : "replaced by a later version")
