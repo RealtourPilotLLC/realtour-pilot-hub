@@ -2387,6 +2387,9 @@ model HubDocument {
   // What was asked for, so a stale doc can be regenerated without guessing.
   prompt    String?
   createdBy String? // the signed-in name/email that asked for it
+  // Oct 20 2026 (audit F1): the level it is read at — the saver's tier
+  // (CREATIVE | ADMIN | OWNER). An owner report carries owner-only data.
+  minRole   String   @default("OWNER")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

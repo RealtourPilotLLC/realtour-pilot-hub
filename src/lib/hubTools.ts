@@ -262,14 +262,13 @@ function allowedRolesFor(viewer: string): string[] {
 // Hub", which admins, editors and photographers all may, so an owner report
 // was one click away for every role.
 //
-// HubDocument has no access column yet, so every reader goes through
-// hubDocumentReadWhere: the owner sees everything, anyone else only the
-// documents they saved themselves (fail closed). When the column lands
-// (`minRole String @default("OWNER")` on HubDocument), flip HUB_DOC_MIN_ROLE:
-// reads then also include documents at or below the viewer's tier, and
+// Every reader goes through hubDocumentReadWhere: the owner sees everything,
+// anyone else the documents at or below their tier plus the ones they saved
+// themselves. HubDocument.minRole defaults to OWNER (fail closed), and
 // save_document stamps the saver's tier through hubDocumentLevelData.
+// HUB_DOC_MIN_ROLE off = own documents only (the pre-column rule).
 // ---------------------------------------------------------------------------
-export const HUB_DOC_MIN_ROLE = false;
+export const HUB_DOC_MIN_ROLE = true;
 
 export type HubDocViewer = { tier: string; names: string[] };
 
@@ -287,12 +286,11 @@ export function hubDocumentReadWhere(v: HubDocViewer): Prisma.HubDocumentWhereIn
   if (v.tier === "OWNER") return {};
   const own: Prisma.HubDocumentWhereInput = v.names.length ? { createdBy: { in: v.names } } : { id: "__no_document__" };
   if (!HUB_DOC_MIN_ROLE) return own;
-  // Untyped on purpose: the generated client has no minRole until the column exists.
-  const atLevel = { minRole: { in: allowedRolesFor(v.tier) } } as unknown as Prisma.HubDocumentWhereInput;
+  const atLevel: Prisma.HubDocumentWhereInput = { minRole: { in: allowedRolesFor(v.tier) } };
   return { OR: [atLevel, own] };
 }
 
-/** The access level save_document writes. Empty until the column exists. */
+/** The access level save_document writes. */
 export function hubDocumentLevelData(tier: string): Record<string, string> {
   return HUB_DOC_MIN_ROLE ? { minRole: ROLE_RANK[tier] ? tier : "OWNER" } : {};
 }
