@@ -4,6 +4,7 @@ import {
   scriptingConfigured,
   scriptingGetDetail,
   scriptingListAll,
+  scriptingListUpdatedSince,
   studioSnapshot,
   type StudioProject,
   type StudioSnapshot,
@@ -251,68 +252,118 @@ export async function hubJobFor(data: Pick<StudioProject, "id" | "external_id" |
   return null;
 }
 
-// Projects whose shoot is close enough that an on-site change could be
-// happening: read every run whatever updated_at says.
-const SHOOT_WINDOW_MS = 3 * 24 * 3600_000;
-const WINDOW_REREAD_MS = 10 * 60_000;
-// Every matched project at least once a day. The platform's updated_at does
-// NOT move when a new script version is saved (an on-site edit, a Revise, a
-// client-requested revision: confirmed by the scripting session, Oct 20 2026;
-// their fix a3757ab waits on Jordan's deploy OK), so an on-site edit to a job
-// outside the shoot window would otherwise wait for a webhook that may have
-// failed. ~83 reads a day, spread by the per-run cap. Once updated_since is
-// live, the reconcile switches to it (they will say).
-const DAILY_REREAD_MS = 24 * 3600_000;
+// The reconcile's bookmark: the newest platform updated_at the hub has
+// handled. Each run asks the platform only for projects changed at/after it.
+export const SCRIPTING_CURSOR_KEY = "scripting_reconcile_cursor";
+// First run with no bookmark: look back a week. Jobs older than that were
+// read by the Oct 20 backfill, whose copy stands (versions saved before the
+// platform's a3757ab never moved updated_at).
+const FIRST_LOOKBACK_MS = 7 * 24 * 3600_000;
+const MAX_PAGES = 5;
+
+type HubRef = { id: string; aryeoOrderId: string | null; scriptingId: string | null; scriptingUpdatedAt: Date | null; scriptingSyncedAt: Date | null };
+
+async function hubJobsFor(list: StudioProject[]): Promise<HubRef[]> {
+  const aryeoIds = list.map((x) => x.aryeo_order_id).filter((x): x is string => !!x);
+  const extIds = list.map((x) => x.external_id).filter((x): x is string => !!x);
+  const sIds = list.map((x) => x.id).filter(Boolean);
+  if (!aryeoIds.length && !extIds.length && !sIds.length) return [];
+  return prisma.project.findMany({
+    where: { OR: [{ aryeoOrderId: { in: aryeoIds } }, { id: { in: extIds } }, { scriptingId: { in: sIds } }] },
+    select: { id: true, aryeoOrderId: true, scriptingId: true, scriptingUpdatedAt: true, scriptingSyncedAt: true },
+  });
+}
+
+function matchJob(hub: HubRef[], s: StudioProject): HubRef | undefined {
+  return hub.find((h) => (s.aryeo_order_id && h.aryeoOrderId === s.aryeo_order_id)) ?? hub.find((h) => s.external_id && h.id === s.external_id) ?? hub.find((h) => h.scriptingId === s.id);
+}
 
 /**
- * EVERY 15 MINUTES (cron/aryeo). One list call (every platform project, with
- * its updated_at), then a detail read for each project matched to a hub job
- * that changed since our last read, was never read, shoots within three days,
- * or was last read a day ago (a new script version does not move updated_at
- * yet). `all` reads every matched project (the backfill).
+ * EVERY 15 MINUTES (cron/aryeo). Since Oct 21 2026 the platform moves a
+ * project's updated_at on every new script version, so the reconcile asks
+ * only "what changed since my bookmark?" (updated_since, oldest change first,
+ * paged while a full page comes back) and reads the detail of each changed
+ * project matched to a hub job. The bookmark only moves past projects that
+ * were handled: a failed read stops it there and the next run retries from
+ * that project. `all` lists every project and reads every matched one (the
+ * backfill). `pageSize` is for drills.
  */
-export async function reconcileScripting(opts: { max?: number; budgetMs?: number; all?: boolean; now?: Date } = {}): Promise<{ listed: number; matched: number; read: number; workingChanged: number; currentChanged: number; errors: number; skipped?: string }> {
+export async function reconcileScripting(opts: { max?: number; budgetMs?: number; all?: boolean; now?: Date; pageSize?: number } = {}): Promise<{ listed: number; matched: number; read: number; workingChanged: number; currentChanged: number; errors: number; pages?: number; cursor?: string | null; skipped?: string }> {
   const out = { listed: 0, matched: 0, read: 0, workingChanged: 0, currentChanged: 0, errors: 0 };
   if (!scriptingConfigured()) return { ...out, skipped: "not configured" };
   const started = Date.now();
   const now = opts.now ?? new Date();
   const max = opts.max ?? 30;
   const budget = opts.budgetMs ?? 60_000;
-  const list = await scriptingListAll(200);
-  out.listed = list.length;
-  const aryeoIds = list.map((x) => x.aryeo_order_id).filter((x): x is string => !!x);
-  const extIds = list.map((x) => x.external_id).filter((x): x is string => !!x);
-  const sIds = list.map((x) => x.id).filter(Boolean);
-  const hub = await prisma.project.findMany({
-    where: { OR: [{ aryeoOrderId: { in: aryeoIds } }, { id: { in: extIds } }, { scriptingId: { in: sIds } }] },
-    select: { id: true, aryeoOrderId: true, scriptingId: true, scriptingUpdatedAt: true, scriptingSyncedAt: true },
-  });
-  const due: { studio: StudioProject; job: (typeof hub)[number]; rank: number }[] = [];
-  for (const s of list) {
-    const job = hub.find((h) => (s.aryeo_order_id && h.aryeoOrderId === s.aryeo_order_id)) ?? hub.find((h) => s.external_id && h.id === s.external_id) ?? hub.find((h) => h.scriptingId === s.id);
-    if (!job) continue;
-    out.matched++;
-    const updated = s.updated_at ? new Date(s.updated_at).getTime() : null;
-    const changed = !job.scriptingUpdatedAt || updated == null || job.scriptingUpdatedAt.getTime() !== updated;
-    const appt = s.appointment_date ? new Date(s.appointment_date).getTime() : null;
-    const inWindow = appt != null && Math.abs(appt - now.getTime()) <= SHOOT_WINDOW_MS && (!job.scriptingSyncedAt || now.getTime() - job.scriptingSyncedAt.getTime() >= WINDOW_REREAD_MS);
-    const daily = !job.scriptingSyncedAt || now.getTime() - job.scriptingSyncedAt.getTime() >= DAILY_REREAD_MS;
-    if (opts.all || changed || inWindow || daily) due.push({ studio: s, job, rank: changed ? 0 : inWindow ? 1 : 2 });
-  }
-  due.sort((a, b) => a.rank - b.rank || (b.studio.updated_at ?? "").localeCompare(a.studio.updated_at ?? ""));
-  for (const d of due.slice(0, max)) {
-    if (Date.now() - started > budget) break;
+  const readOne = async (s: StudioProject, job: HubRef): Promise<boolean> => {
     try {
-      const detail = await scriptingGetDetail({ aryeoOrderId: d.studio.aryeo_order_id ?? null, hubId: d.studio.external_id ?? null, scriptingId: d.studio.id });
-      if (!detail) continue;
+      const detail = await scriptingGetDetail({ aryeoOrderId: s.aryeo_order_id ?? null, hubId: s.external_id ?? null, scriptingId: s.id });
+      if (!detail) return true; // gone from the platform: nothing to read, not a failure
       out.read++;
-      const r = await applyStudioSnapshot(d.job.id, studioSnapshot(detail));
+      const r = await applyStudioSnapshot(job.id, studioSnapshot(detail));
       if (r.workingChanged) out.workingChanged++;
       if (r.currentChanged) out.currentChanged++;
+      return true;
     } catch {
       out.errors++;
-      if (out.errors >= 3) break; // the platform is struggling; the next run retries
+      return false;
     }
+  };
+
+  if (opts.all) {
+    const list = await scriptingListAll(200);
+    out.listed = list.length;
+    const hub = await hubJobsFor(list);
+    for (const s of list) {
+      const job = matchJob(hub, s);
+      if (!job) continue;
+      out.matched++;
+      if (Date.now() - started > budget || out.read >= max) continue;
+      if (!(await readOne(s, job)) && out.errors >= 3) break; // the platform is struggling; the next run retries
+    }
+    return out;
   }
-  return out;
+
+  const saved = await prisma.appSetting.findUnique({ where: { key: SCRIPTING_CURSOR_KEY } }).catch(() => null);
+  const savedAt = (() => { try { return Date.parse(JSON.parse(saved?.value ?? "null") as string); } catch { return NaN; } })();
+  const startCursor = new Date(Number.isNaN(savedAt) ? now.getTime() - FIRST_LOOKBACK_MS : savedAt).toISOString();
+  const pageSize = opts.pageSize ?? 200;
+  let since = startCursor;
+  let cursor = startCursor;
+  let held = false; // a failed read: the bookmark stays before it
+  let pages = 0;
+  outer: while (pages < MAX_PAGES) {
+    const page = await scriptingListUpdatedSince(since, pageSize);
+    pages++;
+    out.listed += page.length;
+    const hub = await hubJobsFor(page);
+    for (const s of page) {
+      if (Date.now() - started > budget || out.read >= max) { held = true; break outer; }
+      const job = matchJob(hub, s);
+      if (job) {
+        out.matched++;
+        const updated = s.updated_at ? new Date(s.updated_at).getTime() : null;
+        const changed = !job.scriptingUpdatedAt || updated == null || job.scriptingUpdatedAt.getTime() !== updated;
+        if (changed && !(await readOne(s, job))) {
+          held = true;
+          if (out.errors >= 3) break outer; // the platform is struggling; the next run retries
+          continue;
+        }
+      }
+      const at = s.updated_at ? Date.parse(s.updated_at) : NaN;
+      if (!held && !Number.isNaN(at) && at > Date.parse(cursor)) cursor = new Date(at).toISOString();
+    }
+    if (page.length < pageSize) break;
+    const newest = Date.parse(page[page.length - 1]?.updated_at ?? "");
+    if (Number.isNaN(newest) || newest <= Date.parse(since)) break; // a full page on one timestamp: nothing further to page to
+    since = new Date(newest).toISOString();
+  }
+  if (cursor !== startCursor || !saved) {
+    await prisma.appSetting.upsert({
+      where: { key: SCRIPTING_CURSOR_KEY },
+      create: { key: SCRIPTING_CURSOR_KEY, value: JSON.stringify(cursor), updatedBy: "scripting-reconcile" },
+      update: { value: JSON.stringify(cursor), updatedBy: "scripting-reconcile" },
+    });
+  }
+  return { ...out, pages, cursor };
 }

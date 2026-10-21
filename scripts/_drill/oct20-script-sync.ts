@@ -40,6 +40,7 @@ const SECRET = "oct20-drill-webhook-secret";
 type P = Record<string, unknown> & { id: string; aryeo_order_id: string | null; external_id: string | null; updated_at: string; appointment_date: string | null };
 const platform = new Map<string, P>();
 let reads = 0, listReads = 0, writes = 0;
+const failDetailFor = new Set<string>();
 
 const fence = fenceFetch(async (url, init) => {
   if (!url.startsWith(`${BASE}/api/v1/projects`)) return null;
@@ -47,9 +48,16 @@ const fence = fenceFetch(async (url, init) => {
   const u = new URL(url);
   if (u.pathname === "/api/v1/projects") {
     listReads++;
-    const projects = [...platform.values()].map(({ id, external_id, aryeo_order_id, status, updated_at, appointment_date, created_at }) => ({ id, external_id, aryeo_order_id, status, updated_at, appointment_date, created_at }));
+    // updated_since (Oct 21 2026, the platform's a3757ab): updated_at >= it,
+    // OLDEST change first, `limit` a page.
+    const since = u.searchParams.get("updated_since");
+    const limit = Number(u.searchParams.get("limit") ?? 200);
+    let rows = [...platform.values()];
+    if (since) rows = rows.filter((x) => Date.parse(x.updated_at) >= Date.parse(since)).sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at));
+    const projects = rows.slice(0, limit).map(({ id, external_id, aryeo_order_id, status, updated_at, appointment_date, created_at }) => ({ id, external_id, aryeo_order_id, status, updated_at, appointment_date, created_at }));
     return new Response(JSON.stringify({ projects }), { status: 200 });
   }
+  if (failDetailFor.has(decodeURIComponent(u.pathname.split("/").pop() ?? ""))) { reads++; return new Response(JSON.stringify({ error: "drill: platform hiccup" }), { status: 500 }); }
   reads++;
   const key = decodeURIComponent(u.pathname.split("/").pop() ?? "");
   const by = u.searchParams.get("by");
@@ -187,23 +195,38 @@ async function main() {
     const late = await prisma.project.create({ data: { clientId: client.id, title: "9 Late Rd TEST", status: "BOOKED", source: "ARYEO", aryeoOrderId: "aryeo-late" } });
 
     // ======================================================================
-    c.head("9 · the 15-minute reconcile");
+    c.head("9 · the 15-minute reconcile (updated_since, Oct 21 2026)");
+    const { SCRIPTING_CURSOR_KEY } = sync;
+    const bookmark = async () => JSON.parse((await prisma.appSetting.findUnique({ where: { key: SCRIPTING_CURSOR_KEY } }))?.value ?? "null") as string | null;
     const first = await sync.reconcileScripting();
-    c.ok("one list call; the never-read job is read and linked", listReads === 1 && first.matched === 4 && (await job(late.id)).scriptingId === "studio-late", JSON.stringify(first));
+    c.ok("one changed-since list call; the never-read job is read and linked", listReads === 1 && first.matched === 4 && (await job(late.id)).scriptingId === "studio-late", JSON.stringify(first));
+    const newestAt = Math.max(...[...platform.values()].map((x) => Date.parse(x.updated_at)));
+    c.ok("…and the bookmark is the newest updated_at handled", Date.parse((await bookmark())!) === newestAt, String(await bookmark()));
     const readsBefore = reads;
     const quiet = await sync.reconcileScripting({ now: new Date() });
-    c.ok("unchanged projects are not re-read, except a shoot within three days that was read 10+ minutes ago", quiet.read === 0 && reads === readsBefore, JSON.stringify(quiet));
+    c.ok("nothing changed: nothing is re-read (no shoot-window or daily re-reads any more)", quiet.read === 0 && reads === readsBefore, JSON.stringify(quiet));
     lateP.updated_at = new Date(Date.now() + 5000).toISOString(); lateP.status = "intake_submitted";
     const changed = await sync.reconcileScripting();
-    c.ok("a changed updated_at is re-read", changed.read === 1 && (await job(late.id)).scriptingStatus === "intake_submitted", JSON.stringify(changed));
-    await prisma.project.update({ where: { id: ridley.id }, data: { scriptingSyncedAt: new Date(Date.now() - 20 * 60_000) } });
-    const windowed = await sync.reconcileScripting();
-    c.ok("a shoot within three days is re-read every run whatever updated_at says", windowed.read === 1, JSON.stringify(windowed));
-    // The platform's updated_at does not move on a new script version (yet):
-    // every matched project is re-read at least once a day.
-    await prisma.project.update({ where: { id: other.id }, data: { scriptingSyncedAt: new Date(Date.now() - 25 * 3600_000) } });
-    const daily = await sync.reconcileScripting();
-    c.ok("a project last read a day ago is re-read whatever updated_at says", daily.read === 1 && (await job(other.id)).scriptingSyncedAt!.getTime() > Date.now() - 60_000, JSON.stringify(daily));
+    c.ok("a project whose updated_at moved is read", changed.read === 1 && (await job(late.id)).scriptingStatus === "intake_submitted", JSON.stringify(changed));
+    // A failed read holds the bookmark before it; the next run retries it.
+    const heldAt = Date.parse((await bookmark())!);
+    ridleyP.updated_at = new Date(Date.now() + 10_000).toISOString(); ridleyP.status = "in_progress";
+    failDetailFor.add("aryeo-ridley"); failDetailFor.add("studio-ridley");
+    const failed = await sync.reconcileScripting();
+    c.ok("a failed read is counted and the bookmark does not pass it", failed.errors >= 1 && Date.parse((await bookmark())!) === heldAt, JSON.stringify(failed));
+    failDetailFor.clear();
+    const retried = await sync.reconcileScripting();
+    c.ok("…the next run reads it and moves the bookmark on", retried.read === 1 && (await job(ridley.id)).scriptingStatus === "in_progress" && Date.parse((await bookmark())!) === Date.parse(ridleyP.updated_at), JSON.stringify(retried));
+    // Paging: a full page means ask again from its newest updated_at.
+    let t = Date.now() + 20_000;
+    const oaklandP = platform.get("studio-oakland")!;
+    for (const p of [lateP, ridleyP, oaklandP]) { p.updated_at = new Date(t += 1000).toISOString(); }
+    const listsBefore = listReads;
+    const paged = await sync.reconcileScripting({ pageSize: 2 });
+    c.ok("a full page pages forward from its newest change; all three changes are read", paged.read === 3 && listReads - listsBefore >= 2 && Date.parse((await bookmark())!) === Date.parse(oaklandP.updated_at), JSON.stringify(paged));
+    // The backfill (all) still reads every matched project.
+    const all = await sync.reconcileScripting({ all: true });
+    c.ok("the backfill (all) reads every matched project", all.read === all.matched && all.matched === 4, JSON.stringify(all));
 
     // ======================================================================
     c.head("10 · the card");

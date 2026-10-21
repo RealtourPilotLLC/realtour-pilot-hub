@@ -131,9 +131,19 @@ export async function scriptingListSince(sinceIso: string, limit = 100): Promise
   return r.projects ?? [];
 }
 
+// Projects whose updated_at is at/after `sinceIso`, OLDEST change first, at
+// most `limit` (200) a page (Oct 21 2026: the platform's a3757ab). Every new
+// script version (an on-site edit, an AI draft, a Revise, a client-requested
+// revision) now moves updated_at, so this is the reconcile's whole question.
+// Page forward from the newest updated_at seen while a full page comes back.
+export async function scriptingListUpdatedSince(sinceIso: string, limit = 200): Promise<StudioProject[]> {
+  const r = await sc<{ projects?: StudioProject[] }>(`/projects?updated_since=${encodeURIComponent(sinceIso)}&limit=${limit}`);
+  return r.projects ?? [];
+}
+
 // Every project, newest first (the platform caps a page at 200; it held 83 on
-// Oct 20 2026). `since` filters on created_at, so a reconcile that must see
-// CHANGES to older projects reads the whole list and compares updated_at.
+// Oct 20 2026). `since` filters on created_at, so the full re-read (the
+// backfill) lists everything; the routine reconcile uses updated_since.
 export async function scriptingListAll(limit = 200): Promise<StudioProject[]> {
   const r = await sc<{ projects?: StudioProject[] }>(`/projects?limit=${limit}`);
   return r.projects ?? [];
