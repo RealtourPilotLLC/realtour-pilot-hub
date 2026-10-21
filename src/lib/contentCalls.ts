@@ -244,16 +244,16 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
     const d = name.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{1,2}):(\d{2})/);
     let at: Date | null = null;
     if (d) {
-      // Title times are ET — build the UTC instant via the ET offset trick used
-      // in datetime.ts (approximate with the date's offset; minute precision).
-      const [y, mo, day, h, min] = [Number(d[1]), Number(d[2]), Number(d[3]), Number(d[4]), Number(d[5])];
-      const guess = new Date(Date.UTC(y, mo - 1, day, h, min));
-      const etHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(guess));
-      at = new Date(guess.getTime() + (h - etHour) * 3600_000);
+      // Title times are ET wall clock, read by datetime.etAt (Oct 21 2026,
+      // audit H15). The local offset trick read the ET hour of the UTC guess,
+      // which wrapped past midnight (or read "24") for a title before 5 AM EDT
+      // (6 AM EST) and dated that call a day early; it was also an hour off on
+      // changeover days. From 5 AM EDT on, the two agree.
+      at = etAt(`${d[1]}-${d[2]}-${d[3]}`, Number(d[4]), Number(d[5]));
     }
     return { prefix: m[1], at };
   };
-  const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const dayKey = etDayKey;
 
   // Group candidate docs by enrollment+month, newest first.
   type Candidate = { file: DriveFile; at: Date | null };

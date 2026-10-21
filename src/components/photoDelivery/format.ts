@@ -29,7 +29,8 @@ export const plural = (n: number, word: string, many?: string) => `${n} ${n === 
 
 export const credits = (n: number) => `${n.toLocaleString("en-US")} credit${n === 1 ? "" : "s"}`;
 
-export const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** "$1,234.50": money.usd2, the photo-fix costs' shape (audit H16). */
+export { usd2 as usd } from "@/lib/money";
 
 /** "PRIMARY_BATHROOM" → "Primary bathroom". */
 export function prettyRoom(roomType: string | null | undefined): string {

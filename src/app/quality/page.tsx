@@ -22,7 +22,7 @@ import { PlatformFeedbackItem } from "@/components/feedback/PlatformFeedbackItem
 import { prisma } from "@/lib/prisma";
 import { etDate, etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { QualityTabs, type QualityTab } from "./QualityTabs";
 import { EditorQualityCard } from "@/components/editing/EditorQualityCard";
 import { SelfCheckSettings, UnclassifiedIssues } from "@/components/editing/QualityDesk";
@@ -627,7 +627,7 @@ async function loadEditorsTab(ownKey: string | null, includeTest: boolean) {
   const { editorQuality, editorsWithWork } = await import("@/lib/editorQuality");
   const now = new Date();
   const from = new Date(now.getTime() - 90 * 24 * 3600_000);
-  const scope = { excludeClientIds: includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id) };
+  const scope = { excludeClientIds: includeTest ? [] : await syntheticClientIds() };
   if (ownKey) {
     return { own: await editorQuality({ ...scope, editorKey: ownKey, from, to: now }), team: null, cards: [], unclassified: [], profiles: [] };
   }

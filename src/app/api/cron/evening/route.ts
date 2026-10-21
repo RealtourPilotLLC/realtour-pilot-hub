@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sendEveningUploadDigests, sendNightlyUploadNags } from "@/lib/uploadDigest";
 import { COMMS_COACHING_ET_HOUR } from "@/lib/commsCoaching";
 import { cronBudget, authorizeCron } from "@/lib/cron";
+import { etHour } from "@/lib/datetime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,9 +30,7 @@ export async function GET(req: NextRequest) {
   // failed 7 PM digest read green by 8 (review, Sep 28).
   const startedAt = Date.now();
   const { step, out, finish } = cronBudget(100_000, startedAt, "evening"); // ~20s headroom under maxDuration
-  const etHour = Number(
-    new Date(startedAt).toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }),
-  );
+  const hour = etHour(new Date(startedAt));
   const { internalAlertRules } = await import("@/lib/settings");
   const alerts = await internalAlertRules();
 
@@ -60,10 +59,10 @@ export async function GET(req: NextRequest) {
   // squeezed to five seconds. Coaching is the best-effort one, so it takes
   // what is left; the digest never waits on it.
   let sent: { key: "digests" | "nags"; r: SendResult; totalFailure: boolean } | null = null;
-  if (alerts.uploadReminder.enabled && etHour === alerts.uploadReminder.hour) {
+  if (alerts.uploadReminder.enabled && hour === alerts.uploadReminder.hour) {
     const { r, totalFailure } = await runSend("digests", sendEveningUploadDigests, "no shoots today", "digest failed");
     sent = { key: "digests", r, totalFailure };
-  } else if (alerts.uploadChaser.enabled && etHour === alerts.uploadChaser.hour) {
+  } else if (alerts.uploadChaser.enabled && hour === alerts.uploadChaser.hour) {
     const { r, totalFailure } = await runSend("nags", sendNightlyUploadNags, "nothing unsubmitted today", "nag failed");
     sent = { key: "nags", r, totalFailure };
   }
@@ -79,7 +78,7 @@ export async function GET(req: NextRequest) {
   // per-day AppSetting marker makes the DST-pair second firing a no-op. (As a
   // step, a throw also marks the run not-ok on Sync health, which is where it
   // should show.)
-  if (etHour === COMMS_COACHING_ET_HOUR) {
+  if (hour === COMMS_COACHING_ET_HOUR) {
     await step("coaching", async () => (await import("@/lib/commsCoaching")).runDailyCommsCoaching());
   }
   const coaching = out.coachingError ? { error: String(out.coachingError) } : out.coaching;
@@ -88,7 +87,7 @@ export async function GET(req: NextRequest) {
     await finish();
     return NextResponse.json({ [sent.key]: sent.r, coaching }, { status: sent.totalFailure ? 500 : 200 });
   }
-  const reason = `ET hour is ${etHour}; reminder at ${alerts.uploadReminder.hour}, chaser at ${alerts.uploadChaser.hour} (Settings → Internal alerts)`;
+  const reason = `ET hour is ${hour}; reminder at ${alerts.uploadReminder.hour}, chaser at ${alerts.uploadChaser.hour} (Settings → Internal alerts)`;
   out.idle = reason;
   await finish();
   return NextResponse.json({ coaching, skipped: true, reason });

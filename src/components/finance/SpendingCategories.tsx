@@ -3,12 +3,12 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronRight, Loader2, Briefcase, User, ArrowLeftRight, Lock } from "lucide-react";
 import { retagCategoryAction, retagTxnAction, retagTxnsBulkAction, fetchCategoryTxnsAction } from "@/app/sales/spendingActions";
+import { usd0 as m } from "@/lib/money";
 
 export type Row = { category: string; sum: number; count: number };
 export type CatOpt = { category: string; kind: string };
 type Txn = { id: string; name: string; amount: number; date: string; kind: string; locked: boolean };
 
-const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const EXCLUDE_OPT = "Not spend (money movement)";
 
 export function SpendingCategories({

@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { etMonthKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // BULK CONTENT PLANS (Oct 15 2026).
@@ -294,13 +295,6 @@ export type CreateBulkPlanInput = {
   editingNote?: string | null;
 };
 
-function etMonthKeyNow(d: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit" }).formatToParts(d);
-  const y = parts.find((p) => p.type === "year")?.value;
-  const m = parts.find((p) => p.type === "month")?.value;
-  return `${y}-${m}`;
-}
-
 /**
  * Turn a client onto a bulk plan. Idempotent per client: an ACTIVE plan is
  * refused (change it, or cancel it first). The anchor month owes the plan's
@@ -315,7 +309,7 @@ export async function createBulkPlan(input: CreateBulkPlanInput, actor: BulkActo
   if (!Number.isFinite(sessions) || sessions < 1 || sessions > 60) throw new Error("Sessions is a whole number from 1 to 60.");
   const cadence = input.cadenceDays ? Math.trunc(Number(input.cadenceDays)) : 7;
   if (!Number.isFinite(cadence) || cadence < 1 || cadence > 60) throw new Error("Days between sessions is a whole number from 1 to 60.");
-  const monthKey = (input.monthKey ?? "").trim() || etMonthKeyNow();
+  const monthKey = (input.monthKey ?? "").trim() || etMonthKey();
   if (!/^\d{4}-\d{2}$/.test(monthKey)) throw new Error("The plan month looks like 2026-10.");
 
   const e = await prisma.contentEnrollment.findUnique({ where: { id: input.enrollmentId } });
@@ -694,6 +688,6 @@ export async function setClientScriptFormat(enrollmentId: string, label: string 
   if (value) next.clientScriptFormat = value; else delete next.clientScriptFormat;
   const now = new Date();
   const { recordEnrollmentChange } = await import("@/lib/enrollmentChanges");
-  await recordEnrollmentChange({ enrollmentId, clientId: e.clientId, field: "overrides", from: { clientScriptFormat: cur.clientScriptFormat ?? null }, to: { clientScriptFormat: value }, effectiveAt: now, effectiveMonthKey: etMonthKeyNow(), changedBy: by, appliedAt: now });
+  await recordEnrollmentChange({ enrollmentId, clientId: e.clientId, field: "overrides", from: { clientScriptFormat: cur.clientScriptFormat ?? null }, to: { clientScriptFormat: value }, effectiveAt: now, effectiveMonthKey: etMonthKey(), changedBy: by, appliedAt: now });
   await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { overridesJson: Object.keys(next).length ? JSON.stringify(next) : null } });
 }

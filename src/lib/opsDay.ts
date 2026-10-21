@@ -15,8 +15,9 @@ import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
 import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
 import { readyToSend, type ReadyBoard } from "@/lib/readyToSend";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
+import { etAddDays, etDayBoundsUtc, etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -26,22 +27,12 @@ import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScop
 
 const ET = "America/New_York";
 
-function etDayKey(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: ET });
-}
 function etDayWindow(offsetDays: number): { start: Date; end: Date; key: string } {
-  // DST-safe for ordinary days (offset resolved at the target day's noon).
-  // Known accepted edges (review): on the two transition nights a shoot
-  // timestamped 11 PM–1 AM can fall in the wrong/both windows — real shoots
-  // never book those hours and the windows self-correct on the next render.
-  const key = new Date(Date.now() + offsetDays * 86_400_000).toLocaleDateString("en-CA", { timeZone: ET });
-  const noonUtc = new Date(`${key}T12:00:00Z`);
-  const etHourAtNoon = Number(noonUtc.toLocaleString("en-US", { timeZone: ET, hour: "numeric", hour12: false }));
-  const start = new Date(`${key}T00:00:00Z`);
-  start.setUTCHours(start.getUTCHours() + (12 - etHourAtNoon));
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-  return { start, end, key };
+  // ET midnight to ET midnight, from datetime.ts (Oct 21 2026, audit H15):
+  // the local copy resolved the offset at the day's noon, so on the two
+  // changeover days its start sat an hour off (the old "known accepted edge").
+  const key = etDayKey(etAddDays(new Date(), offsetDays));
+  return { ...etDayBoundsUtc(key), key };
 }
 
 // ---- The Aryeo appointment brief, parsed into labeled fields ----------------
@@ -591,7 +582,7 @@ export async function buildOpsDay(opts: { includeTest?: boolean; excludeClientId
   const today = etDayWindow(0);
   const tomorrow = etDayWindow(1);
   const excludedClientIds = opts.excludeClientIds ?? (opts.includeTest === false
-    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    ? await syntheticClientIds()
     : []);
   const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
   // Delivery can run throughout the shoot/communications/conditions reads.

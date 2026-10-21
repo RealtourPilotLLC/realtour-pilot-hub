@@ -6,6 +6,7 @@ import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
+import { etHour } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Internal operational pings → Slack (never clients). The task engine files
@@ -2349,10 +2350,8 @@ export async function alertWebhookRejections(provider: string): Promise<void> {
 // honest about a refused DM (deliverDigestDm above).
 // ---------------------------------------------------------------------------
 export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: string }> {
-  const etHour = Number(
-    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
-  );
-  if (etHour < 8 || etHour >= 10) return { sent: false, reason: "outside 8-10am ET" };
+  const hour = etHour();
+  if (hour < 8 || hour >= 10) return { sent: false, reason: "outside 8-10am ET" };
   // The switch BEFORE the day is claimed, so turning it back on mid-window
   // still gets that morning's list.
   const off = await digestGate();

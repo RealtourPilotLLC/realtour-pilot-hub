@@ -2,6 +2,7 @@
 import { useEffect, useState, useTransition } from "react";
 import { Loader2, Lock } from "lucide-react";
 import { retagTxnAction, retagTxnsBulkAction, fetchCategoryTxnsAction } from "@/app/sales/spendingActions";
+import { usd0 as m } from "@/lib/money";
 
 // The itemized charges inside ONE category, with re-tagging — the drill-in the
 // Budget screen shows under a tapped row (Jordan Aug 25: "click on it, it's a
@@ -12,7 +13,6 @@ import { retagTxnAction, retagTxnsBulkAction, fetchCategoryTxnsAction } from "@/
 export type CatOpt = { category: string; kind: string };
 type Txn = { id: string; name: string; amount: number; date: string; kind: string; locked: boolean };
 
-const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const EXCLUDE_OPT = "Not spend (money movement)";
 
 export function CategoryTxnPanel({

@@ -101,6 +101,23 @@ export function etDayStartUtc(d: Date = new Date()): Date {
 export const etAddDays = (d: Date, days: number) => new Date(d.getTime() + days * 86400000);
 
 /**
+ * One ET calendar day as [start, end) UTC instants, for DB range queries.
+ * Both ends are real ET midnights, so a changeover day is 23 or 25 hours
+ * long. Oct 21 2026 (audit H15): opsDay and uploadDigest each built this from
+ * the ET offset at noon, which put the start an hour off on the two
+ * changeover days ("known 1h edge").
+ */
+export function etDayBoundsUtc(dayKey: string): { start: Date; end: Date } {
+  const start = etAt(dayKey, 0);
+  // 36 hours past an ET midnight is always inside the next ET day (days run
+  // 23 to 25 hours), and that day's midnight is this one's end.
+  return { start, end: etDayStartUtc(new Date(start.getTime() + 36 * 3_600_000)) };
+}
+
+/** "2026-10": the ET calendar month of an instant (programs plan and bill by ET month). */
+export const etMonthKey = (d: Date = new Date()): string => etDayKey(d).slice(0, 7);
+
+/**
  * A wall-clock ET time on an ET day, as a real instant. DST-safe.
  *
  * Use this instead of writing an offset into a date string. `"...T17:00:00-04:00"`
@@ -217,6 +234,16 @@ export function businessDaysBetweenET(from: Date, to: Date): number {
     if (dow !== 0 && dow !== 6) n++;
   }
   return n;
+}
+
+/**
+ * The ET hour, 0 to 23. Oct 21 2026 (audit H15): ten screens and crons read
+ * it inline with `hour12: false`, which Node's ICU renders as "24" for the
+ * midnight hour in en-US. hourCycle h23 never does; the % 24 is belt and braces.
+ */
+const ET_HOUR = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hourCycle: "h23" });
+export function etHour(d: Date = new Date()): number {
+  return Number(ET_HOUR.format(d)) % 24;
 }
 
 /** Minutes past midnight ET. */

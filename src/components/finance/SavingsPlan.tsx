@@ -3,13 +3,13 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { PiggyBank, ChevronDown, Check, X, RotateCcw, Loader2 } from "lucide-react";
 import { setSavingsStatusAction } from "@/app/sales/savingsActions";
+import { usd0 as m0 } from "@/lib/money";
 
 export type SavingsItemView = {
   id: string; rank: number; title: string; detail: string | null;
   savesPerMonth: number; tier: string; status: string;
 };
 
-const m0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const TIER_LABEL: Record<string, string> = {
   instant: "do now", setting: "one setting", habit: "habit", decision: "your call",
 };

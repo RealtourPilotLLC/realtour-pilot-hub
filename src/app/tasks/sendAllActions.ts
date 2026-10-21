@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 import { clientTextWhere } from "@/lib/clientTexts";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 
 // ---------------------------------------------------------------------------
 // "Send all" for the drafted client texts (confirmation + delivery). This is
@@ -46,7 +46,7 @@ export async function listDraftedTexts(opts: { includeTest?: boolean } = {}): Pr
   // ONE membership rule for every client-text surface (panel, badge, /today
   // rollup, this batch) — see clientTextWhere for why each clause exists.
   const excludeClientIds = opts.includeTest ? []
-    : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+    : await syntheticClientIds();
   const tasks = await prisma.smartTask.findMany({
     where: clientTextWhere(new Date(), { excludeClientIds }),
     select: { id: true, taskType: true, projectId: true, dueAt: true },

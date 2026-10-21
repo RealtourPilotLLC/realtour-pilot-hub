@@ -3,6 +3,7 @@ import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
 import { logComm } from "@/lib/commLog";
+import { etDayBoundsUtc, etDayKey, etHour } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // The 7 PM shoot digest (Jordan, Sep 1 2026): every evening, each creative
@@ -30,27 +31,10 @@ async function heldForQuietTime(memberId: string, text: string, kind: string, at
   return holdStaffTextForQuietTime(memberId, text, kind, at).catch(() => null);
 }
 
-function etDayKey(d: Date = new Date()): string {
-  return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // YYYY-MM-DD
-}
-
 /** ET midnight-to-midnight window for "today", expressed in UTC instants.
- *  Known 1h edge skew on the two DST transition days for shoots timestamped
- *  11 PM–1 AM ET — real shoots never are (reviewed and accepted). */
-function etDayWindow(): { start: Date; end: Date } {
-  const key = etDayKey();
-  // Resolve the ET offset at noon ET today (DST-safe for a whole-day window).
-  const noonUtc = new Date(`${key}T12:00:00Z`);
-  const etHourAtNoonUtc = Number(
-    noonUtc.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }),
-  );
-  const offsetHours = 12 - etHourAtNoonUtc; // 4 during EDT, 5 during EST
-  const start = new Date(`${key}T00:00:00Z`);
-  start.setUTCHours(start.getUTCHours() + offsetHours);
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-  return { start, end };
-}
+ *  From datetime.ts since Oct 21 2026 (audit H15), which also closes the old
+ *  1h skew on the two DST transition days. */
+const etDayWindow = (): { start: Date; end: Date } => etDayBoundsUtc(etDayKey(new Date()));
 
 // Plain and human (Jordan, Sep 1: the first draft read "cryptic") — short
 // sentences, a numbered list, one idea per line. Once the photographer has
@@ -166,7 +150,7 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
   const notes: string[] = [];
   const held: string[] = [];
   const { start } = etDayWindow();
-  const dayKey = etDayKey();
+  const dayKey = etDayKey(new Date());
   const now = new Date();
 
   const [shoots, halfIn] = await Promise.all([
@@ -300,8 +284,7 @@ export async function sendSplitNoticeIfChaserPassed(projectId: string, now: Date
     const { internalAlertRules } = await import("@/lib/settings");
     const alerts = await internalAlertRules();
     if (!alerts.uploadChaser.enabled) return { sent: false, reason: "the upload chaser is switched off" };
-    const etHour = Number(now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false })) % 24;
-    if (etHour < alerts.uploadChaser.hour) return { sent: false, reason: "tonight's chaser carries it" };
+    if (etHour(now) < alerts.uploadChaser.hour) return { sent: false, reason: "tonight's chaser carries it" };
     const today = etDayKey(now);
     const p = await prisma.project.findFirst({
       where: {
@@ -355,7 +338,7 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
   const notes: string[] = [];
   const held: string[] = [];
   const { start, end } = etDayWindow();
-  const dayKey = etDayKey();
+  const dayKey = etDayKey(new Date());
 
   const shoots = await prisma.project.findMany({
     where: {

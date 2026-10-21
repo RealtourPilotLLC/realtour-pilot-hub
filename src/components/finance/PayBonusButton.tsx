@@ -3,6 +3,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Trophy } from "lucide-react";
 import { payQuarterlyBonus } from "@/app/sales/bonusActions";
+import { usd0 } from "@/lib/money";
 
 // Owner-only money button, two-tap (arm → confirm) — the ONE path from the
 // bonus math to actual pay. Writes a PayoutAdjustment on the person's next
@@ -14,7 +15,7 @@ export function PayBonusButton({ memberId, name, amount, quarter }: {
   const [armed, setArmed] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, start] = useTransition();
-  const m = `$${Math.round(amount).toLocaleString("en-US")}`;
+  const m = usd0(amount);
   if (msg) return <span className="text-[11px] text-muted">{msg}</span>;
   return armed ? (
     <span className="flex items-center gap-1.5">

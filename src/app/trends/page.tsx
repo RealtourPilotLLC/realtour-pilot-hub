@@ -16,6 +16,7 @@ import { canAccess } from "@/lib/auth/access";
 import { bookingTrends, serviceTrends, topSpenders } from "@/lib/trends";
 import { getGrowthPlan } from "@/lib/growthPlan";
 import { recurringRevenue } from "@/lib/recurring";
+import { usd0 } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 // The margin section runs the full payroll engine (~15s on a cold cache) and it
@@ -30,7 +31,6 @@ export const maxDuration = 60;
 // they were PLACED (Aryeo orderedAt), never by shoot date, because that is what
 // moves first when things slow down.
 
-const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 function Delta({ pct, invert }: { pct: number | null; invert?: boolean }) {
   if (pct === null || !Number.isFinite(pct)) return <span className="text-muted-2">—</span>;

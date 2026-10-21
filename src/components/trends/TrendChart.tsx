@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usd0 } from "@/lib/money";
 
 // Hand-rolled time-series bars — the hub carries no chart library, so this
 // follows the same div+inline-height pattern the finance tabs use. Two views
@@ -14,7 +15,7 @@ export function TrendChart({ daily, monthly }: { daily: Point[]; monthly: Point[
   const points = span === "90d" ? daily : monthly;
   const value = (p: Point) => (metric === "count" ? p.count : p.revenue);
   const max = Math.max(1, ...points.map(value));
-  const fmt = (n: number) => (metric === "count" ? String(n) : `$${Math.round(n).toLocaleString("en-US")}`);
+  const fmt = (n: number) => (metric === "count" ? String(n) : usd0(n));
   const total = points.reduce((s, p) => s + value(p), 0);
 
   // Called as a function, not a component made during render (it would remount every render).

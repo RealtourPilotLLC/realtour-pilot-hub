@@ -20,7 +20,7 @@ import { EditorDesk } from "@/components/editing/EditorDesk";
 import { myDesk, workingNow } from "@/lib/editorWork";
 import { editorActivityToday, editorLines, rowEvidence } from "@/lib/editorActivity";
 import { prisma } from "@/lib/prisma";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { editingQueueHref } from "@/lib/editingQueueUrl";
 
 export const dynamic = "force-dynamic";
@@ -151,7 +151,7 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
   const office = me?.role !== "EDITOR";
   const sp = await searchParams ?? {};
   const includeTest = office && sp.test === "1";
-  const excludeClientIds = office && !includeTest ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((client) => client.id) : [];
+  const excludeClientIds = office && !includeTest ? await syntheticClientIds() : [];
   const excludeProjectIds = excludeClientIds.length ? (await prisma.project.findMany({ where: { clientId: { in: excludeClientIds } }, select: { id: true } })).map((project) => project.id) : [];
   const excludedProjects = new Set(excludeProjectIds);
   const scopeParams = new URLSearchParams(Object.entries(sp).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
@@ -204,12 +204,9 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
       ? null
       : await (async () => {
           const { editorQuality } = await import("@/lib/editorQuality");
-          const { prisma } = await import("@/lib/prisma");
-          const { isSyntheticClientRow } = await import("@/lib/testClients");
           // Match the normal /quality editor results. Test quality remains
           // available in that page's explicit test view; queue ownership is separate.
-          const excludeClientIds = (await prisma.client.findMany({ select: { id: true, name: true } }))
-            .filter(isSyntheticClientRow).map((client) => client.id);
+          const excludeClientIds = await syntheticClientIds();
           const now = new Date();
           return editorQuality({ excludeClientIds, editorKey: editorScope, from: new Date(now.getTime() - 90 * 24 * 3600_000), to: now });
         })().catch(() => null);

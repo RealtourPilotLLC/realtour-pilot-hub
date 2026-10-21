@@ -11,7 +11,7 @@ import { etDayStartUtc, etAddDays, etFullDate, etTime, etDayKey, isTodayET } fro
 import { ProjectMap, type MapPin, type MapDay } from "@/components/map/ProjectMap";
 import { hasDroneOps } from "@/components/project/DroneBadge";
 import { ScheduleViewToggle, type ScheduleView } from "@/components/schedule/ScheduleViewToggle";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 
 export const dynamic = "force-dynamic";
 
@@ -220,7 +220,7 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
   const office = !me || me.role === "OWNER" || me.role === "ADMIN";
   const view: ScheduleView = sp.view === "map" ? "map" : "list";
   const includeTest = sp.test === "1";
-  const excludeClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((client) => client.id);
+  const excludeClientIds = includeTest ? [] : await syntheticClientIds();
   // Each view early-returns its own query (communications pattern): the List
   // never runs the geocoded/map pull, the Map never runs the grouped-day pull.
   return view === "map" ? <MapView excludeClientIds={excludeClientIds} includeTest={includeTest} /> : <ListView excludeClientIds={excludeClientIds} includeTest={includeTest} office={office} />;

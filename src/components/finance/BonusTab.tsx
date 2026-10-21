@@ -5,9 +5,9 @@ import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { prisma } from "@/lib/prisma";
 import { quarterFor, quarterBonus } from "@/lib/bonus";
 import { PayBonusButton } from "@/components/finance/PayBonusButton";
+import { usd0 as m } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
-const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 // The quarterly performance bonus — LAUNCHED Aug 25 (Jordan: "Do the bonus
 // engine"). The engine (src/lib/bonus.ts) was fully built and calibrated to

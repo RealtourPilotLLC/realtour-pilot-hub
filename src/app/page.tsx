@@ -8,12 +8,16 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess, contentTier, homeFor } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { cn, formatMoney } from "@/lib/utils";
+// "-$1,995", never "$-1,995": an overdrawn balance is the one figure on this
+// page a person reads at a glance and must not have to parse (money.usd0Signed).
+import { usd0Signed as usd0 } from "@/lib/money";
 import { etFullDate, etTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
 import { QualityDials } from "@/components/dashboard/QualityDials";
 import { ownerPulse } from "@/lib/ownerPulse";
-import { getTopAr, getOwnerStats, getOwnerPulse, getOwnerDials, syntheticClientIds } from "@/lib/queries";
+import { getTopAr, getOwnerStats, getOwnerPulse, getOwnerDials } from "@/lib/queries";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { buildDashboard, kyleDay, kylePerson, ownerWeek, type KyleDay, type OwnerWeek } from "@/lib/opsHome";
@@ -331,13 +335,6 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     </div>
   );
 }
-
-// "-$1,995", never "$-1,995" — an overdrawn balance is the one figure on this
-// page a person reads at a glance and must not have to parse.
-const usd0 = (n: number) => {
-  const r = Math.round(n);
-  return `${r < 0 ? "-" : ""}$${Math.abs(r).toLocaleString("en-US")}`;
-};
 
 function MoneyStat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
   return (

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { unansweredComms } from "@/lib/replyQueue";
 import { editorMeta } from "@/lib/editors";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
+import { etHour } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // The Comms Checklist boards (Jordan, Sep 1 2026: "we don't need to turn every
@@ -453,10 +454,8 @@ export const COMMS_VIEW_TASK_TYPES = ["client_reply", "comms_followup", "callbac
 const DIGEST_ITEMS = 8;
 
 export async function afternoonSlackDigest(): Promise<{ sent: boolean; reason?: string }> {
-  const etHour = Number(
-    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
-  );
-  if (etHour < 16 || etHour >= 18) return { sent: false, reason: "outside 4-6pm ET" };
+  const hour = etHour();
+  if (hour < 16 || hour >= 18) return { sent: false, reason: "outside 4-6pm ET" };
   // Sep 26 2026: the Settings switch "Kyle's Slack digests" is read here (it
   // was read by nothing), BEFORE the day is claimed; the send is notify.ts
   // deliverDigestDm — Kyle's own quiet time, and a refused DM no longer
