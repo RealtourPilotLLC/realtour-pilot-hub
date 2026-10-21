@@ -370,11 +370,26 @@ async function main() {
         wm.text.includes("To sign in, open the page below and enter info+welcome@realtourpilot.com.") && wm.text.includes("\nhttps://hub.example.test/portal/login\n") &&
         !!wm.html?.includes(">Open your portal</a>") && !EM_DASH.test(wm.html ?? ""), `${out.length} ${wm?.cc}`);
       c.ok("…the first welcome's identity is untouched (still one row)", (await prisma.outboxMessage.count({ where: { dedupeKey: PA.portalWelcomeKey(wSeat.id) } })) === 1);
+
       await new Promise((res) => setTimeout(res, 5));
       i = mails.length;
       const r2 = await A.resendWelcomeAction(wp.enrollmentId);
       c.ok("a second press is a second, separate welcome", r2.ok && since(i).length === 1 && (await prisma.outboxMessage.count({ where: { dedupeKey: { startsWith: `portal_invite:${wSeat.id}:welcome:` } } })) === 2);
       c.ok("…the card lists the resends (newest first) with who they went to", r2.state?.welcome.sent.length === 3 && r2.state.welcome.sent[0].resend && r2.state.welcome.sent[0].to === "info+welcome@realtourpilot.com" && !r2.state.welcome.sent[2].resend);
+
+      // Oct 21 2026: the sign-in reminder (Jordan: "send a reminder to any
+      // clients who have not signed in"). Same gates, the welcome's words with
+      // one reminder line, its own subject, its own fresh identity.
+      i = mails.length;
+      const rem = await PA.resendPortalWelcome(wp.enrollmentId, { appUserId: null, actor: "drill" }, { reminder: true });
+      const remOut = since(i);
+      const remRow = (await prisma.outboxMessage.findMany({ where: { clientId: wp.clientId, dedupeKey: { endsWith: "-reminder:welcome" } } }))[0];
+      const rm = remOut.find((m) => m.to === "info+welcome@realtourpilot.com");
+      c.ok("REMINDER: sent to the OWNER seat with the Cc, under a -reminder identity that still reads as portal_invite",
+        rem.ok && rem.message.startsWith("Sign-in reminder sent to info+welcome@realtourpilot.com") && !!remRow && O.outboxKind(remRow.dedupeKey) === "portal_invite" && !!rm && rm.cc.join() === "jspackman215@gmail.com", rem.message);
+      c.ok("…subject \"Reminder: your Realtour Pilot content portal is ready\", the reminder line after the greeting, the sign-in steps kept",
+        rm?.subject === "Reminder: your Realtour Pilot content portal is ready" && /^Hi [^\n]+,\n\nA quick reminder: your content portal is set up and waiting for you/.test(rm?.text ?? "") &&
+        (rm?.text ?? "").includes("To sign in, open the page below and enter info+welcome@realtourpilot.com.") && !EM_DASH.test(rm?.text ?? ""), rm?.subject ?? "none");
       c.ok("…each one audited", (await prisma.auditLog.count({ where: { action: "portal_welcome_resent", target: wp.clientId } })) === 2);
 
       // Held, with the reason, and nothing queued.

@@ -1164,8 +1164,18 @@ export async function portalAccessSummary(enrollmentId: string): Promise<PortalA
  * (the gate's TEST-client welcome to Jordan's own inbox). The stamp carries no
  * colon, so none of those segments move.
  */
-export const portalWelcomeResendKey = (membershipId: string, at: Date) =>
-  `portal_invite:${membershipId}:welcome:${at.toISOString().replace(/[-:.]/g, "")}:welcome`;
+export const portalWelcomeResendKey = (membershipId: string, at: Date, reminder = false) =>
+  `portal_invite:${membershipId}:welcome:${at.toISOString().replace(/[-:.]/g, "")}${reminder ? "-reminder" : ""}:welcome`;
+
+/** Oct 21 2026 (Jordan: "send a reminder to any clients who have not signed
+ *  in"): the welcome's words with one reminder line after the greeting. The
+ *  subject comes from the key's "-reminder" stamp (outbox subjectFor). */
+export function asSignInReminder(welcome: string): string {
+  const lines = welcome.split("\n");
+  const greet = lines.findIndex((l) => l.trim().length > 0);
+  if (greet < 0) return welcome;
+  return [...lines.slice(0, greet + 1), "", "A quick reminder: your content portal is set up and waiting for you, and you haven't signed in yet. It only takes a minute.", ...lines.slice(greet + 1)].join("\n");
+}
 
 export type ProgramEmailsGate = { ok: true } | { ok: false; why: string };
 
@@ -1382,7 +1392,7 @@ export type ResendWelcomeResult = { ok: boolean; outcome: "sent" | "held" | "fai
  * Not the "welcome already sent from onboarding" check: a resend is a person
  * asking for a second one on purpose.
  */
-export async function resendPortalWelcome(enrollmentId: string, by: { appUserId: string | null; actor: string | null }): Promise<ResendWelcomeResult> {
+export async function resendPortalWelcome(enrollmentId: string, by: { appUserId: string | null; actor: string | null }, opts: { reminder?: boolean } = {}): Promise<ResendWelcomeResult> {
   const held = (message: string): ResendWelcomeResult => ({ ok: false, outcome: "held", message });
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, accessRevokedAt: true } });
   if (!e) return held("That program no longer exists.");
@@ -1397,26 +1407,27 @@ export async function resendPortalWelcome(enrollmentId: string, by: { appUserId:
   const gate = await welcomeGateFor(e.clientId, person.email, target.isTest);
   if (!gate.ok) return held(`Not sent: ${gate.why}`);
   const { alsoEmailsFromOverrides, planAlsoEmailWith } = await import("@/lib/clientEmailMonitor");
-  const body = await composeWelcomeEmail({ name: person.name, clientName: target.name, reason: "welcome", clientId: e.clientId, email: person.email });
+  const welcome = await composeWelcomeEmail({ name: person.name, clientName: target.name, reason: "welcome", clientId: e.clientId, email: person.email });
+  const body = opts.reminder ? asSignInReminder(welcome) : welcome;
   const overrides = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
   const copies = planAlsoEmailWith({ kind: "portal_invite", to: person.email, body, alsoEmails: alsoEmailsFromOverrides(overrides?.overridesJson ?? null), synthetic: target.isTest });
   const copied = copies.cc.length ? ` (copy to ${copies.cc.join(", ")})` : "";
   const { sendThroughOutbox, TestClientSendRefusedError } = await import("@/lib/outbox");
   let r: Awaited<ReturnType<typeof sendThroughOutbox>>;
   try {
-    r = await sendThroughOutbox({ channel: "email", toRef: person.email, body, dedupeKey: portalWelcomeResendKey(seat.id, new Date()), clientId: e.clientId, requestedBy: by.appUserId });
+    r = await sendThroughOutbox({ channel: "email", toRef: person.email, body, dedupeKey: portalWelcomeResendKey(seat.id, new Date(), !!opts.reminder), clientId: e.clientId, requestedBy: by.appUserId });
   } catch (err) {
     if (err instanceof TestClientSendRefusedError) return held(`Not sent: ${err.message}`);
     throw err;
   }
   const result: ResendWelcomeResult =
-    r.outcome === "accepted" ? { ok: true, outcome: "sent", message: `Welcome sent to ${person.email}${copied}.` }
+    r.outcome === "accepted" ? { ok: true, outcome: "sent", message: `${opts.reminder ? "Sign-in reminder" : "Welcome"} sent to ${person.email}${copied}.` }
     : r.outcome === "failed" && r.refused ? held(`Not sent: ${r.error.replace(/^refused before send: /, "")}.`)
     : r.outcome === "failed" ? { ok: false, outcome: "failed", message: `The welcome did not send (${r.error}). Nothing went out; try again.` }
     : r.outcome === "unknown" ? { ok: false, outcome: "unknown", message: "The welcome may have gone out. It is held on Connections for a person to confirm, so don't press again." }
     : { ok: false, outcome: "unknown", message: "A welcome to this seat is already being sent. Refresh in a minute." };
   await prisma.auditLog.create({
-    data: { actor: by.actor ?? "unknown", action: "portal_welcome_resent", target: e.clientId, detail: `Welcome resend to ${person.email}${copied}: ${result.outcome}. ${result.message}`.slice(0, 4000) },
+    data: { actor: by.actor ?? "unknown", action: opts.reminder ? "portal_sign_in_reminder" : "portal_welcome_resent", target: e.clientId, detail: `${opts.reminder ? "Sign-in reminder" : "Welcome resend"} to ${person.email}${copied}: ${result.outcome}. ${result.message}`.slice(0, 4000) },
   }).catch(() => {});
   return result;
 }

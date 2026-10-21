@@ -488,7 +488,8 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     // Oct 21 2026: the owner's "Resend the welcome email" (portalAccess
     // portalWelcomeResendKey, `portal_invite:<seat>:welcome:<stamp>:welcome`)
     // ends the same way, so it goes out under the welcome's subject too.
-    case "portal_invite": return dedupeKey?.endsWith(":welcome") ? "Welcome to your Realtour Pilot content portal" : "You've been added to your Realtour Pilot content portal";
+    case "portal_invite": return dedupeKey?.endsWith("-reminder:welcome") ? "Reminder: your Realtour Pilot content portal is ready"
+      : dedupeKey?.endsWith(":welcome") ? "Welcome to your Realtour Pilot content portal" : "You've been added to your Realtour Pilot content portal";
     case "program_reminder": return programReminderSubject(dedupeKey ?? null);
     case "script_share": return "Your scripts are ready in your Realtour Pilot portal";
     // Jordan's wording for the strategy notice (6.2, Sep 25 2026).
