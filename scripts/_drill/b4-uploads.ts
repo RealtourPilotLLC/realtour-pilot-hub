@@ -201,11 +201,11 @@ async function main() {
 
   // B: a product Settings maps premium, with none of the premium name words.
   const mapped = await job("23 Mapped Premium Ave", [{ type: "VIDEO", label: "Premium Video" }], {
-    statusEvidence: fresh(0, 5), videoInstructions: "EDITING NOTES\nlead with the view", debriefSubmittedAt: t0,
+    statusEvidence: fresh(0, 5), videoInstructions: "COLOR PROFILE: iPhone\nEDITING NOTES\nlead with the view", debriefSubmittedAt: t0,
     orderItems: { create: [{ title: "DIAMOND BUNDLE" }] },
   });
   const mappedTwin = await job("24 Mapped Premium Twin", [{ type: "VIDEO", label: "Premium Video" }], {
-    statusEvidence: fresh(0, 5), videoInstructions: "EDITING NOTES\nlead with the view", debriefSubmittedAt: t0,
+    statusEvidence: fresh(0, 5), videoInstructions: "COLOR PROFILE: iPhone\nEDITING NOTES\nlead with the view", debriefSubmittedAt: t0,
     orderItems: { create: [{ title: "DIAMOND BUNDLE" }] },
   });
   await oldTasks.ensureEditorHandoff(mappedTwin).catch(() => {});
@@ -216,8 +216,27 @@ async function main() {
   c.ok("NEW: readiness owes the premium script, as the gate always demanded", /script for this premium video/.test(mNew), mNew);
   await asHarrison();
   const mappedGate = await job("25 Mapped Gate Ave", [{ type: "VIDEO", label: "Premium Video" }], { status: "SCHEDULED", orderItems: { create: [{ title: "DIAMOND BUNDLE" }] } });
-  const gateB = await actions.finalizeUpload(mappedGate, { editorBrief: "", force: true, videoInstructions: "VISION FOR THE EDIT\nslow and warm", providedScript: null });
+  const gateB = await actions.finalizeUpload(mappedGate, { editorBrief: "", force: true, videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nslow and warm", providedScript: null });
   c.ok("…and the gate still refuses the premium submit without it", typeof gateB.blocked === "string" && /script/i.test(gateB.blocked), gateB.blocked);
+
+  // Oct 21 2026 (Jordan): the color profile is the photographer's pick and a
+  // video handoff needs it. No profile line → refused, naming the choices;
+  // each of the four choices passes this gate; a pre-update page (no brief
+  // key at all) is never trapped by it.
+  const colorJob = await job("25b Color Pick Ln", [{ type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], { status: "SCHEDULED" });
+  const noColor = await actions.finalizeUpload(colorJob, { editorBrief: "", force: true, videoInstructions: "EDITING NOTES\nkeep it bright" });
+  c.ok("COLOR: a video submit with no color profile is refused, naming the four choices", typeof noColor.blocked === "string" && /iPhone, S-Log3, D-LogM, or S-Log3 and D-LogM/.test(noColor.blocked), noColor.blocked);
+  const picks = ["iPhone", "S-Log3", "D-LogM", "S-Log3, D-LogM"];
+  const colorRefusals: string[] = [];
+  for (const pick of picks) {
+    const jid = await job(`25c ${pick} Way`, [{ type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], { status: "SCHEDULED" });
+    const r = await actions.finalizeUpload(jid, { editorBrief: "", force: true, videoInstructions: `COLOR PROFILE: ${pick}` });
+    if (typeof r.blocked === "string" && /color profile/i.test(r.blocked)) colorRefusals.push(`${pick}: ${r.blocked}`);
+  }
+  c.ok("…each of the four picks passes the color check", colorRefusals.length === 0, colorRefusals.join(" | "));
+  const legacyTab = await job("25d Old Tab Ct", [{ type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_reel" }], { status: "SCHEDULED" });
+  const oldTab = await actions.finalizeUpload(legacyTab, { editorBrief: "", force: true });
+  c.ok("…and a pre-update page (no brief key) is not trapped by it", !(typeof oldTab.blocked === "string" && /color profile/i.test(oldTab.blocked)), String(oldTab.blocked ?? "accepted"));
 
   // C: a full video stamped on a "Standard Reel" label.
   const stampedOld = await job("26 Stamped Old Ct", [{ type: "SOCIAL_REEL", label: "Standard Reel", videoStyle: "standard_cinematic" }], { status: "SCHEDULED" });

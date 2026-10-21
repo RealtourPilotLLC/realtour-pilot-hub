@@ -704,6 +704,16 @@ export async function finalizeUpload(
       packageName: prior.packageName,
       isPremium: videoTier(liveDeliverables) === "premium",
     });
+    // THE COLOR PROFILE (Oct 21 2026, Jordan: "the photographer has to select
+    // either iPhone, S-Log3, D-LogM, or S-Log3 and D-LogM"). The page composes
+    // it as the brief's "COLOR PROFILE: …" line; the editor grades by it. Key
+    // ABSENT = a pre-update page still open on a phone (never trapped); a
+    // brief already saved with a line keeps it.
+    const colorLine = (t: string | null | undefined) =>
+      /^COLOR PROFILE:\s*(iPhone|S-Log3|D-LogM|S-Log3, D-LogM)\s*$/im.test(t ?? "");
+    if (wantsVideoGate && data.videoInstructions !== undefined && !colorLine(data.videoInstructions) && !colorLine(prior.videoInstructions)) {
+      return { blocked: "Pick the color profile you shot in (iPhone, S-Log3, D-LogM, or S-Log3 and D-LogM) so the editor grades the footage the right way." };
+    }
     // A plain social reel demands no brief at all (Jordan: "if it's a standard
     // social reel, it doesn't need additional notes").
     if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions) {

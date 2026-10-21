@@ -303,7 +303,7 @@ async function main() {
   const armedAt = [...stamps][0];
   await prisma.project.update({
     where: { id: J1.id },
-    data: { videoInstructions: "STYLE: Cinematic\nVISION FOR THE EDIT\nOpen on the drone push to the porch, hold the kitchen island, end wide on the yard at golden hour." },
+    data: { videoInstructions: "COLOR PROFILE: iPhone\nSTYLE: Cinematic\nVISION FOR THE EDIT\nOpen on the drone push to the porch, hold the kitchen island, end wide on the yard at golden hour." },
   });
   await sweep(J1.id);
   const c2a = await card(J1.id);
@@ -320,7 +320,7 @@ async function main() {
     titles: ["Real Estate Video Tour"],
     hasFullVideo: true,
     debriefSubmittedAt: nowDate(),
-    videoInstructions: "VISION FOR THE EDIT\nOpen on the drone push to the porch.",
+    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nOpen on the drone push to the porch.",
     editorBrief: null, reelScript: null, reelHook: null, scriptConfirmedAt: null, videosFilmed: null,
     photographerName: harrison.name,
   });
@@ -419,7 +419,7 @@ async function main() {
   await prisma.project.update({
     where: { id: J2e.id },
     data: {
-      videoInstructions: "VISION FOR THE EDIT\nOpen wide on the drive, hold the great room, close on the pond.",
+      videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nOpen wide on the drive, hold the great room, close on the pond.",
       debriefSubmittedAt: nowDate(),
     },
   });
@@ -486,7 +486,7 @@ async function main() {
   await prisma.project.update({
     where: { id: J2f.id },
     data: {
-      videoInstructions: "VISION FOR THE EDIT\nOpen on the porch, hold the kitchen, close on the garden.",
+      videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nOpen on the porch, hold the kitchen, close on the garden.",
       debriefSubmittedAt: nowDate(),
     },
   });
@@ -555,7 +555,7 @@ async function main() {
   DBX.files = [{ name: "A7R_0001.ARW", tag: "file", path: "/x/A7R_0001.ARW" }, { name: "clip01.mp4", tag: "file", path: "/x/clip01.mp4" }];
   const r3c = await finalizeUpload(J3, {
     editorBrief: "", cullingConfirmed: true, shotOrder: { mode: "front-to-back" }, nothingToRemove: true,
-    videoInstructions: "STYLE: Cinematic\nVISION FOR THE EDIT\nSlow push through the entry, linger on the stone fireplace, finish on the creek.",
+    videoInstructions: "COLOR PROFILE: iPhone\nSTYLE: Cinematic\nVISION FOR THE EDIT\nSlow push through the entry, linger on the stone fireplace, finish on the creek.",
   });
   ok("the submit is accepted", !r3c.blocked && !r3c.needsConfirm, r3c.blocked ?? r3c.warning ?? "accepted");
   const p3c = await proj(J3);
@@ -745,7 +745,7 @@ async function main() {
   DBX.mode = "missing"; // a real, readable zero
   const r5e = await finalizeUpload(J5d, {
     editorBrief: "", cullingConfirmed: true, shotOrder: { mode: "front-to-back" }, nothingToRemove: true,
-    videoInstructions: "VISION FOR THE EDIT\nSlow push through the entry.",
+    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nSlow push through the entry.",
   });
   ok("THE SUBMIT DOES NOT COMPLETE — it bounces back for a confirm", r5e.needsConfirm === true, JSON.stringify(r5e));
   ok("…and says which folder is empty", /RAW-Photos folder is empty|no video files/i.test(r5e.warning ?? ""), r5e.warning ?? "");
@@ -758,7 +758,7 @@ async function main() {
   DBX.mode = "outage";
   const r5f = await finalizeUpload(J5e, {
     editorBrief: "", cullingConfirmed: true, shotOrder: { mode: "front-to-back" }, nothingToRemove: true,
-    videoInstructions: "VISION FOR THE EDIT\nSlow push through the entry.",
+    videoInstructions: "COLOR PROFILE: iPhone\nVISION FOR THE EDIT\nSlow push through the entry.",
   });
   ok("the photographer is not accused of an empty folder the hub could not read", !r5f.needsConfirm, JSON.stringify(r5f));
   ok("…and no timeline row invents a file count", (await prisma.activity.count({ where: { projectId: J5e, body: { startsWith: "Upload check" } } })) === 0);

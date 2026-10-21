@@ -219,7 +219,7 @@ async function main() {
     // real folder reads and status/handoff routing consume that evidence.
     await saveSecret("dropbox", "isolated-client-journey-provider-token");
     await as(shooter);
-    const handoff = await finalizeUpload(project.id, { editorBrief: "Two useful seller videos, calm delivery.", force: true, cullingConfirmed: true, videoInstructions: "Keep the pricing advice clear. Use the approved scripts and natural pacing.", videosFilmed: 2, filmedTopicIds: topicIds, topicNotes: Object.fromEntries(topicIds.map((id, i) => [id, `Use approved script ${versionIds[i]}; retain the seller example.`])), scriptConfirm: { state: "as-written" }, sawScript: true });
+    const handoff = await finalizeUpload(project.id, { editorBrief: "Two useful seller videos, calm delivery.", force: true, cullingConfirmed: true, videoInstructions: "COLOR PROFILE: iPhone\nKeep the pricing advice clear. Use the approved scripts and natural pacing.", videosFilmed: 2, filmedTopicIds: topicIds, topicNotes: Object.fromEntries(topicIds.map((id, i) => [id, `Use approved script ${versionIds[i]}; retain the seller example.`])), scriptConfirm: { state: "as-written" }, sawScript: true });
     const outputs = await prisma.deliverableOutput.findMany({ where: { projectId: project.id }, orderBy: { slot: "asc" } });
     const task = await prisma.smartTask.findFirst({ where: { projectId: project.id, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } } });
     const report = await prisma.contentFilmingReport.findFirst({ where: { projectId: project.id } });

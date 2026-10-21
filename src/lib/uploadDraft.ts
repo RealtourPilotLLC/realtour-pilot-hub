@@ -48,6 +48,8 @@ export type DraftPayload = {
   orderNotes: string;
   vidStyle: string | null;
   vidSections: Record<string, string>;
+  /** Oct 21 2026: the color profile the photographer picked (iphone | slog3 | dlogm | both). */
+  colorProfile?: string | null;
   videosFilmed: string;
   filmedTopicIds: string[];
   topicNotes: Record<string, string>;
@@ -127,6 +129,7 @@ export function normalizeDraftPayload(raw: unknown): DraftPayload {
     orderNotes: str(r.orderNotes, DRAFT_LIMITS.orderNotes),
     vidStyle: typeof r.vidStyle === "string" && /^[a-z_]{1,24}$/.test(r.vidStyle) ? r.vidStyle : null,
     vidSections: sections,
+    colorProfile: r.colorProfile === "iphone" || r.colorProfile === "slog3" || r.colorProfile === "dlogm" || r.colorProfile === "both" ? r.colorProfile : null,
     videosFilmed: typeof r.videosFilmed === "string" ? r.videosFilmed.replace(/[^\d]/g, "").slice(0, 3) : "",
     filmedTopicIds: unknown ? [] : topicIds,
     topicNotes: unknown ? {} : topicNotes,

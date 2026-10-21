@@ -169,15 +169,31 @@ const FULL_KEYS: readonly VidKey[] = ["vision", "summary", "mustShow", "avoid", 
 // video gets (see BRIEF_BY_STYLE) — the box just becomes required when the
 // order isn't a plain reel.
 const MINIMAL_KEYS: readonly VidKey[] = ["editNotes"];
-// The color profile follows the VIDEO TIER (Jordan, Sep 2): standard reels are
-// shot on iPhone, premium is S-Log3 / D-LogM. It used to be one hard-coded
-// S-Log3 line on every job, which told the editor a standard iPhone reel
-// needed a log grade it never had.
-const COLOR_PROFILE_LINE = {
-  standard: "COLOR PROFILE: iPhone",
-  premium: "COLOR PROFILE: S-Log3, D-LogM",
-} as const;
-type ColorTier = keyof typeof COLOR_PROFILE_LINE;
+// The COLOR PROFILE is the photographer's choice (Jordan, Oct 21 2026: "make
+// sure the color profiles are selectable on the upload portal so the
+// photographer has to select either iPhone, S-Log3, D-LogM, or S-Log3 and
+// D-LogM. Right now it's been off since it's been on auto"). From Sep 2 it was
+// derived from the video tier (standard = iPhone, premium = S-Log3 / D-LogM),
+// which was wrong whenever a shoot was filmed on the other camera, and a
+// standard reel with no notes saved no line at all. The editor reads the line
+// (lib/uploadSummary "COLOR PROFILE: …"); the server refuses a video handoff
+// without one (upload/actions.ts).
+const COLOR_PROFILES = { iphone: "iPhone", slog3: "S-Log3", dlogm: "D-LogM", both: "S-Log3, D-LogM" } as const;
+type ColorProfile = keyof typeof COLOR_PROFILES;
+const COLOR_PROFILE_CHOICES: { key: ColorProfile; label: string }[] = [
+  { key: "iphone", label: "iPhone" },
+  { key: "slog3", label: "S-Log3" },
+  { key: "dlogm", label: "D-LogM" },
+  { key: "both", label: "S-Log3 and D-LogM" },
+];
+/** The choice a saved "COLOR PROFILE: …" line names, or null. */
+function colorProfileOf(text: string | null | undefined): ColorProfile | null {
+  const line = (text ?? "").split("\n").map((l) => l.trim()).find((l) => /^COLOR PROFILE:/.test(l));
+  const v = line?.replace(/^COLOR PROFILE:\s*/, "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!v) return null;
+  const hit = (Object.keys(COLOR_PROFILES) as ColorProfile[]).find((k) => COLOR_PROFILES[k].toLowerCase() === v);
+  return hit ?? (v === "s-log3 and d-logm" ? "both" : null);
+}
 
 // ---------------------------------------------------------------------------
 // THE VIDEO STYLE drives the brief (shared contract, Sep 2 2026). The Aryeo
@@ -194,34 +210,32 @@ type ColorTier = keyof typeof COLOR_PROFILE_LINE;
 //   minimal     = the single editing-instructions box (MINIMAL_KEYS)
 //   agent_intro = intro script (required) + editing notes (AGENT_INTRO_KEYS)
 //   full        = the six sectioned fields + style picker (FULL_KEYS)
-//   color "tier" = personal branding isn't a camera tier of its own (Jordan:
-//                  STANDARD is iPhone, PREMIUM is S-Log3 / D-LogM, personal
-//                  branding is the monthly plans) — it keeps following the
-//                  Settings-mapped tier, exactly as before this table.
+// (The color line no longer follows the style: the photographer picks it,
+// Oct 21 2026, see COLOR_PROFILES.)
 type BriefShape = "minimal" | "agent_intro" | "full";
-const BRIEF_BY_STYLE: Record<VideoStyleKey, { shape: BriefShape; color: ColorTier | "tier" }> = {
-  standard_reel:             { shape: "minimal",     color: "standard" },
-  standard_reel_agent_intro: { shape: "agent_intro", color: "standard" },
-  standard_cinematic:        { shape: "minimal",     color: "standard" },
-  personal_branding:         { shape: "full",        color: "tier" },
-  premium_social_reel:       { shape: "full",        color: "premium" },
-  premium_cinematic:         { shape: "full",        color: "premium" },
+const BRIEF_BY_STYLE: Record<VideoStyleKey, { shape: BriefShape }> = {
+  standard_reel:             { shape: "minimal" },
+  standard_reel_agent_intro: { shape: "agent_intro" },
+  standard_cinematic:        { shape: "minimal" },
+  personal_branding:         { shape: "full" },
+  premium_social_reel:       { shape: "full" },
+  premium_cinematic:         { shape: "full" },
 };
-// Parse-side match for EITHER line (mirrors the server's strip in
-// upload/actions.ts). Compose re-adds the CURRENT tier's line, so a brief
-// saved before a product was re-mapped in Settings heals itself on re-submit
-// instead of carrying two profile lines.
+// Parse-side match for any profile line (mirrors the server's strip in
+// upload/actions.ts). Compose re-adds the CHOSEN profile's line, so a brief
+// never carries two.
 const COLOR_PROFILE_RE = /^COLOR PROFILE:/;
 
-function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, colorTier: ColorTier): string {
-  const hasContent = style !== null || VID_SECTIONS.some((s) => sections[s.key]?.trim());
-  // Nothing filled (photo-only jobs, untouched video forms) → EMPTY, so the
-  // server never persists a brief that is just the auto color-profile line
-  // (review: that vacuously satisfied the required-brief gate).
+function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, colorProfile: ColorProfile | null): string {
+  const hasContent = style !== null || colorProfile !== null || VID_SECTIONS.some((s) => sections[s.key]?.trim());
+  // Nothing filled (photo-only jobs, untouched video forms) → EMPTY. A brief
+  // that is only the profile line is saved (the editor needs it on a plain
+  // reel), but the server's required-brief gate strips it, so it never
+  // satisfies that gate on its own.
   if (!hasContent) return "";
   const parts: string[] = [];
   if (style) parts.push(`STYLE: ${VID_STYLES[style]}`);
-  parts.push(COLOR_PROFILE_LINE[colorTier]);
+  if (colorProfile) parts.push(`COLOR PROFILE: ${COLOR_PROFILES[colorProfile]}`);
   for (const s of VID_SECTIONS) {
     const v = sections[s.key]?.trim();
     if (v) parts.push(`${s.label}\n${v}`);
@@ -251,7 +265,7 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
       style = STYLE_BY_LABEL.get(v) ?? style;
       continue;
     }
-    if (COLOR_PROFILE_RE.test(line)) continue; // either tier's line — re-added from the live tier on compose
+    if (COLOR_PROFILE_RE.test(line)) continue; // the profile line: read by colorProfileOf, re-added from the choice on compose
     const key = keyForLabel.get(line);
     if (key) { current = key; continue; }
     if (current) sections[current] += (sections[current] ? "\n" : "") + raw;
@@ -371,6 +385,9 @@ export function PortalEvidence({ evidence, halfAt }: { evidence: EvidenceView[];
 // page composes with — anything the page does not know is dropped.
 function draftStyle(p: DraftPayload): VidStyle | null {
   return p.vidStyle && p.vidStyle in VID_STYLES ? (p.vidStyle as VidStyle) : null;
+}
+function draftColorProfile(p: DraftPayload): ColorProfile | null {
+  return p.colorProfile && p.colorProfile in COLOR_PROFILES ? (p.colorProfile as ColorProfile) : null;
 }
 function draftSections(p: DraftPayload): Record<VidKey, string> {
   return Object.fromEntries(VID_SECTIONS.map((sec) => [sec.key, p.vidSections[sec.key] ?? ""])) as Record<VidKey, string>;
@@ -643,6 +660,8 @@ export function UploadPortal({
   const parsedVid = parseVideoInstructions(project.videoInstructions);
   const [vidStyle, setVidStyle] = useState<VidStyle | null>(d0 ? draftStyle(d0) : parsedVid.style);
   const [vidSections, setVidSections] = useState<Record<VidKey, string>>(d0 ? draftSections(d0) : parsedVid.sections);
+  // No pre-pick: the photographer chooses (a saved brief or draft keeps its choice).
+  const [colorProfile, setColorProfile] = useState<ColorProfile | null>(d0 ? draftColorProfile(d0) ?? colorProfileOf(project.videoInstructions) : colorProfileOf(project.videoInstructions));
   // A job that already carries a brief (legacy free text, or a prior submit)
   // is never retro-blocked for the new required fields — same rule as the
   // server's first-finalize-only gates.
@@ -740,8 +759,7 @@ export function UploadPortal({
   // the page resolved from Deliverable.videoStyle (tier fallback when no row
   // is stamped yet), the same answer videoSpec was built from.
   const brief = BRIEF_BY_STYLE[policy.videoStyle];
-  const colorTier: ColorTier = brief.color === "tier" ? (policy.isPremium ? "premium" : "standard") : brief.color;
-  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, colorTier);
+  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, colorProfile);
   const fullFields = brief.shape === "full";
   // The one standard box is REQUIRED unless the order is a plain social reel
   // (Sep 1: those need nothing) or the intro script already carries the
@@ -821,14 +839,14 @@ export function UploadPortal({
   const draftPayload: DraftPayload = useMemo(
     () => ({
       editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes,
-      vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes,
+      vidStyle, vidSections, colorProfile, videosFilmed, filmedTopicIds, topicNotes,
       extraRows: extraRows.map((x) => ({ title: x.title, note: x.note })),
       scriptChoice, scriptText: scriptChoice === "edited" || !script ? scriptText : "", scriptNote,
       // R02 follow-up: no topic answer on this page — the server keeps the
       // stored draft's, and a later page takes the job's own.
       ...(topicAnswerUnknown ? { topicsUnknown: true as const } : {}),
     }),
-    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script, topicAnswerUnknown],
+    [editorBrief, checks, removal, nothingToRemove, orderChoice, orderNotes, vidStyle, vidSections, colorProfile, videosFilmed, filmedTopicIds, topicNotes, extraRows, scriptChoice, scriptText, scriptNote, script, topicAnswerUnknown],
   );
   const payloadJson = JSON.stringify(draftPayload);
   const payloadRef = useRef(draftPayload);
@@ -1189,6 +1207,7 @@ export function UploadPortal({
     if (pOn && orderChoice === null) missing.push("answer the shot order");
     if (pOn && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
     if (pOn && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
+    if (vOn && colorProfile === null) missing.push("pick the color profile you shot in");
     if (vOn && !hadPriorBrief) {
       if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
       if (fullFields && !vidSections.vision.trim()) missing.push("the vision for the edit");
@@ -1561,6 +1580,7 @@ export function UploadPortal({
     (orderChoice === "out-of-order" && !!orderNotes.trim());
   const videoDone =
     vidAnswered &&
+    colorProfile !== null &&
     (!script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim()))) &&
     // Premium: no Studio script → the typed script is part of "done".
     (!spec.requireScript || !!script || hadPriorBrief || !!scriptText.trim());
@@ -2358,9 +2378,37 @@ export function UploadPortal({
         <StepCard
           n={stepNo++}
           title={contentSession ? "Videos — what you filmed, and notes for the editor" : spec.requireIntro && !fullFields ? "Video — agent intro script & notes" : "Video — script & your instructions"}
-          subtitle={`${videoStyleName(policy.videoStyle) ?? "Video"} · shot on ${colorTier === "premium" ? "S-Log3 / D-LogM" : "iPhone"}`}
+          subtitle={`${videoStyleName(policy.videoStyle) ?? "Video"} · ${colorProfile ? `shot on ${COLOR_PROFILES[colorProfile].replace(", ", " and ")}` : "pick the color profile you shot in"}`}
           done={videoDone}
         >
+          {/* Oct 21 2026 (Jordan): the color profile is the photographer's
+              pick, required, never guessed from the order's tier. */}
+          <div className="mb-4 border-b border-border pb-3.5">
+            <p id="color-profile-label" className="text-[13px] font-medium text-muted">
+              Color profile you shot in <span className="text-danger">*</span>
+            </p>
+            <div role="radiogroup" aria-labelledby="color-profile-label" className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {COLOR_PROFILE_CHOICES.map((c) => {
+                const on = colorProfile === c.key;
+                return (
+                  <button
+                    key={c.key}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    onClick={() => setColorProfile(c.key)}
+                    className={cn(
+                      "min-h-11 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors",
+                      on ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-foreground hover:border-brand/50",
+                    )}
+                  >
+                    {c.label}
+                  </button>
+                );
+              })}
+            </div>
+            {colorProfile === null && <p className="mt-1.5 text-xs text-muted-2">Pick one so the editor grades the footage the right way.</p>}
+          </div>
           {/* §7.5: what the editor is told for each video, read here before
               the photographer writes their own instructions below. */}
           {briefs.length > 0 && <div className="mb-4 border-b border-border pb-3.5">{briefCard}</div>}
