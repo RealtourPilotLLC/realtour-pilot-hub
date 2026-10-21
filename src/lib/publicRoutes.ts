@@ -4,7 +4,7 @@
  * Two places must agree about this, and when they drifted apart the whole staff
  * sidebar — Finance, People, Connections, Ask the Hub — rendered on real
  * clients' portal pages (Sep 2 2026 audit):
- *   · src/middleware.ts   decides whether to demand a session
+ *   · src/proxy.ts   decides whether to demand a session (Next 16's renamed middleware)
  *   · src/components/Shell.tsx  decides whether to draw the app chrome
  * A route registered in one and forgotten in the other is either a locked-out
  * client or a leaked hub, so both now import from here. Add a public route in
@@ -20,7 +20,7 @@ export const PUBLIC_PREFIXES = [
   "/api/portal/upload",
   // The client's ONLY download door. It authenticates itself by scoped media
   // token (src/app/api/portal/download/[videoId]/route.ts) exactly like the cut
-  // stream below; left off this list the middleware sent every real client's
+  // stream below; left off this list the auth gate sent every real client's
   // "Download" button to the STAFF sign-in page (review blocker, Sep 17).
   "/api/portal/download",
   // The month's creative brief (Oct 8 2026): upload and read. Both doors
@@ -37,7 +37,9 @@ export const PUBLIC_PREFIXES = [
   "/api/google",
   "/api/webhooks",
   "/api/cron",
-  "/api/health",
+  // "/api/health" was listed here with no route behind it (removed Oct 20 2026,
+  // audit H25): any route later added at that path would have been public by
+  // accident. Add a real health route here deliberately if one is ever built.
   "/api/activity",
   // The browser error beacon (Oct 6 2026): portal visitors have no session and
   // their errors are the ones that matter most. Same-origin, size-capped and

@@ -25,6 +25,7 @@ import { stripeWebhookStatus } from "@/lib/stripeSignups";
 import { transcriptionCardData } from "@/lib/cutTranscripts";
 import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
 import { prisma } from "@/lib/prisma";
+import { boundedWait } from "@/lib/boundedWait";
 
 export const dynamic = "force-dynamic";
 
@@ -36,15 +37,11 @@ const HIDDEN_CARDS = new Set(["instagram"]);
 const CARDS = PROVIDERS.filter((p) => !HIDDEN_CARDS.has(p.id));
 
 // A read that leaves this machine gets a hard ceiling: null rather than a page
-// that hangs on somebody else's API. Declared out here, not inline, because the
-// timer handle is assigned inside a callback and a `let` written during render
-// is exactly what the immutability lint (rightly) refuses.
-function capped<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([p, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); })]).finally(
-    () => clearTimeout(timer), // no stray timer once the real answer is in
-  );
-}
+// that hangs on somebody else's API. One shared helper (audit G17, Oct 20
+// 2026): this page and Settings each kept a private copy, and the Gmail and
+// Slack probes below had two more inline races. boundedWait rejects at the
+// ceiling (and clears its timer either way); null is the fallback here.
+const capped = <T,>(p: Promise<T>, ms: number): Promise<T | null> => boundedWait(p, ms).catch(() => null);
 
 
 // Last 5 cron runs per job, for the Sync health panel: every job vercel.json
@@ -186,10 +183,7 @@ export default async function ConnectionsPage({
     // Live per-mailbox send-scope probe (finding #41: "connected" hid a token
     // that could read but not send). Capped so a slow Google can't hold the
     // whole page hostage — null = unknown, the card simply omits the chips.
-    Promise.race([
-      gmailSendHealth().catch(() => null),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
-    ]),
+    capped(gmailSendHealth().catch(() => null), 4000),
     // The full order reconcile's cursor — proves the daily safety net completes.
     import("@/lib/integrations/aryeo")
       .then(({ readReconcileCursor }) => readReconcileCursor())
@@ -207,13 +201,7 @@ export default async function ConnectionsPage({
     // needs users:read + users:read.email, which today's install lacks.
     // Capped like the Gmail probe; null = unknown, the card omits the line.
     byProvider.get("slack")?.status === "CONNECTED"
-      ? (() => {
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          return Promise.race([
-            slackBotScopes().catch(() => null),
-            new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 4000); }),
-          ]).finally(() => clearTimeout(timer)); // no stray 4s timer once Slack has answered
-        })()
+      ? capped(slackBotScopes().catch(() => null), 4000)
       : Promise.resolve(null),
     // The 1080p pass. Reading it asks Topaz for the credit balance (free — it
     // starts nothing), so it gets the same treatment as the Gmail and Slack

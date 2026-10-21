@@ -62,18 +62,22 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   // TeamMember with a pay rate — Jordan shoots at his own 40%) see THEIR OWN
   // pay here too; the whole-team payroll stays on Finance → Payroll. Owner/
   // admin without a shoot rate belong on /payouts. ?as=<memberId> is an
-  // EXPLICIT owner/admin preview (read-only, the flag action refuses for
-  // unlinked callers). Editors have no payroll here.
+  // EXPLICIT owner preview (read-only, the flag action refuses for unlinked
+  // callers). Editors have no payroll here.
   //
   // NOBODY's pay ever renders as a guess: the old "first photographer"
   // local-dev fallback put James's page in front of the owner twice and is
   // gone for good. No session → login (prod) or the empty state (open dev).
-  // PAUSED (Jordan, Sep 18). A view switch, nothing more: payroll still runs,
-  // KPIs still score and bonuses still accrue behind this screen, and the owner
-  // and the office still see every number. It is asked FIRST, before any of the
-  // work below — a paused page that spends six seconds in the OSRM router and
-  // then shows a failure is a worse lie than the one intended, and an owner
-  // previewing with ?as= must still see the real thing.
+  // A missing session is settled FIRST: the pay gate below now treats an
+  // unknown viewer as hidden (audit G6), and a signed-out visitor belongs on
+  // the login page, not on a blank scorecard.
+  if (!me && authEnforced()) redirect("/login?next=/my-pay");
+  // PAUSED (Jordan, Sep 18; every non-owner since Oct 14). A view switch,
+  // nothing more: payroll still runs, KPIs still score and bonuses still accrue
+  // behind this screen, and the owner still sees every number. It is asked
+  // FIRST, before any of the work below, so a paused page never spends six
+  // seconds in the OSRM router, and an owner previewing with ?as= still sees
+  // the real thing.
   const { payHiddenFor } = await import("@/lib/settings");
   if (await payHiddenFor(me)) return <MyPerformance memberId={me?.teamMemberId ?? null} />;
 
@@ -83,8 +87,12 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
     memberId = me.teamMemberId;
   } else if (me?.role === "EDITOR") {
     redirect(homeFor(me.role));
-  } else if (sp.as && (me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced())) {
-    memberId = sp.as; // explicit preview — owner/admin (or open local dev)
+  } else if (sp.as && (me ? me.realRole === "OWNER" : !authEnforced())) {
+    // Explicit preview of someone else's pay: the OWNER only (audit G6/C8).
+    // It used to accept any ADMIN, and James is an admin holding the mypay
+    // grant, so lifting the pay pause would have opened every photographer's
+    // pay history to him. Only the owner sees other people's money.
+    memberId = sp.as;
   } else if (me) {
     const tm = me.teamMemberId
       ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { payPercent: true } })
@@ -162,7 +170,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   const pending = await pendingWrapUpShoots(memberId, periodStart, periodEnd).catch(() => []);
   const days = (person?.days ?? []).filter((d) => inPeriod(d.dayKey));
   const adjustments = (person?.adjustments ?? []).filter((a) => inPeriod(etDayKey(new Date(a.dateISO))));
-  const asSuffix = sp.as ? `&as=${sp.as}` : "";
+  const asSuffix = sp.as && memberId === sp.as ? `&as=${encodeURIComponent(sp.as)}` : "";
   // Everything already closed and browsable, newest first.
   const pastPeriods = history.periods.filter((x) => !x.isFuture);
 

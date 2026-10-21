@@ -22,7 +22,13 @@ async function main() {
   const db = await bootDrillDb({ port: Number(process.env.DRILL_PORT ?? 5994) });
   const c = makeChecker();
   try {
-    const { payHiddenFor, putSetting } = await import("@/lib/settings");
+    const { payHiddenFor, putSetting, DEFAULT_PAY_VISIBILITY } = await import("@/lib/settings");
+    // Oct 20 2026 (audit G6): the gate fails CLOSED. No saved row (and a failed
+    // read, which returns the same default) means hidden, and so does a viewer
+    // the page could not resolve. This drill used to assert the opposite for a
+    // missing user.
+    c.ok("no saved row or a failed read: pay is hidden (the default)", DEFAULT_PAY_VISIBILITY.photographerPayPaused === true);
+    c.ok("a fresh database hides pay from a photographer before anyone saves the switch", await payHiddenFor({ role: "PHOTOGRAPHER" }));
     // putSetting, as the Settings card does, so the in-process settings cache is cleared.
     const set = (on: boolean) => putSetting("pay_visibility", { photographerPayPaused: on, pausedAt: null, pausedBy: null }, "drill");
     await set(true);
@@ -30,9 +36,13 @@ async function main() {
     c.ok("paused: an admin with his own pay view (James) does not see pay", await payHiddenFor({ role: "ADMIN" }));
     c.ok("paused: the owner still sees every number", !(await payHiddenFor({ role: "OWNER" })));
     c.ok("paused: the owner previewing as a photographer still sees it", !(await payHiddenFor({ role: "PHOTOGRAPHER", realRole: "OWNER" })));
-    c.ok("paused: a missing user hides nothing it could not show", !(await payHiddenFor(null)));
+    c.ok("paused: a missing user is hidden (fails closed)", await payHiddenFor(null));
     await set(false);
     c.ok("not paused: the photographer and admin see their pay again", !(await payHiddenFor({ role: "PHOTOGRAPHER" })) && !(await payHiddenFor({ role: "ADMIN" })));
+    c.ok("not paused: a missing user is still hidden", await payHiddenFor(null));
+    const myPay = read("src/app/my-pay/page.tsx");
+    c.ok("?as= (someone else's pay) is honoured for the owner only", /sp\.as && \(me \? me\.realRole === "OWNER"/.test(myPay) && !/me\.role === "ADMIN"/.test(myPay));
+    c.ok("a signed-out visitor is sent to login before the pay gate runs", myPay.indexOf('redirect("/login?next=/my-pay")') < myPay.indexOf("await payHiddenFor(me)"));
     const card = read("src/components/shoot/ShootPayCard.tsx");
     c.ok("the shoot screen's pay card asks the same gate", /payHiddenFor\(/.test(card) && /return null/.test(card));
     const page = read("src/app/my-pay/page.tsx");

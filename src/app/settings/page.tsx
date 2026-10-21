@@ -26,7 +26,10 @@ import { CalendarCheck, Zap, EyeOff, Bug, Mail, type LucideIcon } from "lucide-r
 import { ClientEmailMonitorSettings } from "@/components/settings/ClientEmailMonitorSettings";
 import { clientEmailMonitor } from "@/lib/clientEmailMonitor";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
-import { loadAutomations } from "@/app/settings/programActions";
+// Read straight from the lib during render (audit G21, Oct 20 2026).
+// `loadAutomations` is a server action, i.e. a public POST endpoint, which had
+// no guard; it is guarded now, and the page has no need to go through it.
+import { allAutomations } from "@/lib/programAutomation";
 import { RemindersPanel } from "@/components/settings/RemindersPanel";
 import { loadRemindersPanelState } from "@/app/settings/reminderActions";
 import { SettingsGroup, settingsGroupsFor, SETTINGS_LAYOUT, type SettingsGroupDef, type SettingsCardKey } from "@/components/settings/SettingsGroup";
@@ -35,6 +38,7 @@ import { SettingsSearchCard, SettingsSearchOverview } from "@/components/setting
 import { ReadinessPanel, IntegrationsReadiness } from "@/components/settings/ReadinessPanel";
 import { readinessReport } from "@/lib/readiness";
 import type { ReadinessReport, SettingsGroupId } from "@/lib/readiness";
+import { boundedWait } from "@/lib/boundedWait";
 
 export const dynamic = "force-dynamic";
 // The two provider cards stream (see the <Suspense> boundaries below), so the
@@ -45,15 +49,11 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 // A read that leaves this machine gets a hard ceiling: null rather than a page
-// that hangs on somebody else's API. Declared out here, not inline, because the
-// timer handle is assigned inside a callback and a `let` written during render
-// is exactly what the immutability lint (rightly) refuses.
-function capped<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([p, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); })]).finally(
-    () => clearTimeout(timer), // no stray timer once the real answer is in
-  );
-}
+// that hangs on somebody else's API. One shared helper (audit G17, Oct 20
+// 2026): this page and Connections each kept a private copy of the race.
+// boundedWait rejects at the ceiling (and clears its timer either way); null
+// is the fallback here.
+const capped = <T,>(p: Promise<T>, ms: number): Promise<T | null> => boundedWait(p, ms).catch(() => null);
 
 // The shared fallback for both provider cards below: the real heading with four
 // grey bars under it, so the column keeps its shape while a provider answers.
@@ -176,7 +176,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // included; the Sep 11 owner-only "Text me" card folded into this matrix.
     teamNotifyRows().catch(() => null),
     topazSettings(),
-    loadAutomations().catch(() => null),
+    allAutomations().catch(() => null),
     // Program reminders (spec §24) — the policy, the dry run and the send
     // ledger. The switch itself is on the automations panel above; this is the
     // ONE place the policy is written, because this is the shape the reminder
@@ -270,7 +270,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     // on. In the owner-only Financial group (§11: owner-only financial
     // controls stay protected).
     "pay-view": card("pay-view",
-      <Section icon={EyeOff} title="Photographer pay view">
+      <Section icon={EyeOff} title="Team pay view">
         <PayVisibilitySettings initial={payVisibility} isOwner={isOwner} />
       </Section>),
 
@@ -443,7 +443,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     program: `${automations ? `${automations.filter((automation) => automation.enabled).length} of ${automations.length} automation switches on` : "Automation switches could not be read"} · ${reminders ? `reminder policy uses ${reminders.policySource === "stored" ? "saved values" : "defaults"}; its switch is ${reminders.switch.enabled ? "on" : reminders.switch.missing ? "not configured" : "off"}` : "reminder policy could not be read"}.`,
     comms: `Automated text master switch ${textRules.enabled ? "on" : "off"} · client email copies ${emailMonitor.enabled ? `to ${emailMonitor.address}` : "off"} · sending window ${String(textRules.sendFromHour).padStart(2, "0")}:00–${String(textRules.sendUntilHour).padStart(2, "0")}:${String(textRules.sendUntilMinute).padStart(2, "0")} Eastern time${textRules.weekdaysOnly ? ", weekdays" : ""}.`,
     integrations: <Suspense fallback={<>Reading connection status…</>}><IntegrationSummary report={readiness} /></Suspense>,
-    financial: `Photographer pay view ${payVisibility.paused ? "paused" : "not paused"}. Individual access rules still apply.`,
+    financial: payVisibility.paused
+      ? "Team pay hidden: everyone but you sees My Performance. Individual access rules still apply."
+      : "Team pay showing: every login with My Pay sees their own dollar pay. Individual access rules still apply.",
   };
   const render = (g: SettingsGroupDef) => (
     <SettingsGroup key={g.id} group={g} snapshot={snapshots[g.id]}>

@@ -97,8 +97,12 @@ export async function inviteLinkFor(id: string): Promise<Res> {
     await requireOwnerActor();
     const u = await prisma.appUser.findUnique({ where: { id } });
     if (!u) return { ok: false, outcome: "refused", message: "User not found." };
-    const token = u.inviteToken || randomUUID();
-    if (!u.inviteToken) { writing = true; await prisma.appUser.update({ where: { id }, data: { inviteToken: token, invitedAt: new Date() } }); }
+    // A link lives INVITE_TTL_DAYS (audit G15): hand back the live one, or mint
+    // a fresh one when there is none or it has lapsed.
+    const { inviteTokenExpired } = await import("@/lib/auth/inviteToken");
+    const live = u.inviteToken && !inviteTokenExpired(u.invitedAt) ? u.inviteToken : null;
+    const token = live || randomUUID();
+    if (!live) { writing = true; await prisma.appUser.update({ where: { id }, data: { inviteToken: token, invitedAt: new Date() } }); }
     return { ok: true, outcome: "confirmed", message: "Link ready.", link: `${appBase()}/invite/${token}` };
   } catch (e) {
     return failed(e, writing);

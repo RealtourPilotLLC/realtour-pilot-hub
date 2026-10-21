@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { exchangeQuickBooksCode } from "@/lib/integrations/quickbooks";
+import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforcedNow } from "@/lib/auth/enforced";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,12 +12,20 @@ export const dynamic = "force-dynamic";
 //
 // realmId is required for every later API call and Intuit only ever sends it
 // here, so a callback without it is a hard failure rather than a partial connect.
+//
+// OWNER only, like /connect (audit G5, Oct 20 2026): this is the step that
+// actually stores the company file's tokens, and it had no role check at all.
 export async function GET(req: NextRequest) {
   const back = (status: string) => {
     const res = NextResponse.redirect(new URL(`/connections?quickbooks=${status}`, req.url));
     res.cookies.delete("rtp_qbo_state");
     return res;
   };
+
+  if (authEnforcedNow()) {
+    const u = await getCurrentUser().catch(() => null);
+    if (!u || u.realRole !== "OWNER" || u.impersonating) return back("denied");
+  }
 
   if (req.nextUrl.searchParams.get("error")) return back("error");
 

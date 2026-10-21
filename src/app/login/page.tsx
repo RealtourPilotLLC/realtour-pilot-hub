@@ -1,5 +1,6 @@
 import { PasswordLoginForm } from "@/components/auth/PasswordLoginForm";
 import { BrandWordmark } from "@/components/Brand";
+import { safeNextPath } from "@/lib/auth/safeNext";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,8 @@ export default async function LoginPage({
 }) {
   const sp = await searchParams;
   const error = sp.error ? ERRORS[sp.error] ?? "Couldn't sign you in. Please try again." : null;
-  const next = sp.next && sp.next.startsWith("/") ? sp.next : "/";
+  // Only a same-origin path survives to the sign-in buttons (audit G3).
+  const next = safeNextPath(sp.next) ?? "/";
   const loginHref = `/api/auth/login?next=${encodeURIComponent(next)}`;
 
   return (

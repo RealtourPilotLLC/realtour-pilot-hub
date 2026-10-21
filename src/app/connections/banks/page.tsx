@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced } from "@/lib/auth/guards";
+import { authEnforced, requirePageAccess } from "@/lib/auth/guards";
 import { plaidConfigured, getPlaidCreds, listPlaidBanks } from "@/lib/integrations/plaid";
 import { PlaidConnect, type PlaidBankView } from "@/components/connections/PlaidConnect";
 
@@ -11,8 +11,11 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60; // full-history backfill can page thousands of txns
 
 export default async function BanksPage() {
-  const user = await getCurrentUser();
+  const user = await getCurrentUser().catch(() => null);
   if (authEnforced() && user?.realRole !== "OWNER") redirect("/");
+  // The PREVIEWED role decides too, like every other money page (audit G20,
+  // Oct 20 2026): "view as Kyle" used to show the owner's bank balances here.
+  await requirePageAccess("connections");
 
   const [configured, creds, { items, txnCount }] = await Promise.all([
     plaidConfigured(),
