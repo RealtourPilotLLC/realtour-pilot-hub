@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { etDayKey, etHour, isWeekdayET } from "@/lib/datetime";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // "PHOTOS STILL NOT OUT" WATCHDOG.
@@ -45,6 +46,17 @@ export type DeliveryWatchResult = {
   skippedOutsideWindow: boolean;
   texted: string[];
 };
+
+/** The alert: the photos_undelivered template (Settings → Text messages, Oct
+ *  21 2026) around up to four jobs, one per line. Pure. */
+export function photosUndeliveredText(fresh: { street: string; who: string; hoursLate: number }[], t: TextTemplateSet = DEFAULT_TEXTS): string {
+  const lines = fresh.slice(0, 4).map((l) => `${l.street} (${l.who}) — shot ${Math.round(l.hoursLate / 24)}d ago`);
+  return t.render("photos_undelivered", {
+    jobs: `${fresh.length} job${fresh.length === 1 ? "" : "s"}`,
+    jobList: lines.join("\n"),
+    more: fresh.length > 4 ? `+${fresh.length - 4} more` : "",
+  });
+}
 
 /** A monthly-social content session, not a listing with a delivery clock. */
 function isContentSession(titles: string[]): boolean {
@@ -169,14 +181,13 @@ export async function sweepUndeliveredPhotos(opts?: { dryRun?: boolean }): Promi
     where: { active: true, opsAlerts: true },
     select: { id: true, name: true },
   });
-  const lines = fresh.slice(0, 4).map((l) => `${l.street} (${l.who}) — shot ${Math.round(l.hoursLate / 24)}d ago`);
-  const more = fresh.length > 4 ? ` +${fresh.length - 4} more` : "";
   // ROUTINE (Sep 18): late photos are a next-working-hour problem, not a 2am
   // one. Inside cover this sends exactly as it always has; raised in the last
   // hour of the alert window, after cover closes, it is held for the morning.
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
   const results = await notifyStaffSms(
     staff.map((s) => s.id),
-    `${fresh.length} job${fresh.length === 1 ? "" : "s"} shot and photos still not delivered on Aryeo:\n${lines.join("\n")}${more}`,
+    photosUndeliveredText(fresh, await loadTextTemplates()),
     "photos_undelivered",
     { urgency: "routine" },
   );

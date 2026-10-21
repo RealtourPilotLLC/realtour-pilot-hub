@@ -230,14 +230,16 @@ async function main() {
     c.ok("the late-session message, every shape: no em dash, and the link ends the message (never a period glued to it)", lateBodies.every((b) => !EM_DASH.test(b) && b.endsWith("https://drill.invalid/portal/t")), lateBodies.find((b) => !b.endsWith("https://drill.invalid/portal/t")));
 
     const S = await import("@/lib/settings");
-    const TT = await import("@/lib/textTemplateDefaults");
-    const texts = [S.DEFAULT_WELCOME_TEXT, S.DEFAULT_DELIVERY_FEEDBACK_TEXT, S.DEFAULT_AFTER_HOURS_REPLY, ...Object.values(TT.BUILTIN_TEMPLATE_TEXT)];
+    // Oct 21 2026: the client texts' words live in lib/textTemplates
+    // (textTemplateDefaults was only the retired "Text wording" card's display copy).
+    const TT = await import("@/lib/textTemplates");
+    const texts = [S.DEFAULT_WELCOME_TEXT, S.DEFAULT_DELIVERY_FEEDBACK_TEXT, S.DEFAULT_AFTER_HOURS_REPLY, ...TT.TEXT_TEMPLATE_KEYS.filter((k) => TT.TEXT_TEMPLATES[k].audience === "client").map((k) => TT.TEXT_TEMPLATES[k].body)];
     c.ok("default client texts (welcome, delivery, after hours, confirmation): no em dash, no 'RealTour'", texts.every((t) => !EM_DASH.test(t) && !CAPITAL_T.test(t)) && S.DEFAULT_WELCOME_TEXT.includes("welcome to Realtour Pilot!"));
 
     // The template sources themselves: the brand is never spelled with a capital T.
     const sources = [
       "src/lib/reminderTemplates.ts", "src/lib/welcomeEmail.ts", "src/lib/portalAccess.ts", "src/lib/programMessages.ts", "src/lib/clientOnboarding.ts",
-      "src/lib/clientOnboardingCore.ts", "src/lib/outbox.ts", "src/lib/settings.ts", "src/lib/textTemplateDefaults.ts", "src/lib/lateSession.ts",
+      "src/lib/clientOnboardingCore.ts", "src/lib/outbox.ts", "src/lib/settings.ts", "src/lib/textTemplates.ts", "src/lib/lateSession.ts",
       "src/lib/statusTexts.ts", "src/lib/delivery.ts", "src/lib/scriptShare.ts", "src/lib/contentCalls.ts", "src/app/billing/actions.ts", "src/app/quality/actions.ts",
     ];
     const withCapitalT = sources.filter((f) => CAPITAL_T.test(fs.readFileSync(path.join(REPO, f), "utf8")));

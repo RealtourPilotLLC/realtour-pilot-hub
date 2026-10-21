@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { isTestClientName } from "@/lib/testClients";
 import { addBusinessDaysET, etAt, etDateTime, etDayKey } from "@/lib/datetime";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // PROGRAM DESK TASKS — the one way the Content Program puts a job on Kyle's
@@ -99,6 +100,13 @@ export function dueTodayET(now: Date = new Date()): Date {
   return five.getTime() - now.getTime() >= 3_600_000 ? five : etAt(day, 23, 59);
 }
 
+/** The ping's words: the desk_task_ping template (Settings → Text messages,
+ *  Oct 21 2026). Only an URGENT task pings, so "(URGENT)" is in the wording
+ *  itself. Pure. */
+export function deskTaskPingText(o: { how: "New on" | "Back on"; title: string; dueAt: Date | null; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  return t.render("desk_task_ping", { how: o.how, title: o.title, due: o.dueAt ? `· due ${etDateTime(o.dueAt)} ET` : "", link: o.link });
+}
+
 /**
  * THE DESK TASK SAYS IT EXISTS (Oct 5 2026, team notifications pass; since
  * Oct 13 2026 URGENT only — HIGH is covered by the morning and 4 PM digests). An
@@ -129,8 +137,8 @@ async function pingDeskTask(
     const { inBackground, notifyStaffSms, opsAlert } = await import("@/lib/notify");
     const { appBase } = await import("@/lib/appUrl");
     await inBackground(async () => {
-      const due = row.dueAt ? ` · due ${etDateTime(row.dueAt)} ET` : "";
-      const line = `📋 ${how} your list${input.priority === "URGENT" ? " (URGENT)" : ""}: ${input.title}${due}. ${appBase()}/tasks?tab=other&task=${row.id}`;
+      const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+      const line = deskTaskPingText({ how, title: input.title, dueAt: row.dueAt, link: `${appBase()}/tasks?tab=other&task=${row.id}` }, await loadTextTemplates());
       const first = input.assignedKey.trim().toLowerCase();
       const people = first
         ? (await prisma.teamMember.findMany({ where: { active: true, name: { startsWith: first, mode: "insensitive" } }, select: { id: true, name: true }, take: 5 }))

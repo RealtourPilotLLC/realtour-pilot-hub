@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSetting, putSetting, reviewRoomRules } from "@/lib/settings";
 import { firstName, slugForName } from "@/lib/assignees";
 import type { NotifyTarget, Role } from "@/lib/notify";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import type {
   ReviewerCandidate,
   ReviewerSeat,
@@ -785,6 +786,16 @@ const IN_REVIEW: Prisma.ReviewSubmissionWhereInput = { OR: [{ selfCheckedAt: { n
  *  the same carve-out the Review Room and the exceptions board make. */
 const LIVE_JOB: Prisma.ProjectWhereInput = { status: { notIn: ["DELIVERED", "CANCELLED", "ON_HOLD"] } };
 
+/** The owner's text when cuts cross the backup window, oldest first:
+ *  review_escalation_one / review_escalation_many (Settings → Text messages,
+ *  Oct 21 2026). `base` is the hub's origin. Pure. */
+export function reviewEscalationText(crossed: { street: string; round: number; href: string; hours: number }[], base: string, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  const [first] = crossed;
+  return crossed.length === 1
+    ? t.render("review_escalation_one", { street: first.street, round: String(first.round), hours: String(first.hours), link: `${base}${first.href}` })
+    : t.render("review_escalation_many", { count: String(crossed.length), street: first.street, round: String(first.round), link: `${base}/review` });
+}
+
 /**
  * Once an hour, from the status sweep (projectStatus.syncProjectStatuses).
  *   1. AWAY — re-run the away move for anyone marked away (idempotent; catches
@@ -922,10 +933,8 @@ export async function reviewCoverSweep(opts: { now?: Date } = {}): Promise<{
       const ownerIds = await import("@/lib/smsPrefs").then((m) => m.ownerTeamMemberIds()).catch(() => [] as string[]);
       const { notifyStaffSms } = await import("@/lib/notify");
       const { appBase } = await import("@/lib/appUrl");
-      const [first] = crossed;
-      const text = crossed.length === 1
-        ? `Video still waiting on review past the backup window: ${first.street} (v${first.round}), ${first.hours} covered hours. ${appBase()}${first.href}`
-        : `${crossed.length} videos still waiting on review past the backup window, oldest ${first.street} (v${first.round}). ${appBase()}/review`;
+      const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+      const text = reviewEscalationText(crossed, appBase(), await loadTextTemplates());
       if (ownerIds.length) await notifyStaffSms(ownerIds, text, "review_escalation").catch(() => null);
     }
   }

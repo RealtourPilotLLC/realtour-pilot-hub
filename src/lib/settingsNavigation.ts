@@ -61,7 +61,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
     id: "comms",
     title: "Communication & notifications",
     short: "Communication",
-    summary: "The texts clients receive without anyone pressing send, the words they use, where your copy of every client email goes, and the team's alerts, coverage hours and quiet time.",
+    summary: "The texts clients and the team receive without anyone pressing send, the words every one of them uses, where your copy of every client email goes, and the team's alerts, coverage hours and quiet time.",
   },
   {
     id: "integrations",
@@ -115,7 +115,8 @@ export function settingsGroupsFor(isOwner: boolean): SettingsGroupDef[] {
 export const SETTINGS_SEARCH_LABELS: Record<SettingsCardKey, string> = {
   "editor-routing": "Editor auto-assignment routing standard premium personal branding manual",
   "automated-texts": "Automated texts confirmation delivery feedback after hours welcome send window hours timezone Eastern ET",
-  "text-wording": "Text wording templates confirmation delivery placeholders message",
+  // Oct 21 2026: the card is "Text messages", every automatic text's wording.
+  "text-wording": "Text messages wording templates confirmation delivery feedback welcome after hours upload digest chaser payday shoot day missing instructions placeholders message SMS team clients",
   turnaround: "Turnaround promises photos drone twilight floor plan 3D tour headshot virtual staging video monthly hours business days",
   "internal-alerts": "Internal alerts notification schedule coverage hours on call quiet time urgent Slack digests",
   "team-notifications": "Team notifications members mentions project messages bell Slack SMS phone channels",

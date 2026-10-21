@@ -260,9 +260,11 @@ export async function sweepEmailFollowUps(now: Date = new Date()): Promise<Follo
         .createMany({ data: [{ key: escalationKey(key, episode), value: now.toISOString() }], skipDuplicates: true })
         .catch(() => ({ count: 0 }));
       if (claim.count === 1) {
+        // The email_followup template (Settings → Text messages, Oct 21 2026).
+        const { loadTextTemplates } = await import("@/lib/textTemplateStore");
         await notifyStaffSms(
           [holder.teamMemberId],
-          `📧 Still no reply: ${w.clientName}'s email "${subject.slice(0, 70)}" has waited ${age} of business hours. ${appBase()}/tasks?tab=other&task=${taskId}`,
+          (await loadTextTemplates()).render("email_followup", { clientName: w.clientName, subject: subject.slice(0, 70), age, link: `${appBase()}/tasks?tab=other&task=${taskId}` }),
           "email_followup",
         ).catch((e) => console.warn("follow-up DM failed (the task and bell stand)", e));
         counts.escalated++;

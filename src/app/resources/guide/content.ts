@@ -957,7 +957,7 @@ Individual pages can be granted or revoked per person on top of the role, and a 
 
 - **Editor auto-assignment** — who new video work routes to
 - **Automated texts** — whether the confirmation and delivery texts send themselves, and the hours they are allowed to send in (9am to 4pm ET today)
-- **Text wording** — what those messages say
+- **Text messages** — what every automatic text says, to clients and to the team (only you can change them)
 - **Turnaround promises** — the table every due date is built from
 - **Internal alerts** — the 7pm photographer digest and the 10pm chaser, on or off, and at what hour
 - **Review Room** — how long approved cuts are kept in the hub after they reach Dropbox

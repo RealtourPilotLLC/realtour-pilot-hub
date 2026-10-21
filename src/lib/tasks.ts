@@ -2387,11 +2387,13 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
           : "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
       // Same copy the sweep will actually send (Jordan's feedback ask), so the
       // task board and the outgoing text can never disagree.
-      description: deliveryMessage(project, await (async () => {
-        const { textTemplates, DEFAULT_DELIVERY_FEEDBACK_TEXT } = await import("@/lib/settings");
-        const tpl = await textTemplates();
-        return { ...tpl, deliveryAll: tpl.deliveryAll.trim() || DEFAULT_DELIVERY_FEEDBACK_TEXT };
-      })()),
+      // The wording is the sweep's own (Settings → Text messages, Oct 21 2026).
+      description: await (async () => {
+        const { textTemplates } = await import("@/lib/settings");
+        const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+        const [tpl, words] = await Promise.all([textTemplates(), loadTextTemplates()]);
+        return deliveryMessage(project, { deliveryPartial: tpl.deliveryPartial }, words);
+      })(),
       reasonCreated: "Delivered — send the post-delivery client text + feedback link",
       checklist: JSON.stringify([
         "Review the drafted message below",

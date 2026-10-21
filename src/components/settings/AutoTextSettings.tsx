@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { MessageSquareText, Send, Loader2, Check } from "lucide-react";
+import { Send, Loader2, Check } from "lucide-react";
 import { saveAutoTextRules } from "@/app/settings/actions";
 import type { AutoTextRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -42,21 +42,6 @@ function Num({ value, onChange, min, max, suffix }: { value: number; onChange: (
   );
 }
 
-// What the placeholders become when the text really sends. The two links are
-// read from the saved rules, so this preview shows the REAL destinations; the
-// name is a sample, and the website is the public site (lib/settings
-// PUBLIC_WEBSITE — a client component cannot import a server-only module, so
-// this is the one place it is written twice; keep them in step).
-const SAMPLE_FIRST = "Sarah";
-const PREVIEW_WEBSITE = "realtourpilot.com";
-
-function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
-  // Same rule as lib/delivery applyTemplate: an unknown placeholder is left
-  // exactly as typed rather than blanked, so a typo is visible in the preview
-  // instead of silently sending a gap.
-  return tpl.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? vars[k] : m)).trim();
-}
-
 export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
   const [r, setR] = useState<AutoTextRules>(initial);
   const [busy, start] = useTransition();
@@ -68,12 +53,6 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
   // settings row saved before the welcome text existed).
   const welcome = r.welcome ?? { enabled: true, strategyCallUrl: "", message: "" };
   const setWelcome = (patch: Partial<typeof welcome>) => set({ welcome: { ...welcome, ...patch } });
-  const welcomePreview = fillPlaceholders(welcome.message, {
-    first: SAMPLE_FIRST,
-    strategyCallLink: welcome.strategyCallUrl,
-    website: PREVIEW_WEBSITE,
-    portal: r.afterHours?.portalUrl ?? "media.realtourpilot.com",
-  });
 
   const save = () =>
     start(async () => {
@@ -138,33 +117,11 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
           </p>
         </div>
 
-        <div className="mt-3">
-          <label className="text-[13px] font-medium" htmlFor="welcome-msg">Message</label>
-          <textarea
-            id="welcome-msg"
-            value={welcome.message}
-            onChange={(e) => setWelcome({ message: e.target.value })}
-            rows={4}
-            placeholder="Using the built-in wording"
-            className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-          />
-          <p className="mt-1 text-[11px] text-muted-2">
-            Placeholders: <code>{"{first}"}</code> · <code>{"{strategyCallLink}"}</code> · <code>{"{website}"}</code> ·{" "}
-            <code>{"{portal}"}</code>. Anything else you type in braces is sent exactly as written. Empty box = the
-            hub&rsquo;s built-in wording.
-          </p>
-        </div>
-
-        {/* Live preview — the whole point of the box above is seeing the text a
-            real client receives, links and all, before it ever sends. */}
-        <div className="mt-3 rounded-lg border border-border bg-surface-2/60 p-3">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-2">
-            What {SAMPLE_FIRST} receives
-          </p>
-          <p className="mt-1 whitespace-pre-wrap text-[13px] leading-snug">
-            {welcomePreview || <span className="text-muted-2">Using the built-in wording.</span>}
-          </p>
-        </div>
+        {/* The wording moved to Settings → Text messages (Oct 21 2026), with
+            every other automatic text; this card keeps the switch and the link. */}
+        <p className="mt-3 text-[13px] text-muted">
+          The words of this text, and of every other one here, are in <a href="#text-messages" className="font-medium text-brand hover:underline">Text messages</a>.
+        </p>
 
         <p className="mt-2 text-[11px] text-muted-2">
           Only new contacts added since this was switched on, never your existing client list. A client with no phone
@@ -275,7 +232,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
           <li>· <b className="text-foreground/85">Kyle&rsquo;s Slack digests</b> — morning list and 4 PM open-items recap.</li>
         </ul>
         <p className="mt-2 text-[11px] text-muted-2">
-          These go to the team, never to clients. Tell me if you want any of them on this page too.
+          These go to the team, never to clients. Their switches are in Internal alerts; their words are in Text messages.
         </p>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import "server-only";
 import { parseEvidence, owedNow, owedPhrase, owedVerb, sameCategory, type OwedShortfall } from "@/lib/statusEvidence";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // RULE 1 — THE DELIVERY DATE IS STAMPED ONCE.
@@ -207,7 +208,8 @@ function streetForTemplate(street: string, city: string): string {
 // The post-delivery client text, written in Jordan's voice (no em dashes, no
 // emojis, warm + low-pressure). Adapts to whether everything is delivered or
 // part of it (e.g. the video) is still in production.
-// Apply an owner-authored template (Settings → Text templates). An empty
+// Apply an owner-authored template (the old Text wording box; the automatic
+// texts render through lib/textTemplates since Oct 21 2026). An empty
 // template means "use the built-in wording" — a blank box can never send a
 // blank text.
 export function applyTemplate(tpl: string, vars: Record<string, string>): string {
@@ -215,7 +217,13 @@ export function applyTemplate(tpl: string, vars: Record<string, string>): string
   return out;
 }
 
-export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: string; deliveryPartial?: string }): string {
+// `t` (Oct 21 2026): the automatic sender's wording (lib/textTemplateStore).
+// With it, the everything-delivered text is the client_delivery_feedback
+// template (the feedback ask, Settings → Text messages); without it, the
+// per-card Send keeps the announcement it has always sent. The part-delivered
+// branches are not templates: the automatic sweep never reaches them (its gate
+// waits for the whole job), and `templates.deliveryPartial` is the old box.
+export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: string; deliveryPartial?: string }, t?: TextTemplateSet): string {
   const first = (p.client.name || "there").trim().split(/\s+/)[0] || "there";
   const street = streetOf(p.title);
   const city = p.city?.trim() ?? "";
@@ -270,6 +278,7 @@ export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: 
     }
     return `Hi ${first}! The ${present}${forPlace} ${presentVerb} delivered, and ${left} ${leftVerb} ${leftState}. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
   }
+  if (t) return t.render("client_delivery_feedback", { first, street: streetForTemplate(street, city), feedbackUrl: url });
   const tplAll = templates?.deliveryAll?.trim();
   if (tplAll) return applyTemplate(tplAll, { first, street: streetForTemplate(street, city), feedbackUrl: url });
   return `Hi ${first}! Everything${forPlace} has been delivered. How did we do? If anything is not exactly right, just reply here and we will jump on it. And if you have a quick minute, we would love your feedback here: ${url}`;
@@ -323,25 +332,33 @@ function orderedList(deliverables?: { type: string; waivedAt?: Date | null }[]):
 // answers). Quick + brief, because agents are busy: confirm date/time, confirm
 // what they ordered, and ask for any notes / things to avoid. Jordan's voice
 // (no em dashes, no emojis), copy-paste ready.
-export function confirmationMessage(p: ConfirmProject, template?: string): string {
+//
+// The words are the client_confirmation template (lib/textTemplates, Oct 21
+// 2026). `t` is the automatic sender's wording, saved changes included
+// (lib/textTemplateStore); without it, the default wording, which is exactly
+// what the per-card Send and the task's draft have always shown.
+export function confirmationMessage(p: ConfirmProject, t?: TextTemplateSet): string {
   const first = (p.client.name || "there").trim().split(/\s+/)[0] || "there";
   const street = streetOf(p.title);
   const city = p.city?.trim() ?? "";
   // "at 123 Main St" / "in West Chester" / nothing (rule 3).
-  const where = street ? ` at ${street}` : city ? ` in ${city}` : "";
+  const atPlace = street ? `at ${street}` : city ? `in ${city}` : "";
   const when = p.shootDate
     ? new Date(p.shootDate).toLocaleString("en-US", {
         timeZone: "America/New_York", weekday: "long", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
       })
     : "your upcoming shoot";
   const items = orderedList(p.deliverables);
-  const forPart = items ? ` for ${items}` : "";
-  const tpl = template?.trim();
-  if (tpl) return applyTemplate(tpl, { first, street: streetForTemplate(street, city), when, items: items || "your shoot" });
-  const ask = "Anything we should know or want us to avoid? Looking forward to it!";
-  // No date on the job yet: say so instead of gluing "your upcoming shoot"
-  // where the date went ("...at 123 Main St your upcoming shoot for photos").
-  return p.shootDate
-    ? `Hi ${first}! Confirming your shoot${where} on ${when}${forPart}. ${ask}`
-    : `Hi ${first}! Confirming your upcoming shoot${where}${forPart}. ${ask}`;
+  const forItems = items ? `for ${items}` : "";
+  const set = t ?? DEFAULT_TEXTS;
+  // A wording of Jordan's is used with or without a date, as it always was
+  // ({when} then reads "your upcoming shoot"); the automatic send always has
+  // a date. The default wording has a date in it, so a job with none says so
+  // instead of gluing "your upcoming shoot" where the date went.
+  if (p.shootDate || set.sourceOf("client_confirmation") !== "default") {
+    return set.render("client_confirmation", { first, when, atPlace, forItems, street: streetForTemplate(street, city), items: items || "your shoot" });
+  }
+  const where = atPlace ? ` ${atPlace}` : "";
+  const forPart = forItems ? ` ${forItems}` : "";
+  return `Hi ${first}! Confirming your upcoming shoot${where}${forPart}. Anything we should know or want us to avoid? Looking forward to it!`;
 }

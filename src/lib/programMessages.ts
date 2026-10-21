@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { clip } from "@/lib/text";
 import { appBase } from "@/lib/appUrl";
+import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
 import { isTestClientName, isVerifiedTestDestinationEmail } from "@/lib/testClients";
 import { endOfBusinessDaysET } from "@/lib/datetime";
 import { isAutomationEnabled } from "@/lib/programAutomation";
@@ -230,6 +231,13 @@ async function announce(e: { id: string; clientName: string }, owner: DutyOwner,
  * the text when it ends. Never for a TEST client.
  */
 const ALERT_EVERY_MS = 10 * 60_000;
+
+/** The office's line for a client's portal message: the portal_message_team
+ *  template (Settings → Text messages, Oct 21 2026). Pure. */
+export function portalMessageLine(m: { clientName: string; body: string; link: string }, t: TextTemplateSet = DEFAULT_TEXTS): string {
+  return t.render("portal_message_team", { clientName: m.clientName || "a program client", message: clip(m.body.replace(/\s+/g, " "), 160), link: m.link });
+}
+
 async function alertOffice(e: { id: string; clientName: string }, owner: DutyOwner, body: string, now: Date): Promise<void> {
   if (isTestClientName(e.clientName)) return;
   const key = `program-msg-alert:${e.id}`;
@@ -238,7 +246,10 @@ async function alertOffice(e: { id: string; clientName: string }, owner: DutyOwn
   await prisma.appSetting.upsert({ where: { key }, create: { key, value: now.toISOString() }, update: { value: now.toISOString() } });
 
   const link = `${appBase()}/content/${e.id}?tab=messages`;
-  const line = `New portal message from ${e.clientName || "a program client"}: “${clip(body.replace(/\s+/g, " "), 160)}” Reply here: ${link}`;
+  // The portal_message_team template (Settings → Text messages, Oct 21 2026):
+  // the text, and the ops line below it.
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const line = portalMessageLine({ clientName: e.clientName, body, link }, await loadTextTemplates());
   const { opsAlert, queueStaffSms, logDelivery } = await import("@/lib/notify");
   await opsAlert(`💬 ${line}`).catch(() => false);
 

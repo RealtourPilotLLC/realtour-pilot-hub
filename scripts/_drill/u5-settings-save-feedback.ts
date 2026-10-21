@@ -10,7 +10,7 @@ async function main() {
   const c = makeChecker();
   const fence = fenceFetch();
   try {
-    const { SaveRow, TextTemplateSettings, TurnaroundSettings, ReviewRoomSettings } = await import("@/components/settings/OperatingRules");
+    const { SaveRow, TurnaroundSettings, ReviewRoomSettings } = await import("@/components/settings/OperatingRules");
     const { RoutingRulesForm } = await import("@/components/settings/RoutingRulesForm");
     const { DEFAULT_TURNAROUNDS, DEFAULT_REVIEW_ROOM } = await import("@/lib/settings");
     const original = { hours: 24, unknown: { preserve: "future config" } };
@@ -35,9 +35,17 @@ async function main() {
     c.ok("server validation refusal keeps invalid draft for correction", refused.value.hours === 0 && refused.saved.hours === 48 && settingsDraftDirty(refused));
     const busyHtml = renderToStaticMarkup(createElement(SaveRow, { busy: true, dirty: true, feedback: null, onSave() {} }));
     c.ok("pending save has a disabled button and explicit saving status", busyHtml.includes("disabled") && busyHtml.includes("Saving…") && busyHtml.includes("min-h-11"));
-    const templateHtml = renderToStaticMarkup(createElement(TextTemplateSettings, { initial: { confirmation: "", deliveryAll: "exact saved wording", deliveryPartial: "" } }));
-    c.ok("empty template draft remains empty and builtin copy is only a placeholder", /<textarea[^>]*aria-label="Shoot confirmation"[^>]*><\/textarea>/.test(templateHtml));
-    c.ok("saved template words are unchanged on first paint", templateHtml.includes(">exact saved wording</textarea>") && templateHtml.includes("Loaded settings"));
+    // Oct 21 2026: the three-box "Text wording" card became Settings → Text
+    // messages (TextMessagesSettings); the same two first-paint promises, there.
+    const { TextMessagesSettings } = await import("@/components/settings/TextMessagesSettings");
+    const { TEXT_TEMPLATE_KEYS, TEXT_TEMPLATES } = await import("@/lib/textTemplates");
+    const rows = TEXT_TEMPLATE_KEYS.map((key) => ({
+      key, saved: key === "client_delivery_feedback" ? { body: "exact saved wording {feedbackUrl}", by: "Jordan", atISO: "2026-10-21T15:00:00.000Z" } : null,
+      savedProblems: null, legacy: null, source: key === "client_delivery_feedback" ? "saved" as const : "default" as const,
+    }));
+    const templateHtml = renderToStaticMarkup(createElement(TextMessagesSettings, { rows, isOwner: true }));
+    c.ok("an unedited template shows its default words, not an empty box", templateHtml.includes(`>${TEXT_TEMPLATES.client_confirmation.body}</textarea>`));
+    c.ok("saved template words are unchanged on first paint", templateHtml.includes(">exact saved wording {feedbackUrl}</textarea>") && templateHtml.includes("Last edited by Jordan"));
     const routing = renderToStaticMarkup(createElement(RoutingRulesForm, { initial: { standardVideo: "kim", premiumVideo: "john", personalBranding: null } }));
     c.ok("routing retains all three existing values and a named section save", routing.includes('value="kim" selected') && routing.includes('value="john" selected') && routing.includes('value="manual" selected') && routing.includes("Save routing rules"));
     const turns = renderToStaticMarkup(createElement(TurnaroundSettings, { initial: DEFAULT_TURNAROUNDS }));
