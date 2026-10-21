@@ -25,11 +25,14 @@ import type { DeliverableStage, JobRow } from "@/lib/jobsBoard";
 /** The screens this reader may open (a per-user override can take one away:
  *  canAccess). A tile or action whose screen is closed to them is shown
  *  without the link, never as a door that bounces. Default: all open. */
-export type Doors = { review: boolean; ops: boolean; communications: boolean };
-const ALL_DOORS: Doors = { review: true, ops: true, communications: true };
+export type Doors = { review: boolean; ops: boolean; communications: boolean; pipeline: boolean };
+const ALL_DOORS: Doors = { review: true, ops: true, communications: true, pipeline: true };
 export function opens(href: string, doors: Doors = ALL_DOORS): boolean {
   if (href.startsWith("/review")) return doors.review;
-  if (href.startsWith("/ops") || href.startsWith("/jobs")) return doors.ops;
+  // Shoots (/jobs) is the `pipeline` page (its middleware key and the page's
+  // own check), not `ops` (Oct 20 2026, audit A21).
+  if (href.startsWith("/jobs")) return doors.pipeline;
+  if (href.startsWith("/ops")) return doors.ops;
   if (href.startsWith("/communications")) return doors.communications;
   return true;
 }
@@ -68,15 +71,27 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS }: 
   const h = health;
   const href = (to: string) => (opens(to, doors) ? homeRecordHref(to, includeTest) : null);
   const o = h.onTime, m = h.clients, r = h.requests, q = h.qc;
-  // The big number is what goes out next: videos ready to send (else what
-  // could be read: cuts to review, photo sets in QC).
-  const qcValue = !q ? null : q.readyToSend != null ? `${q.readyToSend} ready` : q.toReview != null ? `${q.toReview} to review` : `${q.photosInQc ?? 0} in QC`;
+  // The big number is the first thing waiting: videos ready to send, else cuts
+  // to review, else photo sets in QC; "All clear" when nothing is. It used to
+  // read "0 ready" over five cuts waiting on a verdict (audit A13). The line
+  // under it names the rest and never repeats the big number.
+  const qcParts = !q ? [] : [
+    { key: "ready", n: q.readyToSend, big: (n: number) => `${n} ready`, line: (n: number) => `${plural(n, "video")} ready to send`, failed: "videos couldn't load" },
+    { key: "review", n: q.toReview, big: (n: number) => `${n} to review`, line: (n: number) => `${plural(n, "cut")} to review`, failed: "cuts couldn't load" },
+    { key: "photos", n: q.photosInQc, big: (n: number) => `${n} in QC`, line: (n: number) => `${plural(n, "photo set")} in QC`, failed: "photos couldn't load" },
+  ];
+  const lead = qcParts.find((x) => (x.n ?? 0) > 0) ?? null;
+  // "All clear" only when every source was read: nothing found in a part that
+  // could not be read is "couldn't load", never a reassuring all-clear.
+  const qcValue = !q ? null : lead ? lead.big(lead.n!) : qcParts.some((x) => x.n == null) ? null : "All clear";
   return (
     <section id="health" aria-label="How we're doing right now" data-health-strip className="scroll-mt-32 md:scroll-mt-28">
       <span id="behind" aria-hidden className="block scroll-mt-32 md:scroll-mt-28" />
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4">
         <Tile
-          name="on-time" label="On time" href={href("/jobs?f=late")} tone={o?.tone ?? null}
+          // "Shoots" in the label (audit A23): the red line above counts videos
+          // and photo jobs, this tile counts shoots.
+          name="on-time" label="Shoots on time" href={href("/jobs?f=late")} tone={o?.tone ?? null}
           value={o ? (o.late > 0 ? `${o.late} late` : "None late") : null}
           sub={o ? [
             `${o.dueToday} due today`,
@@ -93,23 +108,22 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS }: 
           ].filter(Boolean).join(" · ")) : null}
         />
         <Tile
-          name="requests" label="Special requests" href={href("/jobs")} tone={r?.tone ?? null}
+          name="requests" label="Special requests" href={href("/jobs?f=requests")} tone={r?.tone ?? null}
           value={r ? `${r.open} open` : null}
-          sub={r ? (r.open === 0 ? "none open" : [
-            r.shoots != null && r.shoots > 0 ? `on ${plural(r.shoots, "shoot")}` : null,
-            r.needOwner == null ? null : r.needOwner > 0 ? `${r.needOwner} ${r.needOwner === 1 ? "needs" : "need"} an owner` : "each with an owner",
+          sub={r ? [
+            r.open === 0 ? "none open on a shoot" : `on ${plural(r.shoots, "shoot")}`,
+            r.open === 0 ? null : r.needOwner > 0 ? `${r.needOwner} ${r.needOwner === 1 ? "needs" : "need"} an owner` : "each with an owner",
             r.behind > 0 ? `${r.behind} past due` : null,
-          ].filter(Boolean).join(" · ")) : null}
+            r.notOnJob ? `${r.notOnJob} not on a job` : null,
+          ].filter(Boolean).join(" · ") : null}
         />
         <Tile
           name="qc" label="QC & review" href={href(q?.href ?? "/review")} tone={q?.tone ?? null}
           value={qcValue}
           sub={q ? [
-            q.readyToSend == null ? "videos couldn't load" : `${plural(q.readyToSend, "video")} ready to send`,
-            q.toReview == null ? null : `${plural(q.toReview, "cut")} to review`,
-            q.photosInQc == null ? "photos couldn't load" : `${plural(q.photosInQc, "photo set")} in QC`,
+            ...qcParts.filter((x) => x !== lead).map((x) => (x.n == null ? x.failed : x.n > 0 ? x.line(x.n) : null)),
             q.late > 0 ? `${q.late} late` : null,
-          ].filter(Boolean).join(" · ") : null}
+          ].filter(Boolean).join(" · ") || (lead ? null : "nothing waiting on QC or review") : null}
         />
       </div>
     </section>
@@ -274,7 +288,10 @@ export function KylesDayCard({ day, includeTest = false, doors = ALL_DOORS }: { 
         )}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-sm">
-        <span className="tabular-nums"><strong className="font-semibold text-success">{day.done}</strong> done today</span>
+        {/* "by the office" (audit A8): the count is everything closed on the
+            list today, by anyone (photos delivered, videos sent, clients
+            answered), not one person's output. */}
+        <span className="tabular-nums"><strong className="font-semibold text-success">{day.done}</strong> done today by the office</span>
         <span aria-hidden className="h-1.5 min-w-24 flex-1 overflow-hidden rounded-full bg-surface-2">
           <span className="block h-full rounded-full bg-success" style={{ width: `${pct}%` }} />
         </span>

@@ -20,7 +20,7 @@ const TYPES: { type: ActivityType; label: string; hint: string; icon: typeof Sta
   {
     type: ActivityType.SPECIAL_REQUEST,
     label: "Request — the photographer and the editor see it",
-    hint: "A Request lands on the photographer's shoot screen and upload page, in the editor's brief, and pings them both — text or Slack, whatever their settings say.",
+    hint: "A Request lands on the photographer's shoot screen and upload page, in the editor's brief, and pings them both — text or Slack, whatever their settings say. It also goes on the job's request list and holds that delivery until someone presses Checked.",
     icon: Star,
     color: "#d97706",
   },
@@ -42,6 +42,9 @@ const TYPES: { type: ActivityType; label: string; hint: string; icon: typeof Sta
 
 export function ActivityComposer({ projectId, readOnly = false }: { projectId: string; readOnly?: boolean }) {
   const [type, setType] = useState<ActivityType>(ActivityType.SPECIAL_REQUEST);
+  // What a Request is about, for the job's request list (audit A2): photos,
+  // video, both, or not sure yet (the cards then ask for an owner).
+  const [medium, setMedium] = useState<string>("unclear");
   const [value, setValue] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -57,11 +60,12 @@ export function ActivityComposer({ projectId, readOnly = false }: { projectId: s
         // returning — a "view as" preview would otherwise blow the transition
         // up with no message on screen (review, Sep 16). Same shape as
         // ProjectMessages.submit(): the rejection becomes the note line.
-        const r = await addProjectNote(projectId, body, type);
+        const r = await addProjectNote(projectId, body, type, type === ActivityType.SPECIAL_REQUEST ? medium : null);
         setNote(r.message);
         if (r.ok) {
           setValue("");
           setType(ActivityType.SPECIAL_REQUEST);
+          setMedium("unclear");
         }
       } catch (e) {
         setNote(e instanceof Error ? e.message : "Couldn’t post that.");
@@ -122,6 +126,17 @@ export function ActivityComposer({ projectId, readOnly = false }: { projectId: s
         }
         className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
       />
+      {type === ActivityType.SPECIAL_REQUEST && (
+        <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-muted">About</span>
+          <select value={medium} onChange={(e) => setMedium(e.target.value)} className="min-h-11 rounded-lg border bg-surface px-2 text-base sm:min-h-9 sm:text-sm">
+            <option value="unclear">Photos or video (not sure yet)</option>
+            <option value="photo">Photos</option>
+            <option value="video">Video</option>
+            <option value="both">Photos and video</option>
+          </select>
+        </label>
+      )}
       {/* Where this lands — one line, so nobody has to guess the audience. */}
       <p className="mt-1.5 text-[11px] leading-snug text-muted">{current.hint}</p>
       <div className="mt-2 flex items-center justify-end gap-3">

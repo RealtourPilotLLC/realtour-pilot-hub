@@ -190,15 +190,25 @@ function videoPromise(
 
 const EMPTY_LANES = (): Record<VideoLane, VideoRow[]> => ({ late: [], today: [], review: [], upcoming: [], sending: [], held: [], finishing: [], delivered: [] });
 
-let memo: { at: number; value: VideoDeliveryBoard } | null = null;
+// The read in flight, not only the finished one (Oct 20 2026, audit A3): the
+// dashboard starts four or five readers of this board at once (its tiles, the
+// checklist's two, the red line, the Shoots rows), and a memo that held only a
+// finished value let each of them build its own on a cold start. A read that
+// fails drops out of the memo, so the next caller tries again.
+let memo: { at: number; value: Promise<VideoDeliveryBoard> } | null = null;
 
 /** The whole board. `now` is for drills. Home's tile may reuse a read up to
  *  15 seconds old; the screen itself (`fresh`) always reads anew, so a press
  *  shows at once. */
 export async function videoDeliveryBoard(opts: { now?: Date; fresh?: boolean; followUps?: boolean } = {}): Promise<VideoDeliveryBoard> {
   if (!opts.now && !opts.fresh && !opts.followUps && memo && Date.now() - memo.at < 15_000) return memo.value;
-  const value = await buildBoard(opts.now ?? new Date(), !!opts.followUps);
-  if (!opts.now) memo = { at: Date.now(), value };
+  const value = buildBoard(opts.now ?? new Date(), !!opts.followUps);
+  if (!opts.now) {
+    const entry = { at: Date.now(), value };
+    memo = entry;
+    // Its 15 seconds count from when the read finished, as before.
+    value.then(() => { entry.at = Date.now(); }, () => { if (memo === entry) memo = null; });
+  }
   return value;
 }
 

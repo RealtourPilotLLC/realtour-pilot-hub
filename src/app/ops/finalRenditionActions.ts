@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { FINAL_CHECK_KEYS, listingChoices, recordListingCheck, finalChoices, recordFinalCheck, finalCheckReceipt, type FinalCheckKey } from "@/lib/finalRendition";
@@ -27,7 +28,7 @@ export async function recordListingFinalCheckAction(data: FormData): Promise<{ o
     ? { duration, width, height } : null;
   const result = await recordListingCheck({ submissionId, mediaId, checks, metadata,
     actor: { id: me?.id ?? null, name: me?.realName ?? me?.name ?? "Office" } });
-  if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); }
+  if (result.ok) { revalidatePath("/"); revalidatePath(CHECKLIST_PATH); }
   return result;
 }
 
@@ -48,7 +49,7 @@ export async function recordFinalFileCheckAction(data: FormData): Promise<{ ok: 
     const r = await recordFinalCheck({ submissionId: String(data.get("submissionId") ?? ""), mediaId: String(data.get("mediaId") ?? ""),
       attemptId: String(data.get("attemptId") ?? ""), checks: FINAL_CHECK_KEYS.filter((k) => data.get(k) === "yes"), metadata,
       actor: { id: me.id, name: me.realName ?? me.name ?? "Office" } });
-    if (r.ok) { revalidatePath("/"); revalidatePath("/ops"); }
+    if (r.ok) { revalidatePath("/"); revalidatePath(CHECKLIST_PATH); }
     return { ...r, outcome: r.ok ? "confirmed" : "refused" };
   } catch {
     return { ok: false, outcome: "unknown", message: "The final-check save is unconfirmed. It may have been recorded. Check this attempt’s receipt before any new save; your current form input is kept here." };

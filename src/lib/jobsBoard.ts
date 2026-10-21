@@ -468,12 +468,13 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   return { rows: opts.limit != null ? out.slice(0, Math.max(0, opts.limit)) : out, counts };
 }
 
-/** The Shoots page's filters. Open (the default) is everything not delivered; Due today has the late ones too (Jordan's rule); This week is due in the next 7 days, late included; All adds the last 10 days' delivered. */
+/** The Shoots page's filters. Open (the default) is everything not delivered; Due today has the late ones too (Jordan's rule); This week is due in the next 7 days, late included; Requests is every open shoot with an open client request (the dashboard's Special requests tile opens it, audit A10); All adds the last 10 days' delivered. */
 export const SHOOT_FILTERS = [
   { key: "open", label: "Open" },
   { key: "late", label: "Late" },
   { key: "today", label: "Due today" },
   { key: "week", label: "This week" },
+  { key: "requests", label: "Requests" },
   { key: "monthly", label: "Monthly" },
   { key: "all", label: "All" },
 ] as const;
@@ -484,6 +485,7 @@ export function filterShootRows<T extends ShootRow>(rows: T[], f: ShootFilter): 
     case "late": return rows.filter((r) => !r.delivered && r.late);
     case "today": return rows.filter((r) => !r.delivered && (r.late || r.dueToday));
     case "week": return rows.filter((r) => !r.delivered && r.dueThisWeek);
+    case "requests": return rows.filter((r) => !r.delivered && r.requests.open > 0);
     case "monthly": return rows.filter((r) => !r.delivered && r.monthly);
     case "all": return rows;
     default: return rows.filter((r) => !r.delivered);

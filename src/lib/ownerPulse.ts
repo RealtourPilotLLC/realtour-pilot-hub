@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { categoryBreakdown } from "@/lib/financeCategories";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etDayStartUtc } from "@/lib/datetime";
 import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScope";
 
 // ---------------------------------------------------------------------------
@@ -49,9 +49,18 @@ export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulse
   const monthStartKey = `${todayKey.slice(0, 7)}-01`;
   const yearStartKey = `${todayKey.slice(0, 4)}-01-01`;
 
-  const weekStart = new Date(now.getTime() - 0);
-  weekStart.setUTCHours(0, 0, 0, 0);
-  const weekEnd = new Date(weekStart.getTime() + 7 * 86_400_000);
+  // THIS WEEK AND THIS MONTH IN EASTERN TIME (Oct 20 2026, audit A11). The
+  // week was today 00:00 UTC (8 PM ET yesterday) plus seven days, neither ET
+  // nor Monday-based, and counted cancelled visits; the month began at UTC
+  // midnight on the 1st, so a delivery on the last evening of a month counted
+  // in the next one, unlike the dashboard's getOwnerStats. Now: Monday 00:00
+  // ET to the next Monday (opsHome.etWeekStart's rule), visits not cancelled
+  // on jobs not cancelled; the month from 00:00 ET on the 1st.
+  const noonToday = new Date(etDayStartUtc(now).getTime() + 12 * 3_600_000);
+  const dow = new Date(`${todayKey}T12:00:00Z`).getUTCDay(); // 0 = Sunday
+  const weekStart = etDayStartUtc(new Date(noonToday.getTime() - ((dow + 6) % 7) * 86_400_000));
+  const weekEnd = etDayStartUtc(new Date(weekStart.getTime() + 7 * 86_400_000 + 12 * 3_600_000));
+  const monthStart = etDayStartUtc(new Date(`${monthStartKey}T12:00:00Z`));
 
   const [revMonth, revYtd, spend, banks, ar, shoots, delivered, tasks] = await Promise.all([
     revenueByProcessor(monthStartKey, todayKey).catch(() => null),
@@ -83,9 +92,12 @@ export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulse
         },
       })
       .catch(() => null),
-    prisma.appointment.count({ where: { project: clientScope, startAt: { gte: weekStart, lt: weekEnd } } }).catch(() => 0),
+    prisma.appointment
+      // A visit with no status is not cancelled: `not` alone would drop it (a NULL never matches).
+      .count({ where: { OR: [{ status: null }, { status: { not: "CANCELED" } }], project: { ...clientScope, status: { not: "CANCELLED" } }, startAt: { gte: weekStart, lt: weekEnd } } })
+      .catch(() => 0),
     prisma.project
-      .count({ where: { ...clientScope, deliveredAt: { gte: new Date(`${monthStartKey}T00:00:00Z`) } } })
+      .count({ where: { ...clientScope, deliveredAt: { gte: monthStart }, status: { not: "CANCELLED" } } })
       .catch(() => 0),
     prisma.smartTask
       .findMany({ where: { AND: [taskClientScopeWhere(opts)], status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { dueAt: true } })

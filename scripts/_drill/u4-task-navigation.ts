@@ -100,7 +100,10 @@ async function main() {
     c.ok("legacy today opens Messages; explicit specialist/completed tabs retain their actual views", legacyToday === "/communications" && elements(await open({ tab: "revisions" }), "RevisionsView").length === 1 && elements(await open({ tab: "done" }), "DoneView").length === 1);
     const tabs = elements(defaultView.tree, "TasksTabs")[0] as Parameters<typeof TasksTabs>[0];
     const nav = TasksTabs(tabs);
-    c.ok("navigation leads with ownership and exposes named specialist queues", textOf(nav).indexOf("My work") < textOf(nav).indexOf("Replies") && ["Needs assignment", "All work", "Completed", "Replies", "Revisions", "Slack"].every((label) => textOf(nav).includes(label)) && elements(nav, "nav").length === 2);
+    // Oct 20 2026 (audit A4): for a login with Messages the Replies tab only
+    // redirected there, so it is not drawn (and its reads are not made); a
+    // login without Messages keeps it.
+    c.ok("navigation leads with ownership and exposes named specialist queues; Replies only for a login without Messages", textOf(nav).indexOf("My work") < textOf(nav).indexOf("Revisions") && ["Needs assignment", "All work", "Completed", "Revisions", "Slack"].every((label) => textOf(nav).includes(label)) && !textOf(nav).includes("Replies") && textOf(nav).includes("answered on Messages") && textOf(TasksTabs({ ...tabs, showReplies: true })).includes("Replies") && elements(nav, "nav").length === 2);
     c.ok("current My work is announced for assistive technology", elements(nav, "Link").filter((p) => p["aria-current"] === "page").length === 1 && elements(nav, "Link").find((p) => p["aria-current"] === "page")?.href === taskWorkHref({ who: "me" }));
     const namedTabs = TasksTabs({ ...tabs, who: "james" });
     c.ok("named-owner subset does not falsely announce All work as current", elements(namedTabs, "Link").every((p) => p["aria-current"] !== "page"));

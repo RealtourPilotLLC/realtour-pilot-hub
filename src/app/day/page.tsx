@@ -37,7 +37,12 @@ export const dynamic = "force-dynamic";
 //  · Reference material (the week, the money) sits at the bottom and stays out
 //    of the way of the doing.
 
-const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+// "-$1,995", never "$-1,995": the dashboard's rule for an overdrawn figure
+// (app/page.tsx usd0), here too (Oct 20 2026, audit A12).
+const usd0 = (n: number) => {
+  const r = Math.round(n);
+  return `${r < 0 ? "-" : ""}$${Math.abs(r).toLocaleString("en-US")}`;
+};
 const hhmm = (d: Date) =>
   d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
 
@@ -406,7 +411,7 @@ export default async function MyDayPage() {
               tone={pulse.bankBalance != null && pulse.bankBalance < 0 ? "bad" : undefined}
             />
             <Stat label="Owed to you" value={usd0(pulse.owedToYou)} sub={`${pulse.owedCount} unpaid`} tone={pulse.owedToYou > 0 ? "bad" : undefined} />
-            <Stat label="Shoots this week" value={String(pulse.shootsThisWeek)} sub={`${pulse.deliveredThisMonth} delivered`} />
+            <Stat label="Shoots this week" value={String(pulse.shootsThisWeek)} sub={`${pulse.deliveredThisMonth} delivered this month`} />
             <Stat
               label="Team tasks"
               value={String(pulse.openTasks)}

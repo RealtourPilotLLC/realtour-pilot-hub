@@ -241,6 +241,20 @@ async function main() {
     /loadBeforeYouSend\(h\.projectId, "photo"\)/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) && /<BeforeYouSendView data=\{box\.data\} medium="photo"/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) && !/OpenClientAsksCard/.test(fs.readFileSync("src/app/ops/photo-delivery/[jobId]/page.tsx", "utf8")) &&
     /loadBeforeYouSend\(project\.id, "video"\)/.test(fs.readFileSync("src/app/edit/[id]/page.tsx", "utf8")) && /medium="video" canCheck=\{beforeYouSend\.canCheck\} hideNotes \/>/.test(fs.readFileSync("src/app/edit/[id]/page.tsx", "utf8")));
 
+  // Oct 20 2026 (audit A2): a Request typed in the job page's composer is the
+  // job's client ask too, so the request lists and "Checked" see it.
+  const { addProjectNote } = await import("@/app/projects/noteActions");
+  me = user("ADMIN", { teamMemberId: kyle.id });
+  const reqJob = await prisma.project.create({ data: { title: "9 Request Ln, Malvern, PA", clientId: heather.id, status: "EDITING" }, select: { id: true } });
+  const posted = await addProjectNote(reqJob.id, "Client wants the pool cover off in every exterior", "SPECIAL_REQUEST", "photo");
+  const filed = await prisma.clientAsk.findMany({ where: { projectId: reqJob.id } });
+  c.ok("a Request on a job in flight files the job's client ask (staff, the medium picked, holds delivery until checked)", posted.ok && filed.length === 1 && filed[0].source === "staff" && filed[0].medium === "photo" && filed[0].holdsDelivery && filed[0].state === "OPEN" && /until someone checks it/.test(posted.message) && (await prisma.activity.count({ where: { projectId: reqJob.id, type: "SPECIAL_REQUEST" } })) === 1, JSON.stringify({ posted, filed }));
+  c.ok("…it is on the photo card's requests and holds the photos", (await jobChecks(reqJob.id, "photo")).requests.some((r) => r.id === filed[0].id) && (await ca.openAsksHolding(reqJob.id, "photo")).length === 1 && (await ca.openAsksHolding(reqJob.id, "video")).length === 0);
+  const officeNote = await addProjectNote(reqJob.id, "Office note only", "NOTE");
+  const deliveredReq = await addProjectNote(done.id, "Late thought on a delivered job", "SPECIAL_REQUEST", "video");
+  c.ok("…a Note files nothing, and neither does a Request on a delivered job", officeNote.ok && deliveredReq.ok && (await prisma.clientAsk.count({ where: { projectId: { in: [reqJob.id, done.id] } } })) === 1);
+  me = user("ADMIN");
+
   // =========================================================================
   c.head("3 · Shoot flags sorted");
   // =========================================================================

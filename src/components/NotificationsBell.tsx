@@ -23,9 +23,11 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// The in-app notification bell. Mounted twice: the mobile top bar (panel drops
-// down, fixed + above the drawer/Leaflet z-stack) and the desktop sidebar footer
-// (panel opens UPWARD — the row sits at the viewport bottom). Data comes from
+// The in-app notification bell. Mounted three times: the mobile top bar (panel
+// drops down, fixed + above the drawer/Leaflet z-stack), the desktop sidebar
+// footer and the mobile drawer's sidebar footer (panel opens UPWARD — the row
+// sits at the viewport bottom). The three share ONE badge poll (see
+// badgeStore below). Data comes from
 // /api/notifications, already scoped server-side to the signed-in user's role +
 // tm:/editor: keys. Unread = rows newer than the seenAt watermark CAPTURED
 // BEFORE opening — rows keep their unread styling for the whole time the panel
@@ -102,6 +104,56 @@ function timeago(iso: string): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" }).format(d);
 }
 
+// ONE BADGE FOR EVERY MOUNTED BELL (Oct 20 2026, audit A22). Each bell polled
+// /api/notifications?count=1 on mount and every 60 seconds by itself: three
+// polls a minute from one tab, and after "Mark all read" in one bell the other
+// two kept the old number until their own next poll. Now the bells share one
+// poller and one count: the first bell to mount starts it, the last to unmount
+// stops it, every read (and every saved watermark) is handed to all of them.
+// A bell whose panel is open ignores it, exactly as its own poll used to skip
+// while open, so the list being read keeps its dots.
+type Badge = { unread: number; seenAt: string | null };
+const badgeListeners = new Set<(b: Badge) => void>();
+let badgeTimer: ReturnType<typeof setInterval> | null = null;
+let badgeInFlight: Promise<Badge | null> | null = null;
+
+function publishBadge(b: Badge) {
+  for (const l of badgeListeners) l(b);
+}
+
+/** One count read at a time; whoever asks while one is running shares it. */
+function readBadge(): Promise<Badge | null> {
+  badgeInFlight ??= (async () => {
+    try {
+      const res = await fetch("/api/notifications?count=1", { cache: "no-store" });
+      if (!res.ok) return null;
+      const data = (await res.json()) as Feed;
+      const b = { unread: data.unread ?? 0, seenAt: data.seenAt ?? null };
+      publishBadge(b);
+      return b;
+    } catch {
+      return null; // the next poll retries
+    } finally {
+      badgeInFlight = null;
+    }
+  })();
+  return badgeInFlight;
+}
+
+function subscribeBadge(fn: (b: Badge) => void): () => void {
+  badgeListeners.add(fn);
+  badgeTimer ??= setInterval(() => {
+    if (document.visibilityState === "visible") void readBadge();
+  }, 60_000);
+  return () => {
+    badgeListeners.delete(fn);
+    if (badgeListeners.size === 0 && badgeTimer) {
+      clearInterval(badgeTimer);
+      badgeTimer = null;
+    }
+  };
+}
+
 export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar" | "header" }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -137,18 +189,14 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
   const wrapRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null); // portaled on mobile — checked separately for outside-click
 
-  // The badge only. Used on mount and by the 60s poll, so an idle tab is not
-  // pulling a screenful of rows every minute for a number.
-  const fetchCount = useCallback(async (updateSeen: boolean) => {
-    try {
-      const res = await fetch("/api/notifications?count=1", { cache: "no-store" });
-      if (!res.ok) return;
-      const data = (await res.json()) as Feed;
-      setUnread(data.unread ?? 0);
-      if (updateSeen) setSeenAt(data.seenAt ?? null);
-    } catch {
-      /* the next poll retries */
-    }
+  // The badge only (the shared poll above), so an idle tab is not pulling a
+  // screenful of rows every minute for a number. This bell's own read, for
+  // when it must refresh while its panel is open (a failed Mark all read).
+  const fetchCount = useCallback(async () => {
+    const b = await readBadge();
+    if (!b) return;
+    setUnread(b.unread);
+    setSeenAt(b.seenAt);
   }, []);
 
   // The list itself, fetched when the panel opens.
@@ -207,17 +255,19 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
     }
   }, []);
 
-  // Badge on mount + poll every 60s while the tab is visible. While the panel is
-  // open the poll must not touch the highlight watermark or the list the person
-  // is reading (they may have loaded older pages under it).
+  // Badge on mount + the shared 60s poll while the tab is visible. While the
+  // panel is open the poll must not touch the highlight watermark or the list
+  // the person is reading (they may have loaded older pages under it).
   useEffect(() => {
     let mounted = true;
-    queueMicrotask(() => { if (mounted) void fetchCount(true); });
-    const t = setInterval(() => {
-      if (document.visibilityState === "visible" && !openRef.current) fetchCount(true);
-    }, 60_000);
-    return () => { mounted = false; clearInterval(t); };
-  }, [fetchCount]);
+    const off = subscribeBadge((b) => {
+      if (!mounted || openRef.current) return;
+      setUnread(b.unread);
+      setSeenAt(b.seenAt);
+    });
+    queueMicrotask(() => { if (mounted) void readBadge(); });
+    return () => { mounted = false; off(); };
+  }, []);
 
   // Advance the watermark over what was actually on screen. The server re-checks
   // that this window covers the whole unread span and refuses to move otherwise,
@@ -239,6 +289,7 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
         if (!d) return;
         if (typeof d.unread === "number") setUnread(d.unread);
         if (d.seenAt !== undefined) setSeenAt(d.seenAt ?? null);
+        if (typeof d.unread === "number" && d.seenAt !== undefined) publishBadge({ unread: d.unread, seenAt: d.seenAt ?? null });
       })
       .catch(() => {});
   }, []);
@@ -263,10 +314,12 @@ export function NotificationsBell({ variant = "sidebar" }: { variant?: "sidebar"
       // value or claim the badge cleared while the request is still in flight.
       setUnread(data.unread);
       setSeenAt(data.seenAt);
+      // The other bells show the same count at once, not at their next poll.
+      publishBadge({ unread: data.unread, seenAt: data.seenAt });
       listLoadedRef.current = false;
     } catch {
       setMarkError("Couldn’t confirm that notifications were marked read. Check the count and try again.");
-      void fetchCount(true);
+      void fetchCount();
     } finally {
       markAllPendingRef.current = false;
       setMarkingAll(false);

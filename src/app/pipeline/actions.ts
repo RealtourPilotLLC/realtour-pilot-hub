@@ -26,7 +26,8 @@ export async function recordMissCauseAction(input: { outputId: string; cause: st
   if (typeof input?.outputId !== "string" || !input.outputId) return { ok: false, message: "No video was named." };
   const { recordMissCause } = await import("@/lib/programWatch");
   const r = await recordMissCause({ outputId: input.outputId, cause: input.cause, note: input.note ?? null, by: await who() });
-  if (r.ok) revalidatePath("/pipeline");
+  // /pipeline only redirects; the watch renders on Shoots (audit A20).
+  if (r.ok) revalidatePath("/jobs");
   return r;
 }
 
@@ -49,6 +50,6 @@ export async function saveProgramWatchRulesAction(next: {
   const { saveProgramWatchRules } = await import("@/lib/programWatch");
   const me = await getCurrentUser().catch(() => null);
   await saveProgramWatchRules(clean, me?.email ?? null);
-  revalidatePath("/pipeline");
+  revalidatePath("/jobs");
   return { ok: true, message: "Saved." };
 }

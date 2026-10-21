@@ -5,6 +5,7 @@ import { ActivityType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 
 // The project page's composer posts HERE (Kyle call, Sep 16). Three things
 // were wrong with the old addNote in src/app/actions.ts: it never stamped an
@@ -19,6 +20,16 @@ import { getCurrentUser } from "@/lib/auth/user";
 // it is a text, a Slack DM, or the bell alone. A NOTE stays office-only; a
 // FLAG is an issue on the job. addNote itself is left as it was for its other
 // callers.
+//
+// A REQUEST IS ALSO THE JOB'S CLIENT ASK (Oct 20 2026, audit A2). The Request
+// row reached the crew but nothing that TRACKS requests: the dashboard's
+// Special requests tile, the Shoots board's Requests column, Kyle's "Special
+// requests to check", the job's own Photos and Video cards with their
+// "Checked", and the "Before you send" check all read ClientAsk, and a Request
+// typed here, the natural place to type one, was on none of them. On a job
+// still in flight it now files the ask as well (source "staff", the medium the
+// composer picked), holding the delivery until it is checked, exactly as
+// "Add a request by hand" on Kyle's list does. One ask per Request row.
 
 export type NoteResult = { ok: boolean; message: string };
 
@@ -28,6 +39,8 @@ export async function addProjectNote(
   projectId: string,
   body: string,
   type: ActivityType = ActivityType.SPECIAL_REQUEST,
+  /** a Request's subject: "photo", "video", "both", or "unclear" (the default) */
+  medium?: string | null,
 ): Promise<NoteResult> {
   await requireAdmin();
   const text = body.trim();
@@ -42,6 +55,8 @@ export async function addProjectNote(
       id: true,
       title: true,
       status: true,
+      clientId: true,
+      deliveredAt: true,
       photographerId: true,
       appointments: {
         where: { status: { not: "CANCELED" } },
@@ -64,7 +79,13 @@ export async function addProjectNote(
   // delivered or cancelled listing is a record, not a job for the crew — the
   // words still land on every surface, the phones stay quiet.
   const closed = project.status === "DELIVERED" || project.status === "CANCELLED";
+  let tracked = false;
   if (type === ActivityType.SPECIAL_REQUEST && !closed) {
+    // A job delivered once and reopened takes its asks as revision briefs, not
+    // client asks (clientAsks.jobInFlight), so only work never delivered files one.
+    if (project.deliveredAt == null) {
+      tracked = await fileRequestAsk({ clientId: project.clientId, projectId, activityId: activity.id, text, medium, by: author.name });
+    }
     await notifyRequest({
       projectId,
       activityId: activity.id,
@@ -76,12 +97,16 @@ export async function addProjectNote(
   }
 
   revalidatePath(`/projects/${projectId}`);
-  // The request renders on every crew surface — refresh the ones that cache.
+  // The request renders on every crew surface — refresh the ones that cache —
+  // and, filed as an ask, on the request lists.
   if (type === ActivityType.SPECIAL_REQUEST) {
     revalidatePath(`/shoot/${projectId}`);
     revalidatePath(`/upload/${projectId}`);
     revalidatePath(`/edit/${projectId}`);
-    revalidatePath("/ops");
+    revalidatePath(`/review/${projectId}`);
+    revalidatePath("/");
+    revalidatePath("/jobs");
+    revalidatePath(CHECKLIST_PATH);
   }
   return {
     ok: true,
@@ -89,11 +114,42 @@ export async function addProjectNote(
       type === ActivityType.SPECIAL_REQUEST
         ? closed
           ? "Request posted — this job is closed, so nobody was pinged."
-          : "Request posted — the photographer and the editor have it."
+          : tracked
+            ? "Request posted — the photographer and the editor have it, and it waits on the job until someone checks it."
+            : "Request posted — the photographer and the editor have it."
         : type === ActivityType.FLAG
           ? "Flagged."
           : "Note added (office only).",
   };
+}
+
+// The Request as the job's client ask (audit A2, see the header). Best-effort:
+// the Request row is already saved and has reached the crew, so a failure here
+// is logged and the answer simply does not claim the request is tracked.
+async function fileRequestAsk(o: { clientId: string; projectId: string; activityId: string; text: string; medium?: string | null; by: string | null }): Promise<boolean> {
+  try {
+    const { createAsk } = await import("@/lib/clientAsks");
+    const { clip } = await import("@/lib/text");
+    const ask = await createAsk({
+      clientId: o.clientId,
+      projectId: o.projectId,
+      kind: "SPECIAL_REQUEST",
+      medium: o.medium ?? "unclear",
+      text: o.text,
+      // Whole (up to the column's 240), so the shoot-day text, which lists
+      // both the Request and the ask, sees one sentence and sends it once.
+      summary: clip(o.text.replace(/\s+/g, " "), 240),
+      source: "staff",
+      askedBy: null,
+      holdsDelivery: true,
+      by: o.by ?? "staff",
+      dedupeKey: `request-note:${o.activityId}`,
+    });
+    return !!ask;
+  } catch (e) {
+    console.warn("addProjectNote: filing the client ask failed (the request itself is saved)", e);
+    return false;
+  }
 }
 
 // The writer's roster row — the SAME ladder the team chat uses for its author

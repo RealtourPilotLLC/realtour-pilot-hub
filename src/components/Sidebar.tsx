@@ -90,9 +90,12 @@ const SECTIONS: NavSection[] = [
       // Nothing in this hub is deleted for being off the menu.
       { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
       // SHOOTS (Oct 19 2026, night; Jordan renamed "Jobs" to "Shoots"): every
-      // shoot in progress with its photos and video side by side. Rides the
-      // `ops` PageKey (owner + office), like Photos, so no new permission.
-      { label: "Shoots", href: "/jobs", icon: House, key: "ops" },
+      // shoot in progress with its photos and video side by side. The
+      // `pipeline` PageKey: /jobs is that page in PAGES, so it is what the
+      // middleware and the page itself check (Oct 20 2026, audit A21: the door
+      // tested `ops`, so an override on either key showed a door that bounced
+      // or hid one that worked). Owner + office by default, as before.
+      { label: "Shoots", href: "/jobs", icon: House, key: "pipeline" },
       // Today + Daily Tasks + Task History merged into the one Tasks hub
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
