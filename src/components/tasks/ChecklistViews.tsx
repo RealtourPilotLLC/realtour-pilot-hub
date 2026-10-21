@@ -302,10 +302,10 @@ function SlackRow({ t, focused, assignOptions }: { t: SlackTaskRow; focused?: bo
 }
 
 // Tab-badge counts, shared with the page so the badges match the tabs.
-export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeCommsClientIds?: string[]; excludeSlackClientIds?: string[] } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
+export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeCommsClientIds?: string[]; excludeSlackClientIds?: string[]; /** the Replies tab is not drawn: skip its two comms boards */ skipComms?: boolean } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
   const [phone, email, revs, slack] = await Promise.all([
-    unansweredCommsBoard("phone", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
-    unansweredCommsBoard("email", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
+    opts.skipComms ? [] : unansweredCommsBoard("phone", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
+    opts.skipComms ? [] : unansweredCommsBoard("email", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
     revisionsBoard(new Date(), { excludeClientIds: opts.excludeRevisionClientIds }),
     slackBoard(new Date(), { excludeClientIds: opts.excludeSlackClientIds }),
   ]);

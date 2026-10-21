@@ -50,7 +50,10 @@ export function WeekStrip({ week, includeTest = false }: { week: WeekShoot[]; in
             </Link>
             <div className="mb-1 mt-1 divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60">
               {shoots.map((s) => (
-                <Link key={s.apptId} href={`/shoot/${s.id}`} className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-surface-2">
+                // The job page, like the shoot cards beside it (audit A14):
+                // the strip is on the office's dashboard, and /shoot is the
+                // photographer's field screen.
+                <Link key={s.apptId} href={homeRecordHref(`/projects/${s.id}`, includeTest)} className="flex min-h-11 items-center gap-2 px-3 py-2 text-xs hover:bg-surface-2">
                   <span className="shrink-0 tabular-nums text-muted">{etTime(s.shootDate)}</span>
                   <span className="min-w-0 flex-1 truncate">{s.title.split(",")[0]}</span>
                   {s.photographer ? (

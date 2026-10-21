@@ -18,7 +18,7 @@ import { boardWhere, BOARD_ACTIVE_STATUSES as ACTIVE, type TaskClientScope } fro
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, editorScopeOf, isUnmappedEditor, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
-import { scrubMoney } from "@/lib/text";
+import { scrubTaskMoney } from "@/components/tasks/scrubTaskMoney";
 import { cn } from "@/lib/utils";
 
 // The full grouped task board — every open task by person and category.
@@ -66,32 +66,8 @@ function category(taskType: string): "confirmations" | "deliveries" | "comms" | 
 // Triage ("needs assigning") is shared with the morning brief via src/lib/triage.
 const TRIAGE = "needs-assigning";
 
-// No money on an ADMIN screen (Jordan's standing rule). A Slack to-do's title
-// ("… with $750 credit applied"), a client's ask in a summary, a customer note
-// ("always haggles on the reel price") all render on this board, so for a
-// non-owner every figure is redacted before the card sees it — the sentence
-// stays, the number goes (audit5 kyle-home §5, Sep 8). Idempotent.
-const sm = (v: string | null | undefined) => (v == null ? v : scrubMoney(v));
-function scrubTaskMoney<T extends QueueTask>(v: T): T {
-  return {
-    ...v,
-    title: scrubMoney(v.title),
-    summary: sm(v.summary) ?? null,
-    description: sm(v.description) ?? null,
-    reasonCreated: sm(v.reasonCreated) ?? null,
-    deliverables: v.deliverables.map((d) => ({ ...d, label: scrubMoney(d.label) })),
-    qcClient: v.qcClient
-      ? {
-          ...v.qcClient,
-          customerNote: sm(v.qcClient.customerNote) ?? null,
-          usuallyAsks: v.qcClient.usuallyAsks.map(scrubMoney),
-          dos: v.qcClient.dos.map(scrubMoney),
-          donts: v.qcClient.donts.map(scrubMoney),
-        }
-      : v.qcClient,
-    siblings: v.siblings?.map((s) => ({ ...s, title: scrubMoney(s.title) })),
-  };
-}
+// No money on an ADMIN screen: every card passes scrubTaskMoney for a
+// non-owner (components/tasks/scrubTaskMoney, shared with the job page).
 
 // Compact work rows stay visible initially; native disclosure keeps each
 // group's count and overdue evidence visible when a person folds it away.
@@ -340,7 +316,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
     <div>
       <TaskFocus />
       <PageHeader
-        eyebrow="Eastern time"
+        eyebrow="Lists"
         title="Tasks"
         subtitle={`${viewLabel} · ${visible.length} ${sp.source || sp.type ? "matching operational tasks" : "operational tasks"}${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
         actions={

@@ -43,6 +43,7 @@ import { Badge, ink } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { taskToView } from "@/lib/taskView";
+import { scrubTaskMoney } from "@/components/tasks/scrubTaskMoney";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { VendorBadge } from "@/components/editing/VendorBadge";
@@ -66,7 +67,6 @@ import { customerNote, creativeCustomerNote } from "@/lib/clientNotes";
 import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { listAssignees } from "@/lib/assignees";
-import { ActivityType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { PhotoBatchPanel } from "@/components/project/PhotoBatchPanel";
@@ -94,6 +94,9 @@ const ACTIVITY_ICON: Record<string, { icon: typeof Star; color: string }> = {
 // vanished would read as "nothing happened here", which is the one thing an
 // audit trail must never say.
 const HELD_BACK = "Money detail — owner only.";
+
+/** The activity feed's length: the newest this many (audit A24). */
+const ACTIVITY_SHOWN = 150;
 
 export default async function ProjectPage({
   params,
@@ -146,6 +149,14 @@ export default async function ProjectPage({
   // whole. Owner text is untouched. Probe over all 5,795 activity rows: 60
   // changed, 48 show the [amount withheld] marker, 0 residual $ figures.
   const scrub = (t: string) => (showMoney ? t : redactMoney(t));
+  // The same rule line by line, for the blocks drawn whitespace-pre (briefs,
+  // the appointment's notes): redactMoney folds whitespace, so a multi-line
+  // brief scrubbed whole would read as one paragraph.
+  const scrubLines = (t: string | null | undefined) => (t == null || showMoney ? t ?? null : t.split("\n").map((l) => (l.trim() ? redactMoney(l) : l)).join("\n"));
+  // Oct 20 2026 (audit A1): the rule above covered the activity feed, the
+  // requests and the customer note, while the open tasks, team messages, the
+  // briefs, the per-deliverable notes and the summary's latest request went
+  // to Kyle raw. Every free-text block below now passes one of these.
 
   // The office's waiver, wired straight to the deliverables list below (Sep 16,
   // Kyle call). Plain form posts on purpose: no client bundle for two buttons
@@ -170,7 +181,9 @@ export default async function ProjectPage({
     redirect(`/projects/${id}?notice=${encodeURIComponent(r.message)}#deliverables`);
   }
 
-  const [project, team, assigneeList] = await Promise.all([getProject(id), getTeam(), listAssignees()]);
+  // The newest ACTIVITY_SHOWN activity rows: a long-lived job carries hundreds,
+  // and the feed is the only reader on this page (audit A24).
+  const [project, team, assigneeList] = await Promise.all([getProject(id, { activities: ACTIVITY_SHOWN }), getTeam(), listAssignees()]);
   if (!project) notFound();
 
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
@@ -211,15 +224,20 @@ export default async function ProjectPage({
 
   // The summary reads the same engines the cards below do; a failure here must
   // never cost the page, so it degrades to no card at all.
-  const brief = await projectBrief(project.id).catch((e: unknown) => {
+  const briefRaw = await projectBrief(project.id).catch((e: unknown) => {
     console.warn("projectBrief failed", (e as Error).message);
     return null;
   });
+  // The summary quotes the client's latest ask and names the blocker in words.
+  const brief = briefRaw && !showMoney
+    ? {
+        ...briefRaw,
+        latestRequest: briefRaw.latestRequest ? { ...briefRaw.latestRequest, text: scrub(briefRaw.latestRequest.text) || HELD_BACK } : null,
+        blocker: briefRaw.blocker ? scrub(briefRaw.blocker) || HELD_BACK : null,
+      }
+    : briefRaw;
 
   const priority = PRIORITY_META[project.priority];
-  const specialRequests = project.activities.filter(
-    (a) => a.type === ActivityType.SPECIAL_REQUEST,
-  );
 
   const addressParts = [
     project.addressLine,
@@ -259,10 +277,11 @@ export default async function ProjectPage({
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
       {/* In-app this walks the history (BackLink); a cold open — a Slack or
-          text deep link — falls back to Home, where every list that links here
-          lives. It used to fall back to /pipeline, the tracker Jordan retired
-          from the nav (audit, Sep 8 2026). */}
-      <BackLink href="/" label="Home" />
+          text deep link — falls back to the dashboard, where every list that
+          links here lives. It used to fall back to /pipeline, the tracker
+          Jordan retired from the nav (audit, Sep 8 2026). Labelled
+          "Dashboard", as the menu says (audit A24, Oct 20 2026). */}
+      <BackLink href="/" label="Dashboard" />
 
       {/* Header */}
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
@@ -292,12 +311,12 @@ export default async function ProjectPage({
               href={project.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : aryeoOrderUrl(project.aryeoOrderId as string)}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium hover:bg-surface-2"
             >
               Open in Aryeo <ExternalLink className="size-3.5" />
             </a>
           )}
-          <StageSelector projectId={project.id} status={project.status} />
+          <StageSelector projectId={project.id} status={project.status} readOnly={!!viewer?.impersonating} />
         </div>
       </div>
 
@@ -384,7 +403,7 @@ export default async function ProjectPage({
             evidence={project.statusEvidence}
             checkedAt={project.statusCheckedAt}
             projectId={project.id}
-            revisionNote={project.revisionNote}
+            revisionNote={project.revisionNote ? scrub(project.revisionNote) || HELD_BACK : project.revisionNote}
             revisionRequestedAt={project.revisionRequestedAt}
             dropboxLinks={dropboxLinks}
             dropboxRootUrl={dropboxWebUrl(folders.listing)}
@@ -395,7 +414,7 @@ export default async function ProjectPage({
             <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {project.smartTasks.map((t) => (
-                  <TaskCard key={t.id} task={taskToView(t)} assignees={assignees} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
+                  <TaskCard key={t.id} task={showMoney ? taskToView(t) : scrubTaskMoney(taskToView(t))} assignees={assignees} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
                 ))}
               </div>
             </Section>
@@ -486,10 +505,10 @@ export default async function ProjectPage({
                           one-press answer is the form on the right. */}
                       {!d.waivedAt && !d.removedFromOrderAt && d.notCompletedReason && (
                         <div className="text-xs text-warning">
-                          Photographer couldn&rsquo;t complete it: {d.notCompletedReason}
+                          Photographer couldn&rsquo;t complete it: {scrub(d.notCompletedReason) || HELD_BACK}
                         </div>
                       )}
-                      {d.notes && <div className="text-xs text-muted">{d.notes}</div>}
+                      {d.notes && <div className="text-xs text-muted">{scrub(d.notes) || HELD_BACK}</div>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -498,13 +517,13 @@ export default async function ProjectPage({
                       d.waivedAt ? (
                         <form action={unwaive}>
                           <input type="hidden" name="id" value={d.id} />
-                          <button type="submit" className="rounded-lg border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                          <button type="submit" className="inline-flex min-h-11 items-center rounded-lg border px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
                             It is owed after all
                           </button>
                         </form>
                       ) : (
                         <details className="group">
-                          <summary className="cursor-pointer list-none rounded-lg border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                          <summary className="inline-flex min-h-11 cursor-pointer list-none items-center rounded-lg border px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
                             Not required
                           </summary>
                           <form action={waive} className="mt-2 flex flex-wrap items-center gap-2">
@@ -514,9 +533,9 @@ export default async function ProjectPage({
                               required
                               maxLength={300}
                               placeholder={d.notCompletedReason ? d.notCompletedReason.slice(0, 60) : "Why isn't it required? (kept on the job)"}
-                              className="w-64 rounded-lg border bg-surface-2/50 px-2.5 py-1 text-xs"
+                              className="min-h-11 w-64 max-w-full rounded-lg border bg-surface-2/50 px-2.5 text-base sm:text-xs"
                             />
-                            <button type="submit" className="rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white">
+                            <button type="submit" className="inline-flex min-h-11 items-center rounded-lg bg-brand-action px-2.5 text-xs font-semibold text-white">
                               Mark not required
                             </button>
                           </form>
@@ -549,7 +568,7 @@ export default async function ProjectPage({
                       durationMin: a.durationMin,
                       status: a.status,
                       title: a.title,
-                      description: a.description,
+                      description: scrubLines(a.description),
                       preferenceType: a.preferenceType,
                       requiresConfirmation: a.requiresConfirmation,
                       canCancel: a.canCancel,
@@ -626,29 +645,29 @@ export default async function ProjectPage({
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot debrief</div>
                   {project.deliverables.filter((d) => d.notCompletedReason).map((d) => (
                     <p key={d.id} className="text-sm font-medium text-warning">
-                      Couldn&rsquo;t complete {d.label ?? d.type}: <span className="font-normal text-foreground/85">{d.notCompletedReason}</span>
+                      Couldn&rsquo;t complete {d.label ?? d.type}: <span className="font-normal text-foreground/85">{scrub(d.notCompletedReason ?? "") || HELD_BACK}</span>
                     </p>
                   ))}
                   {project.videosFilmed != null && (
                     <p className="text-sm text-foreground/85"><span className="font-medium">Videos filmed:</span> {project.videosFilmed}</p>
                   )}
                   {project.shotOrderNotes && (
-                    <p className="text-sm text-foreground/85"><span className="font-medium">Shot order:</span> {project.shotOrderNotes}</p>
+                    <p className="text-sm text-foreground/85"><span className="font-medium">Shot order:</span> {scrub(project.shotOrderNotes) || HELD_BACK}</p>
                   )}
                   {project.removalNotes && (
-                    <p className="text-sm text-foreground/85"><span className="font-medium">Remove in editing:</span> {project.removalNotes}</p>
+                    <p className="text-sm text-foreground/85"><span className="font-medium">Remove in editing:</span> {scrub(project.removalNotes) || HELD_BACK}</p>
                   )}
                   {project.videoInstructions && (
                     <div>
                       <p className="text-sm font-medium">Video brief:</p>
-                      <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.videoInstructions}</p>
+                      <p className="whitespace-pre-wrap text-sm text-foreground/85">{scrubLines(project.videoInstructions) || HELD_BACK}</p>
                     </div>
                   )}
                 </div>
               )}
               {project.editorBrief && (
-                <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-foreground/85">
-                  {project.editorBrief}
+                <div className="whitespace-pre-wrap rounded-lg bg-surface-2 px-3 py-2 text-sm text-foreground/85">
+                  {scrubLines(project.editorBrief) || HELD_BACK}
                 </div>
               )}
               {project.uploads.length === 0 ? (
@@ -740,13 +759,13 @@ export default async function ProjectPage({
                     <div className="ml-auto flex gap-2">
                       {project.invoiceUrl && (
                         <a href={project.invoiceUrl} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium hover:bg-surface-2">
                           <FileText className="size-3.5" /> Invoice
                         </a>
                       )}
                       {project.paymentUrl && project.balanceAmount != null && project.balanceAmount > 0 && (
                         <a href={project.paymentUrl} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg hover:opacity-90">
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 text-xs font-medium text-brand-fg hover:opacity-90">
                           <ExternalLink className="size-3.5" /> Payment link
                         </a>
                       )}
@@ -777,10 +796,12 @@ export default async function ProjectPage({
               id: m.id,
               authorId: m.authorId,
               authorName: m.authorName,
-              body: m.body,
+              // Display only: "Send to the editor as a revision" and replies
+              // carry the message id, and the server reads the stored words.
+              body: scrubLines(m.body) || HELD_BACK,
               createdAt: m.createdAt.toISOString(),
               ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
-              replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: m.replyTo.body } : null,
+              replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: scrub(m.replyTo.body) || HELD_BACK } : null,
             }))}
           />
 
@@ -822,26 +843,18 @@ export default async function ProjectPage({
                 );
               })}
             </ol>
+            {project.activities.length >= ACTIVITY_SHOWN && (
+              <p className="text-xs text-muted">The newest {ACTIVITY_SHOWN} are shown.</p>
+            )}
           </Section>
         </div>
 
         {/* Side column — reference: who, when, how much, who's on it */}
         <div className="space-y-6">
-          {/* Special requests highlight */}
-          {specialRequests.length > 0 && (
-            <Section icon={Star} title="Special requests" tone="warning" bodyClassName="py-3">
-              <ul className="space-y-2">
-                {specialRequests.map((r) => {
-                  const body = scrub(r.body);
-                  return (
-                    <li key={r.id} className={body ? "text-sm text-foreground/90" : "text-sm italic text-muted"}>
-                      {body || HELD_BACK}
-                    </li>
-                  );
-                })}
-              </ul>
-            </Section>
-          )}
+          {/* No side "Special requests" card (Oct 20 2026, audit A2): it listed
+              the composer's rows, which never closed. A Request typed below
+              files a client ask too, and the Photos and Video cards at the top
+              list the open ones with their owner and "Checked". */}
 
           {/* NOT "where this job's work lives" — the summary card at the top of
               this page is already called "Where this job is", and two headings

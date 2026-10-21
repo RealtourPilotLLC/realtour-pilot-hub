@@ -19,7 +19,9 @@ export const dynamic = "force-dynamic";
 //
 // Filters: Open (the default: everything not delivered), Late, Due today
 // (the late ones included, Jordan's rule), This week (due in the next 7 days,
-// late included), Monthly, All (the last 10 days' delivered too). The
+// late included), Requests (an open client request on the shoot: the
+// dashboard's Special requests tile lands here), Monthly, All (the last 10
+// days' delivered too). The
 // program videos' milestones (ProgramVideoWatch, which lived on the old
 // Project Tracker) sit under the list on Open and Monthly. /pipeline (the old
 // Project Tracker) redirects here, so the program alerts' link still lands.
@@ -30,6 +32,7 @@ const EMPTY: Record<ShootFilter, string> = {
   late: "Nothing is late.",
   today: "Nothing is due today, and nothing is late.",
   week: "Nothing is due in the next 7 days.",
+  requests: "No open client requests on a shoot in progress.",
   monthly: "No monthly content in progress.",
   all: "No shoots in progress or delivered in the last 10 days.",
 };

@@ -181,7 +181,7 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
   revalidatePath(`/projects/${projectId}`);
   revalidatePath(`/shoot/${projectId}`);
   revalidatePath(`/upload/${projectId}`);
-  revalidatePath("/pipeline");
+  revalidatePath("/jobs");
   revalidatePath("/schedule");
 
   return {

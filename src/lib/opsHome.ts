@@ -1,8 +1,10 @@
 import "server-only";
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { type JobCounts } from "@/lib/opsCounts";
 import { dueTodayRows, videoDeliveryBoard, videoSummary, type VideoDeliveryBoard, type VideoRow } from "@/lib/videoDelivery";
-import { askBoardCounts, schedulingBoard, specialRequestsBoard, type AskView } from "@/lib/clientAsks";
+import { HOLD_REASON_LABEL } from "@/components/photoDelivery/format";
+import { schedulingBoard, specialRequestsBoard, type AskView } from "@/lib/clientAsks";
 import { loadQueue } from "@/app/ops/photo-delivery/data";
 import type { QueueColumnKey, QueueData } from "@/components/photoDelivery/types";
 import { unansweredCommsBoard, type CommsGroup } from "@/lib/commsBoard";
@@ -10,7 +12,6 @@ import { waitingReplyHref } from "@/components/comms/messagesNav";
 import { normalizeSubject } from "@/components/comms/emailThreads";
 import { getReviewQueue, type ReviewQueue } from "@/lib/reviewRoom";
 import { jobsBoard, type JobRow, type JobsBoard } from "@/lib/jobsBoard";
-import { photoQcWhere } from "@/lib/taskBoard";
 import { scrubMoney } from "@/lib/text";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { pinnedPromise } from "@/lib/turnaround";
@@ -93,36 +94,6 @@ export async function kylePerson(roster: Assignee[]): Promise<(ChecklistPerson &
   return { key: hit?.key ?? "kyle", teamMemberId: to.teamMemberId, name: (tm?.name ?? "Kyle").split(" ")[0] };
 }
 
-// ---- PHOTOS: the photo delivery queue's own cards ----------------------------------
-
-export type PhotoCounts = JobCounts & { readyForReview: number; needsDecision: number };
-
-/** Counted off loadQueue()'s cards, exactly as /ops/photo-delivery renders them.
- *  `behind` = past its due time; `dueToday` = due later today, not behind yet. */
-export function photoCountsFromQueue(q: QueueData, now: Date = new Date()): PhotoCounts {
-  const today = etDayKey(now);
-  const open = q.columns.filter((c) => c.key !== "delivered").flatMap((c) => c.cards);
-  let behind = 0, dueToday = 0, oldest: number | null = null;
-  for (const c of open) {
-    const due = c.slaDueAt ? Date.parse(c.slaDueAt) : null;
-    if (due != null && due < now.getTime()) behind++;
-    else if (due != null && etDayKey(new Date(due)) === today) dueToday++;
-    const since = c.shootDate ? Date.parse(c.shootDate) : null;
-    if (since != null && since < now.getTime()) {
-      const h = (now.getTime() - since) / HOUR;
-      oldest = oldest == null ? h : Math.max(oldest, h);
-    }
-  }
-  return {
-    open: open.length,
-    dueToday,
-    behind,
-    oldestHours: oldest == null ? null : Math.round(oldest),
-    readyForReview: q.columns.find((c) => c.key === "ready")?.cards.length ?? 0,
-    needsDecision: q.columns.find((c) => c.key === "decision")?.cards.length ?? 0,
-  };
-}
-
 // ---- MESSAGES: clients waiting on a reply, and new leads ---------------------------
 
 export type WaitingClient = { family: "phone" | "email"; group: CommsGroup; behind: boolean };
@@ -138,15 +109,29 @@ export type MessagesBoard = {
   counts: JobCounts;
 };
 
-/** The clients waiting on a reply, text and email together, longest wait first.
- *  The dashboard, the checklist's Messages group and the Messages screen all read this. */
-async function waitingClients(now: Date, opts: { excludeClientIds?: string[] } = {}): Promise<WaitingClient[]> {
-  const scope = { excludeClientIds: opts.excludeClientIds };
+// ONE READ PER PAGE RENDER (Oct 20 2026, audit A3). The dashboard's tiles and
+// its "Kyle's day" card (the whole checklist, for two numbers) read the same
+// photo queue and the same waiting clients (two comms boards each), so every
+// render, and the page refreshes itself every 90 seconds, did each of them
+// twice. React's cache() shares one read within one render, keyed by the
+// clock and the scope; outside a render (a drill, a cron) it reads each time.
+const queueOnce = cache((nowMs: number) => loadQueue({ now: new Date(nowMs) }));
+const photoQueue = (now: Date) => queueOnce(now.getTime());
+
+const waitingOnce = cache(async (nowMs: number, ex: string): Promise<WaitingClient[]> => {
+  const now = new Date(nowMs);
+  const scope = { excludeClientIds: ex ? ex.split(",") : [] };
   const [phone, email] = await Promise.all([unansweredCommsBoard("phone", now, scope), unansweredCommsBoard("email", now, scope)]);
   return [
     ...phone.map((g) => ({ family: "phone" as const, group: g, behind: g.oldestHours >= MESSAGE_BEHIND_HOURS })),
     ...email.map((g) => ({ family: "email" as const, group: g, behind: g.oldestHours >= MESSAGE_BEHIND_HOURS })),
   ].sort((a, b) => b.group.oldestHours - a.group.oldestHours);
+});
+
+/** The clients waiting on a reply, text and email together, longest wait first.
+ *  The dashboard, the checklist's Messages group and the Messages screen all read this. */
+async function waitingClients(now: Date, opts: { excludeClientIds?: string[] } = {}): Promise<WaitingClient[]> {
+  return waitingOnce(now.getTime(), (opts.excludeClientIds ?? []).join(","));
 }
 
 /** Where a waiting client's Reply goes: that exact thread on Messages
@@ -221,17 +206,6 @@ export async function messagesBoard(opts: {
   return { waiting, leads, outbox, counts: { open, dueToday, behind, oldestHours: open === 0 || oldest == null ? null : Math.round(oldest) } };
 }
 
-// ---- THE OLD SUMMARY BOX'S NUMBERS ----------------------------------------------------
-
-/** The three numbers the old summary box showed (photos, videos, messages),
- *  still read with the checklist so a drill can hold its groups against them. */
-export type HomeSummary = {
-  /** null = the source could not be read */
-  photos: { dueToday: number; late: number; olderQc: number } | null;
-  videos: { readyToSend: number; late: number; dueToday: number } | null;
-  messages: { waiting: number; behind: number; oldestHours: number | null } | null;
-};
-
 // ---- THE DAILY CHECKLIST ----------------------------------------------------------
 
 export type ChecklistGroupKey = "deliveries" | "messages" | "requests" | "scheduling" | "followups";
@@ -294,7 +268,6 @@ export type DoneLine = {
 
 export type KyleChecklist = {
   nowISO: string;
-  summary: HomeSummary;
   groups: ChecklistGroup[];
   earlier: { items: OldItem[]; unavailable: boolean };
   done: DoneLine[];
@@ -346,7 +319,8 @@ function photoLines(q: QueueData, now: Date): ChecklistLine[] {
       out.push({ dueMs: due, line: {
         key: `photo:${c.id}`,
         title: `${c.street} · photos`,
-        need: col.key === "hold" && c.holdReason ? `On hold: ${c.holdReason}` : n.need,
+        // In words, as the Photos screens say it (audit A18: "On hold: CREDITS").
+        need: col.key === "hold" && c.holdReason ? `On hold: ${HOLD_REASON_LABEL[c.holdReason] ?? c.holdReason.toLowerCase()}` : n.need,
         detail: c.clientName,
         when: dueWords(due, now),
         late: due < now.getTime(),
@@ -430,8 +404,9 @@ function schedulingLine(a: AskView, clean: (s: string) => string): ChecklistLine
 }
 
 /** Tomorrow's shoots with no confirmation text sent (the hub's own test:
- *  clientTextSweeps counts a shoot confirmed once a confirmation_text task is
- *  COMPLETED). One indexed read. */
+ *  clientTextSweeps counts a shoot handled once a confirmation_text task is
+ *  COMPLETED or CANCELLED, "Not needed"). One indexed read, with the open
+ *  confirmation task, so the line can be closed from the list. */
 async function tomorrowUnconfirmed(now: Date, excludeClientIds: string[]) {
   const start = nextEtDayStart(now);
   const end = nextEtDayStart(start);
@@ -441,9 +416,15 @@ async function tomorrowUnconfirmed(now: Date, excludeClientIds: string[]) {
       status: { notIn: ["CANCELLED", "ON_HOLD"] },
       aryeoMissingAt: null,
       ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}),
-      smartTasks: { none: { taskType: "confirmation_text", status: "COMPLETED" } },
+      // Oct 20 2026 (audit A7): "Not needed" (Kyle confirmed by phone) is
+      // handled too, as the sweep reads it; COMPLETED alone nagged until the
+      // shoot day passed with nothing on the line to clear it.
+      smartTasks: { none: { taskType: "confirmation_text", status: { in: ["COMPLETED", "CANCELLED"] } } },
     },
-    select: { id: true, title: true, shootDate: true, client: { select: { name: true } } },
+    select: {
+      id: true, title: true, shootDate: true, client: { select: { name: true } },
+      smartTasks: { where: { taskType: "confirmation_text", status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true }, orderBy: { createdAt: "desc" }, take: 1 },
+    },
     orderBy: { shootDate: "asc" },
   });
 }
@@ -524,9 +505,8 @@ export async function kyleChecklist(opts: {
     console.warn(`opsHome: ${what} failed`, (e as Error)?.message);
     return null;
   };
-  const [queue, video, vrows, waiting, special, sched, unconfirmed, olderQc, tasks, closedTasks, closedAsks, replies] = await Promise.all([
-    loadQueue({ now }).catch(warn("photo queue")),
-    videoSummary(now).catch(warn("video summary")),
+  const [queue, vrows, waiting, special, sched, unconfirmed, tasks, closedTasks, closedAsks, replies] = await Promise.all([
+    photoQueue(now).catch(warn("photo queue")),
     videoRows(now).catch(warn("video rows")),
     waitingClients(now, scope).catch(warn("waiting clients")),
     // The full board when the hand-add form needs its job list (it also reads
@@ -534,22 +514,11 @@ export async function kyleChecklist(opts: {
     specialRequestsBoard(now, { countsOnly: !opts.withRequestJobs }).catch(warn("special requests")),
     schedulingBoard(now, { countsOnly: true }).catch(warn("scheduling")),
     tomorrowUnconfirmed(now, ex).catch(warn("tomorrow's confirmations")),
-    prisma.smartTask.count({ where: photoQcWhere(scope) }).catch(() => 0),
     checklistTasks(now, { person: opts.person, excludeClientIds: ex, scrub: opts.scrub, roster: opts.roster }).catch(warn("tasks")),
     checklistTasksClosedToday(now, { person: opts.person, excludeClientIds: ex, scrub: opts.scrub }).catch(warn("tasks closed today")),
     asksClosedToday(now, ex).catch(warn("asks closed today")),
     repliesToday(now, ex).catch(warn("replies today")),
   ]);
-
-  // ---- the old summary box's numbers ----
-  const pc = queue ? photoCountsFromQueue(queue, now) : null;
-  const summary: HomeSummary = {
-    photos: pc ? { dueToday: pc.dueToday, late: pc.behind, olderQc } : null,
-    videos: video ? { readyToSend: video.readyToSend, late: video.late, dueToday: video.dueToday } : null,
-    messages: waiting
-      ? { waiting: waiting.length, behind: waiting.filter((w) => w.behind).length, oldestHours: waiting[0]?.group.oldestHours ?? null }
-      : null,
-  };
 
   // ---- the five groups ----
   const group = (key: ChecklistGroupKey, lines: ChecklistLine[], unavailable: boolean, later: ChecklistLine[] = []): ChecklistGroup => {
@@ -594,7 +563,8 @@ export async function kyleChecklist(opts: {
       when: null,
       late: false,
       href: `/projects/${p.id}`,
-      action: { kind: "open" as const, label: "Open" },
+      // Done or Not needed on its confirmation task; Open when none was made.
+      action: p.smartTasks[0] ? { kind: "task" as const, id: p.smartTasks[0].id } : { kind: "open" as const, label: "Open" },
     })),
   ];
 
@@ -651,7 +621,6 @@ export async function kyleChecklist(opts: {
   ];
   return {
     nowISO: now.toISOString(),
-    summary,
     groups,
     earlier: { items: earlier, unavailable: !tasks },
     done,
@@ -806,7 +775,8 @@ export async function ownerWeek(now: Date = new Date(), opts: { excludeClientIds
 // figure is computed by the function that builds the screen it opens.
 //   On time          → jobsBoard().counts            (/jobs, "Shoots")
 //   Clients waiting  → messagesBoard().waiting       (Messages)
-//   Special requests → askBoardCounts().special      (+ jobsBoard rows' requests)
+//   Special requests → jobsBoard rows' open requests  (/jobs?f=requests); the
+//                      asks on no job are their own line under Needs attention
 //   QC & review      → getReviewQueue().pending      ("To review" on /review)
 //                      videoSummary().readyToSend    ("Ready to send" on /review)
 //                      loadQueue() QC columns        (/ops/photo-delivery)
@@ -831,7 +801,8 @@ export type DashboardHealth = {
   /** null = the source could not be read */
   onTime: (JobsBoard["counts"] & { tone: Tone }) | null;
   clients: { waiting: number; behind: number; oldestHours: number | null; email: number; text: number; tone: Tone } | null;
-  requests: { open: number; behind: number; shoots: number | null; needOwner: number | null; tone: Tone } | null;
+  /** counted off the Shoots board's rows (the Requests filter it opens); `notOnJob` = open asks no job holds yet */
+  requests: { open: number; behind: number; shoots: number; needOwner: number; notOnJob: number | null; tone: Tone } | null;
   qc: {
     /** cuts waiting on a verdict (the Video Review Room's "To review"); null = could not be read */
     toReview: number | null;
@@ -915,14 +886,14 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   // instead of building it twice.
   const boardP: Promise<VideoDeliveryBoard | null> = videoDeliveryBoard(current ? {} : { now }).catch(warn("video board"));
   const isOwner = opts.viewer.role === "OWNER";
-  const [jobs, messages, asks, review, video, board, queue, old, todos] = await Promise.all([
+  const [jobs, messages, special, review, video, board, queue, old, todos] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
     messagesBoard({ now, excludeClientIds: ex, team: true }).catch(warn("messages")),
-    askBoardCounts(now).catch(warn("special requests")),
+    specialRequestsBoard(now, { countsOnly: true }).catch(warn("special requests")),
     getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")) as Promise<ReviewQueue | null>,
     boardP.then(() => videoSummary(now)).catch(warn("video summary")),
     boardP,
-    loadQueue({ now }).catch(warn("photo queue")),
+    photoQueue(now).catch(warn("photo queue")),
     listOldItems(now, { excludeClientIds: ex, roster: opts.roster }).catch(warn("old items")) as Promise<OldItemsRead | null>,
     isOwner ? import("@/lib/ownerDay").then((m) => m.ownerTodoLists()).catch(warn("owner list")) : Promise.resolve(null),
   ]);
@@ -932,6 +903,15 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   // ---- the four tiles ----
   const withRequests = rows.filter((r) => r.requests.open > 0);
   const needOwnerRows = rows.filter((r) => r.requests.needsOwner > 0);
+  // Oct 20 2026 (audit A10): the tile counted every open ask (asks on no job,
+  // test clients whatever the view) and opened /jobs with no requests filter,
+  // so its number was on no page. It counts the Shoots rows it opens now
+  // (/jobs?f=requests); "past due" is those rows' asks; the asks on no job are
+  // a line of their own under Needs attention, opening Kyle's list.
+  const rowIds = new Set(rows.map((r) => r.projectId));
+  const openAsks = special ? special.groups.flatMap((g) => g.asks) : null;
+  const requestsBehind = (openAsks ?? []).filter((a) => !!a.projectId && rowIds.has(a.projectId) && a.behind).length;
+  const notOnJob = openAsks ? openAsks.filter((a) => !a.projectId).length : null;
   const qcCards = queue ? queue.columns.filter((c) => PHOTO_QC_COLUMNS.includes(c.key)).flatMap((c) => c.cards) : null;
   const photosLate = (qcCards ?? []).filter((c) => c.slaDueAt && Date.parse(c.slaDueAt) < now.getTime()).length;
   const sendingLate = (board?.lanes.sending ?? []).filter((r) => r.late).length;
@@ -951,13 +931,14 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
           tone: waiting.some((w) => w.behind) ? "bad" : waiting.length > 0 ? "warn" : "ok",
         }
       : null,
-    requests: asks
+    requests: jobs
       ? {
-          open: asks.special.open,
-          behind: asks.special.behind,
-          shoots: jobs ? withRequests.length : null,
-          needOwner: jobs ? needOwnerRows.reduce((n, r) => n + r.requests.needsOwner, 0) : null,
-          tone: asks.special.behind > 0 ? "bad" : asks.special.open > 0 ? "warn" : "ok",
+          open: withRequests.reduce((n, r) => n + r.requests.open, 0),
+          behind: requestsBehind,
+          shoots: withRequests.length,
+          needOwner: needOwnerRows.reduce((n, r) => n + r.requests.needsOwner, 0),
+          notOnJob,
+          tone: requestsBehind > 0 ? "bad" : withRequests.length > 0 ? "warn" : "ok",
         }
       : null,
     qc: toReview == null && readyToSend == null && qcCards == null
@@ -1022,9 +1003,11 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
         more > 0 ? `${more} more late` : null,
       ].filter(Boolean).join(" · "),
       owner: inReview ? "Review · the Video Review Room" : `${editor ?? "The editor"} · video editing`,
+      // "Open in Videos", not "Remind John" (audit A6): the button only ever
+      // opened the room; nothing was sent to anyone.
       action: inReview
         ? { label: "Review it", href: r.reviewHref ?? `/review/${r.projectId}` }
-        : { label: editor ? `Remind ${editor}` : "Remind editor", href: "/review" },
+        : { label: "Open in Videos", href: "/review" },
     });
   }
 
@@ -1068,7 +1051,19 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
       lead: one ? `${one.street}:` : `${total} client ${plural0(total, "request")}`,
       text: one ? `${total} client ${plural0(total, "request")} with no owner yet` : `on ${needOwnerRows.length} shoots have no owner yet`,
       owner: `${opsName} · give each one an owner`,
-      action: one ? { label: "Open shoot", href: one.href || `/projects/${one.projectId}` } : { label: "Open Shoots", href: "/jobs" },
+      action: one ? { label: "Open shoot", href: one.href || `/projects/${one.projectId}` } : { label: "Open Shoots", href: "/jobs?f=requests" },
+    });
+  }
+
+  // 5b. Client requests on no job yet: Kyle's list puts each on its job.
+  if (notOnJob) {
+    add(4, {
+      key: "requests-no-job",
+      tone: "warn",
+      lead: `${notOnJob} client ${plural0(notOnJob, "request")}`,
+      text: notOnJob === 1 ? "is not on a job yet" : "are not on a job yet",
+      owner: `${opsName} · pick the job for each`,
+      action: { label: "Open", href: `${CHECKLIST_PATH}#requests` },
     });
   }
 

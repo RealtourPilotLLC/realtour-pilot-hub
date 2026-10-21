@@ -1,10 +1,10 @@
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus, type Prisma } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { clientTextWhere, CLIENT_TEXT_TYPES } from "@/lib/clientTexts";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
 
-import { TRIAGE_TYPES } from "@/lib/triage";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
 import type { QcMissBucket } from "@/lib/qc";
 import { parseChecklist } from "@/lib/checklist";
@@ -19,33 +19,17 @@ import { taskClientScopeWhere, type TaskClientScope } from "@/lib/taskClientScop
 // past this module — queries.ts is the dashboard's single data door.
 export type { QcStats, QcMissBucket } from "@/lib/qc";
 
-/** Projects for the pipeline board — current work only (last-30-day window). */
-export async function getPipelineProjects() {
-  return prisma.project.findMany({
-    where: recentProjectWhere(),
-    // Chronological: soonest shoot first within each column (the board re-sorts
-    // the Delivered column by most-recently-delivered).
-    orderBy: [
-      { shootDate: { sort: "asc", nulls: "last" } },
-      { deliveryDue: { sort: "asc", nulls: "last" } },
-      { orderedAt: "desc" },
-    ],
-    include: {
-      client: true,
-      photographer: true,
-      editor: true,
-      va: true,
-      deliverables: true,
-      checklist: true,
-      _count: { select: { activities: true } },
-    },
-  });
-}
+/** The test (synthetic) clients' ids, read ONCE per page render (React cache;
+ *  outside a render it simply reads). The dashboard, its shoot cards and its
+ *  exceptions card each scanned every client for these on every render, and
+ *  the page refreshes itself every 90 seconds (Oct 20 2026, audit A3). */
+export const syntheticClientIds = cache(async (): Promise<string[]> =>
+  (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id));
 
-export type PipelineProject = Awaited<ReturnType<typeof getPipelineProjects>>[number];
-
-/** A single project with everything for the detail view. */
-export async function getProject(id: string) {
+/** A single project with everything for the detail view. `activities` caps the
+ *  activity rows to the newest N (the job page's feed); the editor brief and
+ *  its PDF read every row, so the default stays all of them. */
+export async function getProject(id: string, opts: { activities?: number } = {}) {
   return prisma.project.findUnique({
     where: { id },
     include: {
@@ -55,7 +39,7 @@ export async function getProject(id: string) {
       va: true,
       deliverables: { orderBy: { createdAt: "asc" } },
       checklist: { orderBy: { sortOrder: "asc" }, include: { assignee: true } },
-      activities: { orderBy: { createdAt: "desc" }, include: { author: true } },
+      activities: { orderBy: { createdAt: "desc" }, include: { author: true }, ...(opts.activities ? { take: opts.activities } : {}) },
       uploads: { orderBy: { createdAt: "asc" }, include: { deliverable: true } },
       appointments: { orderBy: { startAt: "asc" }, include: { assignedTo: true } },
       smartTasks: {
@@ -517,81 +501,6 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
     orderBy: [{ priority: "asc" }, { dueAt: "asc" }],
   });
   return tasks.map((t) => mapTask(t, startToday));
-}
-
-// ---------------------------------------------------------------------------
-// Dashboard chip counts — HONEST, system-wide numbers. The old chips counted
-// only the morning-brief slice (Kyle's due-today view), so the dashboard read
-// "1 replies / 0 to assign" while 44 tasks were active and 34 sat unassigned.
-// These count EVERY active task, so the glance can't understate the backlog.
-// ---------------------------------------------------------------------------
-export type ActionCounts = {
-  replies: number; // open message-type tasks — someone wrote in and is waiting
-  qc: number; // open QC/deliver-type tasks — content sitting in the pipeline
-  late: number; // ANY active task past its dueAt
-  toAssign: number; // triage-type tasks with no owner (isNeedsAssigning, in SQL)
-};
-
-export async function getActionCounts(): Promise<ActionCounts> {
-  const [replies, qc, late, toAssign] = await Promise.all([
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: MESSAGE_TASK_TYPES } } }),
-    // Same recency rule as the Board, so the chip never counts a card no list
-    // can render (audit: a 28-day ON_HOLD QC ghost was chip-counted, invisible).
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: DELIVER_TASK_TYPES }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
-    // Message-type tasks are recency-EXEMPT on every list that renders them —
-    // the chip must count what the lists show (review finding).
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, dueAt: { lt: new Date() }, OR: [{ projectId: null }, { project: recentProjectWhere() }, { taskType: { in: MESSAGE_TASK_TYPES } }] } }),
-    // Same definition as isNeedsAssigning (src/lib/triage.ts) — delegatable work
-    // that arrived without an owner — expressed in SQL so it counts system-wide
-    // instead of only the brief slice.
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, assignedKey: null, taskType: { in: [...TRIAGE_TYPES] } } }),
-  ]);
-  return { replies, qc, late, toAssign };
-}
-
-// The number on the dashboard's "Start your day →" button = the number of CARDS
-// /today actually renders. It replicates /today's stack query EXACTLY
-// (src/app/today/page.tsx): Kyle's own/unassigned + delegated work; message
-// tasks at any due date; QC/deliver (minus delivery_text, which lives on /texts)
-// while open on a recent job; everything else due by end of today INCLUDING
-// overdue; client texts carved out and replaced by ONE rollup card when any are
-// waiting. Kept here so /today can adopt this helper later and the two numbers
-// can never drift.
-export async function getTodayCardCount(): Promise<number> {
-  // etEndOfTodayUtc is the DST-correct helper (clientTexts.ts documents why
-  // now+24h is wrong around the clock changes — review finding).
-  const { etEndOfTodayUtc } = await import("@/lib/clientTexts");
-  const endToday = etEndOfTodayUtc();
-  // /today's "check" step excludes delivery_text — those moved to /texts.
-  const CHECK_TYPES = DELIVER_TASK_TYPES.filter((t) => t !== "delivery_text");
-  const [stack, texts, triage] = await Promise.all([
-    prisma.smartTask.count({
-      where: {
-        status: { in: BRIEF_ACTIVE },
-        // every assignee visible — jordan/photographer keys must not vanish (audit critical)
-        AND: [{
-          OR: [
-            // Messages/replies: always surface while open (someone is waiting).
-            { taskType: { in: MESSAGE_TASK_TYPES } },
-            // QC & deliver: while open on a recent job, any due date.
-            { taskType: { in: CHECK_TYPES }, OR: [{ projectId: null }, { project: recentProjectWhere() }] },
-            // Everything else: due by end of today INCLUDING overdue.
-            {
-              taskType: { notIn: [...MESSAGE_TASK_TYPES, ...CHECK_TYPES, ...CLIENT_TEXT_TYPES] },
-              dueAt: { lte: endToday },
-              OR: [{ projectId: null }, { project: recentProjectWhere() }],
-            },
-          ],
-        }],
-      },
-    }),
-    getClientTextTasks(),
-    // The unowned-instructions rollup card (one per feed when the pile is
-    // non-empty) — counted so the badge matches the feed (review finding).
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, assignedKey: null, taskType: { in: ["internal_instruction", "todo", "vendor_update"] }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
-  ]);
-  // The texts/triage piles aren't cards — /today shows one rollup card each.
-  return stack + (texts.length > 0 ? 1 : 0) + (triage > 0 ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1310,11 +1219,16 @@ export type HistoryDelivery = {
   clientAvatarUrl: string | null; // see BriefTask.clientAvatarUrl
 };
 
+/** One window instead of "the last N days": [since, until). The day recap
+ *  reads the one ET day it summarises (audit A4), not 120 days of rows. */
+export type HistoryWindow = { since?: Date; until?: Date };
+const historySince = (days: number, w: HistoryWindow) => w.since ?? etDayStartUtc(etAddDays(new Date(), -days));
+
 // Completed tasks over the last N days (newest first), for the history page.
-export async function getTaskHistory(days = 45, opts: TaskClientScope = {}): Promise<HistoryTask[]> {
-  const since = etDayStartUtc(etAddDays(new Date(), -days));
+export async function getTaskHistory(days = 45, opts: TaskClientScope & HistoryWindow = {}): Promise<HistoryTask[]> {
+  const since = historySince(days, opts);
   const tasks = await prisma.smartTask.findMany({
-    where: { status: "COMPLETED", completedAt: { gte: since }, AND: [taskClientScopeWhere(opts)] },
+    where: { status: "COMPLETED", completedAt: { gte: since, ...(opts.until ? { lt: opts.until } : {}) }, AND: [taskClientScopeWhere(opts)] },
     orderBy: { completedAt: "desc" },
     select: {
       id: true, title: true, taskType: true, completedAt: true,
@@ -1347,10 +1261,11 @@ export type HistoryShoot = {
 };
 
 // Shoots (appointments) that occurred over the last N days, for the daily recap.
-export async function getShootHistory(days = 45, opts: TaskClientScope = {}): Promise<HistoryShoot[]> {
-  const since = etDayStartUtc(etAddDays(new Date(), -days));
+export async function getShootHistory(days = 45, opts: TaskClientScope & HistoryWindow = {}): Promise<HistoryShoot[]> {
+  const since = historySince(days, opts);
+  const nowD = new Date();
   const appts = await prisma.appointment.findMany({
-    where: { startAt: { gte: since, lte: new Date() }, status: { not: "CANCELED" }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
+    where: { startAt: { gte: since, ...(opts.until && opts.until < nowD ? { lt: opts.until } : { lte: nowD }) }, status: { not: "CANCELED" }, ...(opts.excludeClientIds?.length ? { project: { clientId: { notIn: opts.excludeClientIds } } } : {}) },
     orderBy: { startAt: "desc" },
     select: {
       id: true, startAt: true,
@@ -1538,10 +1453,10 @@ export async function getBillingRows(opts: { excludeClientIds?: string[] } = {})
 }
 
 // Projects delivered over the last N days, to round out the daily recap.
-export async function getDeliveryHistory(days = 45, opts: TaskClientScope = {}): Promise<HistoryDelivery[]> {
-  const since = etDayStartUtc(etAddDays(new Date(), -days));
+export async function getDeliveryHistory(days = 45, opts: TaskClientScope & HistoryWindow = {}): Promise<HistoryDelivery[]> {
+  const since = historySince(days, opts);
   const projects = await prisma.project.findMany({
-    where: { deliveredAt: { gte: since }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
+    where: { deliveredAt: { gte: since, ...(opts.until ? { lt: opts.until } : {}) }, ...(opts.excludeClientIds?.length ? { clientId: { notIn: opts.excludeClientIds } } : {}) },
     orderBy: { deliveredAt: "desc" },
     select: { id: true, title: true, deliveredAt: true, client: { select: { name: true, avatarUrl: true } } },
   });
@@ -1563,6 +1478,22 @@ export type ProactiveFlag = {
   detail: string;
   href: string;
 };
+
+/** The single largest unpaid balance, by client, for the owner's money strip
+ *  on the dashboard. The strip used to run the whole getProactiveFlags below
+ *  (delivery exceptions, the VIP comms groupBy, stale revisions) and render
+ *  none of it, only this one figure (Oct 20 2026, audit A4). Same grouping. */
+export async function getTopAr(opts: { excludeClientIds?: string[] } = {}): Promise<{ name: string; total: number } | null> {
+  const { rows } = await getBillingRows(opts);
+  const byClient = new Map<string, { name: string; total: number }>();
+  for (const r of rows) {
+    const key = r.clientName ?? r.id;
+    const cur = byClient.get(key);
+    if (cur) cur.total += r.outstanding;
+    else byClient.set(key, { name: r.clientName ?? "Unknown", total: r.outstanding });
+  }
+  return [...byClient.values()].sort((a, b) => b.total - a.total)[0] ?? null;
+}
 
 // Returns the top ≤3 freshest flags (not a 12-row wall — freshness is the MVP
 // mechanism, do not raise the cap back up) plus the single largest AR balance

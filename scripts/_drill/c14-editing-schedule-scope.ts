@@ -162,7 +162,8 @@ async function main() {
     const normalHtml = renderToStaticMarkup(listNormal as Parameters<typeof renderToStaticMarkup>[0]);
     const testHtml = renderToStaticMarkup(listTest as Parameters<typeof renderToStaticMarkup>[0]);
     c.ok("normal Schedule List hides fixtures but keeps protected TEST and longer real visits", !normalHtml.includes("Fixture upcoming visit") && normalHtml.includes("Protected TEST visit") && normalHtml.includes("Real visit after Home week") && normalHtml.includes("Real visit without coordinates"), normalHtml);
-    c.ok("Schedule List restores test scope without changing 60-day or status windows", testHtml.includes("Fixture upcoming visit") && !testHtml.includes("Real visit after Schedule horizon") && !testHtml.includes("Real delivered job") && !testHtml.includes("Real cancelled visit") && testHtml.includes("next 60 days"), testHtml);
+    // Oct 20 2026 (audit A15): a visit on a delivered job is on the List, as it is on the Map.
+    c.ok("Schedule List restores test scope without changing the 60-day window; a later visit on a delivered job is listed, as on the Map", testHtml.includes("Fixture upcoming visit") && !testHtml.includes("Real visit after Schedule horizon") && testHtml.includes("Real delivered job") && !testHtml.includes("Real cancelled visit") && testHtml.includes("next 60 days"), testHtml);
     const mapNormal = await scheduleTree("map");
     const mapTest = await scheduleTree("map", "1");
     const normalPins = elements(mapNormal, "ProjectMap")[0].pins as { projectId: string }[];
@@ -170,10 +171,11 @@ async function main() {
     c.ok("Schedule Map shares normal/test identity scope and preserves location/status rules", !normalPins.some((r) => r.projectId === fixtureFuture.id) && fullPins.some((r) => r.projectId === fixtureFuture.id) && normalPins.some((r) => r.projectId === protectedFuture.id) && normalPins.some((r) => r.projectId === delivered.id) && !fullPins.some((r) => [noCoordinates.id, cancelled.id, farFuture.id].includes(r.projectId)));
     const normalWeek = (await getShootWindow({ excludeClientIds: [fixture.id] })).week;
     const fullWeek = (await getShootWindow()).week;
-    c.ok("Home week expands only the same scoped near-term appointments seen in Schedule", normalWeek.every((row) => normalHtml.includes(`href="/shoot/${row.id}"`)) && fullWeek.every((row) => testHtml.includes(`href="/shoot/${row.id}"`)) && !normalWeek.some((row) => row.id === longerFuture.id) && fullWeek.some((row) => row.id === fixtureFuture.id));
+    // Oct 20 2026 (audit A14): the office opens the job page from the Schedule and the week strip.
+    c.ok("Home week expands only the same scoped near-term appointments seen in Schedule", normalWeek.every((row) => normalHtml.includes(`href="/projects/${row.id}"`)) && fullWeek.every((row) => testHtml.includes(`href="/projects/${row.id}"`)) && !normalWeek.some((row) => row.id === longerFuture.id) && fullWeek.some((row) => row.id === fixtureFuture.id));
     const weekHtml = renderToStaticMarkup(createElement(WeekStrip, { week: fullWeek, includeTest: true }));
     const toggleHtml = renderToStaticMarkup(createElement(ScheduleViewToggle, { view: "map", includeTest: true }));
-    c.ok("WeekStrip and Schedule view toggles carry scope while exact shoot URLs stay unchanged", weekHtml.includes('href="/schedule?test=1"') && weekHtml.includes(`href="/shoot/${fixtureFuture.id}"`) && toggleHtml.includes('href="/schedule?view=map&amp;test=1"') && toggleHtml.includes('href="/schedule?test=1"') && toggleHtml.includes('href="/schedule?view=map"'));
+    c.ok("WeekStrip and Schedule view toggles carry scope while exact job URLs stay unchanged", weekHtml.includes('href="/schedule?test=1"') && weekHtml.includes(`href="/projects/${fixtureFuture.id}"`) && toggleHtml.includes('href="/schedule?view=map&amp;test=1"') && toggleHtml.includes('href="/schedule?test=1"') && toggleHtml.includes('href="/schedule?view=map"'));
     const dials = await getOwnerDials({ excludeClientIds: [fixture.id] });
     const dialHtml = renderToStaticMarkup(createElement(QualityDials, { dials, includeTest: true }));
     c.ok("SLA dial labels its existing sample definition and links to matching explicit scope", dialHtml.includes("in the SLA sample") && dialHtml.includes('href="/editing?test=1"') && dialHtml.includes("also includes waiting and upcoming projects"));

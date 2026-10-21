@@ -71,7 +71,8 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
       <PageHeader
         eyebrow="Daily checklist"
         title={mine ? "Your list" : `${ops.name}’s list`}
-        subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET · ${list.stillOpen.total} still open · ${list.done.length} done today`}
+        // The counts are said once, on the list's own header (audit A25).
+        subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
         actions={
           <Link href={toggleHref} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
             {includeTest ? "Hide test records" : "Show test records"}
@@ -79,9 +80,8 @@ export default async function YourListPage(props: { searchParams?: Promise<{ tes
         }
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
-        <p className="text-sm text-muted">
-          {mine ? "What you got done today and what is still open." : `What ${ops.name} got done today and what is still open.`}{" "}
-          <Link href={homeRecordHref("/", includeTest)} className="font-medium text-brand hover:underline">Back to the dashboard</Link>
+        <p className="text-sm">
+          <Link href={homeRecordHref("/", includeTest)} className="inline-flex min-h-11 items-center font-medium text-brand hover:underline">Back to the dashboard</Link>
         </p>
         <BehindLine state={behind} href="#deliveries" />
         <DailyChecklist list={list} includeTest={includeTest} minDay={minDay} maxDay={maxDay} />

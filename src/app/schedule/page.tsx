@@ -1,4 +1,5 @@
 import { requirePageAccess } from "@/lib/auth/guards";
+import { getCurrentUser } from "@/lib/auth/user";
 import Link from "next/link";
 import { CalendarDays, MapPin as MapPinIcon, Camera } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -24,17 +25,20 @@ const WINDOW_DAYS = 60;
 const MAP_LOOKBACK_DAYS = 7;
 
 // ---- List view: appointments grouped by ET day, today onward -----------------
-async function ListView({ excludeClientIds, includeTest }: { excludeClientIds: string[]; includeTest: boolean }) {
+async function ListView({ excludeClientIds, includeTest, office }: { excludeClientIds: string[]; includeTest: boolean; office: boolean }) {
   const startToday = etDayStartUtc(new Date());
   const windowEnd = etDayStartUtc(etAddDays(new Date(), WINDOW_DAYS));
 
   // Driven off APPOINTMENTS so an order with multiple visits shows each shoot on
   // its own day, with the photographer assigned to that specific appointment.
+  // The same job filter as the Map (Oct 20 2026, audit A15): the visit's own
+  // status decides, so a second visit or a reshoot on a job already delivered
+  // is on the List as it is on the Map.
   const appts = await prisma.appointment.findMany({
     where: {
       startAt: { gte: startToday, lt: windowEnd },
       status: { not: "CANCELED" },
-      project: { status: { notIn: ["CANCELLED", "DELIVERED"] }, ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) },
+      project: { status: { notIn: ["CANCELLED"] }, ...(excludeClientIds.length ? { clientId: { notIn: excludeClientIds } } : {}) },
     },
     orderBy: { startAt: "asc" },
     include: {
@@ -74,7 +78,10 @@ async function ListView({ excludeClientIds, includeTest }: { excludeClientIds: s
                 return (
                   <Link
                     key={a.id}
-                    href={`/shoot/${p.id}`}
+                    // The office opens the job page, as every other list of
+                    // shoots does (audit A14); /shoot is the photographer's
+                    // field screen, kept for anyone else this page is opened to.
+                    href={office ? `/projects/${p.id}` : `/shoot/${p.id}`}
                     className="flex items-center gap-4 border-b px-5 py-3 last:border-0 hover:bg-surface-2"
                   >
                     <div className="w-16 shrink-0 text-sm font-semibold text-foreground/80">{time}</div>
@@ -209,11 +216,12 @@ async function MapView({ excludeClientIds, includeTest }: { excludeClientIds: st
 
 export default async function SchedulePage({ searchParams }: { searchParams: Promise<{ view?: string; test?: string }> }) {
   await requirePageAccess("schedule");
-  const sp = await searchParams;
+  const [sp, me] = await Promise.all([searchParams, getCurrentUser().catch(() => null)]);
+  const office = !me || me.role === "OWNER" || me.role === "ADMIN";
   const view: ScheduleView = sp.view === "map" ? "map" : "list";
   const includeTest = sp.test === "1";
   const excludeClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((client) => client.id);
   // Each view early-returns its own query (communications pattern): the List
   // never runs the geocoded/map pull, the Map never runs the grouped-day pull.
-  return view === "map" ? <MapView excludeClientIds={excludeClientIds} includeTest={includeTest} /> : <ListView excludeClientIds={excludeClientIds} includeTest={includeTest} />;
+  return view === "map" ? <MapView excludeClientIds={excludeClientIds} includeTest={includeTest} /> : <ListView excludeClientIds={excludeClientIds} includeTest={includeTest} office={office} />;
 }

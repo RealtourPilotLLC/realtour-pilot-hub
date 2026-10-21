@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { authEnforced, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import type { JobMedium } from "@/lib/jobChecks";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,8 @@ export async function confirmJobRequests(projectId: string, medium: JobMedium): 
     revalidatePath(`/edit/${projectId}`);
     revalidatePath("/ops/photo-delivery", "layout");
     revalidatePath("/ops/video-delivery");
-    revalidatePath("/ops/requests");
+    revalidatePath(CHECKLIST_PATH);
+    revalidatePath("/jobs");
     revalidatePath("/");
     if (!r.confirmed) return { ok: true, message: "Someone checked these a moment ago. Nothing changed." };
     return { ok: true, message: `Checked ${r.confirmed === 1 ? "1 request" : `${r.confirmed} requests`}, saved as checked by ${by}.` };

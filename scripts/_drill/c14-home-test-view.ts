@@ -131,9 +131,11 @@ async function main() {
     const kn = listOf(kNormal), ka = listOf(kAll);
     const normalScope = { excludeClientIds: [fixture.id] };
     const waiting = async (scope?: { excludeClientIds: string[] }) => (await unansweredCommsBoard("phone", now, scope)).length + (await unansweredCommsBoard("email", now, scope)).length;
-    c.ok("normal and explicit-test photo/QC numbers share destination scope", kn.summary.photos?.olderQc === 1 && ka.summary.photos?.olderQc === 2 && kn.summary.photos?.olderQc === await prisma.smartTask.count({ where: photoQcWhere(normalScope) }) && ka.summary.photos?.olderQc === await prisma.smartTask.count({ where: photoQcWhere() }));
+    // Oct 20 2026 (audit A4): the checklist no longer carries the old summary
+    // box's numbers (no screen rendered them); the photo QC scope is held here.
+    c.ok("normal and explicit-test photo/QC scopes differ by the fixture; the checklist carries no summary numbers", !("summary" in kn) && !("summary" in ka) && await prisma.smartTask.count({ where: photoQcWhere(normalScope) }) === 1 && await prisma.smartTask.count({ where: photoQcWhere() }) === 2);
     c.ok("normal and explicit-test Outbox number (Messages' Outbox tab) share destination scope", outboxCount(mNormal) === 1 && outboxCount(mAll) === 2 && 1 === await prisma.smartTask.count({ where: clientTextWhere(now, normalScope) }) && 2 === await prisma.smartTask.count({ where: clientTextWhere(now) }));
-    c.ok("the waiting-clients number and its checklist group restore fixture evidence together", kn.summary.messages?.waiting === await waiting(normalScope) && ka.summary.messages?.waiting === await waiting() && kn.summary.messages?.waiting === 1 && ka.summary.messages?.waiting === 2 && kn.groups[1].lines.length === 1 && ka.groups[1].lines.length === 2);
+    c.ok("the waiting clients and their checklist group restore fixture evidence together", kn.groups[1].lines.length === await waiting(normalScope) && ka.groups[1].lines.length === await waiting() && kn.groups[1].lines.length === 1 && ka.groups[1].lines.length === 2);
     const pile = (l: import("../../src/lib/opsHome").KyleChecklist) => [...l.groups.find((g) => g.key === "followups")!.lines.map((x) => x.key.slice(5)), ...l.earlier.items.map((i) => i.id)];
     c.ok("the shared ops pile on the checklist uses the explicit Home scope", pile(kn).length === 1 && pile(ka).length === 2);
     c.ok("today's shoot cards on the dashboard use the explicit scope", (elements(normal, "ShootList")[0].shoots as unknown[]).length === 1 && (elements(all, "ShootList")[0].shoots as unknown[]).length === 2);
@@ -148,7 +150,7 @@ async function main() {
     c.ok("synthetic Slack task deep links retain task ID and scope", slackRows.length >= 2 && slackRows.every((h) => h.endsWith("&test=1")));
     c.ok("figures from the books and Finance routes retain their definitions", JSON.stringify(elements(normal, "MoneyStat")) === JSON.stringify(elements(all, "MoneyStat")) && allLinks.includes("/sales") && !allLinks.some((href) => href.startsWith("/sales?")));
     await signIn(ops);
-    c.ok("only scalar test=1 enables the scope", listOf(await renderList("true")).summary.messages?.waiting === 1 && listOf(await renderList(["1", "1"])).summary.messages?.waiting === 1);
+    c.ok("only scalar test=1 enables the scope", listOf(await renderList("true")).groups[1].lines.length === 1 && listOf(await renderList(["1", "1"])).groups[1].lines.length === 1);
     await signIn(admin);
     const assigned = await render("1");
     const attentionOf = (tree: unknown) => elements(tree, "NeedsAttention")[0].attention as import("../../src/lib/opsHome").Dashboard["attention"];

@@ -13,9 +13,8 @@ import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
 import { QualityDials } from "@/components/dashboard/QualityDials";
 import { ownerPulse } from "@/lib/ownerPulse";
-import { getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials } from "@/lib/queries";
+import { getTopAr, getOwnerStats, getOwnerPulse, getOwnerDials, syntheticClientIds } from "@/lib/queries";
 import { listAssignees, viewerAssigneeKey, type Assignee } from "@/lib/assignees";
-import { isSyntheticClientRow } from "@/lib/testClients";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { buildDashboard, kyleDay, kylePerson, ownerWeek, type KyleDay, type OwnerWeek } from "@/lib/opsHome";
 import { behindState, type BehindState } from "@/lib/behindAlert";
@@ -78,14 +77,14 @@ type OwnerReads = {
   dials: Awaited<ReturnType<typeof getOwnerDials>> | null;
   money: Awaited<ReturnType<typeof ownerPulse>> | null;
 };
-type RadarRead = Awaited<ReturnType<typeof getProactiveFlags>> | null;
+type TopArRead = Awaited<ReturnType<typeof getTopAr>>;
 
 // MONEY — owner only, and last on purpose. Jordan: money after action. The
 // strip merges the old dashboard line (delivered, pipeline, top AR) with My
 // Day's glance (bank, profit, owed), so there is one money answer on this page
 // instead of two. Trends and quality dials fold under it (Oct 5).
-async function OwnerBusiness({ ownerP, radarP, includeTest }: { ownerP: Promise<OwnerReads>; radarP: Promise<RadarRead>; includeTest: boolean }) {
-  const [{ stats, pulse, dials, money }, radar] = await Promise.all([ownerP, radarP]);
+async function OwnerBusiness({ ownerP, topArP, includeTest }: { ownerP: Promise<OwnerReads>; topArP: Promise<TopArRead>; includeTest: boolean }) {
+  const [{ stats, pulse, dials, money }, topAr] = await Promise.all([ownerP, topArP]);
   if (!stats && !money && !pulse && !dials) {
     return <p role="status" className="rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-muted">The business numbers couldn&rsquo;t load. Refresh to try again, or open Finance.</p>;
   }
@@ -105,7 +104,7 @@ async function OwnerBusiness({ ownerP, radarP, includeTest }: { ownerP: Promise<
           <Link href="/sales" className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-border px-5 py-3.5 text-sm hover:bg-surface-2/60">
             <span><span className="text-muted">Delivered this month</span> <b>{formatMoney(stats.revenueThisMonth)}</b> <span className="text-muted-2">({stats.deliveredThisMonth})</span></span>
             <span><span className="text-muted">Pipeline</span> <b>{formatMoney(stats.pipelineRevenue)}</b> <span className="text-muted-2">({stats.activeCount} active)</span></span>
-            {radar?.topAr && <span><span className="text-muted">Top AR</span> <b>{radar.topAr.name} {formatMoney(radar.topAr.total)}</b></span>}
+            {topAr && <span><span className="text-muted">Top AR</span> <b>{topAr.name} {formatMoney(topAr.total)}</b></span>}
             <ArrowRight className="ml-auto size-4 text-muted-2" />
           </Link>
           ) : couldNotLoad("Delivered this month and the pipeline")}
@@ -215,7 +214,8 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
   const includeTest = sp?.test === "1";
-  const excludedClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  // One read of the test clients for the whole render (its sections share it).
+  const excludedClientIds = includeTest ? [] : await syntheticClientIds();
   const scope = { excludeClientIds: excludedClientIds };
   const roster: Assignee[] = await listAssignees().catch(() => []);
   const viewerKey = me ? viewerAssigneeKey(me, roster) : null;
@@ -241,7 +241,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     console.warn("exceptions board failed", (e as Error).message);
     return { ...emptyExceptionBoard(), unavailable: true };
   });
-  const radarP: Promise<RadarRead> | null = isOwner ? getProactiveFlags(scope).catch(() => null) : null;
+  // Only the largest balance: the strip used to run every proactive flag for
+  // it and render none of them (audit A4).
+  const topArP: Promise<TopArRead> | null = isOwner ? getTopAr(scope).catch(() => null) : null;
   const ownerP: Promise<OwnerReads> | null = isOwner
     ? Promise.all([
         getOwnerStats(scope).catch(() => null),
@@ -258,7 +260,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const nowMin = etMinutes(now);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
   // A per-user override can close a screen to this reader: its tile and actions show without the link.
-  const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), communications: !me || canAccess(me, "communications") };
+  const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), communications: !me || canAccess(me, "communications"), pipeline: !me || canAccess(me, "pipeline") };
   const testToggle = <Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>;
 
   return (
@@ -320,9 +322,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             <OwnerWeekSection weekP={weekP} />
           </Suspense>
         )}
-        {ownerP && radarP && (
+        {ownerP && topArP && (
           <Suspense fallback={<SectionLoading label="Loading the business numbers…" />}>
-            <OwnerBusiness ownerP={ownerP} radarP={radarP} includeTest={includeTest} />
+            <OwnerBusiness ownerP={ownerP} topArP={topArP} includeTest={includeTest} />
           </Suspense>
         )}
       </div>

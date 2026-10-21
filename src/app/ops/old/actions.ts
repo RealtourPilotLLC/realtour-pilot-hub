@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import { requireTaskAccess } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
 import { etAddDays, etDayKey } from "@/lib/datetime";
@@ -74,7 +75,7 @@ export async function pushOldItem(taskId: string, day: string): Promise<{ ok: bo
     });
   }
   revalidatePath("/");
-  revalidatePath("/ops/old");
+  revalidatePath(CHECKLIST_PATH);
   revalidatePath("/tasks");
   const when = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }).format(parsed.dueAt);
   return {

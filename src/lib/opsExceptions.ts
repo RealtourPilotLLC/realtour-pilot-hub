@@ -7,7 +7,6 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { editorRouting } from "@/lib/settings";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { resolveEditorAssignment } from "@/lib/editorAssignment";
-import { isSyntheticClientRow } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // THE EXCEPTIONS BOARD (R08, review Sep 18).
@@ -234,9 +233,8 @@ export async function creativeApprover(): Promise<CreativeApprover | null> {
 export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boolean } = {}): Promise<OpsExceptionBoard> {
   const now = (opts.now ?? new Date()).getTime();
   const cap = EXCEPTION_RULES.perKind;
-  const excludedClientIds = opts.includeTest === false
-    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
-    : [];
+  // Shared within a page render with the dashboard's own read (audit A3).
+  const excludedClientIds = opts.includeTest === false ? await (await import("@/lib/queries")).syntheticClientIds() : [];
   const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
   // The roster is read WITH the approver rather than after it: resolving the
   // key an engine wrote on a task ("john", "kim", "cubicasa") to a person costs
@@ -682,7 +680,10 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
       // board's approver line (which says out loud when nobody is named).
       owner: reviewer ?? verdictOwner,
       nextAction: "Listen to the 1080p file or keep the original",
-      href: "/#video-review",
+      // The listen / keep-original control (HeldRender) is on the Video Review
+      // Room's Held rows. "/#video-review" forwarded to the checklist's
+      // Deliveries group, which has neither (Oct 20 2026, audit A5).
+      href: "/review",
       ageDays: Math.floor(hours / 24),
     });
   }

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { authEnforced, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 
 // ---------------------------------------------------------------------------
 // CLIENT ASK ACTIONS (Oct 19 2026, lib/clientAsks). Pressed from Kyle's
@@ -33,8 +34,10 @@ async function guard(): Promise<AskActionResult | null> {
 }
 
 async function refresh(id?: string) {
-  revalidatePath("/ops/requests");
-  revalidatePath("/ops/scheduling");
+  // /ops/requests and /ops/scheduling only redirect now; the asks live on the
+  // list and on Shoots (audit A20).
+  revalidatePath(CHECKLIST_PATH);
+  revalidatePath("/jobs");
   revalidatePath("/");
   if (!id) return;
   const { prisma } = await import("@/lib/prisma");

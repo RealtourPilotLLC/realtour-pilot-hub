@@ -1,49 +1,19 @@
 import Link from "next/link";
-import { CheckCircle2, Flag } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
-import type { FlaggedItem } from "@/lib/queries";
 import { onTimeWords, ON_TIME_MIN_JOBS, type OwnerWeek } from "@/lib/opsHome";
 import type { ShootIssue } from "@/lib/shootIssues";
 
 // ---------------------------------------------------------------------------
-// The dashboard's shared pieces (Oct 19 2026): the flagged-for-you banner (every
-// office login), and the owner's: this week, shoot issues. Every number
-// arrives computed (lib/opsHome, lib/shootIssues); these only lay it out.
+// The dashboard's shared pieces (Oct 19 2026), the owner's: this week, shoot
+// issues. Every number arrives computed (lib/opsHome, lib/shootIssues); these
+// only lay it out. (The flagged-for-you banner left with Oct 19's "flags show
+// on the shoot itself" and was removed Oct 20, audit A19.)
 // ---------------------------------------------------------------------------
 
 const ET = "America/New_York";
 const fmtDay = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric" });
-
-/** Flags a PERSON raised for this viewer, above everything. */
-export function FlaggedBanner({ flagged }: { flagged: FlaggedItem[] }) {
-  if (flagged.length === 0) return null;
-  return (
-    <section className="panel-shadow overflow-hidden rounded-2xl border-2 border-danger/45 bg-danger-soft/40">
-      <div className="flex items-center gap-2 border-b border-danger/25 px-5 py-2.5">
-        <Flag aria-hidden className="size-4 text-danger" />
-        <h2 className="text-[15px] font-semibold text-danger">
-          Flagged by {[...new Set(flagged.map((f) => f.flaggedBy.split(" ")[0]))].join(" & ")}: look at these first
-        </h2>
-        <span className="ml-auto rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-danger">{flagged.length}</span>
-      </div>
-      <ul className="divide-y divide-danger/15">
-        {flagged.map((f) => (
-          <li key={f.taskId}>
-            <Link href={f.href} className="block px-5 py-3 hover:bg-danger/[0.06]">
-              <p className="text-sm font-semibold leading-snug">{f.title}</p>
-              {f.note && <p className="mt-0.5 whitespace-pre-line text-[13px] leading-relaxed text-foreground/80">{f.note}</p>}
-              <p className="mt-1 text-[11px] text-muted">
-                {f.flaggedBy} · {etDateTime(f.flaggedAtISO)}
-                {f.projectTitle ? ` · ${f.projectTitle}` : ""} · open it
-              </p>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
 
 // ---- The owner's week ------------------------------------------------------------
 

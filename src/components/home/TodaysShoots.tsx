@@ -1,14 +1,12 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { Camera, ChevronDown } from "lucide-react";
-import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforcedNow } from "@/lib/auth/enforced";
 import { etDayKey } from "@/lib/datetime";
-import { isSyntheticClientRow } from "@/lib/testClients";
 import { homeRecordHref } from "@/lib/homeRecordScope";
 import { scrubShoot, todayShootCards, type OpsShoot } from "@/lib/opsDay";
-import { getShootWindow, type ShootWindow } from "@/lib/queries";
+import { getShootWindow, syntheticClientIds, type ShootWindow } from "@/lib/queries";
 import { DayBlock } from "@/components/ops/DayBlock";
 import { WeekStrip } from "@/components/dashboard/WeekStrip";
 import { RushChip, ShootList, rushShoots } from "@/components/home/DailyChecklist";
@@ -84,7 +82,8 @@ export async function TodaysShoots({ includeTest = false, id = "todays-shoots" }
   // enforced, a missing viewer sees no figures.
   const isOwner = me ? me.role === "OWNER" : !authEnforcedNow();
   const read = await (async () => {
-    const excludeClientIds = includeTest ? [] : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+    // The dashboard's own read of the test clients, shared within the render (audit A3).
+    const excludeClientIds = includeTest ? [] : await syntheticClientIds();
     return Promise.all([todayShootCards({ excludeClientIds }), getShootWindow({ excludeClientIds })]);
   })().catch((e: unknown) => {
     console.warn("TodaysShoots failed", (e as Error).message);

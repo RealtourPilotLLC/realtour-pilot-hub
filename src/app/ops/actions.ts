@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import type { SentResult } from "@/lib/readyToSend";
 import { prisma } from "@/lib/prisma";
 import { CLOSED_BY_HAND, qcGateComplete, recordQcCompletion, reopenedForCategories } from "@/lib/tasks";
@@ -67,7 +68,7 @@ export async function completeQcTask(taskId: string, note: string): Promise<{ ok
       .catch(() => {});
   }
   revalidatePath("/"); // the merged home renders the same QC card (audit, Sep 8)
-  revalidatePath("/ops");
+  revalidatePath(CHECKLIST_PATH);
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
   return { ok: true, message: "QC closed." };
@@ -206,7 +207,7 @@ export async function acknowledgeQcCategory(
       .catch(() => {});
   }
   revalidatePath("/");
-  revalidatePath("/ops");
+  revalidatePath(CHECKLIST_PATH);
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
   return {
@@ -297,7 +298,7 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
       })
       .catch(() => {});
   }
-  revalidatePath("/ops");
+  revalidatePath(CHECKLIST_PATH);
   revalidatePath("/");
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
@@ -352,7 +353,7 @@ export async function markVideoSentAction(submissionId: string, notice?: string 
   // button and the repair is one press away.
   if (r.ok && !r.incomplete?.length) {
     revalidatePath("/");
-    revalidatePath("/ops");
+    revalidatePath(CHECKLIST_PATH);
     revalidatePath("/tasks");
   }
   return r;
@@ -365,7 +366,7 @@ export async function markVideoUploadedAction(submissionId: string, expectedFing
     if (me?.impersonating) return { ok: false, message: "Leave preview mode before recording an upload." };
     const { recordUploaded } = await import("@/lib/deliveryUploads");
     const result = await recordUploaded(submissionId, { id: me?.id ?? null, name: me?.name ?? me?.email ?? "Office" }, expectedFingerprint);
-    if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); revalidatePath("/tasks"); }
+    if (result.ok) { revalidatePath("/"); revalidatePath(CHECKLIST_PATH); revalidatePath("/tasks"); }
     return result;
   } catch (error) {
     console.error("Upload acknowledgement failed", error);
@@ -388,7 +389,7 @@ export async function markVideoDeliveredAction(submissionId: string, expectedFin
     }
     const { markDeliveredByHand } = await import("@/lib/projectDelivery");
     const result = await markDeliveredByHand(submissionId, expectedFingerprint, { id: me.id ?? null, name: me.name ?? me.email ?? "Office" });
-    revalidatePath("/"); revalidatePath("/ops"); revalidatePath("/tasks");
+    revalidatePath("/"); revalidatePath(CHECKLIST_PATH); revalidatePath("/tasks");
     return result;
   } catch (error) {
     console.error("Delivery acknowledgement failed", error);
@@ -415,7 +416,7 @@ export async function undoVideoUploadAction(submissionId: string, expectedFinger
   try {
     const { undoUpload } = await import("@/lib/deliveryUploads");
     const result = await undoUpload(submissionId, expectedFingerprint, { id: me?.id ?? null, name: me?.name ?? me?.email ?? "Office" });
-    if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); }
+    if (result.ok) { revalidatePath("/"); revalidatePath(CHECKLIST_PATH); }
     return result;
   } catch (error) {
     console.error("Upload undo failed", error);
@@ -429,7 +430,7 @@ export async function correctVideoUploadAction(submissionId: string, receiptId: 
   if (me?.impersonating) return { ok: false, message: "Leave preview mode before correcting an upload." };
   const { correctUpload } = await import("@/lib/deliveryUploads");
   const result = await correctUpload(submissionId, receiptId, reason, { id: me?.id ?? null, name: me?.name ?? me?.email ?? "Office" });
-  if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); }
+  if (result.ok) { revalidatePath("/"); revalidatePath(CHECKLIST_PATH); }
   return result;
 }
 
@@ -450,7 +451,7 @@ export async function recordClientNoticeAction(submissionId: string, notice: str
   const r = await recordClientNotice(submissionId, me?.name ?? me?.email ?? null, notice);
   if (r.ok) {
     revalidatePath("/");
-    revalidatePath("/ops");
+    revalidatePath(CHECKLIST_PATH);
   }
   return r;
 }
@@ -489,6 +490,6 @@ export async function correctVideoSentAction(submissionId: string, expectedSentA
   if (!me || me.impersonating) return { ok: false, message: "Leave preview mode before correcting delivery." };
   const { correctSent } = await import("@/lib/deliveryUploads");
   const result = await correctSent(submissionId, expectedSentAt, reason, { id: me.id, name: me.name ?? me.email });
-  if (result.ok) { revalidatePath("/"); revalidatePath("/ops"); const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } }); if (cut) revalidatePath(`/review/${cut.projectId}`); }
+  if (result.ok) { revalidatePath("/"); revalidatePath(CHECKLIST_PATH); const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } }); if (cut) revalidatePath(`/review/${cut.projectId}`); }
   return result;
 }

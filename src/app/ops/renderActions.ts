@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 import { requireAdmin } from "@/lib/auth/guards";
 
 /**
@@ -33,7 +34,7 @@ export async function retryRenderAction(jobId: string): Promise<{ ok: boolean; m
   const r = await retryTopazJob(jobId);
   // Everywhere the row can be looked at, so the card Kyle is standing on
   // updates along with the page he might open next.
-  revalidatePath("/ops");
+  revalidatePath(CHECKLIST_PATH);
   revalidatePath("/");
   revalidatePath("/review");
   revalidatePath("/connections");

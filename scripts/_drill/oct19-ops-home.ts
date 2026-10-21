@@ -160,7 +160,6 @@ async function main() {
     // Through require, so the drill reads the same (driven) contract the dashboard does.
     const { videoSummary } = createRequire(__filename)("../../src/lib/videoDelivery") as typeof import("../../src/lib/videoDelivery");
     const { unansweredCommsBoard } = await import("@/lib/commsBoard");
-    const { askBoardCounts } = await import("@/lib/clientAsks");
     const { getReviewQueue } = await import("@/lib/reviewRoom");
     const { forwardedHref, blockScreen, GROUP_ALIASES, CHECKLIST_PATH } = await import("@/lib/homeAnchors");
     const { homeRecordHref } = await import("@/lib/homeRecordScope");
@@ -493,8 +492,8 @@ async function main() {
     const emailWaiting = (await unansweredCommsBoard("email", now, { excludeClientIds: [fixture.id] })).length;
     c.ok("Clients waiting = the clients waiting on a reply (text + email), by channel", health.clients?.waiting === waitingNow.length && waitingNow.length >= 1 && health.clients?.email === emailWaiting && health.clients?.text === waitingNow.length - emailWaiting && health.clients?.oldestHours === Math.max(...waitingNow.map((g) => g.oldestHours)), JSON.stringify(health.clients));
     c.ok("…its tone is red when anyone has waited a day", health.clients?.tone === (waitingNow.some((g) => g.oldestHours >= opsHome.MESSAGE_BEHIND_HOURS) ? "bad" : "warn"));
-    const asksNow = await askBoardCounts(now);
-    c.ok("Special requests = the open special requests (askBoardCounts), on N shoots and M needing an owner from the board's rows", health.requests?.open === asksNow.special.open && health.requests?.shoots === boardRows.filter((r) => r.requests.open > 0).length && health.requests?.needOwner === boardRows.reduce((n, r) => n + r.requests.needsOwner, 0) && health.requests?.needOwner === 2, JSON.stringify(health.requests));
+    // Oct 20 2026 (audit A10): counted off the Shoots rows the tile opens (/jobs?f=requests), not every open ask.
+    c.ok("Special requests = the open requests on the Shoots board's rows, on N shoots and M needing an owner; none on no job", health.requests?.open === boardRows.reduce((n, r) => n + r.requests.open, 0) && health.requests?.open === 4 && health.requests?.shoots === boardRows.filter((r) => r.requests.open > 0).length && health.requests?.needOwner === boardRows.reduce((n, r) => n + r.requests.needsOwner, 0) && health.requests?.needOwner === 2 && health.requests?.notOnJob === 0, JSON.stringify(health.requests));
     const reviewNow = await getReviewQueue({ includeTest: false });
     const queueNow = await loadQueue();
     const inQc = queueNow.columns.filter((col) => ["qc", "decision", "ready"].includes(col.key)).flatMap((col) => col.cards);
@@ -503,9 +502,9 @@ async function main() {
     c.ok("…a photo set past its date in QC makes it red, and it opens the Video Review Room while videos wait", health.qc?.late === 1 && health.qc?.tone === "bad" && health.qc?.href === "/review");
     const dashHtml = renderToStaticMarkup(expand(ownerTree) as Parameters<typeof renderToStaticMarkup>[0]);
     const tileHref = (name: string) => dashHtml.match(new RegExp(`<a[^>]*href="([^"]+)"[^>]*data-health="${name}"`))?.[1] ?? dashHtml.match(new RegExp(`<a[^>]*data-health="${name}"[^>]*href="([^"]+)"`))?.[1];
-    c.ok("each tile is a link: On time → late shoots, Clients waiting → Messages, Special requests → Shoots, QC & review → Videos", tileHref("on-time") === "/jobs?f=late" && tileHref("clients") === "/communications" && tileHref("requests") === "/jobs" && tileHref("qc") === "/review", [tileHref("on-time"), tileHref("clients"), tileHref("requests"), tileHref("qc")].join(" "));
+    c.ok("each tile is a link: On time → late shoots, Clients waiting → Messages, Special requests → Shoots with requests, QC & review → Videos", tileHref("on-time") === "/jobs?f=late" && tileHref("clients") === "/communications" && tileHref("requests") === "/jobs?f=requests" && tileHref("qc") === "/review", [tileHref("on-time"), tileHref("clients"), tileHref("requests"), tileHref("qc")].join(" "));
     c.ok("…each with its state colour (red: late shoots and a QC item late; the others by their own rule)", dashHtml.includes('data-health="on-time" data-tone="bad"') && dashHtml.includes(`data-health="clients" data-tone="${health.clients?.tone}"`) && dashHtml.includes(`data-health="requests" data-tone="${health.requests?.tone}"`) && dashHtml.includes('data-health="qc" data-tone="bad"'));
-    c.ok("…and the words: '3 late', due today and tomorrow, oldest 5 days; '2 need an owner'; '1 ready'", ["3 late", "1 due today · 2 due tomorrow · oldest 5 days", "2 need an owner", "1 ready", "1 video ready to send", "2 photo sets in QC"].every((w) => dashHtml.includes(w)), dashHtml.slice(dashHtml.indexOf("data-health-strip"), dashHtml.indexOf("data-health-strip") + 1500));
+    c.ok("…and the words: '3 late', due today and tomorrow, oldest 5 days; '2 need an owner'; '1 ready' (said once: not again under it)", ["3 late", "1 due today · 2 due tomorrow · oldest 5 days", "2 need an owner", "1 ready", "2 photo sets in QC"].every((w) => dashHtml.includes(w)) && !dashHtml.includes("1 video ready to send"), dashHtml.slice(dashHtml.indexOf("data-health-strip"), dashHtml.indexOf("data-health-strip") + 1500));
 
     // ---- shoots in progress ----
     const table = elements(ownerTree, "ShootsInProgress")[0]?.jobs as Dashboard["jobs"];
@@ -519,7 +518,8 @@ async function main() {
     const att = elements(ownerTree, "NeedsAttention")[0]?.attention as Dashboard["attention"];
     const item = (key: string) => att.items.find((i) => i.key.startsWith(key)) as AttentionItem | undefined;
     c.ok("Needs attention: at most five, red first, each with an owner and one action", att.items.length === opsHome.ATTENTION_MAX && att.items.every((i) => !!i.owner && !!i.action.label && !!i.action.href) && att.items.every((i, n, a) => n === 0 || !(a[n - 1].tone === "warn" && i.tone === "bad")), att.items.map((i) => `${i.tone}:${i.key}`).join(" "));
-    c.ok("…the late video with its editor (from the board's chip) and Remind", item("late:")?.lead === "v-late Video Ave:" && item("late:")?.text.includes("1.3 days late") === true && item("late:")?.owner.startsWith("John") === true && item("late:")?.action.label === "Remind John" && item("late:")?.action.href === "/review", JSON.stringify(item("late:")));
+    // Oct 20 2026 (audit A6): "Open in Videos", not "Remind John": the button only ever opened the room.
+    c.ok("…the late video with its editor (from the board's chip) and Open in Videos", item("late:")?.lead === "v-late Video Ave:" && item("late:")?.text.includes("1.3 days late") === true && item("late:")?.owner.startsWith("John") === true && item("late:")?.action.label === "Open in Videos" && item("late:")?.action.href === "/review", JSON.stringify(item("late:")));
     c.ok("…clients waiting, owned by Kyle, oldest first", item("clients")?.lead === `${waitingNow.length} client${waitingNow.length === 1 ? "" : "s"}` && item("clients")?.owner.startsWith("Kyle · oldest") === true && item("clients")?.action.href === "/communications", JSON.stringify(item("clients")));
     c.ok("…the requests nobody owns, on the one shoot (late, so red), opening that shoot", item("needs-owner")?.lead === "50 Soon St:" && item("needs-owner")?.text === "2 client requests with no owner yet" && item("needs-owner")?.tone === "bad" && item("needs-owner")?.action.href === `/projects/${pSoon.id}`, JSON.stringify(item("needs-owner")));
     c.ok("…the video ready to send with a client request to check, Kyle's to send", item("send:")?.lead === "v-send Video Ave video:" && item("send:")?.text.startsWith("check the client's request, then send it") === true && item("send:")?.owner === "Kyle · 1 client request" && item("send:")?.action.label === "Check & send" && item("send:")?.action.href === `/review/${pEdit.id}?cut=v-send`, JSON.stringify(item("send:")));
@@ -731,7 +731,7 @@ async function main() {
       await signIn(u);
       const html = ssr(await settle(await home({})));
       c.ok(`${who}'s dashboard: Monthly content ${who === "Kyle" ? "is not on it" : "is on it"} (Oct 20 2026: Jordan's and the creative manager's)`, who === "Kyle" ? !html.includes("data-content-actions") : html.includes("data-content-actions"));
-      c.ok(`${who}'s dashboard renders (tiles, shoots in progress, needs attention, the list card), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && ["On time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"].every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > 8, html.slice(0, 200));
+      c.ok(`${who}'s dashboard renders (tiles, shoots in progress, needs attention, the list card), no nested links, thumb-sized taps`, !html.startsWith("RENDER FAILED") && ["Shoots on time", "Clients waiting", "Special requests", "QC &amp; review", "Shoots in progress", "Needs attention now"].every((w) => html.includes(w)) && !nestedLink(html) && (html.match(/min-h-11/g) ?? []).length > 8, html.slice(0, 200));
       c.ok(`${who}'s dashboard: money only for the owner`, who === "Jordan" ? html.includes("Profit this month") && html.includes("This week") : !html.includes("Profit this month") && !html.includes("This week") && !/\$\d/.test(html));
     }
     await signIn(kyle);

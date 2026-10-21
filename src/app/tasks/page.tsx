@@ -61,7 +61,11 @@ export default async function TasksHubPage({ searchParams }: {
   // the same read. Old links (?tab=comms, ?tab=today via /today, the Slack
   // digest's "Unanswered" line, ?via=email) land there; the test view rides
   // along. A login without Messages keeps this tab.
-  if (tab === "comms" && (!me || canAccess(me, "communications"))) {
+  // Whether the Replies tab is a tab at all for this login: only one without
+  // Messages keeps it. For everyone else it is not drawn and its reads (both
+  // comms boards, the phone one twice) are not made (Oct 20 2026, audit A4).
+  const repliesHere = !!me && !canAccess(me, "communications");
+  if (tab === "comms" && !repliesHere) {
     redirect(sp.test === "1" ? "/communications?test=1" : "/communications");
   }
 
@@ -81,9 +85,9 @@ export default async function TasksHubPage({ searchParams }: {
   const [workCounts, doneN, checklists, phoneWaiting] = await Promise.all([
     boardOnly ? { all: 0, mine: 0, needsAssignment: 0 } : boardNavigationCounts({ excludeClientIds: excludedOtherClientIds }),
     boardOnly ? 0 : doneTodayCount({ excludeClientIds: excludedDoneClientIds }),
-    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeCommsClientIds: excludedCommsClientIds, excludeSlackClientIds: excludedSlackClientIds }),
+    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeCommsClientIds: excludedCommsClientIds, excludeSlackClientIds: excludedSlackClientIds, skipComms: !repliesHere }),
     // Only to decide which side of Comms to open on — see commsChannel below.
-    boardOnly ? 0 : unansweredCommsBoard("phone", new Date(), { excludeClientIds: excludedCommsClientIds }).then((g) => g.length).catch(() => 0),
+    boardOnly || !repliesHere ? 0 : unansweredCommsBoard("phone", new Date(), { excludeClientIds: excludedCommsClientIds }).then((g) => g.length).catch(() => 0),
   ]);
   // The Comms badge counts Phone + Email, so defaulting to Phone when nobody is
   // waiting on a text lands a "Comms 5" tab on "Nobody is waiting on a text
@@ -106,6 +110,7 @@ export default async function TasksHubPage({ searchParams }: {
       revisionsCount={checklists.revisions}
       showTest={sp.test === "1"}
       slackCount={checklists.slack}
+      showReplies={repliesHere}
       updatedAt={new Date()}
     />
   );
