@@ -107,6 +107,8 @@ export type DayMiles = {
   overrideNote: string | null;
   /** true = pay rests on a straight-line GUESS (router down, no override). */
   estimated: boolean;
+  /** cachedMileageOnly: no MileageDay row for the day, so its miles count as 0. */
+  notComputed?: boolean;
 };
 
 // The cached MileageDay columns dailyMiles reads. computePayroll fetches every
@@ -176,6 +178,15 @@ async function dailyMiles(
   return withOverride(miles, estimated);
 }
 
+// The cached figure only: never the router, never a write (Oct 21 2026, for
+// the owner's pay structure comparison, lib/paySavings.ts). An owner override
+// still wins. A row whose route has since changed is used as it stands; a day
+// with no row at all counts 0 miles and says so (notComputed).
+function cachedDayMiles(row: MileageRow | null): DayMiles {
+  if (!row) return { miles: 0, computedMiles: 0, overrideMiles: null, overrideNote: null, estimated: false, notComputed: true };
+  return { miles: row.overrideMiles ?? row.miles, computedMiles: row.miles, overrideMiles: row.overrideMiles, overrideNote: row.overrideNote, estimated: false };
+}
+
 export type PayrollJob = {
   projectId: string;
   title: string;
@@ -210,6 +221,8 @@ export type PayrollDay = {
   jobs: number; // jobs sharing the mileage
   /** true = the miles are a straight-line guess (router down); retried next load. */
   estimated?: boolean;
+  /** cachedMileageOnly: the day was never routed, so its miles count as 0. */
+  notComputed?: boolean;
 };
 
 export type PayrollIssue = { level: "warn" | "info"; message: string; projectId?: string };
@@ -253,10 +266,13 @@ export async function unassignedShootsInRange(start: Date, end: Date): Promise<{
 // added to your payroll"). Owner surfaces always see the full accrual.
 export const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
 
+// `cachedMileageOnly` (Oct 21 2026, lib/paySavings.ts): read each day's miles
+// from the MileageDay cache alone, so the pass never calls the router and never
+// writes. Every other rule is the same pass; /payouts and My Pay never set it.
 export async function computePayroll(
   start: Date,
   end: Date,
-  opts?: { memberId?: string; forCreativeEyes?: boolean },
+  opts?: { memberId?: string; forCreativeEyes?: boolean; cachedMileageOnly?: boolean },
 ): Promise<PayrollPerson[]> {
   // Candidate projects: any non-cancelled project with a shoot (appointment or
   // shootDate) in range. We do NOT pre-filter by the project's photographer —
@@ -580,7 +596,10 @@ export async function computePayroll(
             .filter((b) => b.hasCoords)
             .map((b) => { const c = coordsByProject.get(b.projectId)!; return { lat: c!.lat, lng: c!.lng, at: b._at }; })
         : [];
-      const dm = await dailyMiles(memberId, dayKey, home, stops, !!opts?.forCreativeEyes, mileageRowOf.get(`${memberId}|${dayKey}`) ?? null);
+      const cachedRow = mileageRowOf.get(`${memberId}|${dayKey}`) ?? null;
+      const dm = opts?.cachedMileageOnly
+        ? cachedDayMiles(cachedRow)
+        : await dailyMiles(memberId, dayKey, home, stops, !!opts?.forCreativeEyes, cachedRow);
       const payableMiles = Math.max(dm.miles - freeMiles, 0);
       const share = mileageJobs.length > 0 ? r2((payableMiles * (m?.mileageRate ?? 0.65)) / mileageJobs.length) : 0;
       for (const b of mileageJobs) { b.mileageShare = share; b.jobTotal = r2(b.shootPay + share); }
@@ -597,6 +616,7 @@ export async function computePayroll(
         mileagePay: r2(share * mileageJobs.length),
         jobs: mileageJobs.length,
         ...(dm.estimated ? { estimated: true } : {}),
+        ...(dm.notComputed ? { notComputed: true } : {}),
       });
     }
 
