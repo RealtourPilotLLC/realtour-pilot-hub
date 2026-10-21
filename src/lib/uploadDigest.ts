@@ -37,25 +37,16 @@ async function heldForQuietTime(memberId: string, text: string, kind: string, at
 const etDayWindow = (): { start: Date; end: Date } => etDayBoundsUtc(etDayKey(new Date()));
 
 // Plain and human (Jordan, Sep 1: the first draft read "cryptic") — short
-// sentences, a numbered list, one idea per line. Once the photographer has
-// agreed to the new process, the intro/footer drop and it's just the nightly
-// list.
-export function digestText(firstName: string, streets: string[], opts?: { newProcess?: boolean }): string {
+// sentences, a numbered list, one idea per line. The "uploads work a new way
+// starting today" intro retired Oct 21 2026 (Jordan: "That was the first run
+// and now it's in effect."): it showed to anyone the hub never saw agree to
+// the process, which kept the owner on the launch copy every night.
+export function digestText(firstName: string, streets: string[]): string {
   const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
-  if (opts?.newProcess === false) {
-    return (
-      `Hi ${firstName}, Realtour Pilot here.\n\n` +
-      `Tonight's shoots to upload:\n${list}\n\n` +
-      `Files in Dropbox, then finish each shoot's checklist:\n${APP_URL}/upload`
-    );
-  }
   return (
     `Hi ${firstName}, Realtour Pilot here.\n\n` +
-    `Heads up: uploads work a new way starting today.\n\n` +
     `Tonight's shoots to upload:\n${list}\n\n` +
-    `Upload to Dropbox like always, then finish each shoot's checklist here:\n` +
-    `${APP_URL}/upload\n\n` +
-    `The first time you open it, it explains everything — takes 2 minutes.`
+    `Upload to Dropbox, then finish each shoot's checklist here:\n${APP_URL}/upload`
   );
 }
 
@@ -384,11 +375,7 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       skipped++; // already claimed (today's text went out or is in flight)
       continue;
     }
-    // Once they've agreed to the process, the "new way" intro retires itself.
-    const acked = m.email
-      ? await prisma.appSetting.findUnique({ where: { key: `upload-ack-${m.email.toLowerCase()}` } }).catch(() => null)
-      : null;
-    const text = digestText(m.name.split(" ")[0], m.streets, { newProcess: !acked });
+    const text = digestText(m.name.split(" ")[0], m.streets);
     // Their quiet time (the owner's Saturday until 7:30 PM): the same list
     // waits in the staff queue and goes when the window ends. The day's claim
     // stays taken, so the 8 PM EDT firing and tomorrow cannot send it again.
