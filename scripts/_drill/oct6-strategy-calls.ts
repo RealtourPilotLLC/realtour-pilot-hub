@@ -334,7 +334,9 @@ async function main() {
     {
       await signIn(owner);
       const lr = (await rec(lauren))!;
-      const r = await A.ignoreStrategyCallAction(lr.id);
+      const noWhy = await A.ignoreStrategyCallAction(lr.id, " ");
+      c.ok("setting a call aside without a reason is refused (audit D12)", !noWhy.ok && /Say why/.test(noWhy.message), noWhy.message);
+      const r = await A.ignoreStrategyCallAction(lr.id, "a listing walkthrough, not a strategy call");
       const x = await prisma.programCallRecord.findUnique({ where: { id: lr.id } });
       c.ok("Lauren → IGNORED / UNRELATED, nobody's", r.ok && x?.matchState === "IGNORED" && x.callType === "UNRELATED" && !x.clientId && !x.monthId);
       await ccr.syncCallRecordsFromCalendly({ now: now(), lookBackDays: 30, lookAheadDays: 14 });
@@ -346,7 +348,7 @@ async function main() {
       // A WRONG assignment, then "Not a program call": that month gets its state back.
       const wrong = await A.assignStrategyCallAction(lr.id, Ar.clientId, "2026-10");
       c.ok("(wrongly) assigned Lauren's call to Arielle's October", wrong.ok && (await monthOf(Ar.monthId))?.callRecordId === lr.id);
-      await A.ignoreStrategyCallAction(lr.id);
+      await A.ignoreStrategyCallAction(lr.id, "booked on the wrong link");
       const am = await monthOf(Ar.monthId);
       c.ok("ignored → Arielle's October exactly as before", am?.strategyCallStatus === arBefore?.strategyCallStatus && !am?.callRecordId && (am?.planningMode ?? null) === (arBefore?.planningMode ?? null) && !am?.strategyCallAt, JSON.stringify({ am, arBefore }));
       await clearSession();
@@ -385,7 +387,7 @@ async function main() {
       for (const u of [editor, shooter]) {
         await signIn(u);
         const r1 = await A.assignStrategyCallAction(lr.id, J.clientId, "2026-10");
-        const r2 = await A.ignoreStrategyCallAction(lr.id);
+        const r2 = await A.ignoreStrategyCallAction(lr.id, "not a program call");
         const r3 = await A.refreshStrategyCallsAction();
         c.ok(`${u.role} → assign, ignore and re-read all refused`, !r1.ok && !r2.ok && !r3.ok, `${r1.message} | ${r3.message}`);
         let redirected: string | null = null;

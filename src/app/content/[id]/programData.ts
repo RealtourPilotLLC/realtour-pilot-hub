@@ -185,7 +185,7 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       return {
         id: v.id, versionNo: v.versionNo, status: v.status, source: v.source, body: v.body, createdBy: v.createdBy, createdAt: v.createdAt.toISOString(), changeSummary: v.changeSummary, approvedBy: v.approvedBy, approvedAt: iso(v.approvedAt), sharedAt: iso(v.sharedAt),
         estimatedSeconds: v.estimatedSeconds, spokenWordCount: v.spokenWordCount, pointCount: points, findings, gaps, strategyVersionNo: strategyVs.find((x) => x.id === v.strategyVersionId)?.versionNo ?? null, policyVersionNo: policies.find((x) => x.id === v.policyVersionId)?.versionNo ?? null,
-        answerCount: answers, path: v.interviewId ? "written answers" : v.callRecordId ? "call" : v.source.toLowerCase().replace("_", " "), basedOnVersionNo: basedOn, regeneratedSections: regenerated,
+        answerCount: answers, path: v.interviewId ? "written answers" : v.callRecordId ? "call" : v.source.toLowerCase().replace(/_/g, " "), basedOnVersionNo: basedOn, regeneratedSections: regenerated,
         skit: !!v.speakerLabelsJson, filmingNotes: v.filmingNotes,
         // Oct 14 2026: the writer's angle and the automatic check's line (staff only).
         angle: readAngle(v.validationJson), check: judgeLine(readJudge(v.validationJson)), flagged: judgeFlagged(readJudge(v.validationJson)),
@@ -240,10 +240,13 @@ export async function loadFactsTab(clientId: string, enrollmentId: string) {
 }
 
 export async function loadImportTab(enrollmentId: string) {
-  const [batches, reviewItems, pillars, migrated] = await Promise.all([importBatches(enrollmentId), importReviewItems(enrollmentId), listPillars(enrollmentId), prisma.contentNote.count({ where: { migratedFactId: { not: null } } })]);
+  // Oct 20 2026 (audit D21): the company-wide "one-time lifts" button is gone
+  // from every client's Import tab (the lifts ran Sep 17), and with it this
+  // count of notes across ALL clients.
+  const [batches, reviewItems, pillars] = await Promise.all([importBatches(enrollmentId), importReviewItems(enrollmentId), listPillars(enrollmentId)]);
   const b: BatchUi[] = batches.map((x) => ({ id: x.id, kind: x.kind, fileName: x.fileName, mode: x.mode, proposedMonthKey: x.proposedMonthKey, appliedAt: iso(x.appliedAt), appliedBy: x.appliedBy, created: x.itemsCreated, linked: x.itemsLinked, updated: x.itemsUpdated, conflicts: x.itemsConflict, skipped: x.itemsSkipped }));
   const r: ReviewUi[] = reviewItems.map((x) => ({ kind: x.kind, monthKey: x.monthKey, title: x.title, detail: x.detail }));
-  return { batches: b, reviewItems: r, pillars: pillars.map((p) => ({ id: p.id, name: p.name })), migrationDone: migrated > 0 };
+  return { batches: b, reviewItems: r, pillars: pillars.map((p) => ({ id: p.id, name: p.name })) };
 }
 
 // ---------------------------------------------------------------------------

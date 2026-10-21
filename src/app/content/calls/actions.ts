@@ -41,9 +41,17 @@ export async function unassignStrategyCallAction(recordId: string): Promise<Resu
   catch (e) { return fail(e); }
 }
 
-export async function ignoreStrategyCallAction(recordId: string): Promise<Result> {
+/**
+ * Oct 20 2026 (audit D12): ONE RULE for setting a call aside, here and on
+ * Monitoring — a reason is required (kept on the record), and a brand
+ * discovery call is never set aside from a program-call queue
+ * (ignoreStrategyCall refuses it).
+ */
+export async function ignoreStrategyCallAction(recordId: string, note: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
-  try { await ignoreStrategyCall(recordId, await who()); touch(); return { ok: true, message: "Set aside as not a program call." }; }
+  const why = typeof note === "string" ? note.trim() : "";
+  if (!why) return { ok: false, message: "Say why it is being set aside — an unexplained dismissal is how a real call gets lost." };
+  try { await ignoreStrategyCall(recordId, await who(), why.slice(0, 500)); touch(); return { ok: true, message: "Set aside as not a program call, with your note on the record." }; }
   catch (e) { return fail(e); }
 }
 

@@ -12,7 +12,7 @@ import { UnlinkedSessionLinker } from "@/components/content/UnlinkedSessionLinke
 import { prisma } from "@/lib/prisma";
 import { ReassessmentBanner } from "@/components/content/ReassessmentBanner";
 import { ContentLibraryPanel } from "@/components/content/ContentLibraryPanel";
-import { loadContentTab, loadRevisionsView, loadSessionGates, loadSessionsView } from "../workspaceData";
+import { loadContentTab, loadRevisionsView, loadSessionGates, loadSessionsView, type RevisionCutUi } from "../workspaceData";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +24,21 @@ import { MonthHeader, SubNav, type TabCtx } from "./shared";
 // ---------------------------------------------------------------------------
 
 const fmtDay = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null);
+
+/** One cut waiting on review or back with the editor. */
+function CutRow({ c }: { c: RevisionCutUi }) {
+  return (
+    <Link href={c.status === "PENDING" ? "/review" : `/edit/${c.projectId}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2/60">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-medium">{c.fileName ?? "Cut"} <span className="font-normal text-muted-2">v{c.round}</span></div>
+        <div className="text-[12px] text-muted">{c.projectTitle}{c.monthKey ? ` · ${monthLabel(c.monthKey)}` : ""} · {fmtDay(c.createdAtISO)}</div>
+      </div>
+      <span className={c.status === "PENDING" ? "shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand" : "shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning"}>
+        {c.status === "PENDING" ? "waiting for review" : "back with the editor"}
+      </span>
+    </Link>
+  );
+}
 
 export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Record<string, number> }) {
   const { id, month, progress, client } = ctx;
@@ -49,6 +64,8 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
     const d = await loadRevisionsView(id);
     const open = d.briefs.filter((b) => b.open);
     const closed = d.briefs.filter((b) => !b.open);
+    const cutsHere = month ? d.cuts.filter((c) => c.monthKey === month.monthKey) : d.cuts;
+    const cutsElsewhere = month ? d.cuts.filter((c) => c.monthKey !== month.monthKey) : [];
     return (
       <div className="space-y-5">
         {sub}
@@ -74,22 +91,21 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
             </details>
           )}
         </Section>
-        <Section icon={Film} title="Cuts in motion" count={d.cuts.length} flush
+        {/* Oct 20 2026 (audit D23): the tab's badge counts THIS month's cuts
+            waiting for review, so this month's cuts come first and are what
+            the count says; other months' sit folded underneath. */}
+        <Section icon={Film} title={`Cuts in motion${month ? ` · ${monthName}` : ""}`} count={cutsHere.length} flush
           action={<Link href="/review" className="text-[12px] font-medium text-brand hover:underline">Review Room →</Link>}>
           <div className="divide-y divide-border">
-            {d.cuts.length === 0 && <p className="px-5 py-3 text-sm text-muted">No cut is waiting on review or back with the editor.</p>}
-            {d.cuts.map((c) => (
-              <Link key={c.id} href={c.status === "PENDING" ? "/review" : `/edit/${c.projectId}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2/60">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium">{c.fileName ?? "Cut"} <span className="font-normal text-muted-2">v{c.round}</span></div>
-                  <div className="text-[12px] text-muted">{c.projectTitle}{c.monthKey ? ` · ${monthLabel(c.monthKey)}` : ""} · {fmtDay(c.createdAtISO)}</div>
-                </div>
-                <span className={c.status === "PENDING" ? "shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-semibold text-brand" : "shrink-0 rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning"}>
-                  {c.status === "PENDING" ? "waiting for review" : "back with the editor"}
-                </span>
-              </Link>
-            ))}
+            {cutsHere.length === 0 && <p className="px-5 py-3 text-sm text-muted">No cut {month ? `from ${monthName} ` : ""}is waiting on review or back with the editor.</p>}
+            {cutsHere.map((c) => <CutRow key={c.id} c={c} />)}
           </div>
+          {cutsElsewhere.length > 0 && (
+            <details className="border-t border-border">
+              <summary className="min-h-11 cursor-pointer px-5 py-2.5 text-[13px] text-muted">{cutsElsewhere.length} from other months</summary>
+              <div className="divide-y divide-border">{cutsElsewhere.map((c) => <CutRow key={c.id} c={c} />)}</div>
+            </details>
+          )}
         </Section>
       </div>
     );

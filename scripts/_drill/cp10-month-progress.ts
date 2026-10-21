@@ -289,7 +289,8 @@ async function main() {
   } });
   {
     const p = await progressOf(C13D);
-    c.ok("C13: an existing draft is named as draft work, never unwritten or awaiting approval", p.scripts.drafting === 1 && p.nextAction?.ownerDuty === "scripts" && /draft script needs work/.test(p.nextAction.text), p.nextAction?.text ?? "null");
+    // Oct 20 2026 (audit D9): a DRAFT waits on the same OK as INTERNAL_REVIEW (the Scripts tab lists both under "needs your OK").
+    c.ok("C13: an existing draft is counted as a draft and waits on the approver, never as unwritten", p.scripts.drafting === 1 && p.nextAction?.ownerDuty === "script approval" && /waiting on your OK/.test(p.nextAction.text), p.nextAction?.text ?? "null");
     await prisma.contentScript.update({ where: { id: c13Script.id }, data: { status: "INTERNAL_REVIEW" } });
     const review = await progressOf(C13D);
     c.ok("C13: only an internal-review script asks for approval", review.scripts.needsJordan === 1 && review.nextAction?.ownerDuty === "script approval" && /waiting on your OK/.test(review.nextAction.text), review.nextAction?.text ?? "null");

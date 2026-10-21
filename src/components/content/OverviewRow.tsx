@@ -125,7 +125,7 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
           <div>{r.work.topicsSelected} topic{r.work.topicsSelected === 1 ? "" : "s"} selected{r.work.topicsNeeded > 0 ? ` · ${r.work.topicsNeeded} still to pick` : ""}</div>
           {r.work.answersOutstanding > 0 && <div className="text-[#8b93e6]">{r.work.answersOutstanding} waiting on their answers</div>}
           <div className="text-muted">
-            scripts: {r.work.scriptsDrafting} drafting · {r.work.scriptsReviewNeeded} need approval · {r.work.scriptsApproved} approved
+            scripts: {r.work.scriptsReviewNeeded} need approval · {r.work.scriptsApproved} approved
           </div>
           {r.work.strategyReviewNeeded > 0 && <div className="text-warning">{r.work.strategyReviewNeeded} strategy version awaiting approval</div>}
         </Cell>

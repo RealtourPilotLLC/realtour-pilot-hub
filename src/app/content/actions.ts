@@ -5,10 +5,9 @@ import { revalidatePath } from "next/cache";
 import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
-import { contentProgramSweep, etMonthKey, assertDutyOwner, setOwnerOverride, type OwnerDuty } from "@/lib/contentProgram";
+import { contentProgramSweep, assertDutyOwner, setOwnerOverride, type OwnerDuty } from "@/lib/contentProgram";
 import type { ImportKind, ImportPreview, ItemMode } from "@/lib/contentImport";
 import type { FactCategory, FactScope } from "@/lib/clientFacts";
-import type { VersionParts } from "@/lib/contentScripts";
 
 // Who is acting — every approval, release, accept and undo is attributable
 // (spec §6/§22/§23). Falls back to "dev" only when auth is off locally.
@@ -418,53 +417,9 @@ export async function approveScript(scriptId: string, shownVersionNo: number | n
   } catch (e) { return fail(e); }
 }
 
-export async function reviseScriptAI(scriptId: string, instructions: string, lockSections: string[] = []): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  if (!instructions.trim()) return { ok: false, message: "Tell the AI what to change first." };
-  try {
-    const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
-    const me = await actor();
-    await reviseScriptWithInstructions(scriptId, instructions, { requestedBy: me.email, lockSections });
-    revalidatePath("/content");
-    return { ok: true, message: "Revised as a new version — the previous one is kept." };
-  } catch (e) { return fail(e); }
-}
-
-/**
- * ONE CLICK ON AN OVERRUN: send the script back to the generator with a tighten
- * instruction built HERE, from the version's own stored estimate, and nowhere
- * near a duration override.
- *
- * Why the instruction is not a client prop: the panel renders whatever
- * estimatedSeconds the page was built with, and a script revised in another tab
- * (or by an applied client suggestion) moves on underneath it. Reading the
- * current version at the moment of the click means the AI is told the length the
- * row actually has. The wording itself lives in contentPolicy/scriptFormat.ts
- * beside the target it quotes.
- *
- * This is an ACTION, not an exemption. It produces another VERSION — status
- * INTERNAL_REVIEW, which is what contentGeneration.reviseScript writes for
- * every AI revision, not DRAFT as this comment and the success message used to
- * say (review, Sep 18 2026) — and that version goes through the same validator
- * and the same approval gate; nothing here relaxes the 30–50 s target, which
- * has no override field anywhere in the policy layer. Both statuses sit in the
- * Scripts tab's review queue, so where it lands is unchanged; what was wrong
- * was the word, and a wrong word here is what somebody would go looking for in
- * the version trail.
- */
-export async function tightenScriptAI(scriptId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  try {
-    const plan = await tightenPlan(scriptId);
-    if (!plan.ok) return plan;
-    const { seconds, words, versionNo, lo, hi, instruction } = plan;
-    const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
-    const me = await actor();
-    await reviseScriptWithInstructions(scriptId, instruction, { requestedBy: me.email });
-    revalidatePath("/content");
-    return { ok: true, message: `Sent back to be tightened from ≈${seconds} s (${words} words) toward ${lo}–${hi} s — v${versionNo} is kept. The new version is waiting in the review queue.` };
-  } catch (e) { return fail(e); }
-}
+// (reviseScriptAI and tightenScriptAI, the synchronous "Ask AI to revise" and
+// "Tighten" endpoints, were removed Oct 20 2026, audit D14: nothing called
+// them; the Scripts tab queues both through queueScriptRevisionAction.)
 
 /** The tighten instruction for the CURRENT version, or why there is nothing to tighten (shared by the queued Tighten). */
 async function tightenPlan(scriptId: string): Promise<{ ok: false; message: string } | { ok: true; instruction: string; seconds: number; words: number; versionNo: number; lo: number; hi: number }> {
@@ -532,21 +487,11 @@ export async function restoreScriptVersionAction(scriptId: string, versionId: st
 // chain on the hourly sync.)
 
 // ---------------------------------------------------------------------------
-// Generators: seed the topic bank from strategy + call ideas; build the agent
-// profile from calls + strategy + filmed content. Both non-destructive.
+// Generator: build the agent profile from calls + strategy + filmed content.
+// Non-destructive. (generateTopicIdeas, the synchronous "Suggest video topics
+// from the strategy" behind an unmounted TopicSeedButton, was removed Oct 20
+// 2026, audit D14: the topic bank is built by Refresh topics on Video Topics.)
 // ---------------------------------------------------------------------------
-export async function generateTopicIdeas(enrollmentId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  try {
-    const { seedTopicBank } = await import("@/lib/contentPipeline");
-    const me = await actor();
-    const r = await seedTopicBank(enrollmentId, null, { requestedBy: me.email });
-    revalidatePath("/content");
-    if (r.needsInput.length) return { ok: false, message: `Not enough context to build topics: ${r.needsInput.join(" ")}` };
-    return { ok: true, message: r.created ? `${r.created} topic suggestion${r.created === 1 ? "" : "s"} across ${r.pillars.length} pillar${r.pillars.length === 1 ? "" : "s"} — accept, edit or archive each one on Video Topics.` : "Nothing new — the bank already covers this ground." };
-  } catch (e) { return fail(e); }
-}
-
 export async function buildProfile(clientId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
@@ -732,16 +677,37 @@ export async function moveSessionToMonth(projectId: string, targetMonthKey: stri
       clientId: enrollment.clientId,
       monthKey: targetMonthKey,
       videosOwed: enrollment.videosPerMonth,
-      historical: targetMonthKey < etMonthKey(),
+      // Oct 20 2026 (audit D7): a month made by a move is a LIVE month. Marking
+      // a past one historical (imported history) locked its planning, blocked
+      // drafting and hid the scripts it owes.
+      historical: false,
       strategyCallStatus: enrollment.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED",
     },
     select: { id: true },
   });
-  await prisma.project.update({ where: { id: projectId }, data: { contentMonthId: target.id } });
+  // The session and the program's video rows move together (Oct 20 2026,
+  // audit D7): month progress counts filmed and delivered videos by the
+  // VIDEO's month, and the video sync never re-points a row it already has,
+  // so moving only the job left July at zero and August holding its videos.
+  // Only rows still on the month the session left move; a video a person
+  // filed on another month stays there.
+  await prisma.$transaction([
+    prisma.project.update({ where: { id: projectId }, data: { contentMonthId: target.id } }),
+    prisma.contentVideo.updateMany({ where: { projectId, enrollmentId: enrollment.id, monthId: from.id }, data: { monthId: target.id, monthKey: targetMonthKey } }),
+  ]);
   // The library follows the session — the portal groups by month, and "her
   // July content" must sit under July however late it was filmed.
   let libraryConfirmed = true;
   await prisma.portalVideo.updateMany({ where: { projectId }, data: { monthId: target.id } }).catch(() => { libraryConfirmed = false; });
+  // Both months' stages follow (after the response; the hourly recalc is the backstop).
+  const recalc = async () => {
+    try {
+      const { recalcProgramMonth } = await import("@/lib/programMonths");
+      await recalcProgramMonth(from.id);
+      await recalcProgramMonth(target.id);
+    } catch { /* the hourly recalc catches up */ }
+  };
+  try { after(recalc); } catch { void recalc(); }
   revalidatePath(`/content/${enrollment.id}`);
   revalidatePath("/content");
   return libraryConfirmed
@@ -972,40 +938,8 @@ export async function setMonthPlanningAction(monthId: string, choice: MonthPlann
   };
 }
 
-// Scripts slip months too (Jordan, Aug 28: "her July scripts were for the
-// content we shot in August") — same move semantics as sessions: the script
-// re-labels onto the month its content belongs to, and the portal follows.
-export async function moveScriptToMonth(scriptId: string, targetMonthKey: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
-  if (!/^\d{4}-\d{2}$/.test(targetMonthKey)) return { ok: false, message: "Pick a month." };
-  const script = await prisma.contentScript.findUnique({
-    where: { id: scriptId },
-    select: { id: true, enrollmentId: true, monthId: true },
-  });
-  if (!script) return { ok: false, message: "That script no longer exists." };
-  const enrollment = await prisma.contentEnrollment.findUnique({
-    where: { id: script.enrollmentId },
-    select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true },
-  });
-  if (!enrollment) return { ok: false, message: "Enrollment not found." };
-  const target = await prisma.contentMonth.upsert({
-    where: { enrollmentId_monthKey: { enrollmentId: enrollment.id, monthKey: targetMonthKey } },
-    update: {},
-    create: {
-      enrollmentId: enrollment.id,
-      clientId: enrollment.clientId,
-      monthKey: targetMonthKey,
-      videosOwed: enrollment.videosPerMonth,
-      historical: targetMonthKey < etMonthKey(),
-      strategyCallStatus: enrollment.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED",
-    },
-    select: { id: true },
-  });
-  if (target.id === script.monthId) return { ok: true, message: "Already on that month." };
-  await prisma.contentScript.update({ where: { id: scriptId }, data: { monthId: target.id } });
-  revalidatePath(`/content/${enrollment.id}`);
-  return { ok: true, message: `Moved to ${targetMonthKey}.` };
-}
+// (moveScriptToMonth was removed Oct 20 2026, audit D14: nothing called it,
+// and it minted a missing past month as imported history, audit D7.)
 
 // ===========================================================================
 // CONTENT PROGRAM OPERATING SYSTEM (Sep 17 2026) — strategy versions,
@@ -1312,7 +1246,7 @@ export async function setPillarEmphasisAction(enrollmentId: string, pillarId: st
     const r = await setPillarEmphasis(enrollmentId, pillarId, emphasis);
     path(enrollmentId);
     if (!r.changed) return { ok: true, message: `“${r.name}” is already ${r.emphasis.toLowerCase()}.` };
-    const what = r.emphasis === "LEAD" ? "a lead pillar: ranked first in recommendations and shown first to the client" : r.emphasis === "LIGHT" ? "a light pillar: a smaller topic bank, ranked lower and shown last" : "a normal pillar";
+    const what = r.emphasis === "LEAD" ? "a lead pillar: ranked first in recommendations and shown first to the client" : r.emphasis === "LIGHT" ? "a light pillar: the full 10 to 15 topics, ranked lower and shown last" : "a normal pillar";
     return { ok: true, message: `“${r.name}” is now ${what}.` };
   } catch (e) { return fail(e); }
 }
@@ -1907,27 +1841,53 @@ export async function releaseScriptAction(scriptId: string): Promise<Result> {
   } catch (e) { return fail(e); }
 }
 
-export async function returnScriptAction(scriptId: string, note: string): Promise<Result> {
+/**
+ * APPROVE & SEND, ONE PRESS (Oct 20 2026, audit D5). The same operation as
+ * Release (scriptShare.shareApprovedScript: approve this exact version,
+ * release it, queue the email only behind its switch and the rollout), for
+ * the script owner. A person presses it on a script they are reading; nothing
+ * shares a script on its own (script_auto_share stays locked).
+ */
+export async function approveAndSendScriptAction(versionId: string, note?: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
-    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true } });
-    if (!s) return { ok: false, message: "Script not found." };
+    const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true, scriptId: true } });
+    if (!v) return { ok: false, message: "Version not found." };
+    const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId }, select: { monthId: true } });
     const me = await actor();
-    const { returnScriptToQueue } = await import("@/lib/contentScripts");
-    await returnScriptToQueue(scriptId, { email: me.email, appUserId: me.id }, note || null);
-    path(s.enrollmentId);
-    return { ok: true, message: "Back in the review queue." };
+    await assertDutyOwner("SCRIPTS", v.enrollmentId, s?.monthId ?? null, me);
+    const { shareApprovedScript } = await import("@/lib/scriptShare");
+    const r = await shareApprovedScript(versionId, { email: me.email, appUserId: me.id }, { note: note?.trim() || null });
+    path(v.enrollmentId);
+    return { ok: true, message: r.message };
   } catch (e) { return fail(e); }
 }
 
-export async function saveScriptParts(scriptId: string, parts: VersionParts): Promise<Result> {
+/**
+ * "Back to the queue" — and, on a script the client already has, "Pull back
+ * from the client's portal" (Oct 20 2026, audit D6). One stray click used to
+ * take a released script off the client's page with an empty note: pulling
+ * one back now takes a reason (recorded on the ledger), and the month is
+ * re-read so its stage follows.
+ */
+export async function returnScriptAction(scriptId: string, note: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
+    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, monthId: true, sharedVersionId: true, releaseState: true } });
+    if (!s) return { ok: false, message: "Script not found." };
+    const onPortal = !!s.sharedVersionId && s.releaseState === "released";
+    const why = (note ?? "").trim();
+    if (onPortal && !why) return { ok: false, message: "Say why it comes off their portal. The reason is kept with the script's history." };
     const me = await actor();
-    const { editScriptVersion } = await import("@/lib/contentScripts");
-    const r = await editScriptVersion(scriptId, parts, me.email);
-    revalidatePath("/content");
-    return { ok: true, message: `Saved as version ${r.versionNo} — nothing overwritten.` };
+    const { returnScriptToQueue } = await import("@/lib/contentScripts");
+    await returnScriptToQueue(scriptId, { email: me.email, appUserId: me.id }, why || null);
+    if (s.monthId) {
+      const monthId = s.monthId;
+      const work = async () => { try { const { recalcProgramMonth } = await import("@/lib/programMonths"); await recalcProgramMonth(monthId); } catch { /* the hourly recalc catches up */ } };
+      try { after(work); } catch { void work(); }
+    }
+    path(s.enrollmentId);
+    return { ok: true, message: onPortal ? "Pulled back from their portal and back in the review queue." : "Back in the review queue." };
   } catch (e) { return fail(e); }
 }
 
@@ -2054,20 +2014,10 @@ export async function applyImportAction(preview: ImportPreview, decisions: { mon
   } catch (e) { return fail(e); }
 }
 
-// ---- one-time lifts (owner) ---------------------------------------------------------------------
-export async function runProgramMigrations(): Promise<Result> {
-  try { await requireOwner(); } catch (e) { return fail(e); }
-  try {
-    const [{ migrateLegacyStrategies, repairStrategyIdentities }, { markHistoricalImports, backfillScriptVersions }, { migrateContentNotesToFacts }] = await Promise.all([import("@/lib/contentStrategy"), import("@/lib/contentScripts"), import("@/lib/clientFacts")]);
-    const a = await migrateLegacyStrategies();
-    const a2 = await repairStrategyIdentities();
-    const b = await markHistoricalImports();
-    const c = await backfillScriptVersions();
-    const d = await migrateContentNotesToFacts();
-    revalidatePath("/content");
-    return { ok: true, message: `Strategies → v1: ${a.migrated} (${a.skipped} already)${a2.repaired ? ` · identity rows repaired: ${a2.repaired}` : ""} · imports marked historical: ${b.stamped} of ${b.total} · script versions lifted: ${c.created} · notes → facts: ${d.created} created, ${d.skipped} already, ${d.confidential} confidential locked, ${d.monthScoped} month-scoped.` };
-  } catch (e) { return fail(e); }
-}
+// (The owner's "one-time lifts" action, runProgramMigrations, was removed on
+// Oct 20 2026, audit D21: the lifts ran on Sep 17 and its button sat on every
+// client's Import tab while acting on all of them. The library functions it
+// called are kept, idempotent, for a script that ever needs them again.)
 
 // ---------------------------------------------------------------------------
 // CLIENT REVIEW WINDOWS + REVISION ROUNDS (CP-02, Sep 24 2026) — the office's
@@ -2112,18 +2062,9 @@ export async function holdReviewWindowAction(windowId: string, hold: boolean, re
   } catch (e) { return { ...fail(e), outcome: "unknown" }; }
 }
 
-/** Form variants: <form action={…}> with hidden inputs. */
-export async function decideRevisionFeeForm(formData: FormData): Promise<void> {
-  const d = String(formData.get("decision") ?? "");
-  await decideRevisionFeeAction(String(formData.get("roundId") ?? ""), d === "CHARGE" ? "CHARGE" : "WAIVE", String(formData.get("note") ?? "") || undefined);
-}
-export async function restartReviewClockForm(formData: FormData): Promise<void> {
-  await restartReviewClockAction(String(formData.get("windowId") ?? ""));
-}
-export async function holdReviewWindowForm(formData: FormData): Promise<void> {
-  const hold = String(formData.get("hold") ?? "") === "1";
-  await holdReviewWindowAction(String(formData.get("windowId") ?? ""), hold, String(formData.get("reason") ?? "") || (hold ? "Held from the Content tab" : undefined));
-}
+// (The three <form action> variants of these, decideRevisionFeeForm,
+// restartReviewClockForm and holdReviewWindowForm, were removed Oct 20 2026,
+// audit D14: no form posts to them.)
 
 // ===========================================================================
 // BULK PLANS (Oct 15 2026) — Jordan: "I want the system set up for like a bulk

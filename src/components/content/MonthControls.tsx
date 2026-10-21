@@ -109,8 +109,8 @@ export function SessionMonthMover({ projectId, currentKey, monthKeys }: { projec
       let receipt: ControlReceipt;
       try {
         const r = await moveSessionToMonth(projectId, nextKey), outcome = contentControlOutcome(r);
-        receipt = { outcome, text: r.message || `Move to ${nextKey} was not confirmed for session ${projectId}.` };
-      } catch { receipt = { outcome: "unknown", text: `Move to ${nextKey} was not confirmed for session ${projectId}. Your chosen month is kept.` }; }
+        receipt = { outcome, text: r.message || `The move to ${nextKey} was not confirmed.` };
+      } catch { receipt = { outcome: "unknown", text: `The move to ${nextKey} was not confirmed. Your chosen month is kept.` }; }
       update(projectId, currentKey, (old) => ({ ...old, receipt, held: receipt.outcome === "unknown", expected: receipt.outcome === "confirmed" ? nextKey : old.expected, baseline: receipt.outcome === "confirmed" ? nextKey : old.baseline, changed: receipt.outcome === "confirmed" ? false : old.changed }));
       pending.current = false;
       if (receipt.outcome === "confirmed") { try { router.refresh(); } catch { /* confirmed write; a failed view refresh does not undo it */ } }
@@ -169,8 +169,8 @@ export function SkipMonthButton({ monthId, skipped }: { monthId: string; skipped
       let receipt: ControlReceipt;
       try {
         const r = await setMonthSkipped(monthId, requested), outcome = contentControlOutcome(r);
-        receipt = { outcome, text: r.message || `The month change was not confirmed for ${monthId}.` };
-      } catch { receipt = { outcome: "unknown", text: `The request to ${requested ? "skip" : "reopen"} month ${monthId} was not confirmed.` }; }
+        receipt = { outcome, text: r.message || "The month change was not confirmed." };
+      } catch { receipt = { outcome: "unknown", text: `The request to ${requested ? "skip" : "reopen"} this month was not confirmed.` }; }
       update(monthId, skipped, (old) => ({ ...old, receipt, held: receipt.outcome === "unknown", ...(receipt.outcome === "confirmed" ? { value: requested, baseline: requested, expected: requested, changed: false } : {}) }));
       pending.current = false;
       if (receipt.outcome === "confirmed") { try { router.refresh(); } catch { /* retain confirmed write evidence */ } }

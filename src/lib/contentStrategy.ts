@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { sha256 } from "@/lib/aiRuns";
 import { createPillar, listPillars } from "@/lib/contentPillars";
 import { CONFIDENTIAL_RE } from "@/lib/clientFacts";
+import { strategyAwaitingByEnrollment } from "@/lib/strategyAwaiting";
 import {
   parseStrategyDocument, normalizeStrategyLines, validateStrategyStructure, detectStructureVersion, isFrameworkSection, withCanonicalFramework,
   type ParsedStrategy, type StrategyDocument, type StrategyStructureVersion,
@@ -187,15 +188,27 @@ export async function approveStrategyVersion(versionId: string, by: string): Pro
     const now = new Date();
     // ONE DIRECTION ONLY (Jordan, Oct 13 2026: "this should never happen where
     // v2 supersedes v3"). Approving vN replaces what came BEFORE it: an older
-    // version in force, and the open drafts vN was built from (their changes
-    // are inside it). A NEWER version is never "superseded" by an older one:
-    // putting an older version back in force (the undo) sends a newer approved
-    // one back to "needs your OK", where it can be approved again; a newer
-    // draft stays a draft.
-    const all = await prisma.contentStrategyVersion.findMany({ where: { strategyId: v.strategyId }, select: { id: true, versionNo: true, status: true, basedOnVersionId: true } });
-    const ancestors = new Set<string>();
-    for (let at = v.basedOnVersionId; at && !ancestors.has(at); at = all.find((x) => x.id === at)?.basedOnVersionId ?? null) ancestors.add(at);
-    const older = all.filter((x) => x.id !== versionId && x.versionNo < v.versionNo && (x.status === "APPROVED" || (ancestors.has(x.id) && (x.status === "DRAFT" || x.status === "INTERNAL_REVIEW"))));
+    // version in force, and every open draft older than it. A NEWER version is
+    // never "superseded" by an older one: putting an older version back in
+    // force (the undo) sends a newer approved one back to "needs your OK",
+    // where it can be approved again; a newer draft stays a draft.
+    //
+    // Oct 20 2026 (audit D4): EVERY older open draft, not only the ones vN was
+    // built from. An unrelated older draft (a discovery v1 beside an imported
+    // v2 that was approved) stayed DRAFT for ever: the Dashboard nagged about
+    // it, and its "Approve v1" put v1 in force over v2 and released it to the
+    // client's portal. Jordan, Oct 13: "V2 should automatically be superseded
+    // when a later version is released."
+    const all = await prisma.contentStrategyVersion.findMany({ where: { strategyId: v.strategyId }, select: { id: true, versionNo: true, status: true } });
+    // An open draft OLDER than the version in force is history: approving it
+    // would put older words in force over newer ones (and release them).
+    // Putting an earlier version back is the Undo, which approves a version
+    // that WAS in force (SUPERSEDED), never a draft.
+    const inForce = all.filter((x) => x.status === "APPROVED" && x.versionNo > v.versionNo).sort((a, b) => b.versionNo - a.versionNo)[0];
+    if (inForce && (v.status === "DRAFT" || v.status === "INTERNAL_REVIEW")) {
+      throw new Error(`v${v.versionNo} is older than v${inForce.versionNo}, the version in force. Make the change on v${inForce.versionNo} instead.`);
+    }
+    const older = all.filter((x) => x.id !== versionId && x.versionNo < v.versionNo && (x.status === "APPROVED" || x.status === "DRAFT" || x.status === "INTERNAL_REVIEW"));
     const newerInForce = all.filter((x) => x.versionNo > v.versionNo && x.status === "APPROVED");
     if (older.length) await prisma.contentStrategyVersion.updateMany({ where: { id: { in: older.map((x) => x.id) } }, data: { status: "SUPERSEDED" } });
     if (newerInForce.length) await prisma.contentStrategyVersion.updateMany({ where: { id: { in: newerInForce.map((x) => x.id) }, status: "APPROVED" }, data: { status: "INTERNAL_REVIEW" } });
@@ -395,6 +408,20 @@ export async function approvedStrategy(enrollmentId: string): Promise<{ versionI
   const fwSection = stored.sections.find((x) => isFrameworkSection(x));
   const document = stored.document ? withCanonicalFramework(stored.document, fwSection?.text ?? null) : null;
   return { versionId: v.id, versionNo: v.versionNo, label: `v${v.versionNo}`, document, stored, releasedAt: v.releasedAt };
+}
+
+/**
+ * Strategy versions waiting for approval, per enrollment (Oct 20 2026, audit
+ * D4): the one rule in strategyAwaiting.ts, read the same way by the
+ * Dashboard, the Plan badge, the Overview and the roster.
+ */
+export async function strategyAwaitingCounts(enrollmentIds: string[]): Promise<Map<string, number>> {
+  if (!enrollmentIds.length) return new Map();
+  const rows = await prisma.contentStrategyVersion.findMany({
+    where: { enrollmentId: { in: enrollmentIds }, status: { in: ["DRAFT", "INTERNAL_REVIEW", "APPROVED"] } },
+    select: { enrollmentId: true, versionNo: true, status: true },
+  });
+  return strategyAwaitingByEnrollment(rows);
 }
 
 export async function strategyVersions(enrollmentId: string) {

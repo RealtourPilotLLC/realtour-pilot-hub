@@ -317,16 +317,9 @@ export async function registerFolderFileAction(enrollmentId: string, input: { cl
   } catch (e) { return fail(e); }
 }
 
-/**
- * Staff list for the owner pickers. Guarded like every other action in this
- * file: a "use server" export is a reachable endpoint, and this one hands back
- * every active owner/admin's name (or their email when they have no name).
- */
-export async function staffOptions(): Promise<{ id: string; name: string }[]> {
-  await requireAdmin();
-  const users = await prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN"] } }, select: { id: true, name: true, email: true }, orderBy: { name: "asc" } });
-  return users.map((u) => ({ id: u.id, name: u.name ?? u.email }));
-}
+// (staffOptions, a reachable endpoint handing back every owner/admin's name
+// or email, was removed Oct 20 2026, audit D14: the owner pickers read their
+// staff list on the server, in workspaceData.)
 
 // ---- filming sessions: requests, bookings and addresses (CP-04 / CP-05) ---------------
 //

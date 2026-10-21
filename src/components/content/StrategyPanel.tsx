@@ -16,6 +16,7 @@ import {
 } from "@/app/content/actions";
 import { setPillarEmphasisAction } from "@/app/content/actions";
 import { CreativeIdentityCard, type CreativeIdentityUi } from "@/components/content/CreativeIdentityCard";
+import { strategyInForceNo, strategyStaleDraft } from "@/lib/strategyAwaiting";
 
 // ---------------------------------------------------------------------------
 // Strategy tab (spec §3/§21): versions never overwrite; approve and release
@@ -85,6 +86,9 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   const fileRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<StrategyPreview | null>(null);
   const approved = versions.find((v) => v.status === "APPROVED") ?? null;
+  // Oct 20 2026 (audit D4): an open draft OLDER than the version in force is
+  // history (the server refuses to approve it over the newer one).
+  const inForceNo = strategyInForceNo(versions);
   const run = (fn: () => Promise<{ ok: boolean; message: string }>) => start(async () => { const r = await fn(); setNote(r.message); });
   const clientSuggestions = proposals.filter((p) => p.sourceKind === "client");
   // Oct 13 2026: changes chain on the NEWEST version in play; only it is edited.
@@ -168,7 +172,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
             <div key={v.id} className="px-5 py-3">
               <button onClick={() => setOpen(open === v.id ? null : v.id)} className="flex w-full flex-wrap items-center gap-2 text-left">
                 <span className="text-[15px] font-semibold">v{v.versionNo}</span>
-                <StatusChip status={v.status} released={!!v.releasedAt} everApproved={!!v.approvedAt} />
+                <StatusChip status={v.status} released={!!v.releasedAt} everApproved={!!v.approvedAt} stale={strategyStaleDraft(v, inForceNo)} />
                 <span className="text-[12px] text-muted">{v.structureTemplate} · {v.sourceKind.replace("_", " ")}{v.sourceRef ? ` · ${v.sourceRef}` : ""} · {fmt(v.createdAt)}{v.createdBy ? ` by ${v.createdBy}` : ""}</span>
                 {v.approvedAt && v.status === "APPROVED" && <span className="text-[12px] text-success">approved {fmt(v.approvedAt)} by {v.approvedBy}</span>}
                 {v.releasedAt && <span className="text-[12px] text-success">released {fmt(v.releasedAt)}</span>}
@@ -195,7 +199,7 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
                   {v.versionNo === newestNo && <ReviseBox versionNo={v.versionNo} approved={v.status === "APPROVED"} suggestions={clientSuggestions} busy={busy}
                     onRevise={(notes, ids) => run(() => reviseStrategy(v.id, notes, ids))} />}
                   <div className="flex flex-wrap gap-1.5">
-                    {v.status !== "APPROVED" && v.status !== "REJECTED" && v.status !== "SUPERSEDED" && (
+                    {v.status !== "APPROVED" && v.status !== "REJECTED" && v.status !== "SUPERSEDED" && !strategyStaleDraft(v, inForceNo) && (
                       <button disabled={busy} onClick={() => run(() => approveStrategy(v.id))} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{v.versionNo}</button>
                     )}
                     {/* Oct 13 2026: UNDO. Putting the previous version back sends this one to "needs your OK" (approve it again to redo); nothing newer is ever marked replaced by something older. */}
@@ -254,10 +258,12 @@ export function StrategyPanel({ enrollmentId, versions, proposals, pillars, mapp
   );
 }
 
-function StatusChip({ status, released, everApproved }: { status: string; released: boolean; everApproved: boolean }) {
-  const cls = status === "APPROVED" ? "bg-success-soft text-success" : status === "DRAFT" || status === "INTERNAL_REVIEW" ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted";
+function StatusChip({ status, released, everApproved, stale = false }: { status: string; released: boolean; everApproved: boolean; stale?: boolean }) {
+  const cls = status === "APPROVED" ? "bg-success-soft text-success" : (status === "DRAFT" || status === "INTERNAL_REVIEW") && !stale ? "bg-brand-soft text-brand" : "bg-surface-2 text-muted";
+  // Oct 20 2026 (audit D4): DRAFT and INTERNAL_REVIEW both wait for the OK, unless a newer version is already in force.
   const label = status === "APPROVED" ? (released ? "in force · released" : "in force")
-    : status === "INTERNAL_REVIEW" ? "needs your OK"
+    : stale ? "older draft, a later version is in force"
+    : status === "INTERNAL_REVIEW" || status === "DRAFT" ? "needs your OK"
     : status === "SUPERSEDED" ? (everApproved ? "was in force, replaced by a later version" : "replaced by a later version")
     : status.toLowerCase();
   return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{label}</span>;
@@ -433,7 +439,7 @@ function PrioritiesCard({ month, busy, onSave }: { month: { label: string; prior
 const EMPHASIS_OPTIONS = [
   { value: "LEAD", label: "Lead", hint: "The client's main focus: full topic bank, ranked first, shown first to the client" },
   { value: "NORMAL", label: "Normal", hint: "A full topic bank at normal weight" },
-  { value: "LIGHT", label: "Light", hint: "Supporting only: a smaller topic bank, ranked lower, shown last to the client" },
+  { value: "LIGHT", label: "Light", hint: "Supporting only: the full 10 to 15 topics, ranked lower, shown last to the client" },
 ] as const;
 
 function PillarItem({ p, busy, onRename, onEmphasis }: { p: PillarRowUi; busy: boolean; onRename: (n: string) => void; onEmphasis: (e: PillarRowUi["emphasis"]) => void }) {
