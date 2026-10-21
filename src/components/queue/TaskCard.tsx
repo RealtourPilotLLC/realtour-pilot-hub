@@ -332,7 +332,7 @@ function QcChecklist({ taskId, items, qcClient, interactive }: {
       {/* VIP extra pass — visually distinct: high-value client, don't let it bounce. */}
       {vip.length > 0 && (
         <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-2">
-          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning">
             <ShieldAlert className="size-3.5" /> VIP — extra pass
           </div>
           <ul className="space-y-0.5">
@@ -377,7 +377,7 @@ function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
         <User className="size-3.5" /> Know this client
         {segLabel && (
-          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isVip ? "bg-amber-400/15 text-amber-600 dark:text-amber-400" : "bg-surface-2 text-muted"}`}>{segLabel}</span>
+          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isVip ? "bg-amber-400/15 text-warning" : "bg-surface-2 text-muted"}`}>{segLabel}</span>
         )}
       </div>
       <div className="space-y-1 text-foreground/85">

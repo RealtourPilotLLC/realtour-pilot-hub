@@ -354,16 +354,10 @@ async function main() {
     // =========================================================================
     c.head("6 · /pipeline redirects to /jobs");
     // =========================================================================
-    const { default: PipelinePage } = await import("@/app/pipeline/page");
-    const where = async (sp: Record<string, string>) => {
-      try {
-        await PipelinePage({ searchParams: Promise.resolve(sp) });
-        return "rendered";
-      } catch (e) {
-        return e instanceof Redirect ? e.href : String(e);
-      }
-    };
-    c.ok("/pipeline → /jobs, and /pipeline?test=1 → /jobs?test=1", (await where({})) === "/jobs" && (await where({ test: "1" })) === "/jobs?test=1");
+    // Oct 20 2026 (audit H18): a next.config redirect now, not a page.
+    const { configRedirect } = await import("./_configRedirect");
+    c.ok("/pipeline → /jobs, and /pipeline?test=1 → /jobs?test=1", (await configRedirect("/pipeline")) === "/jobs" && (await configRedirect("/pipeline", { test: "1" })) === "/jobs?test=1");
+    c.ok("…and no page is left at /pipeline to render instead", !fs.existsSync("src/app/pipeline/page.tsx"));
     c.ok("the program watch actions stay where the Monthly view calls them", fs.existsSync("src/app/pipeline/actions.ts") && /from "@\/app\/pipeline\/actions"/.test(fs.readFileSync("src/components/tracker/ProgramVideoWatch.tsx", "utf8")));
     c.ok("the fence held", fence.blocked.length === 0, fence.blocked.join(", "));
   } finally {

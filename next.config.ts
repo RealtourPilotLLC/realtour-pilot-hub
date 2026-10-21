@@ -60,6 +60,30 @@ const nextConfig: NextConfig = {
   // `/:path(…)` matches the bare "/" too (an empty capture), so a bookmarked
   // root lands on the new home page; the query string rides along automatically.
   async redirects() {
+    // RETIRED ADDRESSES (Oct 20 2026, audit H18). Each was a page whose only
+    // job was to redirect, so every old link cost a server render and the auth
+    // gate's run before the hop. These answer before either. The incoming
+    // query string rides along, and a key the destination sets (tab, view)
+    // wins over the same key in the old link, exactly as the pages did. Only
+    // the exact path matches (/team/<id>, /people/capacity and /ops/* pages are
+    // untouched). The role-aware doors (/ops/requests, /ops/scheduling,
+    // /ops/old) stay pages: where they send someone depends on who is asking.
+    // 307, not 308, for the reason given above.
+    const retired: [source: string, destination: string][] = [
+      ["/today", "/tasks?tab=today"],
+      ["/queue", "/tasks?tab=board"],
+      ["/history", "/tasks?tab=done"],
+      ["/team", "/users?tab=team"],
+      ["/people", "/users?tab=team"],
+      ["/map", "/schedule?view=map"],
+      ["/billing", "/sales?tab=unpaid"],
+      ["/payouts", "/sales?tab=payroll"],
+      ["/texts", "/communications?tab=outbox"],
+      ["/pipeline", "/jobs"],
+      ["/ops", "/"],
+      ["/ops/messages", "/communications"],
+      ["/ops/video-delivery", "/review"],
+    ];
     return [
       {
         source: `/:path((?!${STAYS_ON_OLD_HOST}).*)`,
@@ -67,6 +91,7 @@ const nextConfig: NextConfig = {
         destination: `${NEW_ORIGIN}/:path`,
         permanent: false, // 307 — see the note above before making this 308
       },
+      ...retired.map(([source, destination]) => ({ source, destination, permanent: false })),
     ];
   },
   // Baseline security headers (the app sets auth cookies + proxies media).

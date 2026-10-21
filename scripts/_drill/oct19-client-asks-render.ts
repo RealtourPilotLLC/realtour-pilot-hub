@@ -8,16 +8,16 @@
 //     what it holds; the client's own words folded under it; Confirmed and
 //     Not needed on every ask, Done only on one that holds nothing;
 //   · no asks: no card at all;
-//   · a board row: Behind / Due today marked; a job card says when delivery
-//     is due; an ask on no job offers that client's jobs to put it on;
-//   · a closed ask says who closed it and offers Reopen;
 //   · no em dash anywhere in the new words.
+// (The board rows Kyle's old Special requests and Scheduling screens used,
+// components/asks/AskBoard, were deleted Oct 20 2026, audit H13: no screen
+// rendered them after the requests moved onto the checklist and job cards.)
 // ---------------------------------------------------------------------------
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
 import { bootDrillDb, fenceFetch, installNextStubs, makeChecker } from "./_harness";
-import type { AskView, RequestGroup } from "@/lib/clientAsks";
+import type { AskView } from "@/lib/clientAsks";
 
 installNextStubs();
 const fence = fenceFetch();
@@ -43,7 +43,6 @@ async function main() {
   const c = makeChecker();
   try {
     const { OpenClientAsksCard } = await import("@/components/asks/OpenClientAsksCard");
-    const { AskBoardRow, RequestGroupCard } = await import("@/components/asks/AskBoard");
 
     c.head("the Review Room card");
     const lots = ask({ id: "a1" });
@@ -68,25 +67,6 @@ async function main() {
     const none = text(html(createElement(OpenClientAsksCard, { asks: [addon], deliverWhat: "video" })));
     c.ok("nothing holding: what the client asked us to get right", none.includes("What the client asked us to get right. Check the work against these."));
     c.ok("no asks: no card at all", html(createElement(OpenClientAsksCard, { asks: [], deliverWhat: "video" })) === "");
-
-    c.head("Kyle's boards");
-    const behind = ask({ id: "b1", behind: true, holdsDelivery: true });
-    const today = ask({ id: "b2", kind: "SCHEDULING", source: "email", sourceWords: "Email", dueToday: true, holdsDelivery: false, summary: "Cancel tomorrow's shoot and confirm", text: "We have to cancel tomorrow's appointment" });
-    const rb = html(createElement("ul", null, createElement(AskBoardRow, { a: behind, showJob: true }), createElement(AskBoardRow, { a: today, showJob: true })));
-    const rt = text(rb);
-    c.ok("a behind ask says Behind; a scheduling ask due today says Due today", /data-ask-behind/.test(rb) && rt.includes("Behind") && rt.includes("Due today"));
-    c.ok("…the job links to its page", /href="\/projects\/p1"[^>]*>Barry Rd</.test(rb));
-    c.ok("…a scheduling ask: Done and Not needed, no Confirmed", /data-ask-id="b2"[\s\S]*data-ask-done[\s\S]*data-ask-not-needed/.test(rb) && !/data-ask-id="b2"[\s\S]*data-ask-confirm/.test(rb));
-    const g: RequestGroup = { key: "p1", projectId: "p1", clientId: "cl1", clientName: "Heather Barritt", street: "Barry Rd", dueWords: "Fri, Oct 16, 12:00 PM", media: ["photo", "video"], behind: true, asks: [behind] };
-    const gt = text(html(createElement(RequestGroupCard, { g, jobs: [] })));
-    c.ok("a job card: street, client, when delivery is due, what it covers, the Review Room", gt.includes("Barry Rd") && gt.includes("Heather Barritt") && gt.includes("Delivery due Fri, Oct 16, 12:00 PM") && gt.includes("Photos") && gt.includes("Video") && gt.includes("Review Room"));
-    const loose: RequestGroup = { ...g, key: "none:cl1", projectId: null, street: null, dueWords: null, asks: [ask({ id: "b3", projectId: null, street: null })] };
-    const lh = html(createElement(RequestGroupCard, { g: loose, jobs: [{ id: "p1", clientId: "cl1", label: "Barry Rd · Heather Barritt" }, { id: "p9", clientId: "other", label: "9 Other St · Someone Else" }] }));
-    const lt = text(lh);
-    c.ok("an ask on no job: 'Which job? Not clear yet', and only that client's jobs to pick", lt.includes("Which job? Not clear yet") && lt.includes("Which job is it for?") && lt.includes("Barry Rd · Heather Barritt") && !lt.includes("9 Other St"));
-    const closed = text(html(createElement("ul", null, createElement(AskBoardRow, { a: ask({ id: "b4", state: "CONFIRMED", closedWords: "Confirmed by Kyle Smith, Sun, Oct 19, 3:02 PM: all 4 lots match the plat" }), showJob: true }))));
-    c.ok("a closed ask says who closed it and offers Reopen", closed.includes("Confirmed by Kyle Smith, Sun, Oct 19, 3:02 PM: all 4 lots match the plat") && closed.includes("Reopen") && !closed.includes("Not needed"));
-    c.ok("no em dash on the boards", !DASH.test(rb) && !DASH.test(lh));
     c.ok("the fence held", fence.blocked.length === 0, fence.blocked.join(", "));
   } finally {
     c.summary();

@@ -74,9 +74,10 @@ const batchFiles = [
   "src/app/edit/[id]/page.tsx", "src/app/editing/page.tsx",
   "src/components/editing/EditorDesk.tsx", "src/components/editing/SimpleQueue.tsx",
   "src/components/editing/AddToQueue.tsx", "src/components/ops/ReadyToSendCard.tsx",
-  "src/components/review/DeliveryExitSummary.tsx", "src/components/ops/MarkSent.tsx",
-  "src/components/ops/NotTold.tsx", "src/components/ops/FinalRenditionCheck.tsx",
+  "src/components/ops/MarkSent.tsx", "src/components/ops/NotTold.tsx",
   "src/lib/readyToSend.ts",
+  // (DeliveryExitSummary and FinalRenditionCheck were deleted Oct 20 2026,
+  // audit H13: no screen rendered either.)
 ];
 function sourceCopy(runtime: string) {
   const checkout = path.join(runtime, "app"); fs.mkdirSync(checkout, { mode: 0o700 });

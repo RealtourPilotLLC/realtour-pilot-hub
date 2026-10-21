@@ -31,15 +31,12 @@
 // ISOLATION: PGlite on 127.0.0.1 (the harness); Dropbox is a byte-preserving
 // local fake that refuses writes outside /AutoHDR like the real team space.
 // ---------------------------------------------------------------------------
-import fs from "node:fs";
-import path from "node:path";
 import { createHash } from "node:crypto";
 import { bootDrillDb, installNextStubs, fenceFetch, interceptModule, makeChecker, quietPrismaErrors } from "./_harness";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 installNextStubs();
 const fence = fenceFetch();
-const REPO = path.resolve(__dirname, "../..");
 
 let refuseAll = false;
 let uploads = 0;
@@ -205,10 +202,9 @@ async function main() {
       const state = staffReceiptIntake((await receipt(String(form.get("requestKey"))))?.itemsJson ?? null)?.attachment?.state;
       c.ok(`a ${name.split(".")[1].toUpperCase()} attachment uploads and records`, r.ok && state === "CONFIRMED", r.message);
     }
-    const formSrc = fs.readFileSync(path.join(REPO, "src/components/review/StaffCutRevisionForm.tsx"), "utf8");
-    c.ok("the form submits by hand (no React form action, which reset the pickers)", /<form onSubmit=\{record\}/.test(formSrc) && /e\.preventDefault\(\)/.test(formSrc) && !/<form[^>]*\saction=/.test(formSrc));
-    c.ok("…its fields are controlled, so a failed try keeps them", /value=\{contact\}/.test(formSrc) && /value=\{words\}/.test(formSrc) && /checked=\{confirmed\}/.test(formSrc));
-    c.ok("…and its spinner is plain async, not a transition held open by a refresh", !/useTransition/.test(formSrc));
+    // (The form's own source checks went with components/review/StaffCutRevisionForm
+    // on Oct 20 2026, audit H13: the Review Room has had no revision form since
+    // Oct 14, "Reopen for revisions" replaced it.)
     c.ok("no provider request escaped the fence", fence.blocked.length === 0, fence.blocked.join(", "));
   } finally {
     console.log(await drill.evidence());

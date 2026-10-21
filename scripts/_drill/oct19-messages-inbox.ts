@@ -18,6 +18,7 @@
 import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker } from "./_harness";
 import type { MessagesBoard } from "../../src/lib/opsHome";
 
@@ -79,9 +80,10 @@ async function main() {
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const pageModule = await import("@/app/communications/page");
     const messages = pageModule.default;
-    const { default: opsMessages } = await import("@/app/ops/messages/page");
     const { default: tasksPage } = await import("@/app/tasks/page");
-    const { default: todayPage } = await import("@/app/today/page");
+    // Oct 20 2026 (audit H18): /ops/messages and /today left their pages for
+    // next.config's redirects; the doors are asserted against that table.
+    const { configRedirect } = await import("./_configRedirect");
     const nav = await import("@/components/comms/messagesNav");
     const { emailFocusKey } = await import("@/components/comms/WaitingOnUs");
     const { homeRecordHref } = await import("@/lib/homeRecordScope");
@@ -248,11 +250,12 @@ async function main() {
     // =====================================================================
     c.head("§6 · the doors: /ops/messages, /tasks?tab=comms and /today open Messages");
     // =====================================================================
-    c.ok("/ops/messages → Messages (Waiting on us)", await redirectOf(() => opsMessages({})) === "/communications" && await redirectOf(() => opsMessages({ searchParams: Promise.resolve({}) })) === "/communications");
-    c.ok("…with ?test=1 kept; only a scalar 1", await redirectOf(() => opsMessages({ searchParams: Promise.resolve({ test: "1" }) })) === "/communications?test=1" && await redirectOf(() => opsMessages({ searchParams: Promise.resolve({ test: ["1", "1"] }) })) === "/communications");
+    c.ok("/ops/messages → Messages (Waiting on us)", await configRedirect("/ops/messages") === "/communications");
+    c.ok("…with ?test=1 kept", await configRedirect("/ops/messages", { test: "1" }) === "/communications?test=1");
+    c.ok("…and no page is left at /ops/messages to render instead", !existsSync("src/app/ops/messages/page.tsx"));
     const tasksTo = (sp: Record<string, string>) => redirectOf(() => tasksPage({ searchParams: Promise.resolve(sp) }));
     c.ok("/tasks?tab=comms (the Replies tab) → Messages; ?via=email too; test kept", await tasksTo({ tab: "comms" }) === "/communications" && await tasksTo({ tab: "comms", via: "email" }) === "/communications" && await tasksTo({ tab: "comms", via: "email", test: "1" }) === "/communications?test=1");
-    c.ok("/today → /tasks?tab=today → Messages", await redirectOf(() => todayPage({ searchParams: Promise.resolve({}) })) === "/tasks?tab=today" && await tasksTo({ tab: "today" }) === "/communications");
+    c.ok("/today → /tasks?tab=today → Messages", await configRedirect("/today") === "/tasks?tab=today" && await tasksTo({ tab: "today" }) === "/communications");
     c.ok("a Slack to-do's ?task= link still lands on the Slack tab, not Messages", await tasksTo({ tab: "comms", task: slackTask.id }) === null);
     c.ok("the other Tasks tabs are untouched", await tasksTo({ tab: "work" }) === null && await tasksTo({ tab: "revisions" }) === null && await tasksTo({}) === null);
     await signIn(noComms);

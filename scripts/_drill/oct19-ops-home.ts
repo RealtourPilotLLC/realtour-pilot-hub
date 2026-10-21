@@ -148,7 +148,8 @@ async function main() {
     const { saveSecret } = await import("@/lib/integrations/connections");
     const { default: home } = await import("@/app/page");
     const { default: listPage } = await import("@/app/ops/checklist/page");
-    const { default: opsPage } = await import("@/app/ops/page");
+    // Oct 20 2026 (audit H18): /ops is a next.config redirect now, not a page.
+    const { configRedirect } = await import("./_configRedirect");
     const { default: oldPage } = await import("@/app/ops/old/page");
     const { default: requestsPage } = await import("@/app/ops/requests/page");
     const { default: schedulingPage } = await import("@/app/ops/scheduling/page");
@@ -612,7 +613,7 @@ async function main() {
     c.head("§7 · /ops goes to the dashboard; the retired pages open the list's groups");
     // =====================================================================
     await signIn(kyle);
-    c.ok("/ops redirects to the dashboard (test scope kept)", await redirectOf(() => opsPage({})) === "/" && await redirectOf(() => opsPage({ searchParams: Promise.resolve({ test: "1" }) })) === "/?test=1");
+    c.ok("/ops redirects to the dashboard (test scope kept)", await configRedirect("/ops") === "/" && await configRedirect("/ops", { test: "1" }) === "/?test=1");
     c.ok("/ops/requests → the list's Special requests, /ops/scheduling → Scheduling, /ops/old → From earlier days", await redirectOf(() => requestsPage({})) === "/ops/checklist#requests" && await redirectOf(() => schedulingPage({})) === "/ops/checklist#scheduling" && await redirectOf(() => oldPage({})) === "/ops/checklist#earlier");
     c.ok("…test scope rides along", await redirectOf(() => requestsPage({ searchParams: Promise.resolve({ test: "1" }) })) === "/ops/checklist?test=1#requests");
     await signIn(owner);
