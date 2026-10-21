@@ -38,7 +38,7 @@ export async function saveAutohdrCredentials(_prev: AutohdrActionResult | null, 
     console.warn("autohdr: first snapshot failed", (e as Error).message);
   }
   revalidatePath("/connections");
-  revalidatePath("/settings/autohdr");
+  revalidatePath("/ops/photo-delivery/credits");
   revalidatePath("/ops/photo-delivery");
   return {
     ok: true,
@@ -63,7 +63,7 @@ export async function retestAutohdr(): Promise<AutohdrActionResult> {
     console.warn("autohdr: snapshot failed", (e as Error).message);
   }
   revalidatePath("/connections");
-  revalidatePath("/settings/autohdr");
+  revalidatePath("/ops/photo-delivery/credits");
   return { ok: true, message: `${test.label}. Checking costs nothing.` };
 }
 
@@ -71,7 +71,7 @@ export async function disconnectAutohdr(): Promise<AutohdrActionResult> {
   await requireOwner();
   await disconnectConn(AUTOHDR_PROVIDER);
   revalidatePath("/connections");
-  revalidatePath("/settings/autohdr");
+  revalidatePath("/ops/photo-delivery/credits");
   const still = await autohdrCredentials().catch(() => null);
   if (still?.source === "env") {
     return { ok: true, message: "Removed from this card, but AUTOHDR_CLIENT_ID and AUTOHDR_CLIENT_SECRET are still set in the deployment's environment, so the hub stays connected until those are removed in Vercel." };

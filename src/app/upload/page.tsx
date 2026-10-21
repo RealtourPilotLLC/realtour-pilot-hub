@@ -12,6 +12,7 @@ import { photographerMemberId } from "@/lib/shoot";
 import { rawPhotoCounts } from "@/lib/dropboxFolders";
 import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
+import { payHiddenFor } from "@/lib/settings";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
 import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
@@ -71,6 +72,9 @@ export default async function UploadListPage() {
   //     submit and keeps its "Submit to add to payroll" chip. "Past uploads"
   //     below excludes exactly that set, so a job is never listed twice.
   const now = new Date();
+  // Oct 20 2026 (audit G): a viewer whose pay view is paused (Harrison,
+  // James) never reads "payroll" here; the chip still asks for the submit.
+  const payHidden = await payHiddenFor(user);
   const windowStart = uploadWindowStart(now);
   const scopeWhere = mine ? ownedBy(mine) : {};
   const shoots = await prisma.project.findMany({
@@ -190,7 +194,7 @@ export default async function UploadListPage() {
               </div>
               <div className="space-y-2">
                 {items.map((r) => (
-                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} />
+                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} payHidden={payHidden} />
                 ))}
               </div>
             </section>
@@ -250,7 +254,7 @@ function extraShootDay(
 // auto-stamp). The row says so until they do.
 
 // `nowMs` comes from the page's one `now` (a render must not read the clock).
-function JobRow({ s, extraShoot, overBudget, nowMs }: { s: Shoot; extraShoot: Date | null; overBudget: boolean; nowMs: number }) {
+function JobRow({ s, extraShoot, overBudget, nowMs, payHidden }: { s: Shoot; extraShoot: Date | null; overBudget: boolean; nowMs: number; payHidden: boolean }) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
   // An extra shoot's raws are not in, whatever the project stamp says: that
   // stamp belongs to the first shoot, and a delivered job carries it.
@@ -304,7 +308,7 @@ function JobRow({ s, extraShoot, overBudget, nowMs }: { s: Shoot; extraShoot: Da
           )}
           {payrollPending && (
             <span className="inline-flex items-center rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand">
-              Submit to add to payroll
+              {payHidden ? "Submit to finish the job" : "Submit to add to payroll"}
             </span>
           )}
         </div>

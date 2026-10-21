@@ -4,6 +4,7 @@ import { isAutomationEnabled } from "@/lib/programAutomation";
 import { isStaffControlledEmail, isSyntheticClientRow } from "@/lib/testClients";
 import { loadProgramRollout } from "@/lib/programRollout";
 import { CLOSED_ROLLOUT, clientAllowedOps, type ProgramRollout } from "@/lib/programRolloutCore";
+import { strategyAwaits, strategyInForceNo } from "@/lib/strategyAwaiting";
 import {
   AUTO_ONBOARD_TOGGLES, autoWelcomeIntentId, dayET, toggleOf, toggleOn,
 } from "@/lib/clientOnboardingCore";
@@ -183,9 +184,14 @@ export async function autoOnboardClient(clientId: string, by: string, opts: Auto
 
   // ---- 2. strategy ---------------------------------------------------------
   try {
-    const approved = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, releasedAt: true } });
-    const waiting = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "INTERNAL_REVIEW" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } });
-    const waitingNote = waiting && (!approved || waiting.versionNo > approved.versionNo) ? ` v${waiting.versionNo} is waiting for your approval (approving releases it).` : "";
+    // Oct 20 2026 (audit D4): "waiting" is the one rule in strategyAwaiting.ts
+    // (DRAFT or INTERNAL_REVIEW, newer than the version in force), so a
+    // discovery DRAFT is named here the way the Dashboard names it.
+    const versions = await prisma.contentStrategyVersion.findMany({ where: { enrollmentId: enrollment.id, status: { in: ["DRAFT", "INTERNAL_REVIEW", "APPROVED"] } }, orderBy: { versionNo: "desc" }, select: { id: true, versionNo: true, status: true, releasedAt: true } });
+    const approved = versions.find((v) => v.status === "APPROVED") ?? null;
+    const inForceNo = strategyInForceNo(versions);
+    const waiting = versions.find((v) => strategyAwaits(v, inForceNo));
+    const waitingNote = waiting ? ` v${waiting.versionNo} is waiting for your approval (approving releases it).` : "";
     if (!approved) step({ key: "strategy", status: "skipped", detail: `No approved strategy yet.${waitingNote}` });
     else if (approved.releasedAt) step({ key: "strategy", status: "already", detail: `v${approved.versionNo} is in their portal.${waitingNote}` });
     else if (dry) step({ key: "strategy", status: "would", detail: `would release v${approved.versionNo} to their portal (the strategy-ready email only if its switch and the rollout allow it).${waitingNote}` });
