@@ -537,7 +537,7 @@ export function CutReviewPanel({
                   onClick={() => setChoice(i)}
                   className={cn(
                     "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium",
-                    i === choice ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2",
+                    i === choice ? "border-brand bg-brand-action text-white" : "border-border bg-surface hover:bg-surface-2",
                   )}
                 >
                   <Icon className="size-3" /> {c.label}
@@ -552,7 +552,7 @@ export function CutReviewPanel({
                 value={clock}
                 onChange={(e) => { currentDraft.current.clock = e.target.value; setClock(e.target.value); }}
                 placeholder="mm:ss"
-                className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm tabular-nums outline-none focus:border-brand"
+                className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1 text-base sm:text-sm tabular-nums outline-none focus:border-brand"
               />
             </div>
           )}
@@ -587,12 +587,12 @@ export function CutReviewPanel({
                 )
               }
               disabled={pending || needsReload || !body.trim()}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />}{" "}
               {lanes[choice].ask ? "Send the ask" : "Save note"}
             </button>
-            <button onClick={() => setComposing(false)} className="px-1 text-xs font-medium text-muted hover:text-foreground">
+            <button onClick={() => setComposing(false)} className="inline-flex min-h-11 items-center px-2 text-xs font-medium text-muted hover:text-foreground">
               Cancel
             </button>
           </div>
@@ -662,7 +662,7 @@ export function CutReviewPanel({
                     onClick={() => run(() => setCutNoteStatus(n.id, "RESOLVED"))}
                     disabled={pending || needsReload}
                     title="Resolve — this is handled"
-                    className="shrink-0 rounded-lg p-1.5 text-muted-2 hover:bg-success/10 hover:text-success"
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-success/10 hover:text-success"
                   >
                     <Check className="size-4" />
                   </button>
@@ -671,7 +671,7 @@ export function CutReviewPanel({
                     onClick={() => run(() => setCutNoteStatus(n.id, "OPEN"))}
                     disabled={pending || needsReload}
                     title="Reopen"
-                    className="shrink-0 rounded-lg p-1.5 text-muted-2 hover:bg-surface-2 hover:text-foreground"
+                    className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground"
                   >
                     <RotateCcw className="size-4" />
                   </button>
@@ -698,12 +698,12 @@ export function CutReviewPanel({
                       onEnter={() => { if (reply.trim() && !pending && !needsReload) run(() => replyCutNote(n.id, reply), () => { if (currentDraft.current.reply === reply) { currentDraft.current.reply = ""; setReply(""); } else setMsg((message) => `${message ?? "The submitted reply was recorded."} Newer reply edits are still unsent.`); }); }}
                       rows={1}
                       placeholder="Reply… (@ to tag)"
-                      className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-brand"
+                      className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-base outline-none focus:border-brand sm:text-sm"
                     />
                     <button
                       onClick={() => run(() => replyCutNote(n.id, reply), () => { if (currentDraft.current.reply === reply) { currentDraft.current.reply = ""; setReply(""); } else setMsg((message) => `${message ?? "The submitted reply was recorded."} Newer reply edits are still unsent.`); })}
                       disabled={pending || needsReload || !reply.trim()}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
+                      className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
                     >
                       <Send className="size-3.5" /> Send
                     </button>

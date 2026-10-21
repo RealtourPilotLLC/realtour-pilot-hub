@@ -79,7 +79,7 @@ export function BudgetScreen({
                 : "It reads your real spending history and writes a target for every category — fixed costs stay honest, the cuttable stuff gets cut."}
             </p>
           </div>
-          <button onClick={runAi} disabled={aiBusy} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
+          <button onClick={runAi} disabled={aiBusy} className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
             {aiBusy ? <><Loader2 className="size-4 animate-spin" /> building…</> : rows.length ? "Rebalance budget" : "Build my budget"}
           </button>
         </div>

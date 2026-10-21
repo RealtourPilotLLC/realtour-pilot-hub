@@ -136,7 +136,7 @@ export function QuarterScoreCard({ card, previous }: { card: QuarterScorecard; p
                 key={b.min}
                 className={cn(
                   "rounded-lg border px-2 py-1.5 text-center",
-                  here ? "border-brand bg-brand text-white" : nextUp ? "border-brand/40 bg-surface" : "border-border bg-surface",
+                  here ? "border-brand bg-brand-action text-white" : nextUp ? "border-brand/40 bg-surface" : "border-border bg-surface",
                 )}
               >
                 <div className={cn("text-[10px] font-medium", here ? "text-white/80" : "text-muted-2")}>{b.short}</div>

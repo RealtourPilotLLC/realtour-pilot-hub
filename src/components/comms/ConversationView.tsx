@@ -176,7 +176,7 @@ export function ChatPanel({
             <Fragment key={it.id}>
             {daySep}
             <div className={cn("flex", out ? "justify-end" : "justify-start")}>
-              <div className={cn("max-w-[80%] rounded-2xl px-3 py-2 text-sm", out ? "rounded-br-sm bg-brand text-white" : "rounded-bl-sm bg-surface-2 text-foreground")}>
+              <div className={cn("max-w-[80%] rounded-2xl px-3 py-2 text-sm", out ? "rounded-br-sm bg-brand-action text-white" : "rounded-bl-sm bg-surface-2 text-foreground")}>
                 {senderName && <div className="mb-0.5 text-[11px] font-semibold text-brand">{senderName}</div>}
                 {it.media?.map((m, i) => (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -219,7 +219,7 @@ export function ChatPanel({
             value={body} onChange={(e) => setBody(e.target.value)} minRows={1}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
             placeholder="Type a message…"
-            className="max-h-32 min-h-[36px] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="max-h-32 min-h-[36px] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-base sm:text-sm outline-none focus:border-brand"
           />
           <button onClick={() => startDraft(async () => {
             const transcript = msgs.map((m) => ({ kind: m.kind, direction: m.direction, text: m.text, at: m.at, from: m.from }));
@@ -231,7 +231,7 @@ export function ChatPanel({
             {drafting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4 text-brand" />}
           </button>
           <button onClick={send} disabled={sending || (!body.trim() && !attach)} aria-label="Send"
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand text-white disabled:opacity-50">
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-action text-white disabled:opacity-50">
             {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </button>
         </div>

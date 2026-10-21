@@ -86,7 +86,7 @@ export function VideoReview({
       <div className="flex w-full max-w-3xl flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={startNote}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white"
         >
           <MessageSquarePlus className="size-4" /> {src ? `Add note at ${fmtClock(now)}` : "Add video note"}
         </button>

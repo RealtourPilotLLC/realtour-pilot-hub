@@ -360,12 +360,12 @@ export default async function ProjectPage({
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm sm:justify-end">
             {project.client.email && (
-              <a href={`mailto:${project.client.email}`} className="flex items-center gap-1.5 text-muted hover:text-foreground">
+              <a href={`mailto:${project.client.email}`} className="flex min-h-9 min-w-0 items-center gap-1.5 text-muted hover:text-foreground">
                 <Mail className="size-3.5 shrink-0" /> <span className="truncate">{project.client.email}</span>
               </a>
             )}
             {project.client.phone && (
-              <a href={`tel:${project.client.phone}`} className="flex items-center gap-1.5 text-muted hover:text-foreground">
+              <a href={`tel:${project.client.phone}`} className="flex min-h-9 items-center gap-1.5 text-muted hover:text-foreground">
                 <Phone className="size-3.5 shrink-0" /> {project.client.phone}
               </a>
             )}
@@ -677,12 +677,12 @@ export default async function ProjectPage({
                   {project.uploads.map((u) => (
                     <li
                       key={u.id}
-                      className="flex items-center gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs"
+                      className="flex items-center gap-2 rounded-lg bg-surface-2 px-2.5 text-xs"
                     >
                       <Package className="size-3.5 shrink-0 text-muted" />
                       <a
                         href={`/api/file?path=${encodeURIComponent(u.storedPath)}&download=1`}
-                        className="flex-1 truncate hover:underline"
+                        className="min-w-0 flex-1 truncate py-2.5 hover:underline"
                       >
                         {u.originalName}
                       </a>
@@ -765,7 +765,7 @@ export default async function ProjectPage({
                       )}
                       {project.paymentUrl && project.balanceAmount != null && project.balanceAmount > 0 && (
                         <a href={project.paymentUrl} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 text-xs font-medium text-brand-fg hover:opacity-90">
+                          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 text-xs font-medium text-brand-fg hover:opacity-90">
                           <ExternalLink className="size-3.5" /> Payment link
                         </a>
                       )}

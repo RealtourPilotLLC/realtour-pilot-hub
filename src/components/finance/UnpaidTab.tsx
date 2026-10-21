@@ -97,7 +97,7 @@ function BillingCard({ r }: { r: BillingRow }) {
           </a>
         )}
         {r.paymentUrl && (
-          <a href={r.paymentUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 font-medium text-white hover:opacity-90">
+          <a href={r.paymentUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 font-medium text-white hover:opacity-90">
             <CreditCard className="size-3.5" /> Payment link
           </a>
         )}

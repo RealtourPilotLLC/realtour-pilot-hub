@@ -55,7 +55,7 @@ function Btn({ children, onClick, primary, success, disabled, busy }: {
         success
           ? "bg-success text-white hover:opacity-90"
           : primary
-          ? "bg-brand text-white hover:opacity-90"
+          ? "bg-brand-action text-white hover:opacity-90"
           : "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"
       }`}
     >

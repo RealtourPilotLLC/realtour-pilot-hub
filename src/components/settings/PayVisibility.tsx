@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { savePayVisibility } from "@/app/settings/actions";
+import { Switch } from "@/components/ui/Switch";
 
 // ---------------------------------------------------------------------------
 // The switch, and the card that says exactly what it does: who is paused,
@@ -58,13 +59,13 @@ export function PayVisibilitySettings({
             </p>
           )}
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={paused}
+        <Switch
+          checked={paused}
+          tone="warning"
           aria-label="Hide pay from everyone but you"
-          disabled={busy || !isOwner}
-          onClick={() =>
+          busy={busy}
+          disabled={!isOwner}
+          onChange={() =>
             start(async () => {
               const next = !paused;
               const res = await savePayVisibility(next).catch(() => ({ ok: false, message: "Couldn’t save. Try again." }));
@@ -72,10 +73,8 @@ export function PayVisibilitySettings({
               setMsg(res.message);
             })
           }
-          className={`mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${paused ? "bg-warning" : "bg-surface-2 border border-border"}`}
-        >
-          <span className={`block size-5 rounded-full bg-white shadow transition-transform ${paused ? "translate-x-5" : "translate-x-0.5"}`} />
-        </button>
+          className="-mt-2.5"
+        />
       </div>
 
       {!isOwner && <p className="text-[13px] text-muted-2">Only Jordan can change this one.</p>}

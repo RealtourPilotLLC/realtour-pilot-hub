@@ -120,7 +120,7 @@ function ScriptCard({ x, canAct }: { x: PortalBulkItem; canAct: boolean }) {
             onClick={toggle}
             disabled={busy}
             aria-pressed={x.markedDone}
-            className={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-60 ${x.markedDone ? "border-brand bg-brand text-white" : "border-border bg-surface hover:border-brand/50"}`}
+            className={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-60 ${x.markedDone ? "border-brand bg-brand-action text-white" : "border-border bg-surface hover:border-brand/50"}`}
           >
             <Check aria-hidden className="size-4" /> {x.markedDone ? "Done (tap to undo)" : "Mark done"}
           </button>

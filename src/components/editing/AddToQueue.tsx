@@ -229,7 +229,7 @@ export function AddToQueue() {
             <button
               onClick={add}
               disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} Add to queue
             </button>

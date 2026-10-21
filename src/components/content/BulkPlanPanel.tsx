@@ -186,7 +186,7 @@ function PlanSettings({ board, busy, run }: { board: BulkBoard; busy: boolean; r
           <textarea className={cn(input, "min-h-20")} value={editing} onChange={(e) => setEditing(e.target.value)} maxLength={2000} />
         </label>
         <div className="flex flex-wrap gap-2 sm:col-span-4">
-          <button type="button" disabled={busy} className={cn(btn, "bg-brand text-white")} onClick={() => run(() => updateBulkPlanAction(p.id, { perSession: Number(per), sessionsPlanned: Number(sessions), cadenceDays: Number(cadence), startsOn: startsOn || null, editingNote: editing }))}>Save</button>
+          <button type="button" disabled={busy} className={cn(btn, "bg-brand-action text-white")} onClick={() => run(() => updateBulkPlanAction(p.id, { perSession: Number(per), sessionsPlanned: Number(sessions), cadenceDays: Number(cadence), startsOn: startsOn || null, editingNote: editing }))}>Save</button>
           {p.status === "ACTIVE" ? (
             <>
               <button type="button" disabled={busy} className={quiet} onClick={() => run(() => updateBulkPlanAction(p.id, { status: "COMPLETE" }))}>Mark the plan complete</button>
@@ -234,7 +234,7 @@ function ImportBank({ planId, clientFirst, imports, busy, run }: { planId: strin
         <p className="text-sm text-muted">One document with every script, in the order to film them (VIDEO 1, VIDEO 2…). They fill the sessions in that order, after anything already planned. A DELIVERY NOTE at the top becomes the editing note.</p>
         <div className="flex flex-wrap gap-2">
           <input ref={fileRef} type="file" accept=".docx,.pdf,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" className="hidden" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPasting(false); setPreview(null); }} />
-          <button type="button" onClick={() => fileRef.current?.click()} className={cn(btn, "bg-brand text-white")}><FileText className="size-4" aria-hidden />{file ? file.name : "Choose the document"}</button>
+          <button type="button" onClick={() => fileRef.current?.click()} className={cn(btn, "bg-brand-action text-white")}><FileText className="size-4" aria-hidden />{file ? file.name : "Choose the document"}</button>
           <button type="button" onClick={() => { setPasting(!pasting); setPreview(null); }} className={quiet}><ClipboardPaste className="size-4" aria-hidden />Paste text</button>
         </div>
         {pasting && <textarea aria-label="Paste the scripts" className={cn(input, "min-h-40 font-mono text-[13px]")} value={text} onChange={(e) => { setText(e.target.value); setPreview(null); }} />}
@@ -244,7 +244,7 @@ function ImportBank({ planId, clientFirst, imports, busy, run }: { planId: strin
         </label>
         <div className="flex flex-wrap gap-2">
           <button type="button" disabled={reading || busy || (!file && !text.trim())} onClick={read} className={quiet}>{reading ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}Read it first</button>
-          <button type="button" disabled={busy || !preview?.ok} onClick={() => run(async () => { const r = await importBulkScriptsAction(planId, form()); if (r.ok) { setPreview(null); setFile(null); setText(""); } return r; })} className={cn(btn, "bg-brand text-white")}>
+          <button type="button" disabled={busy || !preview?.ok} onClick={() => run(async () => { const r = await importBulkScriptsAction(planId, form()); if (r.ok) { setPreview(null); setFile(null); setText(""); } return r; })} className={cn(btn, "bg-brand-action text-white")}>
             <Send className="size-4" aria-hidden />Add {preview?.count ?? ""} scripts to the plan
           </button>
         </div>
@@ -297,7 +297,7 @@ function CreatePlan({ enrollmentId, clientFirst, defaultMonthKey, busy, run, not
         <button
           type="button"
           disabled={busy}
-          className={cn(btn, "bg-brand text-white")}
+          className={cn(btn, "bg-brand-action text-white")}
           onClick={() => run(() => createBulkPlanAction({ enrollmentId, totalVideos: Number(total), perSession: Number(per), cadenceDays: Number(cadence), startsOn: startsOn || null, monthKey }))}
         >
           Turn on the bulk plan

@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { saveClientEmailMonitorAction } from "@/app/settings/actions";
 import { Button } from "@/components/ui/Action";
+import { Switch } from "@/components/ui/Switch";
 
 // ---------------------------------------------------------------------------
 // Client email copies (Jordan, Oct 12 2026): one address and an off switch.
@@ -42,17 +43,13 @@ export function ClientEmailMonitorSettings({
           <label htmlFor="client-email-monitor-address" className="min-w-0 text-sm font-semibold">
             Every email a client gets is also sent to:
           </label>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={enabled}
+          <Switch
+            checked={enabled}
             aria-label="Copy client emails to this address"
             disabled={busy || !isOwner}
-            onClick={() => setEnabled((v) => !v)}
-            className={`mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${enabled ? "bg-brand" : "border border-border bg-surface-2"}`}
-          >
-            <span className={`block size-5 rounded-full bg-white shadow transition-transform ${enabled ? "translate-x-5" : "translate-x-0.5"}`} />
-          </button>
+            onChange={() => setEnabled((v) => !v)}
+            className="-mt-2.5"
+          />
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <input

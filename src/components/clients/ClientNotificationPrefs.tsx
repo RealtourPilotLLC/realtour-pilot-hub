@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { BellRing, Loader2, Check, TriangleAlert } from "lucide-react";
 import { Section } from "@/components/ui/Section";
+import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/utils";
 import { saveClientNotificationPrefs } from "@/app/clients/[id]/notificationActions";
 
@@ -39,35 +40,6 @@ export type AutoTextContext = {
 // error. Show enough to act on, never enough to blow the sidebar apart.
 function clip(s: string, max = 220): string {
   return s.length <= max ? s : `${s.slice(0, max).trimEnd()}…`;
-}
-
-function Toggle({
-  on,
-  onChange,
-  label,
-  disabled,
-}: {
-  on: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!on)}
-      className={cn(
-        "relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-        on ? "bg-success" : "bg-surface-2 ring-1 ring-border",
-      )}
-    >
-      <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", on ? "left-[22px]" : "left-0.5")} />
-    </button>
-  );
 }
 
 export function ClientNotificationPrefs({
@@ -214,7 +186,7 @@ function Row({
           <p className="text-sm font-semibold">{title}</p>
           <p className="mt-0.5 text-[12.5px] leading-snug text-muted">{detail}</p>
         </div>
-        <Toggle on={on} onChange={onChange} label={title} disabled={disabled} />
+        <Switch checked={on} onChange={onChange} aria-label={title} disabled={disabled} className="-mt-2.5" />
       </div>
       {overridden && (
         <p className="mt-2 flex items-start gap-1.5 border-t border-border pt-2 text-[12px] text-warning">

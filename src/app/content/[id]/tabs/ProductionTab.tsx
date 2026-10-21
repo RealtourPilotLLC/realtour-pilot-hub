@@ -83,9 +83,9 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
             ))}
           </div>
           {closed.length > 0 && (
-            <details className="border-t border-border px-5 py-2 text-[12px] text-muted">
-              <summary className="cursor-pointer">{closed.length} finished</summary>
-              <ul className="mt-1 space-y-0.5">
+            <details className="border-t border-border px-5 text-[12px] text-muted">
+              <summary className="cursor-pointer py-2.5">{closed.length} finished</summary>
+              <ul className="space-y-0.5 pb-2.5">
                 {closed.map((b) => <li key={b.id}><Link href={`/edit/${b.projectId}`} className="hover:underline">{b.headline}</Link> <span className="text-muted-2">· {b.projectTitle}</span></li>)}
               </ul>
             </details>
@@ -95,7 +95,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
             waiting for review, so this month's cuts come first and are what
             the count says; other months' sit folded underneath. */}
         <Section icon={Film} title={`Cuts in motion${month ? ` · ${monthName}` : ""}`} count={cutsHere.length} flush
-          action={<Link href="/review" className="text-[12px] font-medium text-brand hover:underline">Review Room →</Link>}>
+          action={<Link href="/review" className="inline-flex min-h-9 items-center text-[12px] font-medium text-brand hover:underline">Review Room →</Link>}>
           <div className="divide-y divide-border">
             {cutsHere.length === 0 && <p className="px-5 py-3 text-sm text-muted">No cut {month ? `from ${monthName} ` : ""}is waiting on review or back with the editor.</p>}
             {cutsHere.map((c) => <CutRow key={c.id} c={c} />)}

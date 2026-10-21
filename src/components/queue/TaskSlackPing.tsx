@@ -78,7 +78,7 @@ export function TaskSlackPing({ taskId, compact }: { taskId: string; compact?: b
             if (r.ok) { setOpen(false); setNote(""); }
           })
         }
-        className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+        className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Send
       </button>

@@ -63,7 +63,7 @@ export function AppointmentFeedback({ projectId }: { projectId: string }) {
                 setDone(r.message);
               })
             }
-            className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
             {pending ? "Saving…" : "Submit debrief"}
           </button>

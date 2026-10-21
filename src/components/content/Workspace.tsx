@@ -67,7 +67,7 @@ export function StrategyCallCard({
     : cur === "SCHEDULED" ? `Strategy call booked${at ? ` for ${fmtCallTime(at)}` : ""}`
     : "The strategy call isn't booked yet";
 
-  const primaryBtn = "inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50";
+  const primaryBtn = "inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50";
   const quietLink = "text-[13px] font-medium text-muted hover:text-foreground hover:underline";
 
   return (
@@ -252,7 +252,7 @@ function ProfileSection({ clientId, section, raw }: { clientId: string; section:
           <button disabled={busy} onClick={() => start(async () => {
             const r = await saveProfileSection(clientId, section.key, values);
             setNote(r.message);
-          })} className="rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
+          })} className="rounded-md bg-brand-action px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
             {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save"}
           </button>
           {note && <span className="ml-2 text-[11px] text-muted">{note}</span>}
@@ -286,7 +286,7 @@ export function NotesCard({
             const r = await addContentNote(clientId, body, intel);
             setNote(r.ok ? null : r.message);
             if (r.ok) { setBody(""); setIntel(false); }
-          })} className="rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
+          })} className="rounded-md bg-brand-action px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
             {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Add note"}
           </button>
           <label className="flex items-center gap-1.5 text-[11px] text-muted">
@@ -436,7 +436,7 @@ export function EnrollmentControls({
               // now hold what was just recorded, so the same values read as
               // "nothing to record" instead of offering to record them again.
               if (r.ok) { setReason(""); setChoice(""); setWhen("next"); }
-            })} className="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+            })} className="rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
               {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Record the change"}
             </button>}
             {!videosOk && <p className="text-[11px] text-warning">Videos a month must be a whole number from 1 to 31.</p>}

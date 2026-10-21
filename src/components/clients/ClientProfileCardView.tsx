@@ -81,7 +81,7 @@ export function ClientProfileCardView({
             <p className="max-w-sm text-sm text-muted">
               Build an AI summary of who this client is to work with, from their messages, shoot debriefs, and revision history.
             </p>
-            <button onClick={regen} disabled={pending} className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50">
+            <button onClick={regen} disabled={pending} className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50">
               <Sparkles className="size-4" /> {pending ? "Building…" : "Generate profile"}
             </button>
           </div>

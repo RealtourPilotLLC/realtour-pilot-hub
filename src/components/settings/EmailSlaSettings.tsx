@@ -5,10 +5,10 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { Loader2 } from "lucide-react";
 import { loadEmailSla, saveEmailSla } from "@/components/settings/emailSla.actions";
 import type { EmailSlaRules } from "@/lib/commsSla";
-import { cn } from "@/lib/utils";
 import { finishNormalizedSettingsSave, settingsDraftDirty, type SettingsDraft } from "@/lib/settingsDraft";
 import { Button } from "@/components/ui/Action";
 import { SaveStatus } from "@/components/ui/SaveStatus";
+import { Switch } from "@/components/ui/Switch";
 
 // Unanswered client email (O06, Sep 26 2026) — Jordan: "bell only, counting
 // covered hours only; Kyle's bell after 4, mine after 9; an unhappy client at
@@ -97,15 +97,7 @@ export function EmailSlaForm({ initial, initialSince }: { initial: EmailSlaRules
             sounds unhappy). These bells are bell only — never a text or a Slack message — and never ring outside covered hours.
           </p>
         </div>
-        <button
-          type="button" role="switch" aria-checked={r.enabled} aria-label="Unanswered client email alerts"
-          onClick={() => set({ enabled: !r.enabled })}
-          className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand"
-        >
-          <span aria-hidden className={cn("relative h-6 w-11 rounded-full transition-colors", r.enabled ? "bg-success" : "bg-surface-2 ring-1 ring-border")}>
-            <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", r.enabled ? "left-[22px]" : "left-0.5")} />
-          </span>
-        </button>
+        <Switch checked={r.enabled} onChange={(v) => set({ enabled: v })} aria-label="Unanswered client email alerts" />
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
         <span className="text-[13px] text-muted">Kyle after</span>
@@ -127,15 +119,7 @@ export function EmailSlaForm({ initial, initialSince }: { initial: EmailSlaRules
             your Home card and don&rsquo;t ring your bell (an unhappy client still does).
           </p>
         </div>
-        <button
-          type="button" role="switch" aria-checked={r.kyleFollowUp} aria-label="Kyle's email follow-up"
-          onClick={() => set({ kyleFollowUp: !r.kyleFollowUp })}
-          className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand"
-        >
-          <span aria-hidden className={cn("relative h-6 w-11 rounded-full transition-colors", r.kyleFollowUp ? "bg-success" : "bg-surface-2 ring-1 ring-border")}>
-            <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", r.kyleFollowUp ? "left-[22px]" : "left-0.5")} />
-          </span>
-        </button>
+        <Switch checked={r.kyleFollowUp} onChange={(v) => set({ kyleFollowUp: v })} aria-label="Kyle's email follow-up" />
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <span className="text-[13px] text-muted">Slack Kyle after</span>

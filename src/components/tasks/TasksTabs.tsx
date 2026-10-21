@@ -13,7 +13,7 @@ export function TasksTabs({ tab, who, allCount, mineCount, needsAssignmentCount,
   /** Replies is a tab only for a login without Messages; everyone else answers clients on Messages (audit A4) */
   showReplies?: boolean;
 }) {
-  const active = "rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+  const active = "rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   const idle = "rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   const badge = (n: number, on: boolean) => n > 0 ? (
     <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${on ? "bg-white/20" : "bg-brand/15 text-brand"}`}>{n}</span>

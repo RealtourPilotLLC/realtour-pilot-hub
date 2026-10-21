@@ -276,7 +276,7 @@ function JobRow({ job, memberId, busy, run }: { job: PayrollJob; memberId: strin
                 <span className="text-muted-2">Note</span>
                 <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. partial completion" className="w-full rounded-lg border bg-surface px-2 py-1" />
               </label>
-              <button onClick={save} disabled={busy} className="rounded-lg bg-brand px-2.5 py-1 font-medium text-white disabled:opacity-60">Save</button>
+              <button onClick={save} disabled={busy} className="rounded-lg bg-brand-action px-2.5 py-1 font-medium text-white disabled:opacity-60">Save</button>
               {job.override && <button onClick={clear} disabled={busy} className="rounded-lg border px-2.5 py-1 text-muted hover:text-foreground">Clear</button>}
             </div>
           </td>
@@ -301,7 +301,7 @@ function AdjustmentForm({ memberId, defaultDateISO, busy, run }: { memberId: str
       <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Bonus / camera payback…" className="flex-1 rounded-lg border bg-surface px-2 py-1.5" />
       <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="± $" className="w-20 rounded-lg border bg-surface px-2 py-1.5" />
       <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border bg-surface px-2 py-1.5" />
-      <button onClick={add} disabled={busy} className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 font-medium text-white disabled:opacity-60"><Plus className="size-3.5" /> Add</button>
+      <button onClick={add} disabled={busy} className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1.5 font-medium text-white disabled:opacity-60"><Plus className="size-3.5" /> Add</button>
     </div>
   );
 }
@@ -427,7 +427,7 @@ function MileageDayRow({ day: d, memberId, busy, run }: {
             className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
             placeholder="why? (optional — e.g. detour on Rt 30)" aria-label="Reason for the adjustment"
           />
-          <button onClick={save} disabled={busy} className="rounded-md bg-brand px-2 py-1 font-semibold text-white disabled:opacity-50">
+          <button onClick={save} disabled={busy} className="rounded-md bg-brand-action px-2 py-1 font-semibold text-white disabled:opacity-50">
             {busy ? <Loader2 className="size-3 animate-spin" /> : "Save"}
           </button>
           <button onClick={() => setEditing(false)} aria-label="Cancel" className="text-muted-2 hover:text-foreground"><X className="size-3.5" /></button>

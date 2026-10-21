@@ -211,7 +211,7 @@ export function FeedbackForm({
         <button
           type="submit"
           disabled={pending}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-3 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-60"
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-action px-4 py-3 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending && <Loader2 className="size-4 animate-spin" />}
           Send feedback

@@ -58,7 +58,7 @@ function SlackProposal({ p }: { p: Extract<DayProposal, { kind: "slack" }> }) {
             })
           }
           disabled={busy || !text.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Send to Kyle
         </button>
@@ -176,7 +176,7 @@ export function DayAssistant() {
         <div className="mb-3 max-h-[28rem] space-y-3 overflow-y-auto pr-1">
           {msgs.map((m, i) =>
             m.role === "user" ? (
-              <div key={i} className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-sm bg-brand px-3.5 py-2 text-sm text-white">
+              <div key={i} className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-sm bg-brand-action px-3.5 py-2 text-sm text-white">
                 {m.content}
               </div>
             ) : (
@@ -217,7 +217,7 @@ export function DayAssistant() {
         <button
           onClick={() => ask(q)}
           disabled={busy || !q.trim()}
-          className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand text-white disabled:opacity-40"
+          className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand-action text-white disabled:opacity-40"
           aria-label="Ask"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}

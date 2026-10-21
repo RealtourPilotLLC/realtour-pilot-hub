@@ -86,13 +86,13 @@ export function JobNoteEditor({
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
         rows={5}
-        className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm leading-relaxed outline-none focus:border-brand"
+        className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-base sm:text-sm leading-relaxed outline-none focus:border-brand"
       />
       <div className="mt-1.5 flex items-center gap-1.5">
         <button
           onClick={save}
           disabled={saving}
-          className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
         >
           {saving && <Loader2 className="size-3 animate-spin" />}
           Save

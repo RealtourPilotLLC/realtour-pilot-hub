@@ -48,7 +48,7 @@ export type SourcesUi = {
 /** Accepted, AI-allowed client facts that also feed the editor brief — shown here with where each came from. */
 export type ProvenanceUi = { id: string; body: string; category: string; scope: string; source: string; projectId: string | null; monthId: string | null; factDateISO: string | null }[];
 
-const btn = "rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50";
+const btn = "rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50";
 const input = "rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm";
 const day = (isoStr: string) => new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" });

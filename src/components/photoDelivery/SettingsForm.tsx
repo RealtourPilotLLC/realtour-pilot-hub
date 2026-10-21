@@ -3,6 +3,7 @@
 import { useEffect, useId, useState, useTransition } from "react";
 import { ChevronDown, Loader2, Plus, Save, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Switch as SwitchControl } from "@/components/ui/Switch";
 import { saveSettingsAction, searchClientsAction } from "@/app/ops/photo-delivery/actions";
 
 // ---------------------------------------------------------------------------
@@ -73,16 +74,9 @@ const PAID_QC: Option<PaidQcMode>[] = [
 const input = "min-h-11 w-full rounded-lg border border-border-strong bg-surface-2 px-3 text-sm tabular-nums focus-visible:outline-2 focus-visible:outline-brand";
 const card = "flex cursor-pointer items-start gap-3 rounded-xl border p-3 hover:bg-surface-2/40";
 
+// One setting as a card: the whole card is the tap target for the shared switch.
 function Switch({ label, help, checked, onChange }: { label: string; help: string; checked: boolean; onChange: (on: boolean) => void }) {
-  return (
-    <label className={cn(card, "border-border")}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
-      <span>
-        <span className="block text-sm font-medium">{label}</span>
-        <span className="block text-ui-status text-muted">{help}</span>
-      </span>
-    </label>
-  );
+  return <SwitchControl checked={checked} onChange={onChange} label={label} description={help} labelClassName={cn(card, "border-border")} />;
 }
 
 function Choice<T extends string>({ name, legend, help, options, value, onChange, grid }: { name: string; legend: string; help?: string; options: Option<T>[]; value: T; onChange: (v: T) => void; grid?: string }) {

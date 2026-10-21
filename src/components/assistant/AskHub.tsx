@@ -201,7 +201,7 @@ function DraftCard({ draft }: { draft: HubDraft }) {
           <button
             onClick={doSend}
             disabled={status === "sending" || !text.trim()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-medium text-brand-fg disabled:opacity-50"
           >
             <Send className="size-3.5" /> {status === "sending" ? "Sending…" : "Send via OpenPhone"}
           </button>
@@ -418,7 +418,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
           m.role === "user" ? (
             <div key={i} className="flex justify-end">
               <div className="flex max-w-[80%] items-start gap-2">
-                <div className="rounded-2xl rounded-tr-sm bg-brand px-4 py-2.5 text-sm text-brand-fg">
+                <div className="rounded-2xl rounded-tr-sm bg-brand-action px-4 py-2.5 text-sm text-brand-fg">
                   {m.text}
                   {m.attachments && m.attachments.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
@@ -538,7 +538,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
             onClick={() => send(value)}
             disabled={isPending || (!value.trim() && files.length === 0)}
             aria-label="Send"
-            className="flex size-9 items-center justify-center rounded-xl bg-brand text-brand-fg disabled:opacity-50"
+            className="flex size-9 items-center justify-center rounded-xl bg-brand-action text-brand-fg disabled:opacity-50"
           >
             <Send className="size-4" />
           </button>

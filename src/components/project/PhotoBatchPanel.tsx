@@ -63,7 +63,7 @@ export async function PhotoBatchPanel({ projectId, canAct }: { projectId: string
         )}
         {earlier.length > 0 && (
           <details className="mt-3 text-xs">
-            <summary className="cursor-pointer text-muted">Earlier attempts ({earlier.length})</summary>
+            <summary className="cursor-pointer py-2 text-muted">Earlier attempts ({earlier.length})</summary>
             <ul className="mt-1.5 space-y-1 text-muted">
               {earlier.map((e) => (
                 <li key={e.id}>

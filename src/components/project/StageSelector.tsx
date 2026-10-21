@@ -62,7 +62,7 @@ export function StageSelector({
               }
             });
           }}
-          className="min-h-11 cursor-pointer appearance-none rounded-lg border pl-3 pr-8 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-60"
+          className="min-h-11 cursor-pointer appearance-none rounded-lg border pl-3 pr-8 text-base sm:text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-60"
           style={style}
         >
           {ALL_STAGES.map((s) => (

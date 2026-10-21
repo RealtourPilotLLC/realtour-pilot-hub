@@ -149,7 +149,7 @@ export function AryeoCutover({ state }: { state: CutoverState }) {
                 })
               }
               disabled={pending}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
             >
               {pending ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
               {state.secretStored ? "Make a new secret" : "Make a secret"}

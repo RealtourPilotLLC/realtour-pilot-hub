@@ -56,7 +56,7 @@ export function TeamTextComposer({
               if (r.ok) { setBody(""); intentRef.current = null; }
             })
           }
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           <Send className="size-4" /> {pending ? "Sending…" : "Send text"}
         </button>

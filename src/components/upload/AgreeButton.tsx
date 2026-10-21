@@ -20,7 +20,7 @@ export function AgreeButton({ next = "/upload" }: { next?: string }) {
             else setErr("Couldn't save — make sure you're signed in, then try again.");
           })
         }
-        className="inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        className="inline-flex items-center gap-2 rounded-xl bg-brand-action px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
         I agree — take me to my shoots

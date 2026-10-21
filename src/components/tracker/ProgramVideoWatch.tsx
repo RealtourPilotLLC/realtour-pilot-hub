@@ -85,7 +85,7 @@ function CauseControl({ row }: { row: WatchViewRow }) {
         type="button"
         onClick={save}
         disabled={pending}
-        className="inline-flex min-h-11 items-center gap-1 rounded-lg bg-brand px-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+        className="inline-flex min-h-11 items-center gap-1 rounded-lg bg-brand-action px-3 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
       >
         {pending ? "Saving…" : row.recorded?.cause ? "Update" : "Record cause"}
       </button>

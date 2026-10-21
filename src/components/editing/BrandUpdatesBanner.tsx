@@ -48,7 +48,7 @@ export function BrandUpdatesBanner({ projectId, items, canAck, canOverride = fal
               const r = await acknowledgeBrandChangesAction(projectId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
               if (r.ok) { setDone(r.message); setErr(null); } else setErr(r.message);
             })}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
           >
             {busy && <Loader2 className="size-3 animate-spin" />} Got it
           </button>

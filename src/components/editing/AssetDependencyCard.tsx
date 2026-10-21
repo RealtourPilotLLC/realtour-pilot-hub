@@ -223,7 +223,7 @@ export function AssetDependencyCard({
                     type="button"
                     disabled={busy || !(refs[d.taskId] ?? "").trim()}
                     onClick={() => attach(d.taskId)}
-                    className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-40"
+                    className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1.5 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-40"
                   >
                     <Paperclip className="size-3" /> Attach the file
                   </button>

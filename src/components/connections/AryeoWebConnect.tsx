@@ -31,7 +31,7 @@ export function AryeoWebConnectForm() {
           <input id="aryeo-web-password" name="password" type="password" autoComplete="new-password" spellCheck={false} className="min-h-11 w-full rounded-lg border border-border-strong bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
           <p className="text-xs text-muted">Checked by signing in and opening one listing page, which changes nothing. A login Aryeo refuses is not saved. The password is encrypted before it is stored and is never shown again.</p>
           <div className="flex gap-2">
-            <button type="submit" disabled={pending} className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
+            <button type="submit" disabled={pending} className="flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-action px-3 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60">
               {pending && <Loader2 className="size-4 animate-spin" />}
               Test &amp; save
             </button>

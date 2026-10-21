@@ -60,7 +60,7 @@ export type BillingUi = {
 export type OwnersUi = { duty: string; word: string; label: string; appUserId: string | null; scope: string }[];
 export type HistoryUi = { id: string; field: string; from: string | null; to: string | null; effectiveAtISO: string; effectiveMonthKey: string | null; currentMonthChoice: string | null; reason: string | null; source: string; billingTruth: boolean; changedBy: string | null; appliedAtISO: string | null; createdAtISO: string; superseded: boolean }[];
 
-const btn = "rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50";
+const btn = "rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50";
 const quiet = "rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50";
 const input = "rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm";
 const money = (n: number | null | undefined) => (n == null ? "—" : usd0(n));

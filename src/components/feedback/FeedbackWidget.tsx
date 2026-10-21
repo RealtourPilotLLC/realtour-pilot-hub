@@ -248,7 +248,7 @@ export function FeedbackWidget() {
               <button
                 onClick={submit}
                 disabled={pending || !title.trim()}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3.5 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 {pending ? <Loader2 className="size-4 animate-spin" /> : done ? <Check className="size-4" /> : <Send className="size-4" />}
                 {done ? "Sent" : "Send"}

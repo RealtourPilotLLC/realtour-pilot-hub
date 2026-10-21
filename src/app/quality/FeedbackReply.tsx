@@ -375,7 +375,7 @@ export function FeedbackReply({
           <button
             onClick={saveSentiment}
             disabled={pending}
-            className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1 text-[11px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1 text-[11px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
           >
             <Check className="size-3" /> Save
           </button>
@@ -414,7 +414,7 @@ export function FeedbackReply({
           <button
             onClick={saveDismiss}
             disabled={pending || !dismissPick}
-            className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1 text-[11px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-lg bg-brand-action px-2.5 py-1 text-[11px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
           >
             <Ban className="size-3" /> Dismiss
           </button>
@@ -452,7 +452,7 @@ export function FeedbackReply({
             <button
               onClick={send}
               disabled={pending}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-[13px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-[13px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
             >
               {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Mail className="size-3.5" />} Send it
             </button>

@@ -47,18 +47,18 @@ function OneReview({ r, canResolve }: { r: CreativeReviewView; canResolve: boole
         {r.questions.map((q, i) => <li key={`q${i}`} className="text-foreground/85">Open question: {q}</li>)}
       </ul>
       <details>
-        <summary className="cursor-pointer text-xs font-medium text-brand">Everything they said</summary>
+        <summary className="cursor-pointer py-2 text-xs font-medium text-brand">Everything they said</summary>
         <p className="mt-1 whitespace-pre-wrap text-xs text-foreground/80">{r.originalText}</p>
       </details>
       {canResolve ? (
         <div className="space-y-2">
           <label className="block text-xs font-medium text-muted">
             Concrete changes for the editor, one per line
-            <textarea value={changes} onChange={(e) => setChanges(e.target.value)} rows={3} disabled={pending} placeholder={"Trim the opening to the first line of the hook\nCut every 2 to 3 seconds in the middle section"} className="mt-1 w-full rounded-md border border-border bg-surface px-2 py-1.5 text-sm" />
+            <textarea value={changes} onChange={(e) => setChanges(e.target.value)} rows={3} disabled={pending} placeholder={"Trim the opening to the first line of the hook\nCut every 2 to 3 seconds in the middle section"} className="mt-1 w-full rounded-md border border-border bg-surface px-2 py-1.5 text-base sm:text-sm" />
           </label>
           <label className="block text-xs font-medium text-muted">
             Your reading of what they mean (goes with it)
-            <input type="text" value={note} onChange={(e) => setNote(e.target.value)} disabled={pending} className="mt-1 w-full rounded-md border border-border bg-surface px-2 py-1.5 text-sm" />
+            <input type="text" value={note} onChange={(e) => setNote(e.target.value)} disabled={pending} className="mt-1 w-full rounded-md border border-border bg-surface px-2 py-1.5 text-base sm:text-sm" />
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => go("CHANGES")} disabled={pending || !changes.trim()} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 text-sm font-medium text-white disabled:opacity-50">

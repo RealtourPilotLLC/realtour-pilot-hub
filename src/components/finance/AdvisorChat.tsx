@@ -85,7 +85,7 @@ export function AdvisorChat() {
           placeholder="Ask about your finances…"
           className="max-h-32 min-h-[2.4rem] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
         />
-        <button onClick={() => send()} disabled={busy || !input.trim()} className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand text-white disabled:opacity-40">
+        <button onClick={() => send()} disabled={busy || !input.trim()} className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-action text-white disabled:opacity-40">
           <Send className="size-4" />
         </button>
       </div>

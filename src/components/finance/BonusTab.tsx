@@ -39,7 +39,7 @@ export async function BonusTab({ show, back = 0 }: { show: FinanceTab[]; back?: 
             const qq = quarterFor(undefined, b);
             return (
               <Link key={b} href={`/sales?tab=bonus&back=${b}`}
-                className={b === back ? "rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white" : "rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2"}>
+                className={b === back ? "rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white" : "rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2"}>
                 {qq.label}
               </Link>
             );

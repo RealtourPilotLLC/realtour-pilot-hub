@@ -141,7 +141,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
         {card.turns.length > 1 && (
           <button
             onClick={() => patch({ showThread: !s.showThread })}
-            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"
+            className="mt-2 inline-flex min-h-9 items-center gap-1 text-xs font-medium text-brand hover:underline"
           >
             {s.showThread ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
             {s.showThread ? "Hide" : `Show the conversation (${card.turns.length} messages)`}
@@ -189,7 +189,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
                   patch({ copied: true });
                   setTimeout(() => patch({ copied: false }), 1600);
                 }}
-                className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground"
+                className="inline-flex min-h-9 items-center gap-1 text-xs text-muted hover:text-foreground"
               >
                 {s.copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
                 {s.copied ? "Copied" : "Copy"}
@@ -199,7 +199,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
               value={s.draft}
               onChange={(e) => patch({ draft: e.target.value })}
               disabled={sent || unconfirmed}
-              className="w-full rounded-xl border border-border bg-bg p-3 text-sm leading-relaxed outline-none focus:border-brand"
+              className="w-full rounded-xl border border-border bg-background p-3 text-base leading-relaxed outline-none focus:border-brand sm:text-sm"
               minRows={3}
             />
             {vague && (
@@ -225,16 +225,16 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
               onChange={(e) => patch({ instruction: e.target.value })}
               placeholder={
                 s.draft
-                  ? "e.g. tell her Saturday 10am works but I need the lockbox code"
+                  ? "e.g. tell them Saturday 10am works but I need the lockbox code"
                   : "e.g. photos go out tonight by 8, video Thursday"
               }
-              className="w-full rounded-lg border border-border bg-bg p-2.5 text-sm outline-none focus:border-brand"
+              className="w-full rounded-lg border border-border bg-background p-2.5 text-base outline-none focus:border-brand sm:text-sm"
               minRows={2}
             />
             <button
               onClick={() => onDraft(s.instruction)}
               disabled={busy || !s.instruction.trim()}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-sm font-medium transition hover:bg-surface disabled:opacity-40"
+              className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-sm font-medium transition hover:bg-surface disabled:opacity-40"
             >
               {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Wand2 className="size-3.5" />}
               {s.draft ? "Rewrite it this way" : "Write it"}
@@ -266,7 +266,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
           {card.clientId && (
             <Link
               href={`/clients/${card.clientId}`}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted transition hover:text-foreground"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted transition hover:text-foreground"
             >
               <MessageSquare className="size-4" /> Open the client
             </Link>
@@ -480,7 +480,7 @@ export function ReplyQueue({
         <div className="pt-2">
           <button
             onClick={() => setShowHandled(!showHandled)}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-foreground"
+            className="inline-flex min-h-11 items-center gap-1.5 text-left text-sm font-medium text-muted hover:text-foreground"
           >
             {showHandled ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
             {handled.length} more that probably need nothing
@@ -532,7 +532,7 @@ function MutedNumbers() {
     <div className="pt-2">
       <button
         onClick={toggle}
-        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-2 hover:text-foreground"
+        className="inline-flex min-h-9 items-center gap-1.5 text-xs font-medium text-muted-2 hover:text-foreground"
       >
         {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         Muted numbers

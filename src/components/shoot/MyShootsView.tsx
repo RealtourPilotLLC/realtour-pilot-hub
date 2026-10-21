@@ -291,7 +291,7 @@ export function MyShootsView({
                 disabled={count === 0}
                 className={cn(
                   "flex aspect-square flex-col items-center justify-center rounded-lg text-sm transition-colors",
-                  isSel ? "bg-brand font-semibold text-brand-fg"
+                  isSel ? "bg-brand-action font-semibold text-brand-fg"
                     : isToday ? "bg-brand-soft text-brand ring-1 ring-inset ring-brand/30"
                     : count > 0 ? "text-foreground hover:bg-surface-2"
                     : "text-muted-2",

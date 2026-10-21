@@ -207,7 +207,7 @@ export function EditorCutPanel({
                 <button
                   onClick={saveNote}
                   disabled={pending || !noteBody.trim()}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
                 >
                   {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />}
                   {noteAt != null ? `Note at ${fmtClock(noteAt)}` : "Add note"}

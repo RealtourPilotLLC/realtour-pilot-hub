@@ -301,7 +301,7 @@ function CutMessage({
             type="button"
             onClick={save}
             disabled={saving}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
           >
             {saving && <Loader2 className="size-3 animate-spin" />}
             {liveTargetId ? "Save the note" : `Send with version ${nextVersion ?? ""}`.trim()}
@@ -417,7 +417,7 @@ export function UploadSentCard({
               type="button"
               disabled={retrying}
               onClick={onRetry}
-              className="ml-6 mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+              className="ml-6 mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
             >
               {retrying ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />} Try again
             </button>
@@ -1073,7 +1073,7 @@ export function CutUploader({
                         type="button"
                         disabled={!!b || (reopenWhy[key] ?? "").trim().length < 4}
                         onClick={() => { const r = reopen[key]; void send(c, r.file, r.dim, r.override, (reopenWhy[key] ?? "").trim()); }}
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
                       >
                         <CloudUpload className="size-3.5" /> Replace it
                       </button>
@@ -1114,7 +1114,7 @@ export function CutUploader({
                         type="button"
                         disabled={!!b}
                         onClick={() => inputs.current[key]?.click()}
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
                       >
                         <CloudUpload className="size-3.5" /> Choose the 1080p export
                       </button>

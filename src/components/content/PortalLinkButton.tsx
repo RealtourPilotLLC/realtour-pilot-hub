@@ -22,7 +22,7 @@ export function PortalLinkButton({ enrollmentId }: { enrollmentId: string }) {
             } else setMsg(r.message);
           })
         }
-        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+        className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
       >
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Link2 className="size-3.5" />}
         Client portal link
@@ -41,7 +41,7 @@ export function PortalLinkButton({ enrollmentId }: { enrollmentId: string }) {
             else { w?.close(); setMsg(r.ok ? "Couldn't open the window — copy the link instead." : r.message); }
           });
         }}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+        className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
       >
         <ExternalLink className="size-3.5" />
         View portal

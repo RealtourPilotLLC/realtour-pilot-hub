@@ -93,7 +93,7 @@ export async function CommsView({ tabs, channel, excludeClientIds, showTest = fa
                 </div>
                 <Link
                   href={`/communications?tab=replies`}
-                  className="shrink-0 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                  className="shrink-0 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
                 >
                   Reply
                 </Link>

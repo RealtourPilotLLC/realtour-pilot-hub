@@ -23,7 +23,7 @@ export function TrendChart({ daily, monthly }: { daily: Point[]; monthly: Point[
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${on ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
+      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${on ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2"}`}
     >
       {children}
     </button>

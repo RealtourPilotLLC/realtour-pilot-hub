@@ -148,7 +148,7 @@ function ProposalBox({ p, busy, run }: { p: FieldProposalUi; busy: boolean; run:
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <input value={value} onChange={(e) => setValue(e.target.value)} aria-label={`New ${p.label}`} className="w-48 rounded border border-border bg-surface px-2 py-1 text-[12px]" />
         <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Your notes (optional)" className="w-56 rounded border border-border bg-surface px-2 py-1 text-[12px]" />
-        <button disabled={busy || !value.trim()} onClick={() => run(() => applyFieldProposalAction(p.id, value, note || null))} className={`${btn} bg-brand text-white`}>Apply change</button>
+        <button disabled={busy || !value.trim()} onClick={() => run(() => applyFieldProposalAction(p.id, value, note || null))} className={`${btn} bg-brand-action text-white`}>Apply change</button>
         <button disabled={busy} onClick={() => run(() => ignoreFieldProposalAction(p.id, note || null))} className={quiet}>Ignore</button>
       </div>
     </div>
@@ -163,7 +163,7 @@ function AddFact({ clientId, busy, run }: { clientId: string; busy: boolean; run
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
         <select value={cat} onChange={(e) => setCat(e.target.value as FactCategory)} className="rounded border border-border bg-surface-2 px-1.5 py-1 text-[11px]">{CATEGORIES.map((c) => <option key={c} value={c}>{catWords(c)}</option>)}</select>
         <label className="flex items-center gap-1 text-[11px] text-muted"><input type="checkbox" checked={conf} onChange={(e) => setConf(e.target.checked)} className="accent-[var(--brand)]" />confidential (never AI context)</label>
-        <button disabled={busy || !body.trim()} onClick={() => { run(() => addFact(clientId, body, cat, conf)); setBody(""); }} className={`${btn} bg-brand text-white`}>Add</button>
+        <button disabled={busy || !body.trim()} onClick={() => { run(() => addFact(clientId, body, cat, conf)); setBody(""); }} className={`${btn} bg-brand-action text-white`}>Add</button>
       </div>
     </div>
   );

@@ -152,7 +152,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
                 </p>
               </div>
               {!selfLink && (
-                <Link href={row.nextAction.href} className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90">
+                <Link href={row.nextAction.href} className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90">
                   {row.nextAction.cta}
                 </Link>
               )}
@@ -207,7 +207,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Strategy call</p>
                 <p>{row.planning.requirementWord}{row.strategyCall.atISO ? ` · ${fmtDay(row.strategyCall.atISO)}` : ""} · {(row.strategyCall.status ?? row.planning.callStatus).toLowerCase().replace(/_/g, " ")}</p>
                 {row.strategyCall.problem && <p className="text-warning">{row.strategyCall.problem}</p>}
-                <Link href={planHref("calls")} className="text-[12px] font-medium text-brand hover:underline">Plan › Calls →</Link>
+                <Link href={planHref("calls")} className="inline-flex min-h-9 items-center text-[12px] font-medium text-brand hover:underline">Plan › Calls →</Link>
                 {/* Oct 12 2026: how this month is planned, when the client told us (owner/admin). */}
                 {ctx.staffEyes && !month.historical && month.status === "OPEN" && !clientPlanned && !progress?.forfeited && (
                   <MonthPlanningControl
@@ -221,7 +221,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
                 <p className={SESSION_TONE[f!.sessionTone]}>{f!.sessionLabel}{row.session.dateISO ? ` · ${fmtDay(row.session.dateISO)}` : ""}</p>
                 {row.session.detail && <p className="text-muted">{row.session.detail}</p>}
                 {row.session.requestedCount > 0 && <p className="text-muted-2">{plural(row.session.requestedCount, "request")} on record</p>}
-                <Link href={prodHref("sessions")} className="text-[12px] font-medium text-brand hover:underline">Production › Sessions →</Link>
+                <Link href={prodHref("sessions")} className="inline-flex min-h-9 items-center text-[12px] font-medium text-brand hover:underline">Production › Sessions →</Link>
               </div>
             </div>
           ) : <p className="text-sm text-muted">Nothing to read.</p>}
@@ -248,7 +248,7 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
 
       {/* COMMUNICATION — reminders are READ from the ledger (an empty one says so), plus the program conversation. */}
       {row && (
-        <Section icon={MessageSquare} title="Communication" action={<Link href={contentHref(id, { tab: "messages" })} className="text-[12px] font-medium text-brand hover:underline">Messages →</Link>}>
+        <Section icon={MessageSquare} title="Communication" action={<Link href={contentHref(id, { tab: "messages" })} className="inline-flex min-h-9 items-center text-[12px] font-medium text-brand hover:underline">Messages →</Link>}>
           <div className="space-y-1 text-[13px]">
             {row.comms.messagesWaiting > 0 ? (
               <p className="text-warning">{plural(row.comms.messagesWaiting, "client message")} waiting for an answer{row.comms.oldestWaitingAt ? ` since ${fmtDay(row.comms.oldestWaitingAt.toISOString())}` : ""}</p>

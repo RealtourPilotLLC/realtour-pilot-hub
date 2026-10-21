@@ -157,7 +157,7 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
       {mode === "na" && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Why it isn't needed" className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2.5 py-1 text-xs" />
-          <button type="button" disabled={pending} onClick={() => run(() => markIssueNotNeededAction(issue.id, text))} className="rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white">Mark not needed</button>
+          <button type="button" disabled={pending} onClick={() => run(() => markIssueNotNeededAction(issue.id, text))} className="rounded-lg bg-brand-action px-2.5 py-1 text-xs font-semibold text-white">Mark not needed</button>
         </div>
       )}
       {mode === "merge" && (
@@ -166,13 +166,13 @@ function IssueRow({ issue, all, canReview }: { issue: IssueView; all: IssueView[
             <option value="">The issue this repeats…</option>
             {others.map((o) => <option key={o.id} value={o.id}>{(o.summary ?? o.text).slice(0, 80)}</option>)}
           </select>
-          <button type="button" disabled={pending || !into} onClick={() => run(() => mergeIssueAction(issue.id, into))} className="rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white">Merge</button>
+          <button type="button" disabled={pending || !into} onClick={() => run(() => mergeIssueAction(issue.id, into))} className="rounded-lg bg-brand-action px-2.5 py-1 text-xs font-semibold text-white">Merge</button>
         </div>
       )}
       {mode === "split" && (
         <div className="mt-2 space-y-1.5">
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} placeholder={"One part per line, e.g.\nFix the agent's name in the end card\nAdd the pool shot the client asked for"} className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs" />
-          <button type="button" disabled={pending} onClick={() => run(() => splitIssueAction(issue.id, text.split("\n")))} className="rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white">Split into parts</button>
+          <button type="button" disabled={pending} onClick={() => run(() => splitIssueAction(issue.id, text.split("\n")))} className="rounded-lg bg-brand-action px-2.5 py-1 text-xs font-semibold text-white">Split into parts</button>
         </div>
       )}
       {msg && <p className="mt-1.5 text-[11px] text-muted">{msg}</p>}

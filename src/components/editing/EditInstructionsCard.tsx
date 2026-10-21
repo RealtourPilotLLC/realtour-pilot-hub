@@ -161,7 +161,7 @@ export function EditInstructionsCard({
                   value={form[f.key] ?? ""}
                   onChange={(e) => setForm((x) => ({ ...x, [f.key]: e.target.value }))}
                   placeholder={f.placeholder}
-                  className="mt-1 w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:border-brand"
                 />
               </label>
             ))}
@@ -173,10 +173,10 @@ export function EditInstructionsCard({
               onChange={(e) => setForm((x) => ({ ...x, instructions: e.target.value }))}
               placeholder="Featured rooms, must-have shots, things to avoid, agent interactions to show…"
               minRows={3}
-              className="mt-1 w-full rounded-lg border border-border bg-bg p-2.5 text-sm outline-none focus:border-brand"
+              className="mt-1 w-full rounded-lg border border-border bg-background p-2.5 text-sm outline-none focus:border-brand"
             />
           </label>
-          <button onClick={save} disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
+          <button onClick={save} disabled={pending} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50">
             {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Save
           </button>
           {note && <p className="text-xs text-muted">{note}</p>}

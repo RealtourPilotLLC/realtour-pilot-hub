@@ -15,6 +15,7 @@ import type { SettingsSaveResult } from "@/lib/settingsDraft";
 import { Button } from "@/components/ui/Action";
 import { TextField } from "@/components/ui/FormField";
 import { SaveStatus } from "@/components/ui/SaveStatus";
+import { Switch } from "@/components/ui/Switch";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
 // settings for turnaround promises, alert thresholds, anything currently hard
@@ -47,19 +48,11 @@ function Num({ label, value, onChange, min, max, suffix, wide }: { label: string
 }
 
 // Exported (Sep 11) so the owner's "Text me" card uses the same switch and
-// Save row as the rest of the page rather than a look-alike.
+// Save row as the rest of the page rather than a look-alike. Oct 21 2026
+// (audit H17): the switch itself is now the shared ui/Switch; `label` is its
+// accessible name.
 export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
-  return (
-    <button
-      type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled}
-      onClick={() => onChange(!on)}
-      className="relative h-11 w-11 shrink-0 rounded-lg disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      <span aria-hidden className={cn("absolute inset-x-0 top-2.5 h-6 rounded-full transition-colors", on ? "bg-success" : "bg-surface-2 ring-1 ring-border-strong")}>
-        <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", on ? "left-[22px]" : "left-0.5")} />
-      </span>
-    </button>
-  );
+  return <Switch checked={on} onChange={onChange} aria-label={label} disabled={disabled} />;
 }
 
 export function SaveRow({ onSave, msg, busy, feedback, dirty, label = "Save" }: { onSave: () => void; msg?: string | null; busy: boolean; feedback?: SettingsSaveResult | null; dirty?: boolean; label?: string }) {

@@ -389,7 +389,7 @@ function JobRow({ job }: { job: TopazLaneJob }) {
           <button
             onClick={() => run(() => markTopazDeliveredAction(job.id))}
             disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1 text-[12px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-60"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1 text-[12px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-60"
           >
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCheck className="size-3.5" />}
             Uploaded to Aryeo &amp; delivered

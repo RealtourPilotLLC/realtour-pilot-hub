@@ -107,7 +107,7 @@ function RequestCard({ r, first }: { r: ScriptRequestView; first: string }) {
             <button type="button" disabled={busy} onClick={() => {
               if (!window.confirm(`Save ${first}'s words as the next version and share it with ${first} for their OK?`)) return;
               run(() => applyClientScriptVersion(r.id));
-            }} className={cn(btn, "bg-brand font-semibold text-white")}>
+            }} className={cn(btn, "bg-brand-action font-semibold text-white")}>
               {busy ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />} {hersLabel}
             </button>
           )}

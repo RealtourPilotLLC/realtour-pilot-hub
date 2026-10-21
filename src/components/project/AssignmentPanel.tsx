@@ -42,7 +42,7 @@ export function AssignmentPanel({
                     await assignMember(projectId, role, e.target.value || null);
                   })
                 }
-                className="rounded-lg border bg-surface px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-60"
+                className="rounded-lg border bg-surface px-2 py-1 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-brand/40 disabled:opacity-60"
               >
                 <option value="">Unassigned</option>
                 {team.map((m) => (

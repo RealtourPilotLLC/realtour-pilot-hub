@@ -53,7 +53,7 @@ export function ReviewBar({
           <button
             onClick={() => send("EDIT")}
             disabled={editOpen === 0 || pending}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-50"
           >
             {pending && sending === "EDIT" ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
             Send to Kyle ({editOpen})
@@ -61,7 +61,7 @@ export function ReviewBar({
           <button
             onClick={() => send("PHOTOGRAPHER")}
             disabled={photogOpen === 0 || pending}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
           >
             {pending && sending === "PHOTOGRAPHER" ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
             Send to photographer ({photogOpen})

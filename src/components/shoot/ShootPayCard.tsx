@@ -44,7 +44,7 @@ export async function ShootPayCard({ projectId, memberId }: { projectId: string;
         </p>
         <Link
           href={`/upload/${projectId}`}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
         >
           <Upload className="size-4" /> Finish the upload page <ChevronRight className="size-4" />
         </Link>

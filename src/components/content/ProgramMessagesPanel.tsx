@@ -64,7 +64,7 @@ export function ProgramMessagesPanel({ d }: { d: StaffMessagesTab }) {
               const office = m.authorKind === "STAFF";
               return (
                 <li key={m.id} className={cn("flex flex-col", office ? "items-end" : "items-start")}>
-                  <div className={cn("max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm", office ? "rounded-tr-md bg-brand text-white" : "rounded-tl-md border border-border bg-surface-2/60")}>
+                  <div className={cn("max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm", office ? "rounded-tr-md bg-brand-action text-white" : "rounded-tl-md border border-border bg-surface-2/60")}>
                     {m.body}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5 px-1 text-[11px] text-muted-2">
@@ -88,7 +88,7 @@ export function ProgramMessagesPanel({ d }: { d: StaffMessagesTab }) {
             className="w-full resize-y rounded-xl border border-border bg-surface px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand" />
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={reply} disabled={pending || !body.trim()}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
+              className="inline-flex items-center gap-1.5 rounded-xl bg-brand-action px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
               {pending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />} Reply
             </button>
             {d.unanswered > 0 && (

@@ -55,7 +55,7 @@ export function SetPasswordForm({ token }: { token: string }) {
       <button
         type="submit"
         disabled={busy}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+        className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-brand-action px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
       >
         {busy && <Loader2 className="size-4 animate-spin" />} Set password &amp; sign in
       </button>

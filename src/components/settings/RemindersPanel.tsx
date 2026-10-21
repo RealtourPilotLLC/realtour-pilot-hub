@@ -46,7 +46,7 @@ function Btn({ onClick, children, busy, tone = "default", title }: { onClick: ()
   return (
     <button type="button" onClick={onClick} disabled={busy} title={title} className={cn(
       "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium disabled:opacity-50",
-      tone === "brand" && "border-brand bg-brand text-white", tone === "danger" && "border-danger/40 text-danger", tone === "default" && "border-border bg-surface-2",
+      tone === "brand" && "border-brand bg-brand-action text-white", tone === "danger" && "border-danger/40 text-danger", tone === "default" && "border-border bg-surface-2",
     )}>{busy ? <Loader2 className="size-3 animate-spin" /> : null}{children}</button>
   );
 }

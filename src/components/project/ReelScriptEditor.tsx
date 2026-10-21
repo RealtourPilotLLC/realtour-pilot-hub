@@ -49,13 +49,13 @@ export function ReelScriptEditor({ projectId, script }: { projectId: string; scr
         onChange={(e) => setDraft(e.target.value)}
         rows={14}
         autoFocus
-        className="w-full resize-y rounded-xl border border-border bg-surface px-3 py-2 text-sm leading-relaxed outline-none focus:border-brand"
+        className="w-full resize-y rounded-xl border border-border bg-surface px-3 py-2 text-base sm:text-sm leading-relaxed outline-none focus:border-brand"
       />
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={save}
           disabled={pending || !draft.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-[13px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-[13px] font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
         >
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Save script
         </button>

@@ -50,7 +50,7 @@ export function BriefReadCard({ projectId, digest, readAtISO, changes, canAcknow
       {marked && <p className="flex items-center gap-2 text-sm text-success"><CheckCircle2 className="size-4 shrink-0" /> This version is marked read.</p>}
       {message && <p role="status" className={`text-sm ${message.ok ? "text-success" : "text-danger"}`}>{message.text}</p>}
       {canAcknowledge && needsRead && !unavailable && !marked && (
-        <button type="button" disabled={pending} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => start(async () => {
+        <button type="button" disabled={pending} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-brand-action px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => start(async () => {
           try {
             const result = await acknowledgeShootBrief(projectId, digest);
             setMessage({ ok: result.ok, text: result.message });

@@ -25,7 +25,7 @@ export function DeliverableStatusSelect({
           await setDeliverableStatus(id, e.target.value as DeliverableStatus);
         })
       }
-      className="cursor-pointer appearance-none rounded-md px-2 py-1 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-60"
+      className="min-h-9 cursor-pointer appearance-none rounded-md px-2 py-1 text-base sm:text-xs font-medium focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-60"
       style={{ color: ink(meta.color), backgroundColor: meta.soft }}
     >
       {Object.values(DeliverableStatus).map((s) => (

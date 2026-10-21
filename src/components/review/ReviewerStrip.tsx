@@ -64,8 +64,8 @@ function Row({ row, data }: { row: ReviewerStripRow; data: ReviewerStripData }) 
               onClick={() => run(() => claimCutReview(row.submissionId, { cover: row.coverOffered }))}
               className={
                 row.coverOffered
-                  ? "inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
-                  : "inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
+                  ? "inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-brand-action px-2.5 py-1 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+                  : "inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted hover:text-foreground disabled:opacity-50"
               }
             >
               {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Hand className="size-3.5" />}
@@ -79,7 +79,7 @@ function Row({ row, data }: { row: ReviewerStripRow; data: ReviewerStripData }) 
                 onChange={(e) => setHandTo(e.target.value)}
                 disabled={busy}
                 aria-label="Hand this cut to"
-                className="rounded-lg border border-border bg-surface px-2 py-1 text-xs outline-none focus:border-brand disabled:opacity-50"
+                className="min-h-9 rounded-lg border border-border bg-surface px-2 py-1 text-base sm:text-xs outline-none focus:border-brand disabled:opacity-50"
               >
                 <option value="">Hand to…</option>
                 {others.map((c) => (
@@ -94,7 +94,7 @@ function Row({ row, data }: { row: ReviewerStripRow; data: ReviewerStripData }) 
                   type="button"
                   disabled={busy}
                   onClick={() => run(() => reassignCutReviewer(row.submissionId, handTo))}
-                  className="rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
+                  className="min-h-9 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
                 >
                   Hand it over
                 </button>

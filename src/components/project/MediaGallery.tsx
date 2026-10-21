@@ -347,7 +347,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                 aria-pressed={reviewOn}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
-                  reviewOn ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                  reviewOn ? "bg-brand-action text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
                 )}
               >
                 <MessageSquarePlus className="size-3.5" /> Review
@@ -407,7 +407,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                     {verdict && (
                       <span className={cn(
                         "absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-white",
-                        verdict === "APPROVED" ? "bg-success" : "bg-brand",
+                        verdict === "APPROVED" ? "bg-success" : "bg-brand-action",
                       )}>
                         {verdict === "APPROVED" ? <Check className="size-2.5" /> : <Pencil className="size-2.5" />}
                         {verdict === "APPROVED" ? "approved" : "needs work"}
@@ -502,7 +502,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                 {vVerdict && (
                   <span className={cn(
                     "absolute left-1.5 top-1.5 z-10 inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-white",
-                    vVerdict === "APPROVED" ? "bg-success" : "bg-brand",
+                    vVerdict === "APPROVED" ? "bg-success" : "bg-brand-action",
                   )}>
                     {vVerdict === "APPROVED" ? <Check className="size-2.5" /> : <Pencil className="size-2.5" />}
                     {vVerdict === "APPROVED" ? "approved" : "needs work"}
@@ -563,7 +563,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                     onClick={() => toggleVerdict(lbAssetUrl, "NEEDS_WORK")}
                     className={cn(
                       "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium",
-                      lbVerdict === "NEEDS_WORK" ? "bg-brand text-white" : "bg-white/10 text-white hover:bg-white/20",
+                      lbVerdict === "NEEDS_WORK" ? "bg-brand-action text-white" : "bg-white/10 text-white hover:bg-white/20",
                     )}
                   >
                     <Pencil className="size-4" /> Needs work

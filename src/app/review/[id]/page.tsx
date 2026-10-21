@@ -295,7 +295,7 @@ export default async function CutReviewPage({
           <div className="flex items-center gap-2">
             <Link
               href={`/projects/${w.projectId}`}
-              className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border bg-surface px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
             >
               <Images className="size-3.5" /> Photo review & project <ExternalLink className="size-3.5" />
             </Link>
@@ -453,7 +453,7 @@ export default async function CutReviewPage({
                               `${s.status === "WITHDRAWN" ? "withdrawn" : "superseded"}${s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}`}
                           </span>
                           {s.assetUrl && (
-                            <a href={s.assetUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand hover:underline">
+                            <a href={s.assetUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 items-center text-xs text-brand hover:underline">
                               Watch
                             </a>
                           )}
@@ -530,7 +530,7 @@ export default async function CutReviewPage({
                   )}
                   {w.reelScript && (
                     <details>
-                      <summary className="cursor-pointer text-xs font-medium text-brand">Full script</summary>
+                      <summary className="cursor-pointer py-2.5 text-xs font-medium text-brand">Full script</summary>
                       <p className="mt-1 whitespace-pre-wrap text-foreground/85">{w.reelScript}</p>
                     </details>
                   )}

@@ -60,7 +60,7 @@ export function todayShootsBlock(o: {
       summary={
         <>
           <Camera aria-hidden="true" className="size-4 shrink-0 text-muted-2" />
-          <span className="font-semibold">Today&rsquo;s shoots</span>
+          <span className="text-base font-semibold">Today&rsquo;s shoots</span>
           <span className="hidden text-muted sm:inline">· access, weather and the week ahead</span>
           <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{o.shoots.length}</span>
           <RushChip n={rushShoots(o.shoots).length} small />

@@ -218,7 +218,7 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
                 <p className="mt-1 text-[13px] text-muted">Word (.docx), PDF or text, one document with every script or one file each. Scripts in any style are read as written: house labels, skits with speakers and directions, or plain paragraphs.</p>
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                   <input ref={fileRef} type="file" multiple accept=".docx,.pdf,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" className="hidden" onChange={(ev) => { if (ev.target.files?.length) readFiles(ev.target.files); ev.target.value = ""; }} />
-                  <button type="button" onClick={() => fileRef.current?.click()} className={cn(btn, "bg-brand text-white")}><Upload className="size-4" aria-hidden />Choose files</button>
+                  <button type="button" onClick={() => fileRef.current?.click()} className={cn(btn, "bg-brand-action text-white")}><Upload className="size-4" aria-hidden />Choose files</button>
                   <button type="button" onClick={() => setPasting(!pasting)} className={quiet}><ClipboardPaste className="size-4" aria-hidden />Paste text</button>
                   {batches.length > 0 && <button type="button" onClick={() => setOpen(false)} className={quiet}>Close</button>}
                 </div>
@@ -227,7 +227,7 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
                 <div>
                   <label htmlFor="upload-paste" className="text-sm font-semibold">Paste the scripts</label>
                   <textarea id="upload-paste" value={paste} onChange={(ev) => setPaste(ev.target.value)} rows={10} placeholder={"1. Title\nHOOK\n…\nTALKING POINT 1 - RE-HOOK\n…\nTALKING POINT 2 - BUILD UP\n…\nTALKING POINT 3 - PAYOFF\n…\nCLOSE / CTA\n…"} className={cn(field, "mt-1 font-mono text-[13px] sm:text-[13px]")} />
-                  <button type="button" onClick={readPaste} className={cn(btn, "mt-2 bg-brand text-white")}>Read the scripts</button>
+                  <button type="button" onClick={readPaste} className={cn(btn, "mt-2 bg-brand-action text-white")}>Read the scripts</button>
                 </div>
               )}
             </div>
@@ -298,7 +298,7 @@ export function ScriptUploadPanel({ enrollmentId, monthId, monthName, clientName
               </ol>
 
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-                <button type="button" onClick={confirm} disabled={view.blocked || !!busyLabel} className={cn(btn, "bg-brand text-white")}>
+                <button type="button" onClick={confirm} disabled={view.blocked || !!busyLabel} className={cn(btn, "bg-brand-action text-white")}>
                   <Check className="size-4" aria-hidden />Add {plural(kept.length, "script")} to {preview.monthName}
                 </button>
                 <button type="button" onClick={cancel} className={quiet}><X className="size-4" aria-hidden />Cancel</button>
@@ -489,7 +489,7 @@ function BatchCard({ b, clientName, onResult }: { b: UploadBatchUi; clientName: 
       {b.lastError && <p className="mt-1 text-[12px] text-warning">This upload stopped part-way ({b.lastError}). Undo takes back what was added.</p>}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {b.canSend > 0 && (
-          <button type="button" onClick={send} disabled={!!working} className={cn(btn, "bg-brand text-white")}>
+          <button type="button" onClick={send} disabled={!!working} className={cn(btn, "bg-brand-action text-white")}>
             {working === "send" ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Send className="size-4" aria-hidden />}
             {working === "send" ? "Sending…" : `Send ${b.canSend === b.scripts.length ? (b.canSend === 1 ? "it" : `all ${b.canSend}`) : b.canSend} to ${clientName} for review`}
           </button>
