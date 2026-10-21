@@ -1,4 +1,3 @@
-import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus, type Prisma } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
@@ -23,8 +22,9 @@ export type { QcStats, QcMissBucket } from "@/lib/qc";
  *  outside a render it simply reads). The dashboard, its shoot cards and its
  *  exceptions card each scanned every client for these on every render, and
  *  the page refreshes itself every 90 seconds (Oct 20 2026, audit A3). */
-export const syntheticClientIds = cache(async (): Promise<string[]> =>
-  (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id));
+// One definition (Oct 21 2026, audit H9): the per-render cached test-client
+// ids live in lib/syntheticClients, which narrows candidates in SQL first.
+export { syntheticClientIds } from "@/lib/syntheticClients";
 
 /** A single project with everything for the detail view. `activities` caps the
  *  activity rows to the newest N (the job page's feed); the editor brief and
