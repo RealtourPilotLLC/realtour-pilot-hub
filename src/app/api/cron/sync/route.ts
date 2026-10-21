@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cronBudget } from "@/lib/cron";
+import { cronBudget, authorizeCron, runParts } from "@/lib/cron";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,18 +23,22 @@ export const maxDuration = 300;
 //   · The legacy call sweeps, the pasted-transcript auto-analysis and the
 //     "send the booking link" tasks are retired (the portal books calls itself;
 //     the Analyze button covers a pasted transcript).
+//
+// EVERY STEP HAS A CAP (Oct 20 2026, audit H4), except the four client-text
+// steps (see there). Most of the steps before the texts had none, so one slow
+// upstream step could spend the budget and push the texts into `skipped`. A cap does not cut a
+// step off: cronBudget stops WAITING for it, records `timedOut` (which pages,
+// once) and moves on while the step's own work finishes underneath. Every
+// capped step works row by row with its own claim or upsert, so the next hour
+// resumes whatever was left. The caps sit well above the steps' usual times
+// (the whole hour has been running 78 to 89 s); they only bite when something
+// upstream hangs. The client texts now run straight after `tasks`, the last
+// step they read, instead of after ten unrelated ones.
 export async function GET(req: NextRequest) {
   // FAIL CLOSED: in prod/Vercel a missing CRON_SECRET must refuse, not open the
-  // door — same rule as the auth gate (losing an env var never fails open).
-  const secret = process.env.CRON_SECRET;
-  const enforced = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
-  if (!secret && enforced) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
-  if (secret) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  // door — the one shared rule (lib/cron authorizeCron).
+  const denied = authorizeCron(req);
+  if (denied) return denied;
   const { step, out, finish } = cronBudget(250_000, Date.now(), "sync"); // ~50s headroom under maxDuration
 
   // IS ANYTHING STILL TALKING TO US? — deliberately the FIRST step of the hour.
@@ -60,7 +64,7 @@ export async function GET(req: NextRequest) {
   await step("orphanOrders", async () => {
     const { flagOrphanedOrders } = await import("@/lib/integrations/aryeo");
     return flagOrphanedOrders();
-  });
+  }, { maxMs: 45_000 });
   // Approved cuts → Dropbox: finish in-flight save_url copies, retry failed
   // ones, and retire uploads that never completed.
   await step("approvedCuts", async () => {
@@ -68,7 +72,7 @@ export async function GET(req: NextRequest) {
     return finalizeApprovedCuts();
   }, { maxMs: 45_000 });
 
-  // The 1080p pass has its own */5 driver (/api/cron/topaz) — this is its
+  // The 1080p pass has its own every-minute driver (/api/cron/topaz) — this is its
   // SAFETY NET, not its engine. If that cron entry is ever lost in a deploy,
   // or a tick dies and leaves a lease behind, the lane still crawls forward
   // once an hour instead of stopping silently. Same lease, so the two can never
@@ -86,20 +90,20 @@ export async function GET(req: NextRequest) {
   await step("dropboxFolders", async () => {
     const { ensureFoldersForUpcomingShoots } = await import("@/lib/dropboxFolders");
     return ensureFoldersForUpcomingShoots();
-  });
+  }, { maxMs: 30_000 });
   // Every client with a video order gets a brand-assets folder (logos,
   // endcards) — feeds the Assets-available badge on /edit and /clients/assets.
   await step("clientAssetFolders", async () => {
     const { ensureVideoClientAssetFolders } = await import("@/lib/clientAssets");
     return ensureVideoClientAssetFolders();
-  });
+  }, { maxMs: 20_000 });
   // CP-06: a brand change whose inline alert never ran gets its Kyle task and
   // banner here, and — only once `brand_change_alerts` is on — changes held
   // while it was off get their editor DM. Database + the switch-gated bridge.
   await step("brandChangeAlerts", async () => {
     const { sweepBrandChangeAlerts } = await import("@/lib/brandProfile");
     return sweepBrandChangeAlerts();
-  });
+  }, { maxMs: 20_000 });
   // Content Creator Program: enrollments follow the Aryeo social flag, every
   // active client gets the current month's workspace, and monthly-plan shoots
   // attach to their month.
@@ -108,20 +112,23 @@ export async function GET(req: NextRequest) {
     // products become live enrollments (Jordan, Aug 28). Runs BEFORE the
     // program sweep so a brand-new enrollment gets its month workspace and
     // roster rows in the same cron pass.
+    // The health check runs even when the signup sweep throws, and its own
+    // failure is no longer turned into { checked: 0 } (Oct 20 2026, audit H6):
+    // a dead subscription alarm now shows on the run instead of reading `ok`.
     const { sweepStripeSignups, sweepSubscriptionHealth } = await import("@/lib/stripeSignups");
-    const signups = await sweepStripeSignups();
-    const health = await sweepSubscriptionHealth().catch(() => ({ checked: 0, alerts: 0 }));
-    return { ...signups, subs: health };
-  });
+    const r = await runParts({ signups: () => sweepStripeSignups(), subs: () => sweepSubscriptionHealth() });
+    return { ...r.signups, subs: r.subs };
+  }, { maxMs: 45_000 });
+  // Oct 15 2026: once a day (the 4 AM ET run) look 60 days back, so videos
+  // added to a listing after its delivery reach the library too. That run
+  // gets the longer cap (no client text goes out at 4 AM anyway).
+  const libraryEtHour = Number(new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
   await step("portalLibrary", async () => {
     // Fresh Aryeo deliveries on content jobs reach the client's portal library
     // within the hour (review-room approvals land instantly via the hook).
     const { sweepPortalLibraries } = await import("@/lib/portalLibrary");
-    // Oct 15 2026: once a day (the 4 AM ET run) look 60 days back, so videos
-    // added to a listing after its delivery reach the library too.
-    const etHour = Number(new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
-    return sweepPortalLibraries({ days: etHour === 4 ? 60 : 3 });
-  });
+    return sweepPortalLibraries({ days: libraryEtHour === 4 ? 60 : 3 });
+  }, { maxMs: libraryEtHour === 4 ? 120_000 : 45_000 });
   // CP-09: a photographer's filmed-topic report that did not land at submit
   // (ContentFilmingReport FAILED / PENDING / a dead lease) is retried here
   // until it does. BEFORE contentLibrary, so the videos it confirms and binds
@@ -130,18 +137,18 @@ export async function GET(req: NextRequest) {
   await step("filmingReports", async () => {
     const { sweepFilmingReports } = await import("@/lib/filmedTopics");
     return sweepFilmingReports();
-  });
+  }, { maxMs: 20_000 });
   await step("contentLibrary", async () => {
     // The NEW video library (ContentVideo), which the staff overview counts
     // production from. Without this it only ever filled when a client opened
     // their portal. Derives from each client's own work; contacts nobody.
     const { sweepContentVideoLibraries } = await import("@/lib/contentVideos");
     return sweepContentVideoLibraries();
-  });
+  }, { maxMs: 30_000 });
   await step("contentProgram", async () => {
     const { contentProgramSweep } = await import("@/lib/contentProgram");
     return contentProgramSweep();
-  });
+  }, { maxMs: 30_000 });
   // CP-07: scripted-but-unfilmed topics from a past month carry into the month
   // contentProgram has just minted (so this must run after it). Behind
   // `topic_carryover` (a missing row is off → `skipped`); a pointer move with
@@ -172,7 +179,7 @@ export async function GET(req: NextRequest) {
   await step("statuses", async () => {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     return syncProjectStatuses();
-  });
+  }, { maxMs: 75_000 });
   // EVERY OWED VIDEO STILL HAS ITS OWN ROW (audit R06, Sep 18). The repair that
   // replaces scripts/materialise-outputs.ts being run by hand.
   //
@@ -204,10 +211,44 @@ export async function GET(req: NextRequest) {
   await step("photosUndelivered", async () => {
     const { sweepUndeliveredPhotos } = await import("@/lib/deliveryWatch");
     return sweepUndeliveredPhotos();
-  });
+  }, { maxMs: 20_000 });
   await step("tasks", async () => {
     const { generateTasksForActiveProjects } = await import("@/lib/tasks");
     return generateTasksForActiveProjects();
+  }, { maxMs: 75_000 });
+  // Client texts that send themselves (Jordan, Sep 1): shoot confirmations 48h
+  // out and delivery texts once Aryeo shows every deliverable shipped. Both
+  // self-gate to 9am-4pm ET, atomically claim the task + an idempotency marker
+  // before sending, and share ONE per-client set so a multi-listing client
+  // gets at most one auto-text per tick (confirmations first — time-critical).
+  //
+  // Straight after `tasks` (Oct 20 2026, audit H4): `statuses` and `tasks` are
+  // the only steps whose writes they read, and ten unrelated steps used to run
+  // in between. NO CAP on these four, on purpose: they share the per-client
+  // set, and a capped step left running underneath would let the next one text
+  // a client it is still texting. Uncapped, a step is still only waited on
+  // until the run's budget is spent, and then nothing after it starts.
+  const autoTexted = new Set<string>();
+  await step("confirmationTexts", async () => {
+    const { sweepConfirmationTexts } = await import("@/lib/clientTextSweeps");
+    return sweepConfirmationTexts(autoTexted);
+  });
+  // Welcome comes right after confirmations: to a brand-new client it matters
+  // more than a feedback ask, and it shares the one-text-per-client set.
+  await step("welcomeTexts", async () => {
+    const { sweepWelcomeTexts } = await import("@/lib/clientTextSweeps");
+    return sweepWelcomeTexts(autoTexted);
+  });
+  await step("deliveryTexts", async () => {
+    const { sweepDeliveryTexts } = await import("@/lib/clientTextSweeps");
+    return sweepDeliveryTexts(autoTexted);
+  });
+  // A client who texts outside working hours gets the office hours + the portal
+  // link, once per closed period (Jordan, Sep 2). Runs on every tick, including
+  // the ones outside the send window — that is the whole point of it.
+  await step("afterHoursReplies", async () => {
+    const { sweepAfterHoursReplies } = await import("@/lib/clientTextSweeps");
+    return sweepAfterHoursReplies(autoTexted);
   });
   // REOPENED WORK HAS A DATE (A52, Sep 25 2026). The net under every path that
   // puts a finished job back without dating it (a board move off Delivered, a
@@ -218,7 +259,7 @@ export async function GET(req: NextRequest) {
   await step("reopenedClocks", async () => {
     const { reconcileReopenedClocks } = await import("@/lib/revisionBrief");
     return reconcileReopenedClocks();
-  });
+  }, { maxMs: 20_000 });
   // A REVISION STILL WAITING ON ITS EDITOR (Jordan, Oct 6 2026: "notifications
   // sent to the editors for projects that have been in revision for over 24
   // hours"). The Editing Room's own "Revisions" rows, each open ask dated from
@@ -246,10 +287,11 @@ export async function GET(req: NextRequest) {
   // Lead and vendor-mail hygiene (Oct 14 2026): an open lead from a number
   // muted as spam, untouched 7 days, is cancelled (never deleted); stale
   // AutoHDR credit-mail and retired balance-check tasks are closed with a note.
+  // Each runs even when the other throws (Oct 20 2026, audit H5; lib/cron runParts).
   await step("deskHygiene", async () => {
     const { cancelSpamLeads } = await import("@/lib/leadDesk");
     const { closeStaleAutohdrBalanceTasks } = await import("@/lib/vendorBalance");
-    return { spamLeads: await cancelSpamLeads(), autohdr: await closeStaleAutohdrBalanceTasks() };
+    return runParts({ spamLeads: () => cancelSpamLeads(), autohdr: () => closeStaleAutohdrBalanceTasks() });
   }, { maxMs: 10_000 });
   // DELIVERED-JOB NOTES CLOSE THEMSELVES (Jordan, Sep 28 2026). Editor-cut and
   // delivery-fix notes (lanes EDITOR, EDIT — never a photographer's coaching)
@@ -273,49 +315,24 @@ export async function GET(req: NextRequest) {
   await step("wrapUps", async () => {
     const { reconcileWrapUps } = await import("@/lib/wrapUp");
     return reconcileWrapUps();
-  });
-  // Client texts that send themselves (Jordan, Sep 1): shoot confirmations 48h
-  // out and delivery texts once Aryeo shows every deliverable shipped. Both
-  // self-gate to 9am-4pm ET, atomically claim the task + an idempotency marker
-  // before sending, and share ONE per-client set so a multi-listing client
-  // gets at most one auto-text per tick (confirmations first — time-critical).
-  // Runs right after `tasks`/`statuses` so the evidence they read is fresh.
-  const autoTexted = new Set<string>();
-  await step("confirmationTexts", async () => {
-    const { sweepConfirmationTexts } = await import("@/lib/clientTextSweeps");
-    return sweepConfirmationTexts(autoTexted);
-  });
-  // Welcome comes right after confirmations: to a brand-new client it matters
-  // more than a feedback ask, and it shares the one-text-per-client set.
-  await step("welcomeTexts", async () => {
-    const { sweepWelcomeTexts } = await import("@/lib/clientTextSweeps");
-    return sweepWelcomeTexts(autoTexted);
-  });
-  await step("deliveryTexts", async () => {
-    const { sweepDeliveryTexts } = await import("@/lib/clientTextSweeps");
-    return sweepDeliveryTexts(autoTexted);
-  });
-  // A client who texts outside working hours gets the office hours + the portal
-  // link, once per closed period (Jordan, Sep 2). Runs on every tick, including
-  // the ones outside the send window — that is the whole point of it.
-  await step("afterHoursReplies", async () => {
-    const { sweepAfterHoursReplies } = await import("@/lib/clientTextSweeps");
-    return sweepAfterHoursReplies(autoTexted);
-  });
-  // Pull missing scripts from the Script Writing platform (by external_id) so
-  // the queue's Script chip and the shoot screen fill themselves — Jordan:
-  // "Script studio should just get the script from the shoot on our script
-  // writing platform via api." Pull-only; the signed webhook is the fast path.
+  }, { maxMs: 20_000 });
+  // (The client texts run straight after `tasks`, above — Oct 20 2026.)
+  // Pull missing scripts from the Script Writing platform so the queue's
+  // Script chip and the shoot screen fill themselves — Jordan: "Script studio
+  // should just get the script from the shoot on our script writing platform
+  // via api." Pull-only; the signed webhook is the fast path and the 15-minute
+  // reconcile (cron/aryeo) re-reads every job it can match. Since Oct 20 2026
+  // (audit H29) this only asks about jobs that reconcile has never matched.
   await step("scripts", async () => {
     const { sweepMissingScripts } = await import("@/lib/scriptSync");
-    return sweepMissingScripts();
-  });
+    return sweepMissingScripts({ budgetMs: 25_000 });
+  }, { maxMs: 30_000 });
   // Retry webhook events that errored on first receipt (transient blips) so a
   // dropped delivered/paid/inbound event doesn't silently vanish.
   await step("retryWebhooks", async () => {
     const { retryFailedWebhooks } = await import("@/lib/webhookRetry");
     return retryFailedWebhooks(25);
-  });
+  }, { maxMs: 60_000 });
 
   // CONTENT PROGRAM OPERATING SYSTEM (Sep 16 2026) — the verified call chain.
   // Bookings on the MAPPED Calendly event types become ProgramCallRecords
@@ -329,58 +346,71 @@ export async function GET(req: NextRequest) {
   // time-critical and the sync has been running 78–89 s of its 250 s budget;
   // a slow Calendly/Drive pass here must never push a confirmation text into
   // `skipped`. Everything below resumes where it left off next tick.
+  //
+  // A FAILURE IS A FAILURE (Oct 20 2026, audit H6). Each call's error used to
+  // become `{ skipped: <message> }` (or `{ closed: 0 }`), so a broken Calendly
+  // or Drive pass recorded `ok` and paged nobody. Not being set up is still a
+  // skip: each sweep returns `{ skipped }` itself when Calendly or Google is
+  // not connected or no mapping is on. A real error now fails the step, after
+  // the other four have run (lib/cron runParts).
   await step("contentCallRecords", async () => {
     const { syncCallRecordsFromCalendly, linkCalendarEvents, discoverTranscriptSources, sweepUnlinkedDriveTranscripts, reconcileCallReviewTasks } = await import("@/lib/contentCallRecords");
     const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
     if (!(await hasEnabledCallMapping())) return { skipped: "no enabled Calendly mapping" };
-    const bookings = await syncCallRecordsFromCalendly().catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
-    const calendar = await linkCalendarEvents({ max: 20 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
-    const transcripts = await discoverTranscriptSources({ max: 40 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
-    // Program Gemini docs no record has claimed → the import review queue (rows only, no text, no tasks, no analysis).
-    const unlinked = await sweepUnlinkedDriveTranscripts({ sinceDays: 45, max: 10 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
-    const review = await reconcileCallReviewTasks().catch(() => ({ closed: 0 }));
-    return { bookings, calendar, transcripts, unlinked, review };
+    return runParts({
+      bookings: () => syncCallRecordsFromCalendly(),
+      calendar: () => linkCalendarEvents({ max: 20 }),
+      transcripts: () => discoverTranscriptSources({ max: 40 }),
+      // Program Gemini docs no record has claimed → the import review queue (rows only, no text, no tasks, no analysis).
+      unlinked: () => sweepUnlinkedDriveTranscripts({ sinceDays: 45, max: 10 }),
+      review: () => reconcileCallReviewTasks(),
+    });
   }, { maxMs: 45_000 });
   // (Transcript jobs: /api/cron/topics, the 15-minute AI work job.)
   // F14: approved content cuts that never reached the client's library. The
   // approve-time write is best-effort by design (an approval must not fail over
   // it) and nothing looked again afterwards. Normally repairs nothing.
+  //
+  // NINE INDEPENDENT REPAIRS (Oct 20 2026, audit H5): each runs even when one
+  // before it throws (lib/cron runParts), and the step's error names every
+  // repair that failed. It used to stop at the first throw, so one broken
+  // repair kept the eight after it from running every hour.
   await step("libraryRepair", async () => {
     const { repairMonthlyPublications } = await import("@/lib/monthlyFinal");
-    const publications = await repairMonthlyPublications(100);
     const { repairApprovedCutLibrary } = await import("@/lib/portalLibrary");
-    const library = await repairApprovedCutLibrary({ sinceDays: 45, max: 200 });
-    // R2: a client change request whose work item never reached the queue. The
-    // client was told "it's with the writer" and the writer had nothing.
     const { repairScriptChangeRequests } = await import("@/lib/scriptDecisions");
-    const changes = await repairScriptChangeRequests({ sinceDays: 90, max: 300 });
-    // R5: a video recorded as sent whose 1080p job was stamped delivered and
-    // whose upload card was left open — the half-finished settle A04 described.
-    // Deliberately NOT the other way round: an undelivered job with an open
-    // card is Kyle's ordinary chase card and must not be closed.
-    const { repairIncompleteDeliveries } = await import("@/lib/readyToSend");
-    const deliveries = await repairIncompleteDeliveries({ sinceDays: 30, max: 200 });
-    // CP-02: a content cut released since the review windows shipped whose
-    // window write failed gets it now, from the TRUE release time. CP-03: a
-    // client's change request whose routing failed after it was recorded — or
-    // notes a racing submit left open beside it — reach the editor.
+    const { repairIncompleteDeliveries, stampNoticesFromDeliveryTexts } = await import("@/lib/readyToSend");
     const { repairReviewWindows } = await import("@/lib/reviewWindows");
-    const reviewWindows = await repairReviewWindows({ max: 100 });
     const { repairPortalRevisionRequests } = await import("@/lib/clientDecisions");
-    const portalRequests = await repairPortalRevisionRequests({ max: 50 });
-    // A42: the client's ACTUAL library (ContentVideo) holds every recently
-    // approved program cut; a client missing one is rebuilt, and a rebuild that
-    // fails or still leaves it out is recorded for the exceptions board.
     const { verifyApprovedCutsInLibrary } = await import("@/lib/contentVideos");
-    const programLibrary = await verifyApprovedCutsInLibrary({ sinceDays: 45, max: 200 });
-    // 9.2: a delivery text the provider accepted is evidence the client was
-    // told — stamped on the cuts it covered. 9.6b: "upload to Aryeo" cards made
-    // for program videos (never on a listing) are closed with the reason.
-    const { stampNoticesFromDeliveryTexts } = await import("@/lib/readyToSend");
-    const notices = await stampNoticesFromDeliveryTexts({ sinceDays: 30, max: 200 });
     const { closeProgramUploadCards } = await import("@/lib/topazJobs");
-    const programCards = await closeProgramUploadCards({ max: 100 });
-    return { publications, library, changes, deliveries, reviewWindows, portalRequests, programLibrary, notices, programCards };
+    return runParts({
+      publications: () => repairMonthlyPublications(100),
+      library: () => repairApprovedCutLibrary({ sinceDays: 45, max: 200 }),
+      // R2: a client change request whose work item never reached the queue. The
+      // client was told "it's with the writer" and the writer had nothing.
+      changes: () => repairScriptChangeRequests({ sinceDays: 90, max: 300 }),
+      // R5: a video recorded as sent whose 1080p job was stamped delivered and
+      // whose upload card was left open — the half-finished settle A04 described.
+      // Deliberately NOT the other way round: an undelivered job with an open
+      // card is Kyle's ordinary chase card and must not be closed.
+      deliveries: () => repairIncompleteDeliveries({ sinceDays: 30, max: 200 }),
+      // CP-02: a content cut released since the review windows shipped whose
+      // window write failed gets it now, from the TRUE release time. CP-03: a
+      // client's change request whose routing failed after it was recorded — or
+      // notes a racing submit left open beside it — reach the editor.
+      reviewWindows: () => repairReviewWindows({ max: 100 }),
+      portalRequests: () => repairPortalRevisionRequests({ max: 50 }),
+      // A42: the client's ACTUAL library (ContentVideo) holds every recently
+      // approved program cut; a client missing one is rebuilt, and a rebuild that
+      // fails or still leaves it out is recorded for the exceptions board.
+      programLibrary: () => verifyApprovedCutsInLibrary({ sinceDays: 45, max: 200 }),
+      // 9.2: a delivery text the provider accepted is evidence the client was
+      // told — stamped on the cuts it covered. 9.6b: "upload to Aryeo" cards made
+      // for program videos (never on a listing) are closed with the reason.
+      notices: () => stampNoticesFromDeliveryTexts({ sinceDays: 30, max: 200 }),
+      programCards: () => closeProgramUploadCards({ max: 100 }),
+    });
     // 45s (was 30s): the A42 check can rebuild a client's library, which is a
     // few seconds each on the rare hour one is missing a cut.
   }, { maxMs: 45_000 });
@@ -427,12 +457,16 @@ export async function GET(req: NextRequest) {
     const { recalcOpenProgramMonths } = await import("@/lib/programMonths");
     const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
     const armed = await hasEnabledCallMapping();
-    const r = await recalcOpenProgramMonths({ dryRun: !armed });
     // CP-08: Kyle's follow-up on answers that stop short of a script. Desk
     // truth, outside every switch (like the discovery task): it opens and
-    // closes SmartTasks and contacts nobody.
+    // closes SmartTasks and contacts nobody. Its error used to be returned as
+    // a result (`{ error }`), which read `ok`; now it fails the step, after
+    // the month recalculation has run either way (Oct 20 2026, audit H6).
     const { reconcileAnswerGapTasks } = await import("@/lib/programDeskTasks");
-    const answerGaps = await reconcileAnswerGapTasks().catch((e) => ({ error: e instanceof Error ? e.message : String(e) }));
+    const { months: r, answerGaps } = await runParts({
+      months: () => recalcOpenProgramMonths({ dryRun: !armed }),
+      answerGaps: () => reconcileAnswerGapTasks(),
+    });
     return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10), answerGaps };
   }, { maxMs: 20_000 });
   // A25 (Sep 25 2026): a booked session whose call moved, was cancelled or was

@@ -3,7 +3,7 @@ import { syncGmail } from "@/lib/integrations/google";
 import { sweepRepliedOpenPhoneTasks } from "@/lib/integrations/openphone";
 import { syncSlackHistory } from "@/lib/integrations/slackSync";
 import { sweepReplySla } from "@/lib/commsSla";
-import { cronBudget } from "@/lib/cron";
+import { cronBudget, authorizeCron, runParts } from "@/lib/cron";
 import type { OutboxKind } from "@/lib/outbox";
 import type { AutomationKey } from "@/lib/programAutomation";
 
@@ -25,18 +25,22 @@ const PROGRAM_KIND_SWITCH: Partial<Record<OutboxKind, AutomationKey>> = {
 // answered. Inbound texts/calls already arrive in real time via OpenPhone
 // webhooks; this covers Gmail (no push) + the answered-thread sweep. It's light
 // on the DB (no full-table scans — those run in /api/cron/daily).
+//
+// THE TWO BIG READS ARE CAPPED (Oct 20 2026, audit H14). Gmail and Slack had
+// no cap, so a slow mailbox or Slack pass could spend the 100 s budget and
+// push the last steps into `skipped`: the 6 PM wrap and the night-before shoot
+// briefs ran last of all. A cap does not cut a step off: cronBudget stops
+// WAITING for it, records `timedOut` and moves on while the read finishes
+// underneath (both dedupe what they log, and the next tick, five minutes
+// later, reads again). `evening` now runs before Kyle's lead and promise
+// pings, which are cheaper to miss for one tick. The once-a-day digests keep
+// no cap: each claims its day before it builds and sends, and a run that
+// stopped waiting on one could end before it sent.
 export async function GET(req: NextRequest) {
   // FAIL CLOSED: in prod/Vercel a missing CRON_SECRET must refuse, not open the
-  // door — same rule as the auth gate (losing an env var never fails open).
-  const secret = process.env.CRON_SECRET;
-  const enforced = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
-  if (!secret && enforced) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
-  if (secret) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  // door — the one shared rule (lib/cron authorizeCron).
+  const denied = authorizeCron(req);
+  if (denied) return denied;
   // Budgeted steps (same pattern as /sync + /daily): each failure is captured
   // per-step, and the run lands in CronRun so a dead comms scan is visible on
   // /connections instead of silently degrading.
@@ -45,7 +49,9 @@ export async function GET(req: NextRequest) {
   // Per-mailbox reads (§9, Sep 26): the step reports `degraded` when any
   // mailbox — info@ or hello@ — was not read, and syncGmail itself opens the
   // owner's reconnect task. /connections reads the flag off this run.
-  await step("gmail", () => syncGmail());
+  // Half the budget at most: the inbox scan matters most, but not more than
+  // everything after it put together. Each Gmail read has its own 30 s limit.
+  await step("gmail", () => syncGmail(), { maxMs: 50_000 });
   // Backstop only — the realtime webhook already closes answered threads.
   // Run it on the top-of-hour tick instead of all 12 (audit: the 5-minute poll
   // hit the OpenPhone API per open reply task per line, duplicating the webhook).
@@ -56,7 +62,7 @@ export async function GET(req: NextRequest) {
   });
   // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
   // minutes via the user token. Small window; logComm dedups the overlap.
-  await step("slack", () => syncSlackHistory({ sinceHours: 2 }));
+  await step("slack", () => syncSlackHistory({ sinceHours: 2 }), { maxMs: 30_000 });
   // Team-SMS digest flusher (batched pings for Harrison/James) + Kyle's 4 PM
   // Slack check-in — both cheap no-ops most runs.
   await step("smsFlush", async () => {
@@ -222,6 +228,15 @@ export async function GET(req: NextRequest) {
     return sweepUploadGaps();
   }, { maxMs: 40_000 });
 
+  // From 6 PM ET: tomorrow's shoot brief to each photographer, and Jordan's
+  // 6 PM wrap (Mon to Sat) with a copy to Kyle. Idle every other tick. Ahead
+  // of Kyle's reminders below since Oct 20 2026 (audit H14): it ran last and
+  // was the first step a slow tick skipped, which delayed the brief and paged.
+  await step("evening", async () => {
+    const { runEveningAutomations } = await import("@/lib/eveningPush");
+    return runEveningAutomations();
+  }, { maxMs: 45_000 });
+
   // KYLE'S REMINDERS, AUTOMATED (Oct 14 2026 comms audit). All three are staff
   // messages only, each behind its own Settings switch (Internal alerts), each
   // claimed per lead / job / day so the next tick (or a twin) sends nothing
@@ -243,21 +258,20 @@ export async function GET(req: NextRequest) {
   //    lasts, and "Back on track" when it clears. Before it, the client asks
   //    on jobs that were delivered close (lib/clientAsks: "the job was
   //    delivered"). Both cheap; idle most ticks.
+  //    The three run even when one throws, and a failure fails the step
+  //    instead of reading `{ closed: 0 }` (Oct 20 2026, audit H5/H6).
   await step("behindAlert", async () => {
     const { closeAsksOnDeliveredJobs } = await import("@/lib/clientAsks");
     const { runBehindAlert } = await import("@/lib/behindAlert");
-    const asks = await closeAsksOnDeliveredJobs();
-    // A shoot's flags clear once the job is delivered (Jordan, Oct 19 2026).
-    const flags = await import("@/lib/shootIssues").then((m) => m.closeShootFlagsOnDeliveredJobs()).catch(() => ({ closed: 0 }));
-    const behind = await runBehindAlert();
+    const { closeShootFlagsOnDeliveredJobs } = await import("@/lib/shootIssues");
+    const { asks, flags, behind } = await runParts({
+      asks: () => closeAsksOnDeliveredJobs(),
+      // A shoot's flags clear once the job is delivered (Jordan, Oct 19 2026).
+      flags: () => closeShootFlagsOnDeliveredJobs(),
+      behind: () => runBehindAlert(),
+    });
     return { asksClosed: asks.closed, flagsClosed: flags.closed, behind };
   }, { maxMs: 30_000 });
-  //  · from 6 PM ET: tomorrow's shoot brief to each photographer, and Jordan's
-  //    6 PM wrap (Mon to Sat) with a copy to Kyle. Idle every other tick.
-  await step("evening", async () => {
-    const { runEveningAutomations } = await import("@/lib/eveningPush");
-    return runEveningAutomations();
-  }, { maxMs: 45_000 });
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

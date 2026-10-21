@@ -30,6 +30,46 @@ export function authorizeCron(req: Request): NextResponse | null {
   return null;
 }
 
+/**
+ * SEVERAL INDEPENDENT JOBS IN ONE STEP (Oct 20 2026, audit H5/H6). A step
+ * that ran its jobs one after another stopped at the first throw, so the jobs
+ * after it never ran, every tick, for as long as it kept failing; and a step
+ * that caught each job's error itself (`.catch(() => ({ closed: 0 }))`)
+ * recorded `ok`, never reached the error tracker and never paged.
+ *
+ * Here every part runs whatever happened to the ones before it, and the
+ * results come back by name. If any part threw, ONE error naming each failed
+ * part is thrown after the last one has run, so the step records it. When
+ * every failure was a provider blip (a timeout, a 5xx), the error carries the
+ * first of them as its `cause`, which cron.ts's noise filter reads, so a blip
+ * stays quiet until it persists exactly as a single-job step's would.
+ *
+ * A part that is NOT CONFIGURED should return `{ skipped: "…" }`, as the
+ * providers' own sweeps already do, never throw: a skip is not a failure.
+ */
+export async function runParts<T extends Record<string, () => Promise<unknown>>>(
+  parts: T,
+): Promise<{ [K in keyof T]: Awaited<ReturnType<T[K]>> }> {
+  const results: Record<string, unknown> = {};
+  const failures: { name: string; error: unknown }[] = [];
+  for (const [name, run] of Object.entries(parts)) {
+    try {
+      results[name] = await run();
+    } catch (error) {
+      failures.push({ name, error });
+    }
+  }
+  if (failures.length > 0) {
+    const { isTransientProviderError } = await import("@/lib/cronNoise");
+    const message = failures
+      .map(({ name, error }) => `${name}: ${error instanceof Error ? error.message : String(error)}`)
+      .join(" · ");
+    const allTransient = failures.every(({ error }) => isTransientProviderError(error));
+    throw new Error(message, allTransient ? { cause: failures[0].error } : undefined);
+  }
+  return results as { [K in keyof T]: Awaited<ReturnType<T[K]>> };
+}
+
 export type CronRunner = {
   /** Run one step. `maxMs` caps it: on timeout the step is recorded as
    *  `{ timedOut: true }` and the run moves on (the work keeps running in the
