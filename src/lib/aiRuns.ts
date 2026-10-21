@@ -154,6 +154,12 @@ export type RunAiOpts<T> = {
   schema: Record<string, unknown>;
   maxTokens?: number;
   model?: string;
+  /**
+   * The model call's whole time limit (default aiTimeoutFor(maxTokens)). A
+   * cron sweep passes what is left of its own budget (Oct 21 2026, audit H)
+   * so one slow call cannot run past the function's deadline.
+   */
+  timeoutMs?: number;
   /** Called with the parsed output; its return value is stored as outputRef ("ContentScriptVersion:<id>"). */
   parse?: (out: T) => T;
   /**
@@ -248,7 +254,7 @@ export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> 
   // it), so "RUNNING" alone could be another worker's retry of the same row.
   const mine = claimed ? { leaseBy: claimed.leaseBy } : {};
   try {
-    const { result, usage, model } = await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model });
+    const { result, usage, model } = await aiJsonWithUsage<T>({ system: opts.system, prompt: opts.prompt, schema: opts.schema, maxTokens: opts.maxTokens, model: opts.model, timeoutMs: opts.timeoutMs });
     const output = opts.parse ? opts.parse(result) : result;
     const costCents = estimateCostCents(model, usage);
     const outputJson = JSON.stringify(output).slice(0, 200_000);

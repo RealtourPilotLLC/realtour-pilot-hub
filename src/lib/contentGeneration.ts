@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { runAiJson, activePolicyVersion, setRunOutputRef, releaseRunKey, claimRunWrite, sha256, type AiRunKind, type ClaimedRun } from "@/lib/aiRuns";
+import { timeoutBefore } from "@/lib/integrations/ai";
 import { approvedStrategy, createStrategyVersion, setMonthPriorities, monthPriorities, structuredFromText, parseStoredSections, deriveStrategyVersion } from "@/lib/contentStrategy";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { createTopic, selectTopicForMonth, recordTopicEvent, blockedTopicHashes, pendingSuggestionHashes, finishRefreshRun, topicDedupeHash, type Actor } from "@/lib/contentTopics";
@@ -359,6 +360,8 @@ export type GenerateScriptOpts = {
   claimedRun?: ClaimedRun | null;
   /** Oct 14 2026: the time (ms epoch) the automatic check must not start a model call past; what is left is finished by the AI cron. */
   checkDeadline?: number | null;
+  /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the draft's own model call ends by it. */
+  deadline?: number | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -416,6 +419,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
     kind: "script_draft", enrollmentId: row.enrollmentId, clientId: row.clientId, scope: { topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null }, inputRefs: { ...built.inputRefs, excerpts: excerpts.length, quotableLines: quotableLines.length },
     promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: o.requestedBy, unattended: o.unattended,
     dedupeKey: `script:${o.topicId}:${o.monthId ?? "bank"}`, holdDedupeKey: true, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: o.claimedRun ?? null,
+    timeoutMs: timeoutBefore(o.deadline, 3000),
   });
   let out: { scriptId: string; versionId: string; versionNo: number; ok: boolean; findings: number; gaps: number };
   try {
@@ -446,7 +450,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
 }
 
 /** Written-answer path: a DRAFT version from the interview's exact answer rows, gaps carried through, never filled. */
-export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean; claimedRun?: ClaimedRun | null; checkDeadline?: number | null } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
+export async function generateScriptFromInterview(interviewId: string, requestedBy: string, opts: { unattended?: boolean; onlyIfUnscripted?: boolean; claimedRun?: ClaimedRun | null; checkDeadline?: number | null; /** Oct 21 2026 (audit H1): a sweep's clock; the draft's model call ends by it. */ deadline?: number | null } = {}): Promise<{ scriptId: string; versionId: string; ok: boolean; gaps: number }> {
   const a = await assembleInterviewInputs(interviewId);
   await (await import("@/lib/programStyle")).assertWeWriteFor(a.enrollmentId); // Oct 8 2026: client-planned → no scripts from us
   const built = await buildClientContext(a.enrollmentId, { monthId: a.monthId });
@@ -461,7 +465,7 @@ export async function generateScriptFromInterview(interviewId: string, requested
   const run = await runAiJson<GeneratedScriptJson>({
     kind: "script_draft", enrollmentId: a.enrollmentId, clientId: a.clientId, scope: { interviewId, topicId: a.topic.id, monthId: a.monthId }, inputRefs: { ...built.inputRefs, answerIds: a.answerIds, excerpts: a.excerpts.length, quotableLines: quotableLines.length },
     promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `script:interview:${interviewId}`, holdDedupeKey: true,
-    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null, timeoutMs: timeoutBefore(opts.deadline, 3000),
   });
   let out: { scriptId: string; versionId: string; ok: boolean; gaps: number };
   try {
@@ -515,6 +519,8 @@ export type ReviseScriptOpts = {
   unattended?: boolean;
   /** Oct 14 2026: an automatic fix round (scriptJudge.ts) — written as the draft's own next version (source AI, same author), judged again. */
   autoFix?: { round: number } | null;
+  /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */
+  deadline?: number | null;
 };
 
 /**
@@ -550,7 +556,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
     kind: "script_revise", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId, basedOnVersionId: baseId, ...(opts.autoFix ? { autoFixRound: opts.autoFix.round } : {}) },
     inputRefs: { ...built.inputRefs, instruction: sha256(instructions), sourcePath: promptSource.path, lockSections: locks },
     promptKey: "script", promptVersion: scriptPromptVersion(built.ctx), policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy, unattended: opts.unattended ?? false, dedupeKey: `revise:${scriptId}`,
-    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 3000, claimedRun: opts.claimedRun ?? null, timeoutMs: timeoutBefore(opts.deadline, 3000),
   });
   // Locked sections: the model's words never reach the version. Put back
   // before validating (so the check describes what is written) and again on
@@ -595,7 +601,7 @@ export async function reviseScript(scriptId: string, instructions: string, reque
 type BankOut = { complete: boolean; pillars: { pillarName: string; topics: { title: string; description: string; audienceNeed: string; businessGoal: string; intendedMessage: string; sourceRef: string | null }[] }[]; gaps: Gap[] };
 
 /** The AI half of a BANK / REFRESH run: prompt from the policy, validated, deduped against archived concepts, stored as PENDING suggestions. */
-export async function executeTopicRefreshRun(runId: string, opts: { unattended: boolean; pillarId?: string | null; count?: number | null; /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null }): Promise<void> {
+export async function executeTopicRefreshRun(runId: string, opts: { unattended: boolean; pillarId?: string | null; count?: number | null; /** Keep only the top N new suggestions (single-suggestion regeneration = 1). */ keep?: number | null; /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null }): Promise<void> {
   const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: runId } });
   if (!run) throw new Error("Run not found.");
   const built = await buildClientContext(run.enrollmentId);
@@ -636,7 +642,7 @@ export async function executeTopicRefreshRun(runId: string, opts: { unattended: 
   const bundle = buildTopicBankPrompt(ctx, { topicsPerPillar: Math.min(Math.max(perPillar, GENERATION_POLICY.topicsPerPillar.min), GENERATION_POLICY.topicsPerPillar.max), existingTopics: existing, refresh: run.kind === "REFRESH", pillarEmphasis });
   const runRes = await runAiJson<BankOut>({
     kind: run.kind === "BANK" ? "topic_bank" : "topic_refresh", enrollmentId: run.enrollmentId, clientId: run.clientId, scope: { refreshRunId: runId, pillarId: opts.pillarId ?? null }, inputRefs: { ...built.inputRefs, existingTopics: existing.length },
-    promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 16_000,
+    promptKey: "topic-bank", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId, requestedBy: run.requestedBy ?? "system", unattended: opts.unattended, system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 16_000, timeoutMs: timeoutBefore(opts.deadline, 16_000),
   });
   const out = runRes.output;
   const [blocked, pendingHashes] = await Promise.all([blockedTopicHashes(run.enrollmentId), pendingSuggestionHashes(run.enrollmentId)]);
@@ -1275,7 +1281,7 @@ export async function reviseStrategyWithFeedback(versionId: string, fb: { notes?
  * falls straight back to the house template. So the worst case of a bad plan is
  * the behaviour we had before it existed.
  */
-export async function planInterviewQuestions(interviewId: string, o: { requestedBy: string; unattended: boolean }): Promise<{ runId: string; questions: number; followUps: number }> {
+export async function planInterviewQuestions(interviewId: string, o: { requestedBy: string; unattended: boolean; /** The sweep's clock (ms epoch): the model call ends by it (audit H1). */ deadline?: number | null }): Promise<{ runId: string; questions: number; followUps: number }> {
   const { interviewPlanningContext } = await import("@/lib/contentInterview");
   const { INTERVIEW_QUESTION_PLAN } = await import("@/lib/contentPolicy");
   const { buildInterviewPlanPrompt } = await import("@/lib/contentPolicy/prompts");
@@ -1288,7 +1294,7 @@ export async function planInterviewQuestions(interviewId: string, o: { requested
     kind: "interview_plan", enrollmentId: ctxRow.enrollmentId, clientId: ctxRow.clientId, scope: { interviewId, topicId: ctxRow.topic.id, monthId: ctxRow.monthId },
     inputRefs: { ...built.inputRefs, topicTitle: ctxRow.topic.title }, promptKey: "interview-plan", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId,
     requestedBy: o.requestedBy, unattended: o.unattended, dedupeKey: `interview-plan:${interviewId}`,
-    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 2000,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 2000, timeoutMs: timeoutBefore(o.deadline, 2000),
   });
 
   // Only ids the POLICY knows survive — a renamed or invented one is dropped

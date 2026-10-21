@@ -39,6 +39,11 @@ export type OwnerPulseSnapshot = {
   deliveredThisMonth: number;
   openTasks: number;
   overdueTasks: number;
+  /** Oct 21 2026 (audit H3/G): the QuickBooks rail is capped at its last
+   *  sync (bookkeeping.revenueByProcessor), so the revenue figures leave out
+   *  QuickBooks payments since then. This says so in words; null when the
+   *  rail is current. Owner screens only (Kyle never sees money). */
+  revenueNote: string | null;
 };
 
 export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulseSnapshot> {
@@ -132,5 +137,8 @@ export async function ownerPulse(opts: TaskClientScope = {}): Promise<OwnerPulse
     deliveredThisMonth: delivered,
     openTasks: tasks.length,
     overdueTasks: tasks.filter((t) => t.dueAt && etDayKey(t.dueAt) < todayKey).length,
+    // The year's note names where the gap really starts (the month's starts
+    // on the 1st at the latest); either one means both figures are short.
+    revenueNote: revYtd?.quickbooksNote || revMonth?.quickbooksNote || null,
   };
 }

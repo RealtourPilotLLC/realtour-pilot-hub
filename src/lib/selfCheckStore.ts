@@ -458,19 +458,36 @@ export async function heldCutsFor(projectId: string): Promise<{ submissionId: st
   return out;
 }
 
-/** The attestation on a version, for the reviewer's eyes. */
-export async function attestationFor(submissionId: string): Promise<{
+export type Attestation = {
   actorName: string; onBehalfOf: string | null; editorKey: string | null; at: Date; checklistKey: string;
   items: { key: string; label: string; answer: string; reason: string | null }[];
   declarations: { addressed: string[]; notAddressed: Record<string, string> };
-} | null> {
-  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { selfCheckId: true, selfCheckedAt: true } });
-  if (!sub?.selfCheckId || !sub.selfCheckedAt) return null;
-  const c = await prisma.cutSelfCheck.findUnique({ where: { id: sub.selfCheckId } });
-  if (!c || c.state !== "VALID") return null;
-  let items: { key: string; label: string; answer: string; reason: string | null }[] = [];
-  try { items = JSON.parse(c.itemsJson); } catch { items = []; }
-  return { actorName: c.actorName, onBehalfOf: c.onBehalfOf, editorKey: c.editorKey, at: c.createdAt, checklistKey: c.checklistKey, items, declarations: parseDeclarations(c.addressedIssueIdsJson) };
+};
+
+/** The attestation on a version, for the reviewer's eyes. */
+export async function attestationFor(submissionId: string): Promise<Attestation | null> {
+  return (await attestationsFor([submissionId])).get(submissionId) ?? null;
+}
+
+/** attestationFor for several versions in two reads (Oct 21 2026, audit B8):
+ *  the editor brief shows every version's check. Only versions with one are
+ *  in the map. */
+export async function attestationsFor(submissionIds: string[]): Promise<Map<string, Attestation>> {
+  const out = new Map<string, Attestation>();
+  const ids = [...new Set(submissionIds.filter(Boolean))];
+  if (!ids.length) return out;
+  const subs = await prisma.reviewSubmission.findMany({ where: { id: { in: ids }, selfCheckId: { not: null }, selfCheckedAt: { not: null } }, select: { id: true, selfCheckId: true } });
+  if (!subs.length) return out;
+  const checks = await prisma.cutSelfCheck.findMany({ where: { id: { in: subs.map((s) => s.selfCheckId!) }, state: "VALID" } });
+  const byId = new Map(checks.map((c) => [c.id, c]));
+  for (const s of subs) {
+    const c = byId.get(s.selfCheckId!);
+    if (!c) continue;
+    let items: Attestation["items"] = [];
+    try { items = JSON.parse(c.itemsJson); } catch { items = []; }
+    out.set(s.id, { actorName: c.actorName, onBehalfOf: c.onBehalfOf, editorKey: c.editorKey, at: c.createdAt, checklistKey: c.checklistKey, items, declarations: parseDeclarations(c.addressedIssueIdsJson) });
+  }
+  return out;
 }
 
 /** Bell-only, to the editor the cut is for and the office: a cut is waiting on

@@ -74,10 +74,12 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
 
   // The two reads every view shares, for the tab numbers: who is waiting on
   // us (lib/opsHome.messagesBoard: waiting clients, new leads, the Outbox
-  // count) and the text reply queue (the Texts list itself).
+  // count) and the text reply queue (the Texts list itself). Both slice ONE
+  // read of the comms log, made once for this request (Oct 21 2026, audit F4:
+  // it was three, phone twice): the same clock, the same client scope.
   const [board, allTexts] = await Promise.all([
     messagesBoard({ now, excludeClientIds, viewer }),
-    replyQueue(),
+    replyQueue({ now, excludeClientIds, shared: true }),
   ]);
   // TEST RECORDS OFF THE TEXTS LIST TOO (audit F24, Oct 20 2026). Waiting,
   // Email and the Outbox hid test clients behind "Show test records"; Texts

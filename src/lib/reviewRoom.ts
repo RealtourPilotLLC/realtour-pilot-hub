@@ -179,8 +179,10 @@ const projectsWithLiveReview = (since: Date) => ({
  * Test clients are left out unless `includeTest`.
  */
 export async function photoQcCards(opts: { includeTest?: boolean; excludeClientIds?: string[] } = {}): Promise<QueuePhotoQc[]> {
+  // The test clients' ids, read once per render (queries.syntheticClientIds,
+  // Oct 21 2026, audit A3/C), not every client row on each Photo Delivery load.
   const excludeClientIds = opts.excludeClientIds ?? (opts.includeTest === false
-    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    ? await import("@/lib/queries").then((m) => m.syntheticClientIds())
     : []);
   const tasks = await prisma.smartTask.findMany({
     where: photoQcWhere({ excludeClientIds }),

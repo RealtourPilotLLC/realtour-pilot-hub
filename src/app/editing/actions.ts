@@ -441,6 +441,10 @@ export async function addToEditorQueue(
         revisionRequestedAt: project.revisionRequestedAt ?? new Date(),
         revisionNote: revNote.slice(0, 300),
         ...(project.status === "DELIVERED" ? { status: "REVISION" } : {}),
+        // Oct 21 2026 (audit B11): the office put a finished job back. The
+        // Editing Room queue reads this stamp (officeReopen.ts), not the
+        // timeline line below.
+        officeReopenedAt: new Date(),
       },
     });
     // Reopen the QC card WITH revision framing (HIGH, due now, re-QC row) —
@@ -502,13 +506,13 @@ export async function addToEditorQueue(
 
     const tmId = await editorTeamMemberId(key);
     await withEditorAssignmentChange(projectId, (tx) => tx.project.update({ where: { id: projectId }, data: { editorId: tmId } }));
-    const { OFFICE_NEW_CUT_LINE } = await import("@/lib/editorQueue");
+    const { OFFICE_NEW_CUT_LINE } = await import("@/lib/officeReopen");
     await prisma.activity.create({
       data: {
         projectId,
         type: "SYSTEM",
-        // The Editing Room reads this line back as the office's own reopen
-        // (editorQueue.OFFICE_NEW_CUT_LINE): change both together.
+        // Jobs reopened before the officeReopenedAt stamp are still read off
+        // this line (officeReopen.OFFICE_NEW_CUT_LINE, LEGACY): keep its start.
         body: `${OFFICE_NEW_CUT_LINE}${queuedBy ? ` by ${queuedBy}` : ""} — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
       },
     });

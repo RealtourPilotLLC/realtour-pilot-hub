@@ -132,6 +132,8 @@ export type VideoDeliveryBoard = {
   unavailable?: boolean;
   /** Only on the room's read ({ followUps: true }). */
   followUps?: VideoFollowUps | null;
+  /** Only on the room's read: each Ready to send / held job's open video requests (projectId → rows), for its "Before you send" box. */
+  jobRequests?: Record<string, import("@/lib/clientAsks").JobRequestRow[]> | null;
 };
 
 /** The delivery follow-up lanes (readyToSend's), shown in the room under Ready to send since Home stopped showing the delivery card (Oct 19). */
@@ -201,10 +203,10 @@ export async function videoDeliveryBoard(opts: { now?: Date; fresh?: boolean; fo
 async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliveryBoard> {
   const todayKey = etDayKey(now);
   const endOfToday = etAt(todayKey, 23, 59);
-  const { isSyntheticClientRow } = await import("@/lib/testClients");
   const { videoDeliverySettings } = await import("@/lib/videoDeliverySettings");
-  const clients = await prisma.client.findMany({ select: { id: true, name: true } });
-  const excludeClientIds = clients.filter(isSyntheticClientRow).map((c) => c.id);
+  // The test clients' ids, read once per render (queries.syntheticClientIds,
+  // Oct 21 2026, audit A3/H): every board build used to read every client row.
+  const excludeClientIds = await import("@/lib/queries").then((m) => m.syntheticClientIds());
 
   const [{ deliveryBoard }, { readyToSend }, { videoStatesFor }, turnaround, qc, settings, connected] = await Promise.all([
     import("@/lib/deliveryBoard"),
@@ -421,7 +423,17 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
         portal: ready.ready.filter((v) => v.deliveryDestination === "client-portal").map((v) => ({ ...v, file: { ...v.file, why: v.file.why ? scrubMoney(v.file.why) : null } })),
       }
     : null;
-  return { asOf: now.toISOString(), lanes, counts, mode: settings.aryeoPush, connected, followUps };
+  // The room's "Before you send" boxes (Oct 21 2026, audit B9): every Ready to
+  // send and held job's open requests in one read, handed to each box, rather
+  // than each box reading its own. Null when the read failed: each box then
+  // reads its own, as before.
+  const jobRequests = withFollowUps
+    ? await import("@/lib/clientAsks")
+        .then((m) => m.jobRequestsFor([...lanes.sending, ...lanes.held].map((r) => r.projectId), "video"))
+        .then((m) => Object.fromEntries(m))
+        .catch(() => null)
+    : null;
+  return { asOf: now.toISOString(), lanes, counts, mode: settings.aryeoPush, connected, followUps, jobRequests };
 }
 
 /** Home's summary box (Oct 19 2026): listing videos ready to send, late, and

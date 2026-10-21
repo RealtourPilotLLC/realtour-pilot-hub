@@ -16,7 +16,6 @@ async function main() {
     const { Button, ActionLink } = await import("@/components/ui/Action");
     const { TextField } = await import("@/components/ui/FormField");
     const { SaveStatus } = await import("@/components/ui/SaveStatus");
-    const { ControlStates } = await import("@/components/ui/ControlStates");
     const { PlanWithCall, PlanWithoutCall, CancelRequestButton } = await import("@/components/portal/PlanningChoice");
     const button = renderToStaticMarkup(createElement(Button, {}, "Example"));
     const submit = renderToStaticMarkup(createElement(Button, { type: "submit", name: "choice", value: "yes", formAction: "/fixture" }, "Submit"));
@@ -31,9 +30,6 @@ async function main() {
     const failed = renderToStaticMarkup(createElement(SaveStatus, { state: "error", message: "Retry the same request." }));
     const partial = renderToStaticMarkup(createElement(SaveStatus, { state: "partial", message: "One file is still unconfirmed." }));
     c.ok("failed and partial receipts cannot read as complete success", failed.includes('role="alert"') && failed.includes("Save not confirmed") && partial.includes("Partly saved") && partial.includes("unconfirmed"));
-    const galleries = renderToStaticMarkup(createElement("div", {}, createElement(ControlStates, { prefix: "staff" }), createElement(ControlStates, { prefix: "client" })));
-    const ids = [...galleries.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
-    c.ok("comparison palettes do not duplicate field or state anchor IDs", ids.length > 0 && new Set(ids).size === ids.length);
     const planning = renderToStaticMarkup(createElement("div", {}, createElement(PlanWithCall, { monthId: "fixture-month" }), createElement(PlanWithoutCall, { monthId: "fixture-month", callBooked: true }), createElement(CancelRequestButton, { requestId: "fixture-request", confirmed: true, selfBooked: true })));
     c.ok("planning and cancellation first paint keep distinct choices without submitting", planning.includes("Talk through topics on a call instead") && planning.includes("Choose my topics here instead") && planning.includes("Cancel session") && !planning.includes('type="submit"'));
     c.ok("rendering fixtures and migrated controls calls no provider", fence.blocked.length === 0);

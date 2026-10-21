@@ -853,17 +853,30 @@ export type JobRequestRow = { id: string; summary: string; text: string; askedBy
  */
 export async function jobRequests(projectId: string, medium: "video" | "photo"): Promise<JobRequestRow[]> {
   if (!projectId) return [];
-  const [rows, p] = await Promise.all([
+  return (await jobRequestsFor([projectId], medium)).get(projectId) ?? [];
+}
+
+/** jobRequests for several jobs in two reads (Oct 21 2026, audit B9): the
+ *  Review Room's board reads them once for every Ready to send job and hands
+ *  each job's list to its box. Every id asked for is in the map. */
+export async function jobRequestsFor(projectIds: string[], medium: "video" | "photo"): Promise<Map<string, JobRequestRow[]>> {
+  const ids = [...new Set(projectIds.filter(Boolean))];
+  const out = new Map<string, JobRequestRow[]>(ids.map((id) => [id, []]));
+  if (!ids.length) return out;
+  const [rows, projects] = await Promise.all([
     prisma.clientAsk.findMany({
-      where: { projectId, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: [...ASK_SOURCES] } },
+      where: { projectId: { in: ids }, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: [...ASK_SOURCES] } },
       orderBy: { askedAt: "asc" },
-      select: { id: true, summary: true, text: true, askedBy: true, askedAt: true, medium: true, source: true, kind: true },
+      select: { id: true, projectId: true, summary: true, text: true, askedBy: true, askedAt: true, medium: true, source: true, kind: true },
     }),
-    prisma.project.findUnique({ where: { id: projectId }, select: { status: true, deliveredAt: true } }),
+    prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, status: true, deliveredAt: true } }),
   ]);
-  return rows
-    .filter((r) => mediumMatches(r.medium, medium) && !closesOnDelivery(r, p))
-    .map((r) => ({ id: r.id, summary: r.summary?.trim() || clip(r.text.replace(/\s+/g, " "), 140), text: r.text, askedBy: r.askedBy, askedAt: r.askedAt, medium: r.medium, source: r.source }));
+  const pById = new Map(projects.map((p) => [p.id, p]));
+  for (const r of rows) {
+    if (!r.projectId || !mediumMatches(r.medium, medium) || closesOnDelivery(r, pById.get(r.projectId) ?? null)) continue;
+    out.get(r.projectId)?.push({ id: r.id, summary: r.summary?.trim() || clip(r.text.replace(/\s+/g, " "), 140), text: r.text, askedBy: r.askedBy, askedAt: r.askedAt, medium: r.medium, source: r.source });
+  }
+  return out;
 }
 
 // ---- money (Oct 19 2026) ----------------------------------------------------------------------

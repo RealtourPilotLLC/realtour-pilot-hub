@@ -11,7 +11,7 @@ import { VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, listingFlowFor, makeThisFor, 
 import { buildSpellList, spellLine, streetOf, townOf, type SpellList } from "@/lib/spellList";
 import { withVideoFacts, type SelfCheckProfile, type SelfCheckVideoFacts } from "@/lib/selfCheck";
 import { notesAskForLogo, type LogoAsk } from "@/lib/logoAsk";
-import type { SlotCheckContext } from "@/lib/selfCheckStore";
+import type { Attestation, SlotCheckContext } from "@/lib/selfCheckStore";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { BrandUpdatesBanner } from "@/components/editing/BrandUpdatesBanner";
@@ -256,7 +256,7 @@ export default async function EditBriefPage({
   // each version came in with. Each read fails soft: the page never breaks
   // over its own quality bookkeeping.
   const qualityRead = (async () => {
-    const { checkContextsForProject, heldCutsFor, attestationFor } = await import("@/lib/selfCheckStore");
+    const { checkContextsForProject, heldCutsFor, attestationsFor } = await import("@/lib/selfCheckStore");
     const { issuesForProject } = await import("@/lib/revisionIssues");
     let canReview = strictOwnerAdmin && !viewer?.impersonating;
     if (!canReview && viewer && !viewer.impersonating) {
@@ -274,11 +274,12 @@ export default async function EditBriefPage({
     ]);
     const attestations: AttestationView[] = [];
     if (canReview) {
-      // Read together, not one version after another (Oct 20 2026, audit H11).
+      // Every version's check in two reads (Oct 21 2026, audit B8; it was two
+      // reads per version).
       const live = submissions.filter((x) => x.status !== "WITHDRAWN");
-      const read = await Promise.all(live.map((s) => attestationFor(s.id).catch(() => null)));
-      for (const [i, s] of live.entries()) {
-        const a = read[i];
+      const read = await attestationsFor(live.map((s) => s.id)).catch(() => new Map<string, Attestation>());
+      for (const s of live) {
+        const a = read.get(s.id);
         if (!a) continue;
         const slotLabel = slots.find((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(s))?.label ?? s.fileName ?? "Video";
         attestations.push({

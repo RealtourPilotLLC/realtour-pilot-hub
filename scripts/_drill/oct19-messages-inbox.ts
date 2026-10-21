@@ -265,8 +265,10 @@ async function main() {
     c.ok("a Slack to-do's ?task= link still lands on the Slack tab, not Messages", await tasksTo({ tab: "comms", task: slackTask.id }) === null);
     c.ok("the other Tasks tabs are untouched", await tasksTo({ tab: "work" }) === null && await tasksTo({ tab: "revisions" }) === null && await tasksTo({}) === null);
     await signIn(noComms);
-    const kept = await tasksPage({ searchParams: Promise.resolve({ tab: "comms" }) });
-    c.ok("a login without Messages keeps the Tasks Replies tab (nothing dropped for them)", elements(kept, "CommsView").length === 1);
+    const kept = await tasksTo({ tab: "comms" });
+    // Oct 21 2026 (audit F15): the Replies tab is gone; a login whose access
+    // was hand-set without Messages lands on its own work board instead.
+    c.ok("a login without Messages is sent to its Tasks work board (the Replies tab is gone)", kept === "/tasks", String(kept));
     await signIn(shooter);
     const shooterTo = await redirectOf(() => messages({ searchParams: Promise.resolve({}) }));
     c.ok("a photographer is sent to their own home, not shown Messages", !!shooterTo && !shooterTo.startsWith("/communications"), String(shooterTo));

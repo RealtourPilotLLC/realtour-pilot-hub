@@ -115,7 +115,8 @@ export async function sweepUnanalyzedBriefs(opts: { now?: Date; max?: number; bu
     await prisma.revisionBrief
       .updateMany({ where: { id: r.id, analyzedAt: null }, data: { analysisError: analysisTryError(tryNo, "the reading stopped without an answer") } })
       .catch(() => {});
-    const ok = await analyzeBrief(r.id).catch(() => false);
+    // Oct 21 2026 (audit H1): the reading ends by this run's clock.
+    const ok = await analyzeBrief(r.id, opts.budgetMs != null ? { deadline: startedAt + opts.budgetMs } : undefined).catch(() => false);
     if (ok) {
       out.read++;
       out.readIds.push(r.id);

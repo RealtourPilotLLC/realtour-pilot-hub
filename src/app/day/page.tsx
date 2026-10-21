@@ -394,7 +394,7 @@ export default async function MyDayPage() {
           action={<span className="text-sm text-muted-2">{pulse.monthLabel}</span>}
         >
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Stat label="Revenue" value={usd0(pulse.revenueMonth)} sub={`${usd0(pulse.revenueYtd)} this year`} />
+            <Stat label="Revenue" value={usd0(pulse.revenueMonth)} sub={`${usd0(pulse.revenueYtd)} this year${pulse.revenueNote ? " · QuickBooks not synced, see below" : ""}`} />
             <Stat
               label="Profit"
               value={usd0(pulse.profitMonth)}
@@ -416,6 +416,7 @@ export default async function MyDayPage() {
               tone={pulse.overdueTasks > 0 ? "bad" : undefined}
             />
           </div>
+          {pulse.revenueNote && <p data-quickbooks-note className="mt-3 text-sm text-warning">{pulse.revenueNote}</p>}
           <div className="mt-3 flex gap-4 text-sm">
             <Link href="/trends" className="font-medium text-brand hover:underline">Trends →</Link>
             <Link href="/sales" className="font-medium text-brand hover:underline">Finance →</Link>

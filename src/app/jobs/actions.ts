@@ -46,7 +46,7 @@ export async function confirmJobRequests(projectId: string, medium: JobMedium): 
     revalidatePath(`/projects/${projectId}`);
     revalidatePath(`/edit/${projectId}`);
     revalidatePath("/ops/photo-delivery", "layout");
-    revalidatePath("/ops/video-delivery");
+    revalidatePath("/review"); // the Review Room's boxes (/ops/video-delivery is a redirect to it now)
     revalidatePath(CHECKLIST_PATH);
     revalidatePath("/jobs");
     revalidatePath("/");

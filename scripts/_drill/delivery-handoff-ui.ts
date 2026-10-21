@@ -78,11 +78,6 @@ async function main() {
     recordClientNoticeAction: async (id: string, notice: string) => { noticeCalls.push({ id, notice }); return noticeResult.promise; },
   });
   stub(req.resolve("next/navigation"), { useRouter: () => ({ refresh: () => { refreshes++; } }) });
-  stub(req.resolve("../../src/app/ops/finalRenditionActions.ts"), {
-    finalFileChoicesAction: () => { throw new Error("read not invoked by this fixture"); },
-    recordFinalFileCheckAction: () => { throw new Error("save not invoked by this fixture"); },
-    readFinalFileCheckReceiptAction: () => { throw new Error("receipt not invoked by this fixture"); },
-  });
   stub(req.resolve("../../src/lib/recordDeliveryRequest.ts"), { recordDeliveryRequest: async (id: string, notice?: string) => { calls.push({ id, notice }); return result.promise; } });
   const windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window");
   const confirms = true;

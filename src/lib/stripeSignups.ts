@@ -916,7 +916,13 @@ export async function resolveSignupReview(id: string): Promise<void> {
  * subscription rings the OWNER once per state change — it never auto-pauses
  * the enrollment (ending service over a card hiccup is Jordan's call).
  */
-export async function sweepSubscriptionHealth(): Promise<{ checked: number; alerts: number }> {
+export async function sweepSubscriptionHealth(): Promise<{ checked: number; alerts: number; failed: number } | { skipped: string }> {
+  // Oct 21 2026 (audit H6): every failed check used to read as "not a program
+  // subscription" (`.catch(() => null)`), so a revoked key or a Stripe outage
+  // recorded { checked: 0 } as `ok` and the lapse alarm could be dead for
+  // weeks. No key is said as a skip; a failure is counted, and a run where
+  // every check failed throws into the cron step, where it is seen.
+  if (!(await getSecret("stripe"))) return { skipped: "Stripe is not connected" };
   const rows = await prisma.programSignup.findMany({
     where: { subscriptionId: { not: null }, enrollmentId: { not: null } },
     orderBy: { paidAt: "desc" },
@@ -924,13 +930,24 @@ export async function sweepSubscriptionHealth(): Promise<{ checked: number; aler
     select: { subscriptionId: true },
   });
   let checked = 0, alerts = 0;
+  const failures: unknown[] = [];
   for (const r of rows) {
-    const c = await checkSubscription(r.subscriptionId!).catch(() => null);
+    let c: Awaited<ReturnType<typeof checkSubscription>>;
+    try {
+      c = await checkSubscription(r.subscriptionId!);
+    } catch (e) {
+      failures.push(e);
+      continue;
+    }
     if (!c) continue;
     checked++;
     if (c.alerted) alerts++;
   }
-  return { checked, alerts };
+  if (failures.length && failures.length === rows.length) {
+    const first = failures[0];
+    throw new Error(`Every subscription check failed (${failures.length}): ${first instanceof Error ? first.message : String(first)}`, { cause: first });
+  }
+  return { checked, alerts, failed: failures.length };
 }
 
 const LAPSED = ["canceled", "unpaid", "past_due", "incomplete_expired"];

@@ -313,7 +313,8 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
       if ((w.readiness === "FROM_ANSWERS" || w.readiness === "THIN_ANSWERS") && w.interviewId) {
         const { generateScriptFromInterview } = await import("@/lib/contentGeneration");
         // Oct 14 2026: checkDeadline: the automatic check after the draft starts no model call past the sweep's clock (the AI cron finishes it).
-        const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended, onlyIfUnscripted: true, checkDeadline: opts.deadline ?? null });
+        // Oct 21 2026 (audit H1): deadline: the draft's own model call ends by it too.
+        const r = await generateScriptFromInterview(w.interviewId, opts.requestedBy, { unattended: opts.unattended, onlyIfUnscripted: true, checkDeadline: opts.deadline ?? null, deadline: opts.deadline ?? null });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "answers", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       } else {
         const { generateScriptForTopic } = await import("@/lib/contentGeneration");
@@ -326,6 +327,7 @@ export async function draftOwedScriptsForMonth(monthId: string, opts: DraftOpts)
           selectedOnCall: w.readiness === "FROM_CALL",
           onlyIfUnscripted: true,
           checkDeadline: opts.deadline ?? null,
+          deadline: opts.deadline ?? null,
         });
         outcomes.push({ topicId: w.topicId, title: w.title, result: "drafted", readiness: w.readiness, path: "topic", scriptId: r.scriptId, versionId: r.versionId, gaps: r.gaps });
       }
@@ -526,7 +528,7 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
       const interviewId = await getOrCreateInterview(sel.topicId, sel.monthId, {});
       const ctx = await interviewPlanningContext(interviewId);
       if (ctx.hasPlan) { alreadyPlanned++; continue; }
-      await planInterviewQuestions(interviewId, { requestedBy: "cron", unattended: true });
+      await planInterviewQuestions(interviewId, { requestedBy: "cron", unattended: true, deadline });
       planned++;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

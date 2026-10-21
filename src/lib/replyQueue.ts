@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { taskClientScopeWhere } from "@/lib/taskClientScope";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -483,6 +484,10 @@ export type UnansweredOptions = {
    *  mint a brand-new dedupe key and wake somebody about it. Persisting an
    *  obligation is a visibility change; it must never become an alerting one. */
   includeOwed?: boolean;
+  /** Slice the request's one scan (sharedScan, Oct 21 2026, audit F4) rather
+   *  than scanning again: both families at the default window, the SIGNED-IN
+   *  VIEWER's tier (minRoles is ignored), `excludeClientIds` as its scope. */
+  shared?: boolean;
 };
 
 type Row = {
@@ -1619,31 +1624,87 @@ async function ledgerThreads(
 /**
  * Every conversation still owed an answer — phone and email in one list.
  * This is the only place that question is answered; every surface slices this.
+ *
+ * Oct 21 2026 (audit F4): the scan and walk (scanWaiting below) return every
+ * card the window holds; what a surface wants (courtesy-only threads, our own
+ * team, unmatched numbers, the ledger) is sliced from it here. With `shared`,
+ * the slice is taken from the request's one scan (sharedScan): the Messages
+ * screen's board and its Texts queue read the comms log once, not three times.
  */
 export async function unansweredComms(opts: UnansweredOptions = {}): Promise<WaitingThread[]> {
   const now = opts.now ?? new Date();
   const families = opts.families ?? (["phone", "email"] as WaitingFamily[]);
-  const wantPhone = families.includes("phone");
-  const wantEmail = families.includes("email");
-  if (!wantPhone && !wantEmail) return [];
+  if (!families.includes("phone") && !families.includes("email")) return [];
   const windowDays = opts.windowDays ?? WINDOW_DAYS;
   const includeUnmatched = opts.includeUnmatched ?? true;
   const includeTeam = opts.includeTeam ?? true;
   const includeCourtesy = opts.includeCourtesy ?? false;
+  const scanned = opts.shared && windowDays === WINDOW_DAYS
+    ? (await sharedScan(now.getTime(), (await viewerRoles()).join(","), [...(opts.excludeClientIds ?? [])].sort().join(","))).filter((t) => families.includes(t.family))
+    : await scanWaiting({ now, families, windowDays, minRoles: opts.minRoles, excludeClientIds: opts.excludeClientIds });
+  // The walk's own rules, applied as it used to apply them, card by card.
+  const out = scanned.filter((t) => (includeCourtesy || !t.courtesyOnly) && (includeTeam || !t.isTeam) && (includeUnmatched || !!t.clientId));
+  if (opts.includeOwed) out.push(...(await ledgerThreads(out, { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })));
+
+  // Longest wait first — VIPs ahead of the rest of an equal wait. The message
+  // that's been sitting two days is the one that costs us a client, not the one
+  // that came in ten minutes ago.
+  return out.sort(
+    (a, b) => (b.isVip ? 1 : 0) - (a.isVip ? 1 : 0) || a.waitingSince.getTime() - b.waitingSince.getTime(),
+  );
+}
+
+/** ONE SCAN PER REQUEST (Oct 21 2026, audit F4): both families, the viewer's
+ *  tier, one client scope, each family read to its own cap exactly as its own
+ *  scan was. React's cache() shares it within one render (the Messages
+ *  screen's board and Texts queue, the dashboard's tiles); outside a render (a
+ *  drill, a cron) it reads each time. The cards are copied so a caller's
+ *  slice can never change another's. */
+const sharedScanOnce = cache(async (nowMs: number, rolesKey: string, exKey: string): Promise<WaitingThread[]> =>
+  scanWaiting({
+    now: new Date(nowMs), families: ["phone", "email"], windowDays: WINDOW_DAYS,
+    minRoles: rolesKey ? rolesKey.split(",") : [], excludeClientIds: exKey ? exKey.split(",") : [], perFamilyCap: true,
+  }));
+async function sharedScan(nowMs: number, rolesKey: string, exKey: string): Promise<WaitingThread[]> {
+  return (await sharedScanOnce(nowMs, rolesKey, exKey)).map((t) => ({ ...t }));
+}
+
+type ScanOptions = {
+  now: Date;
+  families: WaitingFamily[];
+  windowDays: number;
+  minRoles?: string[] | null;
+  excludeClientIds?: string[];
+  /** Both families, each read to its own SCAN_CAP (the shared scan): exactly
+   *  what two one-family scans read. */
+  perFamilyCap?: boolean;
+};
+
+/** The scan and the walk: every card the window holds, unsliced and unsorted
+ *  (unansweredComms slices it). */
+async function scanWaiting(o: ScanOptions): Promise<WaitingThread[]> {
+  const now = o.now;
+  const families = o.families;
+  const wantPhone = families.includes("phone");
+  const wantEmail = families.includes("email");
+  if (!wantPhone && !wantEmail) return [];
+  const windowDays = o.windowDays;
   const since = new Date(now.getTime() - windowDays * 86_400_000);
 
   const channels = [...(wantPhone ? ["text", "call"] : []), ...(wantEmail ? ["email"] : [])];
+  // One read per family under the shared scan, so each keeps its own cap.
+  const channelSets = o.perFamilyCap && wantPhone && wantEmail ? [["text", "call"], ["email"]] : [channels];
   const ROW_SELECT = {
     channel: true, direction: true, clientId: true, clientName: true, contactName: true,
     fromPhone: true, projectId: true, subject: true, body: true, occurredAt: true, source: true,
     externalId: true, createdAt: true,
   } as const;
-  const roleGate = opts.minRoles ? { minRole: { in: opts.minRoles } } : {};
-  const excludedProjectIds = opts.excludeClientIds?.length
-    ? (await prisma.project.findMany({ where: { clientId: { in: opts.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
+  const roleGate = o.minRoles ? { minRole: { in: o.minRoles } } : {};
+  const excludedProjectIds = o.excludeClientIds?.length
+    ? (await prisma.project.findMany({ where: { clientId: { in: o.excludeClientIds } }, select: { id: true } })).map((p) => p.id)
     : [];
-  const clientScope = opts.excludeClientIds?.length ? { AND: [
-    { OR: [{ clientId: null }, { clientId: { notIn: opts.excludeClientIds } }] },
+  const clientScope = o.excludeClientIds?.length ? { AND: [
+    { OR: [{ clientId: null }, { clientId: { notIn: o.excludeClientIds } }] },
     ...(excludedProjectIds.length ? [{ OR: [{ projectId: null }, { projectId: { notIn: excludedProjectIds } }] }] : []),
   ] } : {};
   // Clients we have already written down that we owe an answer to. Read before
@@ -1652,7 +1713,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     ...new Set(
       (
         await prisma.smartTask.findMany({
-          where: { taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null }, AND: [taskClientScopeWhere(opts)] },
+          where: { taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null }, AND: [taskClientScopeWhere({ excludeClientIds: o.excludeClientIds })] },
           select: { clientId: true },
         })
       )
@@ -1662,17 +1723,17 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   ];
   // Newest-first with a cap, then reversed: the walk needs time order, but a
   // blown-out window must drop the OLDEST rows, never the live ones.
-  const [fresh, owed] = await Promise.all([
-    prisma.commLog.findMany({
-      where: { channel: { in: channels }, occurredAt: { gte: since }, ...roleGate, ...clientScope },
+  const [freshParts, owedParts] = await Promise.all([
+    Promise.all(channelSets.map((ch) => prisma.commLog.findMany({
+      where: { channel: { in: ch }, occurredAt: { gte: since }, ...roleGate, ...clientScope },
       orderBy: { occurredAt: "desc" },
       take: SCAN_CAP,
       select: ROW_SELECT,
-    }),
+    }))),
     owedClientIds.length
-      ? prisma.commLog.findMany({
+      ? Promise.all(channelSets.map((ch) => prisma.commLog.findMany({
           where: {
-            channel: { in: channels },
+            channel: { in: ch },
             clientId: { in: owedClientIds },
             occurredAt: { lt: since, gte: new Date(now.getTime() - OWED_LOOKBACK_DAYS * 86_400_000) },
             ...roleGate,
@@ -1681,21 +1742,16 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
           orderBy: { occurredAt: "desc" },
           take: OWED_SCAN_CAP,
           select: ROW_SELECT,
-        })
-      : Promise.resolve([] as Row[]),
+        })))
+      : Promise.resolve([] as Row[][]),
   ]);
   // One time-ordered walk over both reads. The older rows only ever ADD history
   // to a thread the queue would otherwise have started mid-conversation.
-  const rows: Row[] = [...fresh, ...owed].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
-  // AN EMPTY WINDOW IS NOT AN EMPTY QUEUE. Both of this function's early exits
-  // now go through the ledger: the 60-day-old request is precisely the case
-  // where the window returns nothing, and returning [] here is how it used to
-  // disappear (audit R07).
-  if (rows.length === 0) {
-    return opts.includeOwed
-      ? await ledgerThreads([], { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })
-      : [];
-  }
+  const rows: Row[] = [...freshParts.flat(), ...owedParts.flat()].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
+  // AN EMPTY WINDOW IS NOT AN EMPTY QUEUE: unansweredComms still adds the
+  // ledger to an empty scan (the 60-day-old request is precisely the case
+  // where the window returns nothing; audit R07).
+  if (rows.length === 0) return [];
 
   // Our own people, by number and by name. The number is the reliable signal
   // (a name only helps on rows logged before fromPhone existed).
@@ -2022,11 +2078,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
 
   // ---- the human judgments: a ticked/auto-closed reply task, an email ack ----
   const live = [...buckets.values()].filter((b) => b.pending.length > 0 || b.courtesy.length > 0);
-  if (live.length === 0) {
-    return opts.includeOwed
-      ? await ledgerThreads([], { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })
-      : [];
-  }
+  if (live.length === 0) return []; // unansweredComms still adds the ledger
   const allClientIds = [...new Set(live.flatMap((b) => (b.clientId ? [b.clientId] : [])))];
 
   const ackKeys = [
@@ -2246,8 +2298,9 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     }
     if (b.pending.length === 0 && b.courtesy.length === 0) continue;
 
+    // A thread holding only "Thanks!" is a card here; unansweredComms keeps it
+    // only for a surface that asks (includeCourtesy).
     const courtesyOnly = b.pending.length === 0;
-    if (courtesyOnly && !includeCourtesy) continue;
 
     const client = b.clientId ? clientById.get(b.clientId) : undefined;
     // The client's reply to-do, or — for a number we never matched — the lead
@@ -2271,9 +2324,9 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     const teamName =
       (phone ? teamPhones.get(phone) : undefined) ??
       (b.senderName && teamNames.has(b.senderName.trim().toLowerCase()) ? b.senderName : undefined);
+    // Our own team and unmatched numbers are cards too; unansweredComms drops
+    // them for a surface that leaves them out (includeTeam, includeUnmatched).
     const isTeam = !b.clientId && !!teamName;
-    if (isTeam && !includeTeam) continue;
-    if (!b.clientId && !includeUnmatched) continue;
 
     const waitingSince = b.firstAt ?? b.courtesy[0]?.at ?? b.rows[b.rows.length - 1].occurredAt;
     out.push({
@@ -2310,15 +2363,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       inboxes: [...new Set([...b.pending, ...b.courtesy].flatMap((m) => m.mailboxes ?? []))],
     });
   }
-
-  if (opts.includeOwed) out.push(...(await ledgerThreads(out, { now, families, windowDays, includeUnmatched, includeTeam, excludeClientIds: opts.excludeClientIds })));
-
-  // Longest wait first — VIPs ahead of the rest of an equal wait. The message
-  // that's been sitting two days is the one that costs us a client, not the one
-  // that came in ten minutes ago.
-  return out.sort(
-    (a, b) => (b.isVip ? 1 : 0) - (a.isVip ? 1 : 0) || a.waitingSince.getTime() - b.waitingSince.getTime(),
-  );
+  return out;
 }
 
 /** The CommLog tier gate for the signed-in viewer (their tier and below).
@@ -2408,8 +2453,14 @@ function toCard(t: WaitingThread): ReplyCard {
   };
 }
 
-export async function replyQueue(): Promise<ReplyQueue> {
+/** `shared` (the Messages screen, Oct 21 2026, audit F4): slice the request's
+ *  one scan with the screen's own clock and client scope, the same read its
+ *  Waiting on us board slices. */
+export async function replyQueue(opts: { now?: Date; excludeClientIds?: string[]; shared?: boolean } = {}): Promise<ReplyQueue> {
   const threads = await unansweredComms({
+    now: opts.now,
+    excludeClientIds: opts.excludeClientIds,
+    shared: opts.shared,
     families: ["phone"],
     includeCourtesy: true, // the fold below the queue
     minRoles: await viewerRoles(),

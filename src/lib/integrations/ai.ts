@@ -83,6 +83,16 @@ export function aiTimeoutFor(maxTokens: number): number {
   return Math.min(AI_TIMEOUT_CEILING_MS, Math.max(AI_TIMEOUT_FLOOR_MS, 30_000 + tokens * 25));
 }
 
+/**
+ * A call's time limit inside a sweep's budget (Oct 21 2026, audit H1): what is
+ * left before the sweep's `deadline` (ms epoch), never longer than the call's
+ * own default. No deadline → undefined, which means the default.
+ */
+export function timeoutBefore(deadline: number | null | undefined, maxTokens = 4000): number | undefined {
+  if (deadline == null) return undefined;
+  return Math.max(1_000, Math.min(deadline - Date.now(), aiTimeoutFor(maxTokens)));
+}
+
 /** The time limit (or a caller's abort) ended the request. */
 function isAbortError(e: unknown): boolean {
   const name = e && typeof e === "object" ? (e as { name?: unknown }).name : null;

@@ -32,9 +32,6 @@ export const CHECKLIST_ANCHORS: readonly string[] = [
   "requests", "done-today",
 ];
 
-/** Anchors the dashboard itself carries (Today's shoots, Needs attention now, Kyle's day, the health strip). */
-export const DASHBOARD_ANCHORS = ["shoots", "stuck", "exceptions", "needs-you", "needs-attention", "kyles-day", "behind", "health"] as const;
-
 /** Old anchors about answering clients: Messages (/communications, "Waiting on us") holds that work. */
 export const MESSAGES_ANCHORS = ["comms-1", "messages"] as const;
 
@@ -54,16 +51,4 @@ export function forwardedHref(pathname: string, search: string, hash: string): s
   if (isChecklistAnchor(id)) return `${CHECKLIST_PATH}${search}${hash}`;
   if (id === "my-list") return "/day";
   return null;
-}
-
-/** "#loops" → "/ops/checklist#loops"; "#comms-1" → "/communications";
- *  "#shoots" → "/#shoots"; anything else unchanged. For links rendered on a
- *  screen without the checklist. */
-export function blockScreen(href: string): string {
-  if (!href.startsWith("#")) return href;
-  const id = href.slice(1);
-  if (isMessagesAnchor(id)) return "/communications";
-  if (isChecklistAnchor(id)) return `${CHECKLIST_PATH}${href}`;
-  if ((DASHBOARD_ANCHORS as readonly string[]).includes(id)) return `/${href}`;
-  return href;
 }

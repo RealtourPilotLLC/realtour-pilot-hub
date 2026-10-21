@@ -161,7 +161,7 @@ async function main() {
     const { videoSummary } = createRequire(__filename)("../../src/lib/videoDelivery") as typeof import("../../src/lib/videoDelivery");
     const { unansweredCommsBoard } = await import("@/lib/commsBoard");
     const { getReviewQueue } = await import("@/lib/reviewRoom");
-    const { forwardedHref, blockScreen, GROUP_ALIASES, CHECKLIST_PATH } = await import("@/lib/homeAnchors");
+    const { forwardedHref, GROUP_ALIASES, CHECKLIST_PATH } = await import("@/lib/homeAnchors");
     const { homeRecordHref } = await import("@/lib/homeRecordScope");
     const { Sidebar } = await import("@/components/Sidebar");
     const { etAt, etDayKey, etDayStartUtc, etAddDays, etEndOfDay } = await import("@/lib/datetime");
@@ -205,7 +205,6 @@ async function main() {
       && ["#shoots", "#stuck", "#exceptions", "#kyles-day", "#behind", "#needs-you", "#needs-attention"].every((h) => forwardedHref("/", "", h) === null)
       && forwardedHref("/", "", "#my-list") === "/day" && forwardedHref("/ops/checklist", "", "#loops") === null && forwardedHref("/", "", "#%E0") === null);
     c.ok("an old 'answer clients' anchor opens Messages (its Waiting on us view), test scope kept", forwardedHref("/", "", "#comms-1") === "/communications" && forwardedHref("/", "?test=1", "#comms-1") === "/communications?test=1" && forwardedHref("/", "", "#messages") === "/communications");
-    c.ok("a link rendered off the list opens the list's group; the dashboard's anchors open the dashboard", blockScreen("#video-review") === "/ops/checklist#video-review" && blockScreen("#comms-1") === "/communications" && blockScreen("#loops") === "/ops/checklist#loops" && blockScreen("#stuck") === "/#stuck" && blockScreen("#shoots") === "/#shoots" && blockScreen("#nothing-here") === "#nothing-here" && blockScreen("/tasks") === "/tasks");
     c.ok("retired pages' doors open the list's group (everyone's tasks for the pushed bell)", opsHome.checklistDoor("requests") === "/ops/checklist#requests" && opsHome.checklistDoor("scheduling") === "/ops/checklist#scheduling" && opsHome.checklistDoor("earlier") === "/ops/checklist#earlier" && opsHome.checklistDoor("earlier", { everyone: true }) === "/tasks?tab=work&who=all");
     c.ok("test scope reaches the list and the Shoots board", homeRecordHref("/ops/checklist#earlier", true) === "/ops/checklist?test=1#earlier" && homeRecordHref("/jobs?f=late", true) === "/jobs?f=late&test=1");
     c.ok("lateness in words", opsHome.lateWords(9.4) === "9 hours" && opsHome.lateWords(24) === "1 day" && opsHome.lateWords(65) === "2.7 days");

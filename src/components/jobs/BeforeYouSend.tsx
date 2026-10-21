@@ -1,6 +1,7 @@
 import { ClipboardCheck, Flag, MessageSquareWarning, StickyNote } from "lucide-react";
 import { etDateTime } from "@/lib/datetime";
 import { jobChecks, type JobChecks, type JobMedium } from "@/lib/jobChecks";
+import type { JobRequestRow } from "@/lib/clientAsks";
 import { CheckedButton } from "./CheckedButton";
 
 // ---------------------------------------------------------------------------
@@ -32,8 +33,11 @@ async function mayCheck(): Promise<boolean> {
   }
 }
 
-export async function BeforeYouSend({ projectId, medium, compact, hideNotes }: { projectId: string; medium: JobMedium; compact?: boolean; hideNotes?: boolean }) {
-  const { data, canCheck } = await loadBeforeYouSend(projectId, medium);
+/** `requests`: the job's open requests for this medium when the page already
+ *  read them (the Review Room's board, clientAsks.jobRequestsFor; Oct 21 2026,
+ *  audit B9), so the box does not read them a second time. */
+export async function BeforeYouSend({ projectId, medium, compact, hideNotes, requests }: { projectId: string; medium: JobMedium; compact?: boolean; hideNotes?: boolean; requests?: JobRequestRow[] }) {
+  const { data, canCheck } = await loadBeforeYouSend(projectId, medium, { requests });
   return <BeforeYouSendView data={data} medium={medium} compact={compact} hideNotes={hideNotes} canCheck={canCheck} />;
 }
 
@@ -42,8 +46,8 @@ export async function BeforeYouSend({ projectId, medium, compact, hideNotes }: {
  * synchronous pass (and the drills that render it that way), await this with
  * the page's other reads and render BeforeYouSendView with it.
  */
-export async function loadBeforeYouSend(projectId: string, medium: JobMedium): Promise<{ data: JobChecks; canCheck: boolean }> {
-  const [data, canCheck] = await Promise.all([jobChecks(projectId, medium), mayCheck()]);
+export async function loadBeforeYouSend(projectId: string, medium: JobMedium, opts: { requests?: JobRequestRow[] } = {}): Promise<{ data: JobChecks; canCheck: boolean }> {
+  const [data, canCheck] = await Promise.all([jobChecks(projectId, medium, opts), mayCheck()]);
   return { data, canCheck };
 }
 

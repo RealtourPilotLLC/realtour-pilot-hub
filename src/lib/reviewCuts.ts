@@ -1194,9 +1194,17 @@ export async function finalizeCutUpload(
   // and enters exactly as it always did (grandfathered).
   const { bindUploadCheck } = await import("@/lib/selfCheckStore");
   const bound = await bindUploadCheck(sub, { url: blob.url, pathname: blob.pathname, size: blob.size ?? null });
-  if (bound === "void" || bound === "unverified") return { ok: false, held: true, message: HELD_UPLOAD_MESSAGE };
-  const entered = await enterReview(sub.id, { legacy: bound === "none" });
-  return entered.entered ? { ok: true, message: entered.message } : { ok: true, message: "Already in review." };
+  const out = bound === "void" || bound === "unverified"
+    ? { ok: false, held: true, message: HELD_UPLOAD_MESSAGE }
+    : await enterReview(sub.id, { legacy: bound === "none" }).then((e) => (e.entered ? { ok: true, message: e.message } : { ok: true, message: "Already in review." }));
+  // A REPLACEMENT IS SAID BY WHOEVER FILED IT (Oct 21 2026, audit wave 2).
+  // Only the browser's finish said it (audit B10), so a replacement filed by
+  // the store's callback alone (the editor closed the tab mid-upload) was
+  // never announced and its kept reason sat forever. This caller won the
+  // flip, so the version exists: say it now. announceReplacement claims the
+  // kept row, so the browser's own call after this one says nothing twice.
+  await import("@/lib/cutReopen").then((m) => m.announceReplacement(sub.id)).catch(() => {});
+  return out;
 }
 
 /** The bytes are already recorded (by the other of the two finalize callers).

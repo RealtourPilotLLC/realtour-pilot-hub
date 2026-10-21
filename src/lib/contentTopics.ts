@@ -681,7 +681,7 @@ async function failRefreshRun(runId: string, e: unknown): Promise<void> {
 }
 
 /** Run a BANK/REFRESH row we hold the lease on. A failure is recorded and rethrown; the caller decides whether a closed switch is a pause. */
-async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null }): Promise<void> {
+async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null; deadline?: number | null }): Promise<void> {
   const { executeTopicRefreshRun } = await import("@/lib/contentGeneration");
   try {
     await executeTopicRefreshRun(runId, o);
@@ -772,7 +772,8 @@ export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: nu
     let inputs: { pillarId?: string | null; keep?: number | null } = {};
     try { inputs = JSON.parse(run.inputsJson ?? "{}"); } catch { inputs = {}; }
     try {
-      await executeClaimedRefresh(run.id, { unattended: true, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null });
+      // Oct 21 2026 (audit H1): the call ends by the sweep's clock.
+      await executeClaimedRefresh(run.id, { unattended: true, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null, deadline: started + budgetMs });
       const done = await prisma.contentTopicRefreshRun.findUnique({ where: { id: run.id }, select: { status: true, generatedCount: true } });
       if (done?.status === "SUCCEEDED") {
         succeeded++;

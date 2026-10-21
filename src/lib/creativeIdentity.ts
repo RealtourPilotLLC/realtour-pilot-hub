@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { runAiJson, activePolicyVersion } from "@/lib/aiRuns";
+import { timeoutBefore } from "@/lib/integrations/ai";
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { factsForPrompt, factLines, CONFIDENTIAL_RE } from "@/lib/clientFacts";
 import {
@@ -62,7 +63,7 @@ function strategyLines(doc: StrategyDocument): string[] {
 export type DeriveResult = { ok: true; identity: StoredCreativeIdentity; runId: string } | { ok: false; reason: string };
 
 /** One model call; the stored, auto-approved identity. Other override keys are kept (compare-and-swap on the bag). */
-export async function deriveCreativeIdentity(enrollmentId: string, opts: { requestedBy: string; unattended: boolean }): Promise<DeriveResult> {
+export async function deriveCreativeIdentity(enrollmentId: string, opts: { requestedBy: string; unattended: boolean; /** The sweep's clock (ms epoch): the model call ends by it (audit H1). */ deadline?: number | null }): Promise<DeriveResult> {
   const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, overridesJson: true } });
   if (!e) return { ok: false, reason: "Enrollment not found." };
   const strategy = await approvedStrategy(enrollmentId);
@@ -86,7 +87,7 @@ export async function deriveCreativeIdentity(enrollmentId: string, opts: { reque
     kind: "creative_identity", enrollmentId, clientId: e.clientId, scope: { strategyVersionId: strategy.versionId }, inputRefs: { strategyVersionId: strategy.versionId, facts: facts.length, videoStyle: style },
     promptKey: "creative-identity", promptVersion: "identity.v1", policyVersionId: policy.id, strategyVersionId: strategy.versionId,
     requestedBy: opts.requestedBy, unattended: opts.unattended, dedupeKey: `identity:${enrollmentId}`,
-    system: SYSTEM, prompt, schema: CREATIVE_IDENTITY_SCHEMA, maxTokens: 1500,
+    system: SYSTEM, prompt, schema: CREATIVE_IDENTITY_SCHEMA, maxTokens: 1500, timeoutMs: timeoutBefore(opts.deadline, 1500),
   });
   const ci = normalizeCreativeIdentity(run.output, { skitsAccount: style === "SKITS", factSaysSkits: facts.some((f) => /\bskits?\b/i.test(f)) });
   const now = new Date().toISOString();
@@ -133,7 +134,7 @@ export async function sweepCreativeIdentities(opts: { max?: number; budgetMs?: n
   for (const id of due.slice(0, opts.max ?? 3)) {
     if (deadline - Date.now() < (opts.minStartMs ?? 45_000)) { outOfTime = true; break; }
     try {
-      const r = await deriveCreativeIdentity(id, { requestedBy: "cron", unattended: true });
+      const r = await deriveCreativeIdentity(id, { requestedBy: "cron", unattended: true, deadline });
       if (r.ok) derived++; else failed++;
     } catch (e) {
       const name = e instanceof Error ? e.name : "";

@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { runAiJson } from "@/lib/aiRuns";
+import { timeoutBefore } from "@/lib/integrations/ai";
 import { buildScriptJudgePrompt, judgeCriteriaFor, JUDGE_CRITERIA_TEXT, type JudgeCriterion, type ScriptAngle } from "@/lib/contentPolicy";
 import { MAX_FIX_ROUNDS, readJudge, readAngle, type JudgeRecord, type JudgeCriterionResult } from "@/lib/scriptJudgeRecord";
 import { pointsFromJson, createScriptVersion, type VersionParts } from "@/lib/contentScripts";
@@ -59,7 +60,7 @@ async function writeJudge(versionId: string, judge: JudgeRecord): Promise<void> 
 type JudgeOut = { criteria?: { key?: string; pass?: boolean; note?: string }[]; fixInstruction?: string | null };
 
 /** One judge call on one version. Throws when the model's answer is unusable (the caller records "not checked"). */
-export async function judgeVersion(versionId: string, opts: { requestedBy: string; unattended: boolean }): Promise<{ criteria: JudgeCriterionResult[]; failed: JudgeCriterionResult[]; fixInstruction: string | null; runId: string }> {
+export async function judgeVersion(versionId: string, opts: { requestedBy: string; unattended: boolean; /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */ deadline?: number | null }): Promise<{ criteria: JudgeCriterionResult[]; failed: JudgeCriterionResult[]; fixInstruction: string | null; runId: string }> {
   const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId } });
   if (!v) throw new Error("Version not found.");
   const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId } });
@@ -76,7 +77,7 @@ export async function judgeVersion(versionId: string, opts: { requestedBy: strin
     kind: "script_judge", enrollmentId: s.enrollmentId, clientId: s.clientId, scope: { scriptId: s.id, versionId }, inputRefs: { ...built.inputRefs, sourcePath: source.path },
     promptKey: "script-judge", promptVersion: "judge.v1", policyVersionId: built.policyVersionId, strategyVersionId: built.strategyVersionId,
     requestedBy: opts.requestedBy, unattended: opts.unattended, dedupeKey: `judge:${versionId}`,
-    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 1200,
+    system: bundle.system, prompt: bundle.user, schema: bundle.outputSchema, maxTokens: 1200, timeoutMs: timeoutBefore(opts.deadline, 1200),
   });
   const keys = judgeCriteriaFor(skit);
   const got = Array.isArray(run.output?.criteria) ? run.output.criteria : [];
@@ -188,7 +189,7 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
       if (!timeFor(JUDGE_MIN_START_MS)) return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: "out of time" };
       let verdict: Awaited<ReturnType<typeof judgeVersion>>;
       try {
-        verdict = await judgeVersion(v.id, { requestedBy, unattended: opts.unattended });
+        verdict = await judgeVersion(v.id, { requestedBy, unattended: opts.unattended, deadline: opts.deadline });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         // Another worker is judging this very version: it records the result.
@@ -217,7 +218,7 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
       if (!timeFor(FIX_MIN_START_MS)) return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: "out of time" };
       try {
         const { reviseScript } = await import("@/lib/contentGeneration");
-        await reviseScript(scriptId, fixInstructionFrom(j), requestedBy, "REVISION", { autoFix: { round: j.fixRounds + 1 }, unattended: opts.unattended });
+        await reviseScript(scriptId, fixInstructionFrom(j), requestedBy, "REVISION", { autoFix: { round: j.fixRounds + 1 }, unattended: opts.unattended, deadline: opts.deadline });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (/already running/i.test(msg)) return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: "a revision is running" };
