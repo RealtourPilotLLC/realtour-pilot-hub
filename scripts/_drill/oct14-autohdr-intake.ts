@@ -32,7 +32,7 @@ import { createFakeAutohdr } from "./_fake-autohdr";
 installNextStubs();
 
 const MIN = 60_000;
-type DbxFile = { name: string; path: string; id: string; size: number; hash: string };
+type DbxFile = { name: string; path: string; id: string; size: number; hash: string; at?: string };
 const dbx = new Map<string, DbxFile[]>(); // raw folder (lower case) → files
 const linkCalls: string[] = [];
 const saved: { path: string; url: string }[] = []; // files/save_url into 06-Ready-for-Aryeo
@@ -72,7 +72,7 @@ const fence = fenceFetch(async (url, init) => {
     if (ep === "files/list_folder") {
       const files = dbx.get((arg.path ?? "").toLowerCase());
       if (!files) return json({ error_summary: "path/not_found/.." }, 409);
-      return json({ entries: files.map((f) => ({ ".tag": "file", name: f.name, path_display: f.path, id: f.id, size: f.size, content_hash: f.hash, server_modified: "2026-10-14T01:00:00Z" })), has_more: false });
+      return json({ entries: files.map((f) => ({ ".tag": "file", name: f.name, path_display: f.path, id: f.id, size: f.size, content_hash: f.hash, server_modified: f.at ?? "2026-10-14T01:00:00Z" })), has_more: false });
     }
     if (ep === "files/get_temporary_link") {
       linkCalls.push(arg.path ?? "");
@@ -380,6 +380,47 @@ async function main() {
     for (let i = 0; i < 3; i++) await jobs.syncJobFinals(jobW.id, new Date(cancelAt.getTime() + i * 5 * MIN));
     const jCancelled = await prisma.photoJob.findUniqueOrThrow({ where: { id: jobW.id } });
     c.ok("cancelled: said once in the log, looked at again a day later (not every 5 minutes)", (await prisma.photoJobEvent.count({ where: { jobId: jobW.id, action: "project cancelled: sync stopped" } })) === 1 && jCancelled.nextCheckAt?.getTime() === cancelAt.getTime() + 10 * MIN + 24 * 60 * MIN, jCancelled.nextCheckAt?.toISOString());
+
+    // ======================================================================
+    c.head("14 · a split job: the earlier visit's raws are never sent again (Oct 21 2026, 615 Cliff Ln)");
+    {
+      const at = (iso: string) => new Date(iso);
+      const appts = [{ startAt: at("2026-10-08T17:30:00Z"), status: "SCHEDULED" }, { startAt: at("2026-10-14T00:15:00Z"), status: "SCHEDULED" }];
+      c.ok("the floor is the ET day of the latest visit that has started", intake.uploadFloorFor(appts, null, NOW)?.toISOString() === "2026-10-13T04:00:00.000Z");
+      c.ok("…a visit still to come, or a cancelled one, does not move it", intake.uploadFloorFor([...appts, { startAt: at("2026-10-20T15:00:00Z"), status: "SCHEDULED" }, { startAt: at("2026-10-13T23:00:00Z"), status: "CANCELED" }], null, NOW)?.toISOString() === "2026-10-13T04:00:00.000Z");
+      c.ok("…no appointments: the shoot date; nothing started: no floor", intake.uploadFloorFor([], at("2026-10-08T17:30:00Z"), NOW)?.toISOString() === "2026-10-08T04:00:00.000Z" && intake.uploadFloorFor([], at("2026-10-20T15:00:00Z"), NOW) === null);
+      const ff = (name: string, uploadedAt: string | null) => ({ id: name, name, path: `/x/${name}`, size: 1, hash: name, uploadedAt });
+      const fs = intake.filesSince([ff("old.JPG", "2026-10-09T01:00:00Z"), ff("new.JPG", "2026-10-14T01:30:00Z"), ff("undated.JPG", null)], at("2026-10-13T04:00:00Z"));
+      c.ok("files uploaded before the floor are left out and counted; an undated file is kept", fs.older === 1 && fs.kept.map((f) => f.name).join(",") === "new.JPG,undated.JPG");
+
+      const C = "615 Cliff Ln";
+      const cRaw = rawOf(C);
+      // Visit 1 (exteriors): shot Oct 8, uploaded that evening, edited by hand, delivered.
+      const exteriors = Array.from({ length: 10 }, (_, i) => ({ ...file(cRaw, `A750${7900 + i}.JPG`, i), at: "2026-10-09T01:00:00Z" }));
+      dbx.set(cRaw.toLowerCase(), exteriors);
+      const pC = await mkProject(C, { shootDate: at("2026-10-14T00:15:00Z"), debriefSubmittedAt: at("2026-10-09T01:05:00Z"), uploadedAt: at("2026-10-09T01:00:00Z") });
+      for (const a of appts) await prisma.appointment.create({ data: { projectId: pC.id, aryeoId: `appt-cliff-${a.startAt.getTime()}`, startAt: a.startAt, status: a.status } });
+      await prisma.photoJob.create({ data: { projectId: pC.id, stage: "DELIVERED" } });
+      const sentBefore = fake.posts("/v1/photoshoots/from-urls").length;
+      await intake.driveIntake({ budgetMs: 120_000, now: NOW });
+      await intake.driveIntake({ budgetMs: 120_000, now: new Date(NOW.getTime() + 60 * MIN) });
+      c.ok("visit 2 has started, only visit 1's raws in the folder: no batch, nothing sent", (await prisma.photoIntakeBatch.count({ where: { projectId: pC.id } })) === 0 && fake.posts("/v1/photoshoots/from-urls").length === sentBefore);
+      // Visit 2 (interiors) uploads tonight.
+      const interiors = Array.from({ length: 5 }, (_, i) => ({ ...file(cRaw, `A751${1000 + i}.JPG`, 50 + i), at: "2026-10-14T01:30:00Z" }));
+      dbx.set(cRaw.toLowerCase(), [...exteriors, ...interiors]);
+      const t0 = new Date(NOW.getTime() + 61 * MIN);
+      await intake.driveIntake({ budgetMs: 120_000, now: t0 });
+      const bC = await prisma.photoIntakeBatch.findFirst({ where: { projectId: pC.id } });
+      const jobC = await prisma.photoJob.findUniqueOrThrow({ where: { projectId: pC.id } });
+      const seenNote = await prisma.photoJobEvent.findFirst({ where: { jobId: jobC.id, action: { startsWith: "raws seen for AutoHDR batch 1" } }, select: { action: true } });
+      c.ok("the interiors upload: a batch of the 5 new files only (the delivered visit 1 does not stop it)", bC?.state === "WAITING" && bC.fileCount === 5, JSON.stringify(bC && { state: bC.state, n: bC.fileCount }));
+      c.ok("…the job's history says the 10 older files were left out, and why", /10 older files left out, uploaded before Tue, Oct 13, the day of this visit/.test(seenNote?.action ?? ""), seenNote?.action);
+      await intake.driveIntake({ budgetMs: 120_000, now: new Date(t0.getTime() + 12 * MIN) });
+      c.ok("visit 1's wrap-up does not count as this upload's: still settling at 12 minutes (30 for an unsubmitted upload)", fake.posts("/v1/photoshoots/from-urls").length === sentBefore);
+      await intake.driveIntake({ budgetMs: 120_000, now: new Date(t0.getTime() + 31 * MIN) });
+      const pC1 = fake.posts("/v1/photoshoots/from-urls")[sentBefore]?.body as { address: string; files: { filename: string }[] } | undefined;
+      c.ok("sent at 31 minutes: the 5 interiors, none of the exteriors", fake.posts("/v1/photoshoots/from-urls").length === sentBefore + 1 && pC1?.files.length === 5 && pC1.files.every((f) => /^A7511/.test(f.filename)), JSON.stringify(pC1?.files.map((f) => f.filename)));
+    }
 
     c.head("isolation");
     c.ok("no outbound call escaped the fakes", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

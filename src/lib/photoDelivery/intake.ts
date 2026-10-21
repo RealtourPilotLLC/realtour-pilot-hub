@@ -10,6 +10,7 @@ import { photoDeliverySettings } from "./settings";
 import { logJobEvent } from "./jobState";
 import { alertOwnerAndKyle } from "./notifyOps";
 import { shootMatchesStreet } from "./autohdrLink";
+import { etDate, etDayStartUtc } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // THE HUB SENDS THE RAWS TO AUTOHDR (Oct 14 2026).
@@ -43,6 +44,19 @@ import { shootMatchesStreet } from "./autohdrLink";
 // one found = LINKED, nothing sent. A create whose reply was lost is looked
 // up, never repeated blindly. A file is sent once (by Dropbox id and content
 // hash), whatever later happens to its batch.
+//
+// THE UPLOAD-DATE FLOOR (Oct 21 2026, 615 Cliff Ln). A split job is one job
+// with two appointments and one raws folder: Harrison shot the exteriors Oct 7
+// (uploaded that evening, edited and paid for by hand), the interiors were
+// booked for Oct 21. Booking the second visit moved the shoot date into this
+// window, no batch had ever claimed the Oct 7 files, and the hub sent all 69
+// to AutoHDR again. Jordan: "there needs to be a limit using the upload date."
+// So a raw counts only when Dropbox received it on or after the ET day of the
+// job's latest appointment that has started (uploadFloorFor); anything older
+// belongs to an earlier visit and is left out, said once on the job's history
+// when its batch is first seen. With two appointments started, the old
+// "delivered job, never sent" rule stands aside: the delivery it saw covered
+// the earlier visit, and the floor already keeps that visit's files out.
 // ---------------------------------------------------------------------------
 
 const MIN = 60_000;
@@ -57,14 +71,14 @@ const IMG_RE = /\.(jpe?g|png|tiff?|heic|dng|arw|cr2|cr3|nef|raf|orf|rw2)$/i;
 const RAW_EXT = /\.(dng|arw|cr2|cr3|nef|raf|orf|rw2)$/i;
 export const DRONE_RE = /^dji|dji[_-]|drone|mavic|air ?2|^m3[_-]/i;
 
-export type IntakeFile = { id: string | null; name: string; path: string; size: number | null; hash: string | null };
+export type IntakeFile = { id: string | null; name: string; path: string; size: number | null; hash: string | null; /** Dropbox server_modified: when the file reached Dropbox. */ uploadedAt?: string | null };
 
 /**
  * The files AutoHDR should get from one listing. Pure. A JPEG and a raw of
  * the same frame (a camera set to RAW+JPEG, a DJI DNG) send the JPEG only;
  * two copies with one content hash send one.
  */
-export function eligibleFiles(entries: { name: string; tag: string; path: string; id: string | null; size?: number | null; contentHash?: string | null }[]): IntakeFile[] {
+export function eligibleFiles(entries: { name: string; tag: string; path: string; id: string | null; size?: number | null; contentHash?: string | null; serverModified?: string | null }[]): IntakeFile[] {
   const files = entries.filter((e) => e.tag === "file" && IMG_RE.test(e.name) && (e.size == null || e.size > 20_000));
   const jpegStems = new Set(files.filter((f) => !RAW_EXT.test(f.name)).map((f) => f.path.toLowerCase().replace(/\.[a-z0-9]+$/, "")));
   const seenHash = new Set<string>();
@@ -75,9 +89,27 @@ export function eligibleFiles(entries: { name: string; tag: string; path: string
       if (seenHash.has(f.contentHash)) continue;
       seenHash.add(f.contentHash);
     }
-    out.push({ id: f.id, name: f.name, path: f.path, size: f.size ?? null, hash: f.contentHash ?? null });
+    out.push({ id: f.id, name: f.name, path: f.path, size: f.size ?? null, hash: f.contentHash ?? null, uploadedAt: f.serverModified ?? null });
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * The earliest upload that can belong to the visit being edited: the start of
+ * the ET day of the job's latest appointment that has started (not cancelled),
+ * else of its shoot date. Null when nothing has started. Pure.
+ */
+export function uploadFloorFor(appointments: { startAt: Date | null; status: string | null }[], shootDate: Date | null, now: Date): Date | null {
+  const started = appointments.filter((a) => a.startAt && a.startAt <= now && !/cancel/i.test(a.status ?? "")).map((a) => a.startAt!.getTime());
+  const latest = started.length ? Math.max(...started) : shootDate && shootDate <= now ? shootDate.getTime() : null;
+  return latest == null ? null : etDayStartUtc(new Date(latest));
+}
+
+/** The files uploaded on or after the floor (a file Dropbox gave no date for is kept). Pure. */
+export function filesSince(files: IntakeFile[], floor: Date | null): { kept: IntakeFile[]; older: number } {
+  if (!floor) return { kept: files, older: 0 };
+  const kept = files.filter((f) => !f.uploadedAt || !(Date.parse(f.uploadedAt) < floor.getTime()));
+  return { kept, older: files.length - kept.length };
 }
 
 export function filesFingerprint(files: IntakeFile[]): string {
@@ -250,9 +282,14 @@ type WatchResult = "nothing" | "waiting" | "sent" | "linked" | "error";
 
 async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; listShoots: () => Promise<AutohdrPhotoshoot[]> }): Promise<WatchResult> {
   const batches = await prisma.photoIntakeBatch.findMany({ where: { projectId: p.id }, orderBy: { batchNo: "asc" }, select: { id: true, batchNo: true, state: true, fingerprint: true, seenAt: true, filesJson: true } });
+  const appointments = await prisma.appointment.findMany({ where: { projectId: p.id }, select: { startAt: true, status: true } });
+  const floor = uploadFloorFor(appointments, p.shootDate, now);
+  const split = appointments.filter((a) => a.startAt && a.startAt <= now && !/cancel/i.test(a.status ?? "")).length > 1;
   // A delivered job's first upload was edited some other way: never sent (a
-  // job can be delivered in Aryeo before the project row says so).
-  if (!batches.some((b) => b.state !== "WAITING")) {
+  // job can be delivered in Aryeo before the project row says so). Not on a
+  // split job: that delivery was the earlier visit's, and the floor keeps
+  // the earlier visit's files out.
+  if (!split && !batches.some((b) => b.state !== "WAITING")) {
     const job = await prisma.photoJob.findUnique({ where: { projectId: p.id }, select: { stage: true } });
     if (p.deliveredAt || (job && ["DELIVERED", "DELIVERING"].includes(job.stage))) {
       if (batches.length) await prisma.photoIntakeBatch.deleteMany({ where: { projectId: p.id, state: "WAITING" } });
@@ -262,7 +299,7 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
   const rawPath = actualFolderPaths(p).rawPhotos;
   const entries = await dropboxListFolder(rawPath, { recursive: true }).catch(() => null);
   if (!entries) return "error"; // unreadable is not empty
-  const all = eligibleFiles(entries);
+  const { kept: all, older } = filesSince(eligibleFiles(entries), floor);
   // A file belongs to the first batch that listed it (any state but WAITING).
   const claimed = batches.filter((b) => b.state !== "WAITING").flatMap((b) => parseFiles(b.filesJson));
   const claimedIds = new Set(claimed.map((f) => f.id).filter(Boolean));
@@ -279,14 +316,17 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
     await prisma.photoIntakeBatch
       .create({ data: { projectId: p.id, batchNo, rawPath, filesJson: JSON.stringify(fresh), fileCount: fresh.length, fingerprint: fp, expectedPhotos: expectedPhotosFor(fresh), seenAt: now } })
       .catch((e: unknown) => ((e as { code?: string }).code === "P2002" ? null : Promise.reject(e)));
-    await note(p.id, `raws seen for AutoHDR batch ${batchNo}: ${fresh.length} files (waiting for the upload to settle)`);
+    const left = older ? `; ${older} older file${older === 1 ? "" : "s"} left out, uploaded before ${etDate(floor)}, the day of this visit` : "";
+    await note(p.id, `raws seen for AutoHDR batch ${batchNo}: ${fresh.length} files (waiting for the upload to settle)${left}`, older ? { olderLeftOut: older, floor: floor?.toISOString() } : undefined);
     return "waiting";
   }
   if (waiting.fingerprint !== fp) {
     await prisma.photoIntakeBatch.update({ where: { id: waiting.id }, data: { filesJson: JSON.stringify(fresh), fileCount: fresh.length, fingerprint: fp, expectedPhotos: expectedPhotosFor(fresh), seenAt: now, rawPath } });
     return "waiting";
   }
-  const settle = settleMsFor({ batchNo: waiting.batchNo, submitted: !!p.debriefSubmittedAt, files: fresh });
+  // A wrap-up submitted for an earlier visit says nothing about this upload.
+  const submitted = !!p.debriefSubmittedAt && (!floor || p.debriefSubmittedAt >= floor);
+  const settle = settleMsFor({ batchNo: waiting.batchNo, submitted, files: fresh });
   if (now.getTime() - waiting.seenAt.getTime() < settle) return "waiting";
   if (!ctx.canSend) return "waiting";
   return sendBatch(waiting.id, p, fresh, now, ctx.listShoots);
