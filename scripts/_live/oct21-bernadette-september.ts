@@ -20,7 +20,7 @@ async function main() {
   const vids = await prisma.contentVideo.findMany({ where: { projectId: PROJECT, enrollmentId: from.enrollmentId, monthId: from.id }, select: { title: true, status: true } });
   const lib = await prisma.portalVideo.count({ where: { projectId: PROJECT } });
   console.log(`${APPLY ? "APPLY" : "DRY RUN"}: "${p.title}" ${from.monthKey} → ${target.monthKey}`);
-  console.log(`  ${vids.length} program videos move: ${vids.map((v) => `${v.title.replace(/\s+/g, " ")} (${v.status})`).join(", ")}`);
+  console.log(`  ${vids.length} program videos move: ${vids.map((v) => `${(v.title ?? "").replace(/\s+/g, " ")} (${v.status})`).join(", ")}`);
   console.log(`  ${lib} library rows follow`);
   if (!APPLY) { console.log("DRY RUN: nothing written."); await prisma.$disconnect(); return; }
   await prisma.$transaction([
