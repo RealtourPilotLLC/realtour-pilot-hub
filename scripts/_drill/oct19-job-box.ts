@@ -322,47 +322,68 @@ async function main() {
   c.ok("the message: what, how late, who has it, and the plain ask", /^We're very behind: 1 listing video and 2 photo jobs are past the promise\./.test(m) && m.includes("• A St (video): 3 days late. With Kim (editing).") && m.includes("• B St (photos): 3 h late. Ready for Kyle to review and send.") && m.includes("Reply here with your plan for each one."), m);
   c.ok("…no em dash, no money", !DASH.test(m) && !/\$/.test(m));
 
+  const pm = ba.behindMessage("raise", ba.stateOf([item("photo", "B St", 3, "Ready for Kyle to review and send")]), [item("photo", "B St", 3, "Ready for Kyle to review and send")], "https://hub.example");
+  c.ok("a photo-only message: no thread ask (it is a DM), the Photo delivery link", /^We're behind: 1 photo job is past the promise\./.test(pm) && !pm.includes("Reply here") && pm.includes("|Photo delivery>") && !pm.includes("Video Review Room"), pm);
+
+  // Oct 21 2026 (Jordan: "Photo delivery behind notifications should not go to
+  // the video editing chat. Just me and Kyle."): each kind runs on its own.
   let items: ReturnType<typeof item>[] = [];
   let failRead = false;
   ba.__setBehindSourceForTests(async () => { if (failRead) throw new Error("board down"); return items; });
-  const posts: string[] = [];
-  const deps = { post: async (txt: string) => { posts.push(txt); return { ok: true, where: "#video-editing" }; } };
+  const posts: { kind: string; text: string }[] = [];
+  const deps = { post: async (text: string, kind: "video" | "photo") => { posts.push({ kind, text }); return { ok: true, where: kind === "video" ? "#video-editing" : "a DM" }; } };
+  const vp = () => posts.filter((p) => p.kind === "video");
+  const pp = () => posts.filter((p) => p.kind === "photo");
   const at = (iso: string) => new Date(iso);
   const bells = (key: string) => prisma.notification.count({ where: { dedupeKey: { startsWith: key } } });
+  // The switch-over: the old combined state said very behind and posted.
+  await prisma.appSetting.create({ data: { key: "behindAlert.state", value: JSON.stringify({ level: "very_behind", since: "2026-10-19T20:00:00.000Z", posted: true, lastPostAt: "2026-10-19T20:00:00.000Z" }), updatedBy: "drill" } });
+  items = [item("photo", "615 Cliff Ln", 190, "The delivery needs a look")];
+  const t0 = await ba.runBehindAlert(at("2026-10-19T20:30:00Z"), deps);
+  c.ok("the switch-over: the photo job already announced is not announced again, and no false 'back on track' for videos", t0.photo.posted === null && t0.video.posted === null && posts.length === 0, JSON.stringify(t0));
+  items = [];
+  const t0b = await ba.runBehindAlert(at("2026-10-19T21:00:00Z"), deps);
+  c.ok("…it clears: 'Photos are back on track' goes to the photo people only", t0b.photo.posted === "clear" && t0b.video.posted === null && posts.length === 1 && posts[0].kind === "photo" && posts[0].text === "Photos are back on track: no photo job is past its promise now.", JSON.stringify(posts));
+  posts.length = 0;
+
   items = [item("video", "9 Elm Ct", 5, "With Kim (editing)")];
   const t1 = await ba.runBehindAlert(at("2026-10-20T18:00:00Z"), deps);
-  c.ok("the first time it is behind: ONE post, and bells for the owner and office and the editors", t1.posted === "raise" && posts.length === 1 && /We're behind: 1 listing video is past the promise/.test(posts[0]) && (await bells("behind-raise-2026-10-20-behind")) === 2 && (await prisma.notification.count({ where: { dedupeKey: "behind-raise-2026-10-20-behind-1", audience: '["EDITOR"]' } })) === 1, JSON.stringify(t1));
+  c.ok("videos behind for the first time: ONE video post, and bells for the owner and office and the editors", t1.video.posted === "raise" && t1.photo.posted === null && posts.length === 1 && posts[0].kind === "video" && /We're behind: 1 listing video is past the promise/.test(posts[0].text) && (await bells("behind-video-raise-2026-10-20-behind")) === 2 && (await prisma.notification.count({ where: { dedupeKey: "behind-video-raise-2026-10-20-behind-1", audience: '["EDITOR"]' } })) === 1, JSON.stringify(t1));
   const t2 = await ba.runBehindAlert(at("2026-10-20T18:05:00Z"), deps);
-  c.ok("…the next tick, still behind: nothing", t2.posted === null && posts.length === 1);
+  c.ok("…the next tick, still behind: nothing", t2.video.posted === null && posts.length === 1);
   items = [item("video", "9 Elm Ct", 5, "a"), item("video", "10 Elm Ct", 4, "b"), item("photo", "11 Elm Ct", 2, "c"), item("video", "12 Elm Ct", 1, "d")];
   const t3 = await ba.runBehindAlert(at("2026-10-20T18:10:00Z"), deps);
-  c.ok("it gets worse (3 videos late): one more post, 'very behind'", t3.posted === "raise" && posts.length === 2 && /^We're very behind/.test(posts[1]));
-  c.ok("…and again nothing on the next tick", (await ba.runBehindAlert(at("2026-10-20T18:15:00Z"), deps)).posted === null && posts.length === 2);
-  c.ok("a morning tick outside 8 to 10 AM ET: nothing", (await ba.runBehindAlert(at("2026-10-21T11:30:00Z"), deps)).posted === null && posts.length === 2);
+  c.ok("it gets worse (3 videos late): one more video post, 'very behind', listing only the videos", t3.video.posted === "raise" && vp().length === 2 && /^We're very behind: 3 listing videos/.test(vp()[1].text) && !vp()[1].text.includes("11 Elm Ct"), JSON.stringify(vp()));
+  c.ok("…and the late photo job is its own message, to the photo people, not #video-editing", t3.photo.posted === "raise" && pp().length === 1 && pp()[0].text.includes("11 Elm Ct (photos)") && !pp()[0].text.includes("Elm Ct (video)") && (await bells("behind-photo-raise-2026-10-20-behind")) >= 1 && (await prisma.notification.count({ where: { dedupeKey: { startsWith: "behind-photo-" }, audience: { contains: "EDITOR" } } })) === 0, JSON.stringify(pp()));
+  c.ok("…and again nothing on the next tick", (await ba.runBehindAlert(at("2026-10-20T18:15:00Z"), deps)).video.posted === null && posts.length === 3);
+  c.ok("a morning tick outside 8 to 10 AM ET: nothing", (await ba.runBehindAlert(at("2026-10-21T11:30:00Z"), deps)).video.posted === null && posts.length === 3);
   const t5 = await ba.runBehindAlert(at("2026-10-21T12:30:00Z"), deps);
-  c.ok("still behind next morning (8:30 AM ET): one morning post", t5.posted === "morning" && posts.length === 3 && /^Good morning\. We're still behind/.test(posts[2]));
-  c.ok("…once: the 8:35 tick posts nothing", (await ba.runBehindAlert(at("2026-10-21T12:35:00Z"), deps)).posted === null && posts.length === 3);
+  c.ok("still behind next morning (8:30 AM ET): one morning message per kind", t5.video.posted === "morning" && t5.photo.posted === "morning" && posts.length === 5 && /^Good morning\. We're still behind/.test(vp()[2].text) && /^Good morning\. We're still behind: 1 photo job/.test(pp()[1].text));
+  c.ok("…once: the 8:35 tick posts nothing", (await ba.runBehindAlert(at("2026-10-21T12:35:00Z"), deps)).video.posted === null && posts.length === 5);
   failRead = true;
   const tf = await ba.runBehindAlert(at("2026-10-21T13:00:00Z"), deps);
-  c.ok("a read that fails: skipped, nothing posted, nothing changed (never a false Back on track)", tf.level === null && !!tf.skipped && posts.length === 3);
+  c.ok("a read that fails: skipped, nothing posted, nothing changed (never a false back on track)", tf.video.level === null && !!tf.video.skipped && tf.photo.level === null && posts.length === 5);
   failRead = false;
-  items = [];
+  items = [item("photo", "11 Elm Ct", 3, "c")];
   const t7 = await ba.runBehindAlert(at("2026-10-21T13:30:00Z"), deps);
-  c.ok("it clears: one 'Back on track' post", t7.posted === "clear" && posts.length === 4 && posts[3] === "Back on track: nothing is past its promise now. Thanks, team.");
-  c.ok("…once", (await ba.runBehindAlert(at("2026-10-21T13:35:00Z"), deps)).posted === null && posts.length === 4);
-  items = [item("photo", "7 Pine Rd", 2, "Being edited (AutoHDR)")];
-  c.ok("behind again later that day (a new level for the day): posts", (await ba.runBehindAlert(at("2026-10-21T17:00:00Z"), deps)).posted === "raise" && posts.length === 5);
+  c.ok("the videos clear while the photo job is still late: 'Videos are back on track' in #video-editing, nothing for photos", t7.video.posted === "clear" && t7.photo.posted === null && posts.length === 6 && vp()[3].text === "Videos are back on track: no listing video is past its promise now. Thanks, team.", JSON.stringify(t7));
+  c.ok("…once", (await ba.runBehindAlert(at("2026-10-21T13:35:00Z"), deps)).video.posted === null && posts.length === 6);
   items = [];
-  c.ok("…clears: Back on track", (await ba.runBehindAlert(at("2026-10-21T17:30:00Z"), deps)).posted === "clear" && posts.length === 6);
-  items = [item("photo", "7 Pine Rd", 2, "x")];
+  const t8 = await ba.runBehindAlert(at("2026-10-21T14:00:00Z"), deps);
+  c.ok("…then the photo job clears: 'Photos are back on track' to the photo people", t8.photo.posted === "clear" && posts.length === 7 && pp()[2].text === ba.backOnTrackMessage("photo"));
+  items = [item("video", "7 Pine Rd", 2, "With Kim (editing)")];
+  c.ok("videos behind again later that day (a new level for the day): posts", (await ba.runBehindAlert(at("2026-10-21T17:00:00Z"), deps)).video.posted === "raise" && posts.length === 8);
+  items = [];
+  c.ok("…clears: back on track", (await ba.runBehindAlert(at("2026-10-21T17:30:00Z"), deps)).video.posted === "clear" && posts.length === 9);
+  items = [item("video", "7 Pine Rd", 2, "x")];
   await ba.runBehindAlert(at("2026-10-21T18:00:00Z"), deps);
   items = [];
   await ba.runBehindAlert(at("2026-10-21T18:30:00Z"), deps);
-  c.ok("a flap the same day posts nothing more (no raise, so no Back on track either)", posts.length === 6);
+  c.ok("a flap the same day posts nothing more (no raise, so no back on track either)", posts.length === 9);
   items = [item("video", "3 Oak", 2, "x")];
   await ba.runBehindAlert(at("2026-10-22T11:00:00Z"), deps); // 7 AM ET: the day's first post
   const tm = await ba.runBehindAlert(at("2026-10-22T12:30:00Z"), deps);
-  c.ok("posted at 7 AM: the 8:30 morning post is skipped", tm.posted === null && posts.length === 7);
+  c.ok("posted at 7 AM: the 8:30 morning post is skipped", tm.video.posted === null && posts.length === 10);
   items = [];
   await ba.runBehindAlert(at("2026-10-22T13:00:00Z"), deps);
 
@@ -370,19 +391,35 @@ async function main() {
   slackPosts.length = 0;
   items = [item("video", "4 Real St", 6, "Waiting on review (version 2)")];
   const tr = await ba.runBehindAlert(at("2026-10-23T18:00:00Z"));
-  c.ok("the real path posts in #video-editing (its known channel id)", tr.posted === "raise" && tr.where === "#video-editing" && slackPosts.length === 1 && slackPosts[0].channel === ba.VIDEO_EDITING_CHANNEL_ID && slackPosts[0].text.includes("4 Real St (video): 6 h late. Waiting on review (version 2).") && slackPosts[0].text.includes("Reply here with your plan for each one."), JSON.stringify(slackPosts));
+  c.ok("the real path posts videos in #video-editing (its known channel id)", tr.video.posted === "raise" && tr.video.where === "#video-editing" && slackPosts.length === 1 && slackPosts[0].channel === ba.VIDEO_EDITING_CHANNEL_ID && slackPosts[0].text.includes("4 Real St (video): 6 h late. Waiting on review (version 2).") && slackPosts[0].text.includes("Reply here with your plan for each one."), JSON.stringify(slackPosts));
   items = [];
   await ba.runBehindAlert(at("2026-10-23T18:30:00Z"));
   videoEditingRefuses = true;
   slackPosts.length = 0;
   items = [item("video", "4 Real St", 6, "x")];
   const tfb = await ba.runBehindAlert(at("2026-10-24T18:00:00Z"));
-  c.ok("the bot not in #video-editing: the same text goes to the ops alert line, saying so", tfb.where === "the ops alert line" && slackPosts.length === 1 && slackPosts[0].channel !== ba.VIDEO_EDITING_CHANNEL_ID && /^\(For #video-editing, the hub could not post there\.\)/.test(slackPosts[0].text), JSON.stringify(slackPosts));
+  c.ok("the bot not in #video-editing: the same text goes to the ops alert line, saying so", tfb.video.where === "the ops alert line" && slackPosts.length === 1 && slackPosts[0].channel !== ba.VIDEO_EDITING_CHANNEL_ID && /^\(For #video-editing, the hub could not post there\.\)/.test(slackPosts[0].text), JSON.stringify(slackPosts));
+  videoEditingRefuses = false;
+  items = [];
+  await ba.runBehindAlert(at("2026-10-24T18:30:00Z"));
+
+  // Photos: a DM to Jordan and Kyle (the ops alert people), never #video-editing.
+  await prisma.teamMember.updateMany({ where: { id: { in: [jordan.id, kyle.id] } }, data: { opsAlerts: true } });
+  await prisma.appUser.create({ data: { email: "owner@drill.test", role: "OWNER", status: "ACTIVE", teamMemberId: jordan.id } as never });
+  slackPosts.length = 0;
+  items = [item("photo", "615 Cliff Ln", 30, "The delivery needs a look")];
+  const tp = await ba.runBehindAlert(at("2026-10-27T18:00:00Z"));
+  const chans = slackPosts.map((x) => x.channel).sort();
+  c.ok("the real photo path: one DM each to Jordan and Kyle, nothing in #video-editing", tp.photo.posted === "raise" && tp.photo.where === "a DM to Jordan and Kyle" && JSON.stringify(chans) === JSON.stringify(["U0JORDAN", "U0KYLE"]) && slackPosts.every((x) => x.text.includes("615 Cliff Ln (photos): 30 h late.")), JSON.stringify({ tp, slackPosts }));
+  const pb = await prisma.notification.findMany({ where: { dedupeKey: { startsWith: "behind-photo-raise-2026-10-27" } }, select: { audience: true, userKey: true, href: true } });
+  c.ok("…bells: the owner's logins and Kyle by name; not the office role (James), not the editors, Jordan not twice", pb.length === 2 && pb.some((r) => r.audience === '["OWNER"]' && !r.userKey) && pb.some((r) => r.userKey === `tm:${kyle.id}`) && pb.every((r) => r.href === "/ops/photo-delivery" && !r.audience.includes("EDITOR")), JSON.stringify(pb));
+  items = [];
+  await ba.runBehindAlert(at("2026-10-27T18:30:00Z"));
   videoEditingRefuses = false;
   ba.__setBehindSourceForTests(null);
 
   // The real read: a late photo job counts; a cancelled one and a test client's do not.
-  await prisma.appSetting.deleteMany({ where: { key: "behindAlert.state" } });
+  await prisma.appSetting.deleteMany({ where: { key: { startsWith: "behindAlert.state" } } });
   const late = await prisma.project.create({ data: { title: "77 Late Ln, Malvern, PA", clientId: heather.id, status: "EDITING" }, select: { id: true } });
   await prisma.photoJob.create({ data: { projectId: late.id, stage: "READY", slaDueAt: new Date(Date.now() - 5 * HOUR) } });
   const cancelled = await prisma.project.create({ data: { title: "1 Gone Rd", clientId: heather.id, status: "CANCELLED" }, select: { id: true } });

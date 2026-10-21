@@ -252,10 +252,11 @@ export async function GET(req: NextRequest) {
     const { sweepPromiseWatch } = await import("@/lib/promiseWatch");
     return sweepPromiseWatch();
   }, { maxMs: 20_000 });
-  //  · WE'RE BEHIND (Oct 19 2026, lib/behindAlert): when listing videos or
-  //    photo jobs go past their promise, one post in #video-editing and the
-  //    bells (Jordan, Kyle, James, the editors), again each morning while it
-  //    lasts, and "Back on track" when it clears. Before it, the client asks
+  //  · WE'RE BEHIND (Oct 19 2026, lib/behindAlert): when listing videos go
+  //    past their promise, one post in #video-editing and the bells (Jordan,
+  //    Kyle, James, the editors); when photo jobs do, a DM to Jordan and Kyle
+  //    only (Oct 21). Again each morning while it lasts, and "back on track"
+  //    when it clears. Before it, the client asks
   //    on jobs that were delivered close (lib/clientAsks: "the job was
   //    delivered"). Both cheap; idle most ticks.
   //    The three run even when one throws, and a failure fails the step

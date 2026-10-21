@@ -7,38 +7,47 @@ import { noDashes } from "@/lib/text";
 // "WE'RE BEHIND" (Oct 19 2026). Jordan: "if we start getting behind the team
 // needs to know (me, Kyle, James and editors) so that we can get an action
 // plan in place." Home reads behindState() (H's red line); the alert itself
-// posts in #video-editing on Slack and rings the bells (runBehindAlert, a
-// step of the five-minute comms cron).
+// (runBehindAlert, a step of the five-minute comms cron) runs once per kind
+// of work, each kind with its own state, its own claims and its own audience
+// (Oct 21 2026, Jordan: "Photo delivery behind notifications should not go to
+// the video editing chat. Just me and Kyle."):
+//   · listing videos: a post in #video-editing, bells for the owner, the
+//     office and the editors;
+//   · photo jobs: a Slack DM to the ops alert people (TeamMember.opsAlerts:
+//     Jordan and Kyle), bells for the owner and them. Never #video-editing,
+//     never the editors.
 //
-// THE RULE, per kind of work (listing videos, photo jobs), the worse wins:
+// THE RULE, per kind of work (listing videos, photo jobs):
 //   ok           nothing past its promise
 //   behind       1 or 2 past their promise
 //   very_behind  3 or more past their promise, OR any one 48 hours past it
-// Listing videos and their promise come from the Video delivery screen
-// (lib/videoDelivery, read only); photo jobs from the photo delivery queue's
-// own promise (PhotoJob.slaDueAt, not delivered, the job not cancelled).
-// Test clients are left out of both.
+// Home's red line combines the two (the worse wins). Listing videos and their
+// promise come from the Video delivery screen (lib/videoDelivery, read only);
+// photo jobs from the photo delivery queue's own promise (PhotoJob.slaDueAt,
+// not delivered, the job not cancelled). Test clients are left out of both.
 //
-// THE ALERT (once, then once a morning, then once when it clears):
+// THE ALERT, per kind (once, then once a morning, then once when it clears):
 //   · when the level first rises (ok → behind, or up to very_behind): ONE
-//     post in #video-editing listing what is late (street, how late, who has
-//     it now: which editor, waiting on review, or ready to send) and "Reply
-//     here with your plan for each one.", and a bell for the owner, the
-//     office (Kyle, James) and the editors. Claimed once per ET day per level
-//     (AppSetting), so a twin tick or a flap never posts twice;
+//     message listing what is late (street, how late, who has it now: which
+//     editor, waiting on review, or ready to send) and, in #video-editing,
+//     "Reply here with your plan for each one."; and the bells. Claimed once
+//     per kind per ET day per level (AppSetting), so a twin tick or a flap
+//     never posts twice;
 //   · while it stays behind, once each morning between 8 and 10 AM ET
-//     (claimed once per ET day; skipped when the first post already went out
-//     after 5 AM that day), the same list;
-//   · when it clears, one "Back on track" post (only when a post went out for
+//     (claimed once per kind per ET day; skipped when the first post already
+//     went out after 5 AM that day), the same list;
+//   · when it clears, one "back on track" message (only when one went out for
 //     this stretch; the stored state is swapped with a compare-and-set, so one
 //     tick posts it).
-// A read that fails changes nothing (never a false "Back on track").
-// A post to a channel is not a page, so it goes at any hour (notify.ts: the
-// only quiet time is Jordan's Saturday until 7:30 PM ET, and it is for DMs).
-// The channel: SLACK_VIDEO_EDITING_CHANNEL (an id or "#name") when set, else
-// the channel named video-editing that the hub's Slack bot can see. When the
-// bot cannot post there (not invited, Slack down), the same text goes to the
-// ops alert line (notify.opsAlert, which keeps its own DM quiet-time rules).
+// A read that fails changes nothing for that kind (never a false "back on
+// track"), and one kind's failed read never holds up the other.
+// A post to a channel is not a page, so it goes at any hour. A DM asks the
+// person's own quiet time first (notify.holdStaffDmForQuietTime: Jordan's
+// Saturday until 7:30 PM ET) and is kept until it ends, never dropped.
+// The video channel: SLACK_VIDEO_EDITING_CHANNEL (an id or "#name") when set,
+// else #video-editing's known id. When the bot cannot post there (not invited,
+// Slack down), or no photo DM goes through, the same text goes to the ops
+// alert line (notify.opsAlert, which keeps its own DM quiet-time rules).
 // ---------------------------------------------------------------------------
 
 export type BehindState = {
@@ -52,7 +61,8 @@ export type BehindState = {
 };
 
 export type BehindLevel = BehindState["level"];
-export type BehindItem = { kind: "video" | "photo"; projectId: string; street: string; lateHours: number; who: string; href: string };
+export type BehindKind = "video" | "photo";
+export type BehindItem = { kind: BehindKind; projectId: string; street: string; lateHours: number; who: string; href: string };
 
 const HOUR = 3_600_000;
 /** Three or more late, or one this many hours late: very behind. */
@@ -170,9 +180,19 @@ async function latePhotos(now: Date): Promise<BehindItem[]> {
   return out;
 }
 
-/** What is late right now, most late first. Throws when it cannot tell. */
+/** One kind's late work, most late first. Throws when it cannot tell. */
+async function lateOf(kind: BehindKind, now: Date, fresh: boolean): Promise<BehindItem[]> {
+  const items = sourceImpl
+    ? (await sourceImpl(now, { fresh })).filter((i) => i.kind === kind)
+    : kind === "video"
+      ? await lateVideos(now, fresh)
+      : await latePhotos(now);
+  return items.sort((a, b) => b.lateHours - a.lateHours);
+}
+
+/** What is late right now, both kinds, most late first. Throws when it cannot tell. */
 export async function behindReport(now: Date = new Date(), opts: { fresh?: boolean } = {}): Promise<{ state: BehindState; items: BehindItem[] }> {
-  const items = sourceImpl ? await sourceImpl(now, { fresh: !!opts.fresh }) : [...(await lateVideos(now, !!opts.fresh)), ...(await latePhotos(now))];
+  const items = [...(await lateOf("video", now, !!opts.fresh)), ...(await lateOf("photo", now, !!opts.fresh))];
   items.sort((a, b) => b.lateHours - a.lateHours);
   return { state: stateOf(items), items };
 }
@@ -189,11 +209,15 @@ export async function behindState(now: Date = new Date()): Promise<BehindState> 
 
 // ---- the alert -----------------------------------------------------------------------------
 
-const STATE_KEY = "behindAlert.state";
+const STATE_KEY: Record<BehindKind, string> = { video: "behindAlert.state.video", photo: "behindAlert.state.photo" };
+/** The one combined state the alert kept before Oct 21 2026. Read only when a
+ *  kind has no state of its own yet, so the switch-over neither re-posts what
+ *  already went out nor says "back on track" for the other kind's work. */
+const LEGACY_STATE_KEY = "behindAlert.state";
 const MAX_LINES = 15;
 type Stored = { level: BehindLevel; since: string | null; posted: boolean; lastPostAt: string | null };
 
-/** The Slack message (pure). No em dashes, no money, staff words. */
+/** The message (pure). No em dashes, no money, staff words. */
 export function behindMessage(kind: "raise" | "morning", state: BehindState, items: BehindItem[], base: string): string {
   const parts = [state.videosLate ? plural(state.videosLate, "listing video", "listing videos") : null, state.photosLate ? plural(state.photosLate, "photo job", "photo jobs") : null].filter(Boolean).join(" and ");
   const verb = items.length === 1 ? "is" : "are";
@@ -205,17 +229,21 @@ export function behindMessage(kind: "raise" | "morning", state: BehindState, ite
         : `We're behind: ${parts} ${verb} past the promise.`;
   const lines = items.slice(0, MAX_LINES).map((i) => `• ${i.street} (${i.kind === "video" ? "video" : "photos"}): ${lateWords(i.lateHours)} late. ${i.who}.`);
   const more = items.length > MAX_LINES ? [`…and ${items.length - MAX_LINES} more.`] : [];
+  // The ask is for the #video-editing thread; a photo DM has no thread to plan in.
+  const ask = state.videosLate ? "Reply here with your plan for each one." : null;
   const links = [state.videosLate ? `<${base}/review|Video Review Room>` : null, state.photosLate ? `<${base}/ops/photo-delivery|Photo delivery>` : null].filter(Boolean).join(" · ");
-  return noDashes([lead, ...lines, ...more, "Reply here with your plan for each one.", links].filter(Boolean).join("\n"));
+  return noDashes([lead, ...lines, ...more, ask, links].filter(Boolean).join("\n"));
 }
 
-export function backOnTrackMessage(): string {
-  return "Back on track: nothing is past its promise now. Thanks, team.";
+export function backOnTrackMessage(kind: BehindKind): string {
+  return kind === "video"
+    ? "Videos are back on track: no listing video is past its promise now. Thanks, team."
+    : "Photos are back on track: no photo job is past its promise now.";
 }
 
 type Deps = {
-  /** Post one message to the team; resolves where it went. */
-  post?: (text: string) => Promise<{ ok: boolean; where: string }>;
+  /** Send one message for a kind of work; resolves where it went. */
+  post?: (text: string, kind: BehindKind) => Promise<{ ok: boolean; where: string }>;
 };
 
 /** #video-editing's channel id, read from the workspace on Oct 19 2026 (the
@@ -237,7 +265,12 @@ export async function videoEditingChannel(): Promise<string | null> {
   }
 }
 
-async function postToTeam(text: string): Promise<{ ok: boolean; where: string }> {
+/** Who hears about late photo jobs: the ops alert people (Jordan and Kyle). */
+async function photoAlertPeople(): Promise<Array<{ id: string; name: string; slackId: string | null }>> {
+  return prisma.teamMember.findMany({ where: { active: true, opsAlerts: true }, select: { id: true, name: true, slackId: true }, orderBy: { name: "asc" } });
+}
+
+async function postToVideoEditing(text: string): Promise<{ ok: boolean; where: string }> {
   const channel = await videoEditingChannel();
   if (channel) {
     const { slackNotify } = await import("@/lib/integrations/slack");
@@ -249,18 +282,57 @@ async function postToTeam(text: string): Promise<{ ok: boolean; where: string }>
   return { ok, where: ok ? "the ops alert line" : "nowhere" };
 }
 
-async function ringBells(state: BehindState, dedupeKey: string): Promise<void> {
+async function dmPhotoPeople(text: string): Promise<{ ok: boolean; where: string }> {
+  const reached: string[] = [];
+  try {
+    const { holdStaffDmForQuietTime } = await import("@/lib/notify");
+    const { slackDmUser } = await import("@/lib/integrations/slack");
+    for (const p of await photoAlertPeople()) {
+      if (!p.slackId) continue;
+      // Their own quiet time keeps the DM for later (never dropped); else it goes now.
+      const held = await holdStaffDmForQuietTime({ teamMemberId: p.id, slackId: p.slackId, text, kind: "behind_alert" }).catch(() => null);
+      if (held || (await slackDmUser(p.slackId, text))) reached.push(first(p.name) ?? p.name);
+    }
+  } catch (e) {
+    console.warn("[behind] photo DMs failed", e);
+  }
+  if (reached.length) return { ok: true, where: `a DM to ${reached.join(" and ")}` };
+  // Nobody could be DMed: the ops alert line, never #video-editing.
+  const { opsAlert } = await import("@/lib/notify");
+  const ok = await opsAlert(`(Photo delivery is behind; the hub could not DM the ops alert people.)\n${text}`);
+  return { ok, where: ok ? "the ops alert line" : "nowhere" };
+}
+
+async function ringBells(kind: BehindKind, state: BehindState, dedupeKey: string): Promise<void> {
   try {
     const { notifyInApp } = await import("@/lib/notify");
-    const href = state.videosLate || !state.photosLate ? "/review" : "/ops/photo-delivery";
+    const title = noDashes(state.level === "very_behind" ? "We're very behind" : "We're behind").slice(0, 90);
+    if (kind === "video") {
+      await notifyInApp({
+        kind: "behind_alert",
+        title,
+        body: noDashes(`${state.headline ?? ""} Plan each one in #video-editing.`).trim().slice(0, 140),
+        href: "/review",
+        // Jordan and the office (Kyle, James: ADMIN logins) and the editors. An
+        // editor's row loses its body (notify's money clamp); the title says it.
+        targets: [{ roles: ["OWNER", "ADMIN"] }, { roles: ["EDITOR"] }],
+        dedupeKey,
+      });
+      return;
+    }
+    // Photos: the owner's logins, and each ops alert person who is not an
+    // owner (Kyle) by name. Not the office role (James) and not the editors.
+    // behind_alert is bell-only in the bridge, so a named row sends no second DM.
+    const people = await photoAlertPeople();
+    const owners = new Set(
+      (await prisma.appUser.findMany({ where: { role: "OWNER", teamMemberId: { in: people.map((p) => p.id) } }, select: { teamMemberId: true } })).map((u) => u.teamMemberId),
+    );
     await notifyInApp({
       kind: "behind_alert",
-      title: noDashes(state.level === "very_behind" ? "We're very behind" : "We're behind").slice(0, 90),
-      body: noDashes(`${state.headline ?? ""} Plan each one in #video-editing.`).trim().slice(0, 140),
-      href,
-      // Jordan and the office (Kyle, James: ADMIN logins) and the editors. An
-      // editor's row loses its body (notify's money clamp); the title says it.
-      targets: [{ roles: ["OWNER", "ADMIN"] }, { roles: ["EDITOR"] }],
+      title,
+      body: noDashes(state.headline ?? "").trim().slice(0, 140),
+      href: "/ops/photo-delivery",
+      targets: [{ roles: ["OWNER"] }, ...people.filter((p) => !owners.has(p.id)).map((p) => ({ roles: ["ADMIN" as const], userKey: `tm:${p.id}` }))],
       dedupeKey,
     });
   } catch (e) {
@@ -289,20 +361,32 @@ function parseStored(v: string | null | undefined): Stored {
   return { level: "ok", since: null, posted: false, lastPostAt: null };
 }
 
-/** The cron step. Never throws; says what it did. */
-export async function runBehindAlert(now: Date = new Date(), deps: Deps = {}): Promise<{ level: BehindLevel | null; posted: "raise" | "morning" | "clear" | null; where?: string; skipped?: string }> {
-  let report: { state: BehindState; items: BehindItem[] };
+export type BehindRun = { level: BehindLevel | null; posted: "raise" | "morning" | "clear" | null; where?: string; skipped?: string };
+
+/** The cron step: videos, then photos. Never throws; says what it did for each. */
+export async function runBehindAlert(now: Date = new Date(), deps: Deps = {}): Promise<{ video: BehindRun; photo: BehindRun }> {
+  return { video: await runKind("video", now, deps), photo: await runKind("photo", now, deps) };
+}
+
+async function runKind(kind: BehindKind, now: Date, deps: Deps): Promise<BehindRun> {
+  let items: BehindItem[];
   try {
-    report = await behindReport(now, { fresh: true });
+    items = await lateOf(kind, now, true);
   } catch (e) {
     return { level: null, posted: null, skipped: `could not read what is late (${(e as Error)?.message ?? "error"}); nothing changed` };
   }
+  const state = stateOf(items);
   try {
-    const post = deps.post ?? postToTeam;
+    const post = deps.post ?? ((text: string) => (kind === "video" ? postToVideoEditing(text) : dmPhotoPeople(text)));
     const { appBase } = await import("@/lib/appUrl");
-    const { state, items } = report;
-    const row = await prisma.appSetting.findUnique({ where: { key: STATE_KEY }, select: { value: true } });
-    const prev = parseStored(row?.value);
+    const key = STATE_KEY[kind];
+    const row = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+    let prev = parseStored(row?.value);
+    if (!row && state.level !== "ok") {
+      // First tick since the split: carry the combined state over (no repeat post).
+      const legacy = await prisma.appSetting.findUnique({ where: { key: LEGACY_STATE_KEY }, select: { value: true } });
+      if (legacy) prev = parseStored(legacy.value);
+    }
     const day = etDayKey(now);
     const minutes = etMinutesOfDay(now);
 
@@ -310,20 +394,20 @@ export async function runBehindAlert(now: Date = new Date(), deps: Deps = {}): P
       let posted: "raise" | "morning" | null = null;
       let where: string | undefined;
       if (RANK[state.level] > RANK[prev.level]) {
-        if (await claim(`behindAlert.raise.${day}.${state.level}`)) {
-          const r = await post(behindMessage("raise", state, items, appBase()));
+        if (await claim(`behindAlert.raise.${kind}.${day}.${state.level}`)) {
+          const r = await post(behindMessage("raise", state, items, appBase()), kind);
           where = r.where;
-          await ringBells(state, `behind-raise-${day}-${state.level}`);
+          await ringBells(kind, state, `behind-${kind}-raise-${day}-${state.level}`);
           posted = "raise";
         }
       } else if (minutes >= 8 * 60 && minutes < 10 * 60) {
         // Already posted this morning (a raise after 5 AM today): no second post.
         const last = prev.lastPostAt ? new Date(prev.lastPostAt) : null;
         const recent = !!last && etDayKey(last) === day && etMinutesOfDay(last) >= 5 * 60;
-        if (!recent && (await claim(`behindAlert.morning.${day}`))) {
-          const r = await post(behindMessage("morning", state, items, appBase()));
+        if (!recent && (await claim(`behindAlert.morning.${kind}.${day}`))) {
+          const r = await post(behindMessage("morning", state, items, appBase()), kind);
           where = r.where;
-          await ringBells(state, `behind-morning-${day}`);
+          await ringBells(kind, state, `behind-${kind}-morning-${day}`);
           posted = "morning";
         }
       }
@@ -333,25 +417,32 @@ export async function runBehindAlert(now: Date = new Date(), deps: Deps = {}): P
         posted: (prev.level !== "ok" && prev.posted) || !!posted,
         lastPostAt: posted ? now.toISOString() : prev.lastPostAt,
       };
-      if (next.level !== prev.level || next.posted !== prev.posted || next.lastPostAt !== prev.lastPostAt) {
+      if (!row || next.level !== prev.level || next.posted !== prev.posted || next.lastPostAt !== prev.lastPostAt) {
         const value = JSON.stringify(next);
-        await prisma.appSetting.upsert({ where: { key: STATE_KEY }, create: { key: STATE_KEY, value, updatedBy: "behind-alert" }, update: { value, updatedBy: "behind-alert" } });
+        await prisma.appSetting.upsert({ where: { key }, create: { key, value, updatedBy: "behind-alert" }, update: { value, updatedBy: "behind-alert" } });
       }
       return { level: state.level, posted, ...(where ? { where } : {}) };
     }
 
-    // Clear. Only the tick that swaps the stored state posts "Back on track".
+    // Clear. Only the tick that swaps the stored state posts "back on track".
     if (prev.level !== "ok" && row) {
       const value = JSON.stringify({ level: "ok", since: null, posted: false, lastPostAt: prev.lastPostAt } satisfies Stored);
-      const swapped = await prisma.appSetting.updateMany({ where: { key: STATE_KEY, value: row.value }, data: { value, updatedBy: "behind-alert" } });
+      const swapped = await prisma.appSetting.updateMany({ where: { key, value: row.value }, data: { value, updatedBy: "behind-alert" } });
       if (swapped.count === 1 && prev.posted) {
-        const r = await post(backOnTrackMessage());
+        const r = await post(backOnTrackMessage(kind), kind);
         return { level: "ok", posted: "clear", where: r.where };
       }
     }
+    if (!row) {
+      // This kind's own state from its first tick, so the combined state above is read once only.
+      const value = JSON.stringify(parseStored(null));
+      await prisma.appSetting.create({ data: { key, value, updatedBy: "behind-alert" } }).catch((e) => {
+        if ((e as { code?: string })?.code !== "P2002") throw e;
+      });
+    }
     return { level: "ok", posted: null };
   } catch (e) {
-    console.error("[behind] alert failed", e);
-    return { level: report.state.level, posted: null, skipped: `failed: ${(e as Error)?.message ?? "error"}` };
+    console.error(`[behind] ${kind} alert failed`, e);
+    return { level: state.level, posted: null, skipped: `failed: ${(e as Error)?.message ?? "error"}` };
   }
 }
