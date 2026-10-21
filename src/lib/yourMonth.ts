@@ -261,8 +261,9 @@ function clientPlannedSteps(i: YourMonthInput, cp: { briefFiles: number; briefNo
   const steps: Raw[] = [];
   const has = cp.briefFiles > 0 || cp.briefNotes;
   steps.push(has
-    ? { key: "brief", status: "done", title: "Your creative brief is in", detail: [cp.briefFiles ? plural(cp.briefFiles, "file") : null, cp.briefNotes ? "notes" : null].filter(Boolean).join(" and ") + ". Add to it any time.", cta: null }
-    : { key: "brief", status: "todo", title: `Add your creative brief for ${i.monthLabel} (optional)`, detail: "Upload your plan or paste your notes, and your crew will have it at the shoot.", cta: i.readOnly ? null : { label: "Add your brief", href: "#step-brief" } });
+    ? { key: "brief", status: "done", title: "Your creative brief is in", detail: [cp.briefFiles ? plural(cp.briefFiles, "file") : null, cp.briefNotes ? "notes" : null].filter(Boolean).join(" and ") + ". Add to it or swap a file any time. Your crew and editor see it on the job.", cta: null }
+    // Oct 21 2026 (Jordan: "upload a PDF or Word document … any time"): say the formats, and who sees it.
+    : { key: "brief", status: "todo", title: `Add your creative brief for ${i.monthLabel} (optional)`, detail: "Upload your plan as a PDF or Word document, or paste your notes. Your crew and editor will have it on the job.", cta: i.readOnly ? null : { label: "Add your brief", href: "#step-brief" } });
   const dayOnly = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: o.tz, weekday: "long", month: "long", day: "numeric" });
   steps.push(filmingStep(i, { actSession: o.actSession, dayOnly }));
   return oneCurrent(steps);

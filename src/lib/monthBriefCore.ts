@@ -21,6 +21,14 @@ import { PORTAL_UPLOAD_MAX_BYTES, PORTAL_UPLOAD_MAX_LABEL } from "@/lib/portalUp
 // Files are served only through /api/portal/brief/<monthId>/<fileId>, which
 // admits the client of THAT enrollment (scoped media token), owner/admin, and
 // the photographer or editor on one of THAT month's jobs.
+//
+// Oct 21 2026 (Jordan: "Since Mike creates his own creatives, give him the
+// ability to upload a PDF or Word document so our team can access it"): a new
+// file now lands in the client's OWN Dropbox folder, under
+// "Content Plans/<YYYY-MM>/" with the name they gave it, so the team can find
+// it there too (the private prefix stays the fallback, and older files stay
+// where they are). Every file's first bytes must match what its name says
+// (briefContentRefusal): a renamed program or web page is refused.
 // ---------------------------------------------------------------------------
 
 /** The platform refuses request bodies over ~4.5 MB, so the brief uses the portal's one number. */
@@ -59,6 +67,55 @@ export function briefFileRefusal(name: string, size: number): string | null {
   if (size > BRIEF_MAX_BYTES) return `That file is over ${BRIEF_MAX_LABEL}. Send a smaller copy, or paste the text in the notes instead.`;
   return null;
 }
+
+// ---- what is inside the file (Oct 21 2026) ---------------------------------
+
+const startsWith = (b: Uint8Array, sig: readonly number[], at = 0) => b.length >= at + sig.length && sig.every((x, i) => b[at + i] === x);
+const ascii = (s: string) => [...s].map((ch) => ch.charCodeAt(0));
+const PDF_MARK = ascii("%PDF-");
+const ZIP = [0x50, 0x4b, 0x03, 0x04];
+const OLE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
+/** "%PDF-" in the first 1 KB (the PDF rule: a few bytes of junk may come first). */
+function hasPdfMark(b: Uint8Array): boolean {
+  const end = Math.min(b.length, 1024) - PDF_MARK.length;
+  for (let i = 0; i <= end; i++) if (startsWith(b, PDF_MARK, i)) return true;
+  return false;
+}
+
+/** What each allowed type must start with, and the words for a mismatch. */
+const CONTENT_RULES: { ext: RegExp; word: string; ok: (b: Uint8Array) => boolean }[] = [
+  { ext: /\.pdf$/i, word: "a PDF", ok: hasPdfMark },
+  // .docx is a zip; .doc is the older Office container (or RTF saved as .doc,
+  // which Word opens). Google Docs exports either. A web page saved as .doc is not.
+  { ext: /\.docx$/i, word: "a Word document", ok: (b) => startsWith(b, ZIP) },
+  { ext: /\.doc$/i, word: "a Word document", ok: (b) => startsWith(b, OLE) || startsWith(b, ZIP) || startsWith(b, ascii("{\\rtf")) },
+  { ext: /\.rtf$/i, word: "a Word document", ok: (b) => startsWith(b, ascii("{\\rtf")) },
+  { ext: /\.png$/i, word: "a picture", ok: (b) => startsWith(b, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+  { ext: /\.jpe?g$/i, word: "a picture", ok: (b) => startsWith(b, [0xff, 0xd8, 0xff]) },
+  { ext: /\.gif$/i, word: "a picture", ok: (b) => startsWith(b, ascii("GIF87a")) || startsWith(b, ascii("GIF89a")) },
+  { ext: /\.webp$/i, word: "a picture", ok: (b) => startsWith(b, ascii("RIFF")) && startsWith(b, ascii("WEBP"), 8) },
+  { ext: /\.heic$/i, word: "a picture", ok: (b) => startsWith(b, ascii("ftyp"), 4) },
+  // Text is text: no NUL byte in the first 4 KB (every program file has them).
+  { ext: /\.(txt|md)$/i, word: "a text file", ok: (b) => !b.subarray(0, 4096).includes(0) },
+];
+
+/**
+ * The refusal when a file's first bytes are not what its name says, or null.
+ * `head` is the start of the file (the whole file is fine). The browser's
+ * claimed type is never trusted: a program renamed "plan.pdf" is refused here,
+ * before a byte is stored.
+ */
+export function briefContentRefusal(name: string, head: Uint8Array): string | null {
+  const rule = CONTENT_RULES.find((r) => r.ext.test(name));
+  if (!rule) return "That type of file can't be added. PDFs, Word documents, pictures and text files work.";
+  if (rule.ok(head)) return null;
+  return `That file isn't ${rule.word}, even though its name says so. Save it again as ${rule.word === "a picture" ? "a picture" : "a PDF or Word document"} and upload the new copy.`;
+}
+
+/** The client's own folder for their plans: "<client folder>/Content Plans/<YYYY-MM>". */
+export const BRIEF_PLAN_FOLDER = "Content Plans";
+export const briefClientFolderPath = (clientFolder: string, monthKey: string) => `${clientFolder.replace(/\/+$/, "")}/${BRIEF_PLAN_FOLDER}/${monthKey}`;
 
 export type BriefBy = { kind: "client" | "staff"; label: string; id: string | null };
 

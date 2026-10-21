@@ -95,7 +95,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
   ].filter((t) => !d.clientPlanned || t.key === "month" || t.key === d.view);
   const intro = {
     month: d.clientPlanned
-      ? { title: "Your Month", detail: "You plan the videos. Add your brief if you like, then book your filming time." }
+      ? { title: "Your Month", detail: "You plan the videos. Upload your plan (PDF or Word) and book your filming time whenever suits you." }
       : { title: "Your Month", detail: "Plan this month's videos step by step, then book the filming time that fits." },
     scripts: { title: "Scripts to review", detail: "All program months. Each script shows the month it belongs to and the version waiting for your decision." },
     bank: { title: "Topic bank", detail: "Ideas not yet placed on an open month. Choose one when your monthly plan has room." },

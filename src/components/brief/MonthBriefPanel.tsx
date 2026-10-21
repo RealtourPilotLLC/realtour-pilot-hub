@@ -16,6 +16,8 @@ import { BRIEF_MAX_LABEL, BRIEF_NOTES_MAX, briefFileRefusal, fmtBriefSize, type 
 type Row = BriefFileView & { state?: "uploading" | "failed"; message?: string };
 
 const focusRing = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+/** "Oct 21", in Eastern time on every screen (the server and the browser agree, so nothing re-renders). */
+const addedOn = (iso: string) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : ""; };
 
 export function MonthBriefPanel({ mode, monthId, files: initialFiles, notes: initialNotes, canEdit }: {
   mode: "portal" | "staff";
@@ -95,7 +97,8 @@ export function MonthBriefPanel({ mode, monthId, files: initialFiles, notes: ini
               {f.href && !f.state
                 ? <a href={f.href} target="_blank" rel="noopener noreferrer" className={`min-w-0 flex-1 basis-40 break-words font-medium text-brand hover:underline ${focusRing}`}>{f.name}</a>
                 : <span className="min-w-0 flex-1 basis-40 break-words font-medium">{f.name}</span>}
-              <span className="text-xs text-muted-2">{fmtBriefSize(f.size)}{mode === "staff" && f.byLabel ? ` · ${f.byKind === "staff" ? "added by" : "from"} ${f.byLabel}` : ""}</span>
+              {/* Oct 21 2026: the day it was added, so a client can tell this month's plan from an older one. */}
+              <span className="text-xs text-muted-2">{fmtBriefSize(f.size)}{!f.state && addedOn(f.atISO) ? ` · added ${addedOn(f.atISO)}` : ""}{mode === "staff" && f.byLabel ? ` · ${f.byKind === "staff" ? "by" : "from"} ${f.byLabel}` : ""}</span>
               {f.state === "uploading" && <Loader2 className="size-4 animate-spin text-muted" aria-label="Uploading" />}
               {canEdit && (mode === "staff" || f.byKind === "client") && (
                 <button type="button" onClick={() => remove(f)} disabled={busy} className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground ${focusRing}`} aria-label={`Remove ${f.name}`}>
