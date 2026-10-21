@@ -13,7 +13,7 @@ import { houseOverrides, mergeOverrides } from "@/lib/photoDelivery/houseRules";
 import { ALWAYS_FIX } from "@/lib/photoDelivery/fixPolicy";
 import { deliveryGate, deliverySteps } from "@/lib/photoDelivery/delivery";
 import { checkEveryMs } from "@/lib/photoDelivery/verifySweep";
-import { RULES, ruleById } from "@/lib/photoDelivery/registry";
+import { RULES, isExteriorFinding, ruleById } from "@/lib/photoDelivery/registry";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { AUTOHDR_BILLING_URL } from "@/lib/integrations/autohdr";
 import { prettyRoom } from "@/components/photoDelivery/format";
@@ -506,6 +506,11 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
   const rank = (p: PhotoView) => (p.status === "ACTIVE" ? p.position ?? 9_000 + p.sequence : p.status === "EXCLUDED" ? 20_000 + p.sequence : 40_000 + p.sequence);
   photoViews.sort((a, b) => rank(a) - rank(b));
 
+  const roomOfPhoto = new Map(photos.map((p) => [p.id, p.roomType]));
+  // Oct 21 2026: the finding the client asked to have removed (read after the checklist filed the job's items).
+  const askLinks = await import("@/lib/photoDelivery/clientAsked")
+    .then((m) => m.findingAskLinks(job.projectId, findings))
+    .catch(() => new Map<string, { askId: string; label: string; what: string }>());
   const findingViews: FindingView[] = findings.map((f) => {
     const raw = f.pass === "P4_ORDER" ? parse<Record<string, unknown>>(p4RawById.get(f.id)) : null;
     const bbox = parse<unknown[]>(f.bboxJson);
@@ -536,6 +541,8 @@ export async function loadJobDetail(jobId: string, opts: { viewer: Viewer; now?:
       statusReason: f.statusReason,
       planNote: f.planNote,
       alwaysFixed: ALWAYS_FIX.has(f.ruleId),
+      exterior: isExteriorFinding(f.ruleId, f.photoId ? roomOfPhoto.get(f.photoId) : null),
+      clientAsk: askLinks.get(f.id) ?? null,
       decidedBy: f.decidedBy,
       decidedAt: iso(f.decidedAt),
       arbitration: f.arbitration,

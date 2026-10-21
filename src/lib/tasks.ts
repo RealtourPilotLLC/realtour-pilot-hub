@@ -1022,6 +1022,77 @@ async function dismissedAndOnlyCourtesy(
   return isCourtesyMessage(t);
 }
 
+// ---------------------------------------------------------------------------
+// EVERY SMART BRAIN TO-DO HAS A PERSON, AND A MERGE IS THE SAME REQUEST (Oct 21
+// 2026, 859 N Lawrence St). Joseph Sutow's "James and Harrison said we could
+// crop out the wooden sidewalk forms ... Photos 1-5 and 38-40" was merged
+// into an older open to-do about something else, which was retitled, and
+// left assigned to nobody. Now:
+//   · a to-do the brain creates, appends to or merges into is assigned: the
+//     delivery owner (kyleNotice.kyleDesk, the program's DELIVERY duty owner,
+//     never a name search), else the owner's own roster row; a row someone
+//     assigned keeps its person;
+//   · a merge (or an append onto the order's open reply to-do) happens only
+//     when it is the SAME request (isSameRequest); a different request about
+//     the same property is its own to-do, and nothing is retitled under it.
+// ---------------------------------------------------------------------------
+
+/** Who a Smart Brain to-do is for when nobody is: the delivery owner, else the owner. Null only when neither resolves. */
+export async function brainTaskAssignee(): Promise<{ id: string; key: string } | null> {
+  const { kyleDesk } = await import("@/lib/kyleNotice");
+  const desk = await kyleDesk().catch(() => null);
+  if (desk) return { id: desk.id, key: desk.key };
+  const login = await prisma.appUser.findFirst({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } }).catch(() => null);
+  const tm = login?.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: login.teamMemberId }, select: { id: true, name: true } }).catch(() => null) : null;
+  if (!tm) return null;
+  const { slugForName } = await import("@/lib/assignees");
+  const key = slugForName(tm.name);
+  return key ? { id: tm.id, key } : null;
+}
+
+// Words that say nothing about WHICH request it is.
+const REQUEST_NOISE = new Set(
+  ("the and for with from this that these those your our their them they you about into onto over please thanks thank will would could can should " +
+    "need needs want wants asked asks asking ask said says reply respond responded answer client clients team message messages text texts call calls email emails " +
+    "back follow followup update updates confirm confirmed check send sent let know get make sure latest wrote note today just also still again re regarding " +
+    "question questions info details request requested requests what when where which have has had been being are was were not any some more").split(/\s+/),
+);
+function requestWords(text: string, drop: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const raw of (text ?? "").toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 3 || /^\d+$/.test(raw) || REQUEST_NOISE.has(raw) || drop.has(raw)) continue;
+    const w = raw.replace(/(?:ing|ed|es|s)$/, "");
+    if (w.length >= 3 && !drop.has(w)) out.add(w);
+  }
+  return out;
+}
+const GENERIC_TITLES = /^(reply to the latest message|return the voicemail|return the missed call|follow up on client message)$/i;
+
+/**
+ * Is the new message the SAME request as the open to-do? (pure) Compares what
+ * the to-do says (title + summary) with the brain's read of the new message
+ * (title + detail), leaving out the property's own words (its number and
+ * street) and words that name no request. Two shared words, or half of the
+ * smaller side, is the same request. A generic fallback title on either side
+ * can't tell, so it counts as the same (the old append).
+ */
+export function isSameRequest(
+  existing: { title: string; summary?: string | null; propertyAddress?: string | null },
+  incoming: { title: string; detail?: string | null; propertyAddress?: string | null; clientName?: string | null },
+): boolean {
+  if (GENERIC_TITLES.test(existing.title.trim()) || GENERIC_TITLES.test(incoming.title.trim())) return true;
+  const drop = new Set<string>();
+  for (const a of [existing.propertyAddress, incoming.propertyAddress]) for (const w of (a ?? "").split(",")[0].toLowerCase().split(/[^a-z0-9]+/)) if (w) drop.add(w);
+  // The client's own name says nothing about which request either.
+  for (const w of (incoming.clientName ?? "").toLowerCase().split(/[^a-z0-9]+/)) if (w) drop.add(w);
+  const A = requestWords(`${existing.title} ${existing.summary ?? ""}`, drop);
+  const B = requestWords(`${incoming.title} ${incoming.detail ?? ""}`, drop);
+  if (!A.size || !B.size) return true;
+  let shared = 0;
+  for (const w of A) if (B.has(w)) shared++;
+  return shared >= 2 || shared / Math.min(A.size, B.size) >= 0.5;
+}
+
 export async function createCommTask(opts: {
   clientId: string;
   clientName: string;
@@ -1052,8 +1123,18 @@ export async function createCommTask(opts: {
   // stay separate, and replying about one order won't close another's.
   // A todo gets its own key so a later real reply never appends onto an
   // internal note (and vice versa).
-  const key = dedupe([opts.clientId, opts.projectId ?? "noproject", taskType === "todo" ? "brain_todo" : "client_reply"]);
-  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  let key = dedupe([opts.clientId, opts.projectId ?? "noproject", taskType === "todo" ? "brain_todo" : "client_reply"]);
+  let existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  // A DIFFERENT REQUEST ON THE SAME ORDER IS ITS OWN TO-DO (Oct 21 2026): the
+  // order's open reply to-do is appended to only when the brain's read of
+  // this message is the same request; otherwise a to-do of its own, keyed on
+  // the request, so nothing lands silently under another subject's title.
+  if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED" && opts.aiTitle?.trim() &&
+      !isSameRequest({ title: existing.title, summary: existing.summary, propertyAddress: existing.propertyAddress }, { title: opts.aiTitle, detail: opts.aiDetail, propertyAddress: opts.propertyAddress, clientName: opts.clientName })) {
+    key = dedupe([opts.clientId, opts.projectId ?? "noproject", taskType === "todo" ? "brain_todo" : "client_reply", `req:${opts.aiTitle.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`]);
+    existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  }
+  const assignee = await brainTaskAssignee();
   // A row someone dismissed by hand stays dismissed until there is something
   // real to say (Sep 16).
   if (await dismissedAndOnlyCourtesy(existing, opts.snippet ?? opts.aiDetail)) return false;
@@ -1076,12 +1157,13 @@ export async function createCommTask(opts: {
         ...(existing.dueAt && existing.dueAt.getTime() > Date.now() + 2 * HOUR ? { dueAt: new Date(Date.now() + 2 * HOUR) } : {}),
         // They wrote again, so the chase date restarts (see the mint below).
         followUpAt: addBusinessDaysET(new Date(), 1),
+        // Never left with nobody on it (Oct 21 2026).
+        ...(!existing.assignedKey && assignee ? { assignedKey: assignee.key, ownerId: existing.ownerId ?? assignee.id } : {}),
       },
     }).catch(() => {});
     return false;
   }
 
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const verb = opts.kind === "text" ? "Reply to" : "Call back";
   const sourceName =
     opts.source === "gmail" ? "Gmail" : opts.source === "slack" ? "Slack" : "OpenPhone";
@@ -1144,7 +1226,9 @@ export async function createCommTask(opts: {
     contactName: differentName(opts.contactName, opts.clientName),
     projectId: opts.projectId ?? null,
     propertyAddress: opts.propertyAddress ?? null,
-    ownerId: kyle?.id ?? null,
+    // The delivery owner, never a name search (Oct 21 2026); a person someone picked stays.
+    ownerId: existing?.assignedManually && existing.ownerId ? existing.ownerId : assignee?.id ?? null,
+    assignedKey: existing?.assignedManually && existing.assignedKey ? existing.assignedKey : assignee?.key ?? null,
     dedupeKey: key,
   };
 
@@ -1189,7 +1273,8 @@ export async function createProjectFollowupTask(opts: {
     const p = await prisma.project.findUnique({ where: { id: opts.projectId }, select: { clientId: true } });
     clientId = p?.clientId ?? null;
   }
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  // The delivery owner, never a name search (Oct 21 2026).
+  const assignee = await brainTaskAssignee();
   const street = (opts.propertyAddress ?? "this job").split(",")[0];
   const title = (opts.aiTitle || `${opts.senderName} re ${street}`).slice(0, 120);
   // Message only — aiDetail already lives in the summary (no double render).
@@ -1218,7 +1303,8 @@ export async function createProjectFollowupTask(opts: {
     clientId,
     projectId: opts.projectId,
     propertyAddress: opts.propertyAddress ?? null,
-    ownerId: kyle?.id ?? null,
+    ownerId: existing?.assignedManually && existing.ownerId ? existing.ownerId : assignee?.id ?? null,
+    assignedKey: existing?.assignedManually && existing.assignedKey ? existing.assignedKey : assignee?.key ?? null,
     dedupeKey: key,
   };
   if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
@@ -1243,6 +1329,7 @@ export async function createProjectFollowupTask(opts: {
         description: appended.length > 4000 ? appended.slice(appended.length - 4000) : appended,
         summary: `${opts.senderName}: ${count} messages on ${street} — latest: “${clip(opts.text, 200)}”`.slice(0, 500),
         ...(escalate ? { priority: incoming } : {}),
+        ...(!existing.assignedKey && assignee ? { assignedKey: assignee.key, ownerId: existing.ownerId ?? assignee.id } : {}),
         ...(existing.dueAt && existing.dueAt.getTime() > Date.now() + 2 * HOUR ? { dueAt: new Date(Date.now() + 2 * HOUR) } : {}),
       },
     });
@@ -1410,9 +1497,13 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   snippet?: string;
   clientName?: string;
   contactName?: string | null;
-}): Promise<boolean> {
-  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true, clientId: true, projectId: true } });
+}, guard: { sameRequestOnly?: boolean } = {}): Promise<boolean> {
+  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true, clientId: true, projectId: true, title: true, summary: true, propertyAddress: true, ownerId: true, assignedKey: true } });
   if (!existing) return false;
+  // Oct 21 2026: a client's message merges only into the SAME request; a
+  // different one (even about the same property) is refused here, and the
+  // caller files it as its own to-do instead of retitling this one.
+  if (guard.sameRequestOnly && opts.title && !isSameRequest({ title: existing.title, summary: existing.summary, propertyAddress: existing.propertyAddress }, { title: opts.title, detail: opts.detail, propertyAddress: opts.propertyAddress ?? null, clientName: opts.clientName ?? null })) return false;
   if (opts.clientId && existing.clientId !== opts.clientId) return false;
   if (opts.projectId !== undefined && existing.projectId && existing.projectId !== opts.projectId) return false;
   // Never merge an inbound comm into a production task (QC/delivery/confirmation/
@@ -1429,11 +1520,14 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   const titled = opts.title ? opts.title.slice(0, 120) : undefined;
   // Refresh the "what happened" summary to the latest read when we have one.
   const summary = (opts.detail?.trim() || opts.snippet?.trim()) ? (opts.detail?.trim() || `New message: “${clip(opts.snippet!, 240)}”`) : undefined;
+  // Never left with nobody on it (Oct 21 2026): the delivery owner, else the owner.
+  const assignee = existing.assignedKey ? null : await brainTaskAssignee();
   await prisma.smartTask.update({
     where: { id: taskId },
     data: {
       status: "OPEN",
       completedAt: null,
+      ...(assignee ? { assignedKey: assignee.key, ownerId: existing.ownerId ?? assignee.id } : {}),
       description,
       ...(summary ? { summary: summary.slice(0, 500) } : {}),
       ...(titled ? { title: titled } : {}),

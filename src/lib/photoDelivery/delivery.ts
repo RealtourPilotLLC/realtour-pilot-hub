@@ -25,14 +25,38 @@ import { appBase } from "@/lib/appUrl";
 //
 // Shadow mode (the first two weeks): the gate is ADVISORY for a person. It is
 // computed and shown, but a failed check never stops Kyle, because QC is
-// still being calibrated against his manual review.
+// still being calibrated against his manual review. Except the HOLD lines
+// (Oct 21 2026, 859 N Lawrence St; clientAsked.ts): the photographer's
+// wrap-up, and each thing the client asked about the photos, stop him too
+// until they are settled (a typed reason for the wrap-up; Done or an answer
+// for a request).
 // ---------------------------------------------------------------------------
 
 /** `advisory`: shown on the checklist, never counted in `passed` and never
  *  holding a person's delivery (open photo flags, Oct 21 2026). `href`: where
- *  the line's own work is. */
-export type GateCheck = { key: string; label: string; ok: boolean; detail?: string; advisory?: boolean; href?: string };
-export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null };
+ *  the line's own work is.
+ *  Oct 21 2026 (859 N Lawrence St, clientAsked.ts): `hold` lines hold a
+ *  person's delivery even while the checklist is advisory (shadow mode): the
+ *  photographer's wrap-up and each thing the client asked about the photos.
+ *  `overridden` (the wrap-up only, `overridable`): a person typed why the
+ *  photos may go out without it; the line is satisfied for a person, never
+ *  for the hub's own delivery (`passed` stays false). `askId`: the ClientAsk
+ *  the line is (Done / Answer on the job page). */
+export type GateCheck = {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+  advisory?: boolean;
+  href?: string;
+  hrefLabel?: string;
+  hold?: boolean;
+  overridable?: boolean;
+  overridden?: string | null;
+  askId?: string;
+};
+/** `ignored`: the approve summary of the careful set-asides (clientAsked.ignoredCarefulSummary), shown before delivering, never a block. `holdsOpen`: hold lines still open. */
+export type GateResult = { checks: GateCheck[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };
 
 export async function deliveryGate(jobId: string): Promise<GateResult> {
   const [job, settings] = await Promise.all([
@@ -84,12 +108,18 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // openPhotoFlags); here they are information only, never a hold on his
     // Approve and deliver.
     ...(await flagsCheck(job.projectId)),
+    // Oct 21 2026 (Jordan, 859 N Lawrence St): the photographer's wrap-up and
+    // what the client asked, each a line that holds delivery (clientAsked.ts).
+    ...(await askedChecks(job)),
   ];
-  const passed = checks.every((c) => c.ok || c.advisory);
+  // An overridden line is a person's call: it never counts for the hub's own delivery.
+  const passed = checks.every((c) => (c.ok && !c.overridden) || c.advisory);
   // The house setting decides (audit, Oct 15): a job's own qcShadow only records
   // how its last check ran, and kept a job advisory after shadow mode was off.
   const advisory = settings.qcShadow;
   const privacyOrWrong = critical.find((f) => f.privacySensitive || /FILE_NO_MIXED_PROPERTIES|FILE_PROJECT_ASSOCIATION|FILE_CORRECT_PROPERTY_UPLOAD/.test(f.ruleId));
+  const holdsOpen = checks.filter((c) => c.hold && !c.ok).length;
+  const restPassed = checks.filter((c) => !c.hold).every((c) => c.ok || c.advisory);
   return {
     checks,
     passed,
@@ -97,10 +127,59 @@ export async function deliveryGate(jobId: string): Promise<GateResult> {
     // Oct 20 2026 (audit C7): shadow mode makes the checklist advisory for a
     // person, never for a privacy or wrong-property critical. Those are the
     // ones Jordan's override refuses, so the routine path refuses them too.
-    canDeliver: (passed || advisory) && !privacyOrWrong,
+    // Oct 21 2026: nor for a hold line (the wrap-up, what the client asked).
+    canDeliver: (restPassed || advisory) && holdsOpen === 0 && !privacyOrWrong,
     overrideAllowed: !privacyOrWrong,
     blockedForOverride: privacyOrWrong ? "A privacy or wrong-property issue is open. That one has to be resolved, not overridden." : null,
+    holdsOpen,
+    ignored: await import("./clientAsked").then((m) => m.ignoredCarefulSummary(jobId)).catch(() => null),
   };
+}
+
+/**
+ * The wrap-up line and one line per open photo request (clientAsked.ts). A
+ * read that fails is an open hold, never a pass: the hub's own delivery must
+ * not go out on a check it couldn't make (the same rule as uploadCheck).
+ */
+async function askedChecks(job: { id: string; projectId: string | null; stage: string }): Promise<GateCheck[]> {
+  if (!job.projectId) return [];
+  const projectId = job.projectId;
+  const m = await import("./clientAsked");
+  const lines: GateCheck[] = [];
+  try {
+    const w = await m.wrapUpState(projectId, job.id);
+    if (w?.owed) {
+      const who = w.firstName ?? "The photographer";
+      if (!w.missing) lines.push({ key: "wrapup", label: `${who}'s wrap-up is in`, ok: true, hold: true });
+      else {
+        const parts = [!w.removal ? "removal notes not answered" : null, !w.cull ? "cull not confirmed" : null].filter(Boolean).join(", ");
+        lines.push({
+          key: "wrapup",
+          label: `${who} hasn't sent the wrap-up yet: what was promised to the client or must be removed is unknown.`,
+          ok: !!w.override,
+          hold: true,
+          overridable: true,
+          overridden: w.override ? `${w.override.by}: ${w.override.reason}` : null,
+          detail: parts || undefined,
+          href: w.href,
+          hrefLabel: `Open ${w.firstName ? `${w.firstName}'s` : "the"} wrap-up`,
+        });
+      }
+    }
+  } catch {
+    lines.push({ key: "wrapup", label: "The photographer's wrap-up", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" });
+  }
+  try {
+    // The wrap-up's removal notes and the order's photo notes become items to
+    // tick off, before the photos go out (never after).
+    if (!["DELIVERED", "DELIVERING"].includes(job.stage)) await m.syncPhotoAsks(projectId);
+    for (const it of await m.clientAskedItems(projectId)) {
+      lines.push({ key: `ask:${it.id}`, label: it.label, ok: false, hold: it.holds, advisory: !it.holds, askId: it.id, detail: it.detail });
+    }
+  } catch {
+    lines.push({ key: "asks", label: "What the client asked", ok: false, hold: true, detail: "could not be read just now, it is read again on the next pass" });
+  }
+  return lines;
 }
 
 async function uploadCheck(projectId: string | null): Promise<GateCheck[]> {
@@ -269,8 +348,9 @@ export async function startDelivery(jobId: string, by: string, opts: { override?
     if (!gate.overrideAllowed) return { ok: false, message: gate.blockedForOverride ?? "This gallery cannot be overridden." };
     if ((opts.override.reason ?? "").trim().length < 5) return { ok: false, message: "Write the reason for the override." };
   }
+  const overridden = gate.checks.find((c) => c.overridden)?.overridden ?? null;
   const moved = await setStage(jobId, ["READY", "QC_REVIEW", "EDITED", "DELIVERY_MISMATCH", "REVISION_REQUESTED"], "DELIVERING", by, {
-    why: opts.override ? `owner override: ${opts.override.reason.trim()}` : gate.passed ? "checklist passed" : "advisory checklist (shadow mode)",
+    why: opts.override ? `owner override: ${opts.override.reason.trim()}` : gate.passed ? "checklist passed" : overridden ? `without the photographer's wrap-up (${overridden})` : "advisory checklist (shadow mode)",
     extra: { deliveryStartedAt: new Date() },
   });
   if (!moved) return { ok: false, message: "This job moved on in the meantime. Reload the page." };

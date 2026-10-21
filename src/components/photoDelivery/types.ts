@@ -174,6 +174,10 @@ export type FindingView = {
   planNote: string | null;
   /** House policy fixes it on every shoot (trash cans, cars, camera mistakes, lens distortion): never switched off house-wide (audit C19). */
   alwaysFixed?: boolean;
+  /** About the outside of the house (an outside check, or a photo of the outside): a major one is set aside only with a typed reason (Oct 21 2026). */
+  exterior?: boolean;
+  /** The open client request it is about ("Client asked for this to be removed (order note)"): set aside only once that is answered (Oct 21 2026). */
+  clientAsk?: { askId: string; label: string; what: string } | null;
   decidedBy: string | null;
   decidedAt: string | null;
   arbitration: string;
@@ -218,9 +222,24 @@ export type CartView = {
   usdPerCredit: number | null;
 };
 
-/** `advisory`: information on the checklist, never a hold (open photo flags). `href`: where its work is. */
-export type GateCheckView = { key: string; label: string; ok: boolean; detail?: string; advisory?: boolean; href?: string };
-export type GateView = { checks: GateCheckView[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null };
+/** `advisory`: information on the checklist, never a hold (open photo flags). `href`: where its work is.
+ *  Oct 21 2026 (delivery.ts GateCheck): `hold` holds a person's delivery too (the wrap-up, what the client
+ *  asked); `overridable`/`overridden` the wrap-up's typed reason; `askId` the request's Done / Answer. */
+export type GateCheckView = {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+  advisory?: boolean;
+  href?: string;
+  hrefLabel?: string;
+  hold?: boolean;
+  overridable?: boolean;
+  overridden?: string | null;
+  askId?: string;
+};
+/** `ignored`: "You're delivering with 6 exterior issues ignored (…)", shown before delivering. */
+export type GateView = { checks: GateCheckView[]; passed: boolean; advisory: boolean; canDeliver: boolean; overrideAllowed: boolean; blockedForOverride: string | null; holdsOpen: number; ignored: string | null };
 
 export type ReplacementView = { photoId: string; photoName: string; versionId: string; downloadUrl: string; label: string; at: string };
 

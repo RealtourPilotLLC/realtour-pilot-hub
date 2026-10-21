@@ -380,6 +380,11 @@ export function fixPolicySummary(s: { fixTargetUsd: number; fixMaxUsd: number; a
   ];
 }
 
+/** Which always-fixed kind a rule is, in plain plural words ("trash cans"), or null (Oct 21 2026: the approve summary). */
+export function alwaysKind(ruleId: string): string | null {
+  return TRASH.includes(ruleId) ? "trash cans" : VEHICLES.includes(ruleId) ? "cars" : CAMERA.includes(ruleId) ? "camera mistakes" : DISTORTION.includes(ruleId) ? "lens distortion" : null;
+}
+
 /** Why a class of finding is or is not fixed automatically, in Kyle's words (no dollar amounts: Kyle never sees them). */
 const ALWAYS_WHY = (ruleId: string) =>
   CAMERA.includes(ruleId) ? "a camera or photographer mistake" : VEHICLES.includes(ruleId) ? "a car" : TRASH.includes(ruleId) ? "a trash can" : DISTORTION.includes(ruleId) ? "lens distortion" : "always fixed";

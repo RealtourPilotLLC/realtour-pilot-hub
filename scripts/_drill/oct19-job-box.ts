@@ -146,6 +146,11 @@ async function main() {
   // Closing on delivery.
   const onPine = await ca.createAsk({ clientId: heather.id, projectId: pine.id, kind: "SPECIAL_REQUEST", source: "text", medium: "video", text: "Use the upbeat song", askedAt: new Date(now.getTime() - 3 * HOUR) });
   const schedBefore = await ca.createAsk({ clientId: heather.id, projectId: pine.id, kind: "SCHEDULING", source: "text", text: "Can we push the Pine shoot?", askedAt: new Date(now.getTime() - 3 * HOUR) });
+  // Oct 21 2026 (oct21-photo-misses, CHANGED): a special request asked AFTER
+  // the delivery is about the delivered work and stays open, so the requests
+  // filed above (stamped "now") are put before this back-dated delivery, as
+  // they were in the story.
+  await prisma.clientAsk.updateMany({ where: { projectId: pine.id, kind: "SPECIAL_REQUEST" }, data: { askedAt: new Date(now.getTime() - 2 * HOUR) } });
   await prisma.project.update({ where: { id: pine.id }, data: { status: "DELIVERED", deliveredAt: new Date(now.getTime() - 1 * HOUR) } });
   const schedAfter = await ca.createAsk({ clientId: heather.id, projectId: pine.id, kind: "SCHEDULING", source: "text", text: "Book my next shoot please", askedAt: new Date(now.getTime() - 10 * 60_000) });
   c.ok("the boards leave a delivered job out at once", !(await ca.specialRequestsBoard(now)).groups.some((g) => g.projectId === pine.id) && !(await ca.schedulingBoard(now)).asks.some((a) => a.id === schedBefore!.id) && (await ca.schedulingBoard(now)).asks.some((a) => a.id === schedAfter!.id));

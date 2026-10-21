@@ -309,11 +309,13 @@ export async function recordClientCommunication(opts: {
   if (decision) {
     if (decision.actionable) {
       if (decision.mergeIntoTaskId && !checked.issue) {
+        // Oct 21 2026: only into the SAME request (tasks.isSameRequest); a
+        // different one falls through to its own to-do below.
         replyTask = await mergeIntoExistingTask(decision.mergeIntoTaskId, {
           title: decision.title, detail: decision.detail, priority: decision.priority,
           projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text,
           clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null,
-        });
+        }, { sameRequestOnly: true });
         if (replyTask) mergedInto = decision.mergeIntoTaskId;
       }
       // No merge target (or the merge was refused, e.g. it pointed at a production
@@ -332,7 +334,7 @@ export async function recordClientCommunication(opts: {
     }
     // Observability: record what the brain did + any flags, on the chosen order.
     if (effProjectId) {
-      const what = !decision.actionable ? "no action needed" : replyTask && decision.mergeIntoTaskId && !checked.issue ? "merged into an open to-do" : "created a to-do";
+      const what = !decision.actionable ? "no action needed" : mergedInto ? "merged into an open to-do" : decision.mergeIntoTaskId && !checked.issue ? "created a to-do (a different request than the open one it named)" : "created a to-do";
       const note = `Smart Brain: ${what} — ${decision.reason}${decision.flags.length ? ` [${decision.flags.join("; ")}]` : ""}`;
       await prisma.activity.create({ data: { projectId: effProjectId, type: "SYSTEM", body: note.slice(0, 300) } }).catch(() => {});
     }
@@ -576,6 +578,56 @@ export async function recordClientCommunication(opts: {
       }
     } catch (e) {
       console.error("[client-asks] filing from a message failed", opts.clientId, e);
+    }
+  }
+
+  // PHOTOS ALREADY OUT (Oct 21 2026, 859 N Lawrence St). Joseph Sutow texted
+  // "James and Harrison said we could crop out the wooden sidewalk forms ...
+  // Photos 1-5 and 38-40" two hours after the photos went out. The job was
+  // still in REVIEW for its video, so it read as "pre-delivery work" and went
+  // to nobody. "Already delivered" for a PHOTO ask is the photo job's own
+  // delivery: the ask is filed on the job (it shows on the photo job as
+  // "Client asked: ..." and holds the next delivery until it is done), the
+  // photo job reopens as "Client asked for changes after delivery", and the
+  // work goes on the delivery owner's list, assigned (photoDelivery/clientAsked).
+  if (opts.clientId && !checked.issue) {
+    try {
+      const channel = opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call";
+      const photoAsks = (decision?.asks ?? []).filter((a) => a.kind === "SPECIAL_REQUEST" && (a.medium === "photo" || a.medium === "both"));
+      const wanted =
+        photoAsks.length > 0
+          ? photoAsks.map((a) => ({ projectId: a.projectHint ?? (revision ? anchorProjectId : null) ?? effProjectId, words: a.text || opts.text, summary: a.summary }))
+          : revisionSignal && askMedium(opts.text) === "photo"
+            ? [{ projectId: anchorProjectId ?? effProjectId, words: opts.text, summary: decision?.title ?? null }]
+            : [];
+      const done = new Set<string>();
+      for (const w of wanted) {
+        if (!w.projectId || done.has(w.projectId)) continue;
+        done.add(w.projectId);
+        const { photosDeliveredAt, photoAskAfterDelivery } = await import("@/lib/photoDelivery/clientAsked");
+        const job = await prisma.photoJob.findUnique({ where: { projectId: w.projectId }, select: { stage: true, deliveredAt: true, stageChangedAt: true } });
+        if (!photosDeliveredAt(job)) continue;
+        const { createAsk, messageAskKey } = await import("@/lib/clientAsks");
+        const who = opts.contactName?.trim() || opts.clientName?.trim() || null;
+        await createAsk({
+          clientId: opts.clientId,
+          projectId: w.projectId,
+          kind: "SPECIAL_REQUEST",
+          medium: "photo",
+          text: clip(w.words, 4000),
+          summary: w.summary?.trim() ? clip(w.summary.trim(), 240) : null,
+          source: channel,
+          sourceRef: opts.commLogId ?? null,
+          askedBy: who,
+          holdsDelivery: true,
+          // The key fileAsksFromMessage would use: one row per message and job, whichever files first.
+          dedupeKey: messageAskKey(opts.clientId, w.projectId, "SPECIAL_REQUEST", opts.text),
+          by: "hub (client text after the photos went out)",
+        });
+        await photoAskAfterDelivery({ projectId: w.projectId, words: w.words, by: who ?? "client", askedBy: who, clientId: opts.clientId });
+      }
+    } catch (e) {
+      console.error("[photo-delivery] filing a client's photo ask after delivery failed", opts.clientId, e);
     }
   }
 

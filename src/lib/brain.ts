@@ -110,6 +110,17 @@ export async function routeCommTask(input: {
     ]);
 
     const titleById = new Map(orders.map((o) => [o.id, o.title.split(",")[0]]));
+    // PHOTOS GO OUT ON THEIR OWN (Oct 21 2026, 859 N Lawrence St): the photo
+    // job's own delivery, so "crop out the forms in photos 1-5" on an order
+    // still in REVIEW for its video reads as a change to delivered photos,
+    // not "pre-delivery work". A read that fails just leaves it unsaid.
+    const photoJobs = orders.length
+      ? await prisma.photoJob
+          .findMany({ where: { projectId: { in: orders.map((o) => o.id) } }, select: { projectId: true, stage: true, deliveredAt: true, stageChangedAt: true } })
+          .catch(() => [] as { projectId: string; stage: string; deliveredAt: Date | null; stageChangedAt: Date }[])
+      : [];
+    const { photosDeliveredAt } = await import("@/lib/photoDelivery/clientAsked");
+    const photosOut = new Map(photoJobs.map((j) => [j.projectId, photosDeliveredAt(j)]));
 
     const ctx: BrainContext = {
       channel: input.channel,
@@ -123,6 +134,7 @@ export async function routeCommTask(input: {
         status: o.status,
         due: o.deliveryDue ? etDate(o.deliveryDue) : null,
         delivered: o.deliveredAt ? etDate(o.deliveredAt) : null,
+        photosDelivered: (() => { const at = photosOut.get(o.id); return at ? etDate(at) : null; })(),
         inRevision: !!o.revisionRequestedAt,
       })),
       openTasks: openTasks.map((t) => ({

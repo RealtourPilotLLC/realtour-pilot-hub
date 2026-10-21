@@ -42,7 +42,11 @@ import { authEnforcedNow } from "@/lib/auth/enforced";
 // request, when Aryeo confirms or cancels the session (sessionRequests).
 //
 // Asks on a job we already delivered are NOT filed here: those become revision
-// briefs (comms.raiseRevision) and the revision machinery owns them.
+// briefs (comms.raiseRevision) and the revision machinery owns them. One
+// exception (Oct 21 2026, 859 N Lawrence St): a request about photos the photo
+// job already delivered is filed too (comms, photoDelivery/clientAsked), so it
+// sits on the reopened photo job until it is done; asked after the delivery,
+// it does not close with it (closesOnDelivery).
 //
 // SIMPLIFIED (Oct 19 2026, evening audit). Only a client's own words (a text,
 // an email, a call) or an ask staff typed for them is an ask:
@@ -63,7 +67,9 @@ import { authEnforcedNow } from "@/lib/auth/enforced";
 export type AskKind = "SPECIAL_REQUEST" | "SCHEDULING";
 export type AskState = "OPEN" | "DONE" | "CONFIRMED" | "NOT_NEEDED";
 export type AskMediumValue = "video" | "photo" | "both" | "unclear";
-export type AskSource = "text" | "email" | "call" | "order_note" | "portal" | "staff" | "aryeo";
+/** "wrapup" (Oct 21 2026): the photographer's removal notes, filed by Photo Delivery (photoDelivery/clientAsked) so they are ticked off like a request; never on the boards.
+ *  Photo Delivery also files the order's photo notes again under "order_note" (dedupe key "photo-order-note:…"), for the photo job only. */
+export type AskSource = "text" | "email" | "call" | "order_note" | "portal" | "staff" | "aryeo" | "wrapup";
 
 export const ASK_KINDS: readonly AskKind[] = ["SPECIAL_REQUEST", "SCHEDULING"];
 const MEDIA: readonly AskMediumValue[] = ["video", "photo", "both", "unclear"];
@@ -134,7 +140,11 @@ export function closesOnDelivery(
   p: { status: string; deliveredAt: Date | null } | null | undefined,
 ): boolean {
   if (!p || jobInFlight(p)) return false;
-  if (a.kind !== "SCHEDULING") return true;
+  // Oct 21 2026 (859 N Lawrence St): a special request asked AFTER the job
+  // went out is about the delivered work (Photo Delivery files one when the
+  // client asks for changes to photos already delivered); delivery cannot
+  // have answered it. One asked before, or on a cancelled job, still closes.
+  if (a.kind !== "SCHEDULING") return p.status === "CANCELLED" || !p.deliveredAt || a.askedAt.getTime() < p.deliveredAt.getTime();
   return !!p.deliveredAt && a.askedAt.getTime() < p.deliveredAt.getTime();
 }
 
@@ -412,6 +422,14 @@ export async function addAskByHand(input: { projectId: string; text: string; med
   });
   if (!r) return { ok: false, message: "Write what the client asked for." };
   await timeline(input.projectId, `Client ask added by ${input.by}: ${clip(text, 200)}`);
+  // Oct 21 2026: a photo request on photos already delivered reopens the photo
+  // job and goes on the delivery owner's list (photoDelivery/clientAsked).
+  const m = asMedium(input.medium);
+  if (r.created && (m === "photo" || m === "both")) {
+    const { photoAskAfterDelivery } = await import("@/lib/photoDelivery/clientAsked");
+    const after = await photoAskAfterDelivery({ projectId: input.projectId, words: text, by: input.by, clientId: p.clientId });
+    if (after.reopened) return { ok: true, message: `Added to ${streetOf(p.title) ?? "the job"}. The photos were already delivered, so the photo job is reopened for it.` };
+  }
   return { ok: true, message: `Added to ${streetOf(p.title) ?? "the job"}.` };
 }
 
@@ -725,6 +743,34 @@ export function orderAskCandidates(
 }
 
 /**
+ * One job's order notes and add-ons, read off the order exactly as the
+ * "Before you send" box reads them (lib/jobChecks: orderAskCandidates over the
+ * Aryeo appointments' customer notes, access and logistics lines dropped).
+ * Oct 21 2026 (859 N Lawrence St): Photo Delivery reads the same thing, so the
+ * customer's "Wooden side walk forms ... photoshopped in photos" order note is
+ * an item on the photo job (photoDelivery/clientAsked). One reader for both;
+ * jobChecks can call this instead of its own select. Pure apart from the read.
+ */
+export async function orderNotesOf(projectId: string): Promise<OrderAskCandidate[]> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      id: true, clientId: true, createdAt: true,
+      client: { select: { name: true } },
+      appointments: { orderBy: { startAt: "asc" }, select: { aryeoId: true, description: true, createdAt: true } },
+      orderItems: { select: { title: true, isCanceled: true } },
+      deliverables: { select: { productTitle: true, removedFromOrderAt: true } },
+    },
+  });
+  if (!p) return [];
+  const [{ aryeoCustomerNote }, { isAccessNote }, { askMedium }] = await Promise.all([import("@/lib/shoot"), import("@/lib/specialRequests"), import("@/lib/comms")]);
+  return orderAskCandidates(
+    { id: p.id, clientId: p.clientId, clientName: p.client?.name ?? null, createdAt: p.createdAt, appointments: p.appointments, orderItems: p.orderItems, deliverables: p.deliverables },
+    { customerNote: aryeoCustomerNote, isAccessNote, askMedium },
+  );
+}
+
+/**
  * RETIRED (Oct 19 2026): an order's notes and add-ons are no longer filed as
  * asks. They show on the job's "Before you send" box as notes (lib/jobChecks
  * reads them straight off the order). Kept so an older caller files nothing.
@@ -925,7 +971,7 @@ export type AskView = {
 };
 
 const SOURCE_WORDS: Record<string, string> = {
-  text: "Text", email: "Email", call: "Call", order_note: "Order note", portal: "Portal", staff: "Added by staff", aryeo: "Aryeo",
+  text: "Text", email: "Email", call: "Call", order_note: "Order note", portal: "Portal", staff: "Added by staff", aryeo: "Aryeo", wrapup: "Wrap-up",
 };
 export const sourceWords = (s: string) => SOURCE_WORDS[s] ?? s;
 

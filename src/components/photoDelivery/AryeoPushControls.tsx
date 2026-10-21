@@ -89,14 +89,25 @@ export function aryeoPushLine(push: AryeoPushView): { text: string; tone: "muted
   return null;
 }
 
-/** Kyle's presses, each with its confirm: Approve and deliver, Approve and upload to Aryeo (and "Upload anyway"), Deliver in Aryeo. */
+/** Oct 21 2026: the approve summary ("You're delivering with 6 exterior issues ignored (…)") on top of a delivery confirm. Shown, never a block. */
+function withWarning(warning: string | null | undefined, body: string) {
+  if (!warning) return body;
+  return (
+    <>
+      <span className="mb-2 block font-medium text-warning">{warning}</span>
+      <span className="block">{body} Go back to look at them first, or deliver as they are.</span>
+    </>
+  );
+}
+
+/** Kyle's presses, each with its confirm: Approve and deliver, Approve and upload to Aryeo (and "Upload anyway"), Deliver in Aryeo. `warning`: the approve summary. */
 export function useAryeoPushActions() {
   const { jobId, run, confirm, notify } = useJob();
-  const approve = async (deliver: boolean) => {
+  const approve = async (deliver: boolean, warning?: string | null) => {
     if (deliver) {
       const ok = await confirm({
         title: "Approve and deliver?",
-        body: "The hub puts the photos on the Aryeo listing in this order, then delivers it. The listing's customers get Aryeo's usual delivery email, and the hub checks the delivery afterwards.",
+        body: withWarning(warning, "The hub puts the photos on the Aryeo listing in this order, then delivers it. The listing's customers get Aryeo's usual delivery email, and the hub checks the delivery afterwards."),
         confirmLabel: "Approve and deliver",
       });
       if (!ok) return;
@@ -109,10 +120,10 @@ export function useAryeoPushActions() {
     }
     notify(r.ok ? "ok" : "err", r.message);
   };
-  const deliver = async () => {
+  const deliver = async (warning?: string | null) => {
     const ok = await confirm({
       title: "Deliver this listing in Aryeo?",
-      body: "The hub presses Aryeo's Deliver Listing. The listing's customers get Aryeo's usual delivery email, and the hub checks the photo count afterwards.",
+      body: withWarning(warning, "The hub presses Aryeo's Deliver Listing. The listing's customers get Aryeo's usual delivery email, and the hub checks the photo count afterwards."),
       confirmLabel: "Deliver in Aryeo",
     });
     if (ok) await run(() => deliverInAryeoAction(jobId));

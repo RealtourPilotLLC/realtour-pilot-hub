@@ -794,12 +794,14 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
               usedBrain = true;
               if (!decision.actionable) {
                 handled = true;
-              } else if (decision.mergeIntoTaskId) {
-                const { mergeIntoExistingTask } = await import("@/lib/tasks");
-                await mergeIntoExistingTask(decision.mergeIntoTaskId, { title: decision.title, detail: decision.detail, priority: decision.priority, snippet: text });
-                handled = true;
               } else {
-                aiTitle = decision.title; aiDetail = decision.detail; aiPriority = decision.priority;
+                // Oct 21 2026: merged only into the SAME request (tasks.isSameRequest);
+                // refused, the message becomes its own follow-up below, never lost.
+                if (decision.mergeIntoTaskId) {
+                  const { mergeIntoExistingTask } = await import("@/lib/tasks");
+                  handled = await mergeIntoExistingTask(decision.mergeIntoTaskId, { title: decision.title, detail: decision.detail, priority: decision.priority, snippet: text }, { sameRequestOnly: true });
+                }
+                if (!handled) { aiTitle = decision.title; aiDetail = decision.detail; aiPriority = decision.priority; }
               }
             }
           } catch { /* fall through to the single-message helper */ }

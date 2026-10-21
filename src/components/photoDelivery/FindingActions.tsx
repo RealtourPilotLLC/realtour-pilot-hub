@@ -40,11 +40,19 @@ export function FindingActions({ findings, className, showFix = true }: { findin
   // Huddle finding 5: why the automatic plan fixed or skipped it.
   const notes = [...new Set(findings.map((f) => f.planNote).filter((x): x is string => !!x))];
   const planLine = notes.length === 1 ? <p className="w-full text-[12px] text-muted">Automatic plan: {notes[0]}</p> : null;
+  // Oct 21 2026: the client asked for this to be removed (an order note, a text, the wrap-up).
+  const asked = findings.find((f) => f.clientAsk)?.clientAsk ?? null;
+  const askedLine = asked ? (
+    <p className="w-full text-[12px] font-medium text-warning">
+      {asked.label}: &ldquo;{asked.what}&rdquo;. Fix it, or answer the request first (Deliver panel) before setting it aside.
+    </p>
+  ) : null;
   if (!open.length && !undoable.length) {
-    if (!inFix.length && !planLine) return null;
+    if (!inFix.length && !planLine && !askedLine) return null;
     const fixed = inFix.every((f) => f.status === "FIXED");
     return (
       <div className={cn("flex flex-wrap gap-1.5", className)}>
+        {askedLine}
         {inFix.length > 0 && (
           <p className="w-full text-[12px] text-muted">{fixed ? "Fixed. To undo, open the photo and restore an earlier version." : "Fix running."}</p>
         )}
@@ -55,6 +63,7 @@ export function FindingActions({ findings, className, showFix = true }: { findin
   if (!open.length) {
     return (
       <div className={cn("flex flex-wrap gap-1.5", className)}>
+        {askedLine}
         <button type="button" className={btn} disabled={pending} onClick={() => void decide(undoable, "OPEN")}>
           <Undo2 aria-hidden className="size-3.5" /> Undo
         </button>
@@ -95,6 +104,7 @@ export function FindingActions({ findings, className, showFix = true }: { findin
   const canStopFlagging = viewer.isOwner && ruleIds.length === 1 && ruleIds[0] !== "OTHER_DEFECT" && ruleIds[0] !== "FIX_DAMAGE_AI_EDIT" && !findings.some((f) => f.alwaysFixed);
   return (
     <div className={cn("flex flex-wrap gap-1.5", className)} role="group" aria-label="Decide">
+      {askedLine}
       {showFix && fixable.length > 0 && (
         <button
           type="button"
