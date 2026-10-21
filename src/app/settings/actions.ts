@@ -8,7 +8,7 @@ import {
   turnaroundRules, internalAlertRules, textTemplates,
   type EditorRoutingRules, type AutoTextRules, type TurnaroundRules,
   type InternalAlertRules, type TextTemplates,
-  reviewRoomRules, type ReviewRoomRules,
+  reviewRoomRules, type ReviewRoomRules, EVENING_SEND_HOURS,
   topazSettings, saveTopazSettings, type TopazSettings,
 } from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
@@ -170,13 +170,24 @@ export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ o
     if (photosProblem) {
       return { ok: false, message: `Not saved. ${photosProblem} Give it two hours in the same day, the earlier one first — 4pm to 7pm. Nothing on this card was changed.` };
     }
-    // The two single send-hours are read through the same hr() fallback, so an
-    // out-of-range one would be stored and then quietly ignored in favour of
-    // 7pm / 10pm. Same rule, same refusal — "the next run follows these rules"
-    // has to be true of every field on the card, not just most of them.
+    // THE TWO SEND HOURS ARE 7 PM OR 10 PM ET, NOTHING ELSE (Oct 21 2026,
+    // audit H23). The evening cron only ever acts at those two Eastern hours
+    // in every season (lib/settings EVENING_SEND_HOURS), and the reader moves
+    // any other stored hour to the nearest of them. So any other hour is
+    // refused at the door rather than saved and quietly moved: "the next run
+    // follows these rules" has to be true of every field on the card.
+    const realHour = (n: unknown) => typeof n === "number" && (EVENING_SEND_HOURS as readonly number[]).includes(n);
     for (const [label, hour] of [["The upload reminder", merged.uploadReminder.hour], ["The late-night chaser", merged.uploadChaser.hour]] as const) {
-      if (!hourOk(hour)) return { ok: false, message: `Not saved. ${label}'s send time has to be a whole hour between 0 and 23. Nothing on this card was changed.` };
+      if (!realHour(hour)) return { ok: false, message: `Not saved. ${label} can go out at 7 PM or 10 PM Eastern, the two times the evening run fires all year. Nothing on this card was changed.` };
     }
+    // Both on at the same hour: the evening run sends the reminder at that
+    // hour and never reaches the chaser, so the chaser would be on in name only.
+    if (merged.uploadReminder.enabled && merged.uploadChaser.enabled && merged.uploadReminder.hour === merged.uploadChaser.hour) {
+      return { ok: false, message: "Not saved. The upload reminder and the late-night chaser can't both go out at the same hour: only the reminder would be sent. Put one at 7 PM and the other at 10 PM, or switch one off. Nothing on this card was changed." };
+    }
+    // Store exactly the two fields each send time has.
+    merged.uploadReminder = { enabled: merged.uploadReminder.enabled !== false, hour: merged.uploadReminder.hour };
+    merged.uploadChaser = { enabled: merged.uploadChaser.enabled !== false, hour: merged.uploadChaser.hour };
 
     // The window is clamped again on read; what only THIS layer can check is
     // that the on-call id still points at somebody on the roster. A dangling id
@@ -516,47 +527,11 @@ export async function loadTopazRules(): Promise<TopazSettings> {
   return topazSettings();
 }
 
-// ---- Pay view: My Pay vs My Performance -------------------------------------
-// Jordan, Sep 18 2026 (salary transition), widened Oct 14 to every login but
-// the owner. While paused, everyone but Jordan gets My Performance (scorecard
-// and bonus) and no pay figures. OWNER only: it is a compensation decision,
-// not an operations one. Copy rewritten Oct 20 2026 (audit G7): it still
-// described the old "page hit a problem" screen and photographers only.
-export async function savePayVisibility(paused: boolean): Promise<{ ok: boolean; message: string }> {
-  try {
-    const me = await requireSettingsActor();
-    // OWNER only, checked after the admin gate: Kyle runs operations, and what
-    // a photographer is paid — and is shown about it — is not operations.
-    if (me && me.role !== "OWNER") return { ok: false, message: "Only Jordan can change this one." };
-    const { payVisibilityRules } = await import("@/lib/settings");
-    const now = await payVisibilityRules();
-    // pausedAt is the moment it STARTED, so a re-save does not reset the clock
-    // the settings card counts from.
-    const next = {
-      photographerPayPaused: paused,
-      pausedAt: paused ? now.pausedAt ?? new Date().toISOString() : null,
-      pausedBy: paused ? now.pausedBy ?? me?.name ?? me?.email ?? "The owner" : null,
-    };
-    await putSetting("pay_visibility", next, me?.email ?? null);
-    revalidatePath("/settings");
-    revalidatePath("/my-pay");
-    revalidatePath("/shoot");
-    return {
-      ok: true,
-      message: paused
-        ? "Pay hidden. Everyone but you now sees My Performance (their scorecard and bonus), and the pay card is off their shoot screens."
-        : "Pay showing. Every login with a My Pay page, Harrison and James included, can see their own dollar pay again.",
-    };
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
-  }
-}
-export async function loadPayVisibility(): Promise<{ paused: boolean; pausedAtISO: string | null; pausedBy: string | null }> {
-  await requireSettingsActor();
-  const { payVisibilityRules } = await import("@/lib/settings");
-  const r = await payVisibilityRules();
-  return { paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy };
-}
+// ---- Pay view: retired Oct 21 2026 -----------------------------------------
+// savePayVisibility / loadPayVisibility served the "Team pay view" switch.
+// Jordan made "only the owner sees pay" permanent, so there is nothing left to
+// save: lib/settings payHiddenFor() is the rule, and the old `pay_visibility`
+// row is no longer read.
 
 // ---------------------------------------------------------------------------
 // CLIENT EMAIL COPIES (Jordan, Oct 12 2026): "Anytime a client gets an email, I

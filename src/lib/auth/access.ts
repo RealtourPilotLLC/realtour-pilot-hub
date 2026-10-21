@@ -53,7 +53,8 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // "sales" is the merged Finance hub — Revenue (old /sales) + Unpaid (old
   // /billing) + Payroll (old /payouts) are its tabs now. /billing and /payouts
   // are redirect stubs, so "billing"/"payouts" no longer need their own keys.
-  // Per-tab gating lives on the page: Unpaid = admin-visible, Payroll = owner-only.
+  // Per-tab gating lives on the page: every tab but Unpaid is owner-only, and
+  // Unpaid shows a non-owner with a `sales` grant no amounts (canSeeMoney).
   { key: "sales", label: "Finance", href: "/sales" },
   // Leading indicators: bookings by ORDER date, service mix, client spend trend.
   { key: "trends", label: "Trends", href: "/trends" },
@@ -211,6 +212,13 @@ export function contentTier(role: string): "OWNER" | "ADMIN" | "CREATIVE" {
 // figures. Accepts an app role ("ADMIN") or a content tier ("CREATIVE") because
 // pages think in roles and Ask the Hub thinks in tiers; "OWNER" means the same
 // thing in both vocabularies, so one comparison covers both.
+//
+// A PAGE GRANT IS NEVER A MONEY GRANT (Jordan, Oct 21 2026). canAccess() above
+// decides whether someone may OPEN a page, and a per-person override can open
+// Finance, Trends or the Catalog for a non-owner. What that page then prints
+// in dollars is this function's call, never canAccess's: pages pass the
+// viewer's role here (the previewed role under "view as") and render amounts
+// only when it says yes. Nothing about a permissions blob can make it say yes.
 export function canSeeMoney(roleOrTier: string | null | undefined): boolean {
   return roleOrTier === "OWNER";
 }

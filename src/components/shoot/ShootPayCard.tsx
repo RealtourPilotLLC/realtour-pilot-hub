@@ -16,11 +16,12 @@ import { usd2 as usd } from "@/lib/money";
 // "Your pay for this shoot" reads to the person who did the work as "that was
 // worth nothing" (readiness audit, Sep 2).
 export async function ShootPayCard({ projectId, memberId }: { projectId: string; memberId: string }) {
-  // THE SAME DOLLARS, ON A DIFFERENT SCREEN (Jordan, Sep 18). Pausing /my-pay
-  // and leaving this card up would pause nothing — the per-shoot figure is the
-  // number the page adds up. It goes quiet rather than erroring: a failure card
-  // on every shoot in the list reads as the app falling apart, which is louder
-  // than the pause was meant to be.
+  // THE SAME DOLLARS, ON A DIFFERENT SCREEN (Jordan, Sep 18). Hiding /my-pay
+  // and leaving this card up would hide nothing — the per-shoot figure is the
+  // number the page adds up. Since Oct 21 2026 the rule is permanent: only the
+  // owner sees pay (payHiddenFor; a "view as" preview follows the previewed
+  // person). It goes quiet rather than erroring: a failure card on every shoot
+  // in the list reads as the app falling apart.
   const { payHiddenFor } = await import("@/lib/settings");
   const { getCurrentUser } = await import("@/lib/auth/user");
   if (await payHiddenFor(await getCurrentUser().catch(() => null))) return null;

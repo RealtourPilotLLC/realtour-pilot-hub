@@ -28,6 +28,44 @@ const hour12 = (h: number) => {
   return `${v}:00 ${am ? "AM" : "PM"}`;
 };
 
+// THE EVENING SEND TIMES (Oct 21 2026, audit H23). The reminder and the
+// chaser are sent by the evening cron, which only ever acts at 7 PM and 10 PM
+// Eastern in every season (lib/settings EVENING_SEND_HOURS; the UTC schedule in
+// vercel.json lands on other hours for half the year at most). These two
+// fields used to take any hour from 0 to 23 and say it back as if it were
+// true. Now they offer the two real times, and a stored hour that is neither
+// is shown as the time it actually goes out, with a line saying what was
+// saved. Kept as literals here: lib/settings is server-only.
+const EVENING_CHOICES = [19, 22] as const;
+
+function EveningHour({ label, value, onChange, savedAs }: { label: string; value: number; onChange: (n: number) => void; savedAs: number | null }) {
+  const id = useId();
+  return (
+    <div className="mt-2 border-t border-border pt-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label htmlFor={id} className="text-[13px] text-muted">Sends at</label>
+        <select
+          id={id}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="min-h-9 rounded-lg border border-border bg-surface-2 px-2 py-1 text-base outline-none focus:border-brand sm:min-h-0 sm:text-sm"
+          aria-label={label}
+        >
+          {EVENING_CHOICES.map((h) => (
+            <option key={h} value={h}>{hour12(h)} ET</option>
+          ))}
+        </select>
+        <span className="text-[11px] text-muted-2">The evening run fires at 7 PM and 10 PM Eastern all year, so those are the two choices.</span>
+      </div>
+      {savedAs != null && (
+        <p className="mt-1.5 text-[13px] text-warning">
+          Saved as {hour12(savedAs)}, which isn&rsquo;t one of the evening run&rsquo;s two year-round times. It goes out at {hour12(value)}, the nearest one. Save to make that the setting.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Num({ label, value, onChange, min, max, suffix, wide }: { label: string; value: number; onChange: (n: number) => void; min: number; max: number; suffix?: string; wide?: boolean }) {
   const id = useId();
   return (
@@ -179,7 +217,14 @@ function coverageSentence(c: InternalAlertRules["coverage"], onCall: OnCallCandi
   return `Somebody is on ${window}. ${rota} ${runs}`;
 }
 
-export function InternalAlertSettings({ initial }: { initial: InternalAlertRules }) {
+export function InternalAlertSettings({
+  initial,
+  offSchedule = { uploadReminder: null, uploadChaser: null },
+}: {
+  initial: InternalAlertRules;
+  /** A stored evening hour that isn't a real firing time (lib/settings eveningHoursOffSchedule). */
+  offSchedule?: { uploadReminder: number | null; uploadChaser: number | null };
+}) {
   const { value: r, setValue: setR, busy, feedback, dirty, save } = useSettingsDraft(initial);
   const set = (patch: Partial<InternalAlertRules>) => { setR((p) => ({ ...p, ...patch })); };
   const setCover = (patch: Partial<InternalAlertRules["coverage"]>) => set({ coverage: { ...r.coverage, ...patch } });
@@ -255,10 +300,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           </div>
           <Toggle on={r.uploadReminder.enabled} onChange={(v) => set({ uploadReminder: { ...r.uploadReminder, enabled: v } })} label="Upload reminder" />
         </div>
-        <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
-          <span className="text-[13px] text-muted">Sends at</span>
-          <Num label="Upload reminder hour" value={r.uploadReminder.hour} onChange={(n) => set({ uploadReminder: { ...r.uploadReminder, hour: n } })} min={0} max={23} suffix={`ET (${hour12(r.uploadReminder.hour)})`} />
-        </div>
+        <EveningHour label="Upload reminder send time" value={r.uploadReminder.hour} onChange={(n) => set({ uploadReminder: { ...r.uploadReminder, hour: n } })} savedAs={offSchedule.uploadReminder} />
       </div>
 
       <div className="rounded-lg border border-border p-3">
@@ -270,10 +312,12 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           </div>
           <Toggle on={r.uploadChaser.enabled} onChange={(v) => set({ uploadChaser: { ...r.uploadChaser, enabled: v } })} label="Upload chaser" />
         </div>
-        <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
-          <span className="text-[13px] text-muted">Sends at</span>
-          <Num label="Upload chaser hour" value={r.uploadChaser.hour} onChange={(n) => set({ uploadChaser: { ...r.uploadChaser, hour: n } })} min={0} max={23} suffix={`ET (${hour12(r.uploadChaser.hour)})`} />
-        </div>
+        <EveningHour label="Late-night chaser send time" value={r.uploadChaser.hour} onChange={(n) => set({ uploadChaser: { ...r.uploadChaser, hour: n } })} savedAs={offSchedule.uploadChaser} />
+        {r.uploadReminder.enabled && r.uploadChaser.enabled && r.uploadReminder.hour === r.uploadChaser.hour && (
+          <p className="mt-1.5 text-[13px] text-warning">
+            The reminder and the chaser are both set to {hour12(r.uploadChaser.hour)}. Only the reminder would go out, so this can&rsquo;t be saved. Put one at 7 PM and the other at 10 PM, or switch one off.
+          </p>
+        )}
       </div>
 
       <div className="rounded-lg border border-border p-3">
