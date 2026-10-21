@@ -45,6 +45,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 
 const PORT = Number(process.env.DRILL_PORT ?? 5624);
 const REPO = path.resolve(__dirname, "../..");
@@ -93,10 +94,10 @@ type Mail = { to: string; subject: string; body: string };
 const mails: Mail[] = [];
 function decodeMime(raw: string): Mail {
   const text = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-  const [head, ...rest] = text.split("\r\n\r\n");
+  const [head] = text.split("\r\n\r\n");
   const to = /^To: (.+)$/m.exec(head)?.[1] ?? "";
   const subjB64 = /^Subject: =\?UTF-8\?B\?(.+)\?=$/m.exec(head)?.[1] ?? "";
-  return { to, subject: Buffer.from(subjB64, "base64").toString("utf8"), body: rest.join("\r\n\r\n") };
+  return { to, subject: Buffer.from(subjB64, "base64").toString("utf8"), body: plainTextOfMime(text) };
 }
 
 const fence = fenceFetch(async (url, init) => {

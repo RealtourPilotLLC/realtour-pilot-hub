@@ -42,6 +42,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 
 const PORT = Number(process.env.DRILL_PORT ?? 6960);
 
@@ -87,12 +88,14 @@ const fence = fenceFetch(async (url, init) => {
     const raw = Buffer.from(sent.raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
     const cut = raw.indexOf("\r\n\r\n");
     const head = raw.slice(0, cut);
-    const body = raw.slice(cut + 4);
+    // Oct 21 2026: a client email is multipart/alternative now (plain text +
+    // the branded HTML of the same words); `body` is its plain words.
+    const body = plainTextOfMime(raw);
     const lines = head.split("\r\n");
     const val = (name: string) => lines.find((l) => l.toLowerCase().startsWith(`${name.toLowerCase()}: `))?.slice(name.length + 2) ?? "";
     const subjEnc = /^=\?UTF-8\?B\?(.+)\?=$/.exec(val("Subject"))?.[1];
     const bccLines = lines.filter((l) => /^bcc:/i.test(l)).length;
-    const delivered = [...lines.filter((l) => !/^bcc:/i.test(l)), "", body].join("\r\n");
+    const delivered = [...lines.filter((l) => !/^bcc:/i.test(l)), "", raw.slice(cut + 4)].join("\r\n");
     const to = val("To").trim().toLowerCase();
     const m: Mail = {
       n: mails.length + 1, raw, head, body, to, bcc: bccLines ? val("Bcc").trim().toLowerCase() : null, bccLines,

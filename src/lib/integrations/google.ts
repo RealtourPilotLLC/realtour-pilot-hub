@@ -285,6 +285,15 @@ export async function sendGmailNew(opts: {
    *  Gmail delivers to it and strips it from what the To recipient receives. An
    *  address that is not one clean address, or is the recipient, is ignored. */
   bcc?: string | null;
+  /** Oct 21 2026: the branded HTML version of `body` (lib/emailHtml). With it
+   *  the message is multipart/alternative: `body` first as text/plain, then
+   *  this as text/html, both UTF-8 and base64. Without it the message is
+   *  byte-for-byte the plain one it always was. */
+  html?: string | null;
+  /** Oct 21 2026: visible copies (a client's "Also email" addresses). Each must
+   *  be one clean address; the recipient, a duplicate or anything carrying a
+   *  header break is dropped, and at most ten are kept. */
+  cc?: readonly string[] | null;
 }): Promise<
   | { ok: true; to: string; id: string | null }
   | { ok: false; error: string; needsReconnect?: boolean; status?: number }
@@ -306,16 +315,27 @@ export async function sendGmailNew(opts: {
     return { ok: false, error: "Google token expired — reconnect Gmail in Connections.", needsReconnect: true, status: 401 };
   }
   const bcc = bccHeader(opts.bcc ?? null, to);
-  const mime = [
+  // Oct 21 2026: Cc after the Bcc line, so a message without copies keeps its
+  // headers exactly as before (and the Bcc stays right under To).
+  const cc: string[] = [];
+  for (const addr of opts.cc ?? []) {
+    const v = (addr ?? "").trim().toLowerCase();
+    if (!v || /[\r\n,;<>"\s]/.test(v) || !/^[^@]+@[^@]+\.[^@]+$/.test(v) || v === to.toLowerCase() || cc.includes(v)) continue;
+    if (cc.push(v) >= 10) break;
+  }
+  const head = [
     `To: ${to}`,
     ...(bcc ? [`Bcc: ${bcc}`] : []),
+    ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
     `From: ${acct.email}`,
     `Subject: =?UTF-8?B?${Buffer.from(opts.subject).toString("base64")}?=`,
-    "Content-Type: text/plain; charset=UTF-8",
-    "MIME-Version: 1.0",
-    "",
-    opts.body,
-  ].join("\r\n");
+  ];
+  const alt = opts.html ? (await import("@/lib/emailHtml")).multipartAlternative({ text: opts.body, html: opts.html }) : null;
+  const mime = (
+    alt
+      ? [...head, "MIME-Version: 1.0", `Content-Type: ${alt.contentType}`, "", alt.body]
+      : [...head, "Content-Type: text/plain; charset=UTF-8", "MIME-Version: 1.0", "", opts.body]
+  ).join("\r\n");
   const raw = Buffer.from(mime).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST",

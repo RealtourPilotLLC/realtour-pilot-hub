@@ -236,7 +236,7 @@ export type OutboxProvider = {
    *  deliver() runs it AFTER the row is marked accepted, so the ledger is never
    *  waiting on it, and a failure in it is swallowed: it never changes what the
    *  client's message is recorded as. */
-  send(row: Pick<OutboxRow, "channel" | "toRef" | "body" | "dedupeKey" | "extraToRefsJson" | "mediaUrlsJson">): Promise<{ providerId: string | null; afterAccepted?: () => Promise<unknown> }>;
+  send(row: Pick<OutboxRow, "channel" | "toRef" | "body" | "dedupeKey" | "extraToRefsJson" | "mediaUrlsJson"> & Partial<Pick<OutboxRow, "clientId">>): Promise<{ providerId: string | null; afterAccepted?: () => Promise<unknown> }>;
 };
 
 // ---- the store seam ---------------------------------------------------------
@@ -405,8 +405,23 @@ export function realOutboxProvider(): OutboxProvider {
         // copy rides on this very message; a message with a one-use sign-in
         // link gets a separate redacted copy instead, after acceptance. The
         // plan never throws (an unreadable setting = on, to info@).
-        const { planClientEmailCopy, bccOf, sendClientEmailCopy } = await import("@/lib/clientEmailMonitor");
-        const plan = await planClientEmailCopy({ to: row.toRef, body: row.body, internal: kind === "staff" });
+        const { planClientEmailCopy, bccOf, sendClientEmailCopy, planAlsoEmail, sendAlsoEmailCopies } = await import("@/lib/clientEmailMonitor");
+        const internal = kind === "staff";
+        const plan = await planClientEmailCopy({ to: row.toRef, body: row.body, internal });
+        // Oct 21 2026 (Jordan: "I want the emails to be formatted really nicely
+        // and branded in our colors"). Every client email also carries the
+        // branded HTML of the same words (lib/emailHtml); `staff` stays plain.
+        // A render that fails leaves the plain message, never a failed send.
+        const { renderBrandedEmail } = await import("@/lib/emailHtml");
+        const branded = (text: string): string | null => {
+          if (internal) return null;
+          try { return renderBrandedEmail({ subject, text }); } catch { return null; }
+        };
+        const html = branded(row.body);
+        // Oct 21 2026: the client's "Also email" addresses (lib/clientEmailMonitor
+        // planAlsoEmail): a visible Cc, or, when this message carries a one-use
+        // sign-in link, a separate copy each after acceptance. Never throws.
+        const also = internal ? null : await planAlsoEmail({ clientId: row.clientId ?? null, kind, to: row.toRef, body: row.body });
         const res = await sendGmailNew({
           mailbox: "info@realtourpilot.com",
           to: row.toRef,
@@ -415,11 +430,17 @@ export function realOutboxProvider(): OutboxProvider {
           // CP-15: info@ or nothing — never a silent send from another mailbox.
           strict: true,
           bcc: bccOf(plan),
+          ...(html ? { html } : {}),
+          ...(also?.cc.length ? { cc: also.cc } : {}),
         });
         if (res.ok) {
+          const after: (() => Promise<unknown>)[] = [];
+          if (plan.mode === "copy") after.push(() => sendClientEmailCopy(plan, { subject, html: branded(plan.body) }));
+          const copy = also?.copy;
+          if (copy) after.push(() => sendAlsoEmailCopies(copy, { subject, html: branded(copy.body) }));
           return {
             providerId: res.id ?? null,
-            ...(plan.mode === "copy" ? { afterAccepted: () => sendClientEmailCopy(plan, { subject }) } : {}),
+            ...(after.length ? { afterAccepted: async () => { for (const f of after) await f().catch(() => {}); } } : {}),
           };
         }
         // Gmail answers in words, not exceptions. A refusal we understand (no
@@ -464,6 +485,9 @@ export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): 
     case "portal_login": return "Your Realtour Pilot sign-in link";
     // Oct 12 2026: a seat's one welcome (portalWelcomeKey, `…:welcome`) is a
     // welcome; a later invitation to an existing portal says they were added.
+    // Oct 21 2026: the owner's "Resend the welcome email" (portalAccess
+    // portalWelcomeResendKey, `portal_invite:<seat>:welcome:<stamp>:welcome`)
+    // ends the same way, so it goes out under the welcome's subject too.
     case "portal_invite": return dedupeKey?.endsWith(":welcome") ? "Welcome to your Realtour Pilot content portal" : "You've been added to your Realtour Pilot content portal";
     case "program_reminder": return programReminderSubject(dedupeKey ?? null);
     case "script_share": return "Your scripts are ready in your Realtour Pilot portal";

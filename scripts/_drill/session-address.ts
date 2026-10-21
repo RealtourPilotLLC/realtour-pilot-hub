@@ -48,6 +48,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 // (Gmail is faked at the fence, not by module interception: the outbox reaches
 // it through a dynamic import, which Node's ESM loader serves without passing
 // the CommonJS loader the interceptor hooks.)
@@ -94,10 +95,10 @@ const fence = fenceFetch(async (url, init) => {
   if (url === "https://gmail.googleapis.com/gmail/v1/users/me/messages/send") {
     const raw = (JSON.parse(String(init?.body ?? "{}")) as { raw?: string }).raw ?? "";
     const mime = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const [head, ...rest] = mime.split("\r\n\r\n");
+    const [head] = mime.split("\r\n\r\n");
     const to = /^To: (.+)$/m.exec(head)?.[1]?.trim() ?? "";
     const subj = /^Subject: =\?UTF-8\?B\?(.+)\?=$/m.exec(head)?.[1] ?? "";
-    emails.push({ to, subject: Buffer.from(subj, "base64").toString("utf8"), body: rest.join("\r\n\r\n") });
+    emails.push({ to, subject: Buffer.from(subj, "base64").toString("utf8"), body: plainTextOfMime(mime) });
     return new Response(JSON.stringify({ id: `drill-msg-${emails.length}` }), { status: 200 });
   }
   if (url.startsWith("https://geocoding.geo.census.gov/")) {

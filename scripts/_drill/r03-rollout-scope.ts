@@ -108,6 +108,19 @@ installNextStubs();
 // ---- fake Gmail (and Aryeo's GET /customers for §11's fixture) ----------------
 type Mail = { to: string; subject: string; body: string };
 const mails: Mail[] = [];
+/** Oct 21 2026: a client email is multipart/alternative now (the plain words +
+ *  the branded HTML). The plain words of either shape. Inline rather than
+ *  lib/emailHtml: the OLD pass runs this file inside a tree that predates it. */
+function plainOf(mime: string): string {
+  const cut = mime.indexOf("\r\n\r\n");
+  const head = mime.slice(0, cut);
+  const body = mime.slice(cut + 4);
+  const boundary = /boundary="([^"]+)"/.exec(head)?.[1];
+  if (!boundary) return body;
+  const part = body.split(`--${boundary}`).find((p) => /Content-Type: text\/plain/i.test(p)) ?? "";
+  return Buffer.from(part.slice(part.indexOf("\r\n\r\n") + 4).replace(/\s+/g, ""), "base64").toString("utf8").replace(/\r\n/g, "\n");
+}
+
 const customers = createFixtureCustomers();
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
 const fence = fenceFetch(async (url, init) => {
@@ -118,9 +131,9 @@ const fence = fenceFetch(async (url, init) => {
   if (u.hostname === "gmail.googleapis.com" && u.pathname.endsWith("/messages/send")) {
     const { raw } = JSON.parse(String(init?.body ?? "{}")) as { raw: string };
     const text = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const [head, ...rest] = text.split("\r\n\r\n");
+    const [head] = text.split("\r\n\r\n");
     const subj = /^Subject: =\?UTF-8\?B\?(.+)\?=$/m.exec(head)?.[1] ?? "";
-    mails.push({ to: (/^To: (.+)$/m.exec(head)?.[1] ?? "").trim().toLowerCase(), subject: Buffer.from(subj, "base64").toString("utf8"), body: rest.join("\r\n\r\n") });
+    mails.push({ to: (/^To: (.+)$/m.exec(head)?.[1] ?? "").trim().toLowerCase(), subject: Buffer.from(subj, "base64").toString("utf8"), body: plainOf(text) });
     return json({ id: `gm-${mails.length}` });
   }
   return null;

@@ -53,6 +53,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PrismaClient } from "@prisma/client";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
+import { plainTextOfMime } from "@/lib/emailHtml";
 import { buildContentMonth } from "./_fixtures/contentMonth";
 
 const PORT = Number(process.env.DRILL_PORT ?? 5520);
@@ -76,9 +77,9 @@ const fence = fenceFetch(async (url, init) => {
   if (u.hostname === "gmail.googleapis.com" && u.pathname.endsWith("/messages/send")) {
     const { raw } = JSON.parse(String(init?.body ?? "{}")) as { raw: string };
     const text = Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    const [head, ...rest] = text.split("\r\n\r\n");
+    const [head] = text.split("\r\n\r\n");
     const subj = /^Subject: =\?UTF-8\?B\?(.+)\?=$/m.exec(head)?.[1] ?? "";
-    mails.push({ to: /^To: (.+)$/m.exec(head)?.[1] ?? "", subject: Buffer.from(subj, "base64").toString("utf8"), body: rest.join("\r\n\r\n") });
+    mails.push({ to: /^To: (.+)$/m.exec(head)?.[1] ?? "", subject: Buffer.from(subj, "base64").toString("utf8"), body: plainTextOfMime(text) });
     return json({ id: `gm-${mails.length}` });
   }
   return null;
