@@ -603,6 +603,8 @@ export type BrainOrder = {
   status: string;
   due: string | null;
   delivered: string | null;
+  /** Oct 21 2026: when the photo job delivered this order's photos (they go out before the video). */
+  photosDelivered?: string | null;
   inRevision: boolean;
 };
 export type BrainOpenTask = { id: string; type: string; about: string | null; title: string };
@@ -693,7 +695,7 @@ export async function decideCommTask(ctx: BrainContext, key?: string): Promise<B
 
   const ordersBlock = ctx.orders.length
     ? ctx.orders
-        .map((o) => `${o.id} | ${o.address} | ${o.status}${o.due ? ` | due ${o.due}` : ""}${o.delivered ? ` | delivered ${o.delivered}` : ""}${o.inRevision ? " | IN REVISION" : ""}`)
+        .map((o) => `${o.id} | ${o.address} | ${o.status}${o.due ? ` | due ${o.due}` : ""}${o.delivered ? ` | delivered ${o.delivered}` : ""}${o.photosDelivered && !o.delivered ? ` | PHOTOS DELIVERED ${o.photosDelivered}` : ""}${o.inRevision ? " | IN REVISION" : ""}`)
         .join("\n")
     : "(no orders on file)";
   const tasksBlock = ctx.openTasks.length
@@ -714,7 +716,7 @@ Message:
 ${ctx.message.slice(0, 2400)}
 """
 
-This client's orders (id | address | status | due | delivered | revision):
+This client's orders (id | address | status | due | delivered | photos delivered | revision):
 ${ordersBlock}
 
 Recent conversation (oldest first):
@@ -732,11 +734,11 @@ Rules:
 - actionable = false ONLY when the message needs no work from us: a thank-you, an emoji/reaction, "sounds good", a confirmation, or something the conversation shows is already fully handled. Otherwise true.
 - projectId: choose the order this message is about, using the addresses and the conversation. Use null only if no order clearly applies. NEVER invent an id; it must be one listed above.
 - priority: URGENT if the client is upset, it is time-sensitive, a delivery is overdue, or they explicitly need it now; HIGH for a normal question or request; MEDIUM for minor or non-urgent; LOW for FYI.
-- mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null. NEVER merge a NEW topic into a revision to-do: merging overwrites that to-do's title and summary, and a revision task must keep describing the revision. If the message is a different subject than the open to-do (a new email thread, new ideas, a different deliverable), return null and let it be its own task.
-- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. It is also FALSE when the client is sharing IDEAS, reference videos, style examples, scripts, or creative direction for their NEXT or future content (common for monthly social-content clients: "check out this video", "I like this style", "ideas for the next one") — that is a normal reply/instruction, not a revision. When in doubt, false. Read the conversation (with its times) before deciding: if our team or the client has ALREADY said this change is not needed (for example we explained it is not an issue and the client agreed or did not ask again), and the client is not asking for it again AFTER that, it is FALSE. A client repeating the same ask after our answer is still asking: TRUE.
+- mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null. NEVER merge a NEW topic into a revision to-do: merging overwrites that to-do's title and summary, and a revision task must keep describing the revision. If the message is a different subject than the open to-do (a new email thread, new ideas, a different deliverable), return null and let it be its own task. The same holds for every to-do: merging retitles it, so a different request about the same property is null, never a merge.
+- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. It is also FALSE when the client is sharing IDEAS, reference videos, style examples, scripts, or creative direction for their NEXT or future content (common for monthly social-content clients: "check out this video", "I like this style", "ideas for the next one") — that is a normal reply/instruction, not a revision. When in doubt, false. Read the conversation (with its times) before deciding: if our team or the client has ALREADY said this change is not needed (for example we explained it is not an issue and the client agreed or did not ask again), and the client is not asking for it again AFTER that, it is FALSE. A client repeating the same ask after our answer is still asking: TRUE. PHOTOS GO OUT BEFORE THE VIDEO: an order marked "PHOTOS DELIVERED <date>" has its photos delivered even while its status is still in progress (the video is being edited). A request to crop, remove, edit, retouch, swap or redo any of THOSE photos is a change to delivered work: isRevisionRequest TRUE, never "pre-delivery work".
 - flags: 0 to 4 short notes worth surfacing (e.g. "delivery 2 days overdue", "we already promised Tuesday", "asking a second time", "client sounds frustrated"). Only include real, grounded notes.
 - asks: every specific thing IN THIS MESSAGE that the client wants us to make sure of, or to arrange. [] when there is none. Only two kinds:
-  SPECIAL_REQUEST: a concrete instruction about what the photos or video must include or how they must look, for work we have NOT delivered yet (for example "all 4 lots overlaid like the Pennfield output", "add the lot numbers", "no blackened surroundings", "use this song", "get a shot of the pond"). NOT a door, gate or lockbox code or how to get in; NOT a general question, a thank-you or a status check; NOT who does the shoot or what time it starts (that is SCHEDULING or nothing); NOT a change to work we already delivered (that is isRevisionRequest).
+  SPECIAL_REQUEST: a concrete instruction about what the photos or video must include or how they must look, for work we have NOT delivered yet (for example "all 4 lots overlaid like the Pennfield output", "add the lot numbers", "no blackened surroundings", "use this song", "get a shot of the pond"). NOT a door, gate or lockbox code or how to get in; NOT a general question, a thank-you or a status check; NOT who does the shoot or what time it starts (that is SCHEDULING or nothing); NOT a change to work we already delivered (that is isRevisionRequest; photos on an order marked PHOTOS DELIVERED are delivered work).
   SCHEDULING: the client wants a shoot or session booked, moved, rescheduled, postponed or cancelled, or a different time ("we have to cancel tomorrow's appointment", "can we push it to Thursday"). NOT a calendar invitation reply or other automatic notice.
   text = the client's exact words for that ask (at most 30 words; cut longer ones); summary = what must be checked or done, plain, max 14 words, no client name, no prices or dollar amounts, no dashes; medium = which deliverable it is about; projectHint = the order id it is about (one listed above) or null when unclear. If one ask applies to several orders, list it once per order. Our team's replies never answer an ask away: list it even if we already said we would do it.
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;

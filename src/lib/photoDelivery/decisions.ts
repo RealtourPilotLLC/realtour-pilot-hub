@@ -3,7 +3,8 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { logJobEvent, releaseHold, setStage, JOB_STAGES, type JobStage } from "./jobState";
 import { photoDeliverySettings } from "./settings";
-import { ruleById, SEVERITIES, type RuleOverride, type Severity } from "./registry";
+import { isExteriorFinding, ruleById, SEVERITIES, type RuleOverride, type Severity } from "./registry";
+import { MIN_OWN_WORDS, needsOwnWords, ownWordsOk } from "./careRules";
 import { houseOverrides, mergeOverrides } from "./houseRules";
 import { jobVerdict, type JobVerdict } from "./qc/verdict";
 
@@ -52,6 +53,16 @@ const VERB: Record<DecisionStatus, string> = {
 };
 
 const clean = (s: unknown, max: number) => (typeof s === "string" ? s.replace(/\s+/g, " ").trim().slice(0, max) : "");
+
+/** The findings among these that need a person's own words to be set aside (careRules.needsOwnWords): major outside ones, and anything always fixed. */
+export async function needingOwnWords<T extends { severity: string; ruleId: string; photoId: string | null }>(list: T[]): Promise<T[]> {
+  if (!list.length) return [];
+  const { ALWAYS_FIX } = await import("./fixPolicy");
+  const photoIds = [...new Set(list.map((f) => f.photoId).filter((x): x is string => !!x))];
+  const rooms = photoIds.length ? await prisma.photoAsset.findMany({ where: { id: { in: photoIds } }, select: { id: true, roomType: true } }) : [];
+  const roomOf = new Map(rooms.map((p) => [p.id, p.roomType]));
+  return list.filter((f) => needsOwnWords({ severity: f.severity, alwaysFixed: ALWAYS_FIX.has(f.ruleId), exterior: isExteriorFinding(f.ruleId, f.photoId ? roomOf.get(f.photoId) : null) }));
+}
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 /** The house's switched-off checks, then the client's own overrides: what the job page and the paid QC group findings by. */
@@ -131,7 +142,7 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
 
   const found = await prisma.photoQcFinding.findMany({
     where: { id: { in: ids } },
-    select: { id: true, jobId: true, severity: true, status: true },
+    select: { id: true, jobId: true, severity: true, status: true, ruleId: true, photoId: true, specificIssue: true, locationText: true },
   });
   if (found.length !== ids.length) return { ok: false, message: "Some of those issues no longer exist. Reload the page." };
   const jobIds = new Set(found.map((f) => f.jobId));
@@ -149,6 +160,23 @@ export async function decideFindings(input: { findingIds: string[]; status: Deci
   }
   if (REASON_REQUIRED.includes(status) && decidable.some((f) => f.severity !== "MINOR") && reason.length < MIN_REASON) {
     return { ok: false, message: "Write a reason: a major or critical issue can't be set aside without one." };
+  }
+  // IGNORING WITH CARE (Oct 21 2026, 859 N Lawrence St; careRules.ts): a major
+  // issue outside the house, or one the hub always fixes, is set aside (or
+  // overridden) only with the person's own words, never a stock reason alone.
+  // A listing-specific ignore is still allowed and is never a rule rejection.
+  if ((status === "IGNORED" || status === "OVERRIDDEN") && !ownWordsOk(reason) && (await needingOwnWords(decidable)).length) {
+    return { ok: false, message: `Write why in your own words (at least ${MIN_OWN_WORDS} characters, not a stock reason): this is a major issue outside the house, or one the hub always fixes (trash cans, cars, camera mistakes). Say what the client was told, or why it can stay.` };
+  }
+  // WHAT THE CLIENT ASKED COMES FIRST (Oct 21 2026, clientAsked.findingAskLinks):
+  // a finding the client asked to have removed is set aside only once that
+  // request is answered (Done, or answered with a note, on the Deliver panel).
+  if (status === "IGNORED" || status === "OVERRIDDEN") {
+    const job = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
+    const { findingAskLinks } = await import("./clientAsked");
+    const links = job ? await findingAskLinks(job.projectId, decidable) : new Map();
+    const first = decidable.map((f) => links.get(f.id)).find(Boolean);
+    if (first) return { ok: false, message: `${first.label}: "${first.what}". Answer that request first (the Deliver panel, Before the photos go out: Done, or Answer with a note), then decide this.` };
   }
 
   const now = new Date();
@@ -221,12 +249,22 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
   // findings must not approve damage from earlier edits"): that stays open
   // until a person restores the photo.
   const reason = "Skipped all findings on this shoot";
-  const res = await prisma.photoQcFinding.updateMany({
+  // Oct 21 2026: nor one the client asked to have removed (clientAsked.findingAskLinks):
+  // that waits for the request to be answered.
+  const jobRow = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { projectId: true } });
+  const candidates = await prisma.photoQcFinding.findMany({
     where: { jobId, source: { not: "ADDON" }, ruleId: { not: "FIX_DAMAGE_AI_EDIT" }, OR: [{ status: "OPEN" }, { id: { in: freed }, status: { in: ["APPROVED_FIX", "FIXING"] } }] },
+    select: { id: true, ruleId: true, specificIssue: true, locationText: true },
+  });
+  const asked = jobRow ? await import("./clientAsked").then((m) => m.findingAskLinks(jobRow.projectId, candidates)) : new Map<string, unknown>();
+  // One of those whose fix was just called off goes back to open, not into limbo.
+  if (asked.size) await prisma.photoQcFinding.updateMany({ where: { id: { in: [...asked.keys()] }, status: { in: ["APPROVED_FIX", "FIXING"] } }, data: { status: "OPEN", decidedBy: null, decidedAt: null } });
+  const res = await prisma.photoQcFinding.updateMany({
+    where: { id: { in: candidates.filter((f) => !asked.has(f.id)).map((f) => f.id) }, OR: [{ status: "OPEN" }, { status: { in: ["APPROVED_FIX", "FIXING"] } }] },
     data: { status: "IGNORED", statusReason: reason, decidedBy: who, decidedAt: now },
   });
   const damage = await prisma.photoQcFinding.count({ where: { jobId, ruleId: "FIX_DAMAGE_AI_EDIT", status: "OPEN" } });
-  if (!res.count && !cancelled) return { ok: false, message: "Nothing to skip: there are no open findings on this shoot." };
+  if (!res.count && !cancelled) return { ok: false, message: asked.size ? "Nothing skipped: the open findings are what the client asked to have removed. Answer the request first." : "Nothing to skip: there are no open findings on this shoot." };
   await logJobEvent(jobId, who, `Skipped all findings: ${plural(res.count, "issue")} set aside${cancelled ? `, ${fixes(cancelled)} not yet sent to AutoHDR called off (nothing charged)` : ""}`, { skippedAll: true, findings: res.count, cancelled });
   // 3. The stage follows: out of FIXING when nothing is running, then Ready.
   const running = await prisma.photoFixOperation.count({ where: { jobId, status: { in: ["QUEUED", "SUBMITTING", "SUBMITTED"] } } });
@@ -236,7 +274,7 @@ export async function skipAllFindings(jobId: string, by: string): Promise<WriteR
     changed: res.count,
     cancelled,
     stage,
-    message: `${plural(res.count, "finding")} skipped${cancelled ? ` and ${fixes(cancelled)} that had not started called off (nothing charged)` : ""}.${running ? ` ${fixes(running)} already at AutoHDR will finish.` : ""}${damage ? ` ${damage === 1 ? "One photo an AI fix changed stays" : `${damage} photos AI fixes changed stay`} open: restore ${damage === 1 ? "it" : "them"} in the lightbox.` : ""}${stage === "READY" ? " The job is Ready." : ""}`,
+    message: `${plural(res.count, "finding")} skipped${cancelled ? ` and ${fixes(cancelled)} that had not started called off (nothing charged)` : ""}.${running ? ` ${fixes(running)} already at AutoHDR will finish.` : ""}${damage ? ` ${damage === 1 ? "One photo an AI fix changed stays" : `${damage} photos AI fixes changed stay`} open: restore ${damage === 1 ? "it" : "them"} in the lightbox.` : ""}${asked.size ? ` ${plural(asked.size, "finding")} the client asked to have removed stay${asked.size === 1 ? "s" : ""} open: answer the request first.` : ""}${stage === "READY" ? " The job is Ready." : ""}`,
   };
 }
 

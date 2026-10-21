@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { photoDeliverySettings } from "./settings";
 import { logJobEvent } from "./jobState";
 import { fixClass } from "./fixPolicy";
-import { isExteriorRoom, type RoomType } from "./registry";
+import { isExteriorFinding, isExteriorRoom, type RoomType } from "./registry";
 
 // ---------------------------------------------------------------------------
 // PREPARED HOME OR NOT (Oct 15 2026).
@@ -32,7 +32,9 @@ import { isExteriorRoom, type RoomType } from "./registry";
 // rated staged, tidy or empty (or not rated); a lived-in or cluttered room is
 // that room's state, not something the photographer missed.
 // Camera mistakes, cars, trash cans (always wanted), privacy and geometry are
-// never touched by any of this. A person can set the mode on the job page;
+// never touched by any of this, and since Oct 21 2026 nothing outside either
+// (isInteriorClutter): the rooms' state says nothing about the yard or the
+// sidewalk. A person can set the mode on the job page;
 // their choice stays until they put it back to automatic.
 // ---------------------------------------------------------------------------
 
@@ -70,6 +72,18 @@ export function isClutterRule(ruleId: string): boolean {
   return fixClass(ruleId) === "prep";
 }
 
+/**
+ * INSIDE CLUTTER ONLY (Oct 21 2026, 859 N Lawrence St). The fix plan's
+ * "prep" class covers outside rules too (construction materials, hoses), and
+ * the gate set the sidewalk forms the client had been promised aside as "room
+ * not prepared (lived in)". A lived-in or cluttered room, or an as-is home, is
+ * about the rooms inside: an outside check, or any check on a photo of the
+ * outside, is never set aside here. Pure.
+ */
+export function isInteriorClutter(ruleId: string, room: string | null | undefined): boolean {
+  return isClutterRule(ruleId) && !isExteriorFinding(ruleId, room);
+}
+
 const asPrep = (v: unknown): PhotoPrep | null => (typeof v === "string" && (PHOTO_PREPS as readonly string[]).includes(v) ? (v as PhotoPrep) : null);
 
 /** The shoot's mode from its room readings. Pure. null = not enough to decide. */
@@ -87,9 +101,9 @@ export function decidePrepMode(input: { listed: boolean; photos: { room: RoomTyp
   return { mode: "PREPARED", stats: { ...stats, reason: `${pct(stats.staged + stats.tidy + stats.empty)} staged, tidy or empty` } };
 }
 
-/** Is this finding set aside by the gate, and why. Pure. null = it counts. */
-export function gateFor(f: { ruleId: string; confidence: number }, mode: PrepMode | null, prep: string | null | undefined): { by: string; reason: string } | null {
-  if (!isClutterRule(f.ruleId)) return null;
+/** Is this finding set aside by the gate, and why. Pure. null = it counts. `room`: the photo's room (an outside photo is never gated). */
+export function gateFor(f: { ruleId: string; confidence: number }, mode: PrepMode | null, prep: string | null | undefined, room?: string | null): { by: string; reason: string } | null {
+  if (!isInteriorClutter(f.ruleId, room)) return null;
   if (mode === "AS_IS") return { by: GATE_BY.asIs, reason: AS_IS_REASON };
   const p = asPrep(prep);
   if (f.ruleId === LEFTOVER_RULE) {
@@ -112,17 +126,20 @@ export async function applyPrepGate(jobId: string): Promise<{ setAside: number; 
   if (!job) return { setAside: 0, reopened: 0 };
   const mode = (PREP_MODES as readonly string[]).includes(job.prepMode ?? "") ? (job.prepMode as PrepMode) : null;
   const [photos, findings] = await Promise.all([
-    prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, prep: true } }),
+    prisma.photoAsset.findMany({ where: { jobId }, select: { id: true, prep: true, roomType: true } }),
     prisma.photoQcFinding.findMany({
       where: { jobId, photoId: { not: null }, source: { not: "ADDON" }, OR: [{ status: "OPEN" }, { status: "IGNORED", decidedBy: { in: GATE_DECIDERS } }] },
       select: { id: true, ruleId: true, confidence: true, status: true, photoId: true, decidedBy: true },
     }),
   ]);
   const prepOf = new Map(photos.map((p) => [p.id, p.prep]));
+  const roomOf = new Map(photos.map((p) => [p.id, p.roomType]));
   const toSet = new Map<string, { by: string; reason: string; ids: string[] }>();
   const toOpen: string[] = [];
   for (const f of findings) {
-    const g = gateFor(f, mode, prepOf.get(f.photoId!));
+    // An outside finding the gate set aside before Oct 21 2026 is no longer
+    // covered, so it is reopened here (the branch below), on the next refresh.
+    const g = gateFor(f, mode, prepOf.get(f.photoId!), roomOf.get(f.photoId!));
     // Set aside now, or set aside earlier for another reason (room → as-is): restated.
     if (g && (f.status === "OPEN" || f.decidedBy !== g.by)) {
       const k = `${g.by}\u0000${g.reason}`;

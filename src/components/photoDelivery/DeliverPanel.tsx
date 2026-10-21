@@ -7,7 +7,9 @@ import { CheckCircle2, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLi
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { CopyButton } from "@/components/ui/CopyButton";
-import { overrideDeliverAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction } from "@/app/ops/photo-delivery/actions";
+import {
+  clientAskedAnswerAction, clientAskedDoneAction, overrideDeliverAction, overrideWrapUpAction, restageForAryeoAction, startDeliveryAction, verifyDeliveryAction,
+} from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
 import { ReadyProgressBar, type ReadyBarState } from "./ReadyProgressBar";
 import { useJob } from "./JobContext";
@@ -26,6 +28,12 @@ import { aryeoPushLine, aryeoPushNext, aryeoPushOn, useAryeoPushActions, useLive
 //     badge says so: shown, but it never stops Kyle while QC is calibrated),
 //     Verify now and the owner-only "Override and deliver" with a typed
 //     reason (never for an open privacy or wrong-property issue).
+//   · Before the photos go out (Oct 21 2026, 859 N Lawrence St): the
+//     photographer's wrap-up (its page, or "Deliver without it" with a typed
+//     reason) and each thing the client asked about the photos (Done, or
+//     Answer with a note). These hold Kyle's delivery even in shadow mode.
+//     Approve and deliver (and Deliver in Aryeo) show what was set aside
+//     outside or on the always-fixed list before going on; never a block.
 //   · "Replace these on the Aryeo listing": photos fixed through AutoHDR
 //     after they went on the listing, each with a Download of the fixed JPEG.
 //   · The steps by hand: the folder, the listing, the order to match
@@ -55,7 +63,7 @@ const secondary = "border border-border-strong hover:bg-surface-2";
 const TONE = { muted: "text-muted", busy: "text-muted", good: "text-success", warn: "text-warning", bad: "text-danger" } as const;
 
 export function DeliverPanel() {
-  const { data, viewer, jobId, run, ask, pending, photoById, notify } = useJob();
+  const { data, viewer, jobId, run, ask, confirm, pending, photoById, notify } = useJob();
   const [open, setOpen] = useState(false);
   const { gate, steps, header } = data;
   // Oct 14 2026: "Get them ready again" answers at once; the bar follows the copy.
@@ -80,11 +88,22 @@ export function DeliverPanel() {
   const deciding = gate?.checks.filter((c) => !c.advisory) ?? [];
   const passing = deciding.filter((c) => c.ok).length;
   const total = deciding.length;
-  const flags = gate?.checks.find((c) => c.advisory && !c.ok) ?? null;
+  // The flags line by its key: an advisory line can also be a request that does not hold delivery (Oct 21 2026).
+  const flags = gate?.checks.find((c) => c.key === "flags" && !c.ok) ?? null;
   const flagWords = flags?.detail ? `${flags.detail[0].toUpperCase()}${flags.detail.slice(1)}` : "Photo flags are open";
+  // Oct 21 2026 (859 N Lawrence St): the photographer's wrap-up and what the
+  // client asked hold Kyle's delivery too, shadow mode or not.
+  const holds = gate?.checks.filter((c) => c.hold || c.askId) ?? [];
+  const openHolds = holds.filter((c) => c.hold && !c.ok);
   const canStage = START_FROM.has(stage);
   const canStart = !!gate && canStage && gate.canDeliver;
-  const startWhy = !gate ? "The checklist could not be read." : !canStage ? STAGE_WHY[stage] ?? "Not from this stage." : !gate.canDeliver ? gate.blockedForOverride ?? "The checklist has open items." : null;
+  const startWhy = !gate
+    ? "The checklist could not be read."
+    : !canStage
+      ? STAGE_WHY[stage] ?? "Not from this stage."
+      : !gate.canDeliver
+        ? gate.blockedForOverride ?? (openHolds.length ? `${openHolds.length === 1 ? "One thing" : `${openHolds.length} things`} to settle before the photos go out (open this panel).` : "The checklist has open items.")
+        : null;
   const showOverride = viewer.isOwner && !!gate && canStage && !gate.canDeliver;
   const showVerify = ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(stage);
   const replacements = steps?.replacements ?? [];
@@ -132,6 +151,8 @@ export function DeliverPanel() {
   // With the hub's upload on, Kyle approves from Ready to review: open issues are decided first.
   const why = !canStage || (hubOn && stage === "QC_REVIEW") ? STAGE_WHY[stage] ?? null : startWhy;
   const lines: { text: string; tone: keyof typeof TONE }[] = [];
+  // What holds the photos comes first, so a phone shows it too.
+  if (openHolds.length && !delivered) lines.push({ text: `${openHolds[0].label}${openHolds.length > 1 ? ` (+${openHolds.length - 1} more to settle)` : ""}`, tone: "warn" });
   if (pushLine) lines.push(pushLine);
   else if (hubOn && push.sameDayAuto && !delivered) lines.push({ text: "Same-day order: the hub approves and delivers it by itself once every check passes.", tone: "muted" });
   if (why && !(delivered && pushLine)) lines.push({ text: why, tone: delivered ? "good" : "muted" });
@@ -153,6 +174,45 @@ export function DeliverPanel() {
     });
     if (reason === null) return;
     await run(() => overrideDeliverAction(jobId, reason));
+  };
+
+  // Mark as delivering: the approve summary first, when there is one (never a block).
+  const markDelivering = async () => {
+    if (gate?.ignored) {
+      const go = await confirm({ title: "Mark as delivering?", body: `${gate.ignored} Go back to look at them first, or deliver as they are.`, confirmLabel: "Mark as delivering" });
+      if (!go) return;
+    }
+    await run(() => startDeliveryAction(jobId));
+  };
+
+  // A request: Done (fixed on the photos), or answered with a note (Oct 21 2026).
+  const settle = async (askId: string, how: "done" | "answered") => {
+    if (how === "done") {
+      await run(() => clientAskedDoneAction(jobId, askId));
+      return;
+    }
+    const note = await ask({
+      title: "Answer this request",
+      description: "Not doing it as asked? Write what you told the client, or why it stays as it is. It goes on the job's timeline.",
+      required: true,
+      minLength: 5,
+      confirmLabel: "Save the answer",
+    });
+    if (note === null) return;
+    await run(() => clientAskedAnswerAction(jobId, askId, note));
+  };
+  // The photographer's wrap-up is not in: only with a typed reason.
+  const withoutWrapUp = async () => {
+    const reason = await ask({
+      title: "Let the photos go out without the wrap-up?",
+      description: "Only once you know what was promised to the client and what must be removed (you asked the photographer, or the client). Write how you know. It is kept on the job's activity; the hub never delivers without the wrap-up by itself.",
+      required: true,
+      minLength: 10,
+      confirmLabel: "Save the reason",
+      danger: true,
+    });
+    if (reason === null) return;
+    await run(() => overrideWrapUpAction(jobId, reason));
   };
 
   const listingLink: ReactNode = !steps ? null : steps.listingUrl ? (
@@ -281,7 +341,7 @@ export function DeliverPanel() {
             </a>
           )}
           {next === "deliver" ? (
-            <button type="button" disabled={pending} onClick={() => void deliver()} className={cn(btn, primary)}>
+            <button type="button" disabled={pending} onClick={() => void deliver(gate?.ignored)} className={cn(btn, primary)}>
               <Send aria-hidden className="size-4" /> Deliver in Aryeo
             </button>
           ) : next === "approve" ? (
@@ -290,13 +350,13 @@ export function DeliverPanel() {
                 <UploadCloud aria-hidden className="size-4" /> <span className={cn(approveDeliver && "sr-only sm:not-sr-only")}>Approve and upload to Aryeo</span>
               </button>
               {approveDeliver && (
-                <button type="button" disabled={pending} onClick={() => void approve(true)} title="Put the photos on the Aryeo listing in this order, then deliver it" className={cn(btn, primary)}>
+                <button type="button" disabled={pending} onClick={() => void approve(true, gate?.ignored)} title="Put the photos on the Aryeo listing in this order, then deliver it" className={cn(btn, primary)}>
                   <Send aria-hidden className="size-4" /> Approve and deliver
                 </button>
               )}
             </>
           ) : next === "mark" ? (
-            <button type="button" disabled={pending} onClick={() => void run(() => startDeliveryAction(jobId))} className={cn(btn, primary)}>
+            <button type="button" disabled={pending} onClick={() => void markDelivering()} className={cn(btn, primary)}>
               <Truck aria-hidden className="size-4" /> Mark as delivering
             </button>
           ) : null}
@@ -311,7 +371,7 @@ export function DeliverPanel() {
               <p className="mt-1 text-[13px] text-warning">{data.gateError ?? "The checklist could not be read."}</p>
             ) : (
               <ul className="mt-1.5 space-y-1 text-sm">
-                {gate.checks.filter((c) => !c.advisory).map((c) => (
+                {gate.checks.filter((c) => !c.advisory && !c.hold).map((c) => (
                   <li key={c.key} className="flex items-start gap-2">
                     {c.ok ? <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />}
                     <span>
@@ -336,6 +396,49 @@ export function DeliverPanel() {
                 </span>
               </p>
             )}
+            {holds.length > 0 && !delivered && (
+              <div className="mt-3">
+                <h3 className="text-sm font-semibold">Before the photos go out</h3>
+                <ul className="mt-1.5 space-y-2 text-sm">
+                  {holds.map((c) => (
+                    <li key={c.key} className="flex items-start gap-2">
+                      {c.ok ? <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" /> : <CircleAlert aria-hidden className={cn("mt-0.5 size-4 shrink-0", c.hold ? "text-danger" : "text-warning")} />}
+                      <span className="min-w-0 flex-1">
+                        <span className="sr-only">{c.ok ? "Settled: " : c.hold ? "Holds delivery: " : "Open: "}</span>
+                        <span className={cn(!c.ok && "font-medium")}>{c.label}</span>
+                        {c.detail && <span className="block text-[12px] text-muted">{c.detail}{!c.hold && !c.ok ? ". Doesn't hold delivery." : ""}</span>}
+                        {c.overridden && <span className="block text-[12px] text-muted">Going out without it: {c.overridden}</span>}
+                        {!c.ok && (c.href || c.askId || c.overridable) && (
+                          <span className="mt-1 flex flex-wrap gap-2">
+                            {c.href && (
+                              <Link href={c.href} className={cn(cardBtn, secondary, "font-medium")}>
+                                {c.hrefLabel ?? "Open"}
+                              </Link>
+                            )}
+                            {c.askId && (
+                              <>
+                                <button type="button" disabled={pending} onClick={() => void settle(c.askId!, "done")} className={cn(cardBtn, secondary)}>
+                                  <CheckCircle2 aria-hidden className="size-4" /> Done (fixed)
+                                </button>
+                                <button type="button" disabled={pending} onClick={() => void settle(c.askId!, "answered")} className={cn(cardBtn, secondary)}>
+                                  Answer with a note
+                                </button>
+                              </>
+                            )}
+                            {c.overridable && (
+                              <button type="button" disabled={pending} onClick={() => void withoutWrapUp()} className={cn(cardBtn, "border border-danger/50 text-danger hover:bg-danger-soft")}>
+                                Deliver without it
+                              </button>
+                            )}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {gate?.ignored && !delivered && <p className="mt-2 text-[13px] text-warning">{gate.ignored}</p>}
             {gate && !gate.canDeliver && gate.blockedForOverride && <p className="mt-2 text-[13px] text-danger">{gate.blockedForOverride}</p>}
             <p className="mt-2 text-[13px] text-muted">The hub confirms delivery on its own once Aryeo does.</p>
             {(showVerify || showOverride) && (

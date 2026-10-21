@@ -284,14 +284,17 @@ async function main() {
     const fB = await findingsOf(B.job.id);
     const jB = await prisma.photoJob.findUniqueOrThrow({ where: { id: B.job.id } });
     c.ok("as-is: the client is on the list", jB.prepMode === "AS_IS" && /as-is list/.test(JSON.parse(jB.prepStatsJson ?? "{}").reason ?? ""));
-    c.ok("hose, dishes and toilet seat: 'As-is home: clutter not checked', set aside by the hub", ["EXT_GARDEN_HOSES", "KIT_DISHES_ON_COUNTERS", "BATH_TOILET_SEAT_OPEN"].every((r) => { const f = fB.find((x) => x.ruleId === r); return f?.status === "IGNORED" && f.statusReason === prep.AS_IS_REASON && f.decidedBy === prep.GATE_BY.asIs; }));
+    c.ok("dishes and toilet seat: 'As-is home: clutter not checked', set aside by the hub", ["KIT_DISHES_ON_COUNTERS", "BATH_TOILET_SEAT_OPEN"].every((r) => { const f = fB.find((x) => x.ruleId === r); return f?.status === "IGNORED" && f.statusReason === prep.AS_IS_REASON && f.decidedBy === prep.GATE_BY.asIs; }));
+    // Oct 21 2026 (859 N Lawrence St, CHANGED): an as-is home is about the
+    // rooms inside; the hose outside is never set aside by the gate.
+    c.ok("…the hose outside is not: it stays open (oct21-photo-misses)", fB.find((x) => x.ruleId === "EXT_GARDEN_HOSES")?.status === "OPEN");
     c.ok("trash cans (outside and the kitchen's) still open: always wanted", ["EXT_TRASH_CANS_PRIMARY", "KIT_GARBAGE_CANS"].every((r) => fB.find((x) => x.ruleId === r)?.status === "OPEN"));
     const data = await import("@/app/ops/photo-delivery/data");
     const admin = { role: "ADMIN", name: "Kyle", isOwner: false, canSeeMoney: false };
     const viewB = await data.loadJobDetail(B.job.id, { viewer: admin });
-    c.ok("the job page: the set-aside clutter is not listed; the count is said", !!viewB && !viewB.findings.some((f) => ["EXT_GARDEN_HOSES", "KIT_DISHES_ON_COUNTERS", "BATH_TOILET_SEAT_OPEN"].includes(f.ruleId)) && viewB.prep.hiddenAsIs === 3 && viewB.prep.mode === "AS_IS");
+    c.ok("the job page: the set-aside clutter is not listed; the count is said; the hose is listed", !!viewB && !viewB.findings.some((f) => ["KIT_DISHES_ON_COUNTERS", "BATH_TOILET_SEAT_OPEN"].includes(f.ruleId)) && viewB.findings.some((f) => f.ruleId === "EXT_GARDEN_HOSES") && viewB.prep.hiddenAsIs === 2 && viewB.prep.mode === "AS_IS");
     const { reviewStage } = await import("@/lib/photoDelivery/decisions");
-    c.ok("never counted: the verdict sees the two trash cans only", (await reviewStage(B.job.id)).open === 2);
+    c.ok("never counted: the verdict sees the two trash cans and the hose outside", (await reviewStage(B.job.id)).open === 3);
     const C = await mkJob("60 Lived In Ave", ["kitchen", "living", "bed", "bath"]);
     answers.set("60-1.jpg", { room: "kitchen", prep: "cluttered", issues: [{ id: "KIT_EXCESSIVE_COUNTERTOP_ITEMS", where: "counters", confidence: 0.9 }] });
     answers.set("60-2.jpg", { room: "living room", prep: "lived_in", issues: [{ id: "LIV_REMOTE_CONTROLS", where: "coffee table", confidence: 0.9 }] });

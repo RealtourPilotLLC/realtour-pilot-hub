@@ -120,6 +120,27 @@ export function isExteriorRoom(room: RoomType): boolean {
   return EXTERIOR.includes(room);
 }
 
+/** An outside check: an EXT_ rule, or one whose rooms are all outside (a sky, a roofline, an exterior's framing). */
+export function isExteriorRule(ruleId: string): boolean {
+  if (ruleId.startsWith("EXT_")) return true;
+  const rule = BY_ID.get(ruleId);
+  if (!rule?.rooms.length) return false;
+  return rule.rooms.every((t) => {
+    const rooms = expandScope(t);
+    return rooms.length > 0 && rooms.every((r) => EXTERIOR.includes(r));
+  });
+}
+
+/**
+ * A finding about the outside of the house (Oct 21 2026, 859 N Lawrence St):
+ * an outside check, or any check on a photo of the outside. The room-prep gate
+ * never sets one aside, and ignoring a major one needs a typed reason.
+ */
+export function isExteriorFinding(ruleId: string, roomType: string | null | undefined): boolean {
+  if (isExteriorRule(ruleId)) return true;
+  return !!roomType && (EXTERIOR as string[]).includes(roomType);
+}
+
 /** Expand one scope or room label to the concrete room types it covers. */
 export function expandScope(token: RoomType | RoomScope): RoomType[] {
   if (token === "ANY") return [...ROOM_TYPES];

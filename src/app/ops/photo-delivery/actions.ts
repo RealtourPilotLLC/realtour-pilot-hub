@@ -78,6 +78,78 @@ export async function decideFindingsAction(input: { jobId: string; findingIds: s
   }
 }
 
+// ---- what was promised (Oct 21 2026, 859 N Lawrence St; lib/photoDelivery/clientAsked) -----------
+
+/** A request on the photo job is done: fixed on the photos (Confirmed, releases its hold). */
+export async function clientAskedDoneAction(jobId: string, askId: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId)) || !ID.test(String(askId))) return { ok: false, message: "That request is not valid." };
+  try {
+    const { by } = await actor();
+    const { settleClientAsked } = await import("@/lib/photoDelivery/clientAsked");
+    const r = await settleClientAsked({ jobId, askId, how: "done", by });
+    if (r.ok) refresh(jobId);
+    return r;
+  } catch (e) {
+    return failed("mark the request done", e);
+  }
+}
+
+/** A request on the photo job is answered with a note instead (Not needed, with the note: what the client was told). */
+export async function clientAskedAnswerAction(jobId: string, askId: string, note: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId)) || !ID.test(String(askId))) return { ok: false, message: "That request is not valid." };
+  try {
+    const { by } = await actor();
+    const { settleClientAsked } = await import("@/lib/photoDelivery/clientAsked");
+    const r = await settleClientAsked({ jobId, askId, how: "answered", note: typeof note === "string" ? note : "", by });
+    if (r.ok) refresh(jobId);
+    return r;
+  } catch (e) {
+    return failed("answer the request", e);
+  }
+}
+
+/** The photos may go out without the photographer's wrap-up: a typed reason, kept on the job's activity. */
+export async function overrideWrapUpAction(jobId: string, reason: string): Promise<ActionResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (!ID.test(String(jobId))) return { ok: false, message: "That job id is not valid." };
+  try {
+    const { by } = await actor();
+    const { overrideWrapUp } = await import("@/lib/photoDelivery/clientAsked");
+    const r = await overrideWrapUp(jobId, typeof reason === "string" ? reason : "", by);
+    if (r.ok) refresh(jobId);
+    return r;
+  } catch (e) {
+    return failed("save the reason", e);
+  }
+}
+
+/** The approve summary, on the job's activity when a person delivers with careful set-asides (shown to them first; never a block). */
+async function noteIgnoredOnDelivery(jobId: string, by: string): Promise<void> {
+  try {
+    const { ignoredCarefulSummary } = await import("@/lib/photoDelivery/clientAsked");
+    const line = await ignoredCarefulSummary(jobId);
+    if (!line) return;
+    const { logJobEvent } = await import("@/lib/photoDelivery/jobState");
+    await logJobEvent(jobId, by, `delivered with set-asides: ${line.replace(/^You're delivering with /, "")}`);
+  } catch {
+    /* the delivery itself is what matters */
+  }
+}
+
 /** Oct 14 2026 (owner): stop flagging a check on every shoot; its open findings are set aside. */
 export async function stopFlaggingAction(input: { jobId?: string | null; ruleId: string; reason: string }): Promise<ActionResult> {
   try {
@@ -204,6 +276,7 @@ export async function approveAryeoAction(jobId: string, opts: { deliver: boolean
     const { by } = await actor();
     const { approveJob, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
     const r = await approveJob(jobId, by, { deliver: opts.deliver === true, anyway: opts.anyway === true });
+    if (r.started && opts.deliver === true) await noteIgnoredOnDelivery(jobId, by);
     if (r.started) {
       const go = () => advancePush(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
       try { after(go); } catch { void go(); }
@@ -227,6 +300,7 @@ export async function deliverInAryeoAction(jobId: string): Promise<ActionResult>
     const { by } = await actor();
     const { approvePushDelivery, advancePush } = await import("@/lib/photoDelivery/aryeoPush");
     const r = await approvePushDelivery(jobId, by);
+    if (r.ok) await noteIgnoredOnDelivery(jobId, by);
     if (r.ok) {
       const go = () => advancePush(jobId, { budgetMs: 50_000 }).then(() => undefined).catch(() => undefined);
       try { after(go); } catch { void go(); }
@@ -502,6 +576,7 @@ export async function startDeliveryAction(jobId: string): Promise<ActionResult> 
     const { by } = await actor();
     const r = await startDelivery(jobId, by);
     if (r.ok) {
+      await noteIgnoredOnDelivery(jobId, by);
       refresh(jobId);
       checkSoon(jobId);
     }
