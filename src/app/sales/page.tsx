@@ -12,6 +12,7 @@ import { SpendingTab } from "@/components/finance/SpendingTab";
 import { AdvisorTab } from "@/components/finance/AdvisorTab";
 import { BudgetTab } from "@/components/finance/BudgetTab";
 import { BonusTab } from "@/components/finance/BonusTab";
+import { PayStructureTab } from "@/components/finance/PayStructureTab";
 import type { FinanceTab } from "@/components/finance/FinanceTabs";
 
 export const dynamic = "force-dynamic";
@@ -69,7 +70,7 @@ export default async function FinancePage({
   // contradicted the processor-truth engine. Old ?tab= deep links fall through
   // to Overview below.
   const show: FinanceTab[] = isOwner
-    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "unpaid", "payroll", "bonus"]
+    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "unpaid", "payroll", "paystructure", "bonus"]
     : ["unpaid"];
   // Where non-owners land: their only tab, Unpaid. Owners land on Overview (the
   // command center — true P&L, cash, where the money's actually going).
@@ -78,6 +79,7 @@ export default async function FinancePage({
   let tab: FinanceTab;
   if (requested === "unpaid") tab = "unpaid";
   else if (requested === "payroll") tab = "payroll";
+  else if (requested === "paystructure") tab = "paystructure";
   else if (requested === "overview" || requested === "revenue" || requested === "money") tab = "overview";
   else if (requested === "personal") tab = "personal";
   else if (requested === "people") tab = "people";
@@ -96,6 +98,9 @@ export default async function FinancePage({
 
   if (tab === "unpaid") return <UnpaidTab show={show} money={money} />;
   if (tab === "payroll") return <PayrollTab show={show} start={sp.start} />;
+  // Old vs new pay (Oct 21 2026). Owner-only like every tab but Unpaid; the
+  // tab's loader (lib/paySavings.ts ownerPaySavings) refuses anyone else too.
+  if (tab === "paystructure") return <PayStructureTab show={show} />;
   if (tab === "personal") return <PersonalTab show={show} />;
   if (tab === "people") return <PeopleTab show={show} />;
   if (tab === "jobs") return <JobsTab show={show} />;

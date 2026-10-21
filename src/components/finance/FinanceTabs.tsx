@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank, Trophy } from "lucide-react";
+import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank, Trophy, ArrowLeftRight } from "lucide-react";
 
 // Tab bar for the merged Finance page, styled to match CommsTabs: brand pill =
 // active, bordered pill = idle. Which tabs render depends on the viewer's role —
 // everything except Unpaid is owner-only — so the caller passes the allowed tabs.
 // ("money" and "revenue" left the type Oct 20 2026, audit G11: the page maps
 // those old ?tab= links to Overview before a FinanceTab is ever chosen.)
-export type FinanceTab = "overview" | "personal" | "people" | "jobs" | "spending" | "unpaid" | "payroll" | "advisor" | "budget" | "bonus";
+export type FinanceTab = "overview" | "personal" | "people" | "jobs" | "spending" | "unpaid" | "payroll" | "paystructure" | "advisor" | "budget" | "bonus";
 
 const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt }[] = [
   { key: "overview", label: "Overview", href: "/sales?tab=overview", icon: LayoutDashboard },
@@ -21,6 +21,8 @@ const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt
   // Aryeo-price numbers that contradicted every other surface.
   { key: "unpaid", label: "Unpaid", href: "/sales?tab=unpaid", icon: Receipt },
   { key: "payroll", label: "Payroll", href: "/sales?tab=payroll", icon: Banknote },
+  // Oct 21 2026: old per-shoot pay against the new yearly pay (lib/paySavings.ts). Owner only.
+  { key: "paystructure", label: "Pay structure", href: "/sales?tab=paystructure", icon: ArrowLeftRight },
   { key: "bonus", label: "Bonus", href: "/sales?tab=bonus", icon: Trophy },
 ];
 
