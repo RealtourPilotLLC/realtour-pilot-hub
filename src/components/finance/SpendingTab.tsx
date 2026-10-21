@@ -81,7 +81,7 @@ export async function SpendingTab({ show }: { show: FinanceTab[] }) {
         {b.reviewTotal > 100 && (
           <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-            <span><span className="font-medium">{m(b.reviewTotal)}</span> still needs a call — open “To review” below and tag each charge with its dropdown; they join the totals the moment they're tagged.</span>
+            <span><span className="font-medium">{m(b.reviewTotal)}</span> still needs a call — open “To review” below and tag each charge with its dropdown; they join the totals the moment they&rsquo;re tagged.</span>
           </div>
         )}
 
@@ -167,15 +167,3 @@ function Line({ label, value, count, muted }: { label: string; value: number; co
   );
 }
 
-function Kpi({ icon: Icon, accent, label, value, sub }: { icon: typeof Briefcase; accent: string; label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-4 panel-shadow">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg" style={{ backgroundColor: `${accent}1a`, color: accent }}><Icon className="size-4" /></span>
-        <span className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-2">{label}</span>
-      </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums">{value}</div>
-      {sub && <div className="mt-0.5 truncate text-[11px] text-muted-2">{sub}</div>}
-    </div>
-  );
-}

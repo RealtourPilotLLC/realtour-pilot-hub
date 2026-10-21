@@ -15,8 +15,9 @@ export function HubPie({ total, slices }: { total: number; slices: HubStatsSlice
   const cx = 60;
   const cy = 60;
   const C = 2 * Math.PI * r;
-  let offset = 0;
-  const arcs = slices.map((s) => {
+  // Each arc starts where the ones before it end (no variable reassigned during render).
+  const starts = slices.map((_, i) => slices.slice(0, i).reduce((sum, x) => sum + (x.count / total) * C, 0));
+  const arcs = slices.map((s, i) => {
     const len = (s.count / total) * C;
     const el = (
       <circle
@@ -28,11 +29,10 @@ export function HubPie({ total, slices }: { total: number; slices: HubStatsSlice
         stroke={s.color}
         strokeWidth={16}
         strokeDasharray={`${len} ${C - len}`}
-        strokeDashoffset={-offset}
+        strokeDashoffset={-starts[i]}
         transform={`rotate(-90 ${cx} ${cy})`}
       />
     );
-    offset += len;
     return el;
   });
 

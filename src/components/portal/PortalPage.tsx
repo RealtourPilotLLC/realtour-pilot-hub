@@ -505,7 +505,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       planning: p.ok ? p.data : null, planningFailed: !p.ok,
       schedule: thisMonth, scheduleFailed: !sm.ok,
       slotDays: days, bookingUrl: await callBookingUrl(), callBooking: (await loadCallLinks()).view,
-      can: { suggest: perms.suggest, session: perms.session, staff: actor.kind === "STAFF" },
+      can: { suggest: perms.suggest, session: perms.session, staff: actor.kind === "STAFF", approve: perms.approve },
       scheduleHref: portalHref(contextBase, "schedule"),
       selectedSessionIndex: selectedSession,
       late: lateP ? { schedule: sm.ok ? sm.data.find((m) => m.monthId === lateP.monthId) ?? null : null, scripts: lateScripts } : null,
@@ -548,12 +548,10 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
           strategy: strategyRes?.ok ? strategyRes.data : null, strategyFailed: !!strategyRes && !strategyRes.ok, priorities,
           monthKey, canAct: perms.suggest, readOnly, filter: query.filter, hrefs: planHrefs, yourMonth,
           bulk: bulkView,
-          // Oct 20 2026: each month whose scripts are all approved, as one PDF.
+          canApprove: perms.approve,
+          // Oct 20 2026: each month whose scripts are all approved, as one PDF (the link is minted on the tap).
           scriptPdfs: route.planView === "scripts" && !bulkView
-            ? (await import("@/lib/scriptPdfLinks").then((m) => m.monthsReadyForPdf(enrollment.id)).catch(() => [])).map((m) => ({
-                ...m, label: monthLabel(m.monthKey),
-                href: `/api/portal/scripts/all/${enrollment.id}?month=${m.monthKey}&m=${encodeURIComponent(mediaToken(enrollment.id, scope))}`,
-              }))
+            ? (await import("@/lib/scriptPdfLinks").then((m) => m.monthsReadyForPdf(enrollment.id)).catch(() => [])).map((m) => ({ ...m, label: monthLabel(m.monthKey) }))
             : [],
           clientPlanned: yourMonth?.planning?.clientPlanned ?? (await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { clientSuppliesTopics: true } }).catch(() => null))?.clientSuppliesTopics ?? false,
         }} />

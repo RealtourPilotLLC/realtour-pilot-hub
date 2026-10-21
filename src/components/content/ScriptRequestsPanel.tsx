@@ -160,7 +160,7 @@ export function ScriptRequestsPanel({ groups }: { groups: ScriptRequestGroupView
   if (groups.length === 0) return null;
   return (
     <Section icon={FileText} title="The client asked for changes" count={openCount}
-      action={<span className="text-[11px] text-muted-2">use theirs, edit it first, or apply with AI: each becomes a new version they approve</span>}>
+      action={<span className="text-[11px] text-muted-2">use theirs or edit it first: shared with them at once · apply with AI: a draft for you to approve below</span>}>
       <div className="space-y-4">
         {groups.map((g) => {
           const open = g.requests.filter((r) => r.status === "OPEN" || r.status === "APPLYING");

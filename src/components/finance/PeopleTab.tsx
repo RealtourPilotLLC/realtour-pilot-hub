@@ -169,32 +169,17 @@ function Row({ p, monthKey }: { p: PayeeRow; monthKey: string }) {
   );
 }
 
-function Kpi({ icon: Icon, accent, label, value, sub }: { icon: LucideIcon; accent: string; label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-4 panel-shadow">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg" style={{ backgroundColor: `${accent}1a`, color: accent }}>
-          <Icon className="size-4" />
-        </span>
-        <span className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-2">{label}</span>
-      </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums text-foreground">{value}</div>
-      {sub && <div className="mt-0.5 truncate text-[11px] text-muted-2">{sub}</div>}
-    </div>
-  );
-}
-
 function Donut({ total, slices }: { total: number; slices: { key: string; label: string; amount: number; color: string }[] }) {
   if (total <= 0 || slices.length === 0) return <div className="flex h-40 items-center justify-center text-sm text-muted">No payments recorded yet.</div>;
   const r = 42, cx = 60, cy = 60, C = 2 * Math.PI * r;
-  let offset = 0;
-  const arcs = slices.map((s) => {
+  // Each arc starts where the ones before it end (no variable reassigned during render).
+  const starts = slices.map((_, i) => slices.slice(0, i).reduce((sum, x) => sum + (x.amount / total) * C, 0));
+  const arcs = slices.map((s, i) => {
     const len = (s.amount / total) * C;
     const el = (
       <circle key={s.key} cx={cx} cy={cy} r={r} fill="none" stroke={s.color} strokeWidth={16}
-        strokeDasharray={`${len} ${C - len}`} strokeDashoffset={-offset} transform={`rotate(-90 ${cx} ${cy})`} />
+        strokeDasharray={`${len} ${C - len}`} strokeDashoffset={-starts[i]} transform={`rotate(-90 ${cx} ${cy})`} />
     );
-    offset += len;
     return el;
   });
   return (

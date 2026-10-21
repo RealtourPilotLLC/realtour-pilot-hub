@@ -43,7 +43,7 @@ export type YourMonthData = {
   /** W03: the month's strategy call, booked here (embed or API); null = not loaded → bookingUrl. */
   callBooking?: PortalCallBookingView | null;
   selectedSessionIndex?: number | null;
-  can: { suggest: boolean; session: boolean; staff?: boolean };
+  can: { suggest: boolean; session: boolean; staff?: boolean; approve?: boolean };
   readOnly: boolean;
   filter?: string;
   hrefs: { month: string; bank: string; scripts: string; schedule: string };
@@ -220,7 +220,7 @@ export function YourMonth({ d }: { d: YourMonthData }) {
               key={month.id}
               groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
               canAct={d.can.suggest} readOnly={d.readOnly} initialFilter={d.filter}
-              tabHref={d.hrefs.month} view="month" initialMonthId={month.id} scriptsHref={d.hrefs.scripts} staff={!!d.can.staff}
+              tabHref={d.hrefs.month} view="month" initialMonthId={month.id} scriptsHref={d.hrefs.scripts} staff={!!d.can.staff} canApprove={!!d.can.approve}
             />
           </div>
         </details>

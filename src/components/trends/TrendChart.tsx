@@ -17,7 +17,8 @@ export function TrendChart({ daily, monthly }: { daily: Point[]; monthly: Point[
   const fmt = (n: number) => (metric === "count" ? String(n) : `$${Math.round(n).toLocaleString("en-US")}`);
   const total = points.reduce((s, p) => s + value(p), 0);
 
-  const Toggle = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
+  // Called as a function, not a component made during render (it would remount every render).
+  const toggle = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
     <button
       type="button"
       onClick={onClick}
@@ -32,11 +33,11 @@ export function TrendChart({ daily, monthly }: { daily: Point[]; monthly: Point[
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">Bookings over time</h2>
         <div className="ml-auto flex items-center gap-1.5">
-          <Toggle on={metric === "count"} onClick={() => setMetric("count")}>Orders</Toggle>
-          <Toggle on={metric === "revenue"} onClick={() => setMetric("revenue")}>Dollars</Toggle>
+          {toggle({ on: metric === "count", onClick: () => setMetric("count"), children: "Orders" })}
+          {toggle({ on: metric === "revenue", onClick: () => setMetric("revenue"), children: "Dollars" })}
           <span className="mx-1 h-4 w-px bg-border" />
-          <Toggle on={span === "90d"} onClick={() => setSpan("90d")}>90 days</Toggle>
-          <Toggle on={span === "24m"} onClick={() => setSpan("24m")}>24 months</Toggle>
+          {toggle({ on: span === "90d", onClick: () => setSpan("90d"), children: "90 days" })}
+          {toggle({ on: span === "24m", onClick: () => setSpan("24m"), children: "24 months" })}
         </div>
       </div>
 

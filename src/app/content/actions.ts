@@ -616,7 +616,9 @@ export async function applyScriptSuggestion(suggestionId: string): Promise<Resul
   // finding). Only the claimer proceeds; failure releases the claim.
   const claimed = await prisma.scriptSuggestion.updateMany({
     where: { id: sugg.id, status: "OPEN" },
-    data: { status: "APPLYING", originalBody: script.body },
+    // resolvedAt stamps WHEN it was claimed (audit D8): a claim left behind by
+    // a killed function is reopened after ten minutes (scriptRequests).
+    data: { status: "APPLYING", originalBody: script.body, resolvedAt: new Date() },
   });
   if (claimed.count !== 1) return { ok: false, message: "That suggestion is being applied already." };
   try {
@@ -628,7 +630,7 @@ export async function applyScriptSuggestion(suggestionId: string): Promise<Resul
       { requestedBy: me.email, source: "CLIENT_REQUEST" },
     );
   } catch (e) {
-    await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", originalBody: null } }).catch(() => {});
+    await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", originalBody: null, resolvedAt: null } }).catch(() => {});
     return fail(e);
   }
   // Oct 20 2026: the request stays on the card (the client's words are never lost),
@@ -646,9 +648,18 @@ export async function applyScriptSuggestion(suggestionId: string): Promise<Resul
 // Oct 20 2026 (Jordan: "take what she wrote and apply it, or take what she
 // wrote and edit it and then apply it, and then add a message below to be
 // able to respond"). lib/scriptRequests holds the rules.
+/** Oct 20 2026 (audit D1): approving and sharing a script is the script owner's (assertDutyOwner("SCRIPTS")), as on every other approve path. */
+async function assertScriptRequestOwner(suggestionId: string, me: Awaited<ReturnType<typeof actor>>): Promise<void> {
+  const sugg = await prisma.scriptSuggestion.findUnique({ where: { id: suggestionId }, select: { scriptId: true } });
+  const s = sugg ? await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { enrollmentId: true, monthId: true } }) : null;
+  if (!s) throw new Error("That request is gone.");
+  await assertDutyOwner("SCRIPTS", s.enrollmentId, s.monthId, me);
+}
+
 export async function applyClientScriptVersion(suggestionId: string): Promise<Result & { versionNo?: number }> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const me = await actor();
+  try { await assertScriptRequestOwner(suggestionId, me); } catch (e) { return fail(e); }
   const { applyRequestWords } = await import("@/lib/scriptRequests");
   const r = await applyRequestWords(suggestionId, "HERS", null, { email: me.email, appUserId: me.id });
   if (r.ok) revalidatePath("/content");
@@ -658,6 +669,7 @@ export async function applyClientScriptVersion(suggestionId: string): Promise<Re
 export async function applyEditedScriptRequest(suggestionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<Result & { versionNo?: number }> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const me = await actor();
+  try { await assertScriptRequestOwner(suggestionId, me); } catch (e) { return fail(e); }
   const { applyRequestWords } = await import("@/lib/scriptRequests");
   const r = await applyRequestWords(suggestionId, "EDITED", words, { email: me.email, appUserId: me.id });
   if (r.ok) revalidatePath("/content");

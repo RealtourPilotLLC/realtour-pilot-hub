@@ -9,6 +9,7 @@ import { Card, Empty, LoadFailed, StatusChip, SubNav, fmtShort } from "@/compone
 import { TopicBank } from "@/components/portal/TopicBank";
 import { InterviewFlow } from "@/components/portal/InterviewFlow";
 import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
+import { MonthScriptsPdfButton } from "@/components/portal/MonthScriptsPdfButton";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
 import { YourMonth, type YourMonthData } from "@/components/portal/YourMonth";
@@ -59,7 +60,9 @@ export type PlanTabData = {
   /** Oct 15 2026: the client is on a bulk plan — Your sessions replaces the month, scripts and bank views. */
   bulk?: PortalBulkView | null;
   /** Oct 20 2026: the months whose scripts are all approved, each as one PDF (Rick's "Download all scripts", for every client). */
-  scriptPdfs?: { monthKey: string; label: string; count: number; href: string }[];
+  scriptPdfs?: { monthKey: string; label: string; count: number }[];
+  /** Oct 20 2026 (audit E1): may approve scripts (the account owner). */
+  canApprove?: boolean;
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> & { scheduleHref: string } | null;
 };
@@ -111,7 +114,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       ) : d.topicsFailed ? (
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (
-        <ScriptsView plan={plan} canAct={d.canAct} readOnly={d.readOnly} monthHref={d.hrefs.month} pdfs={d.scriptPdfs ?? []} />
+        <ScriptsView plan={plan} canAct={d.canAct} canApprove={!!d.canApprove} readOnly={d.readOnly} monthHref={d.hrefs.month} pdfs={d.scriptPdfs ?? []} />
       ) : d.view === "month" && d.yourMonth ? (
         <YourMonth d={{
           ...d.yourMonth, topics: d.topics, readOnly: d.readOnly, filter: d.filter,
@@ -137,7 +140,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
           <TopicBank
             key={`${d.view}:${plan.month?.id ?? "none"}`}
             groups={d.topics.groups} months={d.topics.months} archivedCount={d.topics.archivedCount} total={d.topics.total} strategyLabel={d.topics.strategyLabel}
-            canAct={d.canAct} readOnly={d.readOnly}
+            canAct={d.canAct} readOnly={d.readOnly} canApprove={!!d.canApprove}
             // The bank opens on what is still to choose from; a filter in the address wins.
             initialFilter={d.view === "bank" ? d.filter ?? "SUGGESTED" : undefined}
             tabHref={d.hrefs.month} view={d.view} initialMonthId={plan.month?.id ?? null} scriptsHref={d.hrefs.scripts}
@@ -149,7 +152,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
 }
 
 /** Scripts waiting on the client's read, the words in full, the two answers beside them. */
-function ScriptsView({ plan, canAct, readOnly, monthHref, pdfs }: { plan: ReturnType<typeof planModel>; canAct: boolean; readOnly: boolean; monthHref: string; pdfs: { monthKey: string; label: string; count: number; href: string }[] }) {
+function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs }: { plan: ReturnType<typeof planModel>; canAct: boolean; canApprove: boolean; readOnly: boolean; monthHref: string; pdfs: { monthKey: string; label: string; count: number }[] }) {
   // A script answered a moment ago stays a card, in the same keyed list, so
   // the ScriptApprovalCard that sent the answer keeps its result line (Sep 24).
   const just = new Set(plan.justDecided.map((t) => t.id));
@@ -164,11 +167,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref, pdfs }: { plan: Return
           every script of that month is approved. */}
       {pdfs.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {pdfs.map((p) => (
-            <a key={p.monthKey} href={p.href} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-brand-action px-4 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
-              <Download className="size-4" aria-hidden /> Download all {p.label.split(" ")[0]} scripts (PDF, {p.count})
-            </a>
-          ))}
+          {pdfs.map((p) => <MonthScriptsPdfButton key={p.monthKey} monthKey={p.monthKey} label={`Download all ${p.label.split(" ")[0]} scripts (PDF, ${p.count})`} />)}
         </div>
       )}
       {cards.length === 0 ? (
@@ -189,7 +188,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref, pdfs }: { plan: Return
               </p>
               {t.scriptText && <div className="mt-3 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
               {canAct && !readOnly && t.script ? (
-                <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large />
+                <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />
               ) : (
                 <p className="mt-2 text-xs text-muted">{readOnly ? "Scripts can’t be approved while your program is paused or ended." : "The program owner approves scripts on this account."}</p>
               )}
@@ -211,7 +210,7 @@ function ScriptsView({ plan, canAct, readOnly, monthHref, pdfs }: { plan: Return
                 <StatusChip word={SCRIPT_WORDS.APPROVED} />
               </summary>
               {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
-              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large />}
+              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />}
             </details>
           ))}
         </section>

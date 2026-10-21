@@ -1,5 +1,4 @@
 import { User, Wallet, CalendarDays, PieChart } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
@@ -139,17 +138,3 @@ export async function PersonalTab({ show }: { show: FinanceTab[] }) {
   );
 }
 
-function Kpi({ icon: Icon, accent, label, value, sub }: { icon: LucideIcon; accent: string; label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-4 panel-shadow">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg" style={{ backgroundColor: `${accent}1a`, color: accent }}>
-          <Icon className="size-4" />
-        </span>
-        <span className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-2">{label}</span>
-      </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums text-foreground">{value}</div>
-      {sub && <div className="mt-0.5 truncate text-[11px] text-muted-2">{sub}</div>}
-    </div>
-  );
-}

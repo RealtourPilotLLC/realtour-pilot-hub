@@ -57,7 +57,7 @@ export function ClientChat({ clientId, clientName }: { clientId: string; clientN
       });
     })();
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [state, clientId]);
 
   // Load messages when the selected thread changes (direct already seeded once).

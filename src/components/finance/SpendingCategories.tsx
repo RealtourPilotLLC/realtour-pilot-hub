@@ -60,7 +60,8 @@ export function SpendingCategories({
 
   const max = Math.max(businessTotal, personalTotal, 1);
 
-  const Column = ({ title, rows, accent, icon: Icon, total }: { title: string; rows: Row[]; accent: string; icon: typeof Briefcase; total: number }) => (
+  // Called as a function, not a component made during render (it would remount every render).
+  const column = ({ title, rows, accent, icon: Icon, total }: { title: string; rows: Row[]; accent: string; icon: typeof Briefcase; total: number }) => (
     <section className="rounded-2xl border border-border bg-surface">
       <div className="flex items-center justify-between border-b border-border px-5 py-3">
         <span className="flex items-center gap-2 text-sm font-semibold"><Icon className="size-4" style={{ color: accent }} /> {title}</span>
@@ -174,12 +175,10 @@ export function SpendingCategories({
     <div className="space-y-4">
       <p className="px-1 text-[11px] text-muted-2">Tap a category to see its charges. Re-tag one charge with its dropdown, tick several and “Move selected to…” to bulk-recategorize, or re-classify the whole category. Changes lock in (🔒) and survive the nightly re-sync.</p>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Column title="Business costs" rows={business} accent="#6ba3d6" icon={Briefcase} total={businessTotal} />
-        <Column title="Personal spending" rows={personal} accent="#d4a95f" icon={User} total={personalTotal} />
+        {column({ title: "Business costs", rows: business, accent: "#6ba3d6", icon: Briefcase, total: businessTotal })}
+        {column({ title: "Personal spending", rows: personal, accent: "#d4a95f", icon: User, total: personalTotal })}
       </div>
-      {review.length > 0 && (
-        <Column title="To review — tag these" rows={review} accent="#e0a53a" icon={ArrowLeftRight} total={review.reduce((s, r) => s + r.sum, 0)} />
-      )}
+      {review.length > 0 && column({ title: "To review: tag these", rows: review, accent: "#e0a53a", icon: ArrowLeftRight, total: review.reduce((s, r) => s + r.sum, 0) })}
     </div>
   );
 }

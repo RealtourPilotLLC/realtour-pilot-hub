@@ -41,7 +41,8 @@ export function VendorTable({ vendors }: { vendors: Row[] }) {
     return s;
   }, [vendors, key, dir]);
 
-  const Th = ({ k, label, right, wide }: { k: SortKey; label: string; right?: boolean; wide?: boolean }) => (
+  // A helper called as a function, not a component made during render (it would remount every render).
+  const th = ({ k, label, right, wide }: { k: SortKey; label: string; right?: boolean; wide?: boolean }) => (
     <th className={`${wide ? "px-5" : "px-3"} py-2 font-medium ${right ? "text-right" : "text-left"}`}>
       <button
         type="button"
@@ -59,11 +60,11 @@ export function VendorTable({ vendors }: { vendors: Row[] }) {
     <table className="w-full min-w-[640px] text-sm">
       <thead>
         <tr className="border-b border-border text-xs text-muted-2">
-          <Th k="vendor" label="Vendor" wide />
-          <Th k="category" label="Category" />
-          <Th k="ytd" label="YTD spend" right />
-          <Th k="avgMonthly" label="Avg / month" right />
-          <Th k="count" label="Txns" right wide />
+          {th({ k: "vendor", label: "Vendor", wide: true })}
+          {th({ k: "category", label: "Category" })}
+          {th({ k: "ytd", label: "YTD spend", right: true })}
+          {th({ k: "avgMonthly", label: "Avg / month", right: true })}
+          {th({ k: "count", label: "Txns", right: true, wide: true })}
         </tr>
       </thead>
       <tbody>

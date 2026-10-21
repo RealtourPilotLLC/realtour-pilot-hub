@@ -60,7 +60,7 @@ export function ClientEmails({ clientId }: { clientId: string }) {
       }
     });
     return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [clientId]);
 
   const toggle = (id: string) =>

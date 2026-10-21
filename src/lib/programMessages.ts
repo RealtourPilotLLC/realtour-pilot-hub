@@ -433,8 +433,9 @@ export async function postStaffMessage(
   me: { id: string | null; name: string | null; email: string | null },
   bodyRaw: string,
   replyToId: string | null = null,
-  /** Oct 20 2026: `ref` marks what the reply is about (a script the client asked to change). */
-  opts: { now?: Date; ref?: ProgramMessageRef | null } = {},
+  /** Oct 20 2026: `ref` marks what the reply is about (a script the client asked to change).
+   *  `closeRun: false` (audit D3): a reply about one item does not answer the client's other messages. */
+  opts: { now?: Date; ref?: ProgramMessageRef | null; closeRun?: boolean } = {},
 ): Promise<Result> {
   const now = opts.now ?? new Date();
   const body = (bodyRaw ?? "").trim();
@@ -457,7 +458,7 @@ export async function postStaffMessage(
     },
     select: { id: true },
   });
-  const handled = await closeRun(enrollmentId, me.email ?? me.id ?? "staff", now);
+  const handled = opts.closeRun === false ? 0 : await closeRun(enrollmentId, me.email ?? me.id ?? "staff", now);
   if (me.id) await markThreadRead(enrollmentId, `au:${me.id}`, now).catch(() => {});
   // Best-effort and switch-gated inside: the hourly sweep is the floor.
   await sweepProgramMessageNotices({ now, enrollmentId }).catch((err) => console.error("[programMessages] notice", err));

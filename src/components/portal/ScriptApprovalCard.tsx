@@ -41,8 +41,11 @@ type R = { ok: boolean; message: string };
 /** `transport`: the request never reached an answer — the one failure a plain retry can fix. */
 type Outcome = R & { transport?: boolean };
 
-export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: parentBusy, large = false }: {
+export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: parentBusy, large = false, canApprove = true }: {
   script: ScriptVerdict;
+  /** Oct 20 2026 (audit E1): approving, and editing an approved script, are the
+   *  account owner's. Everyone else may suggest wording and ask for changes. */
+  canApprove?: boolean;
   /** Oct 14 2026: the words of the version on the page, so the client can edit them once they approve. */
   parts?: EditableParts | null;
   /** The parent's status line (TopicBank v1). Absent → the result renders here. */
@@ -115,7 +118,7 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
           {!editing && (
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <button type="button" onClick={downloadPdf} disabled={pdfBusy || busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}>{pdfBusy ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />} Download PDF</button>
-              {parts && <button type="button" onClick={() => { setEditing(true); setOwn(null); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Edit the wording</button>}
+              {parts && canApprove && <button type="button" onClick={() => { setEditing(true); setOwn(null); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Edit the wording</button>}
             </div>
           )}
           {editing && parts && (
@@ -129,15 +132,22 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
           )}
         </>
       ) : script.decision === "CHANGES_REQUESTED" ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes. We&rsquo;re reworking it and the new version lands here.</p>
+        <>
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-warning"><PencilLine className="size-3.5" /> You asked for changes. We&rsquo;re reworking it and the new version lands here.</p>
+          {/* Oct 20 2026 (audit E14): changed their mind? The server already takes it back. */}
+          {canApprove && (
+            <button type="button" onClick={approve} disabled={busy} className={cn("mt-1.5 inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> Approve as written instead</button>
+          )}
+        </>
       ) : (
         <>
           {script.staleApproval && <p className="mb-1.5 text-[11px] text-muted">We&rsquo;ve rewritten this since you last approved it. Have another read.</p>}
-          <p className="mb-1.5 text-[11px] text-muted">Approve it, edit the wording yourself, or tell us what to change. Once it&rsquo;s approved you can download it as a PDF.</p>
+          <p className="mb-1.5 text-[11px] text-muted">{canApprove ? <>Approve it, edit the wording yourself, or tell us what to change. Once it&rsquo;s approved you can download it as a PDF.</> : <>Suggest your own wording, or tell us what to change. The account owner approves scripts.</>}</p>
           {!proposing && (
             <div className="flex flex-wrap items-center gap-1.5">
-              <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>
-              {parts && <button type="button" onClick={() => { setProposing(true); setChanging(false); setOwn(null); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Edit the wording</button>}
+              {canApprove && <button type="button" onClick={approve} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md bg-brand-action px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><CheckCheck className="size-3" /> {CTA_WORDS.APPROVE}</button>}
+              {/* Before approval an edit is a suggestion to us (audit E14: named for what it does). */}
+              {parts && <button type="button" onClick={() => { setProposing(true); setChanging(false); setOwn(null); }} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><PencilLine className="size-3" /> Suggest my own wording</button>}
               <button type="button" onClick={() => setChanging(!changing)} disabled={busy} className={cn("inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", btn)}><MessageSquare className="size-3" /> {CTA_WORDS.CHANGES}</button>
               {!onResult && busy && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-muted"><Loader2 className="size-3 animate-spin" /> Saving…</span>}
             </div>

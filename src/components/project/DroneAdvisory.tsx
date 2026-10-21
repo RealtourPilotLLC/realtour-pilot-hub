@@ -23,7 +23,7 @@ export function DroneAdvisory({ projectId }: { projectId: string }) {
       setData(r);
       if (r.draft) setBody(r.draft);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [projectId]);
 
   const air = data?.airspace;

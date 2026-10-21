@@ -73,7 +73,7 @@ const PER_PILLAR = 15;
 const monthLabel = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" }); };
 const shortMonth = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "short" }); };
 
-export function TopicBank({ groups, months, total, canAct, readOnly, initialFilter, tabHref, view, initialMonthId = null, scriptsHref = null, staff = false }: {
+export function TopicBank({ groups, months, total, canAct, readOnly, initialFilter, tabHref, view, initialMonthId = null, scriptsHref = null, staff = false, canApprove = false }: {
   groups: { pillarId: string | null; pillarName: string; purpose: string | null; topics: PortalTopic[] }[];
   months: PortalTopicMonth[];
   archivedCount: number;
@@ -92,6 +92,8 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
   scriptsHref?: string | null;
   /** Oct 15 2026: the Realtour Pilot team is viewing (they may ask for one topic in writing). */
   staff?: boolean;
+  /** Oct 20 2026 (audit E1): may approve scripts (the account owner). */
+  canApprove?: boolean;
 }) {
   const router = useRouter();
   const [filter] = useState<PortalTopicState | "ALL">(FILTERS.some((f) => f.key === initialFilter) ? (initialFilter as PortalTopicState | "ALL") : "ALL");
@@ -266,7 +268,7 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                     hold as history is not theirs to approve, and a
                     draft they cannot see has nothing to approve. */}
                 {!t.scriptText.historical && t.script?.shared && canAct && !readOnly && (
-                  <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large />
+                  <ScriptApprovalCard script={t.script} parts={t.scriptText.parts ?? null} onResult={(r) => done(r, t.id)} run={(fn) => act(t.id, fn)} busy={busy} large canApprove={canApprove} />
                 )}
               </details>
             )}

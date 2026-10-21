@@ -461,24 +461,6 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
 
 // ---- little building blocks ------------------------------------------------
 
-function Kpi({ icon: Icon, accent, label, value, sub, tone }: {
-  icon: LucideIcon; accent: string; label: string; value: string; sub?: string; tone?: "danger" | "success" | "warning" | "muted";
-}) {
-  const color = tone === "danger" ? "text-danger" : tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-foreground";
-  return (
-    <div className="rounded-2xl border border-border bg-surface p-4 panel-shadow">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg" style={{ backgroundColor: `${accent}1a`, color: accent }}>
-          <Icon className="size-4" />
-        </span>
-        <span className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-2">{label}</span>
-      </div>
-      <div className={`mt-2 text-2xl font-bold tabular-nums ${color}`}>{value}</div>
-      {sub && <div className="mt-0.5 truncate text-[11px] text-muted-2">{sub}</div>}
-    </div>
-  );
-}
-
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "danger" | "success" | "warning" | "muted" }) {
   const color = tone === "danger" ? "text-danger" : tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-foreground";
   return (

@@ -493,7 +493,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                 onClick={() => setIdx(i)}
                 className="group relative overflow-hidden rounded-xl border border-border bg-surface-2 text-left"
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
+                { }
                 {v.thumb ? (
                   <img src={v.thumb} alt={v.title ?? `Video ${i + 1}`} loading="lazy" className="aspect-video w-full object-cover" />
                 ) : (
@@ -739,7 +739,7 @@ function VideoPlayer({ video }: { video: MediaVideo }) {
   const src = video.download ?? video.playback ?? undefined;
   if (!src) return <div className="text-white/60">Video unavailable</div>;
   return (
-    // eslint-disable-next-line jsx-a11y/media-has-caption
+     
     <video src={src} poster={video.thumb ?? undefined} controls autoPlay className="max-h-full max-w-full rounded-lg" />
   );
 }

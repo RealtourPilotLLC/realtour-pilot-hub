@@ -87,6 +87,19 @@ async function main() {
       parts: { title: "Open House Myths", hook: "Open houses do not sell homes. Or do they?", points: pts("Most buyers walk in already pre-approved.", "Neighbors come too, and they talk.", "That talk is free marketing."), close: "Thinking of selling? Text me.", captionCta: null } });
     await scripts.approveScriptVersion(b1.versionId, staff, "drill: no pillar yet");
     const auth = { token: F.portalToken! };
+    // Oct 20 2026 (audit E1): approving is the account owner's (a signed-in OWNER
+    // seat), never the shared link. The portal action is a thin gate around
+    // these two calls; the drill acts as the owner through them.
+    const ownerAuth = await (async () => {
+      const who = await prisma.clientUser.findUniqueOrThrow({ where: { id: F.clientUserId! } });
+      const e = await prisma.contentEnrollment.findUniqueOrThrow({ where: { id: F.enrollmentId }, select: { id: true, clientId: true } });
+      const c = await prisma.client.findUniqueOrThrow({ where: { id: e.clientId }, select: { name: true } });
+      return { enrollment: { id: e.id, clientId: e.clientId, clientName: c.name }, actor: { kind: "CLIENT" as const, clientUserId: who.id, email: who.email, name: who.name, membershipId: F.membershipId!, membershipRole: "OWNER" as const }, access: "FULL" as const, via: "LOGIN" as const };
+    })();
+    const { clientApproveScript: approveAsOwnerRaw } = await import("@/lib/scriptDecisions");
+    const { adoptEditedScript: adoptAsOwner } = await import("@/lib/scriptEdits");
+    const approveAsOwner = (scriptId: string, versionId: string) => approveAsOwnerRaw(ownerAuth as never, scriptId, versionId);
+    const editAsOwner = async (scriptId: string, baseVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }) => { const r = await adoptAsOwner(scriptId, baseVersionId, words, { kind: "CLIENT", viewer: ownerAuth as never }); return { ok: r.ok, message: r.message }; };
 
     // ======================================================================
     c.head("1 · the PDF builder");
@@ -101,9 +114,11 @@ async function main() {
     c.ok("a link is minted on the click", before.ok && !!before.url && before.url.startsWith(`/api/portal/scripts/one/${a1.scriptId}?m=`), before.message);
     const r0 = await onePdf(new NextRequest(`https://hub.example.test${before.url}`), { params: Promise.resolve({ scriptId: a1.scriptId }) });
     c.ok("…but the door refuses before they approve", r0.status === 403 && /Approve the script first/.test(JSON.stringify(await r0.json())));
-    const e0 = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a1.versionId, { hook: "Changed", points: ["a", "b", "c"], close: "c" });
+    const e0 = await editAsOwner(a1.scriptId, a1.versionId, { hook: "Changed", points: ["a", "b", "c"], close: "c" });
     c.ok("an edit before approving is refused", !e0.ok && /Approve the script first/.test(e0.message), e0.message);
-    const ok1 = await portalActions.portalApproveScript(auth, a1.scriptId, a1.versionId);
+    const linkApprove = await portalActions.portalApproveScript(auth, a1.scriptId, a1.versionId);
+    c.ok("the shared link cannot approve a script (audit E1: the owner signs off)", !linkApprove.ok, linkApprove.message);
+    const ok1 = await approveAsOwner(a1.scriptId, a1.versionId);
     c.ok("the agent approves", ok1.ok, ok1.message);
     const link = await portalActions.portalScriptPdfLink(auth, a1.scriptId);
     const r1 = await onePdf(new NextRequest(`https://hub.example.test${link.url}`), { params: Promise.resolve({ scriptId: a1.scriptId }) });
@@ -113,7 +128,7 @@ async function main() {
     c.ok("a token for one script does not open another", forged.status === 403);
 
     const words = { hook: "Buying a home can be stress free — really.", points: ["Here is how the calm buyers do it.", "They get pre-approved first.", "So the only surprise is a good one."], close: "Call me and I'll walk you through it.", captionCta: "Comment CALM for my checklist." };
-    const e1 = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a1.versionId, words);
+    const e1 = await editAsOwner(a1.scriptId, a1.versionId, words);
     c.ok("the agent's edit saves", e1.ok && /version we'll film/.test(e1.message), e1.message);
     const sA = await prisma.contentScript.findUniqueOrThrow({ where: { id: a1.scriptId } });
     const a2 = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: sA.sharedVersionId! } });
@@ -133,17 +148,17 @@ async function main() {
 
     const count = () => prisma.contentScriptVersion.count({ where: { scriptId: a1.scriptId } });
     const n0 = await count();
-    const stale = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a1.versionId, { ...words, hook: "Another change." });
+    const stale = await editAsOwner(a1.scriptId, a1.versionId, { ...words, hook: "Another change." });
     c.ok("an edit from an old page is refused, nothing written", !stale.ok && /newer version/.test(stale.message) && (await count()) === n0, stale.message);
-    const greet = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a2.id, { ...words, hook: "Hi, I'm Janice and today we talk about buying." });
+    const greet = await editAsOwner(a1.scriptId, a2.id, { ...words, hook: "Hi, I'm Janice and today we talk about buying." });
     c.ok("a greeting in the hook is refused in plain words", !greet.ok && /not a greeting/.test(greet.message) && (await count()) === n0, greet.message);
-    const empty = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a2.id, { ...words, points: ["One.", "", "Three."] });
+    const empty = await editAsOwner(a1.scriptId, a2.id, { ...words, points: ["One.", "", "Three."] });
     c.ok("an empty talking point is refused", !empty.ok && /Talking point 2 can't be empty/.test(empty.message) && (await count()) === n0, empty.message);
-    const same = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a2.id, { hook: a2.hook, points: JSON.parse(a2.pointsJson).map((p: { text: string }) => p.text), close: a2.close, captionCta: a2.captionCta });
+    const same = await editAsOwner(a1.scriptId, a2.id, { hook: a2.hook, points: JSON.parse(a2.pointsJson).map((p: { text: string }) => p.text), close: a2.close, captionCta: a2.captionCta });
     c.ok("an unchanged save writes nothing", same.ok && /No changes/.test(same.message) && (await count()) === n0, same.message);
-    const wrongCount = await portalActions.portalEditApprovedScript(auth, a1.scriptId, a2.id, { ...words, points: ["a", "b"] });
+    const wrongCount = await editAsOwner(a1.scriptId, a2.id, { ...words, points: ["a", "b"] });
     c.ok("a different number of talking points is refused", !wrongCount.ok && (await count()) === n0);
-    const notMine = await portalActions.portalEditApprovedScript(auth, b1.scriptId, b1.versionId, words);
+    const notMine = await editAsOwner(b1.scriptId, b1.versionId, words);
     c.ok("a script not on their page is refused", !notMine.ok && /isn't on your page/.test(notMine.message), notMine.message);
 
     // ======================================================================

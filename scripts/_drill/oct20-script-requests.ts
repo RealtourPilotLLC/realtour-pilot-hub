@@ -55,6 +55,19 @@ async function main() {
     const staff = { email: owner.email, appUserId: owner.id };
     const F = await buildContentMonth(db, { name: "Marcee Requests TEST", package: "Accelerator", topics: [{ title: "Only Seniors", selection: "SELECTED" }, { title: "Repairs That Protect", selection: "SELECTED" }, { title: "Not 2022", selection: "SELECTED" }] });
     const auth = { token: F.portalToken! };
+    // Oct 20 2026 (audit E1): approving is the account owner's (a signed-in OWNER
+    // seat), never the shared link. The portal action is a thin gate around
+    // these two calls; the drill acts as the owner through them.
+    const ownerAuth = await (async () => {
+      const who = await prisma.clientUser.findUniqueOrThrow({ where: { id: F.clientUserId! } });
+      const e = await prisma.contentEnrollment.findUniqueOrThrow({ where: { id: F.enrollmentId }, select: { id: true, clientId: true } });
+      const c = await prisma.client.findUniqueOrThrow({ where: { id: e.clientId }, select: { name: true } });
+      return { enrollment: { id: e.id, clientId: e.clientId, clientName: c.name }, actor: { kind: "CLIENT" as const, clientUserId: who.id, email: who.email, name: who.name, membershipId: F.membershipId!, membershipRole: "OWNER" as const }, access: "FULL" as const, via: "LOGIN" as const };
+    })();
+    const { clientApproveScript: approveAsOwnerRaw } = await import("@/lib/scriptDecisions");
+    const { adoptEditedScript: adoptAsOwner } = await import("@/lib/scriptEdits");
+    const approveAsOwner = (scriptId: string, versionId: string) => approveAsOwnerRaw(ownerAuth as never, scriptId, versionId);
+    const editAsOwner = async (scriptId: string, baseVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }) => { const r = await adoptAsOwner(scriptId, baseVersionId, words, { kind: "CLIENT", viewer: ownerAuth as never }); return { ok: r.ok, message: r.message }; };
     const pts = (a: string, b: string, d: string) => [{ role: "re-hook" as const, text: a }, { role: "build-up" as const, text: b }, { role: "payoff" as const, text: d }];
     const make = async (topicIdx: number, title: string, hook: string) => {
       const v = await scripts.createScriptVersion({ enrollmentId: F.enrollmentId, monthId: F.monthId, topicId: F.topicIds[topicIdx], source: "AI", status: "INTERNAL_REVIEW", createdBy: "ai",
@@ -168,7 +181,7 @@ async function main() {
     c.ok("…and the door refuses it in plain words", early.status === 403 && /Approve every script/.test(JSON.stringify(await early.json())));
     for (const id of [A.scriptId, B.scriptId, C.scriptId]) {
       const s = await prisma.contentScript.findUniqueOrThrow({ where: { id } });
-      const ok = await portalActions.portalApproveScript(auth, id, s.sharedVersionId!);
+      const ok = await approveAsOwner(id, s.sharedVersionId!);
       if (!ok.ok) c.ok(`approve ${id}`, false, ok.message);
     }
     const ready = await monthsReadyForPdf(F.enrollmentId);

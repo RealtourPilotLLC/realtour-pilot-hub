@@ -365,7 +365,7 @@ export async function maybeCreateSlackTask(opts: {
   let priority: "URGENT" | "HIGH" | "MEDIUM" | "LOW" = "MEDIUM";
   let projectId = match?.id ?? null;
   let clientId = match?.clientId ?? null;
-  let propertyAddress = match?.title ?? null;
+  const propertyAddress = match?.title ?? null;
   let usedBrain = false;
 
   // Who it is for — see resolveSlackAddressee above (Sep 8). Null = nobody

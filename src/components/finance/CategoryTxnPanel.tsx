@@ -33,7 +33,7 @@ export function CategoryTxnPanel({
   const kindOf = (cat: string) => (cat === EXCLUDE_OPT ? "EXCLUDE" : allCategories.find((c) => c.category === cat)?.kind ?? "PERSONAL");
 
   const load = () => fetchCategoryTxnsAction(category, startKey, endKey).then(setTxns);
-  useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [category, startKey, endKey]);
+  useEffect(() => { void fetchCategoryTxnsAction(category, startKey, endKey).then(setTxns); }, [category, startKey, endKey]);
 
   const moveTxn = (id: string, toCat: string) =>
     start(async () => {
@@ -51,7 +51,8 @@ export function CategoryTxnPanel({
   const toggleSel = (id: string) =>
     setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
-  const CatOptions = () => (
+  // Called as a function, not a component made during render.
+  const catOptions = () => (
     <>
       <optgroup label="Business">{bizCats.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
       <optgroup label="Personal">{perCats.map((c) => <option key={c} value={c}>{c}</option>)}</optgroup>
@@ -88,7 +89,7 @@ export function CategoryTxnPanel({
                 title="Move all selected charges"
               >
                 <option value="" disabled>Move selected to…</option>
-                <CatOptions />
+                {catOptions()}
               </select>
               <button disabled={pending} onClick={() => setSel(new Set())} className="text-muted-2 underline-offset-2 hover:underline disabled:opacity-50">Clear</button>
             </>
@@ -117,7 +118,7 @@ export function CategoryTxnPanel({
             className="w-32 shrink-0 rounded border border-border bg-surface px-1 py-0.5 text-[11px] outline-none focus:border-brand disabled:opacity-50"
             title="Recategorize this charge"
           >
-            <CatOptions />
+            {catOptions()}
           </select>
         </div>
       ))}

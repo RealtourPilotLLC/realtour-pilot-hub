@@ -169,7 +169,7 @@ export async function applyRequestWords(suggestionId: string, how: "HERS" | "EDI
   }
   if (!Array.isArray(w.points) || w.points.length !== read.parts.points.length) return { ok: false, message: "Something changed on the page. Reload it and try again." };
 
-  const { partsFromVersionRow, canonicalFromParts, approvedPillarsFor, editScriptVersion, approveScriptVersion, releaseScriptVersion, STRUCTURAL_CODES } = await import("@/lib/contentScripts");
+  const { partsFromVersionRow, canonicalFromParts, approvedPillarsFor, editScriptVersion, STRUCTURAL_CODES } = await import("@/lib/contentScripts");
   const { validateNewScript } = await import("@/lib/contentPolicy");
   const { clientScriptFormat } = await import("@/lib/bulkPlan");
   const kept = partsFromVersionRow(read.row);
@@ -187,7 +187,7 @@ export async function applyRequestWords(suggestionId: string, how: "HERS" | "EDI
   if (shape) return { ok: false, message: plainShape(shape) };
 
   // One person at a time (a double click must not make two versions).
-  const claimed = await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "OPEN" }, data: { status: "APPLYING" } });
+  const claimed = await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "OPEN" }, data: { status: "APPLYING", resolvedAt: new Date() } });
   if (claimed.count !== 1) return { ok: false, message: "That request is being applied already." };
   const when = sugg.createdAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
   const summary = how === "HERS"
@@ -195,14 +195,19 @@ export async function applyRequestWords(suggestionId: string, how: "HERS" | "EDI
     : `The client's change request of ${when}, edited by ${actor.email} (from v${read.row.versionNo})`;
   try {
     const v = await editScriptVersion(script.id, parts, actor.email, summary);
-    await approveScriptVersion(v.versionId, actor, `Applied the client's change request (${how === "HERS" ? "their version" : "edited"}).`);
-    await releaseScriptVersion(script.id, actor, { note: summary });
+    // The version is on the request at once, so a failure below leaves a trail (audit D2).
+    await prisma.scriptSuggestion.update({ where: { id: sugg.id }, data: { appliedVersionId: v.versionId } });
+    // Approve AND share in one step, through the same path as "Approve and send",
+    // which also queues the client's "script ready" email when that is switched
+    // on (audit D2: releasing directly recorded QUEUED and queued nothing).
+    const { shareApprovedScript } = await import("@/lib/scriptShare");
+    await shareApprovedScript(v.versionId, actor, { note: summary });
     await prisma.scriptSuggestion.update({ where: { id: sugg.id }, data: { status: "APPLIED", appliedHow: how, appliedVersionId: v.versionId, resolvedAt: new Date(), resolvedBy: actor.email } });
     const client = await prisma.client.findUnique({ where: { id: script.clientId }, select: { name: true } }).catch(() => null);
     const first = (client?.name ?? "").split(" ")[0] || "the client";
     return { ok: true, versionNo: v.versionNo, message: `Saved as v${v.versionNo} and shared with ${first} for their OK.` };
   } catch (e) {
-    await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN" } }).catch(() => {});
+    await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", resolvedAt: null } }).catch(() => {});
     return { ok: false, message: e instanceof Error ? e.message : "That didn't save. Try again." };
   }
 }
@@ -244,7 +249,9 @@ export async function replyToScriptRequest(suggestionId: string, bodyRaw: string
   if (!sugg) return { ok: false, message: "That request is gone." };
   const script = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { title: true } });
   const { postStaffMessage } = await import("@/lib/programMessages");
-  const r = await postStaffMessage(sugg.enrollmentId, me, `About your script "${script?.title ?? "your script"}":\n\n${body}`, null, { ref: { kind: "SCRIPT", id: sugg.scriptId } });
+  // closeRun false (audit D3): this answers the request, not the client's other
+  // unanswered messages (booking, billing …), which stay on Messages.
+  const r = await postStaffMessage(sugg.enrollmentId, me, `About your script "${script?.title ?? "your script"}":\n\n${body}`, null, { ref: { kind: "SCRIPT", id: sugg.scriptId }, closeRun: false });
   return r.ok ? { ok: true, message: `Sent to their Messages, and shown under the script on their page.` } : { ok: false, message: r.message };
 }
 
@@ -268,6 +275,12 @@ export async function loadScriptRequestsForMonth(monthId: string): Promise<Scrip
   const scripts = await prisma.contentScript.findMany({ where: { monthId }, orderBy: { createdAt: "asc" }, select: { id: true, title: true, currentVersionId: true, clientId: true, enrollmentId: true } });
   if (!scripts.length) return [];
   const since = new Date(Date.now() - 60 * 86_400_000);
+  // A claim left behind by a function that was killed mid-apply (audit D8):
+  // APPLYING stamps resolvedAt when claimed; ten minutes later it is open again.
+  await prisma.scriptSuggestion.updateMany({
+    where: { scriptId: { in: scripts.map((s) => s.id) }, status: "APPLYING", OR: [{ resolvedAt: null }, { resolvedAt: { lt: new Date(Date.now() - 10 * 60_000) } }] },
+    data: { status: "OPEN", resolvedAt: null },
+  }).catch(() => {});
   const reqs = await prisma.scriptSuggestion.findMany({
     where: { scriptId: { in: scripts.map((s) => s.id) }, OR: [{ status: { in: ["OPEN", "APPLYING"] } }, { resolvedAt: { gte: since } }, { createdAt: { gte: since } }] },
     orderBy: { createdAt: "asc" },

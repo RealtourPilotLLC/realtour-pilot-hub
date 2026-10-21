@@ -601,9 +601,22 @@ async function main() {
     const plan1 = (await portal.portalPlanning(viewerA.enrollment))!;
     c.ok("their headline: '4 scripts are ready for your review'", plan1.planning?.headline.text === "4 scripts are ready for your review", plan1.planning?.headline.text);
     const auth = { token: A.portalToken };
+    // Oct 20 2026 (audit E1): approving is the account owner's (a signed-in OWNER
+    // seat), never the shared link. The portal action is a thin gate around
+    // these two calls; the drill acts as the owner through them.
+    const ownerAuth = await (async () => {
+      const who = await prisma.clientUser.findUniqueOrThrow({ where: { id: A.clientUserId! } });
+      const e = await prisma.contentEnrollment.findUniqueOrThrow({ where: { id: A.enrollmentId }, select: { id: true, clientId: true } });
+      const c = await prisma.client.findUniqueOrThrow({ where: { id: e.clientId }, select: { name: true } });
+      return { enrollment: { id: e.id, clientId: e.clientId, clientName: c.name }, actor: { kind: "CLIENT" as const, clientUserId: who.id, email: who.email, name: who.name, membershipId: A.membershipId!, membershipRole: "OWNER" as const }, access: "FULL" as const, via: "LOGIN" as const };
+    })();
+    const { clientApproveScript: approveAsOwnerRaw } = await import("@/lib/scriptDecisions");
+    const { adoptEditedScript: adoptAsOwner } = await import("@/lib/scriptEdits");
+    const approveAsOwner = (scriptId: string, versionId: string) => approveAsOwnerRaw(ownerAuth as never, scriptId, versionId);
+    const editAsOwner = async (scriptId: string, baseVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }) => { const r = await adoptAsOwner(scriptId, baseVersionId, words, { kind: "CLIENT", viewer: ownerAuth as never }); return { ok: r.ok, message: r.message }; };
     const weekendScript = await prisma.contentScript.findFirstOrThrow({ where: { monthId: A.monthId, title: "Why the first weekend decides your price" } });
     c.ok("…the card carries the script and the version the page shows", tA("Why the first weekend decides your price").script?.id === weekendScript.id && tA("Why the first weekend decides your price").script?.sharedVersionId === weekendScript.sharedVersionId);
-    const yes = await portalActions.portalApproveScript(auth, weekendScript.id, weekendScript.sharedVersionId!);
+    const yes = await approveAsOwner(weekendScript.id, weekendScript.sharedVersionId!);
     c.ok("Approve: recorded against the exact version they read", yes.ok && !!(await prisma.contentScript.findFirstOrThrow({ where: { monthId: A.monthId, title: "Why the first weekend decides your price" } })).clientApprovedVersionId, yes.message);
     const repairs = await prisma.contentScript.findFirstOrThrow({ where: { monthId: A.monthId, title: "Repairs before listing" } });
     const short = await portalActions.portalRequestScriptChanges(auth, repairs.id, "no", repairs.sharedVersionId!);
@@ -622,7 +635,7 @@ async function main() {
     c.ok("the upload card: 'With Ashley: 1 approved, 1 asked for changes, 2 to read'", card1.counts.clientApproved === 1 && card1.counts.changes === 1 && card1.counts.released === 2, JSON.stringify(card1.counts));
     for (const t of ["Rates are not the whole story", "Should you sell before you buy?"]) {
       const s = await prisma.contentScript.findFirstOrThrow({ where: { monthId: A.monthId, title: t } });
-      await portalActions.portalApproveScript(auth, s.id, s.sharedVersionId!);
+      await approveAsOwner(s.id, s.sharedVersionId!);
     }
     const plan2 = (await portal.portalPlanning(viewerA.enrollment))!;
     c.ok("with three approved and one in rework: 'We're making the changes you asked for'", plan2.planning?.headline.key === "CHANGES_REQUESTED", plan2.planning?.headline.text);
@@ -630,7 +643,7 @@ async function main() {
     await staffActions.saveScriptText(repairs.id, "Repairs before listing\nCategory: Seller Education\nHOOK\nFirst-time sellers: not every repair pays you back.\nTALKING POINT 1 - RE-HOOK\nSome fixes cost more than they return at the closing table.\nTALKING POINT 2 - BUILD UP\nPaint and lighting usually pay.\nTALKING POINT 3 - PAYOFF\nSpend where buyers look first, and skip the rest.\nCLOSE / CTA\nAsk me for my repair checklist before you call a contractor.");
     const sent3 = await act.sendScriptUploadAction(batch2);
     const repairs2 = await prisma.contentScript.findUniqueOrThrow({ where: { id: repairs.id } });
-    const yes2 = await portalActions.portalApproveScript(auth, repairs.id, repairs2.sharedVersionId!);
+    const yes2 = await approveAsOwner(repairs.id, repairs2.sharedVersionId!);
     const plan3 = (await portal.portalPlanning(viewerA.enrollment))!;
     c.ok("reworked, re-sent and approved: 'All 4 scripts approved'", sent3.ok && yes2.ok && plan3.planning?.headline.text === "All 4 scripts approved", `${sent3.message} / ${plan3.planning?.headline.text}`);
     const card = fs.readFileSync(path.join(REPO, "src/components/portal/ScriptApprovalCard.tsx"), "utf8");

@@ -147,19 +147,24 @@ function RequestsChip({ r }: { r: JobRow["requests"] }) {
 }
 
 function JobLine({ r, includeTest }: { r: JobRow; includeTest: boolean }) {
+  // Oct 20 2026 (audit): two lines, not a five-column table. The card sits in
+  // the dashboard's narrow column, where the table scrolled sideways on a
+  // desktop and wrapped every address to four lines.
   return (
-    <tr data-job={r.projectId} className={cn("border-b border-border last:border-0", r.monthly && "opacity-80")}>
-      <td className="px-3 py-2 align-top">
-        <Link href={homeRecordHref(`/projects/${r.projectId}`, includeTest)} className="block min-w-36 font-semibold leading-snug [overflow-wrap:anywhere] hover:text-brand">
+    <li data-job={r.projectId} className={cn("px-4 py-2.5", r.monthly && "opacity-80")}>
+      <div className="flex items-baseline gap-3">
+        <Link href={homeRecordHref(`/projects/${r.projectId}`, includeTest)} className="min-w-0 flex-1 font-semibold leading-snug [overflow-wrap:anywhere] hover:text-brand">
           {r.street}
           {r.client && <span className="block text-[12px] font-normal text-muted">{r.client}</span>}
         </Link>
-      </td>
-      <td className={cn("whitespace-nowrap px-3 py-2 align-top tabular-nums", r.late ? "font-semibold text-danger" : r.dueToday ? "font-medium" : "text-muted")}>{r.dueWords}</td>
-      <td className="px-3 py-2 align-top"><StageChip stage={r.photos} /></td>
-      <td className="px-3 py-2 align-top"><StageChip stage={r.video} /></td>
-      <td className="px-3 py-2 align-top"><RequestsChip r={r.requests} /></td>
-    </tr>
+        <span className={cn("shrink-0 text-right text-[13px] tabular-nums", r.late ? "font-semibold text-danger" : r.dueToday ? "font-medium" : "text-muted")}>{r.dueWords}</span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-2">
+        <span className="inline-flex items-center gap-1">Photos <StageChip stage={r.photos} /></span>
+        <span className="inline-flex items-center gap-1">Video <StageChip stage={r.video} /></span>
+        <span className="inline-flex items-center gap-1">Requests <RequestsChip r={r.requests} /></span>
+      </div>
+    </li>
   );
 }
 
@@ -184,28 +189,11 @@ export function ShootsInProgress({ jobs, includeTest = false, doors = ALL_DOORS 
       ) : jobs.rows.length === 0 ? (
         <p className="flex items-center gap-1.5 px-4 py-3 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> No shoots in progress.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-[11px] font-medium uppercase tracking-wide text-muted">
-                <th scope="col" className="px-3 py-2 font-medium">Shoot</th>
-                <th scope="col" className="px-3 py-2 font-medium">Due</th>
-                <th scope="col" className="px-3 py-2 font-medium">Photos</th>
-                <th scope="col" className="px-3 py-2 font-medium">Video</th>
-                <th scope="col" className="px-3 py-2 font-medium">Requests</th>
-              </tr>
-            </thead>
-            <tbody>
-              {listing.map((r) => <JobLine key={r.projectId} r={r} includeTest={includeTest} />)}
-              {monthly.length > 0 && (
-                <tr className="border-b border-border bg-surface-2/60">
-                  <td colSpan={5} className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">Monthly content</td>
-                </tr>
-              )}
-              {monthly.map((r) => <JobLine key={r.projectId} r={r} includeTest={includeTest} />)}
-            </tbody>
-          </table>
-        </div>
+        <ul className="divide-y divide-border">
+          {listing.map((r) => <JobLine key={r.projectId} r={r} includeTest={includeTest} />)}
+          {monthly.length > 0 && <li className="bg-surface-2/60 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">Monthly content</li>}
+          {monthly.map((r) => <JobLine key={r.projectId} r={r} includeTest={includeTest} />)}
+        </ul>
       )}
       {all && !jobs.unavailable && jobs.total > jobs.rows.length && (
         <Link href={all} className="flex min-h-11 items-center justify-center gap-1 border-t border-border px-4 text-sm font-medium text-muted hover:bg-surface-2/60 hover:text-foreground">

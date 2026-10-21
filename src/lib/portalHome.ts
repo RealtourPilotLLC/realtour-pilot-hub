@@ -202,7 +202,8 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       add({
         kind: "APPROVE_SCRIPTS", count: i.scripts.length,
         title: i.scripts.length === 1 ? `Read your script for “${i.scripts[0].title}”` : `Read ${plural(i.scripts.length, "script")} before we film`,
-        detail: "Approve it as written, or tell us what to change.", cta: i.scripts.length === 1 ? "Read the script" : "Read the scripts", dest: "plan", extra: "pv=scripts",
+        // Audit E1: only the account owner approves; everyone else may suggest.
+        detail: i.perms.approve ? "Approve it as written, or tell us what to change." : "Read it and tell us what to change. The account owner approves it.", cta: i.scripts.length === 1 ? "Read the script" : "Read the scripts", dest: "plan", extra: "pv=scripts",
       });
     }
     // R01: keyed on what is OWED, on either route — a call-route gap after the

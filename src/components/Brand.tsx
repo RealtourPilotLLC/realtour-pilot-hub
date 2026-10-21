@@ -20,7 +20,7 @@ export function BrandMark({ className = "size-9" }: { className?: string }) {
 // Sized by height; width follows the file's own proportions.
 export function BrandWordmark({ className = "h-4", variant = "auto" }: { className?: string; variant?: "auto" | "onDark" | "onLight" }) {
   if (variant !== "auto") {
-    // eslint-disable-next-line @next/next/no-img-element
+     
     return (
       <img
         src={variant === "onLight" ? "/brand/wordmark-dark.png" : "/brand/wordmark-white.png"}

@@ -100,7 +100,10 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
  * separate acts and stay ours; this is the third and it is theirs.
  */
 export async function portalApproveScript(auth: PortalAuth, scriptId: string, readVersionId: string): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
+  // Oct 20 2026 (audit E1): approval is the account owner's (approveEdits), as
+  // the Team settings promise ("Collaborator ... You keep the approvals") and
+  // as for videos. A collaborator or the shared link suggests and asks for changes.
+  const v = await viewerFor(auth, "approveEdits");
   if (typeof v === "string") return fail(v);
   const { clientApproveScript } = await import("@/lib/scriptDecisions");
   // R1: readVersionId is the version the PAGE was showing. The server refuses
@@ -138,12 +141,26 @@ export async function portalScriptPdfLink(auth: PortalAuth, scriptId: string): P
 }
 
 /**
+ * A month's approved scripts as one PDF (Oct 20 2026), minted on the tap like
+ * the one-script PDF, so a page left open never offers a stale link (audit E10).
+ */
+export async function portalMonthScriptsPdfLink(auth: PortalAuth, monthKey: string): Promise<R & { url?: string }> {
+  const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? null });
+  if (!r.ok) return fail(r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : LINK_DEAD);
+  if (!/^\d{4}-\d{2}$/.test(monthKey)) return fail("That month isn't on your page.");
+  const { mediaToken, mediaScopeOf } = await import("@/lib/portalMedia");
+  const id = r.viewer.enrollment.id;
+  return { ok: true, message: "", url: `/api/portal/scripts/all/${id}?month=${monthKey}&m=${encodeURIComponent(mediaToken(id, mediaScopeOf(r.viewer), 15 * 60_000))}` };
+}
+
+/**
  * The agent changes the WORDS of a script they approved (Oct 14 2026: "able
  * to edit the scripts themselves after they approve it"). The edit becomes
  * the version we film, everywhere at once; see lib/scriptEdits.
  */
 export async function portalEditApprovedScript(auth: PortalAuth, scriptId: string, baseVersionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
+  // An edit to an approved script IS a sign-off on the new words: the owner's (audit E1).
+  const v = await viewerFor(auth, "approveEdits");
   if (typeof v === "string") return fail(v);
   const { adoptEditedScript } = await import("@/lib/scriptEdits");
   const r = await adoptEditedScript(scriptId, baseVersionId, words, { kind: "CLIENT", viewer: v }).catch((e) => ({ ok: false as const, message: e instanceof Error && /format|shape/i.test(e.message) ? "That edit couldn't be saved as written. Keep a hook, the talking points and a close, and try again." : "That didn't save. Try again." }));

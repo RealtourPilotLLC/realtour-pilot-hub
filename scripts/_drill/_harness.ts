@@ -1026,7 +1026,7 @@ export function interceptModule(match: (request: string) => boolean, wrap: (load
  * Replaced outright rather than wrapped: under react-server the real
  * next/navigation is a client module that cannot even be evaluated.
  */
-export function installNextStubs(opts: { headers?: Record<string, string>; cookies?: Record<string, string> } = {}) {
+export function installNextStubs(opts: { headers?: Record<string, string>; cookies?: Record<string, string> } = {}): { cookies: { set: (name: string, value: string) => void; delete: (name: string) => void } } {
   const nope = (name: string) => () => { throw new Error(`next/navigation.${name}() is not available in a drill`); };
   const cookieJar = new Map(Object.entries(opts.cookies ?? {}));
   const cookieStore = {
@@ -1062,6 +1062,8 @@ export function installNextStubs(opts: { headers?: Record<string, string>; cooki
     draftMode: async () => ({ isEnabled: false, enable: () => {}, disable: () => {} }),
   });
   installLoader();
+  // Oct 20 2026: a drill can sign someone in (e.g. a client seat's cookie) after its fixtures exist.
+  return { cookies: cookieStore };
 }
 
 // ---- the network fence ----------------------------------------------------

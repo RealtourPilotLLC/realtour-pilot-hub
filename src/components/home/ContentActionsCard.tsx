@@ -41,7 +41,7 @@ export function ContentActionsCard({ data }: { data: ContentActions | null }) {
         <p className="text-sm text-muted">{rows.length ? `${rows.length} ${rows.length === 1 ? "client needs" : "clients need"} something` : "nothing waiting"}</p>
       </div>
       {rows.length === 0 ? (
-        <p className="mt-2 flex items-center gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="size-4" /> Nothing in this month&rsquo;s or next month&rsquo;s content is waiting on you.</p>
+        <p className="mt-2 flex items-start gap-1.5 text-sm text-success"><CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0" /> Nothing in this month&rsquo;s or next month&rsquo;s content is waiting on you.</p>
       ) : (
         <>
           <ul className="mt-2 divide-y divide-border">{rows.slice(0, SHOWN).map((r) => <Row key={r.key} r={r} />)}</ul>
