@@ -1,6 +1,9 @@
 import "server-only";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { getSecret, saveSecret, markSynced, markError, getConnection } from "./connections";
 import { fetchWithTimeout } from "@/lib/http";
+import { prisma } from "@/lib/prisma";
 
 // Time limits (Oct 20 2026, audit H7): Intuit's token calls 30 s; an API read
 // 60 s, because a report (the P&L) is computed on their side.
@@ -54,6 +57,103 @@ export class QuickBooksError extends Error {
     super(message);
     this.name = "QuickBooksError";
   }
+}
+
+/** Another caller holds the QuickBooks lease: nothing was sent to Intuit. */
+export class QuickBooksBusyError extends QuickBooksError {
+  constructor(readonly heldBy: string, readonly until: Date) {
+    super(`A QuickBooks pull is already running (${heldBy}). Try again in a few minutes.`, 423);
+    this.name = "QuickBooksBusyError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ONE QUICKBOOKS CALLER AT A TIME (Oct 21 2026).
+//
+// Every token refresh ROTATES the refresh token and the new one must be saved
+// (see accessToken). Two callers refreshing at once, say the early-morning
+// daily pull and the Sync button on /connections, read the same stored token, and
+// the loser can be left holding (or saving) a token Intuit has already
+// replaced, which is how a connection dies overnight
+// (memory: reference-quickbooks-books).
+//
+// So every call to Intuit runs inside a LEASE: one AppSetting row taken by
+// compare-and-swap (the claim pattern of photoDelivery/digest.ts), renewed
+// as the work goes on and released at the end. A second caller is refused at
+// once with QuickBooksBusyError and sends nothing. Nested calls inside the
+// holder (a sync's many queries) ride the holder's lease through
+// AsyncLocalStorage, and reuse ONE access token for the whole run instead of
+// rotating the refresh token on every query.
+//
+// A request that dies without releasing the lease blocks the next caller for
+// QUICKBOOKS_LEASE_MS at most; a holder still working renews it as it calls.
+// ---------------------------------------------------------------------------
+const LEASE_KEY = "quickbooks:api-lease";
+export const QUICKBOOKS_LEASE_MS = 3 * 60_000;
+const RENEW_EVERY_MS = 30_000;
+
+type LeaseRecord = { owner: string; by: string; until: string };
+type Session = { owner: string; by: string; renewedAt: number; token: { value: string; exp: number } | null };
+const session = new AsyncLocalStorage<Session>();
+
+function readLease(value: string | null | undefined): LeaseRecord | null {
+  try {
+    const v = value ? (JSON.parse(value) as Partial<LeaseRecord>) : null;
+    return v && typeof v.owner === "string" && typeof v.until === "string" ? { owner: v.owner, by: String(v.by ?? "another run"), until: v.until } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Take (or renew) the lease for `owner`. Answers who holds it when refused. */
+async function claimLease(owner: string, by: string, now = Date.now()): Promise<{ ok: true } | { ok: false; held: LeaseRecord }> {
+  const row = await prisma.appSetting.findUnique({ where: { key: LEASE_KEY }, select: { value: true } });
+  const cur = readLease(row?.value);
+  if (cur && cur.owner !== owner && Date.parse(cur.until) > now) return { ok: false, held: cur };
+  const value = JSON.stringify({ owner, by, until: new Date(now + QUICKBOOKS_LEASE_MS).toISOString() } satisfies LeaseRecord);
+  if (!row) {
+    const made = await prisma.appSetting.create({ data: { key: LEASE_KEY, value, updatedBy: "quickbooks" } }).then(() => true, () => false);
+    if (made) return { ok: true };
+    const now2 = await prisma.appSetting.findUnique({ where: { key: LEASE_KEY }, select: { value: true } });
+    return { ok: false, held: readLease(now2?.value) ?? { owner: "?", by: "another run", until: new Date(now + QUICKBOOKS_LEASE_MS).toISOString() } };
+  }
+  const r = await prisma.appSetting.updateMany({ where: { key: LEASE_KEY, value: row.value }, data: { value, updatedBy: "quickbooks" } });
+  if (r.count === 1) return { ok: true };
+  const now2 = await prisma.appSetting.findUnique({ where: { key: LEASE_KEY }, select: { value: true } });
+  return { ok: false, held: readLease(now2?.value) ?? { owner: "?", by: "another run", until: new Date(now + QUICKBOOKS_LEASE_MS).toISOString() } };
+}
+
+async function releaseLease(owner: string): Promise<void> {
+  const row = await prisma.appSetting.findUnique({ where: { key: LEASE_KEY }, select: { value: true } });
+  if (readLease(row?.value)?.owner !== owner) return; // never someone else's
+  await prisma.appSetting.deleteMany({ where: { key: LEASE_KEY, value: row!.value } });
+}
+
+/**
+ * Run `fn` as THE QuickBooks caller. `by` names the caller for the refusal
+ * message ("the daily run", "the Sync button"). Re-entrant: inside a running
+ * lease it simply runs. Throws QuickBooksBusyError, having sent nothing, when
+ * another caller holds the lease.
+ */
+export async function withQuickBooks<T>(by: string, fn: () => Promise<T>): Promise<T> {
+  if (session.getStore()) return fn();
+  const owner = `${by}:${randomUUID()}`;
+  const got = await claimLease(owner, by);
+  if (!got.ok) throw new QuickBooksBusyError(got.held.by, new Date(got.held.until));
+  try {
+    return await session.run({ owner, by, renewedAt: Date.now(), token: null }, fn);
+  } finally {
+    await releaseLease(owner).catch(() => {});
+  }
+}
+
+/** Inside a lease: keep it alive, and stop cold if it was lost (expired and
+ *  taken by another caller) rather than refresh alongside that caller. */
+async function keepLease(s: Session): Promise<void> {
+  if (Date.now() - s.renewedAt < RENEW_EVERY_MS) return;
+  const got = await claimLease(s.owner, s.by);
+  if (!got.ok) throw new QuickBooksBusyError(got.held.by, new Date(got.held.until));
+  s.renewedAt = Date.now();
 }
 
 function appBase() {
@@ -125,13 +225,18 @@ export async function exchangeQuickBooksCode(
     accountLabel: `QuickBooks${IS_SANDBOX ? " (sandbox)" : ""}`,
     metadata: { realmId, env, refreshedAt: new Date().toISOString() },
   });
-  // Best-effort: name the connection after the actual company.
+  // Best-effort: name the connection after the actual company. (Skipped, not
+  // waited for, while a pull holds the QuickBooks lease.)
   try {
     const info = await companyInfo();
     if (info?.CompanyName) {
-      await saveSecret("quickbooks", json.refresh_token, {
+      // Re-save whatever token is stored NOW: reading the company refreshed
+      // the token, and writing back the one from the consent screen would
+      // undo that rotation (Oct 21 2026).
+      const current = (await getSecret("quickbooks")) ?? json.refresh_token;
+      await saveSecret("quickbooks", current, {
         accountLabel: `QuickBooks · ${info.CompanyName}${IS_SANDBOX ? " (sandbox)" : ""}`,
-        metadata: { realmId, env, refreshedAt: new Date().toISOString() },
+        metadata: { ...(await readMeta()), realmId, env },
       });
     }
   } catch { /* label is cosmetic */ }
@@ -168,6 +273,11 @@ function assertEnv(meta: QboMeta) {
  * way a QuickBooks integration breaks, so we always write it back.
  */
 async function accessToken(): Promise<string> {
+  // Only ever minted by the lease holder (qbo() runs inside withQuickBooks),
+  // and once per run: an access token lasts an hour, a sync a few minutes.
+  const s = session.getStore();
+  if (!s) throw new QuickBooksError("QuickBooks token requested outside the QuickBooks lease.", 500);
+  if (s.token && s.token.exp > Date.now()) return s.token.value;
   const refresh = await getSecret("quickbooks");
   if (!refresh) throw new QuickBooksError("QuickBooks is not connected.", 401);
   assertEnv(await readMeta());
@@ -189,15 +299,30 @@ async function accessToken(): Promise<string> {
     );
   }
   if (json.refresh_token && json.refresh_token !== refresh) {
-    const meta = await readMeta();
-    await saveSecret("quickbooks", json.refresh_token, {
-      metadata: { ...meta, refreshedAt: new Date().toISOString() },
-    });
+    // Save the rotated token only over the one it was minted from: if Jordan
+    // reconnected while this ran, the fresh token from Intuit's consent screen
+    // stays (a reconnect does not take the lease, and must never be undone).
+    const conn = await getConnection("quickbooks");
+    if ((await getSecret("quickbooks")) === refresh) {
+      const meta = await readMeta();
+      await saveSecret("quickbooks", json.refresh_token, {
+        // saveSecret writes the label too; keep the company name on the card.
+        accountLabel: conn?.accountLabel ?? undefined,
+        metadata: { ...meta, refreshedAt: new Date().toISOString() },
+      });
+    }
   }
+  // Five minutes' margin under Intuit's expiry (an hour, as a rule).
+  const life = Math.max(60, Number(json.expires_in ?? 3600) - 300) * 1000;
+  s.token = { value: json.access_token, exp: Date.now() + life };
   return json.access_token;
 }
 
 async function qbo<T>(path: string, opts: { query?: Record<string, string> } = {}): Promise<T> {
+  // Every Intuit call holds the lease: a call outside one takes its own.
+  const s = session.getStore();
+  if (!s) return withQuickBooks("a QuickBooks read", () => qbo<T>(path, opts));
+  await keepLease(s);
   const { realmId } = await readMeta();
   if (!realmId) throw new QuickBooksError("QuickBooks company id is missing. Reconnect.", 400);
   const token = await accessToken();
@@ -370,16 +495,33 @@ export function expenseAccount(r: Record<string, unknown>): string | null {
   return best?.name ?? null;
 }
 
-export async function syncQuickBooks(opts: { sinceKey?: string } = {}): Promise<{
+export type QuickBooksSyncResult = {
   invoices: number; payments: number; purchases: number; salesReceipts: number; deposits: number;
-}> {
-  const { prisma } = await import("@/lib/prisma");
+  /** Set when nothing was pulled: not connected, or another caller holds the lease. */
+  skipped?: string;
+};
+
+/**
+ * Pull the ledger since `sinceKey` (default: 400 days). `by` names the caller
+ * for the one-caller lease: when another pull holds it, this returns
+ * `skipped` having sent nothing to Intuit (and marks no error: a busy lease
+ * is not a broken connection).
+ */
+export async function syncQuickBooks(opts: { sinceKey?: string; by?: string } = {}): Promise<QuickBooksSyncResult> {
+  const none = { invoices: 0, payments: 0, purchases: 0, salesReceipts: 0, deposits: 0 };
+  const conn = await getConnection("quickbooks");
+  if (!conn || conn.status === "DISCONNECTED" || !conn.secretEncrypted) return { ...none, skipped: "QuickBooks is not connected" };
   try {
-    const conn = await getConnection("quickbooks");
-    if (!conn || conn.status === "DISCONNECTED" || !conn.secretEncrypted) {
-      return { invoices: 0, payments: 0, purchases: 0, salesReceipts: 0, deposits: 0 };
-    }
-    const since = opts.sinceKey ?? new Date(Date.now() - 400 * 864e5).toISOString().slice(0, 10);
+    return await withQuickBooks(opts.by ?? "a QuickBooks pull", () => pullLedger(opts.sinceKey));
+  } catch (e) {
+    if (e instanceof QuickBooksBusyError) return { ...none, skipped: e.message };
+    throw e;
+  }
+}
+
+async function pullLedger(sinceKey?: string): Promise<QuickBooksSyncResult> {
+  try {
+    const since = sinceKey ?? new Date(Date.now() - 400 * 864e5).toISOString().slice(0, 10);
     let invoices = 0, payments = 0, purchases = 0, salesReceipts = 0, deposits = 0;
 
     // Invoices (what we billed, including everything not in Stripe)
@@ -543,7 +685,10 @@ export async function syncQuickBooks(opts: { sinceKey?: string } = {}): Promise<
     await markSynced("quickbooks");
     return { invoices, payments, purchases, salesReceipts, deposits };
   } catch (e) {
-    await markError("quickbooks", e instanceof Error ? e.message : "QuickBooks sync failed").catch(() => {});
+    // A lease lost mid-run is not a broken connection either.
+    if (!(e instanceof QuickBooksBusyError)) {
+      await markError("quickbooks", e instanceof Error ? e.message : "QuickBooks sync failed").catch(() => {});
+    }
     throw e;
   }
 }

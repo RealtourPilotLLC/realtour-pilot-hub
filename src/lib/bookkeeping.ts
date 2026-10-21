@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { vendorName, STRIPE_CONNECT_ACCOUNTS, stripeWindow } from "@/lib/financeCategories";
+import { vendorName, STRIPE_CONNECT_ACCOUNTS, stripeWindow, operatingCutover, OPERATING_CUTOVER_DEFAULT } from "@/lib/financeCategories";
 import { etDayKey } from "@/lib/datetime";
 import { usd0 } from "@/lib/money";
 
@@ -47,7 +47,13 @@ export type Verdict = {
   duplicateOf?: string;    // qboId of the row we keep
 };
 
+// ··0942 was Jordan's PERSONAL account until ··3002 (business checking) closed;
+// from the cutover (financeCategories.operatingCutover, Oct 21 2026) it IS the
+// business account, so a line that mentions it is no longer evidence of an
+// owner draw or a detour. The rules below that read it apply before the
+// cutover only. ··4284 is the household account (Lauren's) throughout.
 const PERSONAL_ACCT = /0942/;
+const HOUSEHOLD_ACCT = /x{3,}4284|\b4284\b/i;
 const RX = {
   stripe: /\bSTRIPE\b/i,
   venmo: /\bVENMO\b/i,
@@ -184,9 +190,12 @@ export function classify(
   r: Row,
   peers: { qboId: string; amount: number; txnDate: Date }[],
   payouts: { amount: number; at: Date }[],
+  opts: { cutoverKey?: string } = {},
 ): Verdict {
   const memo = r.memo ?? "";
   const days = (a: Date, b: Date) => Math.abs(+a - +b) / 864e5;
+  // Rows are stored at noon UTC, so the UTC date is the posted day.
+  const afterCutover = r.txnDate.toISOString().slice(0, 10) >= (opts.cutoverKey ?? OPERATING_CUTOVER_DEFAULT);
 
   // ---- Expenses -----------------------------------------------------------
   if (r.type === "Purchase") {
@@ -206,6 +215,14 @@ export function classify(
       }
       return { category: "COST_OF_SALES", confidence: 0.85, needsReview: false,
         reviewNote: "Staffify — Remar & Kyle editing labor." };
+    }
+
+    // From the cutover the business account itself pays the household: a
+    // transfer to ··4284 is an owner draw, never a cost (before it, these
+    // left ··3002 and keep the review below, as they always have).
+    if (afterCutover && HOUSEHOLD_ACCT.test(hay)) {
+      return { category: "OWNER_DRAW", confidence: 0.9, needsReview: false, personal: true,
+        reviewNote: "Transfer to the household account ···4284. An owner draw: it never reduces profit." };
     }
 
     // Vendor intelligence FIRST: a recognised vendor is classified with
@@ -243,7 +260,7 @@ export function classify(
       };
     }
 
-    if (PERSONAL_ACCT.test(memo) || PERSONAL_ACCT.test(acct)) {
+    if (!afterCutover && (PERSONAL_ACCT.test(memo) || PERSONAL_ACCT.test(acct))) {
       return {
         category: "OWNER_DRAW", confidence: 0.9, needsReview: false, personal: true,
         reviewNote: "Transfer to the personal ...0942 account. Recorded as an owner draw, not an expense — it must not reduce profit.",
@@ -286,11 +303,18 @@ export function classify(
         reviewNote: "Looks like an account-to-account transfer (e.g. a QuickBooks/Intuit instant transfer or VISA Direct), not a new customer sale. Confirm before counting as revenue." };
     }
 
+    // Money back from the household account into the business one: own money
+    // moving, never a sale (from the cutover; Oct 21 2026).
+    if (afterCutover && HOUSEHOLD_ACCT.test(memo)) {
+      return { category: "OWNER_CONTRIBUTION", confidence: 0.8, needsReview: false, personal: true,
+        reviewNote: "Money back from the household account ···4284. Own money moving into the business account, not revenue." };
+    }
+
     // Personal-account movement. Per Jordan: this is EITHER a payout that landed
     // in ...0942 and was forwarded, OR a round trip of his own money. Only an
     // exact amount+date tie to a Stripe payout settles it, and in practice that
     // matches a small minority — so everything else is flagged, never guessed.
-    if (PERSONAL_ACCT.test(memo)) {
+    if (!afterCutover && PERSONAL_ACCT.test(memo)) {
       const tie = payouts.find((p) => Math.abs(p.amount - r.amount) < 0.02 && days(p.at, r.txnDate) <= 6);
       if (tie) {
         return {
@@ -350,6 +374,7 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
     .map((r) => ({ qboId: r.qboId, amount: r.amount, txnDate: r.txnDate }));
   const payouts = (await prisma.stripeTransaction.findMany({ where: { type: "payout" } }))
     .map((p) => ({ amount: Math.abs(p.gross), at: p.createdAt }));
+  const cutoverKey = await operatingCutover();
 
   const byCategory: Record<string, { n: number; amount: number }> = {};
   let flagged = 0;
@@ -368,7 +393,7 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
     // Feed the classifier the FULL bank description (payee + PrivateNote + line
     // text), not the often-empty memo column, so vendors are actually visible.
     const text = describe(r);
-    const v = classify({ ...r, memo: text || r.memo } as Row, peers, payouts);
+    const v = classify({ ...r, memo: text || r.memo } as Row, peers, payouts, { cutoverKey });
     byCategory[v.category] ||= { n: 0, amount: 0 };
     byCategory[v.category].n++;
     byCategory[v.category].amount += r.amount;
@@ -633,7 +658,9 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   // scheduled pull was stopped on Oct 13, so every QuickBooks payment after it
   // was silently missing from month-to-date and year-to-date. Same rule as the
   // Venmo rail below: the days after the coverage end are UNKNOWN, so they are
-  // capped and reported (quickbooksNote), never presented as $0.
+  // capped and reported (quickbooksNote), never presented as $0. (Oct 21 2026:
+  // the daily pull is back on, so the cap normally sits at today and the note
+  // only speaks up when a pull has failed for two days or more.)
   const qboCoverEnd = await quickbooksCoverageEnd();
   const qboCoverKey = qboCoverEnd ? etDayKey(qboCoverEnd) : null;
   const qboTo = qboCoverKey && qboCoverKey < endKey ? new Date(`${qboCoverKey}T23:59:59Z`) : to;
@@ -924,6 +951,8 @@ const PERSON_CANON: [RegExp, string][] = [
 function payChannel(name: string, mask: string | null | undefined): string {
   if (mask === "venmo") return "Venmo";
   const hay = name || "";
+  // A contractor paid straight from the bank by Zelle (··0942 from the cutover).
+  if (/\bzel(le)?\b|zel to/i.test(hay)) return "Zelle";
   if (/paypal/i.test(hay)) return "PayPal";
   if (/\bwise\b|invoice wise/i.test(hay)) return "Wise";
   if (/corporate ach|ach web|ach pmt|\bach\b/i.test(hay)) return "ACH";

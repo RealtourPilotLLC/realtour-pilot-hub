@@ -10,6 +10,7 @@ import { KpiCards } from "@/components/finance/KpiCards";
 import { revenueByProcessor, expenseCoverage } from "@/lib/bookkeeping";
 import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
 import { BooksReview } from "@/components/finance/BooksReview";
+import { BooksFreshness } from "@/components/finance/BooksFreshness";
 import { listFlaggedQbo } from "@/app/sales/booksReviewActions";
 import { SavingsPlan, type SavingsItemView } from "@/components/finance/SavingsPlan";
 import { MoneyExceptionsCard } from "@/components/finance/MoneyExceptionsCard";
@@ -427,18 +428,11 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             />
           </div>
           {/* RAIL FRESHNESS — how current each money source is (audit: Venmo/Tilt
-              statements went 6+ weeks stale with zero warning). Amber = stale. */}
-          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-            <span className="text-muted-2">Data through:</span>
-            <span className={health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS ? "font-medium text-warning" : "text-muted"}>
-              QuickBooks {fresh.quickbooks ? etDate(fresh.quickbooks) : "—"}
-            </span>
-            <span className="text-muted">Stripe {fresh.stripe ? etDate(fresh.stripe) : "—"}</span>
-            {fresh.manual.map((mrow) => (
-              <span key={mrow.mask} className={mrow.daysBehind != null && mrow.daysBehind >= 21 ? "font-medium text-warning" : "text-muted"}>
-                {mrow.label} {mrow.newest ? etDate(mrow.newest) : "never"}
-              </span>
-            ))}
+              statements went 6+ weeks stale with zero warning). Oct 21 2026:
+              one card for it, with the QuickBooks pull, the bank feed and the
+              lines still waiting in review (BooksFreshness). Amber = behind. */}
+          <div className="mt-3">
+            <BooksFreshness fresh={fresh} now={now} />
           </div>
           <div className="mt-3 flex items-start gap-1.5 rounded-lg bg-surface-2/50 p-3 text-xs text-muted">
             {health.needsReview > 0 ? <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /> : <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />}

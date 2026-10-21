@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cronBudget, authorizeCron } from "@/lib/cron";
 import { prisma } from "@/lib/prisma";
+import { etDayKey, etYearStartKey } from "@/lib/datetime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,10 +41,28 @@ export async function GET(req: NextRequest) {
     return syncStripe();
   }, { maxMs: 60_000 });
 
-  // (The QuickBooks steps — booksSync, and booksClassify which only re-sorts
-  // the QuickBooks ledger it pulled — were STOPPED Oct 13 2026: Jordan does
-  // not use QuickBooks. The library code and the ledger already pulled are
-  // kept; nothing schedules a pull any more.)
+  // Books: pull the recent QuickBooks ledger, then re-run its classification
+  // so Finance → Overview and the review desk stay current. RESTORED Oct 21
+  // 2026: they were stopped on Oct 13 on the belief that Jordan does not use
+  // QuickBooks, and he does ("QuickBooks should still pull and be
+  // categorized"). The pull takes the one-caller QuickBooks lease
+  // (integrations/quickbooks withQuickBooks): when the Sync button is mid-pull
+  // it answers `skipped` having sent nothing, and the classify still runs over
+  // what is stored. 45 days covers late entries and edits; a full 400-day pull
+  // is the Sync button's job. The classify reads the ET year (and at least 60
+  // days back, so January keeps December's peers for duplicate matching).
+  await step("booksSync", async () => {
+    const { syncQuickBooks } = await import("@/lib/integrations/quickbooks");
+    const sinceKey = etDayKey(new Date(Date.now() - 45 * 864e5));
+    return syncQuickBooks({ sinceKey, by: "the early-morning daily pull" });
+  }, { maxMs: 60_000 });
+  await step("booksClassify", async () => {
+    const { categoriseBooks } = await import("@/lib/bookkeeping");
+    const back60 = etDayKey(new Date(Date.now() - 60 * 864e5));
+    const yearStart = etYearStartKey();
+    const r = await categoriseBooks({ sinceKey: back60 < yearStart ? back60 : yearStart });
+    return { scanned: r.scanned, flagged: r.flagged };
+  }, { maxMs: 45_000, after: "booksSync" });
   // Payday morning: "your $X lands today" to every paid creative.
   await step("paydayPings", async () => {
     const { paydayPings } = await import("@/lib/payroll");
