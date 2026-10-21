@@ -222,6 +222,12 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
     prisma.contentRevisionRound.findMany({ where: { enrollmentId, projectId: { in: projectIds } }, orderBy: { createdAt: "asc" } }),
   ]);
   const decisionById = new Map(decisions.map((d) => [d.id, d]));
+  // Oct 21 2026: what the client's own page calls each video, by the portal's
+  // rule, so the office never reads "delivered" where the client reads
+  // "Needs your review". An unreadable answer leaves the chip off.
+  const { clientStatesFor } = await import("@/lib/contentVideos");
+  const { VIDEO_WORDS } = await import("@/lib/portalWords");
+  const clientStates = await clientStatesFor(enrollmentId, videos.filter((v) => v.status !== "ARCHIVED")).catch(() => null);
   const rows: LibraryVideoUi[] = videos.map((v) => {
     const mine = cuts.filter((c) => (c.videoId ? c.videoId === v.id : c.projectId === v.projectId));
     const cutIds = new Set(mine.map((c) => c.id));
@@ -263,6 +269,7 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
         clientDecision: decisions.find((d) => d.submissionId === c.id)?.decision ?? null,
       })),
       reviewWindows, revisionRounds, moneyEyes,
+      clientSees: (() => { const s = clientStates?.get(v.id); return s ? { label: VIDEO_WORDS[s.state].label, updated: s.updated } : null; })(),
     };
   });
   // CP-12: identity flags and the correction tool's data.

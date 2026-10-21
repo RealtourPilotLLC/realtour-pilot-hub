@@ -154,9 +154,10 @@ export type EntitlementFacts = {
   approvals: Map<string, ApprovalFact>;
   /** submissionIds whose latest live decision is a change request. */
   changeRequests: Set<string>;
-  /** submissionId → the approval that is that round's LATEST decision of any
-   *  kind, INCLUDING rows a newer round's decision superseded. Read only by
-   *  the KEEP_PRIOR_APPROVED_VERSION fallback. Omitted = none. */
+  /** submissionId → that round's APPROVAL ON RECORD (approvalsOnRecord): its
+   *  latest approval, INCLUDING one a newer round's decision superseded and
+   *  one the client later asked to change (a reopen). Read only by the
+   *  KEEP_PRIOR_APPROVED_VERSION fallback. Omitted = none. */
   priorApprovals?: Map<string, ApprovalFact>;
   projectDelivered: boolean;
   projectDeliveredAt: Date | null;
@@ -226,7 +227,9 @@ export type Entitlement = {
    *  version is being served (priorVersion), a note that says so. */
   why: string | null;
   deliveredAt: Date | null;
-  /** The file is an EARLIER version than `current` (KEEP_PRIOR_APPROVED_VERSION). */
+  /** The file is not the decisive round's own answer (KEEP_PRIOR_APPROVED_VERSION):
+   *  an EARLIER version than `current`, or `current` itself as the client
+   *  approved it before asking for changes on it (Oct 21 2026). */
   priorVersion?: boolean;
 };
 
@@ -256,6 +259,21 @@ export const WHY = {
 } as const;
 
 /**
+ * What the client is told when an earlier version is the one they can
+ * download (Oct 21 2026). WHY.PRIOR said "the newer version is waiting for
+ * your review" whatever was true: also after they had asked for changes on
+ * it, and about a version we delivered that they never approved here.
+ */
+export function priorWhy(approved: boolean, block: EntitlementBlock | null, sameRound: boolean): string {
+  if (approved && block === "AWAITING_DECISION" && !sameRound) return WHY.PRIOR;
+  const lead = approved ? "This is the version you approved." : "This is the version we delivered to you.";
+  if (sameRound) return `${lead} You asked for changes, so the new version will ask for its own approval. Until then this one stays yours to download.`;
+  if (block === "CHANGES_REQUESTED") return `${lead} You asked for changes on the newer version, so this one stays yours to download until you approve the next one.`;
+  if (block === "FINISHING") return `${lead} A newer version is being finished and will be here for your review shortly.`;
+  return `${lead} The newer version is waiting for your review above; its download unlocks once you approve it.`;
+}
+
+/**
  * The version number the CLIENT knows a round by (Oct 5 2026): its place among
  * the rounds they were shown. A round James sent back before release is never
  * counted, so the first version a client sees is "Version 1", not "Version 3".
@@ -280,9 +298,41 @@ export function decideEntitlement(f: EntitlementFacts, opts: { gateSince?: Date 
   // more the client's than a v2 awaiting their decision, so an approved v1
   // stays theirs meanwhile.
   if (e.blockedBy !== "AWAITING_DECISION" && e.blockedBy !== "CHANGES_REQUESTED" && e.blockedBy !== "FINISHING") return e;
-  const prior = priorApprovedVersion(f, e.current.submissionId, opts);
-  return prior ? { ...prior, current: e.current, why: WHY.PRIOR, priorVersion: true } : e;
+  // Oct 21 2026 (Jordan, on Bernadette Rabel: "I think we made revisions after
+  // she approved"): a version that was the client's and then went back for
+  // changes (a reopen) is still theirs to download until a newer one is
+  // approved. The decisive round's own standing is unchanged (changes asked).
+  const idx = f.chain.findIndex((c) => c.id === e.current!.submissionId);
+  const same = e.blockedBy === "CHANGES_REQUESTED" && idx >= 0 ? theirsBefore(f, idx, opts) : null;
+  const prior = same ?? priorApprovedVersion(f, idx, opts);
+  return prior ? { ...prior, current: e.current, why: priorWhy(prior.basis === "CLIENT_APPROVED", e.blockedBy, !!same), priorVersion: true } : e;
 }
+
+/** A round the client was shown, as it stood before a reopen put it back with the editor. */
+const beforeReopen = (r: ChainRound): ChainRound => (r.status === "CHANGES_REQUESTED" && shownToClient(r) ? { ...r, status: "APPROVED" } : r);
+
+/**
+ * Round `i`'s own file, when the client could already download it on their own
+ * terms before any change was asked on it: their identity-matching approval of
+ * it ON RECORD (approvalsOnRecord, also one they later asked to change), or,
+ * unless their own decision sent it back, a delivery of it judged as if it were
+ * the only round and had never been reopened. Bytes behind it, and not in its
+ * own 1080p pass.
+ */
+function theirsBefore(f: EntitlementFacts, i: number, opts: { gateSince?: Date }): Entitlement | null {
+  const r = f.chain[i];
+  if (!r || !hasBytes(r) || f.clientFiles?.get(r.id)?.kind === "finishing") return null;
+  const approval = f.priorApprovals?.get(r.id) ?? f.approvals.get(r.id) ?? null;
+  if (approval && decisionMatchesCut(approval.contentHash, r)) return approvedFile(f, r, approval);
+  if (f.changeRequests.has(r.id)) return null;
+  const alone = withClientFile(decideForDecisiveRound({ ...f, chain: [...f.chain.slice(0, i), beforeReopen(r)], aryeoFinal: null }, opts), f);
+  return alone.file && alone.file.submissionId === r.id && alone.basis !== "CLIENT_APPROVED" ? { ...alone, current: null } : null;
+}
+
+const approvedFile = (f: EntitlementFacts, r: ChainRound, approval: ApprovalFact): Entitlement => withClientFile({
+  basis: "CLIENT_APPROVED", current: null, captionRef: r.id, blockedBy: null, why: null, deliveredAt: approval.decidedAt,
+  file: { kind: "cut", url: r.assetUrl ?? streamUrlFor(r.id), submissionId: r.id, fileName: r.fileName, label: `v${clientVersionNumber(f.chain, r.id)} (approved)`, approvedByLabel: approval.actorLabel, approvedAtISO: approval.decidedAt.toISOString(), hashOk: true },
+}, f);
 
 /**
  * 9.6b, applied to whatever the rule decided: a cut file whose 1080p pass is
@@ -303,27 +353,17 @@ function withClientFile(e: Entitlement, f: EntitlementFacts): Entitlement {
 /**
  * The newest round BEFORE the decisive one that the client could already
  * download on its own terms: their own identity-matching approval of it, or a
- * delivery of it, with bytes behind it. Never a round they sent back.
+ * delivery of it, with bytes behind it. Never a round they sent back without
+ * ever approving it; one they approved and THEN asked to change still counts
+ * (its approval is on record, approvalsOnRecord, Oct 21 2026).
  */
-function priorApprovedVersion(f: EntitlementFacts, decisiveId: string, opts: { gateSince?: Date }): Entitlement | null {
-  const idx = f.chain.findIndex((c) => c.id === decisiveId);
-  if (idx <= 0) return null;
+function priorApprovedVersion(f: EntitlementFacts, idx: number, opts: { gateSince?: Date }): Entitlement | null {
+  // An earlier round still in its own 1080p pass is not a fallback either; a
+  // version delivered to them outside the portal (or before the gate) is
+  // theirs too (theirsBefore).
   for (let i = idx - 1; i >= 0; i--) {
-    const r = f.chain[i];
-    if (!hasBytes(r) || f.changeRequests.has(r.id)) continue;
-    // An earlier round still in its own 1080p pass is not a fallback either.
-    if (f.clientFiles?.get(r.id)?.kind === "finishing") continue;
-    const approval = f.priorApprovals?.get(r.id) ?? f.approvals.get(r.id) ?? null;
-    if (approval && decisionMatchesCut(approval.contentHash, r)) {
-      return withClientFile({
-        basis: "CLIENT_APPROVED", current: null, captionRef: r.id, blockedBy: null, why: null, deliveredAt: approval.decidedAt,
-        file: { kind: "cut", url: r.assetUrl ?? streamUrlFor(r.id), submissionId: r.id, fileName: r.fileName, label: `v${clientVersionNumber(f.chain, r.id)} (approved)`, approvedByLabel: approval.actorLabel, approvedAtISO: approval.decidedAt.toISOString(), hashOk: true },
-      }, f);
-    }
-    // A version delivered to them outside the portal (or before the gate) is
-    // theirs too: judge it by the same rule as if it were the only round.
-    const alone = withClientFile(decideForDecisiveRound({ ...f, chain: f.chain.slice(0, i + 1), aryeoFinal: null }, opts), f);
-    if (alone.file && alone.file.submissionId === r.id && alone.basis !== "CLIENT_APPROVED") return { ...alone, current: null };
+    const t = theirsBefore(f, i, opts);
+    if (t) return t;
   }
   return null;
 }
@@ -344,8 +384,14 @@ function decideForDecisiveRound(f: EntitlementFacts, opts: { gateSince?: Date } 
   const delivered = (c: ChainRound) => (!!c.sentToClientAt && !f.portalHandoffs?.has(c.id)) || c.decidedBy === DELIVERED_STAMP || preGateDelivered(c) || (!active && f.projectDelivered && !f.portalHandoffs?.has(c.id));
 
   const decisive = [...f.chain].reverse().find((c) => !!cutReleasedAt(c) || c.decidedBy === DELIVERED_STAMP || !!c.sentToClientAt) ?? null;
-  const approval = decisive ? f.approvals.get(decisive.id) ?? null : null;
-  const requested = !!decisive && !approval && f.changeRequests.has(decisive.id);
+  // REOPENED (Oct 21 2026): a released round whose cut is back with the editor
+  // stands at "changes requested". A reopen from a text, an email, a call or
+  // the Review Room (cutReopen) writes no client decision and only marks the
+  // approval's receipt SUPERSEDED, so the approval still read live and the
+  // video went on reading "Approved" (or "Delivered") while it was re-cut.
+  const reopened = !!decisive && decisive.status === "CHANGES_REQUESTED";
+  const approval = decisive && !reopened ? f.approvals.get(decisive.id) ?? null : null;
+  const requested = !!decisive && !approval && (f.changeRequests.has(decisive.id) || reopened);
   const current: Entitlement["current"] = decisive
     ? { submissionId: decisive.id, round: decisive.round, state: approval ? "APPROVED" : requested ? "CHANGES_REQUESTED" : "AWAITING" }
     : null;
@@ -419,6 +465,33 @@ export function foldDecisions(rows: { id: string; submissionId: string; decision
     else if (r.decision === "REQUEST_CHANGES") changeRequests.add(sid);
   }
   return { approvals, changeRequests };
+}
+
+/**
+ * Every round's APPROVAL ON RECORD (Oct 21 2026): its latest APPROVE row,
+ * whatever came after it, a newer round's approval superseding it or a change
+ * request on the same round (a reopen). foldDecisions(all rows) answered "the
+ * latest decision, if it is an approval", so a version the client approved and
+ * then asked to tweak stopped being downloadable the moment they asked. Read
+ * ONLY as the KEEP_PRIOR_APPROVED_VERSION fallback: it never makes the round
+ * it names the decisive answer again, and never approves any other round.
+ *
+ * An AUTOMATIC approval that a decision later replaced is not on record: it
+ * is the one the expiry sweep lost to the client's own request
+ * (reviewWindows.settleTakenAutoApproval, "this approval never stood"), and
+ * it was never the client's own yes.
+ */
+export function approvalsOnRecord(rows: { id: string; submissionId: string; decision: string; actorLabel: string; decidedAt: Date; contentHash: string | null; basis?: string | null; supersededById?: string | null }[]): Map<string, ApprovalFact> {
+  const out = new Map<string, ApprovalFact>();
+  for (const r of rows) {
+    if (r.decision !== "APPROVE") continue;
+    if (r.basis === "AUTO_EXPIRY" && r.supersededById) continue;
+    const prev = out.get(r.submissionId);
+    if (!prev || r.decidedAt.getTime() > prev.decidedAt.getTime() || (r.decidedAt.getTime() === prev.decidedAt.getTime() && r.id > prev.id)) {
+      out.set(r.submissionId, { id: r.id, actorLabel: r.actorLabel, decidedAt: r.decidedAt, contentHash: r.contentHash });
+    }
+  }
+  return out;
 }
 
 /** Is an Aryeo file tied to this chain by its title, or only by position? */
@@ -622,9 +695,11 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
   const enrollmentIds = [...new Set(videos.map((v) => v.enrollmentId))];
   const [decisions, sources, clientFiles, portalHandoffs] = await Promise.all([
     chainIds.length
-      ? prisma.clientDecision.findMany({ where: { submissionId: { in: chainIds }, enrollmentId: { in: enrollmentIds } }, select: { id: true, submissionId: true, enrollmentId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
+      ? prisma.clientDecision.findMany({ where: { submissionId: { in: chainIds }, enrollmentId: { in: enrollmentIds } }, select: { id: true, submissionId: true, enrollmentId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true, basis: true } })
       : Promise.resolve([]),
-    prisma.contentVideoSource.findMany({ where: { videoId: { in: videos.map((v) => v.id) }, kind: "PORTAL_VIDEO", isFinal: true }, orderBy: { createdAt: "asc" }, select: { videoId: true, portalVideoId: true, matchBasis: true, confirmedAt: true } }),
+    // Newest first (Oct 21 2026): a video delivered twice (a re-edit on the
+    // listing) is the newer file, as the sync's aryeoFor reads it too.
+    prisma.contentVideoSource.findMany({ where: { videoId: { in: videos.map((v) => v.id) }, kind: "PORTAL_VIDEO", isFinal: true }, orderBy: { createdAt: "desc" }, select: { videoId: true, portalVideoId: true, matchBasis: true, confirmedAt: true } }),
     clientCutFiles(chainIds),
     monthlyPortalHandoffsFor(chainIds),
   ]);
@@ -637,7 +712,7 @@ export async function entitlementsForVideos(videos: EntitlementVideo[], opts: { 
     const ids = new Set(chain.map((c) => c.id));
     const mine = decisions.filter((d) => d.enrollmentId === v.enrollmentId && ids.has(d.submissionId));
     const { approvals, changeRequests } = foldDecisions(mine.filter((d) => !d.supersededById));
-    const priorApprovals = foldDecisions(mine).approvals;
+    const priorApprovals = approvalsOnRecord(mine);
     const p = projectOf.get(v.id);
     const month = (v.monthId ? monthById.get(v.monthId) : undefined) ?? (p?.contentMonthId ? monthById.get(p.contentMonthId) : undefined);
     const src = sources.filter((s) => s.videoId === v.id).find((s) => { const r = pvById.get(s.portalVideoId ?? ""); return !!r && r.enrollmentId === v.enrollmentId && !!(r.download || r.playback); });

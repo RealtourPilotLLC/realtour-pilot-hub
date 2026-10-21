@@ -7,7 +7,7 @@ import {
 } from "@/lib/portal";
 import { can } from "@/lib/portalAccess";
 import { withMediaToken, mediaScopeOf, mediaToken } from "@/lib/portalMedia";
-import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, libraryAttention, videoState } from "@/lib/contentVideos";
+import { syncEnrollmentVideos, portalVideoList, videoForEnrollment, libraryAttention, videoState, deliveredMediaFor, isUpdatedVersion } from "@/lib/contentVideos";
 import { cutHistory, type CutVersion } from "@/lib/clientDecisions";
 import { postingKitFor, type PostingKit } from "@/lib/postingKit";
 import { publishedResources, type ResourceGroupView } from "@/lib/portalResources";
@@ -257,8 +257,9 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
         const [hist, kit, deliveredSrc, state] = await Promise.all([
           attempt("cut history", () => (video.currentSubmissionId ? cutHistory(viewer, video.currentSubmissionId) : Promise.resolve([] as CutVersion[]))),
           attempt("posting kit", () => postingKitFor(viewer, video)),
-          prisma.contentVideoSource.findFirst({ where: { videoId: video.id, kind: "PORTAL_VIDEO" }, orderBy: { isFinal: "desc" }, select: { portalVideoId: true } })
-            .then(async (s) => (s?.portalVideoId ? prisma.portalVideo.findUnique({ where: { id: s.portalVideoId }, select: { playback: true, thumb: true } }) : null)).catch(() => null),
+          // Oct 21 2026: the poster is the shown version's (contentVideos.posterFor),
+          // never an older delivered file's frame over a newer cut.
+          deliveredMediaFor(video.id, video.currentSubmissionId).catch(() => null),
           attempt("video status", () => videoState(enrollment.id, video)),
         ]);
         // 9.6b: a version still in its 1080p pass (or held for a listen) has
@@ -286,12 +287,15 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
             id: video.id, title: video.title ?? "Video", monthKey: video.monthKey, kind: video.kind, state: state.data, filmedAtISO: video.filmedAt?.toISOString() ?? null, deliveredAtISO: video.deliveredAt?.toISOString() ?? null, pillarName: pillar?.name ?? null, format: video.format,
             // CP-12: older backfill is "Previous content", never labelled with a month we can't vouch for.
             section: await import("@/lib/contentVideos").then((m) => m.videoLibrarySection(video)).catch(() => "RECENT" as const),
+            updated: isUpdatedVersion(video, state.data),
           },
+          staff: actor.kind === "STAFF",
           versions, versionsFailed: !hist.ok,
           finishing: versions.some((x) => x.isCurrent && finishing.has(x.submissionId)),
           kit: kitData, kitFailed: !kit.ok,
           // A delivered (Aryeo/Mux) file plays directly — it is a CDN URL, not a hub cut, so no token applies.
           delivered: deliveredSrc?.playback && !/^\/api\/review\/cut\//.test(deliveredSrc.playback) ? { playback: deliveredSrc.playback, thumb: deliveredSrc.thumb } : null,
+          poster: deliveredSrc?.thumb ?? null,
           // The download door: a media token over the VIDEO id, scoped to this viewer.
           downloadHref: kitData?.access.download ? `/api/portal/download/${video.id}?m=${encodeURIComponent(mediaToken(video.id, scope))}` : null,
           perms: { comment: perms.comment, request: perms.request, approve: perms.approve, suggest: perms.suggest }, readOnly,

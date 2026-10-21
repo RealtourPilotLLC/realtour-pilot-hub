@@ -453,7 +453,11 @@ async function main() {
     const w = (await windowOf(s1))!;
     c.ok("with the acknowledgement the reopen lands in ONE step: window APPROVED → CHANGES_REQUESTED", go.ok && w.state === "CHANGES_REQUESTED" && w.decisionId === req?.id, `${w.state} · ${go.message}`);
     c.ok("  …the approval superseded BY that request (receipt, key and pointer together)", old.receiptState === "SUPERSEDED" && old.dedupeKey === null && old.supersededById === req?.id);
-    c.ok("  …so the page and the download agree: changes requested, nothing to download", (await cardOf(W, s1))?.clientState === "YOU_REQUESTED_CHANGES" && (await entitlementOf(s1)).blockedBy === "CHANGES_REQUESTED");
+    // Oct 21 2026 (Jordan: the approved version "stays downloadable until the
+    // new one is approved"): the reopen no longer locks the version the client
+    // approved. It used to read blockedBy CHANGES_REQUESTED with no file.
+    const reopenedEnt = await entitlementOf(s1);
+    c.ok("  …so the page and the rule agree: changes requested, and the version they approved stays theirs to download", (await cardOf(W, s1))?.clientState === "YOU_REQUESTED_CHANGES" && reopenedEnt.current?.state === "CHANGES_REQUESTED" && reopenedEnt.priorVersion === true && reopenedEnt.file?.submissionId === s1);
     await setSwitch("revision_policy", true);
   }
 

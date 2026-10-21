@@ -86,6 +86,10 @@ export type LibraryVideoUi = {
   moneyEyes?: boolean;
   /** CP-12: identity flags and the correction tool's per-video data. */
   identity?: LibraryIdentityUi;
+  /** Oct 21 2026: the client's own word for this video, by the portal's rule
+   *  (contentVideos.clientStatesFor), and whether a newer version is open
+   *  while they keep the earlier one. Null for an archived row. */
+  clientSees?: { label: string; updated: boolean } | null;
 };
 
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : null);
@@ -164,6 +168,7 @@ export function ContentLibraryPanel({
                 <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2.5 gap-y-1 px-5 py-3 hover:bg-surface-2/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand">
                   <span className="min-w-0 flex-1 basis-40 break-words text-ui-body font-medium">{v.title}</span>
                   <span className={cn("max-w-full rounded-full px-2 py-0.5 text-ui-status font-semibold break-words", STATUS_TONE[v.status] ?? "bg-surface-2 text-muted")}>{v.status.toLowerCase().replace(/_/g, " ")}</span>
+                  {v.clientSees && <span className="max-w-full rounded-full border border-border px-2 py-0.5 text-ui-status text-muted break-words">client sees: {v.clientSees.label}{v.clientSees.updated ? " · updated version" : ""}</span>}
                   {v.kind !== "PROGRAM" && <span className="max-w-full rounded-full bg-surface-2 px-2 py-0.5 text-ui-status text-muted break-words">{v.kind.toLowerCase()}</span>}
                   {!v.countsTowardAllowance && <span className="max-w-full rounded-full bg-surface-2 px-2 py-0.5 text-ui-status text-muted">extra — not against the allowance</span>}
                   <span className="max-w-full text-ui-status text-muted">{v.monthKey ?? "no month"}{v.identity?.section === "PREVIOUS" ? " · previous content" : ""}</span>
@@ -179,7 +184,9 @@ export function ContentLibraryPanel({
                 </summary>
                 <div className="space-y-2 border-t border-border/70 bg-surface-2/30 px-5 py-3 text-ui-status leading-relaxed">
                   <p className="break-words text-muted">
-                    {[v.pillarName, v.format, v.filmedAtISO ? `filmed ${day(v.filmedAtISO)}` : null, v.deliveredAtISO ? `delivered ${day(v.deliveredAtISO)}` : null,
+                    {[v.pillarName, v.format, v.filmedAtISO ? `filmed ${day(v.filmedAtISO)}` : null,
+                      // A newer version open (client review / editing) keeps the EARLIER version's date (Oct 21 2026).
+                      v.deliveredAtISO ? `${v.status === "CLIENT_REVIEW" || v.status === "EDITING" ? "earlier version delivered" : "delivered"} ${day(v.deliveredAtISO)}` : null,
                       v.releasedAtISO ? `released ${day(v.releasedAtISO)}` : null, v.postedAtISO ? `they marked it posted ${day(v.postedAtISO)}` : null,
                       `source: ${v.source}`].filter(Boolean).join(" · ")}
                   </p>

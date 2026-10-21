@@ -434,13 +434,16 @@ export async function cutHistory(viewer: PortalViewer, submissionId: string): Pr
     const approval = mine.find((d) => d.decision === "APPROVE" && d.receiptState !== "SUPERSEDED") ?? null;
     const request = mine.find((d) => d.decision === "REQUEST_CHANGES" && d.receiptState !== "SUPERSEDED") ?? null;
     const isCurrent = current?.id === r.id;
+    // A reopen from a text, a call or the Review Room (cutReopen) writes no
+    // decision; the cut itself is back with the editor (Oct 21 2026). It used
+    // to read "Awaiting your review", with an Approve button the server refuses.
     const clientState: CutVersion["clientState"] = !releasedAt
       ? "NOT_RELEASED"
       : !isCurrent
         ? "SUPERSEDED"
         : approval
           ? approval.basis === "AUTO_EXPIRY" ? "AUTO_APPROVED" : "YOU_APPROVED"
-          : request ? "YOU_REQUESTED_CHANGES" : "AWAITING_YOUR_DECISION";
+          : request || r.status === "CHANGES_REQUESTED" ? "YOU_REQUESTED_CHANGES" : "AWAITING_YOUR_DECISION";
     const decisive = approval ?? request;
     return {
       submissionId: r.id, round: r.round, clientVersion: clientVersionNumber(rounds, r.id), fileName: r.fileName, releasedAtISO: releasedAt?.toISOString() ?? null,
@@ -489,6 +492,10 @@ export async function supersedeEarlierRounds(enrollmentId: string, sub: { id: st
   }).catch(() => {});
 }
 
+/** A staff-recorded approval's note: how and when the client approved (approveCut). */
+export const ON_BEHALF_NOTE_MIN = 6;
+export const ON_BEHALF_NOTE_NEEDED = "Say how and when the client approved (for example: by text, Oct 15). Nothing was approved.";
+
 /** What a lost race says, by the state the window is in now. */
 function stateWords(state: string | undefined): string {
   switch (state) {
@@ -509,12 +516,22 @@ function stateWords(state: string | undefined): string {
  *   NONE     there were no open notes
  * The window's CAS decides a race with a change request (CP-02). A late
  * approval is always accepted — the deadline only ever stops a new REQUEST.
+ *
+ * STAFF RECORD, THEY DO NOT DECIDE (Oct 21 2026). Staff in the owner iframe
+ * could press "Approve this version" like the client, and the row read
+ * "Kyle (on behalf of Bernadette)" with nothing saying the client ever said
+ * yes. A staff approval now RECORDS a sign-off the client gave elsewhere: it
+ * needs `onBehalfNote`, how and when they approved ("by text, Oct 15"), which
+ * is kept on the decision, on the job's timeline and in the audit log. Without
+ * it nothing is approved. A client's own approval ignores the field.
  */
-export async function approveCut(viewer: PortalViewer, submissionId: string, choice: OpenNotesChoice): Promise<ApproveResult> {
+export async function approveCut(viewer: PortalViewer, submissionId: string, choice: OpenNotesChoice, opts: { onBehalfNote?: string | null } = {}): Promise<ApproveResult> {
   const sub = await submissionForEnrollment(viewer.enrollment, submissionId);
   if (!sub) return { ok: false, message: "That video isn't on your page." };
   const full = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { ...HASH_SELECT, projectId: true, round: true, deliverableId: true, slot: true, assetPath: true, videoId: true, clientApprovedDecisionId: true, status: true, clientRequestedAt: true } });
   if (!full) return { ok: false, message: "That video isn't on your page." };
+  const onBehalfNote = viewer.actor.kind === "STAFF" ? clip((opts.onBehalfNote ?? "").replace(/\s+/g, " ").trim(), 300) : null;
+  if (viewer.actor.kind === "STAFF" && (onBehalfNote ?? "").length < ON_BEHALF_NOTE_MIN) return { ok: false, message: ON_BEHALF_NOTE_NEEDED };
   // The newest released round is the only one that can be approved: an
   // approval on an old cut can never approve its replacement (spec §8).
   const history = await cutHistory(viewer, submissionId);
@@ -592,6 +609,7 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
       enrollmentId: viewer.enrollment.id, clientId: viewer.enrollment.clientId, cut: full,
       actor: { ...stamp(viewer), actorLabel: await actorLabelResolved(viewer), membershipRole: roleOf(viewer), resolvedByKind: staff ? "STAFF" : "CLIENT" },
       openCommentIds: open.map((c) => c.id), choice, basis: staff ? "STAFF" : "CLIENT", windowId: w?.id ?? null,
+      note: onBehalfNote,
     });
   } catch (e) {
     // A throw is a failure like any other: the window must not be left
@@ -618,6 +636,7 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     await prisma.reviewSubmission.updateMany({ where: { id: submissionId, status: "CHANGES_REQUESTED", clientRequestedAt: { not: null } }, data: { status: "APPROVED" } }).catch(() => {});
   }
   if (r.duplicate) return { ok: true, decisionId: r.decisionId, duplicate: true, message: "Already approved. This version is marked as yours." };
+  if (staff && onBehalfNote) await auditOnBehalfApproval(viewer, r.decisionId, full, onBehalfNote).catch((e) => console.error("[clientDecisions] on-behalf approval audit", r.decisionId, e));
   // Notes sent along with the approval: Kyle's task, written now so it can't
   // be lost; his bell and Slack follow in the background (the portal action).
   if (choice === "INCLUDE" && open.length) await fileApprovalNotesTask(r.decisionId).catch((e) => console.error("[clientDecisions] approval notes task", r.decisionId, e));
@@ -625,8 +644,26 @@ export async function approveCut(viewer: PortalViewer, submissionId: string, cho
     ok: true, decisionId: r.decisionId, duplicate: false,
     message: overridden !== null
       ? "Approved on the client's behalf. Their change request on this version is set aside. Close the editor's revision card if the work should stop."
-      : "Approved. This exact version is now marked as yours. If a new cut ever replaces it, that one will ask for its own approval.",
+      : staff
+        ? "Recorded. The client's approval of this exact version is on file with your note, and their download and captions open."
+        : "Approved. This exact version is now marked as yours. If a new cut ever replaces it, that one will ask for its own approval.",
   };
+}
+
+/** A staff-recorded approval in the audit log and on the job's timeline:
+ *  who recorded it, for which client and version, and how the client said yes. */
+async function auditOnBehalfApproval(viewer: PortalViewer, decisionId: string, cut: { id: string; projectId: string }, note: string): Promise<void> {
+  const a = viewer.actor;
+  if (a.kind !== "STAFF") return;
+  const [user, chain, label] = await Promise.all([
+    prisma.appUser.findUnique({ where: { id: a.staffUserId }, select: { email: true } }),
+    cutChainOf(cut.id),
+    actorLabelResolved(viewer),
+  ]);
+  const client = viewer.enrollment.clientName || "the client";
+  const what = `${client}'s approval of version ${clientVersionNumber(chain, cut.id)}`;
+  await prisma.auditLog.create({ data: { actor: user?.email ?? label, action: "client_approval_recorded", target: cut.id, detail: `${label} recorded ${what} (decision ${decisionId}). How they approved: ${note}`.slice(0, 1000) } });
+  await prisma.activity.create({ data: { projectId: cut.projectId, type: "SYSTEM", body: `${label} recorded ${what} in the portal. How they approved: ${note}`.slice(0, 1000) } }).catch(() => {});
 }
 
 /** A staff approval over an open change request: the round is CANCELLED (it
@@ -678,6 +715,8 @@ export async function recordClientApproval(input: {
   /** CLIENT | STAFF | AUTO_EXPIRY. */
   basis?: string | null;
   windowId?: string | null;
+  /** Oct 21 2026: a staff-recorded approval's note (how and when the client approved). */
+  note?: string | null;
 }): Promise<{ ok: true; decisionId: string; duplicate: boolean } | { ok: false; message: string }> {
   const { cut, actor } = input;
   const open = input.openCommentIds ?? [];
@@ -697,6 +736,7 @@ export async function recordClientApproval(input: {
         clientUserId: actor.clientUserId, staffUserId: actor.staffUserId, actorLabel: actor.actorLabel, membershipRole: actor.membershipRole,
         receiptState: "DONE", dedupeKey,
         ...(input.basis ? { basis: input.basis } : {}), ...(input.windowId ? { windowId: input.windowId } : {}),
+        ...(input.note ? { note: input.note } : {}),
       },
       select: { id: true },
     });

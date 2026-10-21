@@ -261,7 +261,10 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   await stampImpliedPublicationGates({ projectIds });
   const [rawSubs, libraryRows, existingVideos] = await Promise.all([
     prisma.reviewSubmission.findMany({ where: { projectId: { in: projectIds }, status: { notIn: [...NOT_A_CUT] } }, orderBy: [{ round: "asc" }, { createdAt: "asc" }], select: SUB_SELECT }),
-    prisma.portalVideo.findMany({ where: { enrollmentId: enrollment.id }, orderBy: { deliveredAt: "asc" } }),
+    // createdAt breaks a tie (Oct 21 2026): Aryeo rows carry their JOB's
+    // delivery date, so a re-edit added to the same listing ties with the
+    // original, and the newer file must be the one read last (aryeoFor).
+    prisma.portalVideo.findMany({ where: { enrollmentId: enrollment.id }, orderBy: [{ deliveredAt: "asc" }, { createdAt: "asc" }] }),
     prisma.contentVideo.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, projectId: true, status: true, deliverableId: true, slot: true, currentSubmissionId: true, approvedSubmissionId: true, finalSubmissionId: true, topicId: true, filmedConfirmedAt: true, finalFileRef: true, finalVersionLabel: true, deliveredAt: true } }),
   ]);
   // Every project here is on one of this client's months.
@@ -269,13 +272,13 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // The client's own decisions on these cuts — the only thing that turns an
   // internally approved cut into THEIR video (cutEntitlement). One query per
   // enrollment; superseded rows never count.
-  const { decideEntitlement, foldDecisions, aryeoMatchBasis, clientCutFiles, monthlyPortalHandoffsFor } = await import("@/lib/cutEntitlement");
+  const { decideEntitlement, foldDecisions, approvalsOnRecord, aryeoMatchBasis, clientCutFiles, monthlyPortalHandoffsFor } = await import("@/lib/cutEntitlement");
   // A marked monthly handoff means available for review, not approved for
   // download. Gather the same fact as the live gate before writing its cache.
   // Failed marker reads propagate rather than restoring the old send bypass.
   const [decisionRows, portalHandoffs] = await Promise.all([
     subs.length
-      ? prisma.clientDecision.findMany({ where: { enrollmentId: enrollment.id, submissionId: { in: subs.map((s) => s.id) } }, select: { id: true, submissionId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true } })
+      ? prisma.clientDecision.findMany({ where: { enrollmentId: enrollment.id, submissionId: { in: subs.map((s) => s.id) } }, select: { id: true, submissionId: true, decision: true, actorLabel: true, decidedAt: true, contentHash: true, supersededById: true, basis: true } })
       : Promise.resolve([]),
     monthlyPortalHandoffsFor(subs.map((s) => s.id)),
   ]);
@@ -432,6 +435,11 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
     //    source — it never merges two videos or deletes a row.
     const cutVideos = [...projectVideos].sort((a, b) => a.slotOrder - b.slotOrder);
     const claimed = new Set<string>();
+    // Oct 21 2026: videos a file was paired to BY NAME on this run. A second
+    // new file with the same name is another delivery of that same video (a
+    // re-edit added to the listing beside the original); it used to find the
+    // video claimed and was minted as a separate card counted again.
+    const claimedByName = new Set<string>();
     // CP-12: a video a person pinned a file to is spoken for — no other file
     // is paired onto it by title or by position behind their back.
     for (const r of aryeoRows) {
@@ -446,11 +454,14 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       // own pointer: the two are written together, but if they ever disagree
       // the person's decision is the one that stands.
       const known = (staffPinned(srcKey) ? liveOr(sourceVideo.get(srcKey)) : null) ?? liveOr(r.videoId) ?? liveOr(sourceVideo.get(srcKey));
-      const byName = known ? null : cutVideos.find((c) => !claimed.has(c.videoId) && sameVideo(normTitle(r.title), c.titleKey))?.videoId ?? null;
+      const named = (c: { titleKey: string }) => sameVideo(normTitle(r.title), c.titleKey);
+      const byName = known ? null
+        : (cutVideos.find((c) => !claimed.has(c.videoId) && named(c)) ?? cutVideos.find((c) => claimedByName.has(c.videoId) && named(c)))?.videoId ?? null;
       const byIndex = known || byName || aryeoRows.length !== cutVideos.length ? null
         : cutVideos[i] && !claimed.has(cutVideos[i].videoId) ? cutVideos[i].videoId : null;
       const pairable = byName ?? byIndex;
       if (pairable) claimed.add(pairable);
+      if (byName) claimedByName.add(byName);
       const kind = (r.label === "LISTING" || r.label === "EXTRA" ? r.label : defaultKind) as VideoKind;
       const videoId = pairable ?? (await ensureVideo({
         projectId: p.id, monthId: p.contentMonthId!, kind, title: r.title ?? `Video ${i + 1}`, deliverableId: null, slot: null, format: null,
@@ -470,7 +481,9 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       // here let an Aryeo file paired only by list position deliver a chain
       // the client was still reviewing.
       if (chain) {
-        if (!aryeoFor.has(videoId) && (r.download || r.playback)) {
+        // The NEWEST delivered file of the chain (Oct 21 2026): rows are read
+        // oldest first, so a later one replaces an earlier one here.
+        if (r.download || r.playback) {
           // `confirmed` is a person's word on this pairing (CP-12), read from
           // the source row; the rule then serves an index-paired file.
           aryeoFor.set(videoId, { portalVideoId: r.id, url: (r.download ?? r.playback)!, title: r.title, deliveredAt: r.deliveredAt, matchBasis: aryeoMatchBasis(r.title, chain.cuts), confirmed: staffPinned(srcKey) && sourceVideo.get(srcKey) === videoId });
@@ -493,7 +506,8 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   // Superseded rows never count for the decisive round; they are kept for the
   // prior-approved-version fallback (cutEntitlement.KEEP_PRIOR_APPROVED_VERSION).
   const { approvals, changeRequests } = foldDecisions(decisionRows.filter((d) => !d.supersededById));
-  const priorApprovals = foldDecisions(decisionRows).approvals;
+  // Oct 21 2026: every approval on record, also one the client later asked to change.
+  const priorApprovals = approvalsOnRecord(decisionRows);
   const cachedById = new Map(existingVideos.map((v) => [v.id, v]));
   // A paused or ended program cannot approve in the portal; the rule takes a
   // delivered project as delivered there (cutEntitlement.enrollmentActive).
@@ -626,6 +640,10 @@ export type VideoListRow = {
   pillarName: string | null;
   /** The released cut the client should act on, if any. */
   currentSubmissionId: string | null;
+  /** Oct 21 2026: a NEWER version is open (waiting on them, or back with the
+   *  editor at their ask) while the earlier one they hold stays downloadable.
+   *  The portal says "Updated version"; the row is not "Delivered" meanwhile. */
+  updated: boolean;
   needsDecision: boolean;
   approved: boolean;
   /** Same as `downloadable` (kept for older readers). */
@@ -756,9 +774,15 @@ async function currentDecisions(enrollmentId: string, submissionIds: string[]): 
   const rows = await prisma.clientDecision.findMany({
     where: { enrollmentId, submissionId: { in: submissionIds }, supersededById: null },
     orderBy: [{ decidedAt: "asc" }, { id: "asc" }],
-    select: { submissionId: true, decision: true },
+    select: { submissionId: true, decision: true, receiptState: true },
   });
-  for (const r of rows) if (r.decision === "APPROVE" || r.decision === "REQUEST_CHANGES") out.set(r.submissionId, r.decision);
+  // An approval a reopen set aside (cutReopen: receipt SUPERSEDED, no
+  // replacing decision) is not the client's standing on that cut any more
+  // (Oct 21 2026); it read "Approved" while the video was being re-cut.
+  for (const r of rows) {
+    if (r.decision === "APPROVE" && r.receiptState === "SUPERSEDED") continue;
+    if (r.decision === "APPROVE" || r.decision === "REQUEST_CHANGES") out.set(r.submissionId, r.decision);
+  }
   return out;
 }
 
@@ -768,9 +792,59 @@ async function currentDecisions(enrollmentId: string, submissionIds: string[]): 
 const cachedDownloadable = (v: { status: string; finalSubmissionId: string | null }, hasFinalPortalFile: boolean): boolean =>
   !!v.finalSubmissionId || (v.status === "DELIVERED" && hasFinalPortalFile);
 
-/** Thumbnail for a video: the Mux poster of its delivered file when there is one; hub cuts have none (a placeholder renders). */
-function thumbFor(sources: { kind: string; portalThumb: string | null }[]): string | null {
-  return sources.find((s) => s.portalThumb)?.portalThumb ?? null;
+/**
+ * THE POSTER FOR THE VERSION ON SHOW (Oct 21 2026). Only a delivered (Aryeo)
+ * file carries a poster, its Mux thumbnail; hub cuts carry none and the page
+ * draws a placeholder. A delivered file the hub first saw BEFORE the version
+ * on show was even uploaded cannot be that version: Mike Ciunci's "Video 2"
+ * showed v1's Aryeo frame over the v3 waiting for his review. Such a poster is
+ * left off; the newest delivered file that can be this version wins. With no
+ * cut on show (an Aryeo-only video) every delivered file qualifies.
+ */
+export function posterFor(files: { thumb: string | null; createdAt: Date }[], shownCutCreatedAt: Date | null): string | null {
+  const fit = files.filter((f) => !!f.thumb && (!shownCutCreatedAt || f.createdAt.getTime() >= shownCutCreatedAt.getTime()));
+  return fit.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]?.thumb ?? null;
+}
+
+/**
+ * One video's delivered (Aryeo) file for the page: the newest playable one
+ * (it plays only when the video has no hub cut on show) and the poster for
+ * `shownSubmissionId`, the cut the page plays or hands over (posterFor).
+ */
+export async function deliveredMediaFor(videoId: string, shownSubmissionId: string | null): Promise<{ playback: string | null; thumb: string | null }> {
+  const sources = await prisma.contentVideoSource.findMany({ where: { videoId, kind: "PORTAL_VIDEO" }, select: { portalVideoId: true, isFinal: true } });
+  const ids = sources.map((s) => s.portalVideoId).filter((x): x is string => !!x);
+  if (!ids.length) return { playback: null, thumb: null };
+  const [rows, cut] = await Promise.all([
+    prisma.portalVideo.findMany({ where: { id: { in: ids } }, select: { id: true, playback: true, thumb: true, createdAt: true } }),
+    shownSubmissionId ? prisma.reviewSubmission.findUnique({ where: { id: shownSubmissionId }, select: { createdAt: true } }) : Promise.resolve(null),
+  ]);
+  const finals = new Set(sources.filter((s) => s.isFinal).map((s) => s.portalVideoId));
+  // A hub cut's own stream URL (a `sub:` row) is not a delivered file.
+  const playable = rows.filter((r) => !!r.playback && !/^\/api\/review\/cut\//.test(r.playback)).sort((a, b) => Number(finals.has(b.id)) - Number(finals.has(a.id)) || b.createdAt.getTime() - a.createdAt.getTime());
+  return { playback: playable[0]?.playback ?? null, thumb: posterFor(rows, cut?.createdAt ?? null) };
+}
+
+/** Oct 21 2026: a newer version is open while the client keeps an earlier one (VideoListRow.updated). */
+export const isUpdatedVersion = (v: { finalSubmissionId: string | null; currentSubmissionId: string | null }, state: ClientVideoState): boolean =>
+  (state === "FOR_REVIEW" || state === "CHANGES_IN_PROGRESS") && !!v.finalSubmissionId && !!v.currentSubmissionId && v.finalSubmissionId !== v.currentSubmissionId;
+
+/**
+ * The client's word for each video (Oct 21 2026), by the one rule the portal
+ * reads (stateOf), for the OFFICE's view of the same library: the content
+ * workspace listed the raw status column ("client review", "delivered") beside
+ * a client page that said "Needs your review". Reads the cached columns as the
+ * portal does; the portal's own render runs the sync first.
+ */
+export async function clientStatesFor(enrollmentId: string, videos: { id: string; status: string; approvedSubmissionId: string | null; currentSubmissionId: string | null; finalSubmissionId: string | null }[]): Promise<Map<string, { state: ClientVideoState; updated: boolean }>> {
+  const currentIds = videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x);
+  const [decided, finishing] = await Promise.all([currentDecisions(enrollmentId, currentIds), finishingCuts(currentIds)]);
+  const out = new Map<string, { state: ClientVideoState; updated: boolean }>();
+  for (const v of videos) {
+    const state = stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null, !!v.currentSubmissionId && finishing.has(v.currentSubmissionId));
+    out.set(v.id, { state, updated: isUpdatedVersion(v, state) });
+  }
+  return out;
 }
 
 /**
@@ -828,8 +902,12 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
   const currentIds = videos.map((v) => v.currentSubmissionId).filter((x): x is string => !!x);
   const [decided, finishing] = await Promise.all([currentDecisions(enrollment.id, currentIds), finishingCuts(currentIds), assertMonthlyReleaseCache(videos)]);
   const portalIds = sources.map((s) => s.portalVideoId).filter((x): x is string => !!x);
-  const portalRows = portalIds.length ? await prisma.portalVideo.findMany({ where: { id: { in: portalIds } }, select: { id: true, thumb: true, download: true, playback: true } }) : [];
-  const thumbOf = new Map(portalRows.map((r) => [r.id, r.thumb]));
+  const [portalRows, shownCuts] = await Promise.all([
+    portalIds.length ? prisma.portalVideo.findMany({ where: { id: { in: portalIds } }, select: { id: true, thumb: true, createdAt: true } }) : Promise.resolve([]),
+    currentIds.length ? prisma.reviewSubmission.findMany({ where: { id: { in: currentIds } }, select: { id: true, createdAt: true } }) : Promise.resolve([]),
+  ]);
+  const portalById = new Map(portalRows.map((r) => [r.id, r]));
+  const cutCreated = new Map(shownCuts.map((s) => [s.id, s.createdAt]));
   const order = new Map(ids.map((id, i) => [id, i]));
   const rows = videos
     .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
@@ -837,12 +915,13 @@ export async function portalVideoList(enrollment: { id: string; clientId: string
       const vs = sources.filter((s) => s.videoId === v.id);
       const state = stateOf(v, v.currentSubmissionId ? decided.get(v.currentSubmissionId) ?? null : null, !!v.currentSubmissionId && finishing.has(v.currentSubmissionId));
       const downloadable = cachedDownloadable(v, vs.some((s) => s.kind === "PORTAL_VIDEO" && s.isFinal));
+      const files = vs.map((s) => (s.portalVideoId ? portalById.get(s.portalVideoId) : undefined)).filter((r): r is { id: string; thumb: string | null; createdAt: Date } => !!r);
       return {
         id: v.id, title: v.title ?? "Video", monthKey: v.monthKey, kind: (v.kind as VideoKind) ?? "PROGRAM", countsTowardAllowance: v.countsTowardAllowance,
         state, filmedAtISO: v.filmedAt?.toISOString() ?? null, deliveredAtISO: v.deliveredAt?.toISOString() ?? null,
-        thumb: thumbFor(vs.map((s) => ({ kind: s.kind, portalThumb: s.portalVideoId ? thumbOf.get(s.portalVideoId) ?? null : null }))),
+        thumb: posterFor(files, v.currentSubmissionId ? cutCreated.get(v.currentSubmissionId) ?? null : null),
         format: v.format, pillarName: pillars.find((p) => p.id === v.pillarId)?.name ?? null,
-        currentSubmissionId: v.currentSubmissionId, needsDecision: state === "FOR_REVIEW", approved: !!v.approvedSubmissionId,
+        currentSubmissionId: v.currentSubmissionId, updated: isUpdatedVersion(v, state), needsDecision: state === "FOR_REVIEW", approved: !!v.approvedSubmissionId,
         hasFinalFile: downloadable, downloadable, section: sectionOf.get(v.id) ?? "RECENT",
       };
     });
@@ -1201,8 +1280,19 @@ export async function verifyApprovedCutsInLibrary(opts: { sinceDays?: number; ma
   return { checked: cuts.length, missing, repaired, failed, enrollments: touched };
 }
 
+// "This video is DELIVERED" (the single definition; see the note above
+// LIBRARY_CURSOR for why there is only one).
+//
+// A NEWER VERSION OPEN IS NOT DELIVERED (Oct 21 2026). Jordan: "if a video is
+// open for review it changes the delivered status on their portal to needs
+// your review". The sync writes CLIENT_REVIEW (a newer version waits on the
+// client) or EDITING (they asked for changes) over a video whose earlier
+// version they still hold (cutEntitlement priorVersion), and that row keeps
+// the earlier version's deliveredAt and finalSubmissionId so the download
+// works. Mike Ciunci's "Video 2" counted as delivered in his month while its
+// v3 sat under "Needs your review"; it counts again once he approves v3.
 export const isDeliveredProgramVideo = (v: { status: string; deliveredAt: Date | null; finalSubmissionId: string | null }): boolean =>
-  v.status === "DELIVERED" || !!v.deliveredAt || !!v.finalSubmissionId;
+  v.status !== "CLIENT_REVIEW" && v.status !== "EDITING" && (v.status === "DELIVERED" || !!v.deliveredAt || !!v.finalSubmissionId);
 
 /** Program videos delivered per month, counted from the library (countsTowardAllowance), never from orders. */
 export async function programCountsByMonth(enrollmentId: string, monthKeys: string[]): Promise<Map<string, { delivered: number; total: number }>> {
