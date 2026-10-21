@@ -514,11 +514,15 @@ export async function maybeCreateSlackTask(opts: {
   return true;
 }
 
+// Every Slack read has a time limit (audit H7, Oct 20 2026): a hung request
+// held the 5-minute comms cron until the platform killed it.
+const SLACK_TIMEOUT_MS = 20_000;
+
 async function su(token: string, method: string, query: Record<string, string> = {}): Promise<any> {
   const url = new URL(`https://slack.com/api/${method}`);
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
   for (let attempt = 0; attempt < 4; attempt++) {
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(SLACK_TIMEOUT_MS) });
     const j = (await r.json().catch(() => ({ ok: false }))) as any;
     if (j.ok) return j;
     if (j.error === "ratelimited") { await new Promise((res) => setTimeout(res, (attempt + 1) * 1500)); continue; }
@@ -549,19 +553,27 @@ function resolver(userMap: Record<string, string>) {
     );
 }
 
-async function recentHistory(token: string, channel: string, oldest: string): Promise<any[]> {
-  const out: any[] = [];
+/** The fields of a conversations.history message this file reads. */
+type SlackMsg = { ts?: string; text?: string; user?: string; subtype?: string };
+/** One row of conversations.list, whichever type was asked for. */
+type SlackConv = { id: string; name?: string; is_member?: boolean; user?: string };
+
+// `complete` is false when Slack refused a page or the page cap was hit: the
+// messages in hand are real, but older ones in the window may be missing, so
+// the caller must not move its cursor past them (H20).
+async function recentHistory(token: string, channel: string, oldest: string): Promise<{ messages: SlackMsg[]; complete: boolean }> {
+  const out: SlackMsg[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < 12; i++) {
     const q: Record<string, string> = { channel, limit: "200", oldest };
     if (cursor) q.cursor = cursor;
     const r = await su(token, "conversations.history", q);
-    if (!r.ok) break;
+    if (!r.ok) return { messages: out, complete: false };
     out.push(...(r.messages ?? []));
     cursor = r.response_metadata?.next_cursor;
-    if (!cursor) break;
+    if (!cursor) return { messages: out, complete: true };
   }
-  return out;
+  return { messages: out, complete: false };
 }
 
 /**
@@ -587,74 +599,177 @@ async function recentHistory(token: string, channel: string, oldest: string): Pr
  * Errors are counted and returned rather than swallowed, so a persistent
  * failure shows up in the sync's own result instead of nowhere.
  */
-async function ingest(channel: string, messages: any[], minRole: string, source: string, otherName: string | undefined, resolve: (t: string) => string, userMap: Record<string, string>): Promise<{ logged: number; taskErrors: string[] }> {
+async function ingest(channel: string, messages: SlackMsg[], minRole: string, source: string, otherName: string | undefined, resolve: (t: string) => string, userMap: Record<string, string>): Promise<{ logged: number; taskErrors: string[]; advanceTo: string | null }> {
   let n = 0;
   const taskErrors: string[] = [];
   const me = await jordanSlackId();
-  for (const m of messages) {
-    if (m.subtype && m.subtype !== "thread_broadcast") continue;
-    const text = resolve(m.text || "");
-    if (!text.trim()) continue;
-    const senderName = m.user === me ? "Jordan" : userMap[m.user] || otherName || m.user || "Slack";
-    const created = await logComm({
-      channel: "slack",
-      direction: m.user === me ? "out" : "in",
-      minRole,
-      contactName: senderName,
-      body: text,
-      occurredAt: m.ts ? new Date(Number(m.ts) * 1000) : undefined,
-      source,
-      externalId: `slack-${channel}-${m.ts}`,
-    });
-    n++;
-    void created; // logComm's "was this row new" — no longer what decides the task (A06)
-    // EVERY message in the window is offered to the task rule, every poll. Old
-    // messages and already-tasked ones are refused inside it; a message whose
-    // task write failed last time gets another go. A DM names its other party so
-    // the addressee rule can use it (Sep 8); channels and group DMs pass nothing.
-    try {
-      await maybeCreateSlackTask({ text, ts: m.ts, channel, senderName, dmWith: source === "slack-dm" ? otherName ?? null : null });
-    } catch (e) {
-      // Not fatal to the sync — but not invisible either. The next poll retries
-      // this same message, and until it succeeds the failure is reported.
-      taskErrors.push(`${channel}/${m.ts}: ${e instanceof Error ? e.message.slice(0, 120) : "unknown"}`);
+  // Oldest first, so the cursor (H20, below) can stop at the first message
+  // that did not fully land: every message up to `advanceTo` is stored AND
+  // was offered to the task rule without an error.
+  const ordered = [...messages].sort((a, b) => Number(a.ts ?? 0) - Number(b.ts ?? 0));
+  let advanceTo: string | null = null;
+  let clean = true;
+  for (const m of ordered) {
+    let ok = true;
+    const text = m.subtype && m.subtype !== "thread_broadcast" ? "" : resolve(m.text || "");
+    if (text.trim()) {
+      const senderName = m.user === me ? "Jordan" : (m.user ? userMap[m.user] : undefined) || otherName || m.user || "Slack";
+      try {
+        const created = await logComm({
+          channel: "slack",
+          direction: m.user === me ? "out" : "in",
+          minRole,
+          contactName: senderName,
+          body: text,
+          occurredAt: m.ts ? new Date(Number(m.ts) * 1000) : undefined,
+          source,
+          externalId: `slack-${channel}-${m.ts}`,
+        });
+        n++;
+        void created; // logComm's "was this row new" — no longer what decides the task (A06)
+      } catch (e) {
+        ok = false;
+        taskErrors.push(`${channel}/${m.ts} (not stored): ${e instanceof Error ? e.message.slice(0, 120) : "unknown"}`);
+      }
+      // EVERY message in the window is offered to the task rule, every poll. Old
+      // messages and already-tasked ones are refused inside it; a message whose
+      // task write failed last time gets another go (the cursor stays behind
+      // it). A DM names its other party so the addressee rule can use it
+      // (Sep 8); channels and group DMs pass nothing.
+      if (ok) {
+        try {
+          await maybeCreateSlackTask({ text, ts: m.ts ?? "", channel, senderName, dmWith: source === "slack-dm" ? otherName ?? null : null });
+        } catch (e) {
+          // Not fatal to the sync — but not invisible either. The next poll retries
+          // this same message, and until it succeeds the failure is reported.
+          ok = false;
+          taskErrors.push(`${channel}/${m.ts}: ${e instanceof Error ? e.message.slice(0, 120) : "unknown"}`);
+        }
+      }
     }
+    if (!ok) clean = false;
+    if (clean && typeof m.ts === "string" && m.ts) advanceTo = m.ts;
   }
-  return { logged: n, taskErrors };
+  return { logged: n, taskErrors, advanceTo };
+}
+
+// ---------------------------------------------------------------------------
+// READ ONLY WHAT IS NEW (audit H20, Oct 20 2026). Every 5 minutes this called
+// auth.test, users.list and three conversations.list, then re-read two hours
+// of every channel and DM: about 24 times the reading needed, with the
+// externalId dedupe throwing the repeats away.
+//
+//   · The user map and the channel lists change a few times a year: kept in
+//     AppSetting for an hour (SLACK_DIRECTORY_KEY).
+//   · Each channel keeps a cursor in AppSetting (slack-sync:cursor:<id>), the
+//     newest message ts that was STORED and offered to the task rule without
+//     an error. The next poll reads from there, less a two-minute overlap
+//     (repeats are idempotent). The cursor never moves past a message that
+//     failed to store or whose task write threw, nor past a read Slack cut
+//     short, so no message can be skipped. A channel with no cursor yet reads
+//     the caller's window (sinceHours), as before.
+// ---------------------------------------------------------------------------
+const SLACK_DIRECTORY_KEY = "slack-sync:directory";
+const SLACK_CURSOR_PREFIX = "slack-sync:cursor:";
+const DIRECTORY_TTL_MS = 60 * 60_000;
+const CURSOR_OVERLAP_S = 120;
+
+type SlackDirectory = {
+  at: number;
+  userMap: Record<string, string>;
+  channels: { id: string; name: string; is_member?: boolean }[];
+  ims: { id: string; user: string }[];
+  mpims: { id: string }[];
+};
+
+async function slackDirectory(token: string): Promise<SlackDirectory | null> {
+  const { prisma } = await import("@/lib/prisma");
+  const row = await prisma.appSetting.findUnique({ where: { key: SLACK_DIRECTORY_KEY }, select: { value: true } }).catch(() => null);
+  if (row?.value) {
+    try {
+      const d = JSON.parse(row.value) as SlackDirectory;
+      if (d && typeof d.at === "number" && Date.now() - d.at < DIRECTORY_TTL_MS && d.userMap && Array.isArray(d.channels) && Array.isArray(d.ims) && Array.isArray(d.mpims)) return d;
+    } catch { /* rebuilt below */ }
+  }
+  const auth = await su(token, "auth.test");
+  if (!auth.ok) return null;
+  const [u, ch, ims, mpims] = await Promise.all([
+    su(token, "users.list", { limit: "500" }),
+    su(token, "conversations.list", { types: "public_channel,private_channel", limit: "500", exclude_archived: "true" }),
+    su(token, "conversations.list", { types: "im", limit: "400" }),
+    su(token, "conversations.list", { types: "mpim", limit: "100" }),
+  ]);
+  const userMap: Record<string, string> = {};
+  for (const m of u.members ?? []) userMap[m.id] = m.profile?.display_name || m.real_name || m.name || m.id;
+  const d: SlackDirectory = {
+    at: Date.now(),
+    userMap,
+    channels: ((ch.channels ?? []) as SlackConv[]).map((c) => ({ id: c.id, name: c.name ?? "", is_member: c.is_member })),
+    ims: ((ims.channels ?? []) as SlackConv[]).map((c) => ({ id: c.id, user: c.user ?? "" })),
+    mpims: ((mpims.channels ?? []) as SlackConv[]).map((c) => ({ id: c.id })),
+  };
+  // Only a complete answer is remembered; a partial one is used this once.
+  if (u.ok && ch.ok && ims.ok && mpims.ok) {
+    const value = JSON.stringify(d);
+    await prisma.appSetting.upsert({ where: { key: SLACK_DIRECTORY_KEY }, create: { key: SLACK_DIRECTORY_KEY, value }, update: { value } }).catch(() => {});
+  }
+  return d;
 }
 
 export async function syncSlackHistory(opts: { sinceHours?: number } = {}): Promise<{ logged: number; skipped?: boolean; taskErrors?: string[] }> {
   const token = await getSecret("slack_user");
   if (!token) return { logged: 0, skipped: true };
-  const auth = await su(token, "auth.test");
-  if (!auth.ok) return { logged: 0, skipped: true };
+  const dir = await slackDirectory(token);
+  if (!dir) return { logged: 0, skipped: true };
 
-  const oldest = String(Math.floor((Date.now() - (opts.sinceHours ?? 48) * 3600_000) / 1000));
-  const u = await su(token, "users.list", { limit: "500" });
-  const userMap: Record<string, string> = {};
-  for (const m of u.members ?? []) userMap[m.id] = m.profile?.display_name || m.real_name || m.name || m.id;
+  // The window for a channel that has no cursor yet.
+  const windowOldest = (Date.now() - (opts.sinceHours ?? 48) * 3600_000) / 1000;
+  const { userMap } = dir;
   const resolve = resolver(userMap);
+
+  const { prisma } = await import("@/lib/prisma");
+  const cursorRows = await prisma.appSetting
+    .findMany({ where: { key: { startsWith: SLACK_CURSOR_PREFIX } }, select: { key: true, value: true } })
+    .catch(() => [] as { key: string; value: string }[]);
+  const cursors = new Map(cursorRows.map((r) => [r.key.slice(SLACK_CURSOR_PREFIX.length), r.value]));
 
   let logged = 0;
   // A06: task-processing failures ride back with the result rather than being
   // swallowed. Every one of these messages is retried on the next poll.
   const taskErrors: string[] = [];
-  const take = (r: { logged: number; taskErrors: string[] }) => { logged += r.logged; taskErrors.push(...r.taskErrors); };
+  const pull = async (id: string, minRole: string, source: string, otherName: string | undefined) => {
+    const cursor = cursors.get(id);
+    const cursorS = cursor ? Number(cursor) : NaN;
+    const oldest = (Number.isFinite(cursorS) ? cursorS - CURSOR_OVERLAP_S : windowOldest).toFixed(6);
+    let read: { messages: SlackMsg[]; complete: boolean };
+    try {
+      read = await recentHistory(token, id, oldest);
+    } catch (e) {
+      // A timeout or a dropped connection on one channel: its cursor stays
+      // put and the next poll reads the same stretch again.
+      taskErrors.push(`${id} (not read): ${e instanceof Error ? e.message.slice(0, 120) : "unknown"}`);
+      return;
+    }
+    const r = await ingest(id, read.messages, minRole, source, otherName, resolve, userMap);
+    logged += r.logged;
+    taskErrors.push(...r.taskErrors);
+    if (read.complete && r.advanceTo && (!Number.isFinite(cursorS) || Number(r.advanceTo) > cursorS)) {
+      const key = `${SLACK_CURSOR_PREFIX}${id}`;
+      await prisma.appSetting.upsert({ where: { key }, create: { key, value: r.advanceTo }, update: { value: r.advanceTo } }).catch(() => {});
+    }
+  };
   // Channels (ADMIN).
-  const ch = await su(token, "conversations.list", { types: "public_channel,private_channel", limit: "500", exclude_archived: "true" });
-  for (const c of (ch.channels ?? []).filter((c: any) => c.is_member && CHANNEL_NAME_RE.test(c.name))) {
-    take(await ingest(c.id, await recentHistory(token, c.id, oldest), "ADMIN", "slack-channel", undefined, resolve, userMap));
+  for (const c of dir.channels.filter((c) => c.is_member && CHANNEL_NAME_RE.test(c.name))) {
+    await pull(c.id, "ADMIN", "slack-channel", undefined);
   }
   // DMs (OWNER).
-  const ims = await su(token, "conversations.list", { types: "im", limit: "400" });
-  for (const im of (ims.channels ?? []).filter((im: any) => TARGET_DM_USERS[im.user])) {
-    take(await ingest(im.id, await recentHistory(token, im.id, oldest), "OWNER", "slack-dm", TARGET_DM_USERS[im.user], resolve, userMap));
+  for (const im of dir.ims.filter((im) => TARGET_DM_USERS[im.user])) {
+    await pull(im.id, "OWNER", "slack-dm", TARGET_DM_USERS[im.user]);
   }
   // Group DMs (OWNER).
-  const mpims = await su(token, "conversations.list", { types: "mpim", limit: "100" });
-  for (const g of mpims.channels ?? []) {
-    take(await ingest(g.id, await recentHistory(token, g.id, oldest), "OWNER", "slack-groupdm", undefined, resolve, userMap));
+  for (const g of dir.mpims) {
+    await pull(g.id, "OWNER", "slack-groupdm", undefined);
   }
-  if (taskErrors.length) console.warn(`syncSlackHistory: ${taskErrors.length} message(s) logged but their task did not write — retried next poll. ${taskErrors.slice(0, 3).join(" · ")}`);
+  if (taskErrors.length) console.warn(`syncSlackHistory: ${taskErrors.length} message(s) did not fully land — retried next poll. ${taskErrors.slice(0, 3).join(" · ")}`);
   return { logged, ...(taskErrors.length ? { taskErrors } : {}) };
 }

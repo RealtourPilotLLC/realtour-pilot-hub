@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { phoneKey, callTranscriptText, openPhoneRequestAuthorized, ourOpenPhoneNumberKeys, type OpTranscriptLine } from "@/lib/integrations/openphone";
 import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, findClientProjectByText } from "@/lib/contacts";
@@ -66,10 +66,17 @@ export async function POST(req: NextRequest) {
   const type = (payload.type as string) || "unknown";
   const externalId = (payload.id as string) || undefined;
 
-  // Idempotency.
+  // Idempotency. A copy still being worked (RECEIVED in the last ten
+  // minutes) counts too (audit H8, Oct 20 2026): a provider resend that
+  // arrived mid-flight found no PROCESSED row and ran the AI routing again.
   if (externalId) {
     const seen = await prisma.webhookEvent.findFirst({
-      where: { provider: "openphone", externalId, status: "PROCESSED" },
+      where: {
+        provider: "openphone",
+        externalId,
+        OR: [{ status: "PROCESSED" }, { status: "RECEIVED", createdAt: { gte: new Date(Date.now() - 10 * 60_000) } }],
+      },
+      orderBy: { createdAt: "desc" },
     });
     // An old unsigned copy cannot consume a newly authenticated delivery proof.
     if (seen && (auth.unsigned || type !== "message.delivered" || await hasVerifiedOpenPhoneDeliveryProof(seen))) return NextResponse.json({ ok: true, deduped: true });
@@ -93,21 +100,32 @@ export async function POST(req: NextRequest) {
     return row;
   });
 
-  try {
-    await processOpenPhoneEvent(type, payload, { verifiedProvider: !auth.unsigned });
-    await prisma.webhookEvent.update({
-      where: { id: log.id },
-      data: { status: "PROCESSED", processedAt: new Date() },
-    });
-  } catch (e) {
-    await prisma.webhookEvent.update({
-      where: { id: log.id },
-      data: { status: "ERROR", error: e instanceof Error ? e.message : String(e) },
-    });
-    // Visible to the owner in the error tracker (Oct 6 2026).
-    const { reportError } = await import("@/lib/errorTracker");
-    reportError(e, { area: `webhook:openphone/${String(type).slice(0, 60)}`, source: "route-handler", path: "/api/webhooks/openphone" });
-  }
+  // ANSWER FIRST, WORK AFTER (audit H8, Oct 20 2026). Processing a text can
+  // run the Smart Brain and messageToTodo (up to two model calls) before this
+  // answered, so OpenPhone timed out and resent. The row above is the durable
+  // record; the 200 goes out now and the work runs in after(). A failure
+  // still lands as ERROR, which the hourly sweep (lib/webhookRetry) replays.
+  const work = async () => {
+    try {
+      await processOpenPhoneEvent(type, payload, { verifiedProvider: !auth.unsigned });
+      await prisma.webhookEvent.update({
+        where: { id: log.id },
+        data: { status: "PROCESSED", processedAt: new Date() },
+      });
+    } catch (e) {
+      await prisma.webhookEvent
+        .update({
+          where: { id: log.id },
+          data: { status: "ERROR", error: e instanceof Error ? e.message : String(e) },
+        })
+        .catch(() => {});
+      // Visible to the owner in the error tracker (Oct 6 2026).
+      const { reportError } = await import("@/lib/errorTracker");
+      reportError(e, { area: `webhook:openphone/${String(type).slice(0, 60)}`, source: "route-handler", path: "/api/webhooks/openphone" });
+    }
+  };
+  // Inline when there is no request scope (a drill calling POST directly).
+  try { after(work); } catch { await work(); }
   return NextResponse.json({ ok: true });
 }
 
