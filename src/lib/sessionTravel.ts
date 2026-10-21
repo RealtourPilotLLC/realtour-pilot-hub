@@ -485,7 +485,10 @@ export async function sessionSlotsFor(a: {
   if (a.moveRequestId && (!moving || moving.enrollmentId !== a.enrollmentId || moving.monthId !== a.monthId)) return { ok: false, message: "That session isn't on your page.", days: [] };
   const gate = await sessionGate(a.enrollmentId, a.monthId, { now, sessionIndex: moving ? moving.sessionIndex ?? undefined : a.sessionIndex });
   if (gate.locked) return { ok: false, locked: true, message: gate.reason, days: [] };
-  const preparation = preparationHold(gate.preparation, now);
+  // Oct 21 2026: next month's sessions start on its 1st whatever the
+  // preparation window says, so the window is not the reason then.
+  const hold = preparationHold(gate.preparation, now);
+  const preparation = hold && Date.parse(hold.earliestISO) >= gate.earliest.getTime() - 60_000 ? hold : null;
 
   let dest: LatLng | null = null;
   let planInfo: Pick<SessionSlotsResult, "planId" | "addressVersion" | "addressLine"> = {};
@@ -511,8 +514,13 @@ export async function sessionSlotsFor(a: {
   // tomorrow — a window that ran out before the 72 hours did offered nothing.
   const base = await programSlotDays({ package: sessionPackage, sessionMinutes: product.durationMinutes, from: gate.earliest });
   const earliest = gate.earliest.getTime();
+  // Oct 21 2026: next month opens early, so a date that belongs to another
+  // open month is never offered here (portal.sessionDateRule).
+  const { sessionDateRule, sessionDateFits } = await import("@/lib/portal");
+  const rule = await sessionDateRule(a.enrollmentId, a.monthId, now).catch(() => null);
+  const inMonth = (s: string) => sessionDateFits(rule, new Date(s), gate.earliest);
   const open = base
-    .map((d) => ({ ...d, slots: d.slots.filter((s) => new Date(s).getTime() >= earliest) }))
+    .map((d) => ({ ...d, slots: d.slots.filter((s) => new Date(s).getTime() >= earliest && inMonth(s)) }))
     .filter((d) => d.slots.length > 0);
   const days = dest
     ? await annotateSlotDays(open, { dest, durationMin: product.durationMinutes, excludeRequestId: a.moveRequestId ?? null, bufferMinutes: cfg.bufferMinutes })

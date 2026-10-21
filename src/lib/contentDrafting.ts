@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { etMonthKey } from "@/lib/datetime";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 
 // ---------------------------------------------------------------------------
@@ -399,14 +400,7 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   // new work, and a historical month is a record, not a plan — and a client
   // who plans their own content (Oct 8 2026) is owed no scripts from us.
   const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
-  const months = live.length
-    ? await prisma.contentMonth.findMany({
-        where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },
-        select: { id: true, monthKey: true, clientId: true },
-        orderBy: { monthKey: "desc" },
-        take: 40,
-      })
-    : [];
+  const months = live.length ? await openMonthsCurrentFirst(live.map((e) => e.id)) : [];
   const names = new Map(
     (await prisma.client.findMany({ where: { id: { in: [...new Set(months.map((m) => m.clientId))] } }, select: { id: true, name: true } })).map((c) => [c.id, c.name]),
   );
@@ -453,6 +447,23 @@ export async function sweepOwedScripts(opts: { max?: number; budgetMs?: number; 
   return { months: touched, drafted, skipped, failed, waiting, thin, paused, outOfTime, detail };
 }
 
+/**
+ * The open months the drafting sweeps look at (40 at most): this month and
+ * earlier ones first, newest first as always, THEN months not started yet.
+ * Oct 21 2026: next month is made early for every client
+ * (contentProgram.ensureNextMonths), and newest-first put all of them ahead of
+ * this month, so with 40 clients this month would never have been reached.
+ * Next month still gets its scripts and questions, the same way, after.
+ */
+async function openMonthsCurrentFirst(enrollmentIds: string[]): Promise<{ id: string; monthKey: string; clientId: string }[]> {
+  const cur = etMonthKey();
+  const select = { id: true, monthKey: true, clientId: true } as const;
+  const where = { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: enrollmentIds } };
+  const started = await prisma.contentMonth.findMany({ where: { ...where, monthKey: { lte: cur } }, select, orderBy: { monthKey: "desc" }, take: 40 });
+  const ahead = started.length < 40 ? await prisma.contentMonth.findMany({ where: { ...where, monthKey: { gt: cur } }, select, orderBy: { monthKey: "asc" }, take: 40 - started.length }) : [];
+  return [...started, ...ahead];
+}
+
 // ---------------------------------------------------------------------------
 // THE QUESTIONS, PHRASED FOR THE TOPIC (F10) — the step BEFORE the answers.
 //
@@ -478,12 +489,7 @@ export async function sweepInterviewPlans(opts: { max?: number; budgetMs?: numbe
   // Oct 8 2026: no questions are planned for a client who plans their own content.
   const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true } });
   if (!live.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
-  const months = await prisma.contentMonth.findMany({
-    where: { historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, enrollmentId: { in: live.map((e) => e.id) } },
-    select: { id: true },
-    orderBy: { monthKey: "desc" },
-    take: 40,
-  });
+  const months = await openMonthsCurrentFirst(live.map((e) => e.id));
   if (!months.length) return { planned: 0, alreadyPlanned: 0, failed: 0, paused: null, lastError: null };
 
   // Committed topics only. A call's PROPOSED suggestion is not the month's plan,

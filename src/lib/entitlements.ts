@@ -4,6 +4,7 @@ import {
   ENTITLEMENT_LABEL, RECORD_ONLY, isEntitlementKind, isMonthKey, monthName, termOf,
   type EntitlementKind, type EntitlementState, type Term,
 } from "@/lib/entitlementsCore";
+import { monthStarted } from "@/lib/forfeit";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT ENTITLEMENT LEDGER, SERVER HALF (Oct 15 2026). The words and the
@@ -168,8 +169,11 @@ export async function entitlementSummary(enrollmentId: string, opts: { now?: Dat
         else if (m.status === "SKIPPED") { if (!caughtUpLater) missed += required; state = caughtUpLater ? `caught up in ${monthName(p.catchUp.from!.targetMonthKey)}` : "skipped"; }
         else {
           used += held;
-          if (m.status === "OPEN") available += Math.max(0, required - held);
-          state = m.status === "OPEN" ? (held >= required && required > 0 ? "filmed" : p.sessions.booked > held ? "booked" : "to book") : m.status.toLowerCase();
+          // Oct 21 2026: next month, made early, is not owed yet: it counts
+          // once it starts (forfeit.monthStarted), booked or not.
+          const started = monthStarted(m.monthKey, opts.now ?? new Date());
+          if (m.status === "OPEN" && started) available += Math.max(0, required - held);
+          state = m.status === "OPEN" ? (held >= required && required > 0 ? "filmed" : p.sessions.booked > held ? "booked" : started ? "to book" : "next month") : m.status.toLowerCase();
         }
         perMonth.push({ monthKey: m.monthKey, label: monthName(m.monthKey), required, held, booked: p.sessions.booked, state });
       }

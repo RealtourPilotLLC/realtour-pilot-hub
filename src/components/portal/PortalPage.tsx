@@ -20,7 +20,7 @@ import { ResourcesTab } from "@/components/portal/tabs/ResourcesTab";
 import { MessagesTab, type MessagesTabData } from "@/components/portal/tabs/MessagesTab";
 import { ContactTeam } from "@/components/portal/ContactTeam";
 import { resolvePortalRoute, portalHref, v2HrefFor, baseQueryPairs, portalNav, firstQueryValues, type PlanView } from "@/lib/portalNav";
-import { portalMonthKey, portalSessionIndex, selectedPortalMonth } from "@/lib/portalScheduling";
+import { portalMonthHref, portalMonthKey, portalSessionIndex, selectedPortalMonth } from "@/lib/portalScheduling";
 import { libraryRows, reviewDeadlines } from "@/lib/portalLayout";
 import { homeActions, planModel, libraryView, type HomeAction } from "@/lib/portalHome";
 import { isLibraryFilter, TEXT_KYLE_START } from "@/lib/portalWords";
@@ -205,25 +205,29 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     await attempt("video sync", () => syncEnrollmentVideos(enrollment));
   }
   if (dataTab === "home") {
+    // Oct 21 2026: Home's next step stays about THIS month, even when the
+    // address still carries next month from Your Month's switch.
+    const homeMonth = selectedMonth && selectedMonth.monthKey <= etMonthKey() ? selectedMonth : null;
+    const homeKey = homeMonth?.monthKey ?? etMonthKey();
     const [planning, schedule, videos, topics, month, progress, attention] = await Promise.all([
-      attempt("planning", () => portalPlanning(enrollment, selectedMonth?.id)),
+      attempt("planning", () => portalPlanning(enrollment, homeMonth?.id)),
       attempt("schedule", () => portalScheduleMonths(enrollment)),
       attempt("videos", () => portalVideoList(enrollment, { page: 1, perPage: 24 })),
       attempt("topics", () => portalTopics(enrollment)),
       // Audit E4: a hiccup here used to fail the whole page.
-      attempt("month", () => prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey }, select: { videosOwed: true } })),
+      attempt("month", () => prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, monthKey: homeKey }, select: { videosOwed: true } })),
       // The month through lib/monthProgress (CP-10): sessions and the meter
       // read the same facts Jordan's roster and the client file do.
-      attempt("progress", () => portalMonthProgress(enrollment, monthKey)),
+      attempt("progress", () => portalMonthProgress(enrollment, homeKey)),
       // Library-wide, not page one: "N waiting on you" is a library fact.
       attempt("attention", () => libraryAttention(enrollment)),
     ]);
     home = {
-      first, monthKey, videosOwed: (month.ok ? month.data?.videosOwed : null) ?? enrollment.videosPerMonth,
+      first, monthKey: homeKey, videosOwed: (month.ok ? month.data?.videosOwed : null) ?? enrollment.videosPerMonth,
       program: progress.ok ? { delivered: progress.data.production.delivered, total: progress.data.production.total } : null, countsFailed: !progress.ok,
       progress: progress.ok ? progress.data : null,
       planning: planning.ok ? planning.data : null,
-      schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === monthKey) ?? schedule.data[0] ?? null : null,
+      schedule: schedule.ok ? schedule.data.find((m) => m.monthKey === homeKey) ?? schedule.data[0] ?? null : null,
       // Oct 21 2026: Home's "Coming up" lists every open month (the Schedule page's list).
       scheduleMonths: schedule.ok ? schedule.data : null,
       videos: videos.ok ? { rows: videos.data.rows, total: videos.data.total } : null,
@@ -447,7 +451,14 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
     const readyPage = pageRows.filter((r) => (r.state === "APPROVED" || r.state === "DELIVERED") && r.downloadable);
     const readyCount = home.attention?.readyToUse ?? readyPage.length;
     const sv = homeSessionView(home.progress, home.schedule, { canBook: perms.session, readOnly });
-    const hp = home.topics ? planModel(home.topics, monthKey) : plan;
+    const hp = home.topics ? planModel(home.topics, home.monthKey) : plan;
+    // Oct 21 2026: next month, open early, while something is still to plan or book there.
+    const nowKey = etMonthKey();
+    const nextTopics = home.topics?.months.find((m) => m.monthKey > nowKey) ?? null;
+    const nextSched = home.scheduleMonths?.find((m) => m.monthKey > nowKey && !m.late) ?? null;
+    const aheadKey = nextTopics?.monthKey ?? nextSched?.monthKey ?? null;
+    const selfPlanned = !!home.planning?.clientPlanned;
+    const aheadOpen = !!aheadKey && ((!selfPlanned && !!nextTopics && nextTopics.selected < nextTopics.owed) || (!!nextSched && nextSched.sessionsMissing > 0 && nextSched.capacity.remaining > 0));
     const filmedWork = !!home.progress && (home.progress.sessions.cards.some((s) => s.state === "FILMED") || home.progress.production.delivered > 0 || home.progress.production.approved > 0 || home.progress.production.awaitingYou > 0);
     const visibleSelected = home.topics && hp?.month
       ? home.topics.groups.flatMap((g) => g.topics).filter((t) => !t.declined && t.selection?.monthId === hp.month?.id).length
@@ -483,6 +494,7 @@ export async function PortalPage({ viewer, path, baseQuery = "", query: rawQuery
       ready: { count: readyCount, withFile: home.attention ? home.attention.readyWithFile > 0 : readyPage.length > 0, single: readyCount === 1 && readyPage.length === 1 ? { id: readyPage[0].id, title: readyPage[0].title } : null },
       // A1 (Oct 13 2026): the shared link watches; a signed-in seat decides.
       linkVisitor: actor.kind === "TOKEN" ? { signInHref: offerSignIn ? "/portal/login" : null, hasSeat: linkHasSeat } : null,
+      ahead: aheadOpen && aheadKey ? { label: monthLabel(aheadKey).split(" ")[0], href: portalMonthHref(portalHref(contextBase, "plan"), aheadKey), clientPlanned: selfPlanned } : null,
     }, contextBase);
   }
 

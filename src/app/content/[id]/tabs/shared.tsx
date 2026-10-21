@@ -81,6 +81,8 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
           {m?.status === "SKIPPED" && <span className="ml-2 align-middle text-ui-status font-normal text-muted">{caughtUpIn ? `caught up in ${monthLabel(caughtUpIn).split(" ")[0]}` : "skipped"}</span>}
           {forfeited && <span className="ml-2 align-middle text-ui-status font-normal text-muted">forfeited</span>}
           {lateIn && <span className="ml-2 align-middle text-ui-status font-normal text-muted">session booked in {monthLabel(lateIn).split(" ")[0]}</span>}
+          {/* Oct 21 2026: next month, made early. The client may get ahead on it; nothing is chased before its 1st. */}
+          {m && m.monthKey > nowKey && <span className="ml-2 align-middle text-ui-status font-normal text-muted">starts {monthLabel(m.monthKey).split(" ")[0]} 1 · nothing chased before then</span>}
         </h2>
         {forfeited && m && (
           <p className="mt-1 text-ui-secondary text-muted">
@@ -93,7 +95,7 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
       {ctx.months.length > 0 && (
         <div className="flex max-w-full flex-wrap items-center gap-2 [&>span]:min-w-0 [&>span]:max-w-full [&_button]:min-h-11 [&_button]:min-w-11 [&_button]:max-w-full [&_button]:whitespace-normal [&_button]:text-ui-secondary [&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-brand [&_select]:min-h-11 [&_select]:min-w-0 [&_select]:max-w-full [&_select]:text-base [&_select]:focus-visible:outline-2 [&_select]:focus-visible:outline-offset-2 [&_select]:focus-visible:outline-brand">
           <MonthPicker
-            months={ctx.months.map((x) => ({ key: x.monthKey, label: monthLabel(x.monthKey), historical: x.historical }))}
+            months={ctx.months.map((x) => ({ key: x.monthKey, label: `${monthLabel(x.monthKey)}${x.monthKey > nowKey ? " · upcoming" : ""}`, historical: x.historical }))}
             currentKey={key}
             makeHref={contentHref(ctx.id, { tab, view: view ?? null, month: "MONTH" })}
           />

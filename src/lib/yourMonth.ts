@@ -97,6 +97,37 @@ export function callWhenWords(iso: string, tz: string = "America/New_York", now:
   return `${day} at ${time} ${zoneLabel(tz, at)}`;
 }
 
+// ---------------------------------------------------------------------------
+// THE MONTH SWITCH (Oct 21 2026). Jordan: "it shows October, but I'd like it
+// to show November too, so people can schedule the next month ahead of
+// time." Next month is open early (contentProgram.NEXT_MONTH_OPENS_DAYS_BEFORE),
+// so Your Month offers this month first and next month beside it, labelled as
+// getting ahead. Home's next step stays about this month.
+// ---------------------------------------------------------------------------
+
+export type YourMonthTab = { id: string; monthKey: string; label: string; ahead: boolean; active: boolean };
+
+const monthWord = (monthKey: string) => {
+  const [y, m] = monthKey.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString("en-US", { month: "long", timeZone: "UTC" });
+};
+
+/** The open months as the switch shows them: this month first, then next month ("November · getting ahead"). */
+export function yourMonthTabs(months: { id: string; monthKey: string }[], selectedId: string | null, nowKey: string): YourMonthTab[] {
+  return [...months]
+    .sort((a, b) => a.monthKey.localeCompare(b.monthKey))
+    .map((m) => {
+      const ahead = m.monthKey > nowKey;
+      return { id: m.id, monthKey: m.monthKey, label: ahead ? `${monthWord(m.monthKey)} · getting ahead` : monthWord(m.monthKey), ahead, active: m.id === selectedId };
+    });
+}
+
+/** What a month opened early says at the top of Your Month. No em dashes (client copy). */
+export function aheadLine(monthKey: string, clientPlanned = false): string {
+  const name = monthWord(monthKey);
+  return `You're getting ahead on ${name}. ${clientPlanned ? "Add your plan" : "Choose topics"} and book filming whenever it suits you. Nothing for ${name} is due before ${name} 1.`;
+}
+
 type Raw = Omit<YourMonthStep, "state"> & { status: "done" | "action" | "deferred" | "waiting" | "todo" };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

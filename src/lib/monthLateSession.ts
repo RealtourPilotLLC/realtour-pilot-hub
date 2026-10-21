@@ -530,10 +530,14 @@ export async function bookableLateRecord(enrollmentId: string, month: { id: stri
  */
 export async function lateGateLock(enrollmentId: string, month: { id: string; monthKey: string; status: string; historical: boolean }, now: Date): Promise<string | null> {
   if (month.monthKey >= etMonthKey(now)) return null;
-  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true, clientSuppliesTopics: true } });
   const rec = e ? lateSessionOf(e.overridesJson, month.monthKey) : null;
   if (!rec) return null;
   if (!(await bookableLateRecord(enrollmentId, month, now))) return `Booking for your ${name(month.monthKey)} session has closed. Send us a message and we'll sort it out together.`;
+  // Oct 21 2026: a client who plans their own videos (clientSuppliesTopics)
+  // brings their own scripts. Waiting on ours locked their late session for
+  // good, so it opens like their every other session (the 24-hour floor).
+  if (e?.clientSuppliesTopics) return null;
   const scripts = await lateScriptsReady(month.id, rec);
   return scripts.ready ? null : lateScriptsLock(rec.lateMonthKey, rec.hostMonthKey);
 }
@@ -555,6 +559,8 @@ export type PortalLateSession = {
   combine: CombineChoice;
   /** The host month's name ("October"). */
   hostLabel: string;
+  /** Oct 21 2026: the client plans their own videos, so the session waits on no scripts of ours. */
+  clientPlanned: boolean;
 };
 
 /** The late session the host month brings in, for the client — null when none (or it has been filmed). */
@@ -562,7 +568,7 @@ export async function portalLateSession(enrollment: { id: string; clientId: stri
   const now = opts.now ?? new Date();
   const host = await prisma.contentMonth.findUnique({ where: { id: hostMonthId }, select: { id: true, enrollmentId: true, monthKey: true, status: true, historical: true } });
   if (!host || host.enrollmentId !== enrollment.id || host.status !== "OPEN" || host.historical || host.monthKey < etMonthKey(now)) return null;
-  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true } });
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { overridesJson: true, clientSuppliesTopics: true } });
   const rec = lateSessionsInto(e?.overridesJson, host.monthKey)[0] ?? null;
   if (!rec) return null;
   const lm = await prisma.contentMonth.findUnique({ where: { id: rec.lateMonthId }, select: { id: true, enrollmentId: true, monthKey: true, status: true, historical: true } });
@@ -574,14 +580,17 @@ export async function portalLateSession(enrollment: { id: string; clientId: stri
     combineChoice(rec, { now }),
   ]);
   if (st.filmed) return null;
+  // Oct 21 2026: a self-planned client's late session is open as soon as it is approved (lateGateLock).
+  const clientPlanned = !!e?.clientSuppliesTopics;
+  const scriptsReady = clientPlanned || scripts.ready;
   const tz = opts.timezone ?? "America/New_York";
   const bookedLabel = st.state === "BOOKED" && st.startsAt ? st.startsAt.toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" }) : null;
   return {
     monthId: lm.id, monthKey: lm.monthKey, label: name(lm.monthKey, host.monthKey),
-    slotLabel: rec.combined ? combinedSlotLabel(lm.monthKey, host.monthKey, combine.videos) : lateSlotLabel(lm.monthKey, host.monthKey, scripts.ready),
+    slotLabel: rec.combined ? combinedSlotLabel(lm.monthKey, host.monthKey, combine.videos) : lateSlotLabel(lm.monthKey, host.monthKey, scriptsReady),
     line: latePortalLine({ lateMonthKey: lm.monthKey, hostMonthKey: host.monthKey, state: st.state, hostStillToBook: hostRemaining, bookedLabel, combinedVideos: rec.combined ? combine.videos : null }),
-    state: st.state, scriptsReady: scripts.ready, sentOutside: rec.scriptsSentOutside,
-    combine, hostLabel: name(host.monthKey),
+    state: st.state, scriptsReady, sentOutside: rec.scriptsSentOutside,
+    combine, hostLabel: name(host.monthKey), clientPlanned,
   };
 }
 

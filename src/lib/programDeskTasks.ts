@@ -463,7 +463,10 @@ export async function reconcileScriptApprovalTasks(opts: { now?: Date; max?: num
   const live = await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE", clientSuppliesTopics: false, OR: [{ programKind: null }, { programKind: { not: "BULK" } }] }, select: { id: true, clientId: true } });
   if (!live.length) return { opened, closed, bells, checkedSessions, wouldOpen, wouldRing };
   const curKey = now.toLocaleDateString("en-CA", { timeZone: "America/New_York" }).slice(0, 7);
-  const months = await prisma.contentMonth.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, monthKey: { gte: curKey } }, select: { id: true, monthKey: true, enrollmentId: true, clientId: true }, take: opts.max ?? 100 });
+  // Oct 21 2026: this month first. Next month is made early for every client
+  // (contentProgram.ensureNextMonths) and must not crowd this month out of the
+  // cap; it stays in, for a session booked early in the month.
+  const months = await prisma.contentMonth.findMany({ where: { enrollmentId: { in: live.map((e) => e.id) }, historical: false, status: { notIn: ["CLOSED", "CANCELLED", "IMPORTED"] }, monthKey: { gte: curKey } }, select: { id: true, monthKey: true, enrollmentId: true, clientId: true }, orderBy: { monthKey: "asc" }, take: opts.max ?? 100 });
   const names = new Map((await prisma.client.findMany({ where: { id: { in: [...new Set(months.map((m) => m.clientId))] } }, select: { id: true, name: true } })).map((c) => [c.id, c.name ?? ""]));
   const horizon = Math.max(lead.deskTaskLeadHours, lead.ownerBellLeadHours) * 3_600_000;
   for (const m of months) {

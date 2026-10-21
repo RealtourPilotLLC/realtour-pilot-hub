@@ -57,9 +57,12 @@ const day = (d: Date | null) => d ? d.toLocaleDateString("en-US", { timeZone: "A
 type Db = Pick<typeof prisma, "programCallRecord" | "contentMonth" | "project" | "programSessionRequest" | "contentVideo" | "contentTopic" | "contentTopicSelection" | "contentScript" | "contentInterview">;
 
 /** Why an earlier month can't be caught up (null = it can). Plain words for the office. */
-async function missedMonthRefusal(db: Db, m: { id: string; monthKey: string; status: string; historical: boolean }, targetKey: string, overridesJson: string | null): Promise<string | null> {
+async function missedMonthRefusal(db: Db, m: { id: string; monthKey: string; status: string; historical: boolean }, targetKey: string, overridesJson: string | null, now: Date = new Date()): Promise<string | null> {
   const n = name(m.monthKey, targetKey);
   if (m.monthKey >= targetKey) return `${n} is not before ${name(targetKey)}.`;
+  // Oct 21 2026: next month is open early, so this month can sit before a
+  // target and still be running. A month that isn't over hasn't been missed.
+  if (m.monthKey >= etMonthKey(now)) return `${n} isn't over yet, so it hasn't been missed.`;
   if (m.historical) return `${n} is imported history.`;
   if (m.status !== "OPEN") {
     const from = catchUpFrom(overridesJson, m.monthKey);
@@ -160,7 +163,7 @@ export async function catchUpPanel(monthId: string, opts: { now?: Date } = {}): 
   for (const m of earlier) {
     // Months long closed are history, not candidates: list OPEN ones and say why each can't be used.
     if (m.status !== "OPEN") continue;
-    options.push({ monthId: m.id, monthKey: m.monthKey, label: name(m.monthKey, t.monthKey), videosOwed: m.videosOwed, refusal: await missedMonthRefusal(prisma, m, t.monthKey, e.overridesJson), forfeited: forfeited.has(m.id) });
+    options.push({ monthId: m.id, monthKey: m.monthKey, label: name(m.monthKey, t.monthKey), videosOwed: m.videosOwed, refusal: await missedMonthRefusal(prisma, m, t.monthKey, e.overridesJson, now), forfeited: forfeited.has(m.id) });
   }
   return {
     monthId: t.id, monthKey: t.monthKey,
@@ -186,7 +189,7 @@ export async function applyCatchUp(targetMonthId: string, missedMonthId: string,
     if (!e) throw new Error("Enrollment not found.");
     const tr = await targetRefusal(t, e, now);
     if (tr) throw new Error(tr);
-    const mr = await missedMonthRefusal(tx, m, t.monthKey, e.overridesJson);
+    const mr = await missedMonthRefusal(tx, m, t.monthKey, e.overridesJson, now);
     if (mr) throw new Error(mr);
     const calls = await tx.programCallRecord.findMany({ where: { monthId: t.id, ...LIVE_MONTHLY_CALL }, select: { id: true } });
     const rec: CatchUpRecord = {
