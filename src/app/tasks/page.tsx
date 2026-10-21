@@ -5,8 +5,7 @@ import { canAccess } from "@/lib/auth/access";
 import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
 import { BoardView, boardNavigationCounts } from "@/components/tasks/BoardView";
 import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
-import { CommsView, RevisionsView, SlackView, checklistCounts } from "@/components/tasks/ChecklistViews";
-import { unansweredCommsBoard } from "@/lib/commsBoard";
+import { RevisionsView, SlackView, checklistCounts } from "@/components/tasks/ChecklistViews";
 import { prisma } from "@/lib/prisma";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { resolveTasksRoute } from "@/lib/taskNavigation";
@@ -60,44 +59,30 @@ export default async function TasksHubPage({ searchParams }: {
   // they sent, and the promises at risk) is on Messages · Waiting on us, from
   // the same read. Old links (?tab=comms, ?tab=today via /today, the Slack
   // digest's "Unanswered" line, ?via=email) land there; the test view rides
-  // along. A login without Messages keeps this tab.
-  // Whether the Replies tab is a tab at all for this login: only one without
-  // Messages keeps it. For everyone else it is not drawn and its reads (both
-  // comms boards, the phone one twice) are not made (Oct 20 2026, audit A4).
-  const repliesHere = !!me && !canAccess(me, "communications");
-  if (tab === "comms" && !repliesHere) {
+  // along. Oct 21 2026 (audit F15): the tab itself is gone. Every default
+  // role that has Tasks has Messages, so it was drawn for nobody; a login
+  // whose access was hand-set without Messages lands on its work board.
+  if (tab === "comms") {
+    if (me && !canAccess(me, "communications")) redirect("/tasks");
     redirect(sp.test === "1" ? "/communications?test=1" : "/communications");
   }
 
   const showTestRevisions = tab === "revisions" && sp.test === "1";
   const showTestOther = tab === "work" && sp.test === "1";
-  const showTestComms = tab === "comms" && sp.test === "1";
   const showTestSlack = tab === "slack" && sp.test === "1";
   const showTestDone = tab === "done" && sp.test === "1";
   const syntheticClientIds = boardOnly ? []
     : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
   const excludedRevisionClientIds = showTestRevisions ? [] : syntheticClientIds;
   const excludedOtherClientIds = showTestOther ? [] : syntheticClientIds;
-  const excludedCommsClientIds = showTestComms ? [] : syntheticClientIds;
   const excludedSlackClientIds = showTestSlack ? [] : syntheticClientIds;
   const excludedDoneClientIds = showTestDone ? [] : syntheticClientIds;
 
-  const [workCounts, doneN, checklists, phoneWaiting] = await Promise.all([
+  const [workCounts, doneN, checklists] = await Promise.all([
     boardOnly ? { all: 0, mine: 0, needsAssignment: 0 } : boardNavigationCounts({ excludeClientIds: excludedOtherClientIds }),
     boardOnly ? 0 : doneTodayCount({ excludeClientIds: excludedDoneClientIds }),
-    boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeCommsClientIds: excludedCommsClientIds, excludeSlackClientIds: excludedSlackClientIds, skipComms: !repliesHere }),
-    // Only to decide which side of Comms to open on — see commsChannel below.
-    boardOnly || !repliesHere ? 0 : unansweredCommsBoard("phone", new Date(), { excludeClientIds: excludedCommsClientIds }).then((g) => g.length).catch(() => 0),
+    boardOnly ? { revisions: 0, slack: 0 } : checklistCounts({ excludeRevisionClientIds: excludedRevisionClientIds, excludeSlackClientIds: excludedSlackClientIds }),
   ]);
-  // The Comms badge counts Phone + Email, so defaulting to Phone when nobody is
-  // waiting on a text lands a "Comms 5" tab on "Nobody is waiting on a text
-  // reply" — the same fault the dashboard chips were just fixed for (#9). When
-  // the phone side is empty and the badge isn't, open Email. An explicit ?via=
-  // always wins.
-  const commsChannel: "phone" | "email" =
-    sp.via === "email" ? "email"
-      : sp.via === "phone" ? "phone"
-        : phoneWaiting === 0 && checklists.comms > 0 ? "email" : "phone";
   const tabs = boardOnly ? null : (
     <TasksTabs
       tab={tab}
@@ -106,11 +91,9 @@ export default async function TasksHubPage({ searchParams }: {
       mineCount={workCounts.mine}
       needsAssignmentCount={workCounts.needsAssignment}
       doneCount={doneN}
-      commsCount={checklists.comms}
       revisionsCount={checklists.revisions}
       showTest={sp.test === "1"}
       slackCount={checklists.slack}
-      showReplies={repliesHere}
       updatedAt={new Date()}
     />
   );
@@ -120,6 +103,5 @@ export default async function TasksHubPage({ searchParams }: {
   if (tab === "revisions") return <RevisionsView tabs={tabs} excludeClientIds={excludedRevisionClientIds} showTest={showTestRevisions} />;
   // ?task=<id> lands on the row and highlights it — the digests deep-link here
   // now, and a link that drops you at the top of a 21-row list is not a link.
-  if (tab === "slack") return <SlackView tabs={tabs} focusTaskId={sp.task ?? null} excludeClientIds={excludedSlackClientIds} showTest={showTestSlack} />;
-  return <CommsView tabs={tabs} channel={commsChannel} excludeClientIds={excludedCommsClientIds} showTest={showTestComms} />;
+  return <SlackView tabs={tabs} focusTaskId={sp.task ?? null} excludeClientIds={excludedSlackClientIds} showTest={showTestSlack} />;
 }

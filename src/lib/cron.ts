@@ -157,6 +157,9 @@ export async function lastRunDeploy(job = "sync"): Promise<{ deploy: string | nu
   return { deploy, startedAt: row.startedAt, finishedAt: row.finishedAt };
 }
 
+/** Jobs vercel.json runs every minute: no per-step progress writes (see checkpoint). */
+const EVERY_MINUTE_JOBS = new Set(["topaz"]);
+
 export function cronBudget(budgetMs: number, startedAtMs: number, job?: string): CronRunner {
   const out: Record<string, unknown> = { at: new Date(startedAtMs).toISOString() };
   const deploy = deployStamp();
@@ -190,8 +193,12 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
   // is unrecorded. Best-effort, one small UPDATE per step.
   // Gated to long-budget jobs: the */5 gmail job would otherwise add ~60k
   // small UPDATEs a month for no diagnostic value.
+  // Oct 21 2026 (audit H2): and never for an every-minute job. "topaz" runs
+  // each minute with a 250 s budget, so it wrote a progress UPDATE after every
+  // step, thousands a day of bookkeeping. Its run is still recorded: the row
+  // at the start, the summary at finish().
   const checkpoint = async () => {
-    if (!job || budgetMs < 120_000) return;
+    if (!job || budgetMs < 120_000 || EVERY_MINUTE_JOBS.has(job)) return;
     try {
       const id = await runRowId;
       if (!id) return;

@@ -127,6 +127,8 @@ async function OwnerBusiness({ ownerP, topArP, includeTest }: { ownerP: Promise<
                 <MoneyStat label="Owed to you" value={usd0(money.owedToYou)} sub={`${money.owedCount} unpaid`} tone={money.owedToYou > 0 ? "bad" : undefined} />
                 <MoneyStat label="Money in this year" value={usd0(money.revenueYtd)} sub={`through ${money.monthLabel}`} />
               </div>
+              {/* QuickBooks stopped syncing (audit H3): the figures above leave its payments out, said in words. */}
+              {money.revenueNote && <p data-quickbooks-note className="mt-2 text-xs text-warning">{money.revenueNote}</p>}
             </div>
           )}
       </section>

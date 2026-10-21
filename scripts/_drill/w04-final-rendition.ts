@@ -39,8 +39,10 @@ async function main() {
   const c = makeChecker();
   try {
     const { prisma } = await import("@/lib/prisma");
-    const { manualListingCheckReady, FINAL_CHECK_KEYS } = await import("@/lib/finalRendition");
-    const { listingFinalChoicesAction, recordListingFinalCheckAction } = await import("@/app/ops/finalRenditionActions");
+    // Oct 21 2026 (audit wave 2): the staff final-check server actions
+    // (ops/finalRenditionActions) had no screen left and were deleted; the
+    // checks below drive the library they wrapped, as Kyle.
+    const { manualListingCheckReady, FINAL_CHECK_KEYS, listingChoices, recordListingCheck } = await import("@/lib/finalRendition");
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { signClientSession, CLIENT_COOKIE } = await import("@/lib/auth/clientSession");
     const { resolvePortalViewer } = await import("@/lib/portal");
@@ -70,13 +72,11 @@ async function main() {
       try { const result = await act(); return result?.ok === false && reason.test(result.message); }
       catch (e) { return e instanceof Error && reason.test(e.message); }
     };
-    const checkForm = (submissionId: string, mediaId: string, checks: readonly string[] = FINAL_CHECK_KEYS, metadata = false) => {
-      const data = new FormData();
-      data.set("submissionId", submissionId); data.set("mediaId", mediaId);
-      for (const key of checks) data.set(key, "yes");
-      if (metadata) { data.set("duration", "62"); data.set("width", "1920"); data.set("height", "1080"); }
-      return data;
-    };
+    const checkForm = (submissionId: string, mediaId: string, checks: readonly (typeof FINAL_CHECK_KEYS)[number][] = FINAL_CHECK_KEYS, metadata = false) => ({
+      submissionId, mediaId, checks: [...checks],
+      metadata: metadata ? { duration: 62, width: 1920, height: 1080 } : null,
+      actor: { id: kyle.id, name: kyle.name ?? "Kyle TEST" },
+    });
     await asKyle();
     const project = await prisma.project.create({ data: { clientId: client.id, title: "W04 TEST Address", status: "REVIEW", aryeoListingId: "fake-listing" } });
     const d = await prisma.deliverable.create({ data: { projectId: project.id, type: "VIDEO", quantity: 2 } });
@@ -86,15 +86,15 @@ async function main() {
     const other = await prisma.reviewSubmission.create({ data: { projectId: project.id, deliverableId: d.id, slot: 2, round: 1, status: "APPROVED",
       blobUrl: "https://example.test/other.mp4", decidedAt: new Date(Date.now() - 86_400_000) } });
     await prisma.deliverableOutput.create({ data: { projectId: project.id, deliverableId: d.id, slot: 2, category: "VIDEO", currentSubmissionId: other.id, approvedSubmissionId: other.id } });
-    const choices = await listingFinalChoicesAction(cut.id);
+    const choices = await listingChoices(cut.id);
     c.ok("choice excludes older Aryeo video and names the two new media identities", choices.ok && choices.choices.length === 2 && choices.choices.some((x) => x.id === providerVideoId));
     c.ok("unchecked final file cannot be manually delivered", !(await manualListingCheckReady(cut.id)).ok);
     const { markVideoSentAction } = await import("@/app/ops/actions");
     const blockedAction = await markVideoSentAction(cut.id, "not-yet");
     c.ok("staff send action leaves unchecked cut unsent", !blockedAction.ok && !(await prisma.reviewSubmission.findUnique({ where: { id: cut.id } }))?.sentToClientAt);
-    c.ok("partial checklist refused without a record", !(await recordListingFinalCheckAction(checkForm(cut.id, providerVideoId, ["identity"]))).ok && await prisma.finalRenditionCheck.count() === 0);
-    c.ok("unknown provider video refused", !(await recordListingFinalCheckAction(checkForm(cut.id, "missing"))).ok);
-    const saved = await recordListingFinalCheckAction(checkForm(cut.id, providerVideoId, FINAL_CHECK_KEYS, true));
+    c.ok("partial checklist refused without a record", !(await recordListingCheck(checkForm(cut.id, providerVideoId, ["identity"]))).ok && await prisma.finalRenditionCheck.count() === 0);
+    c.ok("unknown provider video refused", !(await recordListingCheck(checkForm(cut.id, "missing"))).ok);
+    const saved = await recordListingCheck(checkForm(cut.id, providerVideoId, FINAL_CHECK_KEYS, true));
     const row = await prisma.finalRenditionCheck.findFirst({ where: { submissionId: cut.id } });
     c.ok("signed Kyle's exact-version attestation saved with his user id", saved.ok && row?.checkedBy === kyle.name && row.checkedByUserId === kyle.id && row.destinationMediaId === providerVideoId && !!row.sourceFingerprint && !!row.metadataJson);
     c.ok("one video's check cannot certify sibling output", !(await manualListingCheckReady(other.id)).ok);
@@ -104,8 +104,6 @@ async function main() {
     for (const who of deniedActors) {
       await who.signIn();
       const readsBefore = listingReads;
-      c.ok(`${who.label} cannot read staff final-file choices`, await refused(() => listingFinalChoicesAction(cut.id), who.reason));
-      c.ok(`${who.label} cannot record a valid final-file check`, await refused(() => recordListingFinalCheckAction(checkForm(cut.id, providerVideoId)), who.reason));
       c.ok(`${who.label} cannot mark the verified delivered cut sent`, await refused(() => markVideoSentAction(cut.id, "not-yet"), who.reason));
       c.ok(`${who.label} leaves check/send records and provider reads unchanged`, await prisma.finalRenditionCheck.count() === 1 && !(await prisma.reviewSubmission.findUnique({ where: { id: cut.id } }))?.sentToClientAt && listingReads === readsBefore);
     }
@@ -136,8 +134,8 @@ async function main() {
     const { setSmartTaskStatus } = await import("@/app/actions");
     const blockedTask = await setSmartTaskStatus(task.id, "COMPLETED");
     c.ok("Topaz task completion refuses missing final-file check", blockedTask?.ok === false && (await prisma.smartTask.findUnique({ where: { id: task.id } }))?.status === "OPEN");
-    c.ok("second output cannot claim first Aryeo video", !(await recordListingFinalCheckAction(checkForm(other.id, currentId))).ok);
-    const checkedSecond = await recordListingFinalCheckAction(checkForm(other.id, secondId));
+    c.ok("second output cannot claim first Aryeo video", !(await recordListingCheck(checkForm(other.id, currentId))).ok);
+    const checkedSecond = await recordListingCheck(checkForm(other.id, secondId));
     for (const who of deniedActors) {
       await who.signIn();
       const readsBefore = listingReads;

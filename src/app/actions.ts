@@ -15,6 +15,7 @@ import {
   type Prisma,
 } from "@prisma/client";
 import { stageMeta } from "@/lib/pipeline";
+import { boardMoveReopens } from "@/lib/officeReopen";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { noteRevisionLanesClosed, resolveRevisionForTask, resolveRevisionWholeJob } from "@/lib/comms";
@@ -1436,6 +1437,11 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       ...(status === ProjectStatus.REVISION && !project.revisionRequestedAt
         ? { revisionRequestedAt: new Date() }
         : {}),
+      // Oct 21 2026 (audit B11): the office put a finished job back (a move to
+      // Revisions, or off Delivered onto a working stage). The Editing Room
+      // queue and the reopened-clock net read this stamp, not the timeline
+      // line below.
+      ...(boardMoveReopens(project.status, status) ? { officeReopenedAt: new Date() } : {}),
     },
   });
 

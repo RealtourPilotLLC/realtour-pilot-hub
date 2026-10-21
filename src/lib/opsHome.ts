@@ -7,7 +7,7 @@ import { HOLD_REASON_LABEL } from "@/components/photoDelivery/format";
 import { schedulingBoard, specialRequestsBoard, type AskView } from "@/lib/clientAsks";
 import { loadQueue } from "@/app/ops/photo-delivery/data";
 import type { QueueColumnKey, QueueData } from "@/components/photoDelivery/types";
-import { unansweredCommsBoard, type CommsGroup } from "@/lib/commsBoard";
+import { unansweredCommsBoards, type CommsGroup } from "@/lib/commsBoard";
 import { waitingReplyHref } from "@/components/comms/messagesNav";
 import { normalizeSubject } from "@/components/comms/emailThreads";
 import { getReviewQueue, type ReviewQueue } from "@/lib/reviewRoom";
@@ -121,7 +121,8 @@ const photoQueue = (now: Date) => queueOnce(now.getTime());
 const waitingOnce = cache(async (nowMs: number, ex: string): Promise<WaitingClient[]> => {
   const now = new Date(nowMs);
   const scope = { excludeClientIds: ex ? ex.split(",") : [] };
-  const [phone, email] = await Promise.all([unansweredCommsBoard("phone", now, scope), unansweredCommsBoard("email", now, scope)]);
+  // One slice of the request's one comms scan, both families (audit F4).
+  const { phone, email } = await unansweredCommsBoards(now, scope);
   return [
     ...phone.map((g) => ({ family: "phone" as const, group: g, behind: g.oldestHours >= MESSAGE_BEHIND_HOURS })),
     ...email.map((g) => ({ family: "email" as const, group: g, behind: g.oldestHours >= MESSAGE_BEHIND_HOURS })),

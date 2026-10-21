@@ -1,26 +1,21 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { CheckCircle2, ExternalLink, Mail, Phone, Star } from "lucide-react";
+import { CheckCircle2, ExternalLink } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn, nameColor } from "@/lib/utils";
-import { unansweredCommsBoard, revisionsBoard, slackBoard } from "@/lib/commsBoard";
+import { revisionsBoard, slackBoard } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { scrubMoney } from "@/lib/text";
-import { HandledButton, SlackDoneButton, NotNeededButton, SlackAssignPicker } from "@/components/tasks/ChecklistButtons";
+import { SlackDoneButton, NotNeededButton, SlackAssignPicker } from "@/components/tasks/ChecklistButtons";
 import type { SlackTaskRow } from "@/lib/commsBoard";
 import { etTime } from "@/lib/datetime";
 import { TaskFocus } from "@/components/queue/TaskFocus";
-import { AtRiskUpdates } from "@/components/tasks/AtRiskUpdates";
 
-// No money on an ADMIN screen (Jordan's standing rule): a Slack to-do's title,
-// a client's revision ask, or the message a client is waiting on can carry a
-// dollar figure, and for a non-owner it is redacted before it renders (audit5
-// kyle-home §5, Sep 8). The Comms tab's message bodies go through the same
-// scrub as the home's previews of the same rows (review, Sep 8 — "no money
-// anywhere"): only the figure goes, the sentence stays, so Kyle can still
-// answer. If Jordan wants client-quoted figures visible here, drop the three
-// scrub() wraps in CommsView. Sessionless = owner, the same rule the home
+// No money on an ADMIN screen (Jordan's standing rule): a Slack to-do's title
+// or a client's revision ask can carry a dollar figure, and for a non-owner it
+// is redacted before it renders (audit5 kyle-home §5, Sep 8): only the figure
+// goes, the sentence stays. Sessionless = owner, the same rule the home
 // applies.
 async function moneyScrubber(): Promise<(s: string) => string> {
   const me = await getCurrentUser().catch(() => null);
@@ -28,10 +23,11 @@ async function moneyScrubber(): Promise<(s: string) => string> {
 }
 
 // ---------------------------------------------------------------------------
-// The Comms Checklist tabs (Jordan, Sep 1): Comms (Phone | Email, grouped by
-// sender), Revisions (grouped by requester), Slack to-dos. Rows clear
-// themselves when a reply/delivery is detected; the tick is the manual
-// override for things handled outside the hub.
+// The Checklist tabs (Jordan, Sep 1): Revisions (grouped by requester) and
+// Slack to-dos. Rows clear themselves when a delivery is detected; the tick is
+// the manual override for things handled outside the hub. (The Replies tab,
+// Comms, was unreachable once Messages took it over and was removed on Oct 21
+// 2026, audit F15: clients are answered on Messages.)
 // ---------------------------------------------------------------------------
 
 function Shell({ tabs, title, subtitle, children }: { tabs: ReactNode; title: string; subtitle: string; children: ReactNode }) {
@@ -45,88 +41,6 @@ function Shell({ tabs, title, subtitle, children }: { tabs: ReactNode; title: st
     </div>
   );
 }
-
-// ---------------- COMMS ----------------
-
-export async function CommsView({ tabs, channel, excludeClientIds, showTest = false }: { tabs: ReactNode; channel: "phone" | "email"; excludeClientIds?: string[]; showTest?: boolean }) {
-  const scope = { excludeClientIds };
-  const commsHref = `/tasks?tab=comms${showTest ? "&test=1" : ""}`;
-  const [phone, email, scrub] = await Promise.all([unansweredCommsBoard("phone", new Date(), scope), unansweredCommsBoard("email", new Date(), scope), moneyScrubber()]);
-  const groups = channel === "phone" ? phone : email;
-  const sub = "Everything still owed an answer, grouped by who's waiting. Rows clear on their own when a reply goes out — tick only what you handled outside the hub.";
-  return (
-    <Shell tabs={tabs} title="Unanswered Comms" subtitle={sub}>
-      {/* Promises at risk (AU-24, Sep 26): get ahead of the client's "where is it?". */}
-      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
-        <span>{showTest ? "Showing real and test records" : "Showing real client work"}</span>
-        <Link href={`/tasks?tab=comms&via=${channel}${showTest ? "" : "&test=1"}`} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">
-          {showTest ? "Hide test records" : "Show test records"}
-        </Link>
-      </div>
-      <AtRiskUpdates excludeClientIds={excludeClientIds} />
-      <div className="mb-4 flex gap-1.5">
-        <Link href={`${commsHref}&via=phone`} className={channel === "phone" ? subActive : subIdle}>
-          <Phone className="mr-1.5 inline size-3.5" />Phone {phone.length > 0 && <b className="ml-1">{phone.length}</b>}
-        </Link>
-        <Link href={`${commsHref}&via=email`} className={channel === "email" ? subActive : subIdle}>
-          <Mail className="mr-1.5 inline size-3.5" />Email {email.length > 0 && <b className="ml-1">{email.length}</b>}
-        </Link>
-      </div>
-      {groups.length === 0 ? (
-        <p className="flex items-center gap-2 rounded-2xl border border-success/20 bg-success/[0.05] px-5 py-4 text-[15px] text-success">
-          <CheckCircle2 className="size-5" /> Nobody is waiting on a {channel === "phone" ? "text" : "email"} reply.
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {groups.map((g) => (
-            <div key={g.groupKey} className="panel-shadow rounded-2xl border bg-surface p-4">
-              <div className="flex items-center gap-2.5">
-                <Avatar name={g.clientName} color={nameColor(g.clientName)} size={32} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[15px] font-semibold">{g.clientName}</span>
-                    {g.isVip && <Star className="size-3.5 shrink-0 text-warning" />}
-                  </div>
-                  <p className={cn("text-xs", g.oldestHours >= 24 ? "font-semibold text-danger" : "text-muted")}>
-                    waiting {g.oldestHours >= 24 ? `${Math.floor(g.oldestHours / 24)}d ${g.oldestHours % 24}h` : `${g.oldestHours}h`}
-                  </p>
-                </div>
-                <Link
-                  href={`/communications?tab=replies`}
-                  className="shrink-0 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
-                >
-                  Reply
-                </Link>
-                <HandledButton clientId={g.clientId} family={channel} groupKey={g.groupKey} />
-              </div>
-              <div className="mt-2.5 space-y-2.5 border-t border-border pt-2.5">
-                {g.items.map((i, idx) =>
-                  channel === "email" ? (
-                    <div key={idx} className="text-sm">
-                      <p className="font-semibold text-foreground">
-                        {i.subject ? scrub(i.subject) : "(no subject)"}
-                        <span className="ml-2 font-normal text-muted-2">{i.ageHours}h ago</span>
-                      </p>
-                      {i.body && <p className="mt-0.5 whitespace-pre-wrap text-foreground/80">{scrub(i.body)}</p>}
-                    </div>
-                  ) : (
-                    <p key={idx} className="text-sm text-foreground/85">
-                      <span className="text-muted-2">{i.ageHours}h ago · </span>
-                      &ldquo;{scrub(i.snippet)}&rdquo;
-                    </p>
-                  ),
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Shell>
-  );
-}
-
-const subActive = "rounded-lg bg-surface-2 px-3 py-1.5 text-sm font-semibold ring-1 ring-border";
-const subIdle = "rounded-lg px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
 
 // ---------------- REVISIONS ----------------
 
@@ -302,15 +216,12 @@ function SlackRow({ t, focused, assignOptions }: { t: SlackTaskRow; focused?: bo
 }
 
 // Tab-badge counts, shared with the page so the badges match the tabs.
-export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeCommsClientIds?: string[]; excludeSlackClientIds?: string[]; /** the Replies tab is not drawn: skip its two comms boards */ skipComms?: boolean } = {}): Promise<{ comms: number; revisions: number; slack: number }> {
-  const [phone, email, revs, slack] = await Promise.all([
-    opts.skipComms ? [] : unansweredCommsBoard("phone", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
-    opts.skipComms ? [] : unansweredCommsBoard("email", new Date(), { excludeClientIds: opts.excludeCommsClientIds }),
+export async function checklistCounts(opts: { excludeRevisionClientIds?: string[]; excludeSlackClientIds?: string[] } = {}): Promise<{ revisions: number; slack: number }> {
+  const [revs, slack] = await Promise.all([
     revisionsBoard(new Date(), { excludeClientIds: opts.excludeRevisionClientIds }),
     slackBoard(new Date(), { excludeClientIds: opts.excludeSlackClientIds }),
   ]);
   return {
-    comms: phone.length + email.length,
     revisions: revs.reduce((s, g) => s + g.jobs.length, 0),
     slack: slack.total,
   };

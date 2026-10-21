@@ -340,6 +340,8 @@ async function main() {
     const r1 = await editingActions.addToEditorQueue(G1.id, "kim", "Take out everything before Imagine");
     await prisma.activity.updateMany({ where: { projectId: G1.id, body: { startsWith: "Queued a new cut (as a revision)" } }, data: { createdAt: new Date() } });
     c.ok("queued as a new cut: on Open work as Revisions, not Approved in Completed", r1.ok && (await where(G1.id)) === "open:Revisions", `${r1.message} · ${await where(G1.id)}`);
+    const stampOf = async (id: string) => (await prisma.project.findUniqueOrThrow({ where: { id }, select: { officeReopenedAt: true } })).officeReopenedAt;
+    c.ok("(Oct 21, audit B11) the queue-add stamps Project.officeReopenedAt", same(await stampOf(G1.id), new Date()), show(await stampOf(G1.id)));
     const oldG1 = await oldRowOf(G1.id);
     c.ok(`old (${BASE}): the same row read Approved, so it fell into Completed`, oldG1?.status === "Approved", oldG1?.status ?? "absent");
     // The editor hands in the next version: the reopen is answered by it.
@@ -350,13 +352,30 @@ async function main() {
     await appActions.moveProjectStatus(G2.id, "REVISION");
     await prisma.activity.updateMany({ where: { projectId: G2.id, body: { startsWith: "Moved from Delivered to " } }, data: { createdAt: new Date() } });
     c.ok("moved to Revisions on the board: on Open work as Revisions", (await where(G2.id)) === "open:Revisions", await where(G2.id));
+    c.ok("(B11) the board move stamps Project.officeReopenedAt", same(await stampOf(G2.id), new Date()), show(await stampOf(G2.id)));
     // A job on REVISION from BEFORE its newest approval is not reopened by this rule.
+    // (No stamp: a reopen from before the stamp existed, read off the line, LEGACY.)
     const G3 = await withApprovedCut("632 Old Move Rd");
     await prisma.project.update({ where: { id: G3.id }, data: { status: "REVISION" } });
     await prisma.activity.create({ data: { projectId: G3.id, type: "STATUS_CHANGE", body: "Moved from Delivered to Revisions.", createdAt: et(9, 16, 9) } });
     c.ok("a move to Revisions older than the newest approval does not count", !(await where(G3.id)).endsWith(":Revisions"), await where(G3.id));
+    // (B11) The stamp, not the words: a reworded timeline line changes nothing.
+    const G4 = await withApprovedCut("632 Reworded Rd");
+    await appActions.moveProjectStatus(G4.id, "REVISION");
+    await prisma.activity.updateMany({ where: { projectId: G4.id, body: { startsWith: "Moved from " } }, data: { body: "Board: Delivered → Back to the editor." } });
+    c.ok("(B11) a stamped reopen holds with its timeline line reworded: Revisions", (await where(G4.id)) === "open:Revisions", await where(G4.id));
+    // LEGACY: a reopen from before the stamp, recent enough, still counts off its line.
+    const G5 = await withApprovedCut("632 Legacy Rd");
+    await prisma.project.update({ where: { id: G5.id }, data: { status: "REVISION" } });
+    await prisma.activity.create({ data: { projectId: G5.id, type: "STATUS_CHANGE", body: "Moved from Delivered to Revisions with 1 video still missing on Aryeo.", createdAt: new Date() } });
+    c.ok("(B11, legacy) no stamp: the newest board line still reopens it, missing clause and all", (await where(G5.id)) === "open:Revisions", await where(G5.id));
+    // A stamp older than the newest approval: the line is not read for a stamped job.
+    const G6 = await withApprovedCut("632 Stamped Old Rd");
+    await prisma.project.update({ where: { id: G6.id }, data: { status: "REVISION", officeReopenedAt: et(9, 16, 9) } });
+    await prisma.activity.create({ data: { projectId: G6.id, type: "STATUS_CHANGE", body: "Moved from Delivered to Revisions.", createdAt: new Date() } });
+    c.ok("(B11) a stamp older than the approval does not count, and the timeline is not read over it", !(await where(G6.id)).endsWith(":Revisions"), await where(G6.id));
     // Out of the way of the later sections (Kyle's exceptions list is capped).
-    await prisma.project.updateMany({ where: { id: { in: [G1.id, G2.id, G3.id] } }, data: { status: "CANCELLED" } });
+    await prisma.project.updateMany({ where: { id: { in: [G1.id, G2.id, G3.id, G4.id, G5.id, G6.id] } }, data: { status: "CANCELLED" } });
   }
 
   // =========================================================================
@@ -366,10 +385,11 @@ async function main() {
   {
     setClock(et(9, 26, 11).getTime()); // Saturday
     await appActions.moveProjectStatus(J4.id, "EDITING");
-    // The timeline row is stamped by the database's clock, which is the real
-    // one; in production the two are the same clock, so it is set to the
-    // drill's here rather than letting the test pass on the wall time.
-    await prisma.activity.updateMany({ where: { projectId: J4.id, body: { startsWith: "Moved from Delivered to " } }, data: { createdAt: new Date() } });
+    // Oct 21 2026 (audit B11): the move stamps Project.officeReopenedAt and
+    // the net reads that, so the timeline line is removed here to prove it.
+    const j4Stamp = (await prisma.project.findUniqueOrThrow({ where: { id: J4.id }, select: { officeReopenedAt: true } })).officeReopenedAt;
+    c.ok("(B11) a board move off Delivered onto In Editing stamps the office's reopen", same(j4Stamp, et(9, 26, 11)), show(j4Stamp));
+    await prisma.activity.deleteMany({ where: { projectId: J4.id, body: { startsWith: "Moved from Delivered to " } } });
     const before = await boardOf(J4.id);
     c.ok("straight after the move nothing dates it: no date, flagged undated on the board", before?.dueAt === null && before?.reopenedUndated === true, `${show(before?.dueAt)} undated=${before?.reopenedUndated}`);
     const ex = await exceptionOf(J4.id);

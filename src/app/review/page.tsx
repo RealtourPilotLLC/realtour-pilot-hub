@@ -297,7 +297,8 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   const checksFor = new Map<string, React.ReactNode>(
     await Promise.all([...new Set([...ready, ...heldRows].map((r) => r.projectId))].map(async (pid) => {
       try {
-        return [pid, await BeforeYouSend({ projectId: pid, medium: "video", compact: true })] as const;
+        // The board read every job's requests at once (audit B9); a job it has no list for reads its own.
+        return [pid, await BeforeYouSend({ projectId: pid, medium: "video", compact: true, requests: board?.jobRequests?.[pid] })] as const;
       } catch (e) {
         console.warn("[video-review] job checks unavailable", e);
         return [pid, null] as const;

@@ -2,7 +2,7 @@ import "server-only";
 import { ActivityType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
-import type { RequestOwner } from "@/lib/clientAsks";
+import type { JobRequestRow, RequestOwner } from "@/lib/clientAsks";
 
 // ---------------------------------------------------------------------------
 // "BEFORE YOU SEND" (Oct 19 2026). Jordan: "Flagged by 'Creative' should be on
@@ -87,7 +87,9 @@ function flagLine(body: string): string {
   return oneLine(body.replace(/^Shoot debrief\s*[—-]\s*had issues\s*:\s*/i, "After the shoot: ").replace(/\s+[—–]\s+/g, ", "));
 }
 
-export async function jobChecks(projectId: string, medium: JobMedium): Promise<JobChecks> {
+/** `requests`: the job's open requests for this medium when the caller already
+ *  read them (the Review Room's board, jobRequestsFor; audit B9). */
+export async function jobChecks(projectId: string, medium: JobMedium, opts: { requests?: JobRequestRow[] } = {}): Promise<JobChecks> {
   if (!projectId) return empty(projectId);
   try {
     const { jobRequests, orderAskCandidates, mediumMatches, viewerSeesMoney, ASK_SOURCES, requestOwner, shootIsOver } = await import("@/lib/clientAsks");
@@ -108,7 +110,7 @@ export async function jobChecks(projectId: string, medium: JobMedium): Promise<J
           activities: { where: { type: ActivityType.FLAG }, orderBy: { createdAt: "asc" }, take: 60, select: { id: true, body: true, createdAt: true, author: { select: { name: true } } } },
         },
       }),
-      jobRequests(projectId, medium),
+      opts.requests ?? jobRequests(projectId, medium),
       prisma.clientAsk.findMany({
         where: { projectId, kind: "SPECIAL_REQUEST", state: "CONFIRMED", source: { in: [...ASK_SOURCES] }, confirmedAt: { gte: new Date(Date.now() - 7 * 86_400_000) } },
         orderBy: { confirmedAt: "desc" },

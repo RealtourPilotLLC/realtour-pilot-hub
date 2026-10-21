@@ -6,7 +6,8 @@ import { resolveEditorAssignment } from "@/lib/editorAssignment";
 import { appBase } from "@/lib/appUrl";
 import { cutKeyOf, videoStatesFor } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
-import { isMonthlyContentJob, stageMeta } from "@/lib/pipeline";
+import { isMonthlyContentJob } from "@/lib/pipeline";
+import { OFFICE_NEW_CUT_LINE, isOfficeReopenLine } from "@/lib/officeReopen";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
 import { EDIT_ROUND_SUMMARY, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
@@ -94,11 +95,6 @@ export const CHECK_NEEDED_STATUS = "Check needed";
  *  whole client rows (notes, brand fields) were read for a name and a flag. */
 const QUEUE_CLIENT_SELECT = { id: true, name: true, avatarUrl: true } as const;
 const QUEUE_PERSON_SELECT = { id: true, name: true } as const;
-
-/** The timeline line the Editing Room's "New cut" queue-add writes (editing/
- *  actions.ts), read back below as the office's own reopen. One string for the
- *  writer and the reader (Oct 20 2026, audit B11). */
-export const OFFICE_NEW_CUT_LINE = "Queued a new cut (as a revision)";
 
 /**
  * The files are in and the handoff is not (O01/A32, Sep 25): the engine could
@@ -412,33 +408,33 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // the office's reopen is NEWER than its newest approval; a version handed
   // in and approved after the reopen answers it. Nothing is written.
   //
-  // Oct 20 2026 (audit B11): read from the two timeline lines the office's
-  // reopens write, with their wording shared with their writers (the stage
-  // label from the pipeline config, OFFICE_NEW_CUT_LINE) so a renamed stage no
-  // longer silently brings the bug back. The proper fix is a column the two
-  // writers stamp (Project.officeReopenedAt); it needs a schema change.
+  // Oct 21 2026 (audit B11): read from Project.officeReopenedAt, which the
+  // two office writers stamp (officeReopen.ts), so a renamed stage label can no
+  // longer silently bring the bug back.
   {
-    const revisionsLabel = stageMeta("REVISION").label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const toRevisions = new RegExp(` to ${revisionsLabel}\\b`);
     const settled = inflight
       .filter((p) => p.status === "REVISION")
-      .map((p) => p.id)
-      .filter((id) => {
-        const t = cutTally.get(id);
+      .filter((p) => {
+        const t = cutTally.get(p.id);
         return !!t && t.approved > 0 && t.revising === 0 && t.waiting === 0 && t.checking === 0;
       });
     if (settled.length) {
-      const moves = await prisma.activity
-        .findMany({
-          where: { projectId: { in: settled }, OR: [{ body: { startsWith: "Moved from " } }, { body: { startsWith: OFFICE_NEW_CUT_LINE } }] },
-          orderBy: { createdAt: "desc" },
-          select: { projectId: true, body: true, createdAt: true },
-        })
-        .catch(() => []);
       const reopenedAt = new Map<string, number>();
+      for (const p of settled) if (p.officeReopenedAt) reopenedAt.set(p.id, p.officeReopenedAt.getTime());
+      // LEGACY: a job the office reopened before the stamp existed has none;
+      // for those only, the newest of the writers' own timeline lines.
+      const unstamped = settled.filter((p) => !p.officeReopenedAt).map((p) => p.id);
+      const moves = unstamped.length
+        ? await prisma.activity
+            .findMany({
+              where: { projectId: { in: unstamped }, OR: [{ body: { startsWith: "Moved from " } }, { body: { startsWith: OFFICE_NEW_CUT_LINE } }] },
+              orderBy: { createdAt: "desc" },
+              select: { projectId: true, body: true, createdAt: true },
+            })
+            .catch(() => [])
+        : [];
       for (const m of moves) {
-        if (!m.projectId || reopenedAt.has(m.projectId)) continue;
-        if (m.body.startsWith("Moved from ") && !toRevisions.test(m.body)) continue;
+        if (reopenedAt.has(m.projectId) || !isOfficeReopenLine(m.body)) continue;
         reopenedAt.set(m.projectId, m.createdAt.getTime());
       }
       for (const [pid, at] of reopenedAt) {

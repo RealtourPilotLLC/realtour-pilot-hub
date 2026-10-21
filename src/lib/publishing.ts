@@ -2,8 +2,7 @@ import "server-only";
 
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { isAutomationEnabled, recordAutomationRun, getAutomation } from "@/lib/programAutomation";
-import { appBase } from "@/lib/appUrl";
+import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { encryptSecret, decryptSecret } from "@/lib/integrations/crypto";
 import * as ig from "@/lib/integrations/instagram";
 import { cutIdentityHash } from "@/lib/cutTranscripts";
@@ -760,86 +759,4 @@ async function publishOne(jobId: string, claimedFrom: string): Promise<"succeede
     data: { ...release, state: JOB_STATE.SUCCEEDED, providerPermalink: link.ok ? link.value.permalink : null, finishedAt: now(), nextAttemptAt: null, lastError: null, lastErrorAt: null },
   });
   return "succeeded";
-}
-
-// ---- reads for the Connections card ------------------------------------------------
-
-export type PublishingAccountRow = {
-  id: string;
-  clientName: string;
-  handle: string | null;
-  displayName: string | null;
-  status: string;
-  connectedAt: string;
-  tokenExpiresAt: string | null;
-  lastError: string | null;
-  openJobs: number;
-};
-
-export async function publishingAccountRows(): Promise<PublishingAccountRow[]> {
-  const accounts = await prisma.programPublishingAccount.findMany({
-    orderBy: { connectedAt: "desc" },
-    select: { id: true, clientId: true, handle: true, displayName: true, status: true, connectedAt: true, tokenExpiresAt: true, lastError: true },
-  });
-  if (accounts.length === 0) return [];
-  const clients = await prisma.client.findMany({ where: { id: { in: [...new Set(accounts.map((a) => a.clientId))] } }, select: { id: true, name: true } });
-  const names = new Map(clients.map((c) => [c.id, c.name]));
-  const open = await prisma.programPublishingJob.groupBy({ by: ["accountId"], where: { state: { in: OPEN as string[] } }, _count: { _all: true } });
-  const openBy = new Map(open.map((o) => [o.accountId, o._count._all]));
-  return accounts.map((a) => ({
-    id: a.id,
-    clientName: names.get(a.clientId) ?? "Unknown client",
-    handle: a.handle,
-    displayName: a.displayName,
-    status: a.status,
-    connectedAt: a.connectedAt.toISOString(),
-    tokenExpiresAt: a.tokenExpiresAt ? a.tokenExpiresAt.toISOString() : null,
-    lastError: a.lastError,
-    openJobs: openBy.get(a.id) ?? 0,
-  }));
-}
-
-export async function publishingJobRows(opts: { limit?: number } = {}) {
-  return prisma.programPublishingJob.findMany({
-    orderBy: { createdAt: "desc" },
-    take: Math.min(opts.limit ?? 20, 100),
-    select: { id: true, accountId: true, submissionId: true, state: true, scheduledFor: true, timezone: true, attempts: true, lastError: true, providerPermalink: true, invalidatedReason: true, createdAt: true, finishedAt: true },
-  });
-}
-
-export type InstagramCardData = {
-  configured: boolean;
-  appId: string | null;
-  credentialSource: "connection" | "env" | null;
-  requirements: Array<{ key: string; label: string; detail: string }>;
-  automation: { enabled: boolean; missing: boolean };
-  accounts: PublishingAccountRow[];
-  enrollments: Array<{ id: string; clientName: string }>;
-  redirectUri: string;
-};
-
-/** Everything InstagramCard shows. The app SECRET never leaves the adapter; the app id is not a secret. */
-export async function instagramCardData(): Promise<InstagramCardData> {
-  const [creds, auto, accounts, enrollments] = await Promise.all([
-    ig.metaAppCredentials(),
-    getAutomation("publishing"),
-    publishingAccountRows().catch(() => []),
-    prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, clientId: true } }).catch(() => []),
-  ]);
-  const clients = enrollments.length
-    ? await prisma.client.findMany({ where: { id: { in: enrollments.map((e) => e.clientId) } }, select: { id: true, name: true } }).catch(() => [])
-    : [];
-  const names = new Map(clients.map((c) => [c.id, c.name]));
-  return {
-    configured: Boolean(creds),
-    appId: creds?.appId ?? null,
-    credentialSource: creds?.source ?? null,
-    requirements: ig.REQUIREMENTS.map((r) => ({ ...r })),
-    automation: { enabled: auto.enabled, missing: auto.missing },
-    accounts,
-    enrollments: enrollments
-      .map((e) => ({ id: e.id, clientName: names.get(e.clientId) ?? "Unknown client" }))
-      .sort((a, b) => a.clientName.localeCompare(b.clientName)),
-    redirectUri: `${appBase()}/connections`,
-  };
 }

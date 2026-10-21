@@ -57,8 +57,8 @@ async function main() {
   try {
     const { prisma } = await import("@/lib/prisma");
     const { setSession } = await import("@/lib/auth/session");
-    const { FINAL_CHECK_KEYS } = await import("@/lib/finalRendition");
-    const { recordListingFinalCheckAction } = await import("@/app/ops/finalRenditionActions");
+    // Oct 21 2026 (audit wave 2): the final-check server action had no screen left and was deleted; its library records the check here.
+    const { FINAL_CHECK_KEYS, recordListingCheck } = await import("@/lib/finalRendition");
     const { markVideoSentAction } = await import("@/app/ops/actions");
     const { proveListingNow } = await import("@/lib/aryeoDelivery");
     const { setSmartTaskStatus } = await import("@/app/actions");
@@ -144,11 +144,10 @@ async function main() {
 
     c.head("Signed final-file check and manual delivery on a mixed listing");
     const manual = await mixedJob("manual");
-    const form = new FormData();
-    form.set("submissionId", manual.cut.id); form.set("mediaId", manual.mediaId);
-    for (const key of FINAL_CHECK_KEYS) form.set(key, "yes");
-    form.set("duration", "62"); form.set("width", "1920"); form.set("height", "1080");
-    const checked = await recordListingFinalCheckAction(form);
+    const checked = await recordListingCheck({
+      submissionId: manual.cut.id, mediaId: manual.mediaId, checks: [...FINAL_CHECK_KEYS],
+      metadata: { duration: 62, width: 1920, height: 1080 }, actor: { id: user.id, name: user.name ?? "Kyle Mixed TEST" },
+    });
     const check = await prisma.finalRenditionCheck.findFirst({ where: { submissionId: manual.cut.id } });
     c.ok("final-file check records signed staff and the exact video identity on this mixed listing",
       checked.ok && check?.checkedByUserId === user.id && check.destinationMediaId === manual.mediaId);

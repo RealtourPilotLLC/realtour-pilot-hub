@@ -1,7 +1,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { aiJson } from "@/lib/integrations/ai";
+import { aiJson, timeoutBefore } from "@/lib/integrations/ai";
 import { stripMoneySentences } from "@/lib/text";
 import { cutSlots, slotKeyOf } from "@/lib/reviewCuts";
 import { etDateTime } from "@/lib/datetime";
@@ -196,6 +196,8 @@ export async function analyzeRevisionText(opts: {
   /** Oct 14 2026: the conversation around the ask (both sides, timed), for
    *  context only: what "that frame" means, and what was already settled. */
   conversation?: string | null;
+  /** The call's time limit (default: the transport's); the AI cron's sweep passes what is left of its budget. */
+  timeoutMs?: number;
 }): Promise<RevisionAnalysis> {
   const cuts = opts.cuts ?? [];
   const refOf = (i: number) => `V${i + 1}`;
@@ -221,6 +223,7 @@ export async function analyzeRevisionText(opts: {
     prompt: `${context}\n\n--- WHAT THE CLIENT SAID ---\n${opts.text.slice(0, MAX_INPUT)}${opts.conversation ? `\n\n--- THE CONVERSATION AROUND IT (context only, oldest first) ---\n${opts.conversation.slice(0, 6000)}\n\nUse the conversation to understand the ask (what "this", "that frame" or "the other version" refers to, who said what). Take items ONLY from what the client said above. Leave out any ask that our team or the client already said is not needed in the conversation, unless the client asks for it again after that.` : ""}`,
     schema: SCHEMA as unknown as Record<string, unknown>,
     maxTokens: 4000,
+    timeoutMs: opts.timeoutMs,
   });
 
   // Normalise: the model can return empty strings for optional fields, and we
@@ -707,7 +710,11 @@ async function pinnedKeyOf(outputId: string): Promise<string | null> {
   return o ? slotKeyOf(o.deliverableId, o.slot) : null;
 }
 
-type AnalyzeCtx = { clientName?: string | null; propertyAddress?: string | null; deliverables?: string[]; pin?: BriefPin };
+type AnalyzeCtx = {
+  clientName?: string | null; propertyAddress?: string | null; deliverables?: string[]; pin?: BriefPin;
+  /** Oct 21 2026 (audit H1): the AI cron's clock (ms epoch); the reading ends by it. */
+  deadline?: number | null;
+};
 
 /** A failure's words, for the row. */
 const failureWords = (e: unknown): string => ((e instanceof Error ? e.message : String(e ?? "")).trim() || "The reading failed for no stated reason.").slice(0, 300);
@@ -790,6 +797,7 @@ async function analyzeBriefOnce(briefId: string, ctx?: AnalyzeCtx): Promise<bool
         ctx?.deliverables ??
         (brief.project?.deliverables ?? []).map((d) => d.label || d.type).filter(Boolean),
       cuts,
+      timeoutMs: timeoutBefore(ctx?.deadline, 4000),
     });
     // PINNED: the portal already said which video. Every item the model found
     // is scoped to it — the model never gets to move an ask to another video —
@@ -1304,7 +1312,8 @@ export const REOPEN_NET_WINDOW_MS = 26 * 3_600_000;
  *      that closed tasks before it wrote the status);
  *   2. a reopened job with no date is stamped same-day FROM THE MOMENT IT WAS
  *      REOPENED, when that moment is on the record (the ask stamp, or the
- *      board's "Moved from Delivered to …" line) and recent — never from now;
+ *      office's put-back stamp, Project.officeReopenedAt) and recent — never
+ *      from now;
  *   3. revision cards with no date take the job's.
  * Read-heavy, write-light, idempotent. Never throws per job.
  */
@@ -1344,14 +1353,20 @@ export async function reconcileReopenedClocks(opts: { now?: Date } = {}): Promis
 async function reopenMomentOf(projectId: string, deliveredAt: Date): Promise<Date | null> {
   const settled = await settledMarkerAt(projectId);
   const floor = new Date(Math.max(deliveredAt.getTime(), settled?.getTime() ?? 0));
-  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { revisionRequestedAt: true } });
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { revisionRequestedAt: true, officeReopenedAt: true } });
   const asked = p?.revisionRequestedAt && p.revisionRequestedAt > floor ? p.revisionRequestedAt : null;
-  // moveProjectStatus's own timeline line (app/actions.ts): the board move.
-  const moved = await prisma.activity.findFirst({
-    where: { projectId, createdAt: { gt: floor }, body: { startsWith: "Moved from Delivered to " } },
-    orderBy: { createdAt: "desc" },
-    select: { createdAt: true },
-  });
-  const candidates = [asked, moved?.createdAt ?? null].filter((d): d is Date => !!d);
+  // The office's put-back (Oct 21 2026, audit B11): the board move and the
+  // Editing Room's new cut stamp it (officeReopen.ts).
+  const office = p?.officeReopenedAt && p.officeReopenedAt > floor ? p.officeReopenedAt : null;
+  // LEGACY: a job put back before the stamp existed has none; for those only,
+  // moveProjectStatus's own timeline line (app/actions.ts) dates the board move.
+  const moved = p && !p.officeReopenedAt
+    ? await prisma.activity.findFirst({
+        where: { projectId, createdAt: { gt: floor }, body: { startsWith: "Moved from Delivered to " } },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      })
+    : null;
+  const candidates = [asked, office, moved?.createdAt ?? null].filter((d): d is Date => !!d);
   return candidates.length ? new Date(Math.min(...candidates.map((d) => d.getTime()))) : null;
 }

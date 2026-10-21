@@ -65,10 +65,22 @@ function snippetOf(body: string): string {
  *  counted — they show on the Replies tab, which can actually answer them.
  *  Same rows, same ages, same order as every other surface. */
 export async function unansweredCommsBoard(family: "phone" | "email", now: Date = new Date(), opts: { excludeClientIds?: string[] } = {}): Promise<CommsGroup[]> {
+  return (await commsBoardsFor([family], now, opts))[family];
+}
+
+/** Both boards from ONE slice of the request's one scan (Oct 21 2026, audit
+ *  F4): the dashboard and Messages' Waiting on us read phone and email
+ *  together, and the Texts queue slices the same scan (replyQueue `shared`). */
+export async function unansweredCommsBoards(now: Date = new Date(), opts: { excludeClientIds?: string[] } = {}): Promise<{ phone: CommsGroup[]; email: CommsGroup[] }> {
+  return commsBoardsFor(["phone", "email"], now, { ...opts, shared: true });
+}
+
+async function commsBoardsFor(families: ("phone" | "email")[], now: Date, opts: { excludeClientIds?: string[]; shared?: boolean }): Promise<{ phone: CommsGroup[]; email: CommsGroup[] }> {
   const threads = await unansweredComms({
     now,
-    families: [family],
+    families,
     excludeClientIds: opts.excludeClientIds,
+    shared: opts.shared,
     includeUnmatched: false, // the tick needs a client record
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
     // A WORK ITEM MUST NOT VANISH FROM A LIST OF WORK (audit R07, Sep 18). The
@@ -82,7 +94,7 @@ export async function unansweredCommsBoard(family: "phone" | "email", now: Date 
     // deliberately does not (see UnansweredOptions.includeOwed).
     includeOwed: true,
   });
-  return threads.map((t) => ({
+  const groups = (family: "phone" | "email"): CommsGroup[] => threads.filter((t) => t.family === family).map((t) => ({
     clientId: t.clientId ?? "",
     groupKey: t.groupKey,
     clientName: t.displayName,
@@ -101,6 +113,7 @@ export async function unansweredCommsBoard(family: "phone" | "email", now: Date 
     openTaskId: t.openTaskId,
     fromLedger: !!t.fromLedger,
   }));
+  return { phone: families.includes("phone") ? groups("phone") : [], email: families.includes("email") ? groups("email") : [] };
 }
 
 // The email Handled tick's effect on the gmail-born client_reply task lives

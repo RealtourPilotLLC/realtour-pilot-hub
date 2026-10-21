@@ -12,11 +12,11 @@ import { ViewAsBanner } from "@/components/ViewAsBanner";
 import { cn } from "@/lib/utils";
 
 // Routes that render with NO app chrome. Kept as a list (not an inline `||`
-// chain) so it reads next to middleware's PUBLIC_PREFIXES and a missing entry
+// chain) so it reads next to the proxy's PUBLIC_PREFIXES and a missing entry
 // is obvious. A prefix matches the path itself and anything under it, on a
 // segment boundary — "/portal" and "/portal/<token>" match, "/portals" doesn't.
 // Public routes come from the shared list so a new one can never be gated in
-// middleware but still drawn with staff chrome (or the reverse).
+// the proxy (src/proxy.ts) but still drawn with staff chrome (or the reverse).
 
 // The Editor Queue opens the style guide in a 440px floating window; chrome
 // inside that popup would be chrome inside chrome. Internal, not public — kept
@@ -104,10 +104,10 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
   // mobile drawer sit above and which does nothing for view-source or a screen
   // reader. Chrome has to be absent, not covered — so it is decided here.
   //
-  // THIS LIST MIRRORS `PUBLIC_PREFIXES` / `isPublic()` IN src/middleware.ts —
-  // same prefixes, same one-segment /feedback rule. A new public route must be
-  // added to both: middleware decides who may load it, this decides what they
-  // see once it loads.
+  // THIS LIST IS `PUBLIC_PREFIXES` / `isPublicRoute()` (src/lib/publicRoutes.ts),
+  // the same list the auth proxy (src/proxy.ts, Next 16's renamed middleware)
+  // gates with: same prefixes, same one-segment /feedback rule. The proxy
+  // decides who may load it, this decides what they see once it loads.
   const bare = isBare(pathname);
 
   if (bare) return <>{children}</>;

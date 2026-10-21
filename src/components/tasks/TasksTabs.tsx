@@ -1,17 +1,16 @@
 import Link from "next/link";
-import { ListTodo, History, MessageSquare, Repeat2, Hash, RefreshCw, UserRound, UserPlus } from "lucide-react";
+import { ListTodo, History, Repeat2, Hash, RefreshCw, UserRound, UserPlus } from "lucide-react";
 import { etTime } from "@/lib/datetime";
 import { taskWorkHref, type TasksTab } from "@/lib/taskNavigation";
 export type { TasksTab } from "@/lib/taskNavigation";
 
 // Ownership leads the operational board. Specialist queues retain their own
 // membership, actions, counts and shareable URLs.
-export function TasksTabs({ tab, who, allCount, mineCount, needsAssignmentCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt, showTest = false, showReplies = true }: {
+// Oct 21 2026 (audit F15): no Replies tab. Clients are answered on Messages.
+export function TasksTabs({ tab, who, allCount, mineCount, needsAssignmentCount, doneCount, revisionsCount = 0, slackCount = 0, updatedAt, showTest = false }: {
   tab: TasksTab; who: string; allCount: number; mineCount: number; needsAssignmentCount: number; doneCount: number;
-  commsCount?: number; revisionsCount?: number; slackCount?: number;
+  revisionsCount?: number; slackCount?: number;
   updatedAt?: Date; showTest?: boolean;
-  /** Replies is a tab only for a login without Messages; everyone else answers clients on Messages (audit A4) */
-  showReplies?: boolean;
 }) {
   const active = "rounded-lg bg-brand px-3 py-2 text-sm font-medium text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   const idle = "rounded-lg border border-border px-3 py-2 text-sm font-medium text-muted hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
@@ -44,11 +43,6 @@ export function TasksTabs({ tab, who, allCount, mineCount, needsAssignmentCount,
       </nav>
       <nav aria-label="Specialist task queues" className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 text-sm text-muted">Specialist queues</span>
-        {showReplies && (
-          <Link href={sourceLink("comms")} aria-current={tab === "comms" ? "page" : undefined} className={tab === "comms" ? active : idle}>
-            <MessageSquare aria-hidden="true" className="mr-1.5 inline size-4" />Replies{badge(commsCount, tab === "comms")}
-          </Link>
-        )}
         <Link href={sourceLink("revisions")} aria-current={tab === "revisions" ? "page" : undefined} className={tab === "revisions" ? active : idle}>
           <Repeat2 aria-hidden="true" className="mr-1.5 inline size-4" />Revisions{badge(revisionsCount, tab === "revisions")}
         </Link>
@@ -57,9 +51,7 @@ export function TasksTabs({ tab, who, allCount, mineCount, needsAssignmentCount,
         </Link>
       </nav>
       <p className="text-sm text-muted">
-        {showReplies
-          ? "Work views show operational tasks. Use the specialist queues for client replies, revision follow-through, and Slack asks."
-          : "Work views show operational tasks. Use the specialist queues for revision follow-through and Slack asks; clients are answered on Messages."}
+        Work views show operational tasks. Use the specialist queues for revision follow-through and Slack asks; clients are answered on Messages.
       </p>
     </div>
   );

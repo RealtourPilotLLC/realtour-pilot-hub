@@ -504,12 +504,11 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Stuck jobs — the dashboard's real fires. The old "Blockers" panel listed
-// overdue admin TASKS (e.g. two unsent confirmation texts) while PROJECTS days
-// past their delivery promise were invisible on the whole page. This is
-// project-level lateness: past deliveryDue, stuck in revision 2+ days (same
-// threshold as getProactiveFlags' stale-revision branch), or shot 48h+ ago and
-// still not delivered.
+// Stuck jobs: project-level lateness, past deliveryDue, stuck in revision 2+
+// days (same threshold as getProactiveFlags' stale-revision branch), or shot
+// 48h+ ago and still not delivered. No screen renders it any more: the
+// dashboard's Stuck jobs panel was removed (Oct 20 2026, audit A19), and only
+// its drill (c14-home-windows) calls it.
 // ---------------------------------------------------------------------------
 export type StuckJob = {
   id: string;
@@ -658,6 +657,9 @@ function median(xs: number[]): number | null {
 const BULK_PASS_GAP_MS = 5 * 60_000; // moves chained closer than this = one sitting
 const BULK_PASS_MIN_MOVES = 3; // three-plus hand moves in one sitting = a catch-up pass
 const STAMP_MATCH_MS = 2 * 60_000; // deliveredAt is written alongside its own move
+/** moveProjectStatus's "Moved from X to Delivered." line, with or without its
+ *  "with … still missing on Aryeo" clause. */
+const TO_DELIVERED_LINE = / to Delivered(?:\.$| with )/;
 
 /** projectId → the moment a board-clearing pass stamped it Delivered. */
 async function backfillStampedDeliveries(since: Date): Promise<Map<string, Date>> {
@@ -681,7 +683,12 @@ async function backfillStampedDeliveries(since: Date): Promise<Map<string, Date>
         // Only the to-Delivered moves carry a deliveredAt stamp; the rest of the
         // pass (On Hold / Cancelled / back to In Editing) is just context that
         // proves someone was clearing the board.
-        if (m.projectId && /to Delivered\.$/.test(m.body)) stamped.set(m.projectId, m.createdAt);
+        // Oct 21 2026 (audit B11): the writer appends "with N videos still
+        // missing on Aryeo" since Sep 20, and a board-clearing pass of stale
+        // jobs is exactly when it does; `\.$` alone let those stamps through.
+        // (This reads moves TO Delivered, so the office's reopen stamp,
+        // Project.officeReopenedAt, cannot stand in for the line here.)
+        if (m.projectId && TO_DELIVERED_LINE.test(m.body)) stamped.set(m.projectId, m.createdAt);
       }
     }
     run = [];
@@ -1380,23 +1387,14 @@ export async function getBillingRows(opts: { excludeClientIds?: string[] } = {})
       id: true, title: true, orderedAt: true, deliveredAt: true,
       price: true, balanceAmount: true, paymentStatus: true, invoiceUrl: true, paymentUrl: true,
       aryeoOrderId: true, aryeoListingId: true,
+      // Read with the rest (Oct 21 2026, audit G): the column has long been
+      // in the schema, so the separate "not migrated yet" pass is gone.
+      lastNudgedAt: true,
       client: { select: { name: true, avatarUrl: true } },
       deliverables: { select: { label: true, type: true } },
       smartTasks: { where: { status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true } },
     },
   });
-
-  // lastNudgedAt is a freshly-added column — read it in a separate best-effort
-  // pass so /billing keeps rendering even if this code deploys before the
-  // migration lands (the shared prod DB would otherwise 500 the whole page).
-  const nudged = new Map<string, Date>();
-  try {
-    const n = await prisma.project.findMany({
-      where: { id: { in: projects.map((p) => p.id) } },
-      select: { id: true, lastNudgedAt: true },
-    });
-    for (const r of n) if (r.lastNudgedAt) nudged.set(r.id, r.lastNudgedAt);
-  } catch { /* column not migrated yet — rows just show no nudge history */ }
 
   // CROSS-CHECK vs QuickBooks: for each unpaid order, is there a Payment/
   // SalesReceipt from the same customer, on/after the order date, of at least
@@ -1445,7 +1443,7 @@ export async function getBillingRows(opts: { excludeClientIds?: string[] } = {})
     aryeoListingId: p.aryeoListingId ?? null,
     deliverables: [...new Set(p.deliverables.map((d) => d.label || d.type).filter(Boolean))] as string[],
     openTasks: p.smartTasks.length,
-    lastNudgedAt: nudged.get(p.id)?.toISOString() ?? null,
+    lastNudgedAt: p.lastNudgedAt?.toISOString() ?? null,
     possiblyPaidQbo: paidHints.has(p.id),
   }));
   const totalOutstanding = rows.reduce((s, r) => s + r.outstanding, 0);

@@ -69,8 +69,7 @@ async function main() {
     await saveSecret("dropbox", "isolated-refresh-token");
     const { startDropboxCopy, checkDropboxCopy, streamUrlFor } = await import("@/lib/reviewCuts");
     const { monthlyFinalSnapshot, monthlyOwnerAccess } = await import("@/lib/monthlyFinal");
-    const { manualFinalCheckReady, FINAL_CHECK_KEYS } = await import("@/lib/finalRendition");
-    const { finalFileChoicesAction, recordFinalFileCheckAction, readFinalFileCheckReceiptAction } = await import("@/app/ops/finalRenditionActions");
+    const { manualFinalCheckReady, FINAL_CHECK_KEYS, finalChoices, recordFinalCheck, finalCheckReceipt } = await import("@/lib/finalRendition");
     const { GET: finalPreview } = await import("@/app/api/review/cut/[id]/final/route");
     const { GET: reviewOriginal } = await import("@/app/api/review/cut/[id]/stream/route");
     const { markVideoSent, readyToSend } = await import("@/lib/readyToSend");
@@ -81,6 +80,20 @@ async function main() {
     const { setSession, clearSession } = await import("@/lib/auth/session");
     const { NextRequest } = createRequire(__filename)("next/server") as typeof import("next/server");
     const kyle = await prisma.appUser.create({ data: { email: "kyle-monthly@example.test", name: "Kyle TEST", role: "ADMIN", status: "ACTIVE" } });
+    // Oct 21 2026 (audit wave 2): the staff final-check server actions
+    // (ops/finalRenditionActions) had no screen left and were deleted. These
+    // drive the library they wrapped, as Kyle, with the same form and answers.
+    const finalFileChoicesAction = (id: string) => finalChoices(id);
+    const readFinalFileCheckReceiptAction = (id: string, attemptId: string) => finalCheckReceipt(id, attemptId, kyle.id);
+    const recordFinalFileCheckAction = async (data: FormData): Promise<{ ok: boolean; message: string; outcome: "confirmed" | "refused" | "unknown" }> => {
+      try {
+        const r = await recordFinalCheck({ submissionId: String(data.get("submissionId") ?? ""), mediaId: String(data.get("mediaId") ?? ""), attemptId: String(data.get("attemptId") ?? ""),
+          checks: FINAL_CHECK_KEYS.filter((k) => data.get(k) === "yes"), metadata: null, actor: { id: kyle.id, name: kyle.name ?? "Office" } });
+        return { ...r, outcome: r.ok ? "confirmed" : "refused" };
+      } catch {
+        return { ok: false, outcome: "unknown", message: "The final-check save is unconfirmed." };
+      }
+    };
     const editor = await prisma.appUser.create({ data: { email: "editor-monthly@example.test", name: "Editor TEST", role: "EDITOR", editorKey: "john", status: "ACTIVE" } });
     const owner = await prisma.appUser.create({ data: { email: "owner-monthly@example.test", name: "Owner TEST", role: "OWNER", status: "ACTIVE" } });
     const client = await prisma.client.create({ data: { name: "Monthly Destination TEST" } });
