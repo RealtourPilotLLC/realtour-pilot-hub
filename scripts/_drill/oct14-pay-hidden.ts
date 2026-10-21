@@ -86,6 +86,30 @@ async function main() {
     c.ok("the menu calls it My Performance while pay is hidden", /user\?\.payHidden\)[^\n]*label: "My Performance"/.test(sidebar));
     c.ok("the layout hands the flag to the menu", /payHidden/.test(read("src/app/layout.tsx")));
     c.ok("provider fence stayed closed", fence.blocked.length === 0, fence.blocked.join(", "));
+    c.head("4 · the payday text goes only to someone who sees pay (Oct 21 2026)");
+    {
+      const { paydayPings } = await import("@/lib/payroll");
+      const client = await prisma.client.create({ data: { name: "Payday Drill Client" } });
+      const jordanTm = await prisma.teamMember.create({ data: { name: "Jordan Spackman", email: "jordan-pay@drill.test", role: "PHOTOGRAPHER", payPercent: 0.4, payFloor: 0 } as never });
+      const harrisonTm = await prisma.teamMember.create({ data: { name: "Harrison Wells", email: "harrison-pay@drill.test", role: "PHOTOGRAPHER", payPercent: 0.35, payFloor: 100 } as never });
+      const jamesTm = await prisma.teamMember.create({ data: { name: "James Livingston", email: "james-pay@drill.test", role: "PHOTOGRAPHER", payPercent: 0.3, payFloor: 75 } as never });
+      await prisma.appUser.create({ data: { email: "owner-pay@drill.test", role: "OWNER", status: "ACTIVE", teamMemberId: jordanTm.id } });
+      await prisma.appUser.create({ data: { email: "harrison-pay-login@drill.test", role: "PHOTOGRAPHER", status: "ACTIVE", teamMemberId: harrisonTm.id } });
+      await prisma.appUser.create({ data: { email: "james-pay-login@drill.test", role: "ADMIN", status: "ACTIVE", teamMemberId: jamesTm.id } });
+      // A shoot each in the period Oct 4 to Oct 17, which pays Friday Oct 23.
+      let n = 0;
+      for (const tm of [jordanTm, harrisonTm, jamesTm]) {
+        n++;
+        await prisma.project.create({ data: { title: `${n} Payday Ln, Malvern, PA`, clientId: client.id, status: "DELIVERED", shootDate: new Date("2026-10-08T15:00:00Z"), payableInvoice: 500, appointments: { create: [{ aryeoId: `payday-appt-${n}`, startAt: new Date("2026-10-08T15:00:00Z"), status: "SCHEDULED", assignedToId: tm.id }] } } as never });
+      }
+      const r = await paydayPings(new Date("2026-10-23T12:00:00Z"));
+      const lines = await prisma.pendingSms.findMany({ where: { line: { contains: "Payday:" } }, select: { teamMemberId: true } });
+      c.ok("on payday: one text, to the owner only", JSON.stringify(r) === JSON.stringify({ pinged: 1 }) && lines.length === 1 && lines[0].teamMemberId === jordanTm.id, JSON.stringify({ r, lines }));
+      c.ok("…Harrison and James get no pay figure", !lines.some((l) => l.teamMemberId === harrisonTm.id || l.teamMemberId === jamesTm.id));
+      c.ok("…and the day is claimed once", JSON.stringify(await paydayPings(new Date("2026-10-23T13:00:00Z"))) === JSON.stringify({ skipped: "already pinged today" }));
+      c.ok("not a payday: nothing", JSON.stringify(await paydayPings(new Date("2026-10-22T12:00:00Z"))) === JSON.stringify({ skipped: "not a payday" }));
+    }
+
     c.summary();
   } finally { fence.restore(); await db.stop(); }
   process.exit(process.exitCode ?? 0);

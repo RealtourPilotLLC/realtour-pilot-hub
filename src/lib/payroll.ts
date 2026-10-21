@@ -764,10 +764,10 @@ export async function computePayroll(
 // queued-SMS path as every other photographer ping (batching + quiet hours),
 // deduped once per payout day.
 // ---------------------------------------------------------------------------
-export async function paydayPings(): Promise<{ pinged: number } | { skipped: string }> {
-  const todayKey = etDayKey(new Date());
+export async function paydayPings(now: Date = new Date()): Promise<{ pinged: number } | { skipped: string }> {
+  const todayKey = etDayKey(now);
   // The most recent CLOSED period paying today.
-  let period = payPeriodFor();
+  let period = payPeriodFor(todayKey);
   period = shiftPeriod(period.startKey, -1);
   if (period.payoutKey !== todayKey) return { skipped: "not a payday" };
   try {
@@ -784,9 +784,18 @@ export async function paydayPings(): Promise<{ pinged: number } | { skipped: str
     // and it must match the deposit even if an upload page is still pending
     // (the concealment is a during-the-period nudge, never a payday lie).
     const people = await computePayroll(start, end);
+    // Only someone who may see pay gets a pay figure (Oct 21 2026). Pay is
+    // hidden from every login but the owner's (settings.payHiddenFor), and
+    // Harrison and James have been on fixed pay since Sep 25, so this
+    // per-shoot figure is not even what lands for them: the Oct 9 text told
+    // them an old-model amount. A team member with no owner login is skipped.
+    const owners = new Set(
+      (await prisma.appUser.findMany({ where: { role: "OWNER", status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true } })).map((u) => u.teamMemberId),
+    );
     let pinged = 0;
     for (const person of people) {
       if (person.total <= 0) continue;
+      if (!owners.has(person.member.id)) continue;
       const jobs = person.jobs.length;
       const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${appBase()}/my-pay`;
       await prisma.pendingSms.create({ data: { teamMemberId: person.member.id, line } }).catch(() => {});
