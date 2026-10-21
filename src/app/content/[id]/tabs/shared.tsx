@@ -26,8 +26,13 @@ export type TabCtx = {
   me: { id: string; role: string; name: string | null } | null;
   /** OWNER (or open local dev) — money, billing, the portal mirror */
   ownerEyes: boolean;
-  /** OWNER or ADMIN (or open local dev) — the roles the program's write actions accept */
+  /** OWNER, ADMIN or CREATIVE_MANAGER (or open local dev) — the roles the
+   *  program's creative write actions accept (requireCreativeLead) */
   staffEyes: boolean;
+  /** OWNER or ADMIN (or open local dev) — the office's controls: the package
+   *  and status, catch-ups, late sessions, linking a session to a month, the
+   *  entitlement ledger and complaints (Oct 21 2026: not the creative manager) */
+  officeEyes: boolean;
   /** Oct 8 2026: ?catchup=<monthId> — open the catch-up control with that missed month picked. */
   catchupPick?: string | null;
 };
@@ -87,7 +92,7 @@ export function MonthHeader({ ctx, tab, view, title, subtitle, withSkip = false 
         {forfeited && m && (
           <p className="mt-1 text-ui-secondary text-muted">
             Missed — nothing is owed or chased.
-            {ctx.staffEyes && catchUpTarget && <> <Link href={catchUpHref(ctx.id, catchUpTarget.monthKey, m.id)} className="font-medium text-brand hover:underline">Approve a catch-up</Link></>}
+            {ctx.officeEyes && catchUpTarget && <> <Link href={catchUpHref(ctx.id, catchUpTarget.monthKey, m.id)} className="font-medium text-brand hover:underline">Approve a catch-up</Link></>}
           </p>
         )}
         {subtitle && <p className="mt-1 break-words text-ui-secondary leading-relaxed text-muted">{subtitle}</p>}

@@ -2,7 +2,7 @@
 
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireCreativeLead } from "@/lib/auth/guards";
 import type { CallTranscriptUi } from "@/lib/callAnalysis";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ function inBackground(work: () => Promise<unknown>): Promise<void> {
 }
 
 export async function analyzeCallAction(callRecordId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const by = await who();
     const { startCallAnalysis, runClaimedCallAnalysis } = await import("@/lib/callAnalysis");
@@ -50,7 +50,7 @@ export async function analyzeCallAction(callRecordId: string): Promise<Result> {
 
 /** The call's transcript state now — what the button polls while a run is going. */
 export async function callAnalysisStatusAction(callRecordId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { loadCallTranscripts } = await import("@/lib/callAnalysis");
     const [call] = await loadCallTranscripts({ callRecordIds: [callRecordId] });

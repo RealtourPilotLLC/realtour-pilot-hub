@@ -61,7 +61,7 @@ export function ownerSmsKindFor(bellKind: string): OwnerSmsKind | null {
 // set, or none — never throws. Sep 16: generalised from the owner-only
 // lookup so the office (ADMIN logins) can be addressed the same way.
 const loginCache = new Map<string, { at: number; ids: string[] }>();
-export async function teamMemberIdsForLoginRole(role: "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER"): Promise<string[]> {
+export async function teamMemberIdsForLoginRole(role: "OWNER" | "ADMIN" | "CREATIVE_MANAGER" | "EDITOR" | "PHOTOGRAPHER"): Promise<string[]> {
   const hit = loginCache.get(role);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ids;
   try {

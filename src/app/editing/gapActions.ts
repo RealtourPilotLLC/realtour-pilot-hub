@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireCreativeLead } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 
 // ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ export async function raiseGapFromBriefAction(
   outputId: string,
 ): Promise<{ ok: boolean; created: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, created: false, message: e instanceof Error ? e.message : "Only the office can raise missing work." };
   }

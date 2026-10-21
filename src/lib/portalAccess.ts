@@ -99,7 +99,7 @@ export function can(viewer: PortalViewer, permission: PortalPermission): boolean
   if (viewer.access !== "FULL") return false;
   const a = viewer.actor;
   if (a.kind === "TOKEN") return LEGACY_TOKEN[permission];
-  if (a.kind === "STAFF") return a.staffRole === "OWNER" || a.staffRole === "ADMIN";
+  if (a.kind === "STAFF") return a.staffRole === "OWNER" || a.staffRole === "ADMIN" || a.staffRole === "CREATIVE_MANAGER";
   return PERMISSIONS[a.membershipRole]?.[permission] === true;
 }
 

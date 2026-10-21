@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { PkgChip } from "@/components/content/ClientMonthCard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { isCreativeLead } from "@/lib/auth/access";
 import { cn } from "@/lib/utils";
 import { etDateTime, etDayKey, etDaysAgo, etFullDate, etMonthDay, etTime } from "@/lib/datetime";
 import { contentHref } from "@/lib/contentNav";
@@ -38,7 +39,8 @@ const ID_RE = /^[a-z0-9]{10,40}$/i;
 export default async function ClientActivityPage({ searchParams }: { searchParams: Promise<SP> }) {
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/content/activity");
-  if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
+  // The creative manager reads it too (Oct 21 2026): the content program is theirs to oversee.
+  if (me && !isCreativeLead(me.role)) redirect("/");
 
   const sp = await searchParams;
   const one = (v: unknown) => (Array.isArray(v) ? v[0] : v) as string | undefined;

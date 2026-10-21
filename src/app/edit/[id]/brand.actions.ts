@@ -33,7 +33,7 @@ export async function acknowledgeBrandChangesAction(projectId: string): Promise<
 }
 
 export async function overrideBrandChangesAction(projectId: string, reason: string): Promise<{ ok: boolean; message: string }> {
-  try { await requireRole(["OWNER", "ADMIN"]); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." }; }
+  try { await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." }; }
   const id = String(projectId ?? "");
   if (!/^[a-z0-9]{10,40}$/i.test(id) || !(await canViewProject(id))) return { ok: false, message: "That job isn't on your list." };
   const me = await getCurrentUser().catch(() => null);

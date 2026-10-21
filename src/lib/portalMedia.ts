@@ -124,7 +124,7 @@ export async function mediaScopeLive(scope: MediaScope, mintedAt: Date, now: num
     return (await liveMemberships(m.clientUserId)).some((s) => s.id === scope.id);
   }
   const u = await prisma.appUser.findUnique({ where: { id: scope.id }, select: { status: true, role: true } });
-  return !!u && u.status === "ACTIVE" && (u.role === "OWNER" || u.role === "ADMIN");
+  return !!u && u.status === "ACTIVE" && (u.role === "OWNER" || u.role === "ADMIN" || u.role === "CREATIVE_MANAGER");
 }
 
 /** The submission id inside a hub cut URL (`/api/review/cut/<id>/stream`), or null. */

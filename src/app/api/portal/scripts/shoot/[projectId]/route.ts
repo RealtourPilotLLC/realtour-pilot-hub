@@ -30,7 +30,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ projectId: 
     // Reading, not changing: a preview ("view as") may print too.
     const u = await getCurrentUser();
     if (!u && authEnforced()) return deny("Please sign in.", 401);
-    if (u && u.realRole !== "OWNER" && u.realRole !== "ADMIN") {
+    // The creative manager prints any shoot's scripts, like the office (Oct 21 2026).
+    if (u && u.realRole !== "OWNER" && u.realRole !== "ADMIN" && u.realRole !== "CREATIVE_MANAGER") {
       const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
       const mid = u.realRole === "PHOTOGRAPHER" ? await photographerMemberId(u) : null;
       if (!mid || !(await photographerOwnsShoot(projectId, mid))) return deny("You don't have access to that shoot.");

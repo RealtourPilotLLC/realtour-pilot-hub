@@ -122,7 +122,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
   const sessionIds = new Set(view?.sessionRows.map((r) => r.projectId).filter((x): x is string => !!x) ?? []);
   const shells = projects.filter((p) => !sessionIds.has(p.id));
   const monthKeys = ctx.months.map((m) => m.monthKey);
-  const unlinkedJobs = month && ctx.staffEyes ? await prisma.project.findMany({
+  const unlinkedJobs = month && ctx.officeEyes ? await prisma.project.findMany({
     where: { clientId: client.id, contentMonthId: null, status: { not: "CANCELLED" }, deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null, waivedAt: null } } },
     orderBy: [{ shootDate: "desc" }, { createdAt: "desc" }],
     take: 25,
@@ -194,7 +194,7 @@ export async function ProductionTab({ ctx, badges }: { ctx: TabCtx; badges: Reco
               )}
             </div>
           </Section>
-          {ctx.staffEyes && <UnlinkedSessionLinker monthId={month.id} monthKey={month.monthKey} jobs={unlinkedJobs.map((p) => ({ id: p.id, title: p.title, date: fmtDay(p.shootDate?.toISOString() ?? null) }))} />}
+          {ctx.officeEyes && <UnlinkedSessionLinker monthId={month.id} monthKey={month.monthKey} jobs={unlinkedJobs.map((p) => ({ id: p.id, title: p.title, date: fmtDay(p.shootDate?.toISOString() ?? null) }))} />}
           {/* CP-04/CP-05: the requests behind these sessions (confirm, decline,
               retry the hub's booking) and each exact address. */}
           <SessionsPanel enrollmentId={id} monthId={month.id} />

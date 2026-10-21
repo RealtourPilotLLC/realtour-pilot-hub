@@ -46,8 +46,9 @@ export const dynamic = "force-dynamic";
 // and reviews are done well and catching issues. I don't want to overload the
 // users of this hub with analysis paralysis."
 //
-// One screen for Jordan, Kyle and James alike (editors and photographers keep
-// their own homes, /editing and /shoot):
+// One screen for Jordan and Kyle, and since Oct 21 2026 its creative cut for
+// the creative manager (James; see creativeHome below). Editors and
+// photographers keep their own homes, /editing and /shoot:
 //   · flagged-for-you (a person raised it for this reader), then the red line
 //     when we are behind (behindAlert);
 //   · the health strip: On time, Clients waiting, Special requests, QC &
@@ -219,6 +220,15 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   // rather than letting a null viewer read as owner (Sep 2 review).
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
+  // THE CREATIVE MANAGER'S DASHBOARD (Jordan, Oct 21 2026: "he should see and
+  // oversee the whole creative process, but doesn't need the same tasks as
+  // Kyle"). The same pieces, creative ones only: the red line, shoots on time,
+  // special requests and QC & review; today's shoots and the shoots in
+  // progress; Needs attention narrowed to videos, cuts to review and their
+  // own old items; the monthly content card. Not Kyle's day, not Clients
+  // waiting, not the problems board (sending, Aryeo, photo delivery), never
+  // money.
+  const creativeHome = me?.role === "CREATIVE_MANAGER";
   const includeTest = sp?.test === "1";
   // One read of the test clients for the whole render (its sections share it).
   const excludedClientIds = includeTest ? [] : await syntheticClientIds();
@@ -232,7 +242,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const ops = (await kylePerson(roster).catch(() => null)) ?? { key: "kyle", teamMemberId: null, name: "Kyle" };
   const viewer = { role: me?.role ?? "OWNER", key: viewerKey, teamMemberId: me?.teamMemberId ?? null };
   const behindP: Promise<BehindState | null> = behindState(now).catch((e: unknown) => { console.warn("behindState failed", (e as Error).message); return null; });
-  const dayP: Promise<KyleDay | null> = kyleDay({ now, excludeClientIds: excludedClientIds, ops, viewer, roster, scrub: !isOwner })
+  const dayP: Promise<KyleDay | null> | null = creativeHome ? null : kyleDay({ now, excludeClientIds: excludedClientIds, ops, viewer, roster, scrub: !isOwner })
     .catch((e: unknown) => { console.warn("kyleDay failed", (e as Error).message); return null; });
   const weekP = isOwner ? ownerWeek(now, scope).catch((e: unknown) => { console.warn("ownerWeek failed", (e as Error).message); return null; }) : null;
   const issuesP = isOwner ? ownerShootIssues(now).catch(() => null) : null;
@@ -240,10 +250,10 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const creativeManager = !isOwner && !!me?.teamMemberId
     ? !!(await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { creativeManager: true } }).catch(() => null))?.creativeManager
     : false;
-  const contentP: Promise<ContentActions | null> | null = isOwner || creativeManager
+  const contentP: Promise<ContentActions | null> | null = isOwner || creativeManager || creativeHome
     ? monthlyContentActions({ now, excludeClientIds: excludedClientIds }).catch((e: unknown) => { console.warn("monthlyContentActions failed", (e as Error).message); return null; })
     : null;
-  const caughtP: Promise<OpsExceptionBoard> = opsExceptionsBoard({ now, includeTest }).catch((e: unknown) => {
+  const caughtP: Promise<OpsExceptionBoard> | null = creativeHome ? null : opsExceptionsBoard({ now, includeTest }).catch((e: unknown) => {
     console.warn("exceptions board failed", (e as Error).message);
     return { ...emptyExceptionBoard(), unavailable: true };
   });
@@ -260,7 +270,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
     : null;
 
   const [dash, behind] = await Promise.all([
-    buildDashboard({ now, includeTest, excludeClientIds: excludedClientIds, viewer, ops, roster, scrub: !isOwner }),
+    buildDashboard({ now, includeTest, excludeClientIds: excludedClientIds, viewer, ops, roster, scrub: !isOwner, focus: creativeHome ? "creative" : "office" }),
     behindP,
   ]);
   const nowMin = etMinutes(now);
@@ -290,7 +300,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
             top of the screen. Only flagged issues should show up on the shoot
             itself."): a shoot's flags show on its own page. */}
         <BehindLine state={behind} href={homeRecordHref("/jobs?f=late", includeTest)} />
-        <HealthStrip health={dash.health} includeTest={includeTest} doors={doors} />
+        <HealthStrip health={dash.health} includeTest={includeTest} doors={doors} creative={creativeHome} />
 
         <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
           <div className="min-w-0 space-y-4">
@@ -303,9 +313,11 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
           </div>
           <div className="min-w-0 space-y-4">
             <NeedsAttention attention={dash.attention} includeTest={includeTest} doors={doors} />
-            <Suspense fallback={<SectionLoading label={`Reading ${ops.name}’s day…`} />}>
-              <KylesDaySection dayP={dayP} includeTest={includeTest} doors={doors} />
-            </Suspense>
+            {dayP && (
+              <Suspense fallback={<SectionLoading label={`Reading ${ops.name}’s day…`} />}>
+                <KylesDaySection dayP={dayP} includeTest={includeTest} doors={doors} />
+              </Suspense>
+            )}
             {contentP && (
               <Suspense fallback={<SectionLoading label="Reading the monthly content…" />}>
                 <ContentActionsSection contentP={contentP} />
@@ -316,9 +328,11 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
                 <OwnerShootIssues issuesP={issuesP} />
               </Suspense>
             )}
-            <Suspense fallback={null}>
-              <CaughtProblems boardP={caughtP} includeTest={includeTest} canReview={doors.review} canEdit={!me || canAccess(me, "editing")} />
-            </Suspense>
+            {caughtP && (
+              <Suspense fallback={null}>
+                <CaughtProblems boardP={caughtP} includeTest={includeTest} canReview={doors.review} canEdit={!me || canAccess(me, "editing")} />
+              </Suspense>
+            )}
           </div>
         </div>
 

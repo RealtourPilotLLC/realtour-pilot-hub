@@ -123,7 +123,7 @@ export async function reviewAsksAgainstConversation(clientId: string | null | un
         const task = brief.taskId ? await prisma.smartTask.findUnique({ where: { id: brief.taskId }, select: { assignedKey: true } }) : null;
         const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
         const { notifyInApp } = await import("@/lib/notify");
-        const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+        const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }];
         if (task?.assignedKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(task.assignedKey)) targets.push({ roles: ["EDITOR"], userKey: `editor:${task.assignedKey}`, href: `/edit/${brief.projectId}` });
         await notifyInApp({
           kind: "revision_resolved",

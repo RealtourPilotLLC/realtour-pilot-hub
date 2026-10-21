@@ -19,7 +19,7 @@ export async function flagPay(input: {
   periodStartKey: string;
   comment: string;
 }): Promise<FlagResult> {
-  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]); // blocks "view as"
+  await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]); // blocks "view as"
   const comment = (input.comment ?? "").trim();
   if (!comment) return { ok: false, message: "Write a quick note first." };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.periodStartKey)) return { ok: false, message: "Bad period." };

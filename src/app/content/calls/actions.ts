@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, requireOwner } from "@/lib/auth/guards";
+import { requireCreativeLead, requireOwner } from "@/lib/auth/guards";
 import {
   assignStrategyCall, unassignStrategyCall, ignoreStrategyCall, syncCallRecordsFromCalendly,
   confirmCallRecordClient, setCallRecordTargetMonth, verifyClientEmailAlias, dismissClientEmailAlias, confirmTranscriptSource, rejectTranscriptSource,
@@ -38,7 +38,7 @@ function touch() {
 }
 
 export async function assignStrategyCallAction(recordId: string, clientId: string, monthKey: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!clientId) return { ok: false, message: "Pick a client." };
   try {
     const r = await assignStrategyCall(recordId, { clientId, monthKey }, await who());
@@ -48,7 +48,7 @@ export async function assignStrategyCallAction(recordId: string, clientId: strin
 }
 
 export async function unassignStrategyCallAction(recordId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try { await unassignStrategyCall(recordId, await who()); touch(); return { ok: true, message: "Unassigned — the month is back as it was." }; }
   catch (e) { return fail(e); }
 }
@@ -61,7 +61,7 @@ export async function unassignStrategyCallAction(recordId: string): Promise<Resu
  * uses it too.
  */
 export async function ignoreStrategyCallAction(recordId: string, note: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const why = typeof note === "string" ? note.trim() : "";
   if (!why) return { ok: false, message: "Say why it is being set aside — an unexplained dismissal is how a real call gets lost." };
   try { await ignoreStrategyCall(recordId, await who(), why.slice(0, 500)); touch(); return { ok: true, message: "Set aside as not a program call, with your note on the record." }; }
@@ -75,7 +75,7 @@ export async function ignoreStrategyCallAction(recordId: string, note: string): 
  * type was mapped.
  */
 export async function refreshStrategyCallsAction(): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const r = await syncCallRecordsFromCalendly({ lookBackDays: DESK_LOOK_BACK_DAYS, lookAheadDays: DESK_LOOK_AHEAD_DAYS });
     touch();
@@ -92,7 +92,7 @@ export async function refreshStrategyCallsAction(): Promise<Result> {
 // all" and no bulk anything.
 
 export async function confirmCallClientAction(recordId: string, clientId: string, alsoVerifyEmail: boolean): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     await confirmCallRecordClient(recordId, clientId, await who(), { verifyInviteeEmailAsAlias: alsoVerifyEmail });
     touch();
@@ -101,32 +101,32 @@ export async function confirmCallClientAction(recordId: string, clientId: string
 }
 
 export async function setCallMonthAction(recordId: string, monthKey: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!/^\d{4}-\d{2}$/.test(monthKey)) return { ok: false, message: "Pick a month." };
   try { await setCallRecordTargetMonth(recordId, monthKey, await who()); touch(); return { ok: true, message: `Recorded as planning ${monthKey}.` }; }
   catch (e) { return fail(e); }
 }
 
 export async function verifyAliasAction(aliasId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try { await verifyClientEmailAlias(aliasId, await who()); touch(); return { ok: true, message: "Verified. Calls from that address match this client from now on." }; }
   catch (e) { return fail(e); }
 }
 
 export async function dismissAliasAction(aliasId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try { await dismissClientEmailAlias(aliasId); touch(); return { ok: true, message: "Dismissed. It will not be proposed again." }; }
   catch (e) { return fail(e); }
 }
 
 export async function confirmTranscriptAction(sourceId: string, recordId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try { await confirmTranscriptSource(sourceId, recordId, await who()); touch(); return { ok: true, message: "Linked to that call." }; }
   catch (e) { return fail(e); }
 }
 
 export async function rejectTranscriptAction(sourceId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try { await rejectTranscriptSource(sourceId, await who()); touch(); return { ok: true, message: "Rejected. It stays on file, unlinked." }; }
   catch (e) { return fail(e); }
 }

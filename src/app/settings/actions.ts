@@ -461,7 +461,7 @@ export async function loadCreativeApproverCandidates(): Promise<
   const [roster, logins] = await Promise.all([
     prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true, role: true }, orderBy: { name: "asc" } }),
     prisma.appUser.findMany({
-      where: { role: { in: ["OWNER", "ADMIN"] }, status: "ACTIVE", teamMemberId: { not: null } },
+      where: { role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }, status: "ACTIVE", teamMemberId: { not: null } },
       select: { teamMemberId: true },
     }),
   ]);

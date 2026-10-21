@@ -295,7 +295,8 @@ async function main() {
   await prisma.activity.create({ data: { projectId: fj.id, type: "FLAG", body: "Twilight photos came out too dark" } });
   await fileFieldIssue({ projectId: fj.id, note: "Twilight photos came out too dark", page: `/upload/${fj.id}`, label: "Shoot issue" });
   const kl = await kyleLoop();
-  c.ok("a flag about the photos: Kyle's loop as before, the ops ping and the office bell", !!kl && kl.assignedKey === "kyle" && kl.ownerId === kyle.id && slackPosts.length === 1 && /Twilight photos/.test(slackPosts[0].text) && (await prisma.notification.count({ where: { title: "Shoot issue — 5 Elm Ct", audience: '["OWNER","ADMIN"]' } })) === 1);
+  // Oct 21 2026: the field-flag bell reaches the creative manager too (["OWNER","ADMIN","CREATIVE_MANAGER"]).
+  c.ok("a flag about the photos: Kyle's loop as before, the ops ping and the office bell (and the creative manager's)", !!kl && kl.assignedKey === "kyle" && kl.ownerId === kyle.id && slackPosts.length === 1 && /Twilight photos/.test(slackPosts[0].text) && (await prisma.notification.count({ where: { title: "Shoot issue — 5 Elm Ct", audience: '["OWNER","ADMIN","CREATIVE_MANAGER"]' } })) === 1);
   c.ok("…and nothing added to Jordan's loop", !/Twilight/.test((await jordanLoop())?.description ?? ""));
   await prisma.activity.create({ data: { projectId: fj.id, type: "FLAG", body: "Shoot debrief — had issues: Homeowner wouldn't let me shoot the basement photos" } });
   await fileFieldIssue({ projectId: fj.id, note: "Homeowner wouldn't let me shoot the basement photos", page: `/upload/${fj.id}`, label: "Shoot debrief", priority: "HIGH" });

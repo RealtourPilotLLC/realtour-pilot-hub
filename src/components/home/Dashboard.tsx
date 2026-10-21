@@ -67,7 +67,13 @@ function Tile({ name, label, value, sub, tone, href }: { name: string; label: st
 
 /** The four numbers that say whether we are delivering on time, answering
  *  clients, handling special requests and keeping QC and reviews moving. */
-export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS }: { health: DashboardHealth; includeTest?: boolean; doors?: Doors }) {
+export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS, creative = false }: {
+  health: DashboardHealth;
+  includeTest?: boolean;
+  doors?: Doors;
+  /** Oct 21 2026: the creative manager's strip has no Clients waiting tile (Kyle's inbox). */
+  creative?: boolean;
+}) {
   const h = health;
   const href = (to: string) => (opens(to, doors) ? homeRecordHref(to, includeTest) : null);
   const o = h.onTime, m = h.clients, r = h.requests, q = h.qc;
@@ -87,7 +93,7 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS }: 
   return (
     <section id="health" aria-label="How we're doing right now" data-health-strip className="scroll-mt-32 md:scroll-mt-28">
       <span id="behind" aria-hidden className="block scroll-mt-32 md:scroll-mt-28" />
-      <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4">
+      <div className={cn("grid grid-cols-2 gap-2.5 sm:gap-3", creative ? "lg:grid-cols-3" : "lg:grid-cols-4")}>
         <Tile
           // "Shoots" in the label (audit A23): the red line above counts videos
           // and photo jobs, this tile counts shoots.
@@ -99,14 +105,16 @@ export function HealthStrip({ health, includeTest = false, doors = ALL_DOORS }: 
             o.late > 0 && o.oldestLateDays != null ? `oldest ${plural(o.oldestLateDays, "day")}` : null,
           ].filter(Boolean).join(" · ") : null}
         />
-        <Tile
-          name="clients" label="Clients waiting" href={href("/communications")} tone={m?.tone ?? null}
-          value={m ? String(m.waiting) : null}
-          sub={m ? (m.waiting === 0 ? "nobody waiting on a reply" : [
-            m.oldestHours != null ? `oldest ${waitedWords(m.oldestHours)}` : null,
-            m.text === 0 ? "all email" : m.email === 0 ? "all text" : `${m.email} email, ${m.text} text`,
-          ].filter(Boolean).join(" · ")) : null}
-        />
+        {!creative && (
+          <Tile
+            name="clients" label="Clients waiting" href={href("/communications")} tone={m?.tone ?? null}
+            value={m ? String(m.waiting) : null}
+            sub={m ? (m.waiting === 0 ? "nobody waiting on a reply" : [
+              m.oldestHours != null ? `oldest ${waitedWords(m.oldestHours)}` : null,
+              m.text === 0 ? "all email" : m.email === 0 ? "all text" : `${m.email} email, ${m.text} text`,
+            ].filter(Boolean).join(" · ")) : null}
+          />
+        )}
         <Tile
           name="requests" label="Special requests" href={href("/jobs?f=requests")} tone={r?.tone ?? null}
           value={r ? `${r.open} open` : null}

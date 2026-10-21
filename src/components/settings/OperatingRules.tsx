@@ -585,7 +585,7 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
                   // cuts) — listed, greyed, so the reason is on the screen.
                   <option key={m.id} value={m.id} disabled={m.hasLogin && !m.canRuleIfDesignated && m.id !== r[seat.key]}>
                     {m.name}
-                    {!m.hasLogin ? " — no login yet" : !m.canRuleIfDesignated ? " — editor login, can't review" : m.loginRole !== "OWNER" && m.loginRole !== "ADMIN" ? " — only Jordan can seat" : ""}
+                    {!m.hasLogin ? " — no login yet" : !m.canRuleIfDesignated ? " — editor login, can't review" : m.loginRole !== "OWNER" && m.loginRole !== "ADMIN" && m.loginRole !== "CREATIVE_MANAGER" ? " — only Jordan can seat" : ""}
                   </option>
                 ))}
               </select>

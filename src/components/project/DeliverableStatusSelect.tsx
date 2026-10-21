@@ -9,13 +9,23 @@ import { DeliverableStatus } from "@prisma/client";
 export function DeliverableStatusSelect({
   id,
   status,
+  readOnly = false,
 }: {
   id: string;
   status: DeliverableStatus;
+  /** Oct 21 2026: the creative manager reads the status; setting it is the office's (setDeliverableStatus). */
+  readOnly?: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
   const meta = DELIVERABLE_STATUS_META[status];
 
+  if (readOnly) {
+    return (
+      <span className="inline-flex min-h-9 items-center rounded-md px-2 py-1 text-xs font-medium" style={{ color: ink(meta.color), backgroundColor: meta.soft }}>
+        {meta.label}
+      </span>
+    );
+  }
   return (
     <select
       value={status}

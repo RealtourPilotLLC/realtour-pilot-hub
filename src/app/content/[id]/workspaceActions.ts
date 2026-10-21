@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin, requireOwner } from "@/lib/auth/guards";
+import { requireAdmin, requireCreativeLead, requireOwner } from "@/lib/auth/guards";
 import { setOwnerOverride, type OwnerDuty, OWNER_DUTIES } from "@/lib/contentProgram";
 import {
   setCallMode, setBillingTerms, setWorkflowFlags, setOverride,
@@ -51,7 +51,7 @@ function touch(enrollmentId: string) {
 // Kyle alike: staffChangePackageAction / staffSetEnrollmentStatusAction.
 
 export async function setCallModeAction(enrollmentId: string, mode: CallMode, noCallEligible: boolean | null, reason?: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     await setCallMode(enrollmentId, mode, noCallEligible, me.email, reason);
@@ -71,7 +71,7 @@ export async function setBillingTermsAction(enrollmentId: string, terms: { type:
 }
 
 export async function setWorkflowFlagsAction(enrollmentId: string, flags: { timezone?: string | null; notes?: string | null }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     // Oct 20 2026 (audit D13): time zone and notes only. "The client plans
@@ -91,7 +91,7 @@ export async function setWorkflowFlagsAction(enrollmentId: string, flags: { time
  * Oct 13 2026: and the VIDEO STYLE, Direct-to-camera or Skits (programStyle.setVideoStyle).
  */
 export async function setProgramStyleAction(enrollmentId: string, change: { strategyCalls?: boolean; clientPlanned?: boolean; videoStyle?: string }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (typeof enrollmentId !== "string" || !enrollmentId) return { ok: false, message: "Enrollment not found." };
   try {
     const me = await actor();
@@ -170,7 +170,7 @@ export async function createAssetAction(
   enrollmentId: string,
   input: { clientId: string; type: string; name: string; ownership?: string; notes?: string | null; valueText?: string | null; fileRef?: string | null; fileName?: string | null; source?: string },
 ): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!isAssetType(input.type)) return { ok: false, message: "Unknown asset type." };
   // CP-06: website / social links / music are the client's single-valued
   // profile SLOTS. A second free-standing asset of one of those types would be
@@ -208,7 +208,7 @@ export async function addAssetVersionAction(
   assetId: string,
   input: { valueText?: string | null; fileRef?: string | null; fileName?: string | null; note?: string | null; source?: string },
 ): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const before = await prisma.clientAsset.findUnique({ where: { id: assetId }, select: { activeVersionId: true } });
@@ -223,7 +223,7 @@ export async function addAssetVersionAction(
 }
 
 export async function setActiveAssetVersionAction(enrollmentId: string, assetId: string, versionId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const before = await prisma.clientAsset.findUnique({ where: { id: assetId }, select: { activeVersionId: true } });
     await setActiveAssetVersion(assetId, versionId);
@@ -234,7 +234,7 @@ export async function setActiveAssetVersionAction(enrollmentId: string, assetId:
 }
 
 export async function retireAssetAction(enrollmentId: string, assetId: string, retire: boolean): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const before = await prisma.clientAsset.findUnique({ where: { id: assetId }, select: { status: true } });
     await retireAsset(assetId, retire);
@@ -245,7 +245,7 @@ export async function retireAssetAction(enrollmentId: string, assetId: string, r
 }
 
 export async function updateAssetMetaAction(enrollmentId: string, assetId: string, patch: { name?: string; ownership?: string; notes?: string | null }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     await updateAssetMeta(assetId, patch);
     touch(enrollmentId);
@@ -255,7 +255,7 @@ export async function updateAssetMetaAction(enrollmentId: string, assetId: strin
 
 /** Register a file that is already in the client's Dropbox folder as a tracked asset. */
 export async function registerFolderFileAction(enrollmentId: string, input: { clientId: string; type: string; name: string; path: string; fileName: string }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!isAssetType(input.type)) return { ok: false, message: "Unknown asset type." };
   try {
     const me = await actor();
@@ -340,7 +340,7 @@ export async function correctVideoIdentityAction(
   patch: { title?: string | null; topicId?: string | null; scriptId?: string | null; kind?: string | null; confirmMonth?: boolean },
   reason?: string | null,
 ): Promise<IdentityActionResult> {
-  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return identityFailure(e, true); }
   try {
     const { correctVideoIdentity } = await import("@/lib/contentVideos");
     const r = await correctVideoIdentity(enrollmentId, videoId, patch, (await actor()).email, reason);
@@ -350,7 +350,7 @@ export async function correctVideoIdentityAction(
 }
 
 export async function relinkDeliveredFileAction(enrollmentId: string, sourceId: string, targetVideoId: string, reason: string): Promise<IdentityActionResult> {
-  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return identityFailure(e, true); }
   // It changes which file a client downloads: the reason is not optional.
   if (!reason?.trim()) return { ok: false, outcome: "refused", message: "Say why first — moving a file changes what the client downloads." };
   try {
@@ -362,7 +362,7 @@ export async function relinkDeliveredFileAction(enrollmentId: string, sourceId: 
 }
 
 export async function confirmPairingAction(enrollmentId: string, sourceId: string): Promise<IdentityActionResult> {
-  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return identityFailure(e, true); }
   try {
     const { confirmPairing } = await import("@/lib/contentVideos");
     const r = await confirmPairing(enrollmentId, sourceId, (await actor()).email);
@@ -372,7 +372,7 @@ export async function confirmPairingAction(enrollmentId: string, sourceId: strin
 }
 
 export async function adoptTopicVideoAction(enrollmentId: string, chainVideoId: string, topicVideoId: string): Promise<IdentityActionResult> {
-  try { await requireAdmin(); } catch (e) { return identityFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return identityFailure(e, true); }
   try {
     const { adoptTopicVideo } = await import("@/lib/contentVideos");
     const r = await adoptTopicVideo(enrollmentId, chainVideoId, topicVideoId, (await actor()).email);

@@ -258,11 +258,12 @@ async function main() {
     // =======================================================================
     const page = fs.readFileSync(path.join(REPO, "src/app/content/activity/page.tsx"), "utf8");
     const code = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    c.ok("owner and admin only: anyone else is sent home", /if \(me && me\.role !== "OWNER" && me\.role !== "ADMIN"\) redirect\("\/"\);/.test(page) && /if \(!me && authEnforced\(\)\) redirect\("\/login\?next=\/content\/activity"\);/.test(page));
+    // Oct 21 2026: owner, admin and the creative manager (isCreativeLead) oversee the program.
+    c.ok("owner, admin and the creative manager only: anyone else is sent home", /if \(me && !isCreativeLead\(me\.role\)\) redirect\("\/"\);/.test(page) && /if \(!me && authEnforced\(\)\) redirect\("\/login\?next=\/content\/activity"\);/.test(page));
     c.ok("each row links to the client's content workspace and filters the feed (?client=)", /contentHref\(r\.enrollmentId\)/.test(page) && /client: r\.clientId/.test(page));
     c.ok("no em dash in the page's copy or the feed's words", !/—/.test(code(page)) && f.items.every((i) => !/—/.test(`${i.text} ${i.detail ?? ""}`)) && !/—/.test(Object.values(ca.HEALTH).map((x) => x.label + x.hint).join(" ")));
     const sidebar = fs.readFileSync(path.join(REPO, "src/components/Sidebar.tsx"), "utf8");
-    c.ok("nav: 'Client activity' next to Content Program, filtered to owner and admin", /label: "Content Program", href: "\/content"[^\n]*\n[^\n]*\n\s*\{ label: "Client activity", href: "\/content\/activity"/.test(sidebar) && /user\.role !== "OWNER" && user\.role !== "ADMIN"\) items = items\.filter\(\(i\) => i\.href !== "\/content\/activity"\)/.test(sidebar));
+    c.ok("nav: 'Client activity' next to Content Program, filtered to owner, admin and the creative manager", /label: "Content Program", href: "\/content"[^\n]*\n[^\n]*\n\s*\{ label: "Client activity", href: "\/content\/activity"/.test(sidebar) && /if \(user && !isCreativeLead\(user\.role\)\) items = items\.filter\(\(i\) => i\.href !== "\/content\/activity"\)/.test(sidebar));
 
     c.head("isolation");
     c.ok("no outbound call left the machine", fence.blocked.length === 0, fence.blocked.slice(0, 3).join(", "));

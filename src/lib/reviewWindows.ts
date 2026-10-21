@@ -673,7 +673,7 @@ async function autoApprove(w: ContentReviewWindow, now: Date, p: RevisionPolicy)
       title: `Approved automatically — ${client?.name ?? "a client"}`,
       body: `${videoLabel} (v${w.round}): no answer by ${label}.`,
       href: `/content/${w.enrollmentId}?tab=content`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `review-auto-${w.id}`,
     });
   } catch { /* the decision is the record; the bell is a courtesy */ }

@@ -17,12 +17,33 @@ export function AssignmentPanel({
   projectId,
   team,
   current,
+  readOnly = false,
 }: {
   projectId: string;
   team: Member[];
   current: { photographer: string | null; editor: string | null; va: string | null };
+  /** Oct 21 2026: the creative manager reads who is on the job; assigning is the office's (assignMember). */
+  readOnly?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
+  if (readOnly) {
+    return (
+      <dl className="space-y-3 px-5 py-4">
+        {ROLES.map(({ role, label }) => {
+          const member = team.find((m) => m.id === current[role]);
+          return (
+            <div key={role} className="flex items-center justify-between gap-3">
+              <dt className="text-xs uppercase tracking-wide text-muted-2">{label}</dt>
+              <dd className="flex items-center gap-2 text-sm">
+                {member && <Avatar name={member.name} color={member.avatarColor} size={22} />}
+                {member?.name ?? <span className="text-muted">Unassigned</span>}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+    );
+  }
 
   return (
     <div className="space-y-3 px-5 py-4">

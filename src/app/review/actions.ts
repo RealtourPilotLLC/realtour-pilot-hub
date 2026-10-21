@@ -7,6 +7,7 @@ import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { addressableKeys, authEnforced, requireAdmin, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { isCreativeLead } from "@/lib/auth/access";
 import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
@@ -188,7 +189,8 @@ async function reviewSeatTargets(skip: (string | null | undefined)[], href: stri
   for (const m of chain?.members ?? []) if (!people.has(m.teamMemberId)) people.set(m.teamMemberId, m.isOwner ? "OWNER" : "ADMIN");
   for (const id of skip) if (id) people.delete(id);
   const targets: NotifyTarget[] = [...people].map(([id, role]) => ({ roles: [role], userKey: `tm:${id}`, href }));
-  if (!chain?.configured) targets.push({ roles: ["ADMIN"], href });
+  // No seat named: the office and the creative manager (Oct 21 2026) keep the broadcast.
+  if (!chain?.configured) targets.push({ roles: ["ADMIN", "CREATIVE_MANAGER"], href });
   if (owners.length === 0) targets.push({ roles: ["OWNER"], href });
   return targets;
 }
@@ -580,7 +582,7 @@ export async function submitCutForReview(
       editorKey: myEditorKey ?? editorKey,
       reason: "SUBMITTED",
       // The display name sessionAuthor resolved (roster before email, Sep 28).
-      actor: { userId: me?.id ?? null, name: authorName ?? "The office", role: office ? (me?.realRole === "ADMIN" ? "ADMIN" : "OWNER") : "EDITOR" },
+      actor: { userId: me?.id ?? null, name: authorName ?? "The office", role: office ? (me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER") : "EDITOR" },
       detail: office ? `cut sent to review by ${authorName ?? "the office"}` : "cut submitted",
     });
   }
@@ -910,7 +912,8 @@ export async function askCutChange(input: {
       // it yet, and a vendor editor key reaches no login at all (Kim's did
       // exactly that until Sep 16), so the ask must never depend on the editor
       // leg existing.
-      { roles: ["OWNER", "ADMIN"], href: `/review/${input.projectId}?cut=${input.submissionId}` },
+      // The creative manager too (Oct 21 2026): a change ask on a cut is review work.
+      { roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"], href: `/review/${input.projectId}?cut=${input.submissionId}` },
     ];
     if (isTeamEditor) {
       targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${input.projectId}`, slackDm: line });
@@ -2028,7 +2031,7 @@ async function uploadAuthor(
   if (!me && !authEnforced()) return { ok: true, key: null, name: LOCAL_DEV_AUTHOR, role: "OWNER" }; // same rule as requireRole
   if (!me) return { ok: false, message: "Sign in to upload a cut." };
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to upload." };
-  if (!["OWNER", "ADMIN", "EDITOR"].includes(me.role)) return { ok: false, message: "Only editors, admins and the owner can upload cuts." };
+  if (!["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR"].includes(me.role)) return { ok: false, message: "Only editors, the creative manager, admins and the owner can upload cuts." };
   const key = me.role === "EDITOR" ? me.editorKey : null;
   if (me.role === "EDITOR") {
     if (!key) return { ok: false, message: "Your account is not linked to an editor profile yet — ask Jordan or Kyle." };
@@ -2156,7 +2159,7 @@ export async function startCutUpload(input: {
   //   · it never lets an EDITOR past. Jordan and Kyle can wave one through,
   //     with their name on it, below.
   const overSpec = isOverExportSpec(input.width, input.height);
-  const mayOverride = who.role === "OWNER" || who.role === "ADMIN";
+  const mayOverride = isCreativeLead(who.role);
   const waved = overSpec && mayOverride && input.overrideExportSpec === true;
   if (overSpec && !waved) return { ok: false, message: exportRefusalMessage(input.width, input.height) };
   // A WITHDRAWN round is not a version of this cut any more (Sep 16) — it is
@@ -2222,7 +2225,7 @@ export async function startCutUpload(input: {
   // editor's file attests on their behalf, recorded as such.
   const checkMe = await getCurrentUser().catch(() => null);
   const { prepareUploadCheck } = await import("@/lib/selfCheckStore");
-  const office = who.role === "OWNER" || who.role === "ADMIN";
+  const office = isCreativeLead(who.role);
   const prepared = await prepareUploadCheck({
     projectId: input.projectId,
     deliverableId: input.deliverableId,
@@ -2556,9 +2559,10 @@ async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { o
   // "View as" is read-only platform-wide — a previewing owner must not withdraw
   // a cut under an editor's name.
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
-  const office = me.realRole === "OWNER" || me.realRole === "ADMIN";
+  // The creative manager tidies the Room like the office (Oct 21 2026).
+  const office = isCreativeLead(me.realRole);
   if (!office && me.realRole !== "EDITOR") {
-    return { ok: false, message: "Only the editor who sent this cut in, Jordan or Kyle can take it back." };
+    return { ok: false, message: "Only the editor who sent this cut in, Jordan, Kyle or the creative manager can take it back." };
   }
   // The one answer to "which keys are theirs" (guards.addressableKeys, Oct 20
   // 2026): an editor's assigned key and roster name, never the free-text login
@@ -2812,7 +2816,7 @@ async function ringRemoved(input: {
       title: input.title,
       body: input.sentence,
       href: `/review/${input.projectId}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `cut-withdrawn-${input.submissionId}-${input.at.getTime()}`,
     });
   } catch { /* bell is best-effort */ }

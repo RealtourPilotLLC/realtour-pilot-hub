@@ -40,7 +40,8 @@ export default async function ReviewHistoryPage({ searchParams }: { searchParams
   if (!ownerDesk && me?.role === "PHOTOGRAPHER") redirect("/review");
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const deliveryDesk = !me || me.role === "OWNER" || me.role === "ADMIN";
+  // Read-only here (what was sent, by whom): the creative manager too (Oct 21 2026).
+  const deliveryDesk = !me || me.role === "OWNER" || me.role === "ADMIN" || me.role === "CREATIVE_MANAGER";
   const [q, patterns, qcStats, causes, board] = await Promise.all([
     getReviewQueue({ includeTest }),
     getFixPatterns(60, { includeTest }),

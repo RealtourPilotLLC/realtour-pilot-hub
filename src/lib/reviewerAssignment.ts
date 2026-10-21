@@ -134,7 +134,7 @@ export async function reviewerChain(at: Date = new Date()): Promise<ReviewerChai
       select: { id: true, role: true, teamMemberId: true },
     }),
   ]);
-  const rank = (role: string) => (role === "OWNER" ? 0 : role === "ADMIN" ? 1 : 2);
+  const rank = (role: string) => (role === "OWNER" ? 0 : role === "ADMIN" ? 1 : role === "CREATIVE_MANAGER" ? 2 : 3);
   const members: Reviewer[] = [];
   const seen = new Set<string>();
   for (const [slot, id] of named) {
@@ -186,7 +186,7 @@ type AuthorityInput = {
 } | null | undefined;
 
 export type RuleAuthority =
-  | { ok: true; as: "OWNER" | "ADMIN" | "REVIEWER"; teamMemberId: string | null }
+  | { ok: true; as: "OWNER" | "ADMIN" | "CREATIVE_MANAGER" | "REVIEWER"; teamMemberId: string | null }
   | { ok: false; why: string };
 
 /**
@@ -208,6 +208,11 @@ export async function canRuleOnCuts(me: AuthorityInput): Promise<RuleAuthority> 
   if (me.status && me.status !== "ACTIVE") return { ok: false, why: "You don't have access to do that." };
   if (me.realRole === "OWNER" || me.realRole === "ADMIN") {
     return { ok: true, as: me.realRole, teamMemberId: me.teamMemberId };
+  }
+  // The creative manager rules on cuts by role (Oct 21 2026: "oversee the
+  // whole creative process"), seated or not. Still never the bonus flag.
+  if (me.realRole === "CREATIVE_MANAGER") {
+    return { ok: true, as: "CREATIVE_MANAGER", teamMemberId: me.teamMemberId };
   }
   // An EDITOR login never holds the desk, seated or not (review fix, Sep 25):
   // a seat would let an editor approve their own cut and classify their own
@@ -268,7 +273,9 @@ export async function validateReviewSeats(
     if (!tm) return { ok: false, message: "That person isn't on the roster any more — reload and pick again." };
     if (before.has(id)) continue;
     const logins = await prisma.appUser.findMany({ where: { teamMemberId: id, status: "ACTIVE" }, select: { role: true } });
-    const office = logins.some((l) => l.role === "OWNER" || l.role === "ADMIN");
+    // The creative manager already rules on cuts by role (canRuleOnCuts), so
+    // seating them grants nothing new (Oct 21 2026).
+    const office = logins.some((l) => l.role === "OWNER" || l.role === "ADMIN" || l.role === "CREATIVE_MANAGER");
     if (office) continue;
     if (logins.some((l) => SEAT_REFUSED_ROLES.has(l.role))) {
       return { ok: false, message: `${tm.name} signs in as an editor — an editor can't review cuts (they'd be ruling on their own work).` };
@@ -309,7 +316,7 @@ export async function eligibleReviewer(teamMemberId: string): Promise<{ id: stri
   if (!tm?.active) return null;
   const logins = await prisma.appUser.findMany({ where: { teamMemberId, status: "ACTIVE" }, select: { role: true } });
   if (logins.length === 0) return null;
-  if (logins.some((l) => l.role === "OWNER" || l.role === "ADMIN")) return { id: tm.id, name: tm.name };
+  if (logins.some((l) => l.role === "OWNER" || l.role === "ADMIN" || l.role === "CREATIVE_MANAGER")) return { id: tm.id, name: tm.name };
   if (logins.every((l) => SEAT_REFUSED_ROLES.has(l.role))) return null;
   const chain = await reviewerChain();
   return chain.members.some((m) => m.teamMemberId === teamMemberId) ? { id: tm.id, name: tm.name } : null;
@@ -978,7 +985,7 @@ export async function reviewerNamesFor(teamMemberIds: (string | null | undefined
 export async function reviewerCandidates(at: Date = new Date()): Promise<ReviewerCandidate[]> {
   const chain = await reviewerChain(at);
   const office = await prisma.appUser.findMany({
-    where: { role: { in: ["OWNER", "ADMIN"] }, status: "ACTIVE", teamMemberId: { not: null } },
+    where: { role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }, status: "ACTIVE", teamMemberId: { not: null } },
     select: { teamMemberId: true },
   });
   const officeIds = [...new Set(office.map((o) => o.teamMemberId!))].filter((id) => !chain.members.some((m) => m.teamMemberId === id));
@@ -1004,7 +1011,7 @@ export async function reviewerSeats(at: Date = new Date()): Promise<ReviewerSeat
     prisma.appUser.findMany({ where: { status: "ACTIVE", teamMemberId: { not: null } }, select: { teamMemberId: true, role: true } }),
   ]);
   const { notifyPrefsFor } = await import("@/lib/notifyPrefs");
-  const rank = (role: string) => (role === "OWNER" ? 0 : role === "ADMIN" ? 1 : 2);
+  const rank = (role: string) => (role === "OWNER" ? 0 : role === "ADMIN" ? 1 : role === "CREATIVE_MANAGER" ? 2 : 3);
   return Promise.all(
     roster.map(async (r) => {
       const login = logins.filter((l) => l.teamMemberId === r.id).sort((a, b) => rank(a.role) - rank(b.role))[0] ?? null;

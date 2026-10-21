@@ -17,7 +17,7 @@ const NAME_OK = /^[^\\/:?*"<>|]{1,180}$/;
 
 export async function POST(req: NextRequest) {
   try {
-    await requireRole(["OWNER", "ADMIN", "EDITOR"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR"]);
   } catch (e) {
     return NextResponse.json({ ok: false, message: (e as Error).message }, { status: 401 });
   }

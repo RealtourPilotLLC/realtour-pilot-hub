@@ -1012,6 +1012,10 @@ export function guideForRole(role: string | null | undefined): GuideKey {
     case "PHOTOGRAPHER": return "photographer";
     case "EDITOR": return "editor";
     case "ADMIN": return "ops";
+    // The creative manager lands on the field guide they coach from (Oct 21
+    // 2026), never the owner guide (it carries money); canOpenGuide below
+    // opens the editor and ops guides to them as well.
+    case "CREATIVE_MANAGER": return "photographer";
     default: return "owner";
   }
 }
@@ -1025,6 +1029,6 @@ export function guideForRole(role: string | null | undefined): GuideKey {
  */
 export function canOpenGuide(role: string | null | undefined, key: GuideKey): boolean {
   if (role === "OWNER" || role == null) return true; // null = local dev, gate off
-  if (role === "ADMIN") return key !== "owner";
+  if (role === "ADMIN" || role === "CREATIVE_MANAGER") return key !== "owner";
   return key === guideForRole(role);
 }

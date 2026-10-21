@@ -218,7 +218,10 @@ export default async function EditBriefPage({
   const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
     owedSlotKeyOf(s, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) ?? videoKeyOf(s);
 
-  const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
+  // The creative manager runs this desk with the office (Oct 21 2026): the
+  // brief, the edit instructions, the override and rush row, music. Money
+  // (canSeeRaw, strictOwnerAdmin below) and the agency packet stay the office's.
+  const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN" || viewer.role === "CREATIVE_MANAGER";
   // THE OFFICE'S ONE SWITCH (Oct 15 2026, the brief audit). Owner/admin are
   // offered it ("view as" an editor is not — that preview is the editor's
   // page); it is off by default, so Jordan and Kyle see what the editor sees.
@@ -230,7 +233,7 @@ export default async function EditBriefPage({
   // server-side too). realRole, so a "view as" preview can't write; editors
   // read the brief, they don't rewrite what the customer or photographer said.
   const canEditNotes =
-    ["OWNER", "ADMIN", "PHOTOGRAPHER"].includes(viewer?.realRole ?? "OWNER") && !viewer?.impersonating;
+    ["OWNER", "ADMIN", "CREATIVE_MANAGER", "PHOTOGRAPHER"].includes(viewer?.realRole ?? "OWNER") && !viewer?.impersonating;
 
   // Review Room feedback addressed to this editor (owner/admin see all lanes'
   // editor notes read-only — their interactive desk is /review).
@@ -796,7 +799,7 @@ export default async function EditBriefPage({
   // everyone else anyway. Any job, not just a video one: lot lines go on the
   // aerial photos. Editors read the same sentences in the job's brief. A
   // failed read says so rather than showing "nothing waiting".
-  const assetDesk = strictOwnerAdmin && !viewer?.impersonating;
+  const assetDesk = (strictOwnerAdmin || viewer?.role === "CREATIVE_MANAGER") && !viewer?.impersonating;
   const assetDeps = assetDesk
     ? await import("@/lib/assetDependencies").then((m) => m.openAssetDependencies(project.id)).catch(() => null)
     : null;

@@ -30,7 +30,7 @@ const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 export async function loadStrategyTab(enrollmentId: string, month: { id: string; monthKey: string; prioritiesJson: string | null; prioritiesSourceRef: string | null } | null) {
   const [versions, proposals, pillars, mappingRaw, dismissed, owners, staff] = await Promise.all([
     strategyVersions(enrollmentId), openStrategyProposals(enrollmentId), listPillars(enrollmentId), pillarMappingProposal(enrollmentId), dismissedPillarLabels(enrollmentId), ownersFor(enrollmentId, month?.id),
-    prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN"] } }, select: { id: true, name: true, email: true } }),
+    prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] } }, select: { id: true, name: true, email: true } }),
   ]);
   const vrows: VersionRow[] = versions.map((v) => {
     const stored = parseStoredSections(v.sectionsJson);

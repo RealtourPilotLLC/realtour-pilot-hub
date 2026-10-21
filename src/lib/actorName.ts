@@ -46,7 +46,7 @@ export async function displayNameFor(u: NamedLogin | null | undefined): Promise<
 export async function reviewDeskAuthorKeys(): Promise<Set<string>> {
   const keys = new Set<string>(["owner"]);
   const office = await prisma.appUser
-    .findMany({ where: { role: { in: ["OWNER", "ADMIN"] } }, select: { id: true, teamMemberId: true } })
+    .findMany({ where: { role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] } }, select: { id: true, teamMemberId: true } })
     .catch(() => []);
   for (const u of office) {
     keys.add(`user:${u.id}`);

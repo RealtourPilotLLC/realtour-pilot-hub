@@ -39,8 +39,8 @@ export async function saveCutMessage(
   if (me?.impersonating) {
     return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
   }
-  if (me && !["OWNER", "ADMIN", "EDITOR"].includes(me.role)) {
-    return { ok: false, message: "Only editors, admins and the owner can message a cut." };
+  if (me && !["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR"].includes(me.role)) {
+    return { ok: false, message: "Only editors, the creative manager, admins and the owner can message a cut." };
   }
   if (me?.role === "EDITOR") {
     const key = me.editorKey;

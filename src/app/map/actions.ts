@@ -8,7 +8,8 @@ import { weatherAt, driveBetween, geocodeAddress, suggestAddresses, type Weather
 // these are a free geocoding/routing proxy burning the providers' rate limits
 // that payroll mileage depends on. They're read-only lookups, so the owner's
 // read-only "view as" preview may still call them (the map keeps rendering).
-const requireMapAccess = () => requireRole(["OWNER", "ADMIN"], { allowImpersonation: true });
+// The creative manager reads the schedule and its map too (Oct 21 2026).
+const requireMapAccess = () => requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"], { allowImpersonation: true });
 
 // Weather for a project's shoot (lat/lng + shoot time).
 export async function projectWeather(projectId: string): Promise<Weather | null> {

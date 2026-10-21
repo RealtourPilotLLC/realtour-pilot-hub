@@ -100,7 +100,7 @@ async function jobAccess(projectId: string, opts: { write: boolean }): Promise<C
   }
   if (opts.write && me.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
   const role = opts.write ? me.realRole : me.role;
-  if (role === "OWNER" || role === "ADMIN") return me;
+  if (role === "OWNER" || role === "ADMIN" || role === "CREATIVE_MANAGER") return me;
   if (role === "EDITOR") {
     // Every key this human is addressable by — the same resolution
     // requireTaskAccess uses, so a renamed AppUser keeps their own jobs.

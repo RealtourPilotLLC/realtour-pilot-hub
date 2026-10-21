@@ -180,7 +180,8 @@ export default async function UploadProjectPage({
   // words its reopen button for each (Sep 15). OPEN mode (no session) reads
   // as the office, the same way the list page does; under enforcement a null
   // viewer never gets this far (audit C2).
-  const viewerIsOffice = (!viewer && !authEnforced()) || viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  // The creative manager plans recoveries and edits the record too (Oct 21 2026).
+  const viewerIsOffice = (!viewer && !authEnforced()) || viewer?.role === "OWNER" || viewer?.role === "ADMIN" || viewer?.role === "CREATIVE_MANAGER";
   // Oct 20 2026 (audit G): a paused pay view (Harrison, James) reads no payroll copy.
   const payHidden = await payHiddenFor(viewer);
 

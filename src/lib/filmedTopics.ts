@@ -1099,7 +1099,7 @@ async function escalateFilmingReport(report: ReportRow, error: string): Promise<
     title: `Filmed topics did not save — ${street}`,
     body: `${titles.length + extras.length} topic(s) need recording by hand.`,
     href: `/projects/${report.projectId}`,
-    targets: [{ roles: ["OWNER", "ADMIN"] }],
+    targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
     dedupeKey: `filming-report-${report.id}`,
   }).catch(() => {});
 }

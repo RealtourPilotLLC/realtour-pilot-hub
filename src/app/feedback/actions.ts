@@ -41,7 +41,7 @@ export async function submitPlatformFeedback(input: {
   // form is a different action (/feedback/[id] → submitFeedback) and stays
   // unauthenticated. Returned as {ok:false} so the widget shows it inline.
   try {
-    await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Please sign in to do that." };
   }

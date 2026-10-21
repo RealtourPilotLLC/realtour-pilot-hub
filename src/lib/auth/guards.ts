@@ -3,7 +3,7 @@ import { slugForName } from "@/lib/assignees";
 import { getCurrentUser } from "./user";
 import { authEnforcedNow } from "./enforced";
 
-type AppRole = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
+type AppRole = "OWNER" | "ADMIN" | "CREATIVE_MANAGER" | "EDITOR" | "PHOTOGRAPHER";
 
 // Authorization for SERVER ACTIONS. Middleware only gates page navigation, not
 // the POST that invokes a "use server" action — so sensitive actions must guard
@@ -73,6 +73,24 @@ export function editorScopeOf(
   // than somebody else's work. (Verified Sep 17: both live editors — Kim and
   // John — carry explicit editorKeys, so this locks nobody out.)
   return me.editorKey || EDITOR_SCOPE_NONE;
+}
+
+/**
+ * The task scope a Tasks board filters by (Oct 21 2026). An editor's is their
+ * editor scope (above). A creative manager sees only the tasks assigned to
+ * them, never the office list Kyle works: their roster key (addressableKeys),
+ * else the fail-closed sentinel. null for the owner and the office: no filter.
+ * Kept apart from editorScopeOf on purpose, because /edit/<id> reads that one
+ * as "this viewer is an editor".
+ */
+export async function taskScopeOf(
+  me: Awaited<ReturnType<typeof getCurrentUser>> | null | undefined,
+): Promise<string | null> {
+  const editor = editorScopeOf(me);
+  if (editor) return editor;
+  if (!me || me.role !== "CREATIVE_MANAGER") return null;
+  const [key] = [...(await addressableKeys(me))];
+  return key || EDITOR_SCOPE_NONE;
 }
 
 /** True when a scope is the fail-closed sentinel (i.e. an unmapped editor). */
@@ -174,7 +192,8 @@ export async function canViewProject(projectId: string, viewer?: Viewer): Promis
   if (!enforced()) return true;
   const u = viewer !== undefined ? viewer : await getCurrentUser().catch(() => null);
   if (!u) return false;
-  if (u.role === "OWNER" || u.role === "ADMIN") return true;
+  // The creative manager oversees every job's creative work (Oct 21 2026).
+  if (u.role === "OWNER" || u.role === "ADMIN" || u.role === "CREATIVE_MANAGER") return true;
   if (u.role === "PHOTOGRAPHER") {
     const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
     const mid = await photographerMemberId(u);
@@ -197,7 +216,15 @@ export async function deliverableInProject(deliverableId: string, projectId: str
 }
 
 export const requireOwner = () => requireRole(["OWNER"]);
+// The office: owner + ADMIN. Never the creative manager (Oct 21 2026): client
+// comms, scheduling, billing, Aryeo deliveries and settings stay here.
 export const requireAdmin = () => requireRole(["OWNER", "ADMIN"]);
+// The creative lead (Oct 21 2026): owner, office AND the creative manager.
+// For creative writes only: Review Room notes, the content program (strategy,
+// topics, scripts, script requests), editor briefs, shoot issues and photo
+// flags, training. lib/auth/access isCreativeLead is the same sentence for
+// pages deciding what to draw.
+export const requireCreativeLead = () => requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
 
 // A VERDICT ON A CUT (unified handoff §8.1, Sep 25 2026). Owner/admin exactly
 // as requireAdmin — nobody loses anything — PLUS the three named review seats
@@ -230,7 +257,9 @@ export async function requireTaskAccess(taskId: string): Promise<void> {
     throw new Error("You're previewing another user — exit the preview to make changes.");
   }
   if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
-  if (u.realRole === "EDITOR" || u.realRole === "PHOTOGRAPHER") {
+  // The creative manager acts on their OWN tasks, never the office list
+  // (Oct 21 2026: "doesn't need the same tasks as Kyle").
+  if (u.realRole === "EDITOR" || u.realRole === "PHOTOGRAPHER" || u.realRole === "CREATIVE_MANAGER") {
     // The person a task is assigned to may act on THEIR OWN task, whatever
     // their role — a photographer with work moved onto their plate must be
     // able to complete it (audit: assigned-away tasks were act-on-able by
@@ -260,7 +289,9 @@ export async function requireShootAccess(projectId: string): Promise<void> {
   // shoot screen would REALLY text the client (audit: field actions were the
   // one guard family missing this block).
   if (u.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
-  if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
+  // The creative manager runs the field side (Oct 21 2026): shoot issues,
+  // upload pages and instructions on any shoot, and their own shoots.
+  if (u.realRole === "OWNER" || u.realRole === "ADMIN" || u.realRole === "CREATIVE_MANAGER") return;
   if (u.realRole === "PHOTOGRAPHER") {
     const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
     const mid = await photographerMemberId(u);

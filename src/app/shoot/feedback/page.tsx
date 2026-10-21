@@ -37,7 +37,7 @@ export default async function QualityFeedbackPage({
   // URL fell through as "not a photographer" and got the whole photographer
   // scoreboard — and with ?as=<memberId>, any photographer's feedback hub
   // (audit Sep 2). Bounce them to their own home.
-  if (user && !isPhotographer && user.role !== "OWNER" && user.role !== "ADMIN") {
+  if (user && !isPhotographer && user.role !== "OWNER" && user.role !== "ADMIN" && user.role !== "CREATIVE_MANAGER") {
     redirect(homeFor(user.role));
   }
   const { as } = await searchParams;

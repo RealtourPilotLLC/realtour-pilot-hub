@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { canAccess } from "@/lib/auth/access";
+import { canAccess, isCreativeLead, isOffice } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { etMonthKey } from "@/lib/contentProgram";
@@ -69,7 +69,10 @@ export default async function ContentClientPage({
   const { id } = await params;
   const sp = await searchParams;
   const ownerEyes = canPreviewPortal(me, authEnforced());
-  const staffEyes = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // The creative manager runs the program's creative side (Oct 21 2026);
+  // the package, status and catch-ups stay the office's (officeEyes).
+  const staffEyes = me ? isCreativeLead(me.role) : !authEnforced();
+  const officeEyes = me ? isOffice(me.role) : !authEnforced();
 
   const nav = resolveStaffTab(sp.tab, sp.view, ownerEyes);
   if (nav.preview) redirect(`/content/${id}/preview`);
@@ -112,7 +115,7 @@ export default async function ContentClientPage({
     id, client, enrollment: { package: enrollment.package, status: enrollment.status, videosPerMonth: enrollment.videosPerMonth, sessionsPerMonth: enrollment.sessionsPerMonth, strategyCallRequired: enrollment.strategyCallRequired, portalToken: enrollment.portalToken },
     months, month, activeKey, view: nav.view, progress, pview,
     me: me ? { id: me.id, role: me.role, name: me.name } : null,
-    ownerEyes, staffEyes,
+    ownerEyes, staffEyes, officeEyes,
     // Oct 8 2026: a forfeited month's "Approve a catch-up" link names the month to pick.
     catchupPick: typeof sp.catchup === "string" && /^[a-z0-9]{10,40}$/i.test(sp.catchup) ? sp.catchup : null,
   };

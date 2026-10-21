@@ -1,6 +1,6 @@
 "use server";
 
-import { authEnforced, requireAdmin } from "@/lib/auth/guards";
+import { authEnforced, requireCreativeLead } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -101,7 +101,7 @@ async function requireNoteAccess(
   const u = await getCurrentUser();
   if (!u) throw new Error("Please sign in to do that.");
   if (u.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
-  if (u.realRole === "OWNER" || u.realRole === "ADMIN") return null;
+  if (u.realRole === "OWNER" || u.realRole === "ADMIN" || u.realRole === "CREATIVE_MANAGER") return null;
   if (u.realRole === "PHOTOGRAPHER") {
     const { photographerMemberId } = await import("@/lib/shoot");
     const mid = await photographerMemberId(u);
@@ -135,7 +135,7 @@ export async function addMediaNote(input: {
   body: string;
 }): Promise<{ ok: boolean; id?: string; message?: string }> {
   try {
-    await requireAdmin(); // blocks "view as" + non-owner/admin roles
+    await requireCreativeLead(); // blocks "view as" + non-owner/admin roles
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -272,7 +272,7 @@ export async function setMediaNoteStatus(
     if (status === "FIXED" && note.lane === "PHOTOGRAPHER") {
       await requireNoteAccess(note.photographerId); // owner/admin OR that photographer
     } else {
-      await requireAdmin(); // reopen + approve stay with the owner's desk
+      await requireCreativeLead(); // reopen + approve stay with the owner's desk
     }
   } catch (e) {
     return { ok: false, message: (e as Error).message };
@@ -379,7 +379,7 @@ export async function setMediaVerdict(
   verdict: "APPROVED" | "NEEDS_WORK" | null,
 ): Promise<{ ok: boolean }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch {
     return { ok: false };
   }
@@ -409,7 +409,7 @@ export async function setMediaVerdict(
 // Re-sending reopens + refreshes the same task instead of duplicating.
 export async function sendReviewToLane(projectId: string, lane: NoteLane): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -553,7 +553,7 @@ export async function acknowledgeMediaNote(noteId: string): Promise<{ ok: boolea
 // notes so the review side shows Shared/Seen receipts.
 export async function shareShootFeedback(projectId: string): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }

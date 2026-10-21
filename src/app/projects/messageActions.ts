@@ -44,10 +44,11 @@ export async function markProjectMessagesRead(projectId: string, lastMessageId: 
 // only: a tag used to send them to /shoot/<id>, which had no thread to read,
 // let alone answer. requireRole is the role gate; the ownership check below
 // is the same one /shoot/<id> and requireShootAccess make (fail closed).
-const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
+// The creative manager too (Oct 21 2026): photo flags and job threads are creative work.
+const requireStaff = () => requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR"]);
 
 async function requireThreadAccess(projectId: string): Promise<void> {
-  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]);
   const { authEnforced, canViewProject } = await import("@/lib/auth/guards");
   if (!authEnforced()) return;
   const { getCurrentUser } = await import("@/lib/auth/user");

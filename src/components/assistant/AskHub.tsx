@@ -63,7 +63,8 @@ function MemoryCard({ memory }: { memory: HubMemoryCard }) {
 
 const ROLES: { value: HubRole; label: string; hint: string }[] = [
   { value: "OWNER", label: "Owner (you)", hint: "sees everything" },
-  { value: "ADMIN", label: "Admin (Kyle)", hint: "no owner finances/strategy" },
+  // Oct 21 2026: the office AND the creative manager read at this tier, so no name on it.
+  { value: "ADMIN", label: "Staff", hint: "no owner finances/strategy" },
   { value: "CREATIVE", label: "Creative", hint: "craft & shoot info only" },
 ];
 

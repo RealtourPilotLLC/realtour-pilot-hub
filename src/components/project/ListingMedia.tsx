@@ -36,7 +36,8 @@ export async function ListingMedia({ listingId, title, projectId }: { listingId:
   let review: ReviewData | undefined;
   if (projectId) {
     const viewer = await getCurrentUser().catch(() => null);
-    const ownerDesk = viewer ? viewer.role === "OWNER" || viewer.role === "ADMIN" : !authEnforced();
+    // The creative manager reviews the photos here too (Oct 21 2026): pins, verdicts, flags.
+    const ownerDesk = viewer ? viewer.role === "OWNER" || viewer.role === "ADMIN" || viewer.role === "CREATIVE_MANAGER" : !authEnforced();
     if (ownerDesk) {
       const r = await getProjectReview(projectId).catch(() => null);
       if (r) review = { notes: r.notes, verdicts: r.verdicts, enabled: true };

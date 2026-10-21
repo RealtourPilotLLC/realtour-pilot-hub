@@ -28,6 +28,8 @@ export async function isCreativeApprover(me: Actor, opts: { authEnforced: boolea
   if (!me) return !opts.authEnforced;
   if (me.impersonating) return false;
   if (me.realRole === "OWNER") return true;
+  // The creative manager is the creative approver by role (Oct 21 2026).
+  if (me.realRole === "CREATIVE_MANAGER") return true;
   if (!me.teamMemberId) return false;
   const { reviewRoomRules } = await import("@/lib/settings");
   const rules = await reviewRoomRules().catch(() => null);

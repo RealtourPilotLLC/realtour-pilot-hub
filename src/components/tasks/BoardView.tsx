@@ -17,7 +17,7 @@ import { taskWorkCounts, taskWorkHref, taskWorkOwner } from "@/lib/taskNavigatio
 import { boardWhere, BOARD_ACTIVE_STATUSES as ACTIVE, type TaskClientScope } from "@/lib/taskBoard";
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced, editorScopeOf, isUnmappedEditor, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
+import { authEnforced, isUnmappedEditor, taskScopeOf, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
 import { scrubTaskMoney } from "@/components/tasks/scrubTaskMoney";
 import { cn } from "@/lib/utils";
 
@@ -39,14 +39,14 @@ const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinit
 // The shared predicate keeps Home's count and this tab's rows in agreement.
 export async function boardOpenCount(opts: TaskClientScope = {}): Promise<number> {
   const me = await getCurrentUser().catch(() => null);
-  return prisma.smartTask.count({ where: boardWhere(editorScopeOf(me), opts) });
+  return prisma.smartTask.count({ where: boardWhere(await taskScopeOf(me), opts) });
 }
 
 // Navigation badges use the same source predicate and ownership rule as the rows.
 export async function boardNavigationCounts(opts: TaskClientScope = {}) {
   const me = await getCurrentUser().catch(() => null);
   const [rows, assignees] = await Promise.all([
-    prisma.smartTask.findMany({ where: boardWhere(editorScopeOf(me), opts), select: { assignedKey: true, taskType: true } }),
+    prisma.smartTask.findMany({ where: boardWhere(await taskScopeOf(me), opts), select: { assignedKey: true, taskType: true } }),
     listAssignees(),
   ]);
   return taskWorkCounts(rows, viewerAssigneeKey(me, assignees));
@@ -113,7 +113,8 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
 
 export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClientIds, showTest = false }: { sp: { who?: string; task?: string; source?: string; type?: string }; tabs: ReactNode; excludeClientIds?: string[]; excludeRelatedClientIds?: string[]; showTest?: boolean }) {
   const me = await getCurrentUser().catch(() => null);
-  const editorScope = editorScopeOf(me);
+  // An editor, or the creative manager (Oct 21 2026): their own tasks only.
+  const editorScope = await taskScopeOf(me);
   const deadlineOffice = me ? !me.impersonating && (me.role === "OWNER" || me.role === "ADMIN") : !authEnforced();
   const scope = { excludeClientIds };
   const boardHref = (who: string) => taskWorkHref({ who, showTest, source: sp.source, type: sp.type });
@@ -129,7 +130,7 @@ export async function BoardView({ sp, tabs, excludeClientIds, excludeRelatedClie
           {tabs}
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <UserPlus className="mx-auto mb-2 size-6 text-muted-2" />
-            <p className="text-sm text-muted">{UNMAPPED_EDITOR_MESSAGE}</p>
+            <p className="text-sm text-muted">{me?.role === "CREATIVE_MANAGER" ? "Your account is not linked to a team member yet. Ask Jordan to link it on People." : UNMAPPED_EDITOR_MESSAGE}</p>
           </div>
         </div>
       </div>

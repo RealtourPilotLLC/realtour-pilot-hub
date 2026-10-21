@@ -302,7 +302,7 @@ async function main() {
     const actionsSrc = fs.readFileSync(path.join(REPO, "src/app/content/actions.ts"), "utf8");
     const approveBody = /export async function approveStrategy\([\s\S]*?\n\}/.exec(actionsSrc)?.[0] ?? "";
     c.ok("the approve action re-derives it after approval (best effort, after the response)", /deriveCreativeIdentity\(/.test(approveBody) && /after\(work\)/.test(approveBody) && approveBody.indexOf("approveStrategyVersion(") < approveBody.indexOf("deriveCreativeIdentity("));
-    c.ok("Rebuild is a server action behind requireAdmin", /export async function rebuildCreativeIdentityAction[\s\S]{0,120}requireAdmin\(\)/.test(actionsSrc));
+    c.ok("Rebuild is a server action behind requireCreativeLead (owner, office or the creative manager since Oct 21 2026)", /export async function rebuildCreativeIdentityAction[\s\S]{0,120}requireCreativeLead\(\)/.test(actionsSrc));
     const routeSrc = fs.readFileSync(path.join(REPO, "src/app/api/cron/topics/route.ts"), "utf8");
     c.ok("the 15-minute AI cron runs the identity sweep and the script checks", /sweepCreativeIdentities\(/.test(routeSrc) && /sweepScriptChecks\(/.test(routeSrc));
     c.ok("a function runs it for every active enrollment (the live run after deploy)", typeof ident.deriveAllCreativeIdentities === "function");

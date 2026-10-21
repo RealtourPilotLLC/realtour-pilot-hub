@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin, requireRole, requireShootAccess } from "@/lib/auth/guards";
+import { requireAdmin, requireCreativeLead, requireRole, requireShootAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { EDITORS, editorTeamMemberId, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
@@ -64,7 +64,7 @@ async function signedAs(me: import("@/lib/actorName").NamedLogin | null | undefi
 //     recordEditorPacketSent below: the bell is a reminder, never evidence.
 export async function setEditVideoEditor(projectId: string, editorKey: string): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -147,7 +147,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
     const { closeGhostWork } = await import("@/lib/editorWork");
     await closeGhostWork(projectId, {
       reason: unassign ? "UNASSIGNED" : "REASSIGNED",
-      actor: { userId: me?.id ?? null, name: by, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      actor: { userId: me?.id ?? null, name: by, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
       detail: unassign ? `unassigned by ${by}` : `reassigned to ${editorName} by ${by}`,
     });
   } catch { /* the hourly card refresh closes it too */ }
@@ -253,7 +253,7 @@ export type QueueCandidate = {
 
 // Find projects to add — by street or client name. Owner/admin only.
 export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]> {
-  await requireAdmin();
+  await requireCreativeLead();
   const query = (q ?? "").trim();
   if (query.length < 2) return [];
 
@@ -328,7 +328,7 @@ export async function addToEditorQueue(
   note?: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -495,7 +495,7 @@ export async function addToEditorQueue(
         const { closeGhostWork } = await import("@/lib/editorWork");
         await closeGhostWork(projectId, {
           reason: "REASSIGNED",
-          actor: { userId: me?.id ?? null, name: queuedBy ?? "The office", role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          actor: { userId: me?.id ?? null, name: queuedBy ?? "The office", role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
           detail: `the new cut was routed to ${editorName}`,
         });
       }
@@ -708,7 +708,7 @@ export async function saveEditSpec(
   spec: { musicType?: string; colorProfile?: string; desiredLength?: string; instructions?: string },
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -821,9 +821,16 @@ export async function setQueueStatus(projectId: string, label: string, requestId
     });
     editCard = open.find((t) => t.taskType === "edit_video") ?? null;
     const gate = editCard ?? open[0] ?? null;
-    const { requireTaskAccess, requireAdmin: reqAdmin } = await import("@/lib/auth/guards");
-    if (gate) await requireTaskAccess(gate.id);
-    else await reqAdmin();
+    const { requireTaskAccess, requireCreativeLead: reqLead } = await import("@/lib/auth/guards");
+    // The card's own editor, the office, or the creative manager, who runs the
+    // editors' queue with the office (Oct 21 2026).
+    if (gate) {
+      try {
+        await requireTaskAccess(gate.id);
+      } catch (e) {
+        await reqLead().catch(() => { throw e; });
+      }
+    } else await reqLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -834,7 +841,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
   // words instead of the guard's generic line.
   if (target === "SHOT" || target === "WAITING") {
     try {
-      await requireRole(["OWNER", "ADMIN"]);
+      await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
     } catch {
       return { ok: false, message: `Only the office can put a job back to ${target === "WAITING" ? "Waiting" : "Ready for editing"}.` };
     }
@@ -881,7 +888,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
   // review).
   if (heldNow && target !== "WAITING" && target !== "SHOT") {
     try {
-      await requireRole(["OWNER", "ADMIN"]);
+      await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
     } catch {
       const street = (proj.title || "this job").split(",")[0].trim();
       return { ok: false, message: `${street} is held in Waiting by the office — it can't be started until the footage is in.` };
@@ -976,7 +983,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
       const { closeActiveWork } = await import("@/lib/editorWork");
       await closeActiveWork(projectId, {
         reason: "PUT_BACK",
-        actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+        actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
         detail: `put back to Waiting by ${actor}`,
       });
     }
@@ -1368,7 +1375,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
         const { closeActiveWork } = await import("@/lib/editorWork");
         await closeActiveWork(projectId, {
           reason: "PUT_BACK",
-          actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
           detail: `put back to Ready for editing by ${actor}`,
         });
       }
@@ -1511,7 +1518,7 @@ export async function setQueueStatus(projectId: string, label: string, requestId
 // UNDER the new one so nobody loses "typed by the photographer".
 // ---------------------------------------------------------------------------
 export async function saveReelScript(projectId: string, script: string): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCreativeLead();
   const text = script.trim().slice(0, 20_000);
   if (!text) return { ok: false, message: "The script can't be empty — delete a line, not the whole thing." };
   const prior = await prisma.project.findUnique({ where: { id: projectId }, select: { reelScript: true, scriptConfirmNote: true, title: true } });
@@ -1596,7 +1603,10 @@ export async function saveEditOverrides(
   rush?: RushApproval,
 ): Promise<{ ok: boolean; message: string; rush?: RushGate }> {
   try {
-    await requireRole(["OWNER", "ADMIN"]);
+    // The creative manager keeps the override and the rush desk they held as
+    // an admin (Oct 21 2026): Jordan named James the first rush approver
+    // (editorWorkload.rushAuthority, the PRIMARY review seat).
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
   } catch {
     return { ok: false, message: "Only the office can override a job." };
   }
@@ -2011,7 +2021,7 @@ export async function saveEditOverrides(
         const { closeActiveWork } = await import("@/lib/editorWork");
         await closeActiveWork(projectId, {
           reason: "PUT_BACK",
-          actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+          actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
           detail: `put back by ${actor} (override)`,
         });
       }
@@ -2118,7 +2128,7 @@ export async function previewPriorityImpact(
   change: RushChange,
 ): Promise<{ ok: boolean; message?: string; gate?: RushGate }> {
   try {
-    await requireRole(["OWNER", "ADMIN"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
   } catch {
     return { ok: false, message: "Only the office can override a job." };
   }
@@ -2146,7 +2156,7 @@ export async function escalateRushToJordan(
   reason: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireRole(["OWNER", "ADMIN"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
   } catch {
     return { ok: false, message: "Only the office can override a job." };
   }
@@ -2256,7 +2266,7 @@ export async function recordAssetDependencyAction(input: {
   interpretation?: { what: string; ownerKey?: string | null } | null;
 }): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireRole(["OWNER", "ADMIN"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
   } catch {
     return { ok: false, message: "Only the office can record what a job is waiting on." };
   }
@@ -2278,7 +2288,7 @@ export async function recordAssetDependencyAction(input: {
 
 export async function attachAssetReferenceAction(taskId: string, ref: string): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireRole(["OWNER", "ADMIN"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
   } catch {
     return { ok: false, message: "Only the office can attach the file." };
   }
@@ -2307,7 +2317,7 @@ export async function attachAssetReferenceAction(taskId: string, ref: string): P
 /** Take a job off the Editing Room. Reversible for RESTORE_WINDOW_DAYS. */
 export async function removeFromEditorQueue(projectId: string, note?: string): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -2365,7 +2375,7 @@ export async function removeFromEditorQueue(projectId: string, note?: string): P
     const { closeActiveWork } = await import("@/lib/editorWork");
     await closeActiveWork(projectId, {
       reason: "REMOVED",
-      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
       detail: `taken off the Editing Room by ${actor}`,
     });
   }
@@ -2389,7 +2399,7 @@ export async function removeFromEditorQueue(projectId: string, note?: string): P
 /** Put it back, exactly as it was. */
 export async function restoreToEditorQueue(projectId: string): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -2494,7 +2504,7 @@ export async function recentlyRemovedFromQueue(): Promise<
   { projectId: string; street: string; by: string | null; atISO: string; note: string | null; expiresISO: string }[]
 > {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch {
     return [];
   }
@@ -2675,7 +2685,7 @@ export async function mergeProjectWork(
     const { closeActiveWork } = await import("@/lib/editorWork");
     await closeActiveWork(fromId, {
       reason: "MERGED",
-      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
     });
   }
 
@@ -2782,7 +2792,7 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
     const { closeGhostWork } = await import("@/lib/editorWork");
     await closeGhostWork(m.intoId, {
       reason: "MERGED",
-      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" ? "ADMIN" : "OWNER" },
+      actor: { userId: me?.id ?? null, name: actor, role: me?.realRole === "ADMIN" || me?.realRole === "CREATIVE_MANAGER" ? "ADMIN" : "OWNER" },
       detail: `${actor} put the merged work back on its own job`,
     });
   }
@@ -2875,7 +2885,7 @@ export async function saveVideoBrief(
   brandChoice?: import("@/lib/deliverableOutputs").OutputBrandChoice,
 ): Promise<{ ok: boolean; changed: boolean; message: string; version: number | null; reason?: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, changed: false, message: (e as Error).message, version: null, reason: "forbidden" };
   }

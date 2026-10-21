@@ -180,7 +180,7 @@ export async function announceReplacement(submissionId: string): Promise<void> {
       title: `${r.stillApproved ? "An approved video" : "A video"} was replaced: ${r.slotLabel}`,
       body: `${r.by}: "${r.reason.slice(0, 160)}"${r.sent ? " · this one had already gone to the client." : ""}`,
       href: `/review/${r.projectId}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `cut-reopen-${submissionId}`,
     }).catch(() => {});
   } catch (e) {

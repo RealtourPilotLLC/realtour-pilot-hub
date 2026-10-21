@@ -29,7 +29,8 @@ export const maxDuration = 300;
 export default async function StrategyCallsPage() {
   await requirePageAccess("content");
   const me = await getCurrentUser().catch(() => null);
-  if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/content");
+  // Strategy calls feed the creative strategy: the creative manager too (Oct 21 2026).
+  if (me && me.role !== "OWNER" && me.role !== "ADMIN" && me.role !== "CREATIVE_MANAGER") redirect("/content");
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
   const [data, calls, queue, months] = await Promise.all([
     // A failed desk read is said out loud below; it no longer takes the review section down with it.

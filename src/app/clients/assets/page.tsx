@@ -76,7 +76,8 @@ async function assetsByFolder(): Promise<Map<string, string[]> | null> {
 
 export default async function ClientAssetsPage() {
   const me = await getCurrentUser().catch(() => null);
-  const allowed = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // Brand assets are creative context: the creative manager too (Oct 21 2026).
+  const allowed = me ? me.role === "OWNER" || me.role === "ADMIN" || me.role === "CREATIVE_MANAGER" : !authEnforced();
   if (!allowed) redirect(homeFor(me?.role));
 
   const clients = await videoClients();

@@ -500,7 +500,7 @@ export async function notifySelfCheckNeeded(submissionId: string, reason: string
     const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
     const street = (sub.project?.title ?? "job").split(",")[0].trim();
     const href = `/edit/${sub.projectId}#self-check`;
-    const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"], href }];
+    const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"], href }];
     if (sub.submittedByKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(sub.submittedByKey)) {
       targets.push({ roles: ["EDITOR"], userKey: `editor:${sub.submittedByKey}`, href });
     }

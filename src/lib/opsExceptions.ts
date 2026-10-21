@@ -223,7 +223,7 @@ export async function creativeApprover(): Promise<CreativeApprover | null> {
   // still needs owner/admin, because the flag grants nothing.
   const login = await prisma.appUser
     .findFirst({
-      where: { teamMemberId: row.id, status: "ACTIVE", ...(picked ? {} : { role: { in: ["OWNER", "ADMIN"] } }) },
+      where: { teamMemberId: row.id, status: "ACTIVE", ...(picked ? {} : { role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] } }) },
       select: { id: true },
     })
     .catch(() => null);

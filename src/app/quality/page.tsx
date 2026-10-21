@@ -75,6 +75,10 @@ export default async function QualityPage({
   // view is theirs to act on. An EDITOR: their OWN review results and nothing
   // else on this page — no team comparison, no client or photographer tabs.
   const officeView = !me || me.role === "OWNER" || me.role === "ADMIN";
+  // The creative manager (Oct 21 2026): the two creative halves, how each
+  // photographer is shooting and how each editor's versions fare. What clients
+  // said, with its replies and handled marks, stays the office's tab.
+  const creativeLead = !!me && me.role === "CREATIVE_MANAGER";
   let reviewSeat = officeView;
   if (!reviewSeat && me && !me.impersonating) {
     try {
@@ -86,15 +90,16 @@ export default async function QualityPage({
   if (me && !officeView && !reviewSeat && !editorSelf) redirect(homeFor(me.role));
 
   const sp = await searchParams;
-  const tab: QualityTab =
-    !officeView || sp.tab === "editors" ? "editors" : sp.tab === "photographers" ? "photographers" : "clients";
+  const tab: QualityTab = creativeLead
+    ? (sp.tab === "editors" ? "editors" : "photographers")
+    : !officeView || sp.tab === "editors" ? "editors" : sp.tab === "photographers" ? "photographers" : "clients";
   const filter: ClientFilter =
     sp.filter === "unhappy" || sp.filter === "rated" || sp.filter === "open" ? sp.filter : "all";
 
   // Load ONLY the tab being viewed (the /users + /communications pattern) —
   // the photographer roll is four queries nobody asked for on a client view.
   const [tabCounts, feedRaw, boardRaw, editors] = await Promise.all([
-    officeView ? getTabCounts() : Promise.resolve({ clients: 0, photographers: 0 }),
+    officeView || creativeLead ? getTabCounts() : Promise.resolve({ clients: 0, photographers: 0 }),
     tab === "clients" ? getClientFeedbackFeed(filter) : null,
     tab === "photographers" ? getPhotographerBoard() : null,
     tab === "editors" ? loadEditorsTab(editorSelf ? (me?.editorKey ?? "__none__") : null, sp.test === "1") : null,
@@ -154,7 +159,7 @@ export default async function QualityPage({
         subtitle="What clients said about the work, and how each photographer is doing. Requests and bugs about the hub itself live on Feedback & requests."
       />
       <div className="mx-auto max-w-4xl space-y-5 px-4 py-5 sm:px-6">
-        <QualityTabs active={tab} counts={{ ...tabCounts, editors: editors?.unclassified.length }} only={officeView ? undefined : ["editors"]} />
+        <QualityTabs active={tab} counts={{ ...tabCounts, editors: editors?.unclassified.length }} only={officeView ? undefined : creativeLead ? ["photographers", "editors"] : ["editors"]} />
         {openComplaints && <OpenComplaintsList issues={openComplaints} />}
         {feed && <ClientTab feed={feed} />}
         {board && <PhotographerTab board={board} mod={mod} />}

@@ -1,6 +1,6 @@
 "use server";
 
-import { requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
+import { requireAdmin, requireCreativeLead, requireTaskAccess } from "@/lib/auth/guards";
 import { deliveryStamp, outstandingForDelivery } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
 import { appBase } from "@/lib/appUrl";
@@ -849,7 +849,9 @@ export async function createManualTask(input: {
   priority?: string;
   assignedKey?: string;
 }): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  // The creative manager may hand out work too (Oct 21 2026): a note to an
+  // editor, a reshoot to plan, a fix for the field team.
+  await requireCreativeLead();
   const title = (input.title || "").trim();
   if (!title) return { ok: false, message: "Give the task a title." };
 
@@ -1149,7 +1151,7 @@ export async function editCardWork(taskIds: string[]): Promise<{ ok: boolean; ca
     if (authEnforced()) {
       if (!me) return { ok: false, cards };
       if (me.role !== "OWNER" && me.role !== "ADMIN") {
-        if (me.role !== "EDITOR" && me.role !== "PHOTOGRAPHER") return { ok: true, cards };
+        if (me.role !== "EDITOR" && me.role !== "PHOTOGRAPHER" && me.role !== "CREATIVE_MANAGER") return { ok: true, cards };
         mine = await addressableKeys(me);
       }
     }
@@ -1194,7 +1196,9 @@ export async function toggleTaskChecklistItem(
   taskId: string,
   index: number,
 ): Promise<{ ok: boolean; items: { label: string; done: boolean }[]; completed: boolean }> {
-  await requireAdmin();
+  // Owner/office, or the person the task is assigned to (Oct 21 2026: the
+  // creative manager ticks their own task's list; requireTaskAccess's rule).
+  await requireTaskAccess(taskId);
   const { parseChecklist, serializeChecklist, checklistComplete } = await import("@/lib/checklist");
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
@@ -1759,7 +1763,7 @@ export async function addNote(
   body: string,
   type: ActivityType = ActivityType.NOTE,
 ) {
-  await requireAdmin();
+  await requireCreativeLead();
   const trimmed = body.trim();
   if (!trimmed) return;
   await prisma.activity.create({
@@ -1819,7 +1823,8 @@ export async function setDeliverableStatus(
 export async function recheckProjectStatus(
   projectId: string,
 ): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  // A read-and-recompute, no decision in it: the creative manager too (Oct 21 2026).
+  await requireCreativeLead();
   try {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     const r = await syncProjectStatuses({ projectId });

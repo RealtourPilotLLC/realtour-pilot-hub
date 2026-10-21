@@ -81,8 +81,8 @@ export async function escalationOwnerFor(enrollmentId: string, monthId?: string 
   return (await ownersFor(enrollmentId, monthId))["ESCALATION"];
 }
 
-/** Staff a duty can be handed to — active owner/admin logins only. */
+/** Staff a duty can be handed to: active owner, admin and creative manager logins (the creative manager since Oct 21 2026). */
 export async function staffChoices(): Promise<{ id: string; name: string; email: string; role: string }[]> {
-  const users = await prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN"] } }, select: { id: true, name: true, email: true, role: true }, orderBy: { name: "asc" } });
+  const users = await prisma.appUser.findMany({ where: { status: "ACTIVE", role: { in: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] } }, select: { id: true, name: true, email: true, role: true }, orderBy: { name: "asc" } });
   return users.map((u) => ({ id: u.id, name: u.name ?? u.email, email: u.email, role: u.role }));
 }

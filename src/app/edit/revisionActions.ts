@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireTaskAccess, requireAdmin } from "@/lib/auth/guards";
+import { requireTaskAccess, requireAdmin, requireCreativeLead } from "@/lib/auth/guards";
 import { analyzeBrief } from "@/lib/revisionBrief";
 
 // Who may act on a revision brief: the editor it's assigned to, plus
@@ -56,7 +56,7 @@ export async function setBriefItemDone(
  */
 export async function reanalyzeBrief(briefId: string): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }

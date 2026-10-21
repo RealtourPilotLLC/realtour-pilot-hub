@@ -46,7 +46,7 @@ export default async function FeedbackPage() {
   ]);
   const shots = new Set(withShot.map((r) => r.id));
   // Only owner/admin can open /quality, so only they get the pointer to it.
-  const showQualityLink = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
+  const showQualityLink = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN" || viewer.role === "CREATIVE_MANAGER";
   const rows: FeedbackRow[] = all.map((f) => ({
     id: f.id,
     kind: f.kind,
