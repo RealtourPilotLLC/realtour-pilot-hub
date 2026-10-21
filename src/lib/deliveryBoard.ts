@@ -25,7 +25,7 @@ import { turnaroundRules } from "@/lib/settings";
 // Light: prisma, the roster and the date helpers.
 import { workLabel, workStateFor, type ProjectWork } from "@/lib/editorWork";
 import { overrideLineSetsDue } from "@/lib/editOverrides";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -1173,7 +1173,7 @@ export async function deliveryBoard(opts: { includeTest?: boolean; excludeClient
   const todayKey = etDayKey(now);
   const tomorrowKey = etDayKey(etAddDays(now, 1));
   const excludedClientIds = opts.excludeClientIds ?? (opts.includeTest === false
-    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    ? await syntheticClientIds()
     : []);
   const excludedProjectIds = excludedClientIds.length
     ? (await prisma.project.findMany({ where: { clientId: { in: excludedClientIds } }, select: { id: true } })).map((p) => p.id)

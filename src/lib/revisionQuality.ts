@@ -1,14 +1,14 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { CAUSE_LABEL, hasConfirmedIssueCause, isEditorCaused, type IssueCause } from "@/lib/issueCauses";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 
 /** Read the existing issue ledger; optional QC checkboxes are never evidence here. */
 export async function revisionQuality(days = 30, opts: { includeTest?: boolean; now?: Date } = {}) {
   const to = opts.now ?? new Date();
   const from = new Date(to.getTime() - days * 86_400_000);
   const excluded = opts.includeTest === false
-    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    ? await syntheticClientIds()
     : [];
   // Plain project references can outlive records. Unlinked history cannot be
   // assigned to a normal client and is reported separately, never as clean work.

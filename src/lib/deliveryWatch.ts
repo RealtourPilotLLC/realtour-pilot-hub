@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
-import { etDayKey, isWeekdayET } from "@/lib/datetime";
+import { etDayKey, etHour, isWeekdayET } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // "PHOTOS STILL NOT OUT" WATCHDOG.
@@ -37,9 +37,6 @@ const LOOKBACK_DAYS = 6;
 // enough that someone can still act on it.
 const ALERT_HOUR_FROM = 16;
 const ALERT_HOUR_TO = 19;
-
-const etHour = () =>
-  Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()));
 
 export type DeliveryWatchResult = {
   checked: number;

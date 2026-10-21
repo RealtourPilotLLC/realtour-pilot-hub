@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etAt, etDate, etDateTime, etDayKey, etMinutesOfDay } from "@/lib/datetime";
+import { etAt, etDate, etDateTime, etDayKey, etHour } from "@/lib/datetime";
 import { noDashes, scrubMoney } from "@/lib/text";
 import type { OpsDay, OpsShoot } from "@/lib/opsDay";
 import type { DeliveryBoard, BoardJob } from "@/lib/deliveryBoard";
@@ -43,7 +43,6 @@ const BRIEF_TO = 22; // a shoot booked tonight for tomorrow still gets its brief
 const ACCESS_GAP = "no lockbox / access answer on the appointment";
 export const ACCESS_TASK_PREFIX = "shoot-access-missing:";
 
-const etHour = (d: Date) => Math.floor(etMinutesOfDay(d) / 60);
 const etDow = (d: Date) => new Date(`${etDayKey(d)}T12:00:00Z`).getUTCDay(); // 0 = Sunday
 const street = (t: string | null | undefined) => (t ?? "").split(",")[0].trim() || "a job";
 const first = (n: string | null | undefined) => (n ?? "").trim().split(/\s+/)[0] || "";

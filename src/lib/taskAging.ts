@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { homeFor } from "@/lib/auth/access";
 import { listAssignees, slugForName, type Assignee } from "@/lib/assignees";
 import { taskClientScopeWhere } from "@/lib/taskClientScope";
-import { etDate, etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { etDate, etDayKey, etDayStartUtc, etHour } from "@/lib/datetime";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { CLIENT_TEXT_TYPES } from "@/lib/clientTexts";
 import { noDashes, scrubMoney } from "@/lib/text";
 import { DISMISSED_PREFIX } from "@/lib/triage";
@@ -436,11 +437,6 @@ export async function kyleOldItemLines(base: string, now: Date = new Date()): Pr
   return { lines: oldItemsDigestLines(read.items, base), count: read.items.length };
 }
 
-async function syntheticClientIds(): Promise<string[]> {
-  const { isSyntheticClientRow } = await import("@/lib/testClients");
-  return (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
-}
-
 // ---------------------------------------------------------------------------
 // ONCE A DAY, IN THE MORNING (the comms cron, every 5 minutes, 8 to 10 AM ET).
 // One bell and one Slack DM per person with old items, claimed per person per
@@ -453,8 +449,8 @@ async function syntheticClientIds(): Promise<string[]> {
 export type MorningResult = { window: boolean; people: { name: string; bell: boolean; dm: string }[] };
 
 export async function oldItemsMorning(now: Date = new Date()): Promise<MorningResult> {
-  const etHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(now));
-  if (etHour < 8 || etHour >= 10) return { window: false, people: [] };
+  const hour = etHour(now);
+  if (hour < 8 || hour >= 10) return { window: false, people: [] };
   const day = etDayKey(now);
   const { notifyInApp, deliverDigestDm, kyleDigestRecipient } = await import("@/lib/notify");
   const { appBase } = await import("@/lib/appUrl");

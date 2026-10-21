@@ -6,8 +6,7 @@ import { canSeeMoney } from "@/lib/auth/access";
 
 import { getTaskHistory, getDeliveryHistory, getShootHistory } from "@/lib/queries";
 import { etAt, etDayStartUtc } from "@/lib/datetime";
-import { prisma } from "@/lib/prisma";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { scrubMoney } from "@/lib/text";
 
 // AI recap of one ET calendar day, built from that day's completed tasks,
@@ -32,7 +31,7 @@ export async function summarizeDay(dayKey: string, opts: { includeTest?: boolean
   const me = await getCurrentUser().catch(() => null);
   const clean = (s: string) => (!me || canSeeMoney(me.role) ? s : scrubMoney(s));
   const excludeClientIds = opts.includeTest ? []
-    : (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+    : await syntheticClientIds();
   // That one ET day, not the last 120 (audit A4). Noon plus a day lands inside
   // the next ET day whatever the clocks did overnight.
   const noon = etAt(dayKey, 12);

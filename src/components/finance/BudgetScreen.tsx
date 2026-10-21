@@ -7,10 +7,10 @@ import { Markdown } from "@/components/ui/Markdown";
 import { saveBudgetTargetAction, removeBudgetTargetAction } from "@/app/sales/budgetActions";
 import { aiSetupBudgetAction } from "@/app/sales/advisorActions";
 import { CategoryTxnPanel, type CatOpt } from "@/components/finance/CategoryTxnPanel";
+import { usd0 as m0 } from "@/lib/money";
 
 export type BudgetRow = { category: string; target: number; note: string | null; spent: number; avg3mo: number };
 
-const m0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const MONTH = (key: string) => new Date(`${key}-01T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
 
 export function BudgetScreen({

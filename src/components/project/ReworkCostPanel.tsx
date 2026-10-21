@@ -4,6 +4,7 @@ import { evidenceCandidates, reworkRowsForProject, REWORK_KIND_LABEL } from "@/l
 import { CAUSE_LABEL, isIssueCause } from "@/lib/issueCauses";
 import { etDate } from "@/lib/datetime";
 import { ReworkCostForm, VoidReworkButton } from "@/components/project/ReworkCostForm";
+import { usd2 } from "@/lib/money";
 
 // WHAT THE REDO COST (§10 AU-26, Sep 26) — OWNER ONLY; the caller renders it
 // only when the viewer can see money. Actual and estimate are kept apart, a job
@@ -11,7 +12,7 @@ import { ReworkCostForm, VoidReworkButton } from "@/components/project/ReworkCos
 // subtracted into a profit figure: the Jobs tab shows it BESIDE the modelled
 // margin.
 
-const usd = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const usd = (cents: number) => usd2(cents / 100);
 
 function evidenceWords(raw: string): string {
   const ref = raw.split("#void:")[0];

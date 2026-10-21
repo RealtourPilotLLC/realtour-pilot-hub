@@ -2,8 +2,8 @@ import Link from "next/link";
 import { DollarSign, Camera, Car, Upload, ChevronRight, Clock, HelpCircle } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { shootEarnings } from "@/lib/shoot";
+import { usd2 as usd } from "@/lib/money";
 
-const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // Async server component: computes the assigned photographer's pay for this one
 // shoot (base pay + that day's mileage share) and renders it. Rendered inside a

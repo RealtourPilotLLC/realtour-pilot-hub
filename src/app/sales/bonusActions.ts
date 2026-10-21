@@ -2,8 +2,8 @@
 import { revalidatePath } from "next/cache";
 import { requireOwner } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
+import { usd2 } from "@/lib/money";
 
-const usd2 = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // The ONLY money path out of the bonus engine (its own design rule #4: the
 // engine computes, it never pays). Owner-only; idempotent per person+quarter;

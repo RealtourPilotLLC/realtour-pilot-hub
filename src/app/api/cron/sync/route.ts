@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cronBudget, authorizeCron, runParts } from "@/lib/cron";
+import { etHour } from "@/lib/datetime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,7 +123,7 @@ export async function GET(req: NextRequest) {
   // Oct 15 2026: once a day (the 4 AM ET run) look 60 days back, so videos
   // added to a listing after its delivery reach the library too. That run
   // gets the longer cap (no client text goes out at 4 AM anyway).
-  const libraryEtHour = Number(new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
+  const libraryEtHour = etHour();
   await step("portalLibrary", async () => {
     // Fresh Aryeo deliveries on content jobs reach the client's portal library
     // within the hour (review-room approvals land instantly via the hook).

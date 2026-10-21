@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { lockAdvisory } from "@/lib/dbLocks";
 import { isSyntheticClientRow, isVerifiedTestDestinationEmail } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import type { HubWriteScopeConfig, HubWriteSwitch, PilotState } from "@/lib/hubWritePermit";
 import {
   CLOSED_ROLLOUT,
@@ -432,9 +433,6 @@ export async function rolloutSweepClientIds(
   const { rolloutClientFilter } = await import("@/lib/programRolloutCore");
   const f = rolloutClientFilter({ rollout, op, now, featureTestOnly: opts.featureTestOnly });
   if (f.everyone) return null;
-  const named = await prisma.client
-    .findMany({ where: { OR: [{ name: { contains: "test", mode: "insensitive" } }, { name: { contains: "john doe", mode: "insensitive" } }] }, select: { id: true, name: true } })
-    .catch(() => [] as { id: string; name: string }[]);
-  const synthetic = named.filter((c) => isSyntheticClientRow(c)).map((c) => c.id);
+  const synthetic = await syntheticClientIds().catch(() => [] as string[]);
   return [...new Set([...synthetic, ...f.realClientIds])];
 }

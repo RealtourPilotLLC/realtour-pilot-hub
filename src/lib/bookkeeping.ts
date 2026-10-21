@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { vendorName, STRIPE_CONNECT_ACCOUNTS, stripeWindow } from "@/lib/financeCategories";
 import { etDayKey } from "@/lib/datetime";
+import { usd0 } from "@/lib/money";
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -485,7 +486,7 @@ export async function expenseCoverage(startKey: string, endKey: string): Promise
         : pct < BOOKS_COVERAGE_THIN ? "thin"
           : "current";
 
-  const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+  const money = usd0;
   const note =
     verdict === "unknown"
       ? "No bank activity in this period, so there is nothing to measure the books against."

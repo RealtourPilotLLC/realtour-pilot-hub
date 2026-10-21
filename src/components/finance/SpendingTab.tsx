@@ -8,9 +8,9 @@ import { SpendingCategories } from "@/components/finance/SpendingCategories";
 import { VendorTable } from "@/components/finance/VendorTable";
 import { KpiCards } from "@/components/finance/KpiCards";
 import { Store } from "lucide-react";
+import { usd0 as m } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
-const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 // "Where the money goes" — every 2026 bank/card/Venmo dollar categorized as
 // BUSINESS or PERSONAL, with self-transfers / card paydowns / top-ups excluded

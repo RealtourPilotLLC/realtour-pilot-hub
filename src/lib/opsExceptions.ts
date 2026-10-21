@@ -234,7 +234,7 @@ export async function opsExceptionsBoard(opts: { now?: Date; includeTest?: boole
   const now = (opts.now ?? new Date()).getTime();
   const cap = EXCEPTION_RULES.perKind;
   // Shared within a page render with the dashboard's own read (audit A3).
-  const excludedClientIds = opts.includeTest === false ? await (await import("@/lib/queries")).syntheticClientIds() : [];
+  const excludedClientIds = opts.includeTest === false ? await (await import("@/lib/syntheticClients")).syntheticClientIds() : [];
   const clientScope = excludedClientIds.length ? { clientId: { notIn: excludedClientIds } } : {};
   // The roster is read WITH the approver rather than after it: resolving the
   // key an engine wrote on a task ("john", "kim", "cubicasa") to a person costs

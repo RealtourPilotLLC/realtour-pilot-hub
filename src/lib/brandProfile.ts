@@ -14,6 +14,7 @@ import { isAutomationEnabled } from "@/lib/programAutomation";
 import { clip, scrubMoney, stripMoneySentences } from "@/lib/text";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
 import { mediaToken, type MediaScope } from "@/lib/portalMedia";
+import { etDayKey, etHour } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // THE BRAND PROFILE — one spine for every change to what a client's videos
@@ -508,9 +509,9 @@ export function describeBrandChange(r: Pick<ChangeRow, "label" | "kind" | "fromT
   return `${r.label}: ${r.fromText ? `${q(r.fromText)} → ` : ""}${q(r.toText)}${r.kind === "APPLIED_FROM_CALL" ? " (from a call, applied by the office)" : ""}`;
 }
 
+/** "2026102107": the ET day and hour, the brand-change alert's dedupe bucket. */
 function etHourKey(d: Date): string {
-  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(d).map((x) => [x.type, x.value]));
-  return `${p.year}${p.month}${p.day}${p.hour}`;
+  return `${etDayKey(d).replace(/-/g, "")}${String(etHour(d)).padStart(2, "0")}`;
 }
 
 export type BrandAlertOutcome = { claimed: number; channel: string | null; editors: string[]; taskId: string | null };

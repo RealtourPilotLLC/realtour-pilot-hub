@@ -2,13 +2,13 @@ import Link from "next/link";
 import { Repeat, AlertTriangle } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import type { RecurringRevenue as Recurring } from "@/lib/recurring";
+import { usd0 } from "@/lib/money";
 
 // The second revenue rail. Everything else on /trends counts Aryeo money — what
 // clients pay per listing. This counts what they pay every month whether or not
 // they list anything, which is the steadiest revenue in the business and appears
 // in no Aryeo figure anywhere.
 
-const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 export function RecurringRevenueCard({ data }: { data: Recurring }) {
   const { retainers, lapsed, passes } = data;

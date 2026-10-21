@@ -4,7 +4,7 @@ import { requireOwner } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { parseMoney } from "@/lib/money";
+import { parseMoney, usd2 } from "@/lib/money";
 
 export type ActionResult = { ok: boolean; message: string };
 
@@ -139,7 +139,7 @@ export async function creativeStatementHtml(
   if (!p) return { ok: false, message: "No payout for this creative in this period." };
 
   const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-  const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const usd = usd2;
   const dKey = (k: string, o: Intl.DateTimeFormatOptions) => new Date(k + "T12:00:00Z").toLocaleDateString("en-US", o);
   const dISO = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "—");
 

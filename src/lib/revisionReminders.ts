@@ -5,7 +5,7 @@ import { editorMeta, TEAM_MEMBER_EDITOR_KEYS } from "@/lib/editors";
 import { appBase } from "@/lib/appUrl";
 import { etDayKey, etMinutesOfDay, etMonthDay } from "@/lib/datetime";
 import { firstName } from "@/lib/reviewAttribution";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { escapeSlack } from "@/lib/text";
 import { videoNavigationFor } from "@/lib/videoNavigation";
 import { dayWords, HOUR_MS, waitedDays, type RevisionAsk } from "@/lib/openRevisions";
@@ -104,7 +104,7 @@ export function askWords(r: Pick<OpenRevision, "video" | "source" | "by" | "sinc
 export async function openRevisions(opts: { now?: Date } = {}): Promise<OpenRevision[]> {
   const now = opts.now ?? new Date();
   // TEST clients are off the office's board, so they are off this too.
-  const excludeClientIds = (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
+  const excludeClientIds = await syntheticClientIds();
   const { notDone } = await buildEditorQueue({ excludeClientIds });
   const rows = notDone.filter((r) => r.status === STATUS_LABEL.REVISION && r.revisionAsks?.length);
   if (rows.length === 0) return [];

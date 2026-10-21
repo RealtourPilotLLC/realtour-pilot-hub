@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { readyToSend } from "@/lib/readyToSend";
 import { notifyInApp } from "@/lib/notify";
 import { appBase } from "@/lib/appUrl";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 import { deliveryReadyMessage, hubIsSending } from "@/lib/deliveryReadyMessage";
 
 /**
@@ -89,9 +89,8 @@ export async function deliveryAlertsDue(now: Date = new Date()): Promise<{ due: 
 /** Staff-only reminders. Never uploads media, releases a portal, or sends to clients. */
 export async function notifyKyleDeliveryReady() {
   const owner = await deliveryOwnerTeamMemberId();
-  const clients = await prisma.client.findMany({ select: { id: true, name: true } });
   const board = await readyToSend({
-    excludeClientIds: clients.filter(isSyntheticClientRow).map(c => c.id),
+    excludeClientIds: await syntheticClientIds(),
     recordFollowUpHealth: false,
     includeNoticeIncidents: false,
     // Only `ready` is read here (audit H2/B3): no follow-up lanes.

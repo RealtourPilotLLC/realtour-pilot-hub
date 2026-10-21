@@ -24,7 +24,7 @@ import { listAssignees, viewerAssigneeKey } from "@/lib/assignees";
 import { scrubMoney } from "@/lib/text";
 import { formatDistanceToNow } from "date-fns";
 import { deliveryNoticeFocus } from "@/lib/deliveryNoticeIncidents";
-import { isSyntheticClientRow } from "@/lib/testClients";
+import { syntheticClientIds } from "@/lib/syntheticClients";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Messages" };
@@ -67,8 +67,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   const includeTest = TEST_SCOPED_TABS.has(tab) && sp.test === "1";
   const me = await getCurrentUser().catch(() => null);
   const isOwner = !me || me.role === "OWNER";
-  const syntheticClientIds = (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id);
-  const excludeClientIds = includeTest ? [] : syntheticClientIds;
+  const excludeClientIds = includeTest ? [] : await syntheticClientIds();
   const roster = me ? await listAssignees().catch(() => []) : [];
   const viewer = me ? { key: viewerAssigneeKey(me, roster), role: me.role, teamMemberId: me.teamMemberId } : null;
   const now = new Date();

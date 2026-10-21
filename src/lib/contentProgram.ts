@@ -10,6 +10,7 @@ import {
   type SessionLeg,
 } from "@/lib/turnaround";
 import type { MonthProgress } from "@/lib/monthProgress";
+import { etMonthKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Content Creator Program — domain layer (Phase 1).
@@ -173,12 +174,8 @@ export function programPriceFor(priceId: string | null | undefined): StripeProgr
 }
 
 // ET month key ("2026-08") for a date — months are ET like everything else.
-export function etMonthKey(d: Date = new Date()): string {
-  const p = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit" }).formatToParts(d);
-  const y = p.find((x) => x.type === "year")!.value;
-  const m = p.find((x) => x.type === "month")!.value;
-  return `${y}-${m}`;
-}
+// The one definition lives in datetime.ts (Oct 21 2026, audit H15).
+export { etMonthKey };
 
 /**
  * The LAST month a client may see in the portal (Jordan, Oct 13 2026: "I

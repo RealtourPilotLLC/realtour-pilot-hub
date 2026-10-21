@@ -1,13 +1,13 @@
 import { Scale } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { getPackageMargins } from "@/lib/packageMargin";
+import { usd0 } from "@/lib/money";
 
 // Reads a PRECOMPUTED row. Costing the year runs the payroll engine, which
 // resolves mileage through the public OSRM router — that took a 60-second
 // serverless function down in production while running in 3s locally. The engine
 // now runs once a night in the cron; this is a single row read.
 
-const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 export function MarginByPackageSkeleton() {
   return (

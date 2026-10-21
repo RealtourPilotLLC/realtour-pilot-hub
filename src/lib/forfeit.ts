@@ -23,6 +23,8 @@
 // of grouped queries and hands it here.
 // ---------------------------------------------------------------------------
 
+import { etMonthKey } from "@/lib/datetime";
+
 export type ForfeitMonthRow = { monthKey: string; status: string; historical: boolean; strategyCallStatus?: string | null };
 
 export type ForfeitEvidence = {
@@ -42,10 +44,9 @@ export type ForfeitEvidence = {
 
 export const NO_EVIDENCE: ForfeitEvidence = { shoots: 0, sessionRequests: 0, videos: 0, filmedTopics: 0, plannedWork: 0, calls: 0 };
 
-/** "2026-10" for an instant, on the ET calendar. */
+/** "2026-10" for an instant, on the ET calendar (datetime.etMonthKey, audit H15). */
 export function etMonthKeyOf(d: Date): string {
-  const p = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit" }).formatToParts(d);
-  return `${p.find((x) => x.type === "year")!.value}-${p.find((x) => x.type === "month")!.value}`;
+  return etMonthKey(d);
 }
 
 /** The month's ET calendar month is over. */

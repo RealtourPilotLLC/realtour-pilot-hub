@@ -4,6 +4,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/utils";
 import type { OpsShoot } from "@/lib/opsDay";
 import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
+import { etMinutesOfDay } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // WHAT THE OLD DAILY CHECKLIST LEFT BEHIND (Oct 19 2026, evening).
@@ -21,13 +22,9 @@ import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
 
 const ET = "America/New_York";
 
-export function etMinutes(d: Date): number {
-  const [h, m] = d
-    .toLocaleTimeString("en-US", { timeZone: ET, hour: "2-digit", minute: "2-digit", hour12: false })
-    .split(":")
-    .map(Number);
-  return h * 60 + m;
-}
+/** Minutes past ET midnight: datetime.etMinutesOfDay (Oct 21 2026, audit H15).
+ *  The local copy read the midnight hour as "24" (en-US hour12:false). */
+export const etMinutes = (d: Date): number => etMinutesOfDay(d);
 const fmtTime = (iso: string) =>
   new Date(iso).toLocaleTimeString("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit" });
 

@@ -17,6 +17,9 @@ import { authEnforced } from "@/lib/auth/guards";
 import { buildDayPlan, ownerTodoLists, ownerMemberId, calendarAhead } from "@/lib/ownerDay";
 import { ownerPulse } from "@/lib/ownerPulse";
 import { etDayKey } from "@/lib/datetime";
+// "-$1,995", never "$-1,995": the dashboard's rule for an overdrawn figure
+// (money.usd0Signed), here too (Oct 20 2026, audit A12).
+import { usd0Signed as usd0 } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 
@@ -37,12 +40,6 @@ export const dynamic = "force-dynamic";
 //  · Reference material (the week, the money) sits at the bottom and stays out
 //    of the way of the doing.
 
-// "-$1,995", never "$-1,995": the dashboard's rule for an overdrawn figure
-// (app/page.tsx usd0), here too (Oct 20 2026, audit A12).
-const usd0 = (n: number) => {
-  const r = Math.round(n);
-  return `${r < 0 ? "-" : ""}$${Math.abs(r).toLocaleString("en-US")}`;
-};
 const hhmm = (d: Date) =>
   d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
 

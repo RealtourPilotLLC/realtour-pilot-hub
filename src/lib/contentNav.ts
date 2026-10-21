@@ -22,6 +22,8 @@
 // server actions, the page and client components can all import it.
 // ---------------------------------------------------------------------------
 
+import { etMonthKey } from "@/lib/datetime";
+
 export type StaffTab = "overview" | "plan" | "production" | "brand" | "messages" | "settings" | "import";
 export type PlanView = "topics" | "scripts" | "strategy" | "calls" | "knowledge" | "bulk";
 export type ProductionView = "sessions" | "videos" | "revisions";
@@ -131,12 +133,6 @@ export function resolveStaffTab(tab?: string | null, view?: string | null, isOwn
   return { tab: "overview", view: null, redirect: true, preview: false, moved: false };
 }
 
-/** The ET month key — contentProgram.etMonthKey's formula, restated here only because that module is server-only. */
-function etMonthKeyPure(d: Date): string {
-  const p = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit" }).formatToParts(d);
-  return `${p.find((x) => x.type === "year")!.value}-${p.find((x) => x.type === "month")!.value}`;
-}
-
 export type ContentHrefOpts = {
   tab?: StaffTab | null;
   view?: string | null;
@@ -154,7 +150,7 @@ export function contentHref(enrollmentId: string, opts: ContentHrefOpts = {}): s
   const tab = opts.tab ?? "overview";
   if (tab !== "overview") q.set("tab", tab);
   if (tab !== "overview" && opts.view) q.set("view", opts.view);
-  if (opts.month && opts.month !== etMonthKeyPure(opts.now ?? new Date())) q.set("month", opts.month);
+  if (opts.month && opts.month !== etMonthKey(opts.now ?? new Date())) q.set("month", opts.month);
   if (opts.moved) q.set("moved", "1");
   const qs = q.toString();
   return `/content/${enrollmentId}${qs ? `?${qs}` : ""}${opts.anchor ? `#${opts.anchor.replace(/^#/, "")}` : ""}`;

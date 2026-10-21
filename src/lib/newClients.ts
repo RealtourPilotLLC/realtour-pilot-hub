@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { clip } from "@/lib/text";
 import { isSyntheticClientRow } from "@/lib/testClients";
+import { SYNTHETIC_CANDIDATE_WHERE } from "@/lib/syntheticClients";
 
 // ---------------------------------------------------------------------------
 // NEW CLIENTS — the ping, and the list behind the home-dashboard card.
@@ -60,7 +61,7 @@ export async function newClientsForDashboard(
   // Filtering the six returned cards would let recent TEST clients crowd a
   // real arrival out of the normal Home view.
   const excludedIds = opts.includeTest === false
-    ? (await prisma.client.findMany({ where: { firstSeenAt: { gte: since }, parentClientId: null }, select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
+    ? (await prisma.client.findMany({ where: { firstSeenAt: { gte: since }, parentClientId: null, ...SYNTHETIC_CANDIDATE_WHERE }, select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
     : [];
 
   const rows = await prisma.client.findMany({

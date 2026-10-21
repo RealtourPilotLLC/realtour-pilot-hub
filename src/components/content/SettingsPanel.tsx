@@ -8,6 +8,7 @@ import {
   setWorkflowFlagsAction, setOverrideAction, setEnrollmentOwnerAction,
 } from "@/app/content/[id]/workspaceActions";
 import type { CurrentMonthChoice } from "@/lib/enrollmentChanges";
+import { usd0 } from "@/lib/money";
 
 // ---------------------------------------------------------------------------
 // SETTINGS (spec §17). Package, enrollment status, allowances, call
@@ -62,7 +63,7 @@ export type HistoryUi = { id: string; field: string; from: string | null; to: st
 const btn = "rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50";
 const quiet = "rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50";
 const input = "rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm";
-const money = (n: number | null | undefined) => (n == null ? "—" : `$${Math.round(n).toLocaleString("en-US")}`);
+const money = (n: number | null | undefined) => (n == null ? "—" : usd0(n));
 const day = (isoStr: string | null) => (isoStr ? new Date(isoStr).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : "—");
 
 export function SettingsPanel({

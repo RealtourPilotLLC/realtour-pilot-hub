@@ -531,7 +531,7 @@ async function main() {
   const deliveryEmitter = readFileSync(path.join(process.cwd(), "src/lib/deliveryReadyNotify.ts"), "utf8");
   // Oct 5 wave 2: addressed to the DELIVERY duty owner's roster row, not "the one name containing Kyle".
   check("delivery queue addresses Kyle with a Slack sentence", deliveryEmitter.includes('userKey: `tm:${owner}`') && deliveryEmitter.includes('await deliveryOwnerTeamMemberId()') && deliveryEmitter.includes('slackDm: message.slackDm'));
-  check("delivery queue uses verified readiness and excludes synthetic clients", deliveryEmitter.includes('await readyToSend(') && deliveryEmitter.includes('clients.filter(isSyntheticClientRow)'));
+  check("delivery queue uses verified readiness and excludes synthetic clients", deliveryEmitter.includes('await readyToSend(') && deliveryEmitter.includes('excludeClientIds: await syntheticClientIds()'));
   check("old Topaz emitter no longer duplicates the ready notification", !src.slice(src.indexOf('async function pingKyle'), src.indexOf('const PROGRAM_CARD_CLOSED')).includes('await notifyInApp('));
   // `ownerSms:` with the colon — the PROPERTY, not the word. The first cut of
   // this check matched the prose in pingKyle's own comment, which explains why

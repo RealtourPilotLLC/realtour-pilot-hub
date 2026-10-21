@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { usd0 as m } from "@/lib/money";
 
 type Row = {
   vendor: string;
@@ -14,7 +15,6 @@ type Row = {
 
 type SortKey = "vendor" | "category" | "ytd" | "avgMonthly" | "count";
 
-const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 // Sortable vendors table — click a header to sort by it; click again to flip.
 // Text columns default A→Z, money/number columns default high→low.
