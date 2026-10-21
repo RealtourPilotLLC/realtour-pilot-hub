@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { canSeeMoney, homeFor } from "@/lib/auth/access";
+import { scrubMoney } from "@/lib/text";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { PlatformFeedbackItem } from "@/components/feedback/PlatformFeedbackItem";
@@ -92,12 +93,42 @@ export default async function QualityPage({
 
   // Load ONLY the tab being viewed (the /users + /communications pattern) —
   // the photographer roll is four queries nobody asked for on a client view.
-  const [tabCounts, feed, board, editors] = await Promise.all([
+  const [tabCounts, feedRaw, boardRaw, editors] = await Promise.all([
     officeView ? getTabCounts() : Promise.resolve({ clients: 0, photographers: 0 }),
     tab === "clients" ? getClientFeedbackFeed(filter) : null,
     tab === "photographers" ? getPhotographerBoard() : null,
     tab === "editors" ? loadEditorsTab(editorSelf ? (me?.editorKey ?? "__none__") : null, sp.test === "1") : null,
   ]);
+
+  // THE MONEY RULE ON CLIENT WORDS (audit F7, Oct 20 2026). The client feed
+  // and the photographer board replay what clients wrote, which is where a
+  // price turns up. The owner reads them verbatim (the reason data.ts scrubs
+  // nothing); an admin gets the figures scrubbed, the same rule as Messages.
+  // `!me` only reaches here with enforcement off (local dev, the owner).
+  const seesMoney = !me || canSeeMoney(me.role);
+  const c = (t: string | null) => (t == null || seesMoney ? t : scrubMoney(t));
+  const feed = feedRaw && !seesMoney
+    ? {
+        ...feedRaw,
+        items: feedRaw.items.map((f) => ({
+          ...f,
+          body: scrubMoney(f.body),
+          photographerNote: c(f.photographerNote),
+          improveNote: c(f.improveNote),
+          contentNote: c(f.contentNote),
+          sentimentNote: c(f.sentimentNote),
+        })),
+      }
+    : feedRaw;
+  const board = boardRaw && !seesMoney
+    ? {
+        ...boardRaw,
+        blocks: boardRaw.blocks.map((b) => ({
+          ...b,
+          clientWords: b.clientWords.map((w) => ({ ...w, body: scrubMoney(w.body), photographerNote: c(w.photographerNote), improveNote: c(w.improveNote) })),
+        })),
+      }
+    : boardRaw;
 
   // Oct 15 2026: complaints still open on any client (lib/clientIssues.ts),
   // money scrubbed for anyone but the owner.

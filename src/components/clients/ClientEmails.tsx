@@ -39,14 +39,16 @@ export function ClientEmails({ clientId }: { clientId: string }) {
   const makeDraft = () =>
     startDraft(async () => {
       setCopied(false);
-      const r = await draftEmailReply(clientId);
+      const r = await draftEmailReply(clientId).catch(() => ({ ok: false as const, message: "Couldn't draft a reply. Try again.", draft: undefined }));
       setDraft(r.ok ? { text: r.draft, note: r.message } : { error: r.message });
     });
 
   useEffect(() => {
     let alive = true;
     start(async () => {
-      const r = await loadClientEmails(clientId);
+      // Caught here: a thrown action inside a transition reaches the error
+      // boundary in React 19 and takes the whole client page with it (F8).
+      const r = await loadClientEmails(clientId).catch(() => ({ ok: false as const, message: "Couldn't load email. Refresh to try again.", emails: undefined }));
       if (!alive) return;
       if (r.ok) {
         const list = r.emails ?? [];

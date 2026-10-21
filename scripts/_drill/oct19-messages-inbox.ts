@@ -101,7 +101,7 @@ async function main() {
     c.ok("no tab = Waiting on us (the first view)", tabOf({}) === "waiting" && tabOf({ tab: "" }) === "waiting" && tabOf({ tab: "nonsense" }) === "waiting");
     c.ok("every old tab name still lands on its work: replies → Texts, inbox → All; email, team, outbox unchanged", tabOf({ tab: "replies" }) === "texts" && tabOf({ tab: "inbox" }) === "all" && tabOf({ tab: "email" }) === "email" && tabOf({ tab: "team" }) === "team" && tabOf({ tab: "outbox" }) === "outbox" && tabOf({ tab: "OUTBOX" }) === "outbox");
     c.ok("a delivery-text check (?incident=) opens on All, as it always did; a named tab still wins", tabOf({ incident: "x" }) === "all" && tabOf({ incident: "x", tab: "email" }) === "email");
-    c.ok("links: Waiting on us is bare /communications; ?test=1 only where a view reads it", nav.messagesHref("waiting") === "/communications" && nav.messagesHref("waiting", { test: true }) === "/communications?test=1" && nav.messagesHref("email", { test: true }) === "/communications?tab=email&test=1" && nav.messagesHref("outbox", { test: true }) === "/communications?tab=outbox&test=1" && nav.messagesHref("texts", { test: true }) === "/communications?tab=texts" && nav.messagesHref("all", { test: true }) === "/communications?tab=all");
+    c.ok("links: Waiting on us is bare /communications; ?test=1 only where a view reads it", nav.messagesHref("waiting") === "/communications" && nav.messagesHref("waiting", { test: true }) === "/communications?test=1" && nav.messagesHref("email", { test: true }) === "/communications?tab=email&test=1" && nav.messagesHref("outbox", { test: true }) === "/communications?tab=outbox&test=1" && nav.messagesHref("texts", { test: true }) === "/communications?tab=texts&test=1" && nav.messagesHref("all", { test: true }) === "/communications?tab=all");
     c.ok("Reply on a text opens Texts at that conversation; on an email, Email at that thread (test view kept)", nav.waitingReplyHref("phone", "c1") === "/communications?tab=texts&focus=c1" && nav.waitingReplyHref("email", "floor plan::c2", true) === "/communications?tab=email&focus=floor+plan%3A%3Ac2&test=1");
     c.ok("Home's test scope reaches Messages (Waiting on us, Email, Outbox), not a delivery-text check or Texts", homeRecordHref("/communications", true) === "/communications?test=1" && homeRecordHref("/communications?tab=email", true) === "/communications?tab=email&test=1" && homeRecordHref("/communications?tab=replies", true) === "/communications?tab=replies" && homeRecordHref("/communications?incident=x", true) === "/communications?incident=x" && homeRecordHref("/communications", false) === "/communications");
     c.ok("the page's browser title is Messages", (pageModule as unknown as { metadata?: { title?: string } }).metadata?.title === "Messages");
@@ -181,8 +181,11 @@ async function main() {
     const sub = String(elements(kTree, "PageHeader")[0]?.subtitle ?? "");
     const h2s = [...kHtml.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/g)].map((m) => stripTags(m[1]));
     const kTexts = await replyQueue();
-    c.ok("the tab bar: six tabs in order, with counts (waiting clients + leads; texts owed; drafts in the Outbox)", tabsIn(kHtml) === "waiting,texts,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length) && countOf(kHtml, "texts") === String(kTexts.cards.length) && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "texts")}/${countOf(kHtml, "outbox")}`);
-    // (The Texts list has never hidden test clients; that is unchanged.)
+    // CHANGED Oct 20 2026 (audit F24): the Texts view hides test clients like
+    // Waiting, Email and the Outbox do, unless ?test=1. The library list still
+    // carries them; the page filters.
+    const kTextsReal = kTexts.cards.filter((card) => card.clientId !== fixture.id);
+    c.ok("the tab bar: six tabs in order, with counts (waiting clients + leads; texts owed; drafts in the Outbox)", tabsIn(kHtml) === "waiting,texts,email,team,outbox,all" && countOf(kHtml, "waiting") === String(kyleBoard.waiting.length + kyleBoard.leads.length) && countOf(kHtml, "texts") === String(kTextsReal.length) && countOf(kHtml, "outbox") === "1", `${countOf(kHtml, "waiting")}/${countOf(kHtml, "texts")}/${countOf(kHtml, "outbox")}`);
     c.ok("…Texts counts every unanswered text (the unsaved number too), so it differs from the clients waiting", kTexts.cards.length === 3 && kTexts.cards.some((card) => !card.isClient) && kTexts.cards.some((card) => card.clientId === vip.id));
     c.ok("each number appears once: no count in the header or the section titles", !/\d/.test(h2s.join(" ")) && !sub.includes(`${kyleBoard.waiting.length} client`) && !sub.includes(`${kyleBoard.leads.length} new lead`) && sub.includes("1 client has waited over 24 hours"), `${h2s.join(" | ")} || ${sub}`);
     c.ok("the Outbox is a tab, not a second line on this view", !kHtml.includes("drafted and ready in the Outbox"));
@@ -202,7 +205,7 @@ async function main() {
     c.ok("?test=1 brings the test client's row back, and its Outbox draft into the count", tBoard.waiting.some((w) => w.group.clientId === fixture.id) && tBoard.waiting.length === kyleBoard.waiting.length + 1 && countOf(tHtml, "outbox") === "2");
     // The tab links, in order, by their data-tab marker (attribute order is React's).
     const tabHrefs = (html: string) => [...html.matchAll(/<a\b[^>]*>/g)].map((m) => m[0]).filter((a) => a.includes("data-tab=")).map((a) => (a.match(/href="([^"]+)"/)?.[1] ?? "").replace(/&amp;/g, "&"));
-    c.ok("…the test view rides along on Waiting on us, Email and Outbox only", tabHrefs(tHtml).join() === "/communications?test=1,/communications?tab=texts,/communications?tab=email&test=1,/communications?tab=team,/communications?tab=outbox&test=1,/communications?tab=all" && tabHrefs(kHtml).join() === "/communications,/communications?tab=texts,/communications?tab=email,/communications?tab=team,/communications?tab=outbox,/communications?tab=all", tabHrefs(tHtml).join());
+    c.ok("…the test view rides along on Waiting on us, Texts, Email and Outbox only", tabHrefs(tHtml).join() === "/communications?test=1,/communications?tab=texts&test=1,/communications?tab=email&test=1,/communications?tab=team,/communications?tab=outbox&test=1,/communications?tab=all" && tabHrefs(kHtml).join() === "/communications,/communications?tab=texts,/communications?tab=email,/communications?tab=team,/communications?tab=outbox,/communications?tab=all", tabHrefs(tHtml).join());
     c.ok("only a scalar test=1 turns it on", !(elements(await messages({ searchParams: Promise.resolve({ test: ["1", "1"] as never }) }), "WaitingOnUs")[0]?.board as MessagesBoard).waiting.some((w) => w.group.clientId === fixture.id));
 
     // =====================================================================
@@ -214,8 +217,10 @@ async function main() {
     };
     const texts = await view({ tab: "texts" });
     const rq = elements(texts.tree, "ReplyQueue")[0];
-    c.ok("Texts = the reply queue (every unanswered text, a reply ready to write)", texts.tab === "texts" && texts.title === "Messages" && (rq?.cards as unknown[]).length === kTexts.cards.length);
-    c.ok("…its header and the Everyone filter do not repeat the tab's number", !texts.html.includes("Everyone (") && !String(elements(texts.tree, "PageHeader")[0]?.subtitle).includes(`${kTexts.cards.length} waiting`) && texts.html.includes(`Clients only (${kTexts.cards.filter((card) => card.isClient).length})`));
+    c.ok("Texts = the reply queue (every unanswered text, a reply ready to write; test clients hidden)", texts.tab === "texts" && texts.title === "Messages" && (rq?.cards as unknown[]).length === kTextsReal.length);
+    c.ok("…its header and the Everyone filter do not repeat the tab's number", !texts.html.includes("Everyone (") && !String(elements(texts.tree, "PageHeader")[0]?.subtitle).includes(`${kTextsReal.length} waiting`) && texts.html.includes(`Clients only (${kTextsReal.filter((card) => card.isClient).length})`));
+    const textsTest = await view({ tab: "texts", test: "1" });
+    c.ok("…and ?test=1 brings the test client's text back (audit F24)", (elements(textsTest.tree, "ReplyQueue")[0]?.cards as unknown[]).length === kTexts.cards.length && textsTest.html.includes("Hide test records"));
     const legacy = await view({ tab: "replies" });
     c.ok("an old ?tab=replies link opens Texts", legacy.tab === "texts" && elements(legacy.tree, "ReplyQueue").length === 1);
     const focused = await view({ tab: "texts", focus: vipRow.group.groupKey });

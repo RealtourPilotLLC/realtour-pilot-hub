@@ -1,10 +1,10 @@
 "use server";
 
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireRole } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
+import { defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
 import { closeReplyForOutbound } from "@/lib/tasks";
 
 export type ActionResult = { ok: boolean; message: string; draft?: string };
@@ -32,11 +32,28 @@ async function recentProjectId(clientId: string): Promise<string | null> {
   return p?.id ?? null;
 }
 
-// Send a text to the client via OpenPhone. Human-initiated (Kyle clicks Send).
-export async function sendClientText(clientId: string, body: string): Promise<ActionResult> {
+// Send a text to the client via OpenPhone. Human-initiated (a person clicks
+// Send on Ask the Hub's draft card).
+//
+// THROUGH THE OUTBOX (Oct 20 2026, audit F2). This called OpenPhone directly:
+// no per-press identity, no duplicate check, no TEST-client floor, a timeout
+// or 5xx reported as a plain failure (the text may well have gone), and the
+// bookkeeping after an accepted send unguarded, so one throw there brought the
+// Send button back. Every one of those invites the second press that puts the
+// message on the client's phone twice. Same rail and same rules as
+// communications/threadActions.sendThreadText.
+export async function sendClientText(
+  clientId: string,
+  body: string,
+  /** The id the BROWSER minted for this press (see outbox.manualKey). */
+  intentId?: string,
+): Promise<ActionResult & { pending?: boolean }> {
   await requireAdmin();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
+  if (!intentId || !/^[A-Za-z0-9_-]{8,64}$/.test(intentId)) {
+    return { ok: false, message: "Refresh this page and try again. We couldn't identify this send, and we won't guess in case it doubles up." };
+  }
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { phone: true, name: true } });
   if (!client?.phone) return { ok: false, message: "No phone number on file for this client." };
   const k = phoneKey(client.phone);
@@ -44,23 +61,79 @@ export async function sendClientText(clientId: string, body: string): Promise<Ac
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
 
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const actor = await getCurrentUser().catch(() => null);
+  const { sendThroughOutbox, manualKey } = await import("@/lib/outbox");
+  let sentId: string | null = null;
   try {
-    await OpenPhone.sendMessage(from, `+1${k}`, text);
+    const res = await sendThroughOutbox({
+      channel: "sms",
+      toRef: k,
+      body: text,
+      dedupeKey: manualKey(intentId),
+      clientId,
+      requestedBy: actor?.email ?? actor?.name ?? null,
+    });
+    if (res.outcome === "accepted") sentId = res.providerId ?? null;
+    else if (res.outcome === "failed") return { ok: false, message: `OpenPhone refused it: ${res.error}` };
+    else if (res.outcome === "duplicate" || res.outcome === "busy") return { ok: true, message: "That one's already going out. We didn't send it twice." };
+    else {
+      return {
+        ok: false,
+        pending: true,
+        message: `OpenPhone didn't confirm this one, so we can't say yet whether it reached ${client.name}. It's saved and marked unconfirmed. Check the conversation before sending again.`,
+      };
+    }
   } catch (e) {
+    if ((e as Error)?.name === "TestClientSendRefusedError") return { ok: false, message: (e as Error).message };
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send text." };
   }
 
-  // Log it + clear any open reply task (the webhook also does this; do it now too).
-  const projectId = await recentProjectId(clientId);
-  if (projectId) {
-    await prisma.activity.create({
-      data: { projectId, type: "SYSTEM", body: `Text sent to ${client.name}: ${text.slice(0, 200)}` },
-    });
+  // Our own record, so the conversation stops reading "waiting" before the
+  // delivery webhook lands. Same externalId the webhook uses, so it dedupes.
+  await import("@/lib/commLog")
+    .then(({ logComm }) =>
+      logComm({
+        channel: "text",
+        direction: "out",
+        clientId,
+        clientName: client.name,
+        contactName: "Us",
+        fromPhone: k,
+        body: text,
+        source: "openphone",
+        externalId: sentId ? `op-${sentId}` : undefined,
+      }),
+    )
+    .catch(() => { /* already sent: a log failure must not report failure */ });
+  if (sentId) {
+    await import("@/lib/commSenders")
+      .then(({ stampCommActor }) => stampCommActor({ externalId: `op-${sentId}`, wrote: "the hub" }))
+      .catch(() => { /* attribution never fails a sent text */ });
   }
-  await closeReplyForOutbound(clientId, text);
+
+  // The text has gone. Every step below is isolated, and a failure is a note
+  // on a SUCCESSFUL send, never a failure of it.
+  const notLogged: string[] = [];
+  try {
+    const projectId = await recentProjectId(clientId);
+    if (projectId) {
+      await prisma.activity.create({
+        data: { projectId, type: "SYSTEM", body: `Text sent to ${client.name}: ${text.slice(0, 200)}` },
+      });
+    }
+  } catch {
+    notLogged.push("it isn't on the job's timeline");
+  }
+  try {
+    await closeReplyForOutbound(clientId, text);
+  } catch {
+    notLogged.push("the reply task didn't close");
+  }
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
   revalidatePath("/queue");
+  if (notLogged.length) return { ok: true, message: `Sent, but ${notLogged.join(" and ")}. The text went out; this is only our own record.` };
   return { ok: true, message: "Text sent." };
 }
 
@@ -68,7 +141,8 @@ export async function sendClientText(clientId: string, body: string): Promise<Ac
 export async function loadClientEmails(
   clientId: string,
 ): Promise<{ ok: boolean; message: string; emails?: import("@/lib/integrations/google").GmailEmail[] }> {
-  await requireAdmin();
+  // A read: allowed while the owner previews "view as" (audit F8, Oct 20 2026).
+  try { await requireRole(["OWNER", "ADMIN"], { allowImpersonation: true }); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to this." }; }
   const { googleConfigured, clientEmailThreads } = await import("@/lib/integrations/google");
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!googleConfigured() || !(await getSecret("gmail"))) {
@@ -82,7 +156,14 @@ export async function loadClientEmails(
   if (addrs.length === 0) return { ok: false, message: "No email on file for this client." };
   try {
     const emails = await clientEmailThreads(addrs);
-    return { ok: true, message: "ok", emails };
+    // The money rule on the client's own words (audit F7): owner only.
+    const { viewerMoneyView } = await import("@/components/comms/viewerScrub");
+    const { seesMoney, clean } = await viewerMoneyView();
+    return {
+      ok: true,
+      message: "ok",
+      emails: seesMoney ? emails : emails.map((e) => ({ ...e, subject: clean(e.subject ?? ""), snippet: clean(e.snippet ?? ""), body: clean(e.body ?? "") })),
+    };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Couldn't load emails." };
   }
@@ -107,6 +188,20 @@ export async function draftClientReply(
   try {
     const { relevantPolicies } = await import("@/lib/policies");
     const { draftReplyWithContext } = await import("@/lib/integrations/ai");
+    // Oct 14 2026 (Jordan: context "any time a response is being drafted"):
+    // the recent conversation both ways, not only the last message.
+    //
+    // Oct 20 2026 (audit F9): the conversation is the source, read here. The
+    // browser's `lastMessage` is only a fallback for a client with no comms
+    // on record; it used to be appended as the client's newest turn, dated
+    // now, whenever it didn't match a turn word for word, and the page's guess
+    // at it could be our own outbound text.
+    const { recentConversation } = await import("@/lib/conversationContext");
+    const lines = await recentConversation(clientId, { limit: 12, clientName: client?.name ?? null });
+    const turns = lines.map((l) => ({ role: l.role, text: l.text, at: l.at.toISOString(), sender: l.role === "us" ? l.who : null }));
+    const fallback = (lastMessage ?? "").trim();
+    if (turns.length === 0 && fallback) turns.push({ role: "client", text: fallback, at: new Date().toISOString(), sender: null });
+    const lastClientWords = [...turns].reverse().find((t) => t.role === "client")?.text ?? fallback;
     const draft = await draftReplyWithContext({
       channel,
       clientName: client?.name,
@@ -114,17 +209,8 @@ export async function draftClientReply(
       socialPlan: client?.socialClient ? (client?.socialPlan ?? "yes") : null,
       propertyAddress: client?.projects[0]?.title ?? null,
       projects: client?.projects ?? [],
-      // Oct 14 2026 (Jordan: context "any time a response is being drafted"):
-      // the recent conversation both ways, not only the last message.
-      transcript: await (async () => {
-        const { recentConversation } = await import("@/lib/conversationContext");
-        const lines = await recentConversation(clientId, { limit: 12, clientName: client?.name ?? null });
-        const turns = lines.map((l) => ({ role: l.role, text: l.text, at: l.at.toISOString(), sender: l.role === "us" ? l.who : null }));
-        const last = (lastMessage ?? "").trim();
-        if (last && !turns.some((t) => t.role === "client" && t.text === last.replace(/\s+/g, " ").slice(0, 600))) turns.push({ role: "client", text: last, at: new Date().toISOString(), sender: null });
-        return turns.length ? turns : [{ role: "client" as const, text: "(no recent message — write a friendly check-in)", at: null, sender: null }];
-      })(),
-      policies: await relevantPolicies(lastMessage),
+      transcript: turns.length ? turns : [{ role: "client" as const, text: "(no recent message — write a friendly check-in)", at: null, sender: null }],
+      policies: await relevantPolicies(lastClientWords),
     });
     if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "Looks handled — no reply needed here." };
     return { ok: true, message: "Draft ready. Review before sending.", draft };

@@ -26,7 +26,9 @@ export function ClientChat({ clientId, clientName }: { clientId: string; clientN
   useEffect(() => {
     let alive = true;
     (async () => {
-      const r = await loadClientThread(clientId);
+      // A refused or failed load shows its reason rather than spinning on
+      // "Loading conversation…" for ever (audit F8, Oct 20 2026).
+      const r = await loadClientThread(clientId).catch(() => ({ ok: false as const, message: "Couldn't load the conversation. Refresh to try again.", toPhone: undefined, items: undefined, client: undefined }));
       if (!alive) return;
       if (r.ok && r.toPhone) {
         setClient(r.client ?? null);
@@ -49,8 +51,8 @@ export function ClientChat({ clientId, clientName }: { clientId: string; clientN
     if (state !== "ready") return;
     let alive = true;
     (async () => {
-      const r = await loadClientGroupThreads(clientId);
-      if (!alive || !r.ok || !r.threads?.length) return;
+      const r = await loadClientGroupThreads(clientId).catch(() => null);
+      if (!alive || !r?.ok || !r.threads?.length) return;
       setThreads((prev) => {
         const seen = new Set(prev.map((t) => t.id));
         return [...prev, ...r.threads!.filter((t) => !seen.has(t.id))];
@@ -66,8 +68,8 @@ export function ClientChat({ clientId, clientName }: { clientId: string; clientN
     if (selected.id === "direct" && directSeeded.current) { directSeeded.current = false; return; }
     let alive = true;
     startItems(async () => {
-      const r = await loadThreadItems(selected.participants.join(","));
-      if (alive) setItems(r.ok && r.items ? r.items : []);
+      const r = await loadThreadItems(selected.participants.join(",")).catch(() => null);
+      if (alive) setItems(r?.ok && r.items ? r.items : []);
     });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -123,29 +123,57 @@ async function stageFile(f: File): Promise<StagedFile | { error: string }> {
   return { error: `${f.name}: photos, PDFs, and text/CSV files are supported.` };
 }
 
-const SUGGESTIONS = [
-  "What's shooting today?",
-  "What's overdue right now?",
-  "Who owes us money?",
-  "Draft a follow-up to Stephen Kennedy about his balance",
-  "Anything in revision?",
-];
+// Starter questions BY ACCESS LEVEL (audit F17, Oct 20 2026). Every level
+// used to get the owner's money questions ("Who owes us money?", a balance
+// follow-up naming a real client), and tapping one below owner earned a
+// refusal. Nothing below owner offers a money question.
+const SUGGESTIONS: Record<string, string[]> = {
+  OWNER: [
+    "What's shooting today?",
+    "What's overdue right now?",
+    "Who owes us money?",
+    "Draft a follow-up to a client about an unpaid balance",
+    "Anything in revision?",
+  ],
+  ADMIN: [
+    "What's shooting today?",
+    "What's overdue right now?",
+    "Who's waiting on a reply?",
+    "Anything in revision?",
+    "What's on the schedule tomorrow?",
+  ],
+  CREATIVE: [
+    "What's shooting today?",
+    "What's on the schedule tomorrow?",
+    "Anything in revision?",
+    "What should I check before a twilight shoot?",
+  ],
+};
 
 // A Send-ready draft the assistant produced. Editable, then the human sends it
 // (via OpenPhone) or copies it. The assistant never sends.
 function DraftCard({ draft }: { draft: HubDraft }) {
   const [text, setText] = useState(draft.message);
-  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error" | "unconfirmed">("idle");
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
+  // The identity of THIS message (outbox.manualKey), minted once and kept until
+  // the words change: pressing Send again on the same words collides in the
+  // outbox instead of texting the client twice (audit F2, Oct 20 2026).
+  const intentRef = useRef<string | null>(null);
+  const intentFor = () =>
+    (intentRef.current ??= (globalThis.crypto?.randomUUID?.() ?? `i${Date.now()}${Math.random().toString(36).slice(2, 10)}`).replace(/-/g, ""));
 
   async function doSend() {
     setStatus("sending"); setErr("");
     try {
-      const r = await sendClientText(draft.clientId, text);
-      if (r.ok) setStatus("sent");
+      const r = await sendClientText(draft.clientId, text, intentFor());
+      if (r.ok) { setStatus("sent"); setErr(r.message === "Text sent." ? "" : r.message); }
+      else if (r.pending) { setStatus("unconfirmed"); setErr(r.message); }
       else { setStatus("error"); setErr(r.message); }
     } catch (e) {
+      // The request itself failed. A press of Send now carries the SAME id, so
+      // if the first one did reach the outbox the second collides there.
       setStatus("error"); setErr(e instanceof Error ? e.message : "Failed to send.");
     }
   }
@@ -162,14 +190,14 @@ function DraftCard({ draft }: { draft: HubDraft }) {
       </div>
       <AutoTextarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => { setText(e.target.value); intentRef.current = null; }}
         minRows={3}
         maxRows={16}
-        disabled={status === "sent"}
+        disabled={status === "sent" || status === "unconfirmed" || status === "sending"}
         className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-70"
       />
-      <div className="mt-2 flex items-center gap-2">
-        {draft.channel === "text" && draft.canText && status !== "sent" && (
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {draft.channel === "text" && draft.canText && status !== "sent" && status !== "unconfirmed" && (
           <button
             onClick={doSend}
             disabled={status === "sending" || !text.trim()}
@@ -193,6 +221,15 @@ function DraftCard({ draft }: { draft: HubDraft }) {
           <span className="text-xs text-muted">No phone on file — copy and send manually.</span>
         )}
         {status === "error" && <span className="text-xs text-danger">{err}</span>}
+        {/* Unconfirmed: the provider may have taken it. No Send button here;
+            the conversation in Messages is where to check. */}
+        {status === "unconfirmed" && (
+          <span className="basis-full text-xs text-warning">
+            {err}{" "}
+            <Link href={`/clients/${draft.clientId}`} className="font-medium underline">Open the conversation</Link>
+          </span>
+        )}
+        {status === "sent" && err && <span className="basis-full text-xs text-muted">{err}</span>}
       </div>
     </div>
   );
@@ -359,11 +396,12 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
             </span>
             <h2 className="font-semibold">Ask the Hub</h2>
             <p className="mx-auto mt-1 max-w-md text-sm text-muted">
-              Ask anything about your live operation — shoots, clients, the schedule, to-dos,
-              billing, or how the team handles something. I read straight from your hub data.
+              {tier === "OWNER"
+                ? "Ask anything about your live operation: shoots, clients, the schedule, to-dos, billing, or how the team handles something. I read straight from your hub data."
+                : "Ask anything about the live operation: shoots, the schedule, to-dos, or how the team handles something. I read straight from the hub's data."}
             </p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {SUGGESTIONS.map((s) => (
+              {(SUGGESTIONS[tier] ?? SUGGESTIONS.CREATIVE).map((s) => (
                 <button
                   key={s}
                   onClick={() => send(s)}

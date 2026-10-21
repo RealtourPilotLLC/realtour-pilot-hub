@@ -158,7 +158,7 @@ export async function sendReply(key: string, text: string, intentId?: string): P
   const card = await replyCardFor(key);
   if (!card) return { ok: false, message: "That conversation has already been answered." };
   if (!card.phone) {
-    return { ok: false, message: "No number on file for this conversation — reply from the Inbox tab instead." };
+    return { ok: false, message: "No number on file for this conversation. Reply from Messages · All instead." };
   }
 
   const from = await defaultOpenPhoneNumber();
@@ -267,13 +267,4 @@ export async function sendReply(key: string, text: string, intentId?: string): P
   revalidatePath("/queue");
   if (notLogged.length) return { ok: true, message: `Sent to ${card.displayName} — but ${notLogged.join(" and ")}. The text went out; this is only our own record.` };
   return { ok: true, message: `Sent to ${card.displayName}.` };
-}
-
-// Refresh the queue after work happens elsewhere (someone replied in
-// Communications, or on their phone) without a full page reload.
-export async function refreshReplyQueue(): Promise<{ cards: ReplyCard[] }> {
-  await requireAdmin();
-  const { replyQueue } = await import("@/lib/replyQueue");
-  const q = await replyQueue();
-  return { cards: q.cards };
 }

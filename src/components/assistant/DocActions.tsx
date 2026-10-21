@@ -10,6 +10,7 @@ import { deleteHubDocument } from "@/app/assistant/actions";
 export function DocActions({ id, title, markdown }: { id: string; title: string; markdown: string }) {
   const [copied, setCopied] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const router = useRouter();
 
@@ -48,7 +49,12 @@ export function DocActions({ id, title, markdown }: { id: string; title: string;
         <span className="inline-flex items-center gap-2 text-sm">
           <span className="text-muted">Delete this?</span>
           <button
-            onClick={() => start(async () => { await deleteHubDocument(id); router.push("/assistant/docs"); })}
+            onClick={() => start(async () => {
+              setErr(null);
+              const r = await deleteHubDocument(id).catch(() => ({ ok: false, message: "Couldn't delete it. Try again." }));
+              if (r.ok) router.push("/assistant/docs");
+              else { setErr(r.message ?? "Couldn't delete it."); setConfirming(false); }
+            })}
             disabled={busy}
             className="inline-flex items-center gap-1 rounded-lg bg-danger px-2.5 py-1 text-sm font-semibold text-white disabled:opacity-50"
           >
@@ -63,6 +69,7 @@ export function DocActions({ id, title, markdown }: { id: string; title: string;
           <Trash2 className="size-4" /> Delete
         </button>
       )}
+      {err && <span role="alert" className="basis-full text-sm text-danger">{err}</span>}
     </div>
   );
 }

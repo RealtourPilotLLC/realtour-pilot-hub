@@ -247,13 +247,20 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
   }
 }
 
-/** Bin a saved document. Owner/admin only, same gate as the assistant itself. */
-export async function deleteHubDocument(id: string): Promise<{ ok: boolean }> {
+/** Bin a saved document. The owner may bin any; an admin only one they saved
+ *  themselves (audit F1, Oct 20 2026: any admin could delete the owner's
+ *  reports, and the answer was "ok" even when nothing was deleted). */
+export async function deleteHubDocument(id: string): Promise<{ ok: boolean; message?: string }> {
   const { requireAdmin } = await import("@/lib/auth/guards");
   const { prisma } = await import("@/lib/prisma");
   const { revalidatePath } = await import("next/cache");
-  await requireAdmin();
-  await prisma.hubDocument.delete({ where: { id } }).catch(() => null);
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." }; }
+  const { hubDocViewer } = await import("@/lib/hubTools");
+  const viewer = await hubDocViewer();
+  const mine = viewer.tier === "OWNER" ? {} : { createdBy: { in: viewer.names.length ? viewer.names : ["__no_one__"] } };
+  const gone = await prisma.hubDocument.deleteMany({ where: { id, ...mine } }).catch(() => null);
+  if (!gone) return { ok: false, message: "Couldn't delete it. Try again." };
+  if (gone.count === 0) return { ok: false, message: "Only the owner or the person who saved it can delete this document." };
   revalidatePath("/assistant/docs");
   return { ok: true };
 }

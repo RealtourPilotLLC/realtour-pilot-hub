@@ -43,7 +43,7 @@ export function EmailThreadList({ threads, focusKey = null }: { threads: EmailTh
             <button
               type="button"
               onClick={() => toggle(t.key)}
-              className={cn("flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-surface-2", expanded && "bg-surface-2")}
+              className={cn("flex min-h-11 w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2 sm:px-5", expanded && "bg-surface-2")}
             >
               <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand">
                 <Mail className="size-4" />
@@ -76,7 +76,7 @@ export function EmailThreadList({ threads, focusKey = null }: { threads: EmailTh
             </button>
 
             {expanded && (
-              <div className="space-y-3 border-t bg-surface-2/50 px-5 py-4">
+              <div className="space-y-3 border-t bg-surface-2/50 px-4 py-4 sm:px-5">
                 {t.messages.map((m) => (
                   <div key={m.id} className="rounded-xl border bg-surface p-3">
                     <div className="mb-1.5 flex items-center gap-2 text-xs">

@@ -195,7 +195,7 @@ export const HUB_TOOLS: HubTool[] = [
   },
   {
     name: "list_reply_queue",
-    description: "The unanswered client texts, each with its pre-drafted reply. Use for 'who's waiting on a reply?', 'show me the reply queue', 'what texts need answers?'. Read-only — send from the Communications Replies tab (or say which one to answer and draft it).",
+    description: "The unanswered client texts, each with its pre-drafted reply. Use for 'who's waiting on a reply?', 'show me the reply queue', 'what texts need answers?'. Read-only: send from Messages · Texts (or say which one to answer and draft it).",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -252,6 +252,49 @@ const ROLE_RANK: Record<string, number> = { CREATIVE: 1, ADMIN: 2, OWNER: 3 };
 function allowedRolesFor(viewer: string): string[] {
   const rank = ROLE_RANK[viewer] ?? ROLE_RANK.CREATIVE;
   return Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= rank);
+}
+
+// ---------------------------------------------------------------------------
+// SAVED DOCUMENTS ARE READ AT THE LEVEL THEY WERE WRITTEN (Oct 20 2026, audit
+// F1). A document Ask the Hub saves is built from whatever its asker's tools
+// returned, and for the owner that includes receivables, owner-only knowledge
+// and Slack DMs. The Documents list and page only checked "may open Ask the
+// Hub", which admins, editors and photographers all may, so an owner report
+// was one click away for every role.
+//
+// HubDocument has no access column yet, so every reader goes through
+// hubDocumentReadWhere: the owner sees everything, anyone else only the
+// documents they saved themselves (fail closed). When the column lands
+// (`minRole String @default("OWNER")` on HubDocument), flip HUB_DOC_MIN_ROLE:
+// reads then also include documents at or below the viewer's tier, and
+// save_document stamps the saver's tier through hubDocumentLevelData.
+// ---------------------------------------------------------------------------
+export const HUB_DOC_MIN_ROLE = false;
+
+export type HubDocViewer = { tier: string; names: string[] };
+
+/** Who is reading Documents. A sessionless local dev reads as the owner (the
+ *  pages redirect a missing session once enforcement is on). */
+export async function hubDocViewer(): Promise<HubDocViewer> {
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const { contentTier } = await import("@/lib/auth/access");
+  const me = await getCurrentUser().catch(() => null);
+  if (!me) return { tier: "OWNER", names: [] };
+  return { tier: contentTier(me.role), names: [me.name, me.email].filter((n): n is string => !!n && !!n.trim()) };
+}
+
+export function hubDocumentReadWhere(v: HubDocViewer): Prisma.HubDocumentWhereInput {
+  if (v.tier === "OWNER") return {};
+  const own: Prisma.HubDocumentWhereInput = v.names.length ? { createdBy: { in: v.names } } : { id: "__no_document__" };
+  if (!HUB_DOC_MIN_ROLE) return own;
+  // Untyped on purpose: the generated client has no minRole until the column exists.
+  const atLevel = { minRole: { in: allowedRolesFor(v.tier) } } as unknown as Prisma.HubDocumentWhereInput;
+  return { OR: [atLevel, own] };
+}
+
+/** The access level save_document writes. Empty until the column exists. */
+export function hubDocumentLevelData(tier: string): Record<string, string> {
+  return HUB_DOC_MIN_ROLE ? { minRole: ROLE_RANK[tier] ? tier : "OWNER" } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,6 +1186,8 @@ export async function execHubTool(
           kind,
           markdown: markdown.slice(0, 120_000),
           createdBy: ctx.who ?? null,
+          // F1: read back at the level it was written (no-op until the column exists).
+          ...hubDocumentLevelData(ctx.role),
         },
         select: { id: true, title: true, kind: true },
       });
@@ -1152,7 +1197,7 @@ export async function execHubTool(
         title: row.title,
         kind: row.kind,
         href: `/assistant/docs/${row.id}`,
-        note: "Saved. Tell Jordan it's saved and that he can open it from Documents — do not paste the whole document back into the chat.",
+        note: "Saved. Tell the person it's saved and that they can open it from Documents. Do not paste the whole document back into the chat.",
       };
     }
 

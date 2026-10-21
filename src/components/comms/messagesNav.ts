@@ -39,8 +39,9 @@ export function resolveMessagesTab(sp: { tab?: string | string[]; incident?: str
   return "waiting";
 }
 
-/** The views that read ?test=1 (real and test records together). */
-export const TEST_SCOPED_TABS: ReadonlySet<MessagesTab> = new Set<MessagesTab>(["waiting", "email", "outbox"]);
+/** The views that read ?test=1 (real and test records together). Texts joined
+ *  them Oct 20 2026 (audit F24): it listed and counted test clients. */
+export const TEST_SCOPED_TABS: ReadonlySet<MessagesTab> = new Set<MessagesTab>(["waiting", "texts", "email", "outbox"]);
 
 export function messagesHref(tab: MessagesTab, opts: { test?: boolean; focus?: string | null } = {}): string {
   const q = new URLSearchParams();

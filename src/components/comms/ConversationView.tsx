@@ -12,6 +12,7 @@ import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { stageMeta } from "@/lib/pipeline";
 import { cn, stripHtml } from "@/lib/utils";
+import { etMonthDayTime } from "@/lib/datetime";
 import { sendThreadText, draftThreadReply, uploadCommAttachment } from "@/app/communications/threadActions";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
@@ -45,9 +46,10 @@ export type ConvoClient = {
 export type ConvoProject = { id: string; title: string; status: string; shootDate: string | null; price: number | null };
 export type ConvoActivity = { id: string; body: string; createdAt: string; type: string; projectTitle: string | null };
 
+// ET, date and time as two calls (datetime.ts): one toLocaleString call joins
+// them differently in Node and Safari, a hydration error on this page (F12).
 function fmtTime(iso: string): string {
-  if (!iso) return "";
-  return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return iso ? etMonthDayTime(iso) : "";
 }
 function isOut(d?: string) { return (d || "").toLowerCase().startsWith("out"); }
 // ET calendar day, so the separators match the day the message actually landed.

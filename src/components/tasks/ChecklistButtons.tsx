@@ -13,8 +13,18 @@ export function HandledButton({ clientId, family = "phone", groupKey }: { client
   const router = useRouter();
   const [busy, start] = useTransition();
   const [done, setDone] = useState(false);
+  // F6 (Oct 20 2026): the server's own words when it has any ("Cleared. One
+  // request is still open on X…", "That one was already handled…"). The bare
+  // checkmark hid exactly why the row was still there after the refresh.
+  const [said, setSaid] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  if (done) return <span className="shrink-0 text-xs font-medium text-success"><Check className="mr-1 inline size-3.5" />Handled</span>;
+  if (done) {
+    return (
+      <span className="shrink-0 text-xs font-medium text-success">
+        <Check className="mr-1 inline size-3.5" />{said ?? "Handled"}
+      </span>
+    );
+  }
   return (
     <>
       {err && <span className="shrink-0 text-xs text-danger">{err}</span>}
@@ -23,7 +33,7 @@ export function HandledButton({ clientId, family = "phone", groupKey }: { client
         onClick={() => start(async () => {
           setErr(null);
           const r = await markCommsHandled(clientId, family, groupKey).catch(() => ({ ok: false as const, message: "Something went wrong — try again." }));
-          if (r.ok) { setDone(true); router.refresh(); }
+          if (r.ok) { setSaid(("message" in r && r.message) || null); setDone(true); router.refresh(); }
           else setErr(("message" in r && r.message) || "No access — admins only.");
         })}
         title="Mark handled — answered on a personal phone, in person, or no reply needed"
@@ -196,16 +206,17 @@ export function CommsDismissButton({
   threadKey: string;
   family: "phone" | "email";
   clientId?: string | null;
-  onCleared?: () => void;
+  onCleared?: (message: string | null) => void;
 }) {
   const router = useRouter();
   const [busy, start] = useTransition();
   const [open, setOpen] = useState(false);
   const [gone, setGone] = useState(false);
+  const [said, setSaid] = useState<string | null>(null); // F6: the server's words, when it has any
   const [err, setErr] = useState<string | null>(null);
 
   if (gone) {
-    return <span className="text-xs font-medium text-muted"><Check className="mr-1 inline size-3.5" />Cleared</span>;
+    return <span className="text-xs font-medium text-muted"><Check className="mr-1 inline size-3.5" />{said ?? "Cleared"}</span>;
   }
 
   const pick = (reason: string) =>
@@ -215,7 +226,16 @@ export function CommsDismissButton({
         ok: false as const,
         message: "Couldn’t save — try again.",
       }));
-      if (r.ok) { setGone(true); setOpen(false); onCleared?.(); router.refresh(); }
+      if (r.ok) {
+        const message = ("message" in r && r.message) || null;
+        setSaid(message);
+        setGone(true);
+        setOpen(false);
+        // The card goes either way; the caller holds it on screen longer when
+        // the server said something worth reading.
+        onCleared?.(message);
+        router.refresh();
+      }
       else setErr(("message" in r && r.message) || "No access — admins only.");
     });
 

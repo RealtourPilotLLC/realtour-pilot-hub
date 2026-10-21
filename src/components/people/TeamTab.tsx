@@ -32,20 +32,27 @@ const ACTIVE_STATUSES: ProjectStatus[] = [
 
 // `isOwner` is still passed by the page (its tab gating) but nothing on this
 // tab is owner-only any more — the office (owner + admin) gets every button.
-export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEditSlack: boolean; isOwner: boolean }) {
+export async function TeamTab({ show, canEditSlack, showFormer = false }: { show: PeopleTab[]; canEditSlack: boolean; isOwner: boolean; showFormer?: boolean }) {
   const activeWhere = { status: { in: ACTIVE_STATUSES } };
-  const team = await prisma.teamMember.findMany({
-    orderBy: { role: "asc" },
-    include: {
-      _count: {
-        select: {
-          shootsAsPhotographer: { where: activeWhere },
-          projectsAsEditor: { where: activeWhere },
-          projectsAsVa: { where: activeWhere },
+  // Oct 20 2026 (audit F25): the current team only. Retired editors (Remar)
+  // filled the directory with Slack fields and "Send test DM" buttons and
+  // inflated the head count. ?former=1 still lists everyone.
+  const [team, formerCount] = await Promise.all([
+    prisma.teamMember.findMany({
+      where: showFormer ? undefined : { active: true },
+      orderBy: { role: "asc" },
+      include: {
+        _count: {
+          select: {
+            shootsAsPhotographer: { where: activeWhere },
+            projectsAsEditor: { where: activeWhere },
+            projectsAsVa: { where: activeWhere },
+          },
         },
       },
-    },
-  });
+    }),
+    prisma.teamMember.count({ where: { active: false } }),
+  ]);
   const withSlack = team.filter((m) => m.slackId).length;
 
   return (
@@ -53,7 +60,7 @@ export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEd
       <PageHeader
         eyebrow="Directory"
         title="People"
-        subtitle={`${team.length} people · ${withSlack} on Slack`}
+        subtitle={`${team.length} ${showFormer ? "people, current and former" : "people"} · ${withSlack} on Slack`}
         actions={canEditSlack ? <SlackSyncButton /> : undefined}
       />
       <div className="p-4 sm:p-6">
@@ -63,6 +70,16 @@ export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEd
           their Slack member ID is on their card; a text needs a phone on the row. Which pings go where, per person, is set
           under <Link href="/settings" className="inline-flex min-h-11 items-center rounded-lg font-medium text-brand underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Settings → Team notifications</Link>.
         </p>
+        {formerCount > 0 && (
+          <p className="mb-4 text-sm text-muted">
+            <Link
+              href={showFormer ? "/users?tab=team" : "/users?tab=team&former=1"}
+              className="inline-flex min-h-11 items-center font-medium text-brand underline underline-offset-2"
+            >
+              {showFormer ? "Show the current team only" : `Show ${formerCount} former ${formerCount === 1 ? "teammate" : "teammates"}`}
+            </Link>
+          </p>
+        )}
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {team.map((m) => {
             const role = ROLE_META[m.role];

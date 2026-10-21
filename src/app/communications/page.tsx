@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
 import { OpenPhone, phoneKey, recentOpenPhoneConversations, type OpConversation } from "@/lib/integrations/openphone";
+import { loadPhoneDirectory } from "@/lib/queries";
 import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
 import { SendAllTexts } from "@/components/tasks/SendAllTexts";
 import { getEmailThreads } from "@/components/comms/emailThreads";
@@ -75,10 +76,22 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   // The two reads every view shares, for the tab numbers: who is waiting on
   // us (lib/opsHome.messagesBoard: waiting clients, new leads, the Outbox
   // count) and the text reply queue (the Texts list itself).
-  const [board, texts] = await Promise.all([
+  const [board, allTexts] = await Promise.all([
     messagesBoard({ now, excludeClientIds, viewer }),
     replyQueue(),
   ]);
+  // TEST RECORDS OFF THE TEXTS LIST TOO (audit F24, Oct 20 2026). Waiting,
+  // Email and the Outbox hid test clients behind "Show test records"; Texts
+  // listed and counted them. Same rule, applied here: a card on a test
+  // client stays off the list and off the tab's number unless ?test=1.
+  const hidden = new Set(excludeClientIds);
+  const realOnly = (c: { clientId: string | null }) => !c.clientId || !hidden.has(c.clientId);
+  const texts = hidden.size
+    ? { ...allTexts, cards: allTexts.cards.filter(realOnly), handled: allTexts.handled.filter(realOnly) }
+    : allTexts;
+  // THE MONEY RULE ON CLIENT WORDS (audit F7): owner only, on every view,
+  // the same scrub Waiting on us already ran.
+  const clean = isOwner ? (t: string) => t : scrubMoney;
   const counts: Partial<Record<MessagesTab, TabCount>> = {
     waiting: { n: board.waiting.length + board.leads.length, tone: board.counts.behind > 0 ? "danger" : "brand" },
     texts: { n: texts.cards.length, tone: "danger" },
@@ -103,7 +116,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           <WaitingOnUs
             board={board}
             now={now}
-            clean={isOwner ? (s: string) => s : scrubMoney}
+            clean={clean}
             includeTest={includeTest}
             excludeClientIds={excludeClientIds}
             showFollowupsLink={!isOwner}
@@ -128,8 +141,13 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   if (tab === "texts") {
     const all = [...texts.cards, ...texts.handled];
     const match = focus ? all.find((c) => c.key === focus || c.key.slice(2) === focus) ?? null : null;
-    const cards = match ? [match, ...texts.cards.filter((c) => c !== match)] : texts.cards;
-    const handled = match ? texts.handled.filter((c) => c !== match) : texts.handled;
+    // Display copies only: the send and draft actions re-read each card on
+    // the server by its key, so scrubbing what the browser shows changes
+    // nothing that is sent or drafted.
+    const shown = (c: (typeof all)[number]) =>
+      isOwner ? c : { ...c, lastInbound: clean(c.lastInbound), turns: c.turns.map((t) => ({ ...t, text: clean(t.text) })) };
+    const cards = (match ? [match, ...texts.cards.filter((c) => c !== match)] : texts.cards).map(shown);
+    const handled = (match ? texts.handled.filter((c) => c !== match) : texts.handled).map(shown);
     const oldestDays = Math.floor(texts.oldestHours / 24);
     return (
       <div>
@@ -142,10 +160,14 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           {focus && (
             <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
               <span>{match ? `Answering ${match.displayName}. Their conversation is first.` : "That conversation is not waiting on a text reply any more."}</span>
-              <Link href={messagesHref("waiting")} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
+              <Link href={messagesHref("waiting", { test: includeTest })} className="inline-flex min-h-11 items-center font-medium text-brand underline">Back to Waiting on us</Link>
             </p>
           )}
-          <ReplyQueue key={match?.key ?? "all"} cards={cards} handled={handled} focusKey={match?.key ?? null} />
+          <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
+            <span>{includeTest ? "Showing real and test records" : "Test records hidden"}</span>
+            <Link href={messagesHref("texts", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
+          </div>
+          <ReplyQueue key={`${match?.key ?? "all"}:${includeTest ? "test" : "real"}`} cards={cards} handled={handled} focusKey={match?.key ?? null} />
         </div>
       </div>
     );
@@ -180,7 +202,17 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   // no OpenPhone involved. Replies happen in Gmail (no send scope connected).
   // ?focus= is a Reply pressed on Waiting on us: that thread goes first, open.
   if (tab === "email") {
-    const { threads, fresh } = await getEmailThreads({ excludeClientIds });
+    const read = await getEmailThreads({ excludeClientIds });
+    const fresh = read.fresh;
+    // The money rule on client email (audit F7): owner only.
+    const threads = isOwner
+      ? read.threads
+      : read.threads.map((t) => ({
+          ...t,
+          subject: clean(t.subject),
+          snippet: clean(t.snippet),
+          messages: t.messages.map((m) => ({ ...m, body: clean(m.body) })),
+        }));
     // The thread key is "<subject>::<client>". Exact first, then the same
     // subject where the client wrote last, then (a request the hub wrote down
     // with no subject on it) that client's newest thread.
@@ -309,7 +341,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
     return (
       <div>
         <PageHeader title="Messages" subtitle="Calls and texts from OpenPhone" />
-        <div className="p-6">
+        <div className="p-4 sm:p-6">
           {tabBar()}
           {incidentCard}
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
@@ -326,87 +358,56 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
   let conversations: OpConversation[] = [];
   let error: string | null = null;
   let ourNumbers = new Set<string>();
-  try {
+  // Oct 20 2026 (audits H10, F20): who is on each number is read ONCE, in
+  // parallel with the OpenPhone pull rather than three table reads after it,
+  // from the same directory a conversation and a client's group threads use
+  // (lib/queries.loadPhoneDirectory). A number two real clients share is now
+  // named by the same ranking the conversation page uses, so the list and
+  // the thread it opens can't name different people.
+  const [pulled, dir] = await Promise.all([
     // Page through ALL conversations and sort newest-first — OpenPhone's native
     // order is arbitrary, so fetching a single page drops active threads (incl.
     // group texts) from the inbox.
-    const [convs, phones] = await Promise.all([
-      recentOpenPhoneConversations(),
-      OpenPhone.phoneNumbers(),
-    ]);
-    conversations = convs;
-    ourNumbers = new Set(phones.map((p) => phoneKey(p.number)).filter(Boolean));
-  } catch (e) {
-    error = e instanceof Error ? e.message : "Could not load conversations.";
-  }
+    Promise.all([recentOpenPhoneConversations(), OpenPhone.phoneNumbers()]).then(
+      ([convs, phones]) => ({ convs, phones, error: null as string | null }),
+      (e) => ({ convs: [] as OpConversation[], phones: [] as { number: string }[], error: e instanceof Error ? e.message : "Could not load conversations." }),
+    ),
+    loadPhoneDirectory(),
+  ]);
+  conversations = pulled.convs;
+  ourNumbers = new Set(pulled.phones.map((p) => phoneKey(p.number)).filter(Boolean));
+  error = pulled.error;
 
-  // Match conversation participants to clients by phone.
-  const clients = await prisma.client.findMany({
-    where: { phone: { not: null } },
-    select: { id: true, name: true, phone: true },
-  });
-  const clientByPhone = new Map<string, { id: string; name: string }>();
-  for (const c of clients) {
-    const k = phoneKey(c.phone);
-    if (!k) continue;
-    const prior = clientByPhone.get(k);
-    // A fixture can share a person's number; it must not replace a real
-    // client merely because Postgres returned the fixture row last.
-    if (!prior || (isSyntheticClientRow(prior) && !isSyntheticClientRow(c))) clientByPhone.set(k, { id: c.id, name: c.name });
-  }
-
-  // Fall back to synced OpenPhone/HubSpot contact names for numbers that aren't
-  // one of our clients (each contact can carry several numbers).
-  const contacts = await prisma.contact.findMany({
-    where: { phones: { not: null } },
-    select: { firstName: true, lastName: true, company: true, phones: true },
-  });
-  const contactByPhone = new Map<string, { name: string; company: string | null }>();
-  for (const ct of contacts) {
-    const display = [ct.firstName, ct.lastName].filter(Boolean).join(" ").trim() || ct.company;
-    if (!display) continue;
-    let nums: string[] = [];
-    try { nums = ct.phones ? JSON.parse(ct.phones) : []; } catch { nums = []; }
-    for (const n of nums) {
-      const k = phoneKey(n);
-      if (k.length === 10 && !contactByPhone.has(k)) contactByPhone.set(k, { name: display, company: ct.company });
-    }
-  }
-
-  // Team members often appear in group threads (a photographer looped in, etc.).
-  const team = await prisma.teamMember.findMany({
-    where: { phone: { not: null } },
-    select: { name: true, phone: true },
-  });
-  const teamByPhone = new Map<string, string>();
-  for (const t of team) {
-    const k = phoneKey(t.phone);
-    if (k.length === 10) teamByPhone.set(k, t.name);
-  }
-
-  const nameFor = (ph: string) => {
+  // Jordan's TEST client also has Jordan's team number. A participant is the
+  // person on that number (team first), not the fixture account that uses it.
+  const nameFor = async (ph: string) => {
     const k = phoneKey(ph);
-    // Jordan's TEST client also has Jordan's team number. A group participant
-    // is the person on that number, not the fixture account that uses it.
-    return teamByPhone.get(k) || clientByPhone.get(k)?.name || contactByPhone.get(k)?.name || fmtPhone(ph);
+    return dir.teamName(k) || (await dir.client(k))?.name || dir.contact(k)?.name || fmtPhone(ph);
   };
 
   const DISPLAY_CAP = 150;
   const totalConversations = conversations.length;
-  const rows = conversations
+  // Shape and cap first; only the rows that will show are named.
+  const shaped = conversations
     .map((conv) => {
       const others = (conv.participants ?? []).filter((p) => !ourNumbers.has(phoneKey(p)));
       const isGroup = others.length > 1;
       const phone = others[0] ?? conv.participants?.[0] ?? "";
-      const teamName = teamByPhone.get(phoneKey(phone));
-      const client = teamName ? undefined : clientByPhone.get(phoneKey(phone));
-      const contact = teamName || client ? undefined : contactByPhone.get(phoneKey(phone));
-      const groupName = isGroup ? (conv.name || others.map(nameFor).join(", ")) : "";
-      return { conv, phone, others, isGroup, groupName, teamName, client, contact };
+      return { conv, phone, others, isGroup };
     })
     .filter((r) => !incident || (incidentPhone?.length === 10 && r.others.some((p) => phoneKey(p) === incidentPhone)))
     .sort((a, b) => new Date(b.conv.lastActivityAt ?? 0).getTime() - new Date(a.conv.lastActivityAt ?? 0).getTime())
     .slice(0, DISPLAY_CAP);
+  const rows = await Promise.all(
+    shaped.map(async (r) => {
+      const k = phoneKey(r.phone);
+      const teamName = dir.teamName(k);
+      const client = teamName ? undefined : await dir.client(k);
+      const contact = teamName || client ? undefined : dir.contact(k);
+      const groupName = r.isGroup ? (r.conv.name || (await Promise.all(r.others.map(nameFor))).join(", ")) : "";
+      return { ...r, groupName, teamName, client, contact };
+    }),
+  );
 
   return (
     <div>
@@ -415,7 +416,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
         subtitle={incident ? `${rows.length} matching conversation${rows.length === 1 ? "" : "s"}` : totalConversations > rows.length ? `${rows.length} most recent of ${totalConversations} conversations` : `${rows.length} conversations`}
         actions={<Badge soft="var(--surface-2)">Live from OpenPhone</Badge>}
       />
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         {tabBar()}
         {incidentCard}
         {error && <div className="mb-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
@@ -428,7 +429,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
               const pParam = isGroup ? others.join(",") : phone;
               const href = `/communications/thread?pn=${encodeURIComponent(conv.phoneNumberId ?? "")}&p=${encodeURIComponent(pParam)}&name=${encodeURIComponent(name)}`;
               return (
-                <Link key={conv.id} href={href} className="flex items-center gap-3 border-b px-5 py-3 last:border-0 hover:bg-surface-2">
+                <Link key={conv.id} href={href} className="flex min-h-11 items-center gap-3 border-b px-4 py-3 last:border-0 hover:bg-surface-2 sm:px-5">
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand">
                     {isGroup ? <Users className="size-4" /> : <MessageCircle className="size-4" />}
                   </span>

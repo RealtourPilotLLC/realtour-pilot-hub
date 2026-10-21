@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { after } from "next/server";
 import Link from "next/link";
 import { PieChart, MessagesSquare, ShieldCheck, ArrowLeft, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -15,13 +16,18 @@ export default async function HubHistoryPage() {
   // Owner-only surface (chat history can hold owner-tier knowledge + private DMs).
   if (!(await isOwnerView())) notFound();
 
-  // Pre-build summaries for the most recent stale chats so the page reads well on
-  // open; older ones get an on-demand "Generate summary" button. Bounded for cost.
-  const recent = await listHubChats(100);
-  const toFill = recent.filter((c) => c.messageCount >= 2 && !c.fresh).slice(0, 12);
-  await Promise.all(toFill.map((c) => summarizeHubChat(c.id).catch(() => null)));
-
   const [stats, chats, people] = await Promise.all([hubQuestionStats(), listHubChats(100), hubUserStats()]);
+
+  // Summaries for the most recent stale chats are written AFTER the page is
+  // sent (audit F10, Oct 20 2026): up to 12 AI calls used to run before
+  // anything rendered, and the chat list was then read a second time. The
+  // next visit reads them; an older chat still has its on-demand button.
+  // Bounded for cost, as before.
+  const toFill = chats.filter((c) => c.messageCount >= 2 && !c.fresh).slice(0, 12);
+  if (toFill.length) {
+    const fill = () => Promise.all(toFill.map((c) => summarizeHubChat(c.id).catch(() => null))).then(() => undefined);
+    try { after(fill); } catch { await fill(); }
+  }
 
   const items: ChatListItem[] = chats.map((c) => ({
     id: c.id,

@@ -112,69 +112,105 @@ async function rankedPhoneClientId(ids: string[]): Promise<string | null> {
   return rankClientRows(rows)[0]?.id ?? null;
 }
 
-// Resolve a set of phone numbers (group participants) to names/clients, for the
-// group-chat header, sender labels, and the members sidebar.
-export async function resolveParticipants(phones: string[]): Promise<ConvoMember[]> {
-  const keys = phones.map((p) => (p || "").replace(/\D/g, "").slice(-10)).filter((k) => k.length === 10);
-  if (keys.length === 0) return [];
+// ---------------------------------------------------------------------------
+// WHO IS ON A NUMBER, read once (Oct 20 2026, audits F11 and F20).
+//
+// The client page's group-thread scan called resolveParticipants once per
+// group, and each call re-read every client, every contact and the team, so
+// eight groups meant 24 whole-table reads one after another. The Messages
+// "All" list kept its own copy of the same maps and labelled a number shared
+// by two real clients with whichever row Postgres returned first, while the
+// conversation it opened ranked them (rankedPhoneClientId) and could name the
+// other client. One directory now: three reads in parallel, and the ranking
+// for a shared number done once per number and remembered.
+// ---------------------------------------------------------------------------
+type DirectoryClient = { id: string; name: string; phone: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null; avatarUrl: string | null };
+export type PhoneDirectory = {
+  /** Our own team member on this number (a photographer looped into a group). */
+  teamName: (key: string) => string | undefined;
+  /** The client on this number: a real row before a test fixture, and a number
+   *  two real clients share goes to the comms resolver's ranking. */
+  client: (key: string) => Promise<DirectoryClient | undefined>;
+  /** A synced OpenPhone/HubSpot contact on this number. */
+  contact: (key: string) => { name: string; company: string | null } | undefined;
+};
+
+const key10 = (p: string | null | undefined) => (p || "").replace(/\D/g, "").slice(-10);
+
+export async function loadPhoneDirectory(): Promise<PhoneDirectory> {
   const [clients, contacts, team] = await Promise.all([
-    prisma.client.findMany({ select: { id: true, name: true, phone: true, segment: true, socialClient: true, socialPlan: true, avatarUrl: true } }),
+    prisma.client.findMany({ where: { phone: { not: null } }, select: { id: true, name: true, phone: true, segment: true, socialClient: true, socialPlan: true, avatarUrl: true } }),
     prisma.contact.findMany({ where: { phones: { not: null } }, select: { firstName: true, lastName: true, company: true, phones: true } }),
     prisma.teamMember.findMany({ where: { phone: { not: null } }, select: { name: true, phone: true } }),
   ]);
-  const candidatesByPhone = new Map<string, (typeof clients)[number][]>();
+  const candidatesByPhone = new Map<string, DirectoryClient[]>();
   for (const c of clients) {
-    const k = (c.phone ?? "").replace(/\D/g, "").slice(-10);
+    const k = key10(c.phone);
     if (k.length !== 10) continue;
     const candidates = candidatesByPhone.get(k) ?? [];
     candidates.push(c);
     candidatesByPhone.set(k, candidates);
   }
-  const byClient = new Map<string, (typeof clients)[number]>();
-  await Promise.all([...new Set(keys)].map(async (key) => {
-    const candidates = candidatesByPhone.get(key) ?? [];
-    const real = candidates.filter((c) => !isSyntheticClientRow(c));
-    const eligible = real.length ? real : candidates;
-    if (eligible.length === 1) byClient.set(key, eligible[0]);
-    else if (eligible.length > 1) {
-      // Reuse the comms resolver's existing activity/parent ranking for shared
-      // real numbers; never choose whichever database row happened to load last.
-      const rankedId = await rankedPhoneClientId(eligible.map((c) => c.id));
-      const row = eligible.find((c) => c.id === rankedId);
-      if (row) byClient.set(key, row);
-    }
-  }));
   const byTeam = new Map<string, string>();
   for (const member of team) {
-    const k = (member.phone ?? "").replace(/\D/g, "").slice(-10);
+    const k = key10(member.phone);
     if (k.length === 10) byTeam.set(k, member.name);
   }
-  const byContact = new Map<string, string>();
+  const byContact = new Map<string, { name: string; company: string | null }>();
   for (const ct of contacts) {
     const name = [ct.firstName, ct.lastName].filter(Boolean).join(" ").trim() || ct.company;
     if (!name) continue;
     let nums: string[] = [];
     try { nums = ct.phones ? JSON.parse(ct.phones) : []; } catch { nums = []; }
-    for (const n of nums) { const k = n.replace(/\D/g, "").slice(-10); if (k.length === 10 && !byContact.has(k)) byContact.set(k, name); }
+    for (const n of nums) { const k = key10(n); if (k.length === 10 && !byContact.has(k)) byContact.set(k, { name, company: ct.company }); }
   }
-  return phones
-    .map((phone) => {
-      const key = phone.replace(/\D/g, "").slice(-10);
+  const ranked = new Map<string, Promise<DirectoryClient | undefined>>();
+  const client = (key: string): Promise<DirectoryClient | undefined> => {
+    const hit = ranked.get(key);
+    if (hit) return hit;
+    const candidates = candidatesByPhone.get(key) ?? [];
+    const real = candidates.filter((c) => !isSyntheticClientRow(c));
+    const eligible = real.length ? real : candidates;
+    // Reuse the comms resolver's existing activity/parent ranking for shared
+    // real numbers; never choose whichever database row happened to load last.
+    const found: Promise<DirectoryClient | undefined> =
+      eligible.length <= 1
+        ? Promise.resolve(eligible[0])
+        : rankedPhoneClientId(eligible.map((c) => c.id)).then((id) => eligible.find((c) => c.id === id));
+    ranked.set(key, found);
+    return found;
+  };
+  return { teamName: (k) => byTeam.get(k), client, contact: (k) => byContact.get(k) };
+}
+
+/** Members for a list of numbers, from a directory already in hand. */
+export async function resolveWithDirectory(dir: PhoneDirectory, phones: string[]): Promise<ConvoMember[]> {
+  const out = await Promise.all(
+    phones.map(async (phone) => {
+      const key = key10(phone);
       if (key.length !== 10) return null;
-      const teamName = byTeam.get(key);
-      const c = teamName ? undefined : byClient.get(key);
+      const teamName = dir.teamName(key);
+      const c = teamName ? undefined : await dir.client(key);
       const fmt = `(${key.slice(0, 3)}) ${key.slice(3, 6)}-${key.slice(6)}`;
       return {
         phone, key,
-        name: teamName ?? c?.name ?? byContact.get(key) ?? fmt,
+        name: teamName ?? c?.name ?? dir.contact(key)?.name ?? fmt,
         clientId: c?.id ?? null,
         segment: c?.segment ?? null,
         socialClient: c?.socialClient ?? false,
         socialPlan: c?.socialPlan ?? null,
         avatarUrl: c?.avatarUrl ?? null,
       } as ConvoMember;
-    })
-    .filter((m): m is ConvoMember => m !== null);
+    }),
+  );
+  return out.filter((m): m is ConvoMember => m !== null);
+}
+
+// Resolve a set of phone numbers (group participants) to names/clients, for the
+// group-chat header, sender labels, and the members sidebar.
+export async function resolveParticipants(phones: string[]): Promise<ConvoMember[]> {
+  if (!phones.some((p) => key10(p).length === 10)) return [];
+  return resolveWithDirectory(await loadPhoneDirectory(), phones);
 }
 
 // Resolve a phone number (from a conversation) to a client + their recent
