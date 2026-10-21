@@ -251,6 +251,10 @@ const BELL_RULES: Record<string, BellRule> = {
   // because a role can't find him. Only the OWNER/ADMIN broadcast goes, and
   // that one is already a task in the queue and an alert on Ops Day.
   raws_missing: "person",
+  // Oct 21 2026 (lib/missingInstructions): the creative manager's own row when
+  // a photographer's upload-page instructions are still missing the morning
+  // after; the photographer gets the text itself, so no broadcast is wanted.
+  instructions_missing: "person",
 
   // --- SILENCED entirely: nothing to do about them --------------------------
   // A delivery needs no one: the project page, the Dashboard's delivered rail

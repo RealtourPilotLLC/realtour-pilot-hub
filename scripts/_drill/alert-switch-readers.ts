@@ -96,8 +96,9 @@ async function main() {
   // Six until Oct 14 2026, when the four Kyle-reminder switches joined (leadPing,
   // eveningPush, photographerBrief, promiseWatch); eleven since Oct 19 2026
   // (shootDayText, the special requests texted at the shoot); twelve since the
-  // same night (uploadGap, missing from the upload).
-  c.ok("InternalAlertRules parses into its twelve keys", keys.length === 12, keys.join(", "));
+  // same night (uploadGap, missing from the upload); thirteen since Oct 21 2026
+  // (missingInstructions, the morning-after nudge).
+  c.ok("InternalAlertRules parses into its thirteen keys", keys.length === 13, keys.join(", "));
 
   const files = walk("src").filter((f) => !NOT_READERS.has(f));
   const texts = new Map(files.map((f) => [f, code(read(f))]));

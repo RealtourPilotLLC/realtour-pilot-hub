@@ -60,7 +60,9 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 //                     addresses whoever carries TeamMember.creativeManager
 //                     by tm:<id> for raws_missing whatever their group, so
 //                     the day that flag moves from James to Kyle his row
-//                     must still be switchable (Sep 16 review).
+//                     must still be switchable (Sep 16 review). Oct 21 2026:
+//                     lib/missingInstructions addresses the same person the
+//                     same way (instructions_missing).
 export const NOTIFY_EVENTS = [
   { key: "mention", label: "Tagged in a message, or replied to", short: "Tags", appliesTo: ["Owner", "Editor", "Photographer", "Office"] },
   { key: "project_message", label: "A message posted on one of their jobs (photographers: jobs they shot)", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
@@ -69,7 +71,7 @@ export const NOTIFY_EVENTS = [
   // had just been given a second job — the 1080p file landing back from Topaz
   // — so a person turning it off had no way to know what else went quiet.
   { key: "review_ready", label: "A video waiting on review, or a 1080p file back from Topaz", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
-  { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
+  { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage or instructions missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
 ] as const satisfies readonly { key: string; label: string; short: string; appliesTo: readonly NotifyGroup[] }[];
 
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number]["key"];
@@ -119,6 +121,7 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   appointment_change: "shoot change",
   order_canceled: "cancelled",
   raws_missing: "footage missing",
+  instructions_missing: "instructions missing", // Oct 21 2026 (lib/missingInstructions)
   cull: "cull",
   task_assigned: "task",
   photos_undelivered: "photos not delivered",
