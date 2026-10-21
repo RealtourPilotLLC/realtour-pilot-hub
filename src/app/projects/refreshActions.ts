@@ -117,7 +117,14 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
     changed.push(`photographer ${before.photographer?.name ?? "unassigned"} → ${after.photographer?.name ?? "unassigned"}`);
   }
   if (Math.abs((before.price ?? 0) - (after.price ?? 0)) > 0.005) {
-    changed.push(`invoice $${(before.price ?? 0).toFixed(2)} → $${(after.price ?? 0).toFixed(2)}`);
+    // Oct 21 2026 (Jordan's decision 18): amounts only for whoever may see
+    // money; admins and the shoot's photographer read that it changed.
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const { canSeeMoney } = await import("@/lib/auth/access");
+    const viewer = await getCurrentUser().catch(() => null);
+    changed.push(viewer && canSeeMoney(viewer.role)
+      ? `invoice $${(before.price ?? 0).toFixed(2)} → $${(after.price ?? 0).toFixed(2)}`
+      : "invoice total changed");
   }
   if ((before.paymentStatus ?? null) !== (after.paymentStatus ?? null)) {
     changed.push(`payment ${before.paymentStatus ?? "—"} → ${after.paymentStatus ?? "—"}`);

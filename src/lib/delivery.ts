@@ -6,7 +6,7 @@ import { parseEvidence, owedNow, owedPhrase, owedVerb, sameCategory, type OwedSh
 //
 // Project.deliveredAt is not "the last time somebody said done". It is the day
 // the client got their content, and four surfaces read it as exactly that:
-//   · the on-time percentage  (queries.ts + bonus.ts compare deliveredAt <= deliveryDue)
+//   · the on-time percentage  (queries.ts + kpi.ts compare deliveredAt <= deliveryDue)
 //   · the revenue window      (finance.ts buckets a month by deliveredAt)
 //   · the client portal       (portalLibrary.ts orders the library by it)
 //   · every "Delivered <date>" line on a job, a payout and an AR row.

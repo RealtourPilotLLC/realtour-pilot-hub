@@ -1192,7 +1192,7 @@ export async function raiseRevision(opts: RaiseRevisionOpts): Promise<boolean> {
 // automatic "Everything for <address> has been delivered, how did we do?" text
 // to a client who has never seen the video. On a genuinely delivered job it
 // still overwrote the REAL delivery date with the resolve timestamp, which is
-// what the on-time % (queries.ts) and the creative bonus (bonus.ts) measure
+// what the on-time % (queries.ts) and the scorecard bonus (kpi.ts) measure
 // against deliveryDue.
 //
 // `deliveredAt` is the delivery signal, exactly as the Review Room's two

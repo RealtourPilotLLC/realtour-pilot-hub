@@ -12,6 +12,7 @@ import { MarginByPackage, MarginByPackageSkeleton } from "@/components/trends/Ma
 import { RecurringRevenueCard } from "@/components/trends/RecurringRevenue";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { canSeeMoney } from "@/lib/auth/access";
 import { canAccess } from "@/lib/auth/access";
 import { bookingTrends, serviceTrends, topSpenders } from "@/lib/trends";
 import { getGrowthPlan } from "@/lib/growthPlan";
@@ -49,6 +50,11 @@ function Delta({ pct, invert }: { pct: number | null; invert?: boolean }) {
 export default async function TrendsPage() {
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/trends");
+  // Oct 21 2026 (Jordan's decision 18): a page grant never shows dollars.
+  // Counts, trends and names stay; every amount reads "—" unless the viewer
+  // may see money (canSeeMoney, the hub's one money rule).
+  const showMoney = me ? canSeeMoney(me.role) : !authEnforced();
+  const usd = (n: number) => (showMoney ? usd0(n) : "—");
   if (me && !canAccess(me, "trends")) redirect("/");
 
   // The growth plan and the advisor are owner-only: they quote margins, which
@@ -69,31 +75,31 @@ export default async function TrendsPage() {
     {
       key: "today", icon: <CalendarClock className="size-4" />, accent: "#6366f1",
       label: "Booked today", value: String(today.count),
-      sub: today.revenue > 0 ? usd0(today.revenue) : "no orders yet",
+      sub: today.revenue > 0 ? usd(today.revenue) : "no orders yet",
     },
     {
       key: "w7", icon: <CalendarClock className="size-4" />, accent: "#0ea5e9",
       label: "Past 7 days", value: String(w7.count),
-      sub: `${usd0(w7.revenue)} · prior 7d: ${w7.prevCount}`,
+      sub: `${usd(w7.revenue)} · prior 7d: ${w7.prevCount}`,
       tone: (w7.countChangePct ?? 0) < -15 ? "danger" : undefined,
       detailTitle: "Past 7 days vs before",
       details: [
         { label: "Orders", value: String(w7.count), sub: `prior week ${w7.prevCount}` },
-        { label: "Booked value", value: usd0(w7.revenue), sub: `prior week ${usd0(w7.prevRevenue)}` },
-        { label: "Average ticket", value: usd0(w7.avgTicket) },
+        { label: "Booked value", value: usd(w7.revenue), sub: `prior week ${usd(w7.prevRevenue)}` },
+        { label: "Average ticket", value: usd(w7.avgTicket) },
         { label: "Same week last year", value: w7.yoyCount === null ? "—" : String(w7.yoyCount) },
       ],
     },
     {
       key: "w30", icon: <TrendingUp className="size-4" />, accent: "#34d399",
       label: "Past 30 days", value: String(w30.count),
-      sub: `${usd0(w30.revenue)} · avg ${usd0(w30.avgTicket)}`,
+      sub: `${usd(w30.revenue)} · avg ${usd(w30.avgTicket)}`,
       tone: (w30.countChangePct ?? 0) < -15 ? "danger" : undefined,
       detailTitle: "Past 30 days vs before",
       details: [
         { label: "Orders", value: String(w30.count), sub: `prior 30d ${w30.prevCount}` },
-        { label: "Booked value", value: usd0(w30.revenue), sub: `prior 30d ${usd0(w30.prevRevenue)}` },
-        { label: "Average ticket", value: usd0(w30.avgTicket) },
+        { label: "Booked value", value: usd(w30.revenue), sub: `prior 30d ${usd(w30.prevRevenue)}` },
+        { label: "Average ticket", value: usd(w30.avgTicket) },
         { label: "Same 30d last year", value: w30.yoyCount === null ? "—" : String(w30.yoyCount) },
         { label: "Cancelled", value: String(w30.cancelled), sub: "counted as booked above" },
       ],
@@ -101,12 +107,12 @@ export default async function TrendsPage() {
     {
       key: "w365", icon: <TrendingUp className="size-4" />, accent: "#f59e0b",
       label: "Past year", value: String(w365.count),
-      sub: `${usd0(w365.revenue)} booked`,
+      sub: `${usd(w365.revenue)} booked`,
       detailTitle: "Past 12 months",
       details: [
         { label: "Orders", value: String(w365.count), sub: `prior year ${w365.prevCount}` },
-        { label: "Booked value", value: usd0(w365.revenue), sub: `prior year ${usd0(w365.prevRevenue)}` },
-        { label: "Average ticket", value: usd0(w365.avgTicket) },
+        { label: "Booked value", value: usd(w365.revenue), sub: `prior year ${usd(w365.prevRevenue)}` },
+        { label: "Average ticket", value: usd(w365.avgTicket) },
         { label: "Booking lead time", value: bookings.leadTimeDays.median === null ? "—" : `${bookings.leadTimeDays.median} days`, sub: "median order → shoot" },
       ],
     },
@@ -172,17 +178,17 @@ export default async function TrendsPage() {
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">So far</div>
                 <div className="text-2xl font-bold tabular-nums">{proj.mtdCount}</div>
-                <div className="text-[11px] text-muted-2">{usd0(proj.mtdRevenue)}</div>
+                <div className="text-[11px] text-muted-2">{usd(proj.mtdRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">On pace for</div>
                 <div className="text-2xl font-bold tabular-nums text-brand">{proj.projectedCount}</div>
-                <div className="text-[11px] text-muted-2">{usd0(proj.projectedRevenue)}</div>
+                <div className="text-[11px] text-muted-2">{usd(proj.projectedRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Last month</div>
                 <div className="text-2xl font-bold tabular-nums text-muted">{proj.lastMonthCount}</div>
-                <div className="text-[11px] text-muted-2">{usd0(proj.lastMonthRevenue)}</div>
+                <div className="text-[11px] text-muted-2">{usd(proj.lastMonthRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">A year ago</div>
@@ -234,15 +240,15 @@ export default async function TrendsPage() {
             <div className="mt-3 grid grid-cols-3 gap-3 rounded-xl border border-warning/25 bg-warning/[0.06] p-3">
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Spent this year</div>
-                <div className="text-xl font-bold tabular-nums text-warning">{usd0(quiet.ytdRevenue)}</div>
+                <div className="text-xl font-bold tabular-nums text-warning">{usd(quiet.ytdRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Spent with us ever</div>
-                <div className="text-xl font-bold tabular-nums">{usd0(quiet.lifetimeRevenue)}</div>
+                <div className="text-xl font-bold tabular-nums">{usd(quiet.lifetimeRevenue)}</div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-muted-2">Worth per year</div>
-                <div className="text-xl font-bold tabular-nums">{usd0(quiet.annualValue)}</div>
+                <div className="text-xl font-bold tabular-nums">{usd(quiet.annualValue)}</div>
               </div>
             </div>
 
@@ -253,12 +259,12 @@ export default async function TrendsPage() {
                   <span className="text-muted-2">
                     normally every {c.medianGapDays}d · last ordered <span className="font-medium text-warning">{c.daysSinceLastOrder}d ago</span>
                   </span>
-                  <span className="ml-auto tabular-nums text-muted">{usd0(c.ytdRevenue)} YTD</span>
+                  <span className="ml-auto tabular-nums text-muted">{usd(c.ytdRevenue)} YTD</span>
                 </div>
               ))}
               {quiet.count > quietShown.length && (
                 <p className="pt-1 text-[11px] text-muted-2">
-                  + {quiet.count - quietShown.length} more, {usd0(quiet.rows.slice(quietShown.length).reduce((s, r) => s + r.ytdRevenue, 0))} YTD between them.
+                  + {quiet.count - quietShown.length} more, {usd(quiet.rows.slice(quietShown.length).reduce((s, r) => s + r.ytdRevenue, 0))} YTD between them.
                 </p>
               )}
             </div>
@@ -301,7 +307,7 @@ export default async function TrendsPage() {
           title="Revenue by package"
           action={
             <span className="text-[11px] text-muted-2">
-              {services.exactRevenue ? "from Aryeo line items" : "estimated"} · {usd0(pkgRevTotal)}
+              {services.exactRevenue ? "from Aryeo line items" : "estimated"} · {usd(pkgRevTotal)}
             </span>
           }
         >
@@ -317,12 +323,12 @@ export default async function TrendsPage() {
                 <div className="h-5 min-w-0 flex-1 overflow-hidden rounded bg-surface-2">
                   <div className="h-full rounded bg-success/70" style={{ width: `${(s.revenue / maxPkgRev) * 100}%` }} />
                 </div>
-                <span className="w-20 shrink-0 text-right text-sm font-semibold tabular-nums">{usd0(s.revenue)}</span>
+                <span className="w-20 shrink-0 text-right text-sm font-semibold tabular-nums">{usd(s.revenue)}</span>
                 <span className="w-11 shrink-0 text-right text-[11px] tabular-nums text-muted-2">
                   {pkgRevTotal ? Math.round((s.revenue / pkgRevTotal) * 100) : 0}%
                 </span>
                 <span className="w-20 shrink-0 text-right text-[11px] tabular-nums text-muted-2">
-                  {usd0(s.orders ? s.revenue / s.orders : 0)}/order
+                  {usd(s.orders ? s.revenue / s.orders : 0)}/order
                 </span>
               </div>
             ))}
@@ -381,9 +387,9 @@ export default async function TrendsPage() {
                       )}
                       {c.company && <span className="ml-1.5 text-[11px] text-muted-2">{c.company}</span>}
                     </td>
-                    <td className="py-2 text-right font-semibold tabular-nums">{usd0(c.ytdRevenue)}</td>
+                    <td className="py-2 text-right font-semibold tabular-nums">{usd(c.ytdRevenue)}</td>
                     <td className="py-2 text-right tabular-nums text-muted">{c.ytdJobs}</td>
-                    <td className="py-2 text-right tabular-nums text-muted">{usd0(c.avgTicket)}</td>
+                    <td className="py-2 text-right tabular-nums text-muted">{usd(c.avgTicket)}</td>
                     <td className="py-2 text-right"><Delta pct={c.changePct} /></td>
                     <td className="py-2 text-right tabular-nums text-muted-2">
                       {c.daysSinceLastOrder === null ? "—" : `${c.daysSinceLastOrder}d`}
