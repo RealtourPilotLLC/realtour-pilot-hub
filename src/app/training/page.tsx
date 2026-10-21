@@ -1,29 +1,16 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import { ChevronDown, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Markdown } from "@/components/ui/Markdown";
-import { ShareLessonButton } from "@/components/training/ShareLessonButton";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
+import { creativeMaySee } from "./lessonAccess";
+import { LessonDetails } from "./LessonDetails";
 
 export const dynamic = "force-dynamic";
 
-// Which Vol II courses creatives (photographers/editors) may see. Jordan's rule:
-// they get everything CREATIVE — shooting, filming, editing, scripting — and
-// none of the business side (sales, pricing, systems, growth, coaching replays).
-// Vol I "Agent on Camera" is entirely creative and always visible. This is an
-// ALLOWLIST on purpose: a newly-ingested business course is hidden by default.
-// The Hub's KnowledgeItem chunks for the excluded courses are minRole ADMIN, so
-// Ask-the-Hub matches this page.
-const CREATIVE_VOL2_COURSES = new Set([
-  "AI Editing",
-  "Editing",
-  "Scripting",
-  "Shooting",
-  "Viral Editing Masterclass (2024)",
-  "Viral Editing Masterclass (2025)",
-]);
+// Which courses a creative may see: lessonAccess.ts (the page and the
+// lesson-text action both apply it).
 
 // These lessons are Studio 910 PB's videos on THEIR Vimeo. The Aug 14-17 2026
 // outage ("Sorry, this video does not exist" everywhere, including 910's own
@@ -54,21 +41,21 @@ export default async function TrainingPage() {
   const canShare = !me || me.role === "OWNER";
   const allLessons = await prisma.trainingLesson.findMany({
     orderBy: [{ volumeNo: "asc" }, { courseNo: "asc" }, { orderNo: "asc" }],
-    select: { id: true, volumeNo: true, volume: true, courseNo: true, course: true, title: true, body: true, summaryMd: true, videoUrl: true, shareToken: true },
+    // Titles only (audit F21, Oct 20 2026): a lesson's text loads when it is
+    // opened (LessonDetails), not every transcript in the page's HTML.
+    select: { id: true, volumeNo: true, volume: true, courseNo: true, course: true, title: true, videoUrl: true, shareToken: true },
   });
-  const lessons = creative
-    ? allLessons.filter((l) => l.volume === "Agent on Camera" || CREATIVE_VOL2_COURSES.has(l.course))
-    : allLessons;
+  const lessons = creative ? allLessons.filter(creativeMaySee) : allLessons;
 
   // Group: volume → course → lessons (input is already ordered).
-  type L = { id: string; title: string; body: string; summaryMd: string | null; videoUrl: string | null; shareToken: string | null };
+  type L = { id: string; title: string; videoUrl: string | null; shareToken: string | null };
   const volumes: { volumeNo: number; volume: string; courses: { course: string; lessons: L[] }[] }[] = [];
   for (const l of lessons) {
     let v = volumes.find((x) => x.volumeNo === l.volumeNo);
     if (!v) { v = { volumeNo: l.volumeNo, volume: l.volume, courses: [] }; volumes.push(v); }
     let c = v.courses.find((x) => x.course === l.course);
     if (!c) { c = { course: l.course, lessons: [] }; v.courses.push(c); }
-    c.lessons.push({ id: l.id, title: l.title, body: l.body, summaryMd: l.summaryMd, videoUrl: l.videoUrl, shareToken: l.shareToken });
+    c.lessons.push({ id: l.id, title: l.title, videoUrl: l.videoUrl, shareToken: l.shareToken });
   }
 
   return (
@@ -100,48 +87,16 @@ export default async function TrainingPage() {
                       <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{c.lessons.length}</span>
                     </summary>
                     <div className="divide-y divide-border border-t border-border">
-                      {c.lessons.map((l, i) => {
-                        const embed = l.videoUrl ? vimeoEmbed(l.videoUrl) : null;
-                        return (
-                        <details key={i} className="group/l">
-                          <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 pl-6 hover:bg-surface-2">
-                            <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/l:rotate-0" />
-                            <span className="text-sm text-foreground/90">{l.title}</span>
-                            {embed && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
-                            {canShare && (
-                              <span className="ml-auto">
-                                <ShareLessonButton lessonId={l.id} initialToken={l.shareToken} />
-                              </span>
-                            )}
-                          </summary>
-                          <div className="px-4 pb-4 pl-12">
-                            {embed && (
-                              <div className="mb-3 aspect-video overflow-hidden rounded-xl border border-border bg-black">
-                                <iframe
-                                  src={embed}
-                                  className="size-full"
-                                  loading="lazy"
-                                  title={l.title}
-                                  allow="autoplay; fullscreen; picture-in-picture; clipboard-write"
-                                  allowFullScreen
-                                />
-                              </div>
-                            )}
-                            {l.summaryMd
-                              ? <Markdown content={l.summaryMd} />
-                              : <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/80">{l.body}</div>}
-                            {l.summaryMd && (
-                              <details className="group/t mt-3 border-t border-border pt-2">
-                                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-muted-2 hover:text-foreground">
-                                  <ChevronDown className="size-3 shrink-0 -rotate-90 transition-transform group-open/t:rotate-0" /> Full transcript
-                                </summary>
-                                <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-muted">{l.body}</div>
-                              </details>
-                            )}
-                          </div>
-                        </details>
-                        );
-                      })}
+                      {c.lessons.map((l) => (
+                        <LessonDetails
+                          key={l.id}
+                          id={l.id}
+                          title={l.title}
+                          embed={l.videoUrl ? vimeoEmbed(l.videoUrl) : null}
+                          canShare={canShare}
+                          shareToken={l.shareToken}
+                        />
+                      ))}
                     </div>
                   </details>
                 ))}

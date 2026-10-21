@@ -436,13 +436,22 @@ export async function unmuteCommsNumber(phone: string): Promise<{ ok: boolean; m
   return { ok: true };
 }
 
-/** The muted list, for the Replies tab's fold. Read on demand (a click), so
- *  the page costs nothing when nobody has muted anything. */
-export async function listMutedNumbers(): Promise<{ phone: string; since: string; reason: string | null }[]> {
-  const { requireAdmin } = await import("@/lib/auth/guards");
-  try { await requireAdmin(); } catch { return []; }
+/** The muted list, for the Texts tab's fold. Read on demand (a click), so
+ *  the page costs nothing when nobody has muted anything.
+ *  Oct 20 2026 (audit F18): a refusal is an error, not an empty list. It
+ *  used to answer [] and the screen said "Nothing is muted". */
+export async function listMutedNumbers(): Promise<
+  { ok: true; rows: { phone: string; since: string; reason: string | null }[] } | { ok: false; message: string }
+> {
+  const { requireRole } = await import("@/lib/auth/guards");
+  // Read-only: an owner previewing "view as" may look at the list.
+  try { await requireRole(["OWNER", "ADMIN"], { allowImpersonation: true }); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
   const { mutedNumbers } = await import("@/lib/replyQueue");
-  return mutedNumbers();
+  try {
+    return { ok: true, rows: await mutedNumbers() };
+  } catch {
+    return { ok: false, message: "Couldn't read the muted list. Try again." };
+  }
 }
 
 // ---------------------------------------------------------------------------

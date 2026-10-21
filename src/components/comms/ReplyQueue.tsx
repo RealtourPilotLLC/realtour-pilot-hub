@@ -39,18 +39,29 @@ function waitLabel(hours: number): { text: string; tone: "ok" | "warn" | "bad" }
 // date+time differently from Node — a hydration mismatch).
 const fmtTime = (iso: string) => etMonthDayTime(iso);
 
+/** A fresh outbox identity for a reply (outbox.manualKey). Only ever called
+ *  from a Send press, never while rendering. */
+const mintIntentId = () =>
+  (globalThis.crypto?.randomUUID?.() ?? `i${Date.now()}${Math.random().toString(36).slice(2, 10)}`).replace(/-/g, "");
+
 type CardState = {
   draft: string;
   instruction: string;
-  status: "idle" | "drafting" | "sent";
+  /** "unconfirmed" (audit F3, Oct 20 2026): OpenPhone did not answer, so the
+   *  reply may already be on the client's phone. Send is hidden, not reset. */
+  status: "idle" | "drafting" | "sent" | "unconfirmed";
   note: string | null;
   error: string | null;
   showThread: boolean;
   copied: boolean;
+  /** The outbox identity of THIS draft (outbox.manualKey), minted on the first
+   *  press and kept until the words change: a second press on the same words
+   *  collides in the outbox instead of texting the client twice. */
+  intentId: string | null;
 };
 
 const blank = (): CardState => ({
-  draft: "", instruction: "", status: "idle", note: null, error: null, showThread: false, copied: false,
+  draft: "", instruction: "", status: "idle", note: null, error: null, showThread: false, copied: false, intentId: null,
 });
 
 type CardProps = {
@@ -60,7 +71,7 @@ type CardProps = {
   onDraft: (instruction?: string) => void;
   onSend: () => void;
   /** the card cleared itself — drop it from the list without a round trip */
-  onDismiss: () => void;
+  onDismiss: (message: string | null) => void;
   /** opened from a Reply on Messages · Waiting on us: shown first, marked */
   focused?: boolean;
 };
@@ -69,6 +80,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
   const wait = waitLabel(card.hoursWaiting);
   const vague = s.draft ? VAGUE.exec(s.draft) : null;
   const sent = s.status === "sent";
+  const unconfirmed = s.status === "unconfirmed";
   const busy = s.status === "drafting";
 
   return (
@@ -159,7 +171,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
             <button
               onClick={() => onDraft()}
               disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-brand transition hover:bg-surface-2 disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-brand transition hover:bg-surface-2 disabled:opacity-50"
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
               {busy ? "Writing…" : "Write a reply"}
@@ -186,7 +198,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
             <AutoTextarea
               value={s.draft}
               onChange={(e) => patch({ draft: e.target.value })}
-              disabled={sent}
+              disabled={sent || unconfirmed}
               className="w-full rounded-xl border border-border bg-bg p-3 text-sm leading-relaxed outline-none focus:border-brand"
               minRows={3}
             />
@@ -203,7 +215,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
         )}
 
         {/* Tailoring — the part that makes this Kyle's message, not the model's */}
-        {!sent && (
+        {!sent && !unconfirmed && (
           <div className="mt-3 rounded-xl border border-dashed border-border p-3">
             <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-muted">
               Tell it what to say
@@ -235,12 +247,12 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
 
         {/* Send */}
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {!sent && s.draft && (
+          {!sent && !unconfirmed && s.draft && (
             <button
               onClick={onSend}
               disabled={busy || !s.draft.trim() || !card.phone}
               title={card.phone ? undefined : "No number on file for this conversation"}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
             >
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
               Send
@@ -260,7 +272,7 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
             </Link>
           )}
           {!card.phone && (
-            <span className="text-xs text-warning">No number on file — reply from the Inbox tab.</span>
+            <span className="text-xs text-warning">No number on file. Reply from the All tab.</span>
           )}
           {/* THE WAY OUT (Kyle, Sep 16: "there’s no way to get rid of things
               I’ve already dealt with"). Every row gets it — a client, an
@@ -278,7 +290,12 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss, focu
         </div>
 
         {s.error && <p className="mt-2 text-xs text-danger">{s.error}</p>}
-        {s.note && !sent && !s.error && <p className="mt-2 text-xs text-muted">{s.note}</p>}
+        {unconfirmed && s.note && (
+          <p role="status" className="mt-2 text-xs text-warning">
+            {s.note} Check the conversation on the All tab before writing to them again.
+          </p>
+        )}
+        {s.note && !sent && !unconfirmed && !s.error && <p className="mt-2 text-xs text-muted">{s.note}</p>}
       </div>
     </div>
   );
@@ -304,8 +321,13 @@ export function ReplyQueue({
   const [bulkNote, setBulkNote] = useState<string | null>(null);
 
   const get = (k: string) => state[k] ?? blank();
+  // New words are a new message: a changed draft drops the old send identity.
   const patch = (k: string, p: Partial<CardState>) =>
-    setState((s) => ({ ...s, [k]: { ...(s[k] ?? blank()), ...p } }));
+    setState((s) => {
+      const prev = s[k] ?? blank();
+      const fresh = p.draft !== undefined && p.draft !== prev.draft && !("intentId" in p) ? { intentId: null } : {};
+      return { ...s, [k]: { ...prev, ...p, ...fresh } };
+    });
 
   const visible = useMemo(
     () => (filter === "clients" ? cards.filter((c) => c.isClient) : cards),
@@ -341,12 +363,13 @@ export function ReplyQueue({
   const send = (card: ReplyCard) => {
     const s = get(card.key);
     if (!s.draft.trim()) return;
-    patch(card.key, { status: "drafting", error: null });
+    // R4: the identity of THIS message (see outbox.manualKey). Kept on the card
+    // until the words change (audit F3, Oct 20 2026): a press that came back
+    // unanswered and is pressed again collides instead of sending twice.
+    const intentId = s.intentId ?? mintIntentId();
+    patch(card.key, { status: "drafting", error: null, intentId });
     startBulk(async () => {
-      // R4: the identity of THIS press (see outbox.manualKey). A double submit
-      // collides; a deliberate second reply is a new press and a new id.
-      const intentId = (globalThis.crypto?.randomUUID?.() ?? `i${Date.now()}${Math.random().toString(36).slice(2, 10)}`).replace(/-/g, "");
-      const r = await sendReply(card.key, s.draft, intentId);
+      const r = await sendReply(card.key, s.draft, intentId).catch(() => ({ ok: false as const, pending: false, message: "Couldn't reach the hub. Press Send again: the same reply can't go twice." }));
       if (r.ok) {
         patch(card.key, { status: "sent", note: r.message, error: null });
         // Drop it after a beat so Kyle sees the confirmation land.
@@ -359,7 +382,10 @@ export function ReplyQueue({
         // The card STAYS (somebody has to look), but it is not reset to "idle"
         // with a red error — that reads as "it didn't go" and invites the
         // second press that puts the message on the client's phone twice.
-        patch(card.key, { status: "idle", note: r.message, error: null });
+        // F3 (Oct 20 2026): nor to "idle" with the note, which left a live
+        // Send button beside "give it a minute". Send stays hidden until a
+        // person has looked.
+        patch(card.key, { status: "unconfirmed", note: r.message, error: null });
       } else {
         patch(card.key, { status: "idle", error: r.message });
       }
@@ -378,8 +404,9 @@ export function ReplyQueue({
     onDraft: (instruction) => draftOne(card, instruction),
     onSend: () => send(card),
     // Dismissing leaves the confirmation on screen for a beat, same as a send,
-    // so nothing blinks out from under the click.
-    onDismiss: () => setTimeout(() => drop(card.key), 1400),
+    // so nothing blinks out from under the click; longer when the server
+    // explained something (audit F6), so it can actually be read.
+    onDismiss: (message) => setTimeout(() => drop(card.key), message ? 6000 : 1400),
     focused: !!focusKey && card.key === focusKey,
   });
 
@@ -410,7 +437,7 @@ export function ReplyQueue({
           <button
             onClick={draftAll}
             disabled={bulk || pendingDraftable === 0}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
           >
             {bulk ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
             {pendingDraftable === 0 ? "All drafted" : `Draft all ${pendingDraftable}`}
@@ -421,7 +448,7 @@ export function ReplyQueue({
                 key={f}
                 onClick={() => setFilter(f)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-xs font-medium transition",
+                  "inline-flex min-h-10 items-center rounded-md px-2.5 py-1 text-xs font-medium transition",
                   filter === f ? "bg-surface-2 text-foreground" : "text-muted hover:text-foreground",
                 )}
               >
@@ -482,6 +509,9 @@ export function ReplyQueue({
 function MutedNumbers() {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<{ phone: string; since: string; reason: string | null }[] | null>(null);
+  // F18 (Oct 20 2026): a refused or failed read/un-mute says so, rather than
+  // "Nothing is muted" or a row that vanishes without being un-muted.
+  const [err, setErr] = useState<string | null>(null);
   const [busy, start] = useTransition();
 
   const fmtPhone = (k: string) => (k.length === 10 ? `(${k.slice(0, 3)}) ${k.slice(3, 6)}-${k.slice(6)}` : k);
@@ -489,7 +519,13 @@ function MutedNumbers() {
   const toggle = () => {
     const next = !open;
     setOpen(next);
-    if (next && rows === null) start(async () => setRows(await listMutedNumbers().catch(() => [])));
+    if (next && rows === null) {
+      start(async () => {
+        const r = await listMutedNumbers().catch(() => ({ ok: false as const, message: "Couldn't read the muted list. Try again." }));
+        if (r.ok) { setRows(r.rows); setErr(null); }
+        else { setErr(r.message); setOpen(false); }
+      });
+    }
   };
 
   return (
@@ -502,6 +538,7 @@ function MutedNumbers() {
         Muted numbers
         {busy && <Loader2 className="size-3 animate-spin" />}
       </button>
+      {err && <p role="alert" className="mt-1 text-xs text-danger">{err}</p>}
       {open && (
         <div className="mt-2 rounded-xl border border-border p-3">
           {rows === null ? (
@@ -518,11 +555,12 @@ function MutedNumbers() {
                     disabled={busy}
                     onClick={() =>
                       start(async () => {
-                        await unmuteCommsNumber(m.phone).catch(() => {});
-                        setRows((r) => (r ?? []).filter((x) => x.phone !== m.phone));
+                        const r = await unmuteCommsNumber(m.phone).catch(() => ({ ok: false, message: "Couldn't un-mute it. Try again." }));
+                        if (r.ok) { setErr(null); setRows((rs) => (rs ?? []).filter((x) => x.phone !== m.phone)); }
+                        else setErr(r.message ?? "Couldn't un-mute it. Try again.");
                       })
                     }
-                    className="rounded-lg border border-border px-2 py-1 font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+                    className="inline-flex min-h-9 items-center rounded-lg border border-border px-2 py-1 font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
                   >
                     Un-mute
                   </button>

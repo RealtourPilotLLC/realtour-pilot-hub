@@ -4,16 +4,23 @@ import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
+import { defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
 
 export type ActionResult = { ok: boolean; message: string; outcome?: "confirmed" | "refused" | "unknown" };
 
 // Text a teammate via OpenPhone. Human-initiated (Kyle/Jordan clicks Send) — the
 // platform never auto-texts. Used for shoot coordination + morning well-wishes.
-export async function sendTeamText(memberId: string, body: string): Promise<ActionResult> {
+//
+// Oct 20 2026 (audit F2): through the outbox like every other typed text, with
+// the browser's per-press id. A direct OpenPhone call read a timeout or a 5xx
+// as "failed", and the obvious next press texted the teammate twice.
+export async function sendTeamText(memberId: string, body: string, intentId?: string): Promise<ActionResult> {
   await requireAdmin();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
+  if (!intentId || !/^[A-Za-z0-9_-]{8,64}$/.test(intentId)) {
+    return { ok: false, outcome: "refused", message: "Refresh this page and try again. We couldn't identify this send, and we won't guess in case it doubles up." };
+  }
   const member = await prisma.teamMember.findUnique({
     where: { id: memberId },
     select: { phone: true, name: true },
@@ -23,14 +30,29 @@ export async function sendTeamText(memberId: string, body: string): Promise<Acti
   if (k.length !== 10) return { ok: false, message: "Their phone number looks invalid." };
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
+  const first = member.name.split(" ")[0];
 
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const actor = await getCurrentUser().catch(() => null);
+  const { sendThroughOutbox, manualKey } = await import("@/lib/outbox");
   try {
-    await OpenPhone.sendMessage(from, `+1${k}`, text);
+    const res = await sendThroughOutbox({
+      channel: "sms",
+      toRef: k,
+      body: text,
+      dedupeKey: manualKey(intentId),
+      requestedBy: actor?.email ?? actor?.name ?? null,
+    });
+    if (res.outcome === "failed") return { ok: false, outcome: "refused", message: `OpenPhone refused it: ${res.error}` };
+    if (res.outcome === "duplicate" || res.outcome === "busy") return { ok: true, outcome: "confirmed", message: `That text to ${first} is already going out. We didn't send it twice.` };
+    if (res.outcome === "unknown") {
+      return { ok: false, outcome: "unknown", message: `OpenPhone didn't confirm this one, so we can't say yet whether it reached ${first}. Check the conversation before sending again.` };
+    }
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Failed to send text." };
+    return { ok: false, outcome: "refused", message: e instanceof Error ? e.message : "Failed to send text." };
   }
   revalidatePath(`/team/${memberId}`);
-  return { ok: true, message: `Text sent to ${member.name.split(" ")[0]}.` };
+  return { ok: true, outcome: "confirmed", message: `Text sent to ${first}.` };
 }
 
 // Save a creative's pay settings (manually set; drive automatic payroll). The

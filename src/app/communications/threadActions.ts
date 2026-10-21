@@ -1,13 +1,28 @@
 "use server";
 
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireRole } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
 import { loadConversation } from "@/lib/commsThread";
-import { resolveParticipants } from "@/lib/queries";
+import { loadPhoneDirectory, resolveWithDirectory } from "@/lib/queries";
 import { closeReplyForOutbound } from "@/lib/tasks";
 import type { ChatItem, ConvoClient, ChatMember } from "@/components/comms/ConversationView";
+
+// READS ARE ALLOWED IN "VIEW AS" (Oct 20 2026, audit F8). The client page's
+// chat loads through the three loaders below, and requireAdmin() refuses an
+// owner previewing someone else, so the preview spun on "Loading
+// conversation…" for ever. Reading is not changing anything: these take the
+// same office gate with impersonation allowed (map/actions.ts does the same).
+// Sending stays requireAdmin, so a preview still cannot text anyone.
+const requireOfficeRead = () => requireRole(["OWNER", "ADMIN"], { allowImpersonation: true });
+
+// The money rule on the words these loaders hand the browser (audit F7).
+async function scrubItems(items: ChatItem[]): Promise<ChatItem[]> {
+  const { viewerMoneyView } = await import("@/components/comms/viewerScrub");
+  const { seesMoney, clean } = await viewerMoneyView();
+  return seesMoney ? items : items.map((it) => (it.text ? { ...it, text: clean(it.text) } : it));
+}
 
 export type SendResult = {
   ok: boolean;
@@ -39,7 +54,7 @@ export type ClientThread = {
 export async function loadClientGroupThreads(
   clientId: string,
 ): Promise<{ ok: boolean; message: string; threads?: ClientThread[] }> {
-  await requireAdmin();
+  await requireOfficeRead();
   const c = await prisma.client.findUnique({
     where: { id: clientId },
     select: { phone: true, teamMembers: { select: { phone: true } } },
@@ -57,12 +72,18 @@ export async function loadClientGroupThreads(
   // ourselves and the group reads as just the real people. Also drop anything
   // that resolves to our own brand name (a mis-saved "RealTour Pilot" contact).
   const { OpenPhone } = await import("@/lib/integrations/openphone");
-  const selfKeys = new Set<string>();
-  try { for (const n of await OpenPhone.phoneNumbers()) { const k = phoneKey(n.number); if (k.length === 10) selfKeys.add(k); } } catch { /* best effort */ }
   const isUs = (name: string) => /realtour\s*pilot/i.test(name);
 
-  let convos: Awaited<ReturnType<typeof recentOpenPhoneConversations>> = [];
-  try { convos = await recentOpenPhoneConversations(12); } catch { return { ok: true, message: "ok", threads: [] }; }
+  // F11 (Oct 20 2026): our numbers and the conversation pages are
+  // independent, so they load together rather than one after the other.
+  const [numbers, convosRead] = await Promise.all([
+    OpenPhone.phoneNumbers().catch(() => [] as { number: string }[]),
+    recentOpenPhoneConversations(12).then((c) => ({ ok: true as const, c }), () => ({ ok: false as const, c: [] })),
+  ]);
+  if (!convosRead.ok) return { ok: true, message: "ok", threads: [] };
+  const convos = convosRead.c;
+  const selfKeys = new Set<string>();
+  for (const n of numbers) { const k = phoneKey(n.number); if (k.length === 10) selfKeys.add(k); }
 
   const groups = convos
     .map((conv) => ({
@@ -71,6 +92,9 @@ export async function loadClientGroupThreads(
     }))
     .filter(({ keys }) => keys.length >= 2 && keys.some((k) => ourKeys.has(k)))
     .slice(0, 8);
+  if (groups.length === 0) return { ok: true, message: "ok", threads: [] };
+  // Read once for every group (F11), and only when there is a group to name.
+  const dir = await loadPhoneDirectory();
 
   const threads: ClientThread[] = [];
   for (const { conv, keys } of groups) {
@@ -79,7 +103,8 @@ export async function loadClientGroupThreads(
     // own "RealTour Pilot" line that's genuinely in the thread) returns 0 messages
     // and would fork a new conversation on reply. We only clean the DISPLAY label.
     const e164 = keys.map((k) => `+1${k}`);
-    const members = (await resolveParticipants(e164)) as ChatMember[]; // all, for sender attribution
+    // One directory for every group (F11): no whole-table re-reads per group.
+    const members = (await resolveWithDirectory(dir, e164)) as ChatMember[]; // all, for sender attribution
     const real = members.filter((m) => !isUs(m.name));
     if (real.length < 2) continue; // needs ≥2 real (non-us) people to be a group
     const labelNames = (real.length ? real : members).map((m) => m.name);
@@ -100,7 +125,7 @@ export async function loadClientGroupThreads(
 export async function loadThreadItems(
   participantsCsv: string,
 ): Promise<{ ok: boolean; message: string; items?: ChatItem[] }> {
-  await requireAdmin();
+  await requireOfficeRead();
   const numId = await defaultOpenPhoneNumberId();
   if (!numId) return { ok: false, message: "OpenPhone isn't connected." };
   const parts = participantsCsv.split(",").map((s) => s.trim()).filter(Boolean);
@@ -108,7 +133,7 @@ export async function loadThreadItems(
   const { items, note } = await loadConversation(numId, parts);
   // Nothing live AND nothing saved → report the failure rather than an empty room.
   if (note && items.length === 0) return { ok: false, message: note };
-  return { ok: true, message: note ?? "ok", items };
+  return { ok: true, message: note ?? "ok", items: await scrubItems(items) };
 }
 
 // Load a client's live OpenPhone thread + header info, for the embedded chat on
@@ -116,7 +141,7 @@ export async function loadThreadItems(
 export async function loadClientThread(
   clientId: string,
 ): Promise<{ ok: boolean; message: string; toPhone?: string; items?: ChatItem[]; client?: ConvoClient }> {
-  await requireAdmin();
+  await requireOfficeRead();
   const c = await prisma.client.findUnique({
     where: { id: clientId },
     select: { id: true, name: true, phone: true, email: true, backupEmail: true, company: true, segment: true, socialClient: true, socialPlan: true, avatarUrl: true },
@@ -129,7 +154,7 @@ export async function loadClientThread(
 
   const { items, note } = await loadConversation(numId, [`+1${k}`]);
   if (note && items.length === 0) return { ok: false, message: note };
-  return { ok: true, message: note ?? "ok", toPhone: `+1${k}`, items, client: c };
+  return { ok: true, message: note ?? "ok", toPhone: `+1${k}`, items: await scrubItems(items), client: c };
 }
 
 // Send a text/MMS in a conversation. Human-initiated (a person clicks Send).
@@ -229,13 +254,24 @@ export async function sendThreadText(
   // lands the thread showed the client "still waiting", inviting a double-send
   // (audit; same fix the Replies tab already carried). Same externalId the
   // webhook will use, so its later event dedupes instead of duplicating.
+  //
+  // A GROUP text is threaded on the page's client when they are in the group
+  // (audit F19, Oct 20 2026). It was filed under whoever sat first in the
+  // participant list, often a teammate, and because the webhook's echo dedupes
+  // against this row the webhook's better pick never landed either.
+  let counterparty = tos[0];
+  if (tos.length > 1 && clientId) {
+    const own = await prisma.client.findUnique({ where: { id: clientId }, select: { phone: true } }).catch(() => null);
+    const ownKey = phoneKey(own?.phone);
+    if (ownKey.length === 10 && keys.includes(ownKey)) counterparty = `+1${ownKey}`;
+  }
   await import("@/lib/commLog").then(({ logComm }) =>
     logComm({
       channel: "text",
       direction: "out",
       clientId: clientId ?? null,
       contactName: "Us",
-      fromPhone: tos[0],
+      fromPhone: counterparty,
       body: text || "[attachment]",
       source: "openphone",
       externalId: sentId ? `op-${sentId}` : undefined,
@@ -271,11 +307,24 @@ export async function sendThreadText(
   const notLogged: string[] = [];
   if (clientId) {
     try {
-      const recent = await prisma.project.findFirst({
-        where: { clientId }, orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }], select: { id: true },
-      });
-      if (recent) {
-        await prisma.activity.create({ data: { projectId: recent.id, type: "SYSTEM", body: `Text sent: ${(text || "[attachment]").slice(0, 200)}` } });
+      // THE JOB THE TEXT IS ABOUT, NOT THE NEWEST ORDER (audit F19, Oct 20
+      // 2026). The line went on the client's most recently ordered job whatever
+      // the text said. Now: the job the text names by street (the webhook's
+      // own rule), else the client's ONE job still in flight, else no line at
+      // all. A guess on the wrong timeline is worse than none; the text itself
+      // is in the conversation either way.
+      const { findClientProjectByText } = await import("@/lib/contacts");
+      const named = text ? await findClientProjectByText(clientId, text) : null;
+      const inFlight = named
+        ? []
+        : await prisma.project.findMany({
+            where: { clientId, status: { notIn: ["DELIVERED", "CANCELLED"] } },
+            select: { id: true },
+            take: 2,
+          });
+      const jobId = named?.id ?? (inFlight.length === 1 ? inFlight[0].id : null);
+      if (jobId) {
+        await prisma.activity.create({ data: { projectId: jobId, type: "SYSTEM", body: `Text sent: ${(text || "[attachment]").slice(0, 200)}` } });
       }
     } catch {
       notLogged.push("it isn't on the job's timeline");

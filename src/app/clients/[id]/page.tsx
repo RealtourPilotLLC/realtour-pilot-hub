@@ -28,7 +28,7 @@ import { notesHtmlToText } from "@/lib/integrations/aryeo";
 import { getClientDetail } from "@/lib/queries";
 import { autoTextRules } from "@/lib/settings";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced } from "@/lib/auth/guards";
+import { authEnforced, requirePageAccess } from "@/lib/auth/guards";
 import { canSeeMoney } from "@/lib/auth/access";
 import { redactMoney } from "@/lib/hubTools";
 import { stageMeta } from "@/lib/pipeline";
@@ -44,6 +44,10 @@ export const dynamic = "force-dynamic";
 const HELD_BACK = "Money detail — owner only.";
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  // Oct 20 2026 (audit F14): the fresh in-page gate. Middleware trusts a
+  // login-time claim that can be days old, so a revoked Clients permission
+  // kept reading client pages (their texts and email) until the token expired.
+  await requirePageAccess("clients");
   const { id } = await params;
   const data = await getClientDetail(id);
   if (!data) notFound();
@@ -52,15 +56,21 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // Orders count + lifetime spend exclude cancelled, to match the segment chip.
   const orderCount = client.projects.filter((p) => p.status !== "CANCELLED").length;
 
-  // Best-effort "last thing the client said" for the AI draft hint — exclude our
-  // own outbound log lines ("Text sent to …", "Delivery text sent …") so we never
-  // draft a reply to ourselves.
+  // The last thing the CLIENT said, for the AI draft hint: their newest inbound
+  // message in comms memory. Oct 20 2026 (audit F9): this used to be the newest
+  // timeline line matching /text:|email|…/, and the webhook writes our OWN
+  // outbound as "OpenPhone outgoing text: …", which matched, so the email draft
+  // could be a reply to our own text (and the prefix kept it from deduping
+  // against the real turns, so it was appended as a fresh client turn).
   const lastInbound =
-    timeline.find(
-      (t) =>
-        t.kind === "activity" &&
-        /text:|email|message|said|wrote|asked|inbound/i.test(t.body) &&
-        !/\bsent to\b|sent\.|\breplied\b/i.test(t.body),
+    (
+      await prisma.commLog
+        .findFirst({
+          where: { clientId: client.id, direction: "in", channel: { in: ["text", "email"] } },
+          orderBy: { occurredAt: "desc" },
+          select: { body: true },
+        })
+        .catch(() => null)
     )?.body ?? "";
 
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true, overridesJson: true } }).catch(() => null);
@@ -324,7 +334,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             clientId={client.id}
             hasPhone={!!client.phone}
             email={client.email}
-            lastInbound={lastInbound}
+            lastInbound={scrub(lastInbound)}
             notes={notesHtmlToText(client.generalNotes)}
             notesSyncedAt={client.notesSyncedAt ? etDateTime(client.notesSyncedAt) : null}
             notesSyncError={client.notesSyncError}

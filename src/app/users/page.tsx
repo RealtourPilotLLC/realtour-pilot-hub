@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic";
 export default async function PeoplePage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; former?: string }>;
 }) {
   // Same guard shape as the Tasks hub: getCurrentUser() is null sessionless
   // (local dev = owner view, gate off) and never redirects on its own; we only
@@ -59,5 +59,5 @@ export default async function PeoplePage({
   // buttons render. A per-page override that lets someone else see this tab
   // still shows them the chips, read-only.
   const canEditSlack = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
-  return <TeamTab show={show} canEditSlack={canEditSlack} isOwner={isOwner} />;
+  return <TeamTab show={show} canEditSlack={canEditSlack} isOwner={isOwner} showFormer={sp.former === "1"} />;
 }

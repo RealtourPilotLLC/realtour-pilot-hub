@@ -13,6 +13,12 @@ export class SlackError extends Error {
   }
 }
 
+// Every Slack request has a time limit (audit H7, Oct 20 2026). None did, so
+// a hung connection held a DM, an ops alert or the 5-minute comms cron until
+// the platform killed it. A post that times out reads as "unknown" (it may
+// have gone), never as a refusal, so nothing re-sends it blindly.
+const SLACK_TIMEOUT_MS = 20_000;
+
 // Explicit no-post responses. Slack documents internal_error/fatal_error as
 // possibly partially successful; unfamiliar errors remain unknown too.
 const NO_POST_ERRORS = new Set([
@@ -33,6 +39,7 @@ async function slackApi<T = Record<string, unknown>>(
     headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify(body),
     cache: "no-store",
+    signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
   });
   const json = (await res.json().catch(() => ({ ok: false, error: "bad_response" }))) as { ok: boolean; error?: string };
   if (!res.ok || json.ok !== true) throw new SlackError(json.error || `Slack ${method} failed`, res.ok && json.ok === false && json.error && NO_POST_ERRORS.has(json.error) ? "refused" : "unknown");
@@ -124,7 +131,7 @@ export async function slackPermalink(channel: string, ts: string): Promise<strin
       const u = new URL("https://slack.com/api/chat.getPermalink");
       u.searchParams.set("channel", ch);
       u.searchParams.set("message_ts", stamp);
-      const res = await fetch(u, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      const res = await fetch(u, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(SLACK_TIMEOUT_MS) });
       const json = (await res.json().catch(() => null)) as { ok?: boolean; permalink?: string; error?: string } | null;
       if (json) {
         answered = true;
@@ -219,7 +226,7 @@ export async function slackUserName(id: string): Promise<string> {
       const t = await getSecret("slack_user");
       if (t) {
         const r = await fetch("https://slack.com/api/users.list?limit=500", {
-          headers: { Authorization: `Bearer ${t}` }, cache: "no-store",
+          headers: { Authorization: `Bearer ${t}` }, cache: "no-store", signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
         });
         const j = (await r.json().catch(() => ({ ok: false }))) as { ok: boolean; members?: { id: string; name?: string; real_name?: string; profile?: { display_name?: string } }[] };
         if (j.ok && j.members) {
@@ -246,7 +253,7 @@ export async function slackLookupByEmail(email: string): Promise<SlackLookup> {
     if (!token) botError = "not_connected";
     else {
       const res = await fetch(`https://slack.com/api/users.lookupByEmail?email=${encodeURIComponent(email)}`, {
-        headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+        headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
       });
       const json = (await res.json()) as { ok?: boolean; error?: string; user?: { id?: string } };
       if (json.ok && json.user?.id) return { ok: true, id: json.user.id };
@@ -292,7 +299,7 @@ export async function slackWorkspaceUsers(): Promise<{ ok: true; users: SlackWor
       const url = new URL("https://slack.com/api/users.list");
       url.searchParams.set("limit", "200");
       if (cursor) url.searchParams.set("cursor", cursor);
-      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(SLACK_TIMEOUT_MS) });
       const j = (await r.json().catch(() => ({ ok: false, error: "bad_response" }))) as {
         ok: boolean; error?: string; members?: Member[]; response_metadata?: { next_cursor?: string };
       };
@@ -335,6 +342,7 @@ export async function slackBotScopes(): Promise<{ scopes: string[]; team: string
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
+      signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
     });
     const json = (await res.json().catch(() => ({ ok: false }))) as { ok?: boolean; team?: string };
     if (!json.ok) return null;
@@ -377,6 +385,7 @@ export async function slackDmUserDetailed(userId: string, text: string): Promise
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ users: userId }),
+      signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
     });
     const oj = (await open.json()) as { ok?: boolean; error?: string; channel?: { id?: string } };
     if (!open.ok || oj.ok !== true || !oj.channel?.id) {

@@ -8,6 +8,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
+import { hubDocViewer, hubDocumentReadWhere } from "@/lib/hubTools";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,8 @@ export default async function HubDocPage({ params }: { params: Promise<{ id: str
   if (me && !canAccess(me, "assistant")) redirect("/");
 
   const { id } = await params;
-  const doc = await prisma.hubDocument.findUnique({ where: { id } });
+  // F1 (Oct 20 2026): a document above the viewer's level is a 404, not a page.
+  const doc = await prisma.hubDocument.findFirst({ where: { AND: [{ id }, hubDocumentReadWhere(await hubDocViewer())] } });
   if (!doc) notFound();
 
   return (

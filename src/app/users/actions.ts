@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
+import { appBase } from "@/lib/appUrl";
 import { ROLES, PAGES, type PageKey, parsePermissions, roleHasByDefault } from "@/lib/auth/access";
 
 export type UserActionResult = { ok: boolean; message: string; link?: string; outcome?: "confirmed" | "refused" | "unknown" };
@@ -27,12 +28,10 @@ async function requireOwnerActor() {
   return u;
 }
 
-function appBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
-  );
-}
+// Invite links use the hub's one origin helper (audit F23, Oct 20 2026). This
+// file carried its own copy that skipped APP_URL and never normalized the
+// scheme or a trailing slash, so a link could point at a per-deployment
+// Vercel host or come out malformed.
 
 const validRole = (r: string) => (ROLES as string[]).includes(r);
 

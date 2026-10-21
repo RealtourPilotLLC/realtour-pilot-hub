@@ -17,10 +17,11 @@ export default async function AssistantPage({ searchParams }: { searchParams: Pr
     <div className="flex h-full flex-col">
       <PageHeader
         title="Ask the Hub"
-        subtitle="Answers from your live hub data — shoots, clients, schedule, to-dos, billing"
+        subtitle={tier === "OWNER" ? "Answers from your live hub data: shoots, clients, schedule, to-dos, billing" : "Answers from the live hub data: shoots, schedule, to-dos and how things are done"}
         actions={
           <div className="flex items-center gap-2">
-            {/* Anyone who can ask can read what was written down. */}
+            {/* Anyone who can ask can read what was written down at their
+                level (audit F1: lib/hubTools hubDocumentReadWhere). */}
             <Link
               href="/assistant/docs"
               className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2"

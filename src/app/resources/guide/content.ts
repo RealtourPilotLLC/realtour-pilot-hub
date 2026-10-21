@@ -674,8 +674,8 @@ The same loops appear on the dashboard, eight at a time, with the same buttons.`
       title: "Client communication",
       body: `Three sweeps a day — 10:30, 2:00, 5:00 — all showing the same list: clients who wrote to us and have not had an answer, with how long they have waited. Over 24 hours goes red.
 
-- **Reply** on a row opens the replies view, where every unanswered inbound message already has a draft you can edit or replace.
-- **Clear the queue** opens the Comms tab of the Tasks hub, grouped by sender.
+- **Reply** on a row opens Messages · Texts, where every unanswered inbound text already has a draft you can edit or replace. An email opens Messages · Email at that thread.
+- **Messages · Waiting on us** is the one list of every client waiting on a reply, texts and email together, oldest first.
 
 ### Texts that send themselves
 Two kinds go out without you: **shoot confirmations** about 48 hours before the shoot, and **delivery texts** once Aryeo shows everything on the order is live. They only send inside the window set in Settings → Automated texts — **9am to 4pm ET** today. Nothing goes out in the evening; it waits for the next morning. A client with several listings gets at most one automatic text per pass.
@@ -683,9 +683,9 @@ Two kinds go out without you: **shoot confirmations** about 48 hours before the 
 Everything else waits for a human. The comms **Outbox** holds drafted texts ready to send, and the dashboard's **texts to send** chip counts exactly that list.
 
 ### Getting rid of something you have already dealt with
-Every conversation on the **Replies** view now has a **Dismiss** button — a client, a number we have never saved, one of our own photographers, a blast from a stranger. Say why: *answered elsewhere*, *no reply needed*, or *spam*. The row goes; the messages stay in the Inbox, and nothing is deleted. It is a line drawn under what has been said so far, so if that person writes again afterwards they come straight back. **Spam** also mutes that number until you un-mute it — the list of muted numbers sits at the bottom of the same page, and one of our own team's numbers can never be muted.
+Every conversation on **Messages · Texts** has a **Dismiss** button — a client, a number we have never saved, one of our own photographers, a blast from a stranger. Say why: *answered elsewhere*, *no reply needed*, or *spam*. The row goes; the messages stay in Messages · All, and nothing is deleted. It is a line drawn under what has been said so far, so if that person writes again afterwards they come straight back. **Spam** also mutes that number until you un-mute it — the list of muted numbers sits at the bottom of the same page, and one of our own team's numbers can never be muted.
 
-Our own photographers and editors texting the office no longer count as "waiting on a reply" anywhere. They still show, folded in under the thank-yous, so you can answer or dismiss them — they are simply not a client sitting on an unanswered message, and the Replies badge, the Comms tab and the home pill now agree on that.
+Our own photographers and editors texting the office no longer count as "waiting on a reply" anywhere. They still show, folded in under the thank-yous, so you can answer or dismiss them — they are simply not a client sitting on an unanswered message, and the counts on Messages and Home agree on that.
 
 ### The rest of the Tasks hub
 **Comms** (phone and email), **Revisions**, **Slack asks**, **Other** (the general queue, including anything that needs assigning), and **Done** (today's ledger, plus what got closed without being done). The tab strip carries each tab's own count and the time the page last read the database, so you can see at a glance that it is live.
@@ -694,8 +694,8 @@ Our own photographers and editors texting the office no longer count as "waiting
 
 If nobody is waiting on a reply and there are Slack asks open, **Tasks** opens on the Slack asks list rather than an empty Comms tab. Click any tab and it stays where you put it.`,
       links: [
-        { href: "/communications?tab=replies", label: "Replies" },
-        { href: "/tasks?tab=comms", label: "Tasks · Comms" },
+        { href: "/communications", label: "Messages · Waiting on us" },
+        { href: "/communications?tab=texts", label: "Messages · Texts" },
         { href: "/tasks?tab=slack", label: "Tasks · Slack asks" },
         { href: "/communications?tab=outbox", label: "Outbox" },
       ],

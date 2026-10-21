@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { Send, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { sendTeamText } from "@/app/team/actions";
@@ -23,11 +23,14 @@ export function TeamTextComposer({
   const [body, setBody] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, start] = useTransition();
+  // The identity of THIS message (outbox.manualKey), kept until the words
+  // change: a second press on the same words collides instead of texting twice.
+  const intentRef = useRef<string | null>(null);
 
   if (!hasPhone) {
     return (
       <p className="text-sm text-muted">
-        No phone number on file — add one in OpenPhone to text {firstName}.
+        No phone number on file. Add one to {firstName}&rsquo;s People record to text them from here.
       </p>
     );
   }
@@ -36,7 +39,7 @@ export function TeamTextComposer({
     <div>
       <AutoTextarea
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={(e) => { setBody(e.target.value); intentRef.current = null; }}
         minRows={3}
         placeholder={`Text ${firstName} via OpenPhone…`}
         className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
@@ -46,9 +49,11 @@ export function TeamTextComposer({
           disabled={pending || !body.trim()}
           onClick={() =>
             start(async () => {
-              const r = await sendTeamText(memberId, body);
+              intentRef.current ??= (globalThis.crypto?.randomUUID?.() ?? `i${Date.now()}${Math.random().toString(36).slice(2, 10)}`).replace(/-/g, "");
+              const r = await sendTeamText(memberId, body, intentRef.current).catch(() => ({ ok: false, message: "Couldn't reach the hub. Press Send again: the same text can't go twice.", outcome: "unknown" as const }));
               setMsg({ ok: r.ok, text: r.message });
-              if (r.ok) setBody("");
+              // Unconfirmed: the words stay (with their id) so nothing re-sends them as new.
+              if (r.ok) { setBody(""); intentRef.current = null; }
             })
           }
           className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
@@ -57,7 +62,7 @@ export function TeamTextComposer({
         </button>
         {morningGreeting && (
           <button
-            onClick={() => setBody(morningGreeting)}
+            onClick={() => { setBody(morningGreeting); intentRef.current = null; }}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
           >
             <Sun className="size-4 text-warning" /> Morning well-wish

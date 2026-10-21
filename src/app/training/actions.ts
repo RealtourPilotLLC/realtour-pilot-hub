@@ -35,3 +35,29 @@ export async function setLessonShare(lessonId: string, share: boolean): Promise<
   }
   return { ok: true, token };
 }
+
+// One lesson's text, loaded when the lesson is opened (audit F21, Oct 20
+// 2026). The page used to put every lesson's full transcript and summary in
+// its HTML, all ~165 of them, behind closed sections. Same gate as the page:
+// signed in with Training access, and a creative only reads the creative
+// courses (lessonAccess.creativeMaySee).
+export async function loadLessonText(
+  lessonId: string,
+): Promise<{ ok: true; body: string; summaryMd: string | null } | { ok: false; message: string }> {
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const { authEnforced } = await import("@/lib/auth/guards");
+  const { canAccess, contentTier } = await import("@/lib/auth/access");
+  const { creativeMaySee } = await import("./lessonAccess");
+  const me = await getCurrentUser().catch(() => null);
+  if (!me && authEnforced()) return { ok: false, message: "Please sign in to read this." };
+  if (me && !canAccess(me, "training")) return { ok: false, message: "Training isn't available at your access level." };
+  const lesson = await prisma.trainingLesson.findUnique({
+    where: { id: lessonId },
+    select: { volume: true, course: true, body: true, summaryMd: true },
+  });
+  if (!lesson) return { ok: false, message: "That lesson is no longer here." };
+  if (me && contentTier(me.role) === "CREATIVE" && !creativeMaySee(lesson)) {
+    return { ok: false, message: "That lesson isn't available at your access level." };
+  }
+  return { ok: true, body: lesson.body, summaryMd: lesson.summaryMd };
+}

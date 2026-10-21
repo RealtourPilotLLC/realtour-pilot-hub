@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
+import { mailboxOfExternalId } from "@/lib/replyQueue";
 
 // ---------------------------------------------------------------------------
 // Email tab data for the Communications hub.
@@ -72,6 +73,15 @@ const oneLine = (s: string, max: number) => {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
 
+/** Gmail search in a named mailbox; /u/0/ (the browser's first account) when
+ *  we don't know which mailbox it was. */
+export function gmailSearchHref(query: string, mailbox: string | null): string {
+  const q = encodeURIComponent(query);
+  return mailbox
+    ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(mailbox)}#search/${q}`
+    : `https://mail.google.com/mail/u/0/#search/${q}`;
+}
+
 const WINDOW_DAYS = 60;
 const THREAD_CAP = 50;
 const FRESH_MS = 48 * 3600_000;
@@ -110,6 +120,7 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
       subject: true,
       body: true,
       occurredAt: true,
+      externalId: true,
     },
   });
 
@@ -152,8 +163,10 @@ export async function getEmailThreads(opts: { excludeClientIds?: string[] } = {}
       subject: (latest.subject ?? "").trim() || "(no subject)",
       // No gmail.send scope is connected, so replies happen in Gmail itself —
       // a subject search is the most reliable deep link we can build without
-      // the Gmail thread id.
-      gmailHref: `https://mail.google.com/mail/u/0/#search/${encodeURIComponent((latest.subject ?? "").trim() || counterpart)}`,
+      // the Gmail thread id. Oct 20 2026 (audit F13): in the mailbox the email
+      // actually landed in (`authuser`), not whichever Google account is
+      // first in this browser (/u/0/), so Kyle searches the right inbox.
+      gmailHref: gmailSearchHref((latest.subject ?? "").trim() || counterpart, msgs.map((m) => mailboxOfExternalId(m.externalId)).find(Boolean) ?? null),
       count: msgs.length,
       snippet: oneLine(decodeEntities(latest.body), 140),
       lastAgo: formatDistanceToNow(latest.occurredAt, { addSuffix: true }),

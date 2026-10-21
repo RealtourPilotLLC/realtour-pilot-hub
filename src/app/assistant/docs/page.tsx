@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { etDateTime } from "@/lib/datetime";
+import { hubDocViewer, hubDocumentReadWhere } from "@/lib/hubTools";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,10 @@ export default async function HubDocsPage() {
   if (!me && authEnforced()) redirect("/login?next=/assistant/docs");
   if (me && !canAccess(me, "assistant")) redirect("/");
 
+  // F1 (Oct 20 2026): read at the level each document was written. Until
+  // HubDocument carries an access level, a non-owner sees only their own.
   const docs = await prisma.hubDocument.findMany({
+    where: hubDocumentReadWhere(await hubDocViewer()),
     orderBy: { createdAt: "desc" },
     select: { id: true, title: true, kind: true, createdBy: true, createdAt: true, markdown: true },
     take: 200,
