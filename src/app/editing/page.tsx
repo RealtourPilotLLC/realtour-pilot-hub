@@ -129,9 +129,11 @@ export default async function EditorQueuePage(props: { searchParams?: Promise<Re
     );
   }
 
-  // An EDITOR whose login has no editorKey AND no name can't be scoped — fail
-  // closed with a nudge, never fall through to the all-jobs view below.
-  if (me?.role === "EDITOR" && !editorScope) {
+  // An EDITOR whose login has no editorKey can't be scoped — fail closed with a
+  // nudge, never fall through to the all-jobs view below. Oct 20 2026 (audit
+  // B13): editorScopeOf answers the truthy sentinel for them, never null, so
+  // the old `!editorScope` test never fired and they got an empty desk.
+  if (me?.role === "EDITOR" && (!editorScope || isUnmappedEditor(editorScope))) {
     return (
       <div>
         <PageHeader eyebrow="Video projects only" title="Editing Room" />

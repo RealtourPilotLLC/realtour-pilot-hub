@@ -73,8 +73,7 @@ async function main() {
     const { unansweredCommsBoard } = await import("@/lib/commsBoard");
     const { homeRecordHref } = await import("@/lib/homeRecordScope");
     const { ReadyToSendCard } = await import("@/components/ops/ReadyToSendCard");
-    // (The Review Room's old delivery summary, components/review/DeliveryExitSummary,
-    // was deleted Oct 20 2026, audit H13: no page rendered it.)
+    const { DeliveryFollowUps } = await import("@/components/ops/ReadyToSendCard");
     const now = new Date();
     const ago = (hours: number) => new Date(now.getTime() - hours * 3_600_000);
     const real = await prisma.client.create({ data: { name: "Real Agent", firstSeenAt: now } });
@@ -164,10 +163,14 @@ async function main() {
     // The simplified Review Room no longer embeds the delivery summary. Check
     // its actual scoped cut rows; the summary's return-link contract follows.
     c.ok("Review Room retains both real and fixture cuts in explicit test view", jobs.every(job => elements(reviewTree, "CutRow").some(row => (row.s as { id: string }).id === job.cut.id)));
+    // Oct 20 2026 (B7/H13): DeliveryExitSummary was never rendered and is
+    // deleted; its return-link check went with it. The incident link is
+    // checked on the follow-up lanes the Video Review Room does render.
     const incident = { projectId: jobs[1].project.id, street: "Fixture-only property", state: "failed" as const, queuedAtISO: now.toISOString(), outboxId: "isolated-outbox", taskId: "isolated-task" };
     const incidentBoard = { ready: [], rendering: [], needsFinishing: [], notTold: [], noticeIncidents: [incident] };
     const card = renderToStaticMarkup(createElement(ReadyToSendCard, { board: incidentBoard, includeTest: true }));
-    c.ok("the delivery card keeps the fixture incident task reachable", card.includes('href="/tasks?tab=other&amp;task=isolated-task&amp;test=1"') && card.includes('href="/communications?incident=isolated-outbox"'));
+    const incidentSummary = renderToStaticMarkup(createElement(DeliveryFollowUps, { board: { ...incidentBoard, portal: [] }, includeTest: true }));
+    c.ok("both delivery surfaces keep the fixture incident task reachable", [card, incidentSummary].every((html) => html.includes('href="/tasks?tab=other&amp;task=isolated-task&amp;test=1"')) && card.includes('href="/communications?incident=isolated-outbox"'));
     c.ok("scope helper preserves filters/hash and supported queue scope while keeping exact external/detail routes", homeRecordHref("/tasks?tab=work&who=all&source=slack#task-1", true) === "/tasks?tab=work&who=all&source=slack&test=1#task-1" && homeRecordHref("/#video-review", true) === "/?test=1#video-review" && homeRecordHref("/editing", true) === "/editing?test=1" && homeRecordHref("/schedule", true) === "/schedule?test=1" && ["/communications?tab=replies", "/sales", "/review/project?cut=version", "https://example.test/tasks", "//example.test/tasks", "#shoots"].every((href) => homeRecordHref(href, true) === href));
     c.ok("Home scope reads leave source work, editing state and communications untouched", JSON.stringify(beforeTasks) === JSON.stringify(await prisma.smartTask.findMany({ orderBy: { id: "asc" } })) && await prisma.editorWorkEvent.count() === 0 && await prisma.outboxMessage.count() === 0 && fence.blocked.length === 0 && fence.faked.length === 0);
     c.summary();

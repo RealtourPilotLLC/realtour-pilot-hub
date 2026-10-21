@@ -50,6 +50,42 @@ export async function deliveryOwnerTeamMemberId(): Promise<string> {
   throw new Error(`The delivery owner (${name || user.email}) is not linked to one active team member. Link their login to their roster entry.`);
 }
 
+/** How far back the in-between minutes look for something that moved. Wider
+ *  than one tick, so a late or skipped tick still sees it. */
+const RECENT_MS = 3 * 60_000;
+
+/**
+ * WHETHER THIS MINUTE BUILDS THE BOARD (Oct 20 2026, audit H2/B3).
+ *
+ * The 1080p lane's cron runs every minute since Oct 19 and this step built the
+ * whole Ready-to-send board on every tick, about 1,440 builds a day. Now:
+ *   · every fifth minute, the full sweep, the cadence these alerts had before
+ *     Oct 19. It catches anything the cheap check below cannot see and retries
+ *     a Slack send that failed (notifyInApp);
+ *   · the minutes between, only when something that puts a video on the board
+ *     moved in the last few minutes: a cut approved, a 1080p pass that
+ *     finished, was saved or was held, or an Aryeo upload a person started.
+ * Three small counts instead of the board. A failed check builds the board.
+ */
+export async function deliveryAlertsDue(now: Date = new Date()): Promise<{ due: boolean; why: string }> {
+  if (now.getUTCMinutes() % 5 === 0) return { due: true, why: "five-minute sweep" };
+  const since = new Date(now.getTime() - RECENT_MS);
+  try {
+    const { VIDEO_PUSH_PREFIX } = await import("@/lib/videoAryeoPush");
+    const [approved, rendered, pushes] = await Promise.all([
+      prisma.reviewSubmission.count({ where: { status: "APPROVED", sentToClientAt: null, decidedAt: { gte: since } } }),
+      prisma.topazJob.count({ where: { OR: [{ finishedAt: { gte: since } }, { savedAt: { gte: since } }, { heldAt: { gte: since } }] } }),
+      prisma.appSetting.count({ where: { key: { startsWith: VIDEO_PUSH_PREFIX }, updatedAt: { gte: since } } }),
+    ]);
+    if (approved) return { due: true, why: "a cut was approved" };
+    if (rendered) return { due: true, why: "a 1080p pass moved" };
+    if (pushes) return { due: true, why: "an Aryeo upload moved" };
+    return { due: false, why: "nothing moved" };
+  } catch {
+    return { due: true, why: "the quick check failed" };
+  }
+}
+
 /** Staff-only reminders. Never uploads media, releases a portal, or sends to clients. */
 export async function notifyKyleDeliveryReady() {
   const owner = await deliveryOwnerTeamMemberId();
@@ -58,6 +94,8 @@ export async function notifyKyleDeliveryReady() {
     excludeClientIds: clients.filter(isSyntheticClientRow).map(c => c.id),
     recordFollowUpHealth: false,
     includeNoticeIncidents: false,
+    // Only `ready` is read here (audit H2/B3): no follow-up lanes.
+    readyOnly: true,
   });
   // A pass that skipped or failed on a portal video already told Kyle by name,
   // with the reason (topazJobs.tellSomebody). Its "1080p file needed" row

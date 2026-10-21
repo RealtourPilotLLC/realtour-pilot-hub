@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { EMPTY_COUNTS, type JobCounts } from "@/lib/opsCounts";
+import type { JobCounts } from "@/lib/opsCounts";
 import { etDateTime, etDayKey, etAt } from "@/lib/datetime";
 import type { VideoPushLine } from "@/lib/videoAryeoPush";
 import type { ReadyBoard, ReadyVideo } from "@/lib/readyToSend";
@@ -43,9 +43,9 @@ import type { VideoPushMode } from "@/lib/videoDeliverySettings";
 // due by tonight, the late ones included (Jordan's rule); behind = lateListing;
 // open = the listing videos ready to send or due today (late included);
 // readyToSend = the sending lane. CONTENT-PROGRAM videos (monthly, the
-// client's portal) are counted apart (lateMonthly) and never mixed into the
-// listing numbers; the room shows only the late ones (they publish to the
-// portal by themselves).
+// client's portal) are not on this board: they publish to the portal by
+// themselves, and the Dashboard's program watch tracks them (Oct 20 2026,
+// audit B6: the board's unread program section was removed).
 // ---------------------------------------------------------------------------
 
 export type VideoDeliveryCounts = JobCounts & {
@@ -53,8 +53,6 @@ export type VideoDeliveryCounts = JobCounts & {
   lateListing: number;
   /** Hours the most-late listing video is past its promise; null when none. */
   oldestLateHours: number | null;
-  /** Content-program (monthly) videos past their date (never in the listing numbers). */
-  lateMonthly: number;
   /** Listing videos approved and ready to send (the room's top section). */
   readyToSend?: number;
 };
@@ -84,6 +82,8 @@ export type VideoSend = {
   asksUnknown: boolean;
   /** Why the button is not offered (the hub cannot send this file itself); null when it is. */
   byHandWhy: string | null;
+  /** The upload status could not be read just now: the row says reload, never "by hand" (audit B12). */
+  pushUnknown: boolean;
 };
 
 export type VideoRow = {
@@ -121,23 +121,9 @@ export type VideoRow = {
   heldRender: { jobId: string; fileName: string; dropboxUrl: string | null; lastCheck: string | null } | null;
 };
 
-export type ProgramRow = {
-  outputId: string;
-  projectId: string;
-  clientName: string;
-  title: string;
-  monthWords: string;
-  promiseISO: string | null;
-  promiseWords: string;
-  late: boolean;
-  stage: string;
-  why: string;
-};
-
 export type VideoDeliveryBoard = {
   asOf: string;
   lanes: Record<VideoLane, VideoRow[]>;
-  program: { late: ProgramRow[]; dueToday: ProgramRow[]; atRisk: number; unavailable: boolean };
   counts: VideoDeliveryCounts;
   /** The stored switch (read only; button only since Oct 19, it starts nothing). */
   mode: VideoPushMode;
@@ -209,7 +195,6 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   const { videoDeliverySettings } = await import("@/lib/videoDeliverySettings");
   const clients = await prisma.client.findMany({ select: { id: true, name: true } });
   const excludeClientIds = clients.filter(isSyntheticClientRow).map((c) => c.id);
-  const excluded = new Set(excludeClientIds);
 
   const [{ deliveryBoard }, { readyToSend }, { videoStatesFor }, turnaround, qc, settings, connected] = await Promise.all([
     import("@/lib/deliveryBoard"),
@@ -286,6 +271,8 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     if (r.listingMissing) return "This job has no Aryeo listing linked yet. Open the job and press Refresh from Aryeo, then send it.";
     if (r.file.source !== "topaz-1080p") return `This is the editor's own file (the 1080p pass did not produce one${r.file.why ? `: ${scrubWhy(r.file.why).replace(/[.\s]+$/, "")}` : ""}), so it goes up by hand.`;
     if (!connected) return "The hub's Aryeo login is not set up yet, so this one goes up by hand. Jordan adds it on Connections, Aryeo hub login.";
+    // A failed read of the upload status is not "never checked" (audit B12).
+    if (r.pushUnknown) return null;
     if (!r.push) return "The 1080p file was never checked, so the hub does not send it on its own. Upload it by hand.";
     return null;
   };
@@ -296,7 +283,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
 
   for (const pid of videoJobIds) {
     const p = projectById.get(pid);
-    if (!p || excluded.has(pid)) continue;
+    if (!p) continue;
     const job = jobById.get(pid);
     const st = states.get(pid);
     const promise = videoPromise(job, p, helpers);
@@ -337,6 +324,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
               listingWarning: r.listing && (r.listing.contested || r.listing.couldBeThisCut) && !r.uploaded ? r.listing.says : null,
               openAsks: a?.list ?? [], asksUnknown: a?.unknown ?? false,
               byHandWhy: byHandWhy(r),
+              pushUnknown: !!r.pushUnknown,
             } : null,
           });
           continue;
@@ -392,29 +380,6 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
   lanes.delivered.sort((a, b) => (b.deliveredAtISO ?? "").localeCompare(a.deliveredAtISO ?? ""));
   lanes.sending.sort((a, b) => Number(b.late) - Number(a.late) || (a.approvedAtISO ?? "").localeCompare(b.approvedAtISO ?? ""));
 
-  // ---- the content program (monthly, the client's portal) ----
-  const program = { late: [] as ProgramRow[], dueToday: [] as ProgramRow[], atRisk: 0, unavailable: false };
-  try {
-    const { programVideos } = await import("@/lib/programWatch");
-    const { STAGE_STAFF_WORDS } = await import("@/lib/programWatchCore");
-    const rows = (await programVideos({ now })).filter((r) => !excluded.has(r.clientId) && r.evaluation && r.evaluation.status !== "DONE");
-    for (const r of rows) {
-      const e = r.evaluation!;
-      if (e.status === "AT_RISK") program.atRisk++;
-      const row: ProgramRow = {
-        outputId: r.outputId, projectId: r.projectId, clientName: r.clientName, title: r.title, monthWords: r.monthWords,
-        promiseISO: r.promisedAt?.toISOString() ?? null, promiseWords: promiseWords(r.promisedAt, now), late: e.status === "LATE",
-        stage: STAGE_STAFF_WORDS[e.stage] ?? e.stage, why: r.why,
-      };
-      if (e.status === "LATE") program.late.push(row);
-      else if (r.promisedAt && r.promisedAt.getTime() <= endOfToday.getTime()) program.dueToday.push(row);
-    }
-    program.late.sort((a, b) => (a.promiseISO ?? "").localeCompare(b.promiseISO ?? ""));
-  } catch (e) {
-    console.warn("[video-delivery] program videos unavailable", e);
-    program.unavailable = true;
-  }
-
   // ---- the counts (Kyle's Home reads these): each video once per number ----
   const owedRows = VIDEO_LANES.filter((l) => l !== "delivered").flatMap((l) => lanes[l]);
   const lateRows = owedRows.filter((r) => r.late);
@@ -429,7 +394,6 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
     oldestHours: waits.length ? Math.max(...waits) : null,
     lateListing: lateRows.length,
     oldestLateHours: lateRows.length ? Math.max(...lateRows.map((r) => r.lateHours ?? 0)) : null,
-    lateMonthly: program.late.length,
     readyToSend: lanes.sending.length,
   };
   // ---- the follow-ups (the room only): what the delivery card used to carry ----
@@ -447,14 +411,7 @@ async function buildBoard(now: Date, withFollowUps: boolean): Promise<VideoDeliv
         portal: ready.ready.filter((v) => v.deliveryDestination === "client-portal").map((v) => ({ ...v, file: { ...v.file, why: v.file.why ? scrubMoney(v.file.why) : null } })),
       }
     : null;
-  return { asOf: now.toISOString(), lanes, program, counts, mode: settings.aryeoPush, connected, followUps };
-}
-
-/** Counts for Kyle's Video tile (test clients excluded). A read that fails
- *  throws (Home greys the tile) rather than reporting "nothing late". */
-export async function videoDeliveryCounts(now: Date = new Date()): Promise<VideoDeliveryCounts> {
-  const b = await videoDeliveryBoard(Math.abs(now.getTime() - Date.now()) < 60_000 ? {} : { now });
-  return { ...EMPTY_COUNTS, ...b.counts };
+  return { asOf: now.toISOString(), lanes, counts, mode: settings.aryeoPush, connected, followUps };
 }
 
 /** Home's summary box (Oct 19 2026): listing videos ready to send, late, and

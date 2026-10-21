@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { requirePageAccess } from "@/lib/auth/guards";
+import { editorScopeOf, isUnmappedEditor, requirePageAccess, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
 import { getCurrentUser } from "@/lib/auth/user";
-import { slugForName } from "@/lib/assignees";
 import { TeamMessagesPanel, loadTeamChat } from "@/components/comms/TeamMessagesPanel";
 
 export const dynamic = "force-dynamic";
@@ -44,15 +43,19 @@ export default async function MessageCenterPage({
   // here (their board renders no Messages button), so this is the door, not the
   // sign. Their conversation about a cut is the Review Room.
   if (me?.role === "PHOTOGRAPHER") redirect("/editing");
-  const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
+  // The one editor scope (guards.editorScopeOf): an assigned editorKey or the
+  // fail-closed sentinel. Oct 20 2026 (audit B2): this page used to rebuild it
+  // with the first-name fallback the Sep 17 audit removed, so an unlinked
+  // EDITOR could read another editor's threads by sharing a first name.
+  const editorScope = editorScopeOf(me);
   // Fail CLOSED for an editor whose scope can't resolve — a null scope would
   // read as "the office" below and hand them every lane's threads.
-  if (me?.role === "EDITOR" && !editorScope) {
+  if (me?.role === "EDITOR" && (!editorScope || isUnmappedEditor(editorScope))) {
     return (
       <div>
         <PageHeader eyebrow="Editing Room" title="Messages" />
         <p className="m-4 rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted sm:m-6">
-          Your login isn&rsquo;t linked to an editor profile yet — ask Jordan to set your editor key.
+          {UNMAPPED_EDITOR_MESSAGE}
         </p>
       </div>
     );

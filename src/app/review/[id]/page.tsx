@@ -116,8 +116,8 @@ export default async function CutReviewPage({
   // individually (Jordan: "review each one individually in a timely manner").
   // A cut = (deliverable × slot) for uploaded rows, the file for legacy
   // folder rows; the newest round of each is the current cut.
-  const cutKeyOf = (s: (typeof w.submissions)[number]) => (s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id));
-  const { cutSlots, owedSlotKeyOf } = await import("@/lib/reviewCuts");
+  // (reviewCuts.cutKeyOf: one definition of the key, audit B23.)
+  const { cutSlots, cutKeyOf, owedSlotKeyOf } = await import("@/lib/reviewCuts");
   const slots = await cutSlots(w.projectId);
   const navigation = await videoNavigationFor(w.projectId);
   const latestPerCut = new Map<string, (typeof w.submissions)[number]>();
@@ -485,7 +485,7 @@ export default async function CutReviewPage({
                 ].filter(Boolean).join(" · ")}
               </span>
               {w.premium && (
-                <span className="rounded-md px-1.5 py-0.5 text-[11px] font-medium" style={{ backgroundColor: "#a78bfa1a", color: "#a78bfa" }}>
+                <span className="rounded-md bg-violet-400/10 px-1.5 py-0.5 text-[11px] font-medium text-violet-400 light:text-violet-600">
                   Premium
                 </span>
               )}
@@ -505,7 +505,7 @@ export default async function CutReviewPage({
                   <p className="mt-1 text-sm text-muted">No video deliverables listed.</p>
                 )}
                 {w.premium && (
-                  <p className="mt-2 text-xs font-medium" style={{ color: "#a78bfa" }}>
+                  <p className="mt-2 text-xs font-medium text-violet-400 light:text-violet-600">
                     Premium tier — hold it to the influencer standard.
                   </p>
                 )}

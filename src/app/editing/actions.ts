@@ -502,11 +502,14 @@ export async function addToEditorQueue(
 
     const tmId = await editorTeamMemberId(key);
     await withEditorAssignmentChange(projectId, (tx) => tx.project.update({ where: { id: projectId }, data: { editorId: tmId } }));
+    const { OFFICE_NEW_CUT_LINE } = await import("@/lib/editorQueue");
     await prisma.activity.create({
       data: {
         projectId,
         type: "SYSTEM",
-        body: `Queued a new cut (as a revision)${queuedBy ? ` by ${queuedBy}` : ""} — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
+        // The Editing Room reads this line back as the office's own reopen
+        // (editorQueue.OFFICE_NEW_CUT_LINE): change both together.
+        body: `${OFFICE_NEW_CUT_LINE}${queuedBy ? ` by ${queuedBy}` : ""} — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
       },
     });
     await notifyQueued("revision_raised", `New cut — ${street}`);

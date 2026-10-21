@@ -85,6 +85,46 @@ async function main() {
     c.ok("an older approved version cannot reopen while a newer one is in", !old.ok && /newer version \(v2\)/.test(old.message) && (await statusOf(B.cuts[0].id)) === "APPROVED", old.message);
 
     // ======================================================================
+    c.head("1b · the 1080p pass of a reopened version (Oct 20 2026, audit B1)");
+    {
+      const { putSetting } = await import("@/lib/settings");
+      await putSetting("topaz", { enabled: true, deliverableTypes: ["VIDEO", "SOCIAL_REEL"] });
+      const topaz = await import("@/lib/topazJobs");
+      // A queued pass (nothing spent) and a finished one with Kyle's upload card.
+      const Q = await mk("Queued Pass Reopen TEST");
+      const q1 = Q.cuts[0];
+      await prisma.reviewSubmission.update({ where: { id: q1.id }, data: { blobUrl: "https://example.test/q1.mov" } });
+      const qJob = await prisma.topazJob.create({ data: { submissionId: q1.id, projectId: Q.f.projectId!, state: "queued" } });
+      const D = await mk("Done Pass Reopen TEST");
+      const d1 = D.cuts[0];
+      const dJob = await prisma.topazJob.create({ data: { submissionId: d1.id, projectId: D.f.projectId!, state: "done", finalPath: "/x/Final/reel FINAL (Topaz).mp4", savedAt: new Date() } });
+      await prisma.smartTask.create({ data: { taskType: "internal_instruction", title: "Upload the 1080p video to Aryeo — test", source: "system", status: "OPEN", projectId: D.f.projectId!, dedupeKey: `topaz-deliver-${dJob.id}` } });
+      await note(Q.f.projectId!, q1, "Trim the intro.");
+      await note(D.f.projectId!, d1, "Swap the music.");
+      const rq = await actions.requestCutChanges(q1.id, { reopen: true });
+      const rd = await actions.requestCutChanges(d1.id, { reopen: true });
+      c.ok("both versions reopened", rq.ok && rd.ok, `${rq.message} | ${rd.message}`);
+      const qAfter = await prisma.topazJob.findUniqueOrThrow({ where: { id: qJob.id } });
+      c.ok("a queued pass on a reopened version stops before anything is spent", qAfter.state === "cancelled" && /reopened for revisions/.test(qAfter.skipReason ?? ""), `${qAfter.state} ${qAfter.skipReason}`);
+      const card = await prisma.smartTask.findUniqueOrThrow({ where: { dedupeKey: `topaz-deliver-${dJob.id}` } });
+      c.ok("Kyle's upload card for the reopened version closes with the reason", card.status === "CANCELLED" && /reopened for revisions/.test(card.summary ?? ""), `${card.status} ${card.summary}`);
+      c.ok("a finished pass is left as it was (the render was paid for)", (await prisma.topazJob.findUniqueOrThrow({ where: { id: dJob.id } })).state === "done");
+      // An estimate the reopen could not stop itself: the driver hands it back and stops it.
+      const E = await mk("Estimated Pass Reopen TEST");
+      const e1 = E.cuts[0];
+      const eJob = await prisma.topazJob.create({ data: { submissionId: e1.id, projectId: E.f.projectId!, state: "estimated", requestId: "isolated-request", estimateCredits: 3 } });
+      await prisma.reviewSubmission.update({ where: { id: e1.id }, data: { status: "CHANGES_REQUESTED" } });
+      const stepped = await topaz.advanceTopazJob(eJob.id);
+      const eAfter = await prisma.topazJob.findUniqueOrThrow({ where: { id: eJob.id } });
+      c.ok("the driver stops an estimate on a reopened version, with nothing committed", stepped === "cancelled" && eAfter.state === "cancelled" && eAfter.requestId === null && eAfter.acceptedAt === null, `${stepped} ${eAfter.state}`);
+      // The same version approved again: its stopped pass comes back to the queue.
+      await prisma.reviewSubmission.update({ where: { id: q1.id }, data: { status: "APPROVED" } });
+      const again = await topaz.queueTopazRender(q1.id);
+      const qBack = await prisma.topazJob.findUniqueOrThrow({ where: { id: qJob.id } });
+      c.ok("re-approving the same version re-queues its stopped pass", again.queued && qBack.state === "queued" && qBack.skipReason === null, JSON.stringify(again));
+    }
+
+    // ======================================================================
     c.head("2 · a client text about the delivered video reopens it");
     const { raiseRevision, askMedium } = await import("@/lib/comms");
     c.ok("Georgiana's wording reads as video now (it was filed as a photo revision)", askMedium("Also I notice they kept the seated version of me speaking on the back deck and we talked about swapping that with the standing version if my leg couldn't be cropped. Can we swap that frame with the standing version please?") === "video");

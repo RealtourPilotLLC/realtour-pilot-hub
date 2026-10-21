@@ -224,6 +224,7 @@ async function main() {
     c.ok("direct send receipt removes row once without heavy dashboard refresh", sentRemoved === 1 && refreshes === refreshBeforeSend && markers.size === 0);
     const partialHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [], needsFinishing: [{ submissionId: ready.submissionId, projectId: ready.projectId, street: ready.street, sentAtISO: ready.approvedAtISO, sentBy: "Kyle", why: "Fixture partial" }] } }));
     c.ok("partial follow-up no longer claims client possession from a handoff stamp", !partialHTML.includes("The client has these") && partialHTML.includes("does not prove client approval, notification or receipt"));
+    // Oct 20 2026 (B7/H13): DeliveryExitSummary was never rendered and is deleted, with its two checks.
 
     const { clientNotToldYet } = await import("../../src/lib/readyToSend");
     const noticeRows = await clientNotToldYet({ projectId: "exact-requested-project", excludeClientIds: ["excluded-fixture"], max: 7 });
