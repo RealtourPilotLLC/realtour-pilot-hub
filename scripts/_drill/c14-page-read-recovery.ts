@@ -130,7 +130,8 @@ async function main() {
     const scheduleFailed = await inject(prisma.appointment as unknown as { findMany: unknown }, (args) => record(args.include).assignedTo === true, async () => settleSchedule(await schedule(query)));
     c.ok("Kyle Schedule appointment read propagates unavailable, never no-shoots reassurance", scheduleFailed.hits === 1 && scheduleFailed.error instanceof Error && scheduleFailed.error.message === "isolated named page read unavailable" && scheduleFailed.value === null);
     const scheduleHtml = renderToStaticMarkup(await settleSchedule(await schedule(query)) as Parameters<typeof renderToStaticMarkup>[0]);
-    c.ok("Kyle Schedule retry restores the exact visit and original shoot link", scheduleHtml.includes("72 Oak Visit") && scheduleHtml.includes(`href="/shoot/${visit.id}"`) && !scheduleHtml.includes("No shoots scheduled"));
+    // Oct 21 2026 (audit A14): the office's Schedule rows open the job page.
+    c.ok("Kyle Schedule retry restores the exact visit and its job link", scheduleHtml.includes("72 Oak Visit") && scheduleHtml.includes(`href="/projects/${visit.id}"`) && !scheduleHtml.includes("No shoots scheduled"));
     c.ok("failure and recovery reads preserve task, exact cut, appointment and manual work state", before === await snapshot() && await prisma.editorWorkEvent.count() === 0 && await prisma.outboxMessage.count() === 0);
     c.ok("all page traffic remains fenced with no provider calls", fence.blocked.length === 0 && fence.faked.length === 0);
     console.log(await db.evidence());
