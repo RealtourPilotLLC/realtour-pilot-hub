@@ -56,6 +56,9 @@ async function assetsByFolder(): Promise<Map<string, string[]> | null> {
       const cut = rest.indexOf("/");
       if (cut <= 0) continue; // a file sitting loose at the root belongs to no client
       const folder = rest.slice(0, cut);
+      // A self-planned client's content plans live under "<client>/Content
+      // Plans/" (Oct 21 2026); they are plans, not brand assets.
+      if (rest.slice(cut + 1).startsWith("content plans/")) continue;
       const key = prefix + folder;
       const files = byFolder.get(key) ?? [];
       if (files.length < MAX_FILES) files.push(e.name);
