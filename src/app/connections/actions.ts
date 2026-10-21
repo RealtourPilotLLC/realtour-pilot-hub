@@ -151,16 +151,32 @@ export async function testTopazNow(): Promise<ActionResult> {
 // Pull the real books from QuickBooks on demand. This is the number that has
 // been missing everywhere else: revenue processed outside Stripe, plus the
 // expense ledger the Hub has never seen.
+//
+// Oct 21 2026: the pull takes the one-caller QuickBooks lease, so a press
+// while the daily pull (or another press) is running is refused with nothing
+// sent to Intuit, instead of two runs rotating the token at once. After a
+// pull the ledger is re-classified, so the review desk reflects it at once
+// rather than after the next daily run.
 export async function syncQuickBooksNow(): Promise<ActionResult> {
   await requireOwner();
   try {
     const { syncQuickBooks } = await import("@/lib/integrations/quickbooks");
-    const r = await syncQuickBooks();
+    const r = await syncQuickBooks({ by: "the Sync button on Connections" });
+    if (r.skipped) return { ok: false, message: r.skipped };
+    let sorted = "";
+    try {
+      const { categoriseBooks } = await import("@/lib/bookkeeping");
+      // The daily run's window: the ET year, and at least 60 days back.
+      const { etDayKey, etYearStartKey } = await import("@/lib/datetime");
+      const back60 = etDayKey(new Date(Date.now() - 60 * 864e5));
+      const c = await categoriseBooks({ sinceKey: back60 < etYearStartKey() ? back60 : etYearStartKey() });
+      sorted = ` Sorted ${c.scanned.toLocaleString("en-US")}; ${c.flagged} need a look.`;
+    } catch { /* the nightly classify catches up */ }
     revalidatePath("/connections");
     revalidatePath("/sales");
     return {
       ok: true,
-      message: `Synced — ${r.invoices} invoices, ${r.payments} payments, ${r.salesReceipts} sales receipts, ${r.deposits} deposits, ${r.purchases} expenses.`,
+      message: `Synced: ${r.invoices} invoices, ${r.payments} payments, ${r.salesReceipts} sales receipts, ${r.deposits} deposits, ${r.purchases} expenses.${sorted}`,
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "QuickBooks sync failed." };

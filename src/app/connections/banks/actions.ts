@@ -38,9 +38,21 @@ export async function exchangePlaidPublicToken(publicToken: string) {
   revalidatePath("/connections/banks");
 }
 
+// Oct 21 2026: a manual pull is sorted straight away (the same rules as the
+// daily run, owner-locked rows untouched), so new lines land in Finance with
+// their categories instead of all waiting in review until the next morning.
+async function sortPulledLines() {
+  try {
+    const { categorizeAllPlaid } = await import("@/lib/financeCategories");
+    await categorizeAllPlaid();
+    revalidatePath("/sales");
+  } catch { /* the daily run sorts them */ }
+}
+
 export async function syncPlaidNow() {
   await requireOwner();
   const r = await syncAllPlaid();
+  await sortPulledLines();
   revalidatePath("/connections/banks");
   return r;
 }
@@ -48,6 +60,7 @@ export async function syncPlaidNow() {
 export async function backfillPlaidNow() {
   await requireOwner();
   const r = await backfillAllPlaid();
+  await sortPulledLines();
   revalidatePath("/connections/banks");
   return r;
 }

@@ -1,7 +1,8 @@
 import { Briefcase, User, AlertTriangle, ArrowLeftRight, Wallet, CreditCard } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
-import { categoryBreakdown, vendorBreakdown, cardPaydowns } from "@/lib/financeCategories";
+import { categoryBreakdown, vendorBreakdown, cardPaydowns, railFreshness } from "@/lib/financeCategories";
+import { BooksFreshness } from "@/components/finance/BooksFreshness";
 import { etYear } from "@/lib/datetime";
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { SpendingCategories } from "@/components/finance/SpendingCategories";
@@ -18,11 +19,13 @@ export const dynamic = "force-dynamic";
 export async function SpendingTab({ show }: { show: FinanceTab[] }) {
   const year = etYear(); // ET, not UTC — late-evening views shifted a year at Dec 31 (audit)
   const start = `${year}-01-01`, end = `${year}-12-31`;
-  const [b, rev, vb, cards] = await Promise.all([
+  const now = new Date();
+  const [b, rev, vb, cards, fresh] = await Promise.all([
     categoryBreakdown(start, end),
     revenueByProcessor(start, end),
     vendorBreakdown(start, end),
     cardPaydowns(start, end),
+    railFreshness(),
   ]);
 
   const revenue = rev.total;
@@ -78,6 +81,9 @@ export async function SpendingTab({ show }: { show: FinanceTab[] }) {
           ]}
         />
 
+        {/* How current all of this is, and what is still waiting (Oct 21 2026). */}
+        <BooksFreshness fresh={fresh} now={now} />
+
         {b.reviewTotal > 100 && (
           <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
@@ -87,7 +93,7 @@ export async function SpendingTab({ show }: { show: FinanceTab[] }) {
 
         {/* Interactive: business / personal / review — tap to drill in and re-tag */}
         <SpendingCategories
-          business={b.business} personal={b.personal} review={b.review}
+          business={b.business} personal={b.personal} review={b.review} reviewIncoming={b.reviewIncoming}
           businessTotal={b.businessTotal} personalTotal={b.personalTotal}
           allCategories={allCategories}
           startKey={start} endKey={end}

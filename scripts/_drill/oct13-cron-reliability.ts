@@ -12,8 +12,9 @@
 //      (and in cronHealth's expected list); the hourly sync no longer reads
 //      orders/appointments, runs sessions, the Ready-to-send pass, any model
 //      call, the legacy call sweeps, the transcript auto-analysis or the
-//      booking-link tasks; daily no longer pulls QuickBooks; the unscheduled
-//      relabel route and the "sync calls" action are gone.
+//      booking-link tasks; the unscheduled relabel route and the "sync calls"
+//      action are gone. (Oct 21 2026: daily pulls and re-sorts QuickBooks
+//      AGAIN; Jordan does use it. scripts/_drill/oct21-books-0942.ts §9.)
 //   2  GET /api/cron/aryeo: 200, its five steps in order, one CronRun "aryeo",
 //      Aryeo only ever READ (every non-GET is refused and counted).
 //   3  GET /api/cron/topics: 200, the AI queue first, then the unread-brief
@@ -125,7 +126,9 @@ async function main() {
     const ai = read("src/app/api/cron/topics/route.ts");
     c.ok("the AI work job: AI queue first, every sweep with a start-only-with-time-to-finish floor", ai.indexOf('step("aiQueue"') > 0 && (ai.match(/minStartMs:/g) ?? []).length >= 5 && /TOPIC_REFRESH_MAX = 2;/.test(ai));
     const daily = read("src/app/api/cron/daily/route.ts").replace(/^\s*\/\/.*$/gm, "");
-    c.ok("daily no longer pulls or re-sorts QuickBooks", !/syncQuickBooks|categoriseBooks/.test(daily));
+    // Oct 21 2026: the Oct 13 stop was reversed (Jordan: "QuickBooks should
+    // still pull and be categorized"), so this now asserts the pull is back.
+    c.ok("daily pulls QuickBooks again, then re-sorts it after a clean pull", /step\("booksSync"[\s\S]*?syncQuickBooks\(/.test(daily) && /step\("booksClassify"[\s\S]*?categoriseBooks\([\s\S]*?after: "booksSync"/.test(daily));
     c.ok("the unscheduled relabel-deliverables route is gone", !fs.existsSync(path.join(REPO, "src/app/api/cron/relabel-deliverables/route.ts")));
     c.ok("the staff 'sync calls' action is gone", !/export async function syncCallsNow/.test(read("src/app/content/actions.ts")));
   }

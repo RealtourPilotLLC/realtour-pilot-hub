@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayStartUtc } from "@/lib/datetime";
+import { etDayStartUtc, etYearStartKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // ONE WINDOW RULE FOR THE STRIPE RAIL (Oct 20 2026, audit G9).
@@ -30,6 +30,82 @@ export function stripeWindow(startKey: string, endKey: string): { from: Date; to
 // ---------------------------------------------------------------------------
 
 export type FinanceKind = "BUSINESS" | "PERSONAL" | "EXCLUDE" | "REVIEW" | "INCOME";
+
+// ---------------------------------------------------------------------------
+// THE BUSINESS OPERATING ACCOUNT MOVED (Oct 21 2026, Jordan: "My PNC business
+// account was closed, but I still have 0942, which I am currently using as a
+// business account").
+//
+// PNC ··3002 ("Payroll") was business checking until it closed; its last
+// transaction posted 2026-09-05. Since then the business runs through ··0942,
+// which before that was Jordan's personal account and the "detour" hub
+// (memory: reference-account-0942). The same mask therefore means two things:
+//   · BEFORE the cutover ··0942 is personal, and its history is classified
+//     exactly as it always was (so is all of ··3002's);
+//   · FROM the cutover ··0942 is business checking: business merchants and
+//     contractors are business costs (the same categories ··3002 produced),
+//     transfers to ··4284 and personal spending are owner draws (never a cost),
+//     Stripe and QuickBooks Payments deposits are money already counted at the
+//     processor (bookkeeping.revenueByProcessor never reads a deposit), round
+//     trips between his own accounts are transfers, and a deposit nobody can
+//     name waits in REVIEW instead of being guessed as income.
+//
+// The cutover lives in ONE place: the AppSetting below (a YYYY-MM-DD) when it
+// is set, else the day after ··3002's last transaction. It is a fixed date on
+// purpose, never re-derived from the data on each run: a straggler posting on
+// the closed account (a closing fee, a returned item) would otherwise move the
+// line and silently re-sort weeks of ··0942.
+// ---------------------------------------------------------------------------
+export const CLOSED_BUSINESS_MASK = "3002";
+export const OPERATING_MASK = "0942";
+export const OPERATING_CUTOVER_DEFAULT = "2026-09-06";
+export const OPERATING_CUTOVER_SETTING = "finance:operating-cutover";
+
+/** The cutover day from the AppSetting's stored value (a bare or JSON-quoted
+ *  YYYY-MM-DD, or {"date": …}); the default for anything else. Pure. */
+export function parseOperatingCutover(raw: string | null | undefined): string {
+  let v: unknown = raw ?? null;
+  if (typeof v === "string") {
+    try { v = JSON.parse(v); } catch { /* a bare date string */ }
+  }
+  if (v && typeof v === "object" && "date" in v) v = (v as { date?: unknown }).date;
+  const s = typeof v === "string" ? v.trim() : "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T12:00:00Z`)) && new Date(`${s}T12:00:00Z`).toISOString().slice(0, 10) === s) return s;
+  return OPERATING_CUTOVER_DEFAULT;
+}
+
+export async function operatingCutover(): Promise<string> {
+  const row = await prisma.appSetting.findUnique({ where: { key: OPERATING_CUTOVER_SETTING }, select: { value: true } }).catch(() => null);
+  return parseOperatingCutover(row?.value);
+}
+
+/** Is this line ··0942 acting as the business checking account? Pure. */
+export function isOperatingLine(mask: string | null | undefined, dateKey: string | null | undefined, cutoverKey: string = OPERATING_CUTOVER_DEFAULT): boolean {
+  return mask === OPERATING_MASK && !!dateKey && dateKey >= cutoverKey;
+}
+
+/** A ledger row's day. Bank, card and statement rows are stored at noon UTC
+ *  precisely so the UTC date IS the posted day. */
+export function ledgerDayKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** The REVIEW bucket for money that arrived in the business account and that
+ *  no rule can name (a mobile check deposit, a Zelle in, a cash deposit). */
+export const DEPOSIT_TO_IDENTIFY = "Deposit to identify";
+
+// Contractors paid straight from the bank (Zelle / ACH / check), not via
+// Venmo (the Venmo statement rows carry those) or Stripe Connect (the Stripe
+// transfer rows do). The bank feed truncates surnames ("LIVINGSTO").
+const CONTRACTOR_PEOPLE = /harrison ?wel|james ?livings|\blivingsto|matthew ?bertsch/i;
+// Borrowed money landing in the account is not a sale (a Stripe Capital
+// advance once read as $15,533.56 of income).
+const LOAN_PROCEEDS = /stripe capital|capital advance|loan proceeds|loan advance|loan disb/i;
+// Bank → Stripe funding of the contractor payouts. The cost is counted ONCE,
+// on the Stripe side (the Connect transfers to James and Harrison, folded into
+// "Creative specialist pay" by categoryBreakdown); booking the funding leg as
+// a cost too would double every dollar of it.
+const STRIPE_FUNDING = /realtourpilo|realtour ?p\b|realtour ?pilot|\bstripe\b.*\b(top-?up|payroll|funding)\b/i;
 
 // Stripe Connect destination accounts → the person behind them. EXACT: each
 // transfer row carries `destination` (stamped by syncStripe from /v1/transfers;
@@ -160,13 +236,22 @@ const PLAID_FALLBACK: [RegExp, string][] = [
   [/^PERSONAL_CARE_/i, "Health & personal care"],
 ];
 
-export function classifyRow(name: string, amount: number, accountMask?: string, plaidDetail?: string | null): { category: string; kind: FinanceKind } {
+/** Where and when a line posted. Without it a line is classified as it always
+ *  was; with it, ··0942 from the cutover is read as business checking. */
+export type ClassifyContext = { dateKey?: string | null; cutoverKey?: string };
+
+// What "INCOME" means on a bank line: customer money ARRIVING in an account.
+// It is the cash-in side of finance.getCashPosition's runway, and nothing
+// else. The P&L never sums it: revenue is counted where it is processed
+// (bookkeeping.revenueByProcessor reads QuickBooks Payments, Stripe and the
+// Venmo statements, never a deposit), so a payout deposit can't be counted twice.
+export function classifyRow(name: string, amount: number, accountMask?: string, plaidDetail?: string | null, ctx?: ClassifyContext): { category: string; kind: FinanceKind } {
   const hay = name || "";
   // (2026-07-23: Lauren's Venmo statements are now IMPORTED — pseudo-account
   // mask "venmoL" carries her per-payee truth, so her 4284 bank funding debits
   // are excluded like Jordan's. The short-lived ≥$900→nanny bank-proxy rule is
-  // retired; accountMask stays as a hook for future per-account rules.)
-  void accountMask;
+  // retired.) Oct 21 2026: the mask now matters for ··0942 from the cutover.
+  const operating = isOperatingLine(accountMask, ctx?.dateKey, ctx?.cutoverKey);
   if (amount < 0) {
     // Bounced-payment reversals: the failed debit and its reversal must BOTH
     // net out (the pairing script locks the dead debit; this catches the credit).
@@ -183,6 +268,7 @@ export function classifyRow(name: string, amount: number, accountMask?: string, 
     if (/xxxxx4284/i.test(hay)) return { category: "Transfer to wife (household)", kind: "EXCLUDE" };
     if (/online transfer|transfer to xxxxx|transfer from xxxxx/i.test(hay)) return { category: "Self-transfer (own accounts)", kind: "EXCLUDE" };
     if (/venmo/i.test(hay)) return { category: "Venmo cash-out", kind: "EXCLUDE" };
+    if (operating && LOAN_PROCEEDS.test(hay)) return { category: "Loan proceeds (not income)", kind: "EXCLUDE" };
     if (/stripe|realtourpilo/i.test(hay)) return { category: "Stripe payout (revenue)", kind: "INCOME" };
     if (/intuit|visa direct|quickbooks/i.test(hay)) return { category: "QuickBooks Payments (revenue)", kind: "INCOME" };
     // MERCHANT REFUNDS ARE NEGATIVE SPEND, NOT INCOME. A credit back from a shop
@@ -201,7 +287,19 @@ export function classifyRow(name: string, amount: number, accountMask?: string, 
         return { category: r.category, kind: r.kind };
       }
     }
+    // In the business account an unnamed deposit could be a client's check,
+    // Jordan's own money coming back, or a refund: never guessed as income.
+    if (operating) return { category: DEPOSIT_TO_IDENTIFY, kind: "REVIEW" };
     return { category: "Deposit / income", kind: "INCOME" };
+  }
+  // ··0942 AS BUSINESS CHECKING: people paid straight from the bank. Venmo
+  // lines stay with the rule table (the Venmo statement rows carry them).
+  if (operating && !/venmo/i.test(hay)) {
+    if (CONTRACTOR_PEOPLE.test(hay)) return { category: "Creative specialist pay", kind: "BUSINESS" };
+    if (/katie ?mac/i.test(hay)) return { category: "Childcare / nanny", kind: "PERSONAL" };
+    // Money to Lauren lands in her account and is counted where she spends it.
+    if (/lauren spackman|laurie spackman/i.test(hay)) return { category: "Transfer to wife (household)", kind: "EXCLUDE" };
+    if (STRIPE_FUNDING.test(hay)) return { category: "Stripe funding / top-up", kind: "EXCLUDE" };
   }
   // Paul's monthly consulting rides on Staffify/Flylisted pulls at exactly
   // $1,500 (owner-confirmed) — everything else from them is editing labor.
@@ -221,31 +319,31 @@ export function classifyRow(name: string, amount: number, accountMask?: string, 
   return { category: "Other / uncategorized", kind: "REVIEW" };
 }
 
-/** (Re)categorize every PlaidTransaction the owner hasn't hand-locked. Batched
- *  by (kind,category) — ~30 updateMany calls, not one round-trip per row. */
-export async function categorizeAllPlaid(): Promise<{ updated: number }> {
-  const rows = await prisma.plaidTransaction.findMany({
-    where: { financeLocked: false },
-    select: { id: true, name: true, merchantName: true, amount: true, categoryDetail: true, account: { select: { mask: true } } },
-  });
-  const groups = new Map<string, { kind: FinanceKind; category: string; ids: string[] }>();
+/** One stored ledger line, as the planner reads it. */
+export type PlanRow = {
+  id: string;
+  name: string | null;
+  merchantName: string | null;
+  amount: number;
+  categoryDetail: string | null;
+  date: Date;
+  mask: string | null;
+  financeKind: string | null;
+  financeCategory: string | null;
+  financeLocked: boolean;
+};
+export type Planned = { kind: FinanceKind; category: string };
+
+/** What the rules make of every UNLOCKED row: the rule table row by row, then
+ *  refunds following their merchant. Pure, so the nightly run, the one-off
+ *  re-classification script (scripts/_fix/oct21/reclassify-books.ts) and the
+ *  drills all compute the identical answer. Locked rows are never planned. */
+export function planPlaidCategories(rows: PlanRow[], cutoverKey: string = OPERATING_CUTOVER_DEFAULT): Map<string, Planned> {
+  const plan = new Map<string, Planned>();
+  const ctxOf = (r: PlanRow): ClassifyContext => ({ dateKey: ledgerDayKey(r.date), cutoverKey });
   for (const r of rows) {
-    const { category, kind } = classifyRow(r.name || r.merchantName || "", r.amount, r.account?.mask ?? undefined, r.categoryDetail);
-    const key = `${kind}||${category}`;
-    let g = groups.get(key);
-    if (!g) { g = { kind, category, ids: [] }; groups.set(key, g); }
-    g.ids.push(r.id);
-  }
-  let updated = 0;
-  for (const g of groups.values()) {
-    for (let i = 0; i < g.ids.length; i += 500) {
-      const chunk = g.ids.slice(i, i + 500);
-      await prisma.plaidTransaction.updateMany({
-        where: { id: { in: chunk } },
-        data: { financeKind: g.kind, financeCategory: g.category },
-      });
-      updated += chunk.length;
-    }
+    if (r.financeLocked) continue;
+    plan.set(r.id, classifyRow(r.name || r.merchantName || "", r.amount, r.mask ?? undefined, r.categoryDetail, ctxOf(r)));
   }
 
   // A REFUND MUST FOLLOW ITS MERCHANT. The rules classify a credit on its name
@@ -254,60 +352,90 @@ export async function categorizeAllPlaid(): Promise<{ updated: number }> {
   // category showing a nonsense −$170. Here each refund adopts the kind and
   // category its own vendor's charges actually carry (including the owner's
   // manual re-tags), so netting always happens in the right bucket.
-  const refunds = await prisma.plaidTransaction.findMany({
-    where: {
-      amount: { lt: 0 },
-      financeLocked: false,
-      OR: [
-        { financeKind: { in: ["PERSONAL", "BUSINESS"] } },
-        // A credit that SAYS it's a merchant return but fell through to income
-        // (no spend rule knew the vendor — a BeenVerified POS RETURN sat in
-        // "Deposit / income", Aug 2026). Give it the same vendor-adoption shot;
-        // with no charges to net against it stays income below, per the
-        // T-Mobile rule.
-        { financeKind: "INCOME", name: { contains: "POS RETURN", mode: "insensitive" } },
-      ],
-    },
-    select: { id: true, name: true, merchantName: true, financeKind: true, financeCategory: true },
-  });
+  // (Oct 21 2026: computed over the planned state instead of re-read after a
+  // first write; the answer is the same, and a dry run can now show it.)
+  const tagOf = (r: PlanRow) => (r.financeLocked ? { kind: r.financeKind, category: r.financeCategory } : plan.get(r.id)!);
   // One pass over the charges builds vendor → dominant (kind, category).
-  const charges = await prisma.plaidTransaction.findMany({
-    where: { amount: { gt: 0 }, financeKind: { in: ["PERSONAL", "BUSINESS"] } },
-    select: { name: true, merchantName: true, amount: true, financeKind: true, financeCategory: true },
-  });
   const byVendorTag = new Map<string, Map<string, number>>();
-  for (const c of charges) {
+  for (const c of rows) {
+    if (!(c.amount > 0)) continue;
+    const t = tagOf(c);
+    if (t.kind !== "PERSONAL" && t.kind !== "BUSINESS") continue;
     const v = vendorName(c.name || c.merchantName || "");
     if (!v) continue;
-    const t = byVendorTag.get(v) ?? new Map<string, number>();
-    const k = `${c.financeKind}||${c.financeCategory ?? ""}`;
-    t.set(k, (t.get(k) ?? 0) + c.amount);
-    byVendorTag.set(v, t);
+    const tally = byVendorTag.get(v) ?? new Map<string, number>();
+    const k = `${t.kind}||${t.category ?? ""}`;
+    tally.set(k, (tally.get(k) ?? 0) + c.amount);
+    byVendorTag.set(v, tally);
   }
-  for (const r of refunds) {
+  for (const r of rows) {
+    if (r.financeLocked || !(r.amount < 0)) continue;
+    const p = plan.get(r.id)!;
+    const operating = isOperatingLine(r.mask, ledgerDayKey(r.date), cutoverKey);
+    // A credit that SAYS it's a merchant return but fell through to income
+    // (no spend rule knew the vendor — a BeenVerified POS RETURN sat in
+    // "Deposit / income", Aug 2026) gets the same vendor-adoption shot; in the
+    // business account that same credit sits in REVIEW instead of income.
+    const posReturn = /pos return/i.test(r.name ?? "");
+    const candidate = p.kind === "PERSONAL" || p.kind === "BUSINESS"
+      || (posReturn && (p.kind === "INCOME" || (operating && p.category === DEPOSIT_TO_IDENTIFY)));
+    if (!candidate) continue;
     const vendor = vendorName(r.name || r.merchantName || "");
     const tally = vendor ? byVendorTag.get(vendor) : null;
     // A REFUND CAN ONLY NET AGAINST SPENDING THAT EXISTS. With no charge from
     // this vendor anywhere in the ledger, netting invents a negative category
     // (a $170 T-Mobile credit drove "Phone" to −$170 — every phone charge here
-    // is Verizon, hand-locked to the business). Unmatched credits stay income.
+    // is Verizon, hand-locked to the business). Unmatched credits stay income,
+    // or, in the business account, wait in review.
     if (!tally || tally.size === 0) {
-      await prisma.plaidTransaction.update({
-        where: { id: r.id },
-        data: { financeKind: "INCOME", financeCategory: "Deposit / income" },
-      });
-      updated++;
+      plan.set(r.id, operating ? { kind: "REVIEW", category: DEPOSIT_TO_IDENTIFY } : { kind: "INCOME", category: "Deposit / income" });
       continue;
     }
     const [best] = [...tally.entries()].sort((a, b) => b[1] - a[1]);
     if (!best) continue;
     const [kind, category] = best[0].split("||");
-    if (kind !== r.financeKind || category !== r.financeCategory) {
-      await prisma.plaidTransaction.update({
-        where: { id: r.id },
-        data: { financeKind: kind as FinanceKind, financeCategory: category },
+    plan.set(r.id, { kind: kind as FinanceKind, category });
+  }
+  return plan;
+}
+
+/** Every stored line in the planner's shape (locked rows included: their
+ *  owner-set tags feed the refund tallies). */
+export async function loadPlanRows(): Promise<PlanRow[]> {
+  const rows = await prisma.plaidTransaction.findMany({
+    select: {
+      id: true, name: true, merchantName: true, amount: true, categoryDetail: true, date: true,
+      financeKind: true, financeCategory: true, financeLocked: true, account: { select: { mask: true } },
+    },
+  });
+  return rows.map(({ account, ...r }) => ({ ...r, mask: account?.mask ?? null }));
+}
+
+/** (Re)categorize every PlaidTransaction the owner hasn't hand-locked. Only the
+ *  rows whose tag actually changes are written, batched by (kind,category),
+ *  and each write re-checks `financeLocked: false`, so a row the owner tags
+ *  while this runs keeps the owner's tag (Oct 21 2026). */
+export async function categorizeAllPlaid(): Promise<{ updated: number; scanned: number }> {
+  const [cutoverKey, rows] = await Promise.all([operatingCutover(), loadPlanRows()]);
+  const plan = planPlaidCategories(rows, cutoverKey);
+  const groups = new Map<string, { kind: FinanceKind; category: string; ids: string[] }>();
+  for (const r of rows) {
+    const p = plan.get(r.id);
+    if (!p || (p.kind === r.financeKind && p.category === r.financeCategory)) continue;
+    const key = `${p.kind}||${p.category}`;
+    let g = groups.get(key);
+    if (!g) { g = { kind: p.kind, category: p.category, ids: [] }; groups.set(key, g); }
+    g.ids.push(r.id);
+  }
+  let updated = 0;
+  for (const g of groups.values()) {
+    for (let i = 0; i < g.ids.length; i += 500) {
+      const chunk = g.ids.slice(i, i + 500);
+      const res = await prisma.plaidTransaction.updateMany({
+        where: { id: { in: chunk }, financeLocked: false },
+        data: { financeKind: g.kind, financeCategory: g.category },
       });
-      updated++;
+      updated += res.count;
     }
   }
   // RETURNED PAYMENTS ARE NOT SPEND. A "RETRY PYMT" row exists ONLY because an
@@ -323,7 +451,7 @@ export async function categorizeAllPlaid(): Promise<{ updated: number }> {
   const nr = await netReturnedPayments();
   const pr = await pairReversalCredits();
   updated += nr.netted + pr.netted;
-  return { updated };
+  return { updated, scanned: rows.length };
 }
 
 /** Pair every REVERSE-ACH credit with the debit it reverses — the dead debit
@@ -404,6 +532,11 @@ export type Breakdown = {
   businessTotal: number;
   personalTotal: number;
   reviewTotal: number;
+  /** Money that ARRIVED and still needs a call (a deposit in the business
+   *  account no rule could name), as positive sums. Kept apart from `review`
+   *  so it never nets against the spend still to be tagged (Oct 21 2026). */
+  reviewIncoming: CatRow[];
+  reviewIncomingTotal: number;
 };
 
 /** Spend breakdown for a period: BUSINESS vs PERSONAL by category (money-out
@@ -424,8 +557,15 @@ export async function categoryBreakdown(startKey: string, endKey: string): Promi
   const buckets: Record<FinanceKind, Record<string, CatRow>> = {
     BUSINESS: {}, PERSONAL: {}, EXCLUDE: {}, REVIEW: {}, INCOME: {},
   };
+  const reviewIn: Record<string, CatRow> = {};
   for (const r of rows) {
     const kind = (r.financeKind as FinanceKind) || "REVIEW";
+    if (r.amount < 0 && kind === "REVIEW") {
+      const cat = r.financeCategory || DEPOSIT_TO_IDENTIFY;
+      const b = (reviewIn[cat] ||= { category: cat, sum: 0, count: 0 });
+      b.sum -= r.amount; b.count++;
+      continue;
+    }
     // Money IN only counts where it is a REFUND of a cost we booked (PERSONAL /
     // BUSINESS) — there it nets. Inflows on the money-movement and income rails
     // stay out, so the "Excluded" list keeps showing gross transfer volume.
@@ -459,6 +599,7 @@ export async function categoryBreakdown(startKey: string, endKey: string): Promi
   const sort = (o: Record<string, CatRow>) => Object.values(o).sort((a, b) => b.sum - a.sum);
   const business = sort(buckets.BUSINESS);
   const personal = sort(buckets.PERSONAL);
+  const reviewIncoming = sort(reviewIn);
   return {
     business,
     personal,
@@ -467,6 +608,8 @@ export async function categoryBreakdown(startKey: string, endKey: string): Promi
     businessTotal: business.reduce((a, r) => a + r.sum, 0),
     personalTotal: personal.reduce((a, r) => a + r.sum, 0),
     reviewTotal: sort(buckets.REVIEW).reduce((a, r) => a + r.sum, 0),
+    reviewIncoming,
+    reviewIncomingTotal: reviewIncoming.reduce((a, r) => a + r.sum, 0),
   };
 }
 
@@ -607,10 +750,18 @@ export async function cardPaydowns(startKey: string, endKey: string): Promise<{
   const now = new Date();
   const to = toRaw < now ? toRaw : now;
   const months = Math.max(0.5, (to.getTime() - from.getTime()) / (30.44 * 864e5));
-  const rows = await prisma.plaidTransaction.findMany({
-    where: { date: { gte: from, lte: toRaw }, amount: { gt: 0 }, financeCategory: "Credit-card paydown", pending: false },
-    select: { amount: true, date: true, name: true, account: { select: { isBusiness: true } } },
-  });
+  const [rows, cutoverKey] = await Promise.all([
+    prisma.plaidTransaction.findMany({
+      where: { date: { gte: from, lte: toRaw }, amount: { gt: 0 }, financeCategory: "Credit-card paydown", pending: false },
+      select: { amount: true, date: true, name: true, account: { select: { isBusiness: true, mask: true } } },
+    }),
+    operatingCutover(),
+  ]);
+  // Which side paid: the account's Business tag, except that ··0942 only
+  // became the business account at the cutover (Oct 21 2026). Before it, a
+  // card paid from ··0942 was paid with personal money.
+  const fromBusinessSide = (r: (typeof rows)[number]) =>
+    r.account?.mask === OPERATING_MASK ? isOperatingLine(r.account.mask, ledgerDayKey(r.date), cutoverKey) : !!r.account?.isBusiness;
   const cardOf = (n: string) =>
     /\btilt\b|tiltfin/i.test(n) ? "Tilt Engage"
     : /capital one|crcardpmt|\bcrcard\b/i.test(n) ? "Capital One cards"
@@ -622,7 +773,7 @@ export async function cardPaydowns(startKey: string, endKey: string): Promise<{
   for (const r of rows) {
     total += r.amount;
     if (r.date.toISOString().slice(0, 7) === monthKey) thisMonth += r.amount;
-    if (r.account?.isBusiness) fromBusiness += r.amount; else fromPersonal += r.amount;
+    if (fromBusinessSide(r)) fromBusiness += r.amount; else fromPersonal += r.amount;
     const c = cardOf(r.name || "");
     (byCard[c] ||= { sum: 0, count: 0 });
     byCard[c].sum += r.amount; byCard[c].count++;
@@ -706,23 +857,58 @@ export const MANUAL_STATEMENT_ACCOUNTS: { mask: string; label: string }[] = [
 ];
 
 export type RailFreshness = {
+  /** The newest transaction the QuickBooks ledger holds (what has been entered). */
   quickbooks: Date | null;
+  /** When the hub last pulled QuickBooks successfully, and the connection's state. */
+  quickbooksPulledAt: Date | null;
+  quickbooksStatus: string | null;
+  quickbooksError: string | null;
   stripe: Date | null;
+  /** The live bank and card feed (Plaid, statement imports excluded): its
+   *  newest posted line, the last successful sync, and logins needing a fix. */
+  bank: { newest: Date | null; syncedAt: Date | null; erroredItems: number };
+  /** Lines still waiting for a call this ET year (the Categories tab's window):
+   *  spend to tag and deposits to identify. */
+  review: { since: string; lines: number; out: number; in: number; deposits: number };
   manual: { mask: string; label: string; newest: Date | null; daysBehind: number | null }[];
 };
 
 export async function railFreshness(): Promise<RailFreshness> {
   const days = (d: Date | null) => (d ? Math.floor((Date.now() - d.getTime()) / 86_400_000) : null);
-  const [qbo, stripe, ...manualRows] = await Promise.all([
+  const since = etYearStartKey();
+  const statementMasks = MANUAL_STATEMENT_ACCOUNTS.map((a) => a.mask);
+  // A Plaid account with no mask is still a live account: `notIn` alone would
+  // drop it (a NULL never matches a NOT), so it is named on purpose.
+  const liveAccount = { OR: [{ mask: null }, { mask: { notIn: statementMasks } }] };
+  const liveItem = { status: { not: "DISCONNECTED" }, NOT: { itemId: { startsWith: "stmt-" } } };
+  const waiting = { date: { gte: new Date(`${since}T00:00:00Z`) }, OR: [{ financeKind: "REVIEW" }, { financeKind: null }] };
+  const [qbo, qboConn, stripe, bankNewest, bankSync, erroredItems, reviewOut, reviewIn, ...manualRows] = await Promise.all([
     prisma.qboTransaction.aggregate({ _max: { txnDate: true } }),
+    prisma.connection.findUnique({ where: { provider: "quickbooks" }, select: { lastSyncedAt: true, status: true, lastError: true } }),
     prisma.stripeTransaction.aggregate({ _max: { createdAt: true } }),
+    prisma.plaidTransaction.findFirst({ where: { pending: false, account: liveAccount }, orderBy: { date: "desc" }, select: { date: true } }),
+    prisma.plaidItem.aggregate({ where: liveItem, _max: { lastSyncedAt: true } }),
+    prisma.plaidItem.count({ where: { ...liveItem, status: "ERROR" } }),
+    prisma.plaidTransaction.aggregate({ where: { ...waiting, amount: { gt: 0 } }, _sum: { amount: true }, _count: true }),
+    prisma.plaidTransaction.aggregate({ where: { ...waiting, amount: { lt: 0 } }, _sum: { amount: true }, _count: true }),
     ...MANUAL_STATEMENT_ACCOUNTS.map((a) =>
       prisma.plaidTransaction.findFirst({ where: { account: { mask: a.mask } }, orderBy: { date: "desc" }, select: { date: true } }),
     ),
   ]);
   return {
     quickbooks: qbo._max.txnDate,
+    quickbooksPulledAt: qboConn?.lastSyncedAt ?? null,
+    quickbooksStatus: qboConn?.status ?? null,
+    quickbooksError: qboConn?.lastError ?? null,
     stripe: stripe._max.createdAt,
+    bank: { newest: bankNewest?.date ?? null, syncedAt: bankSync._max.lastSyncedAt ?? null, erroredItems },
+    review: {
+      since,
+      lines: reviewOut._count + reviewIn._count,
+      out: round2(reviewOut._sum.amount ?? 0),
+      in: round2(Math.abs(reviewIn._sum.amount ?? 0)),
+      deposits: reviewIn._count,
+    },
     manual: MANUAL_STATEMENT_ACCOUNTS.map((a, i) => ({
       ...a,
       newest: manualRows[i]?.date ?? null,
