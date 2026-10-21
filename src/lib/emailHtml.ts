@@ -40,7 +40,8 @@ export const EMAIL_BRAND = {
   card: "#ffffff",
   text: "#1f1f1f",
   muted: "#6b6b6b",
-  logoUrl: "https://hub.realtourpilot.com/brand/wordmark-white.png",
+  /** 1200x168 (2x of 600x84): the white wordmark on #0a0a0a, one image (public/brand/email-header.png). */
+  headerUrl: "https://hub.realtourpilot.com/brand/email-header.png",
   site: "https://realtourpilot.com",
   siteLabel: "realtourpilot.com",
   tagline: "Realtour Pilot · Pennsylvania's premier real estate media",
@@ -386,9 +387,12 @@ export function renderBrandedEmail(input: { subject: string; text: string; prehe
     `<tr><td class="rtp-outer" align="center" style="padding:28px 12px;">`,
     `<!--[if mso]><table role="presentation" width="600" border="0" cellpadding="0" cellspacing="0"><tr><td><![endif]-->`,
     `<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">`,
-    // The dark header band and the white wordmark.
-    `<tr><td class="rtp-band" bgcolor="${B.ink}" align="left" style="background-color:${B.ink};padding:28px 36px;border-radius:16px 16px 0 0;">`,
-    `<a href="${B.site}" target="_blank" style="text-decoration:none;"><img src="${B.logoUrl}" width="180" alt="Realtour Pilot" style="display:block;width:180px;max-width:180px;height:auto;border:0;outline:none;color:#ffffff;${F}font-size:18px;font-weight:800;"></a>`,
+    // The dark header band, as ONE image with its near-black baked in (Oct 21
+    // 2026: Gmail's dark mode inverts a colored band to light but never an
+    // image, so the white wordmark on a CSS band washed out). bgcolor stays
+    // for clients that block images; the alt text then reads in white.
+    `<tr><td bgcolor="${B.ink}" align="left" style="background-color:${B.ink};padding:0;border-radius:16px 16px 0 0;">`,
+    `<a href="${B.site}" target="_blank" style="text-decoration:none;display:block;"><img src="${B.headerUrl}" width="600" alt="Realtour Pilot" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;border-radius:16px 16px 0 0;color:#ffffff;${F}font-size:18px;font-weight:800;"></a>`,
     `</td></tr>`,
     `<tr><td height="4" bgcolor="${B.accent}" style="height:4px;line-height:4px;font-size:0;background-color:${B.accent};">&nbsp;</td></tr>`,
     // The card.
