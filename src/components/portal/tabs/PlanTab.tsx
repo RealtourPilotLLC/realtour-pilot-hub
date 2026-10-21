@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCheck, ChevronRight, Download, PencilLine, ScrollText } from "lucide-react";
+import { CheckCheck, ChevronRight, PencilLine, ScrollText } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalInterviewView, PortalStrategyView, PortalTopicsData } from "@/lib/portal";
 import { planModel } from "@/lib/portalHome";
@@ -110,7 +110,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       <SubNav label="Your Month" items={tabs.map((t) => ({ href: d.hrefs[t.key], label: t.label, short: t.short, active: d.view === t.key, count: t.count, countLabel: t.countLabel }))} />
 
       {d.view === "strategy" ? (
-        <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} canSuggest={false} readOnly={d.readOnly} />
+        <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} />
       ) : d.topicsFailed ? (
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (

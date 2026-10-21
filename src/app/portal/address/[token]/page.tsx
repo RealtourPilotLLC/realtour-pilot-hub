@@ -1,7 +1,8 @@
 import { MapPin, Phone } from "lucide-react";
 import { BrandWordmark } from "@/components/Brand";
 import { sessionAddressByToken, addressClientNote, formatAddressLine } from "@/lib/sessionAddress";
-import { URGENT_CONTACT } from "@/lib/reviewWindows";
+import { portalContact } from "@/lib/programMessages";
+import type { PortalContact } from "@/components/portal/ContactTeam";
 import { submitSessionAddressByToken } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -24,17 +25,16 @@ export const metadata = {
 // never "confirmed" — until Aryeo reads the new address back.
 // ---------------------------------------------------------------------------
 
-const KYLE_E164 = "+12156454889";
-
-function Shell({ children }: { children: React.ReactNode }) {
+// The office line: the owner-editable `portal-contact` (audit E12), never a literal.
+function Shell({ contact, children }: { contact: PortalContact; children: React.ReactNode }) {
   return (
     <div className="portal-light fixed inset-0 overflow-y-auto bg-background p-6 text-foreground">
       <div className="mx-auto w-full max-w-md">
         <div className="mb-8 flex justify-center"><BrandWordmark variant="onLight" className="h-5" /></div>
         {children}
         <p className="mt-6 flex flex-wrap items-center justify-center gap-1.5 text-xs text-muted">
-          <Phone className="size-3.5" /> Anything changing within 24 hours? Call or text Kyle at
-          <a href={`tel:${KYLE_E164}`} className="font-semibold text-brand hover:underline">{URGENT_CONTACT}</a>
+          <Phone className="size-3.5" /> Anything changing within 24 hours? Call or text {contact.name} at
+          <a href={`tel:${contact.e164}`} className="inline-flex min-h-11 items-center font-semibold text-brand hover:underline">{contact.display}</a>
         </p>
       </div>
     </div>
@@ -47,13 +47,13 @@ export default async function SessionAddressPage({ params, searchParams }: {
 }) {
   const { token } = await params;
   const q = await searchParams;
-  const t = await sessionAddressByToken(token);
+  const [t, contact] = await Promise.all([sessionAddressByToken(token), portalContact()]);
   if (!t.ok) {
     return (
-      <Shell>
+      <Shell contact={contact}>
         <h1 className="text-center text-xl font-semibold tracking-tight">{t.reason === "expired" ? "This link has closed" : "This link isn't active"}</h1>
         <p className="mt-2 text-center text-sm text-muted">
-          {t.reason === "expired" ? "The session it was for has started or passed." : "It may have been replaced by a newer email from us."} Call or text Kyle and he will sort out the address with you.
+          {t.reason === "expired" ? "The session it was for has started or passed." : "It may have been replaced by a newer email from us."} Call or text {contact.name} at {contact.display} and we&rsquo;ll sort out the address with you.
         </p>
       </Shell>
     );
@@ -65,9 +65,10 @@ export default async function SessionAddressPage({ params, searchParams }: {
   const saved = row.submittedAt
     ? formatAddressLine({ streetNumber: row.streetNumber, streetName: row.streetName, unit: row.unitNumber, city: row.city, stateCode: row.stateCode, postalCode: row.postalCode })
     : null;
-  const input = "mt-1 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand";
+  // text-base: a phone browser zooms into anything smaller on focus (audit E11).
+  const input = "mt-1 min-h-11 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-base outline-none focus:border-brand sm:text-sm";
   return (
-    <Shell>
+    <Shell contact={contact}>
       <h1 className="text-xl font-semibold tracking-tight">Where are we filming?</h1>
       <p className="mt-1 text-sm text-muted">Your filming session is {when}.</p>
       <div className="mt-4 rounded-2xl border border-border bg-surface p-4 text-sm">
@@ -111,7 +112,7 @@ export default async function SessionAddressPage({ params, searchParams }: {
           </label>
         </div>
         <p className="text-xs text-muted">A good spot has plenty of natural light, room to move around, and says something about the market you work in.</p>
-        <button type="submit" className="w-full rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90">
+        <button type="submit" className="min-h-11 w-full rounded-xl bg-brand-action px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90">
           {saved ? "Change the address" : "Save the address"}
         </button>
       </form>

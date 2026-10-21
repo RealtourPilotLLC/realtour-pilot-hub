@@ -45,7 +45,7 @@ function socialFrom(text: string | null): Record<SocialKey, string> {
 const socialText = (o: Record<SocialKey, string>) => SOCIAL.map((s) => (o[s.key].trim() ? `${s.label}: ${o[s.key].trim()}` : null)).filter(Boolean).join("\n");
 
 type Status = { state: "idle" | "saving" | "saved" | "failed"; message?: string };
-const input = "mt-1 min-h-11 min-w-0 w-full rounded-lg border border-border bg-surface-2/60 px-3 py-2 text-sm focus:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+const input = "mt-1 min-h-11 min-w-0 w-full rounded-lg border border-border bg-surface-2/60 px-3 py-2 text-base sm:text-sm focus:border-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 const quiet = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-1 rounded-lg border border-border px-2.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 
 export function PortalProfile({

@@ -328,7 +328,7 @@ export async function submitSessionAddress(actor: AddressActor, input: ExactAddr
   if (row.submittedAt && sameAddress(stored, { ...value, unit: value.unit })) {
     return { ok: true, message: addressClientNote(row.syncState), state: row.syncState, duplicate: true };
   }
-  if (row.version >= MAX_VERSIONS) return { ok: false, message: `This session's address has been changed several times already. Call or text Kyle at ${URGENT_CONTACT} and he will update it.` };
+  if (row.version >= MAX_VERSIONS) return { ok: false, message: `This session's address has been changed several times already. Call or text Kyle at ${URGENT_CONTACT} and we'll update it.` };
 
   const { geocodeAddress } = await import("@/lib/travel");
   const geo = await geocodeAddress(formatAddressLine(value)).catch(() => null);

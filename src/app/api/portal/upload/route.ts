@@ -5,7 +5,7 @@ import { can, refusalMessage } from "@/lib/portalAccess";
 import { dropboxUpload } from "@/lib/integrations/dropbox";
 import { ensureClientBrandFolder } from "@/lib/clientFolders";
 import { isPortalUploadKind, recordPortalAssetUpload, replaceableAsset } from "@/lib/brandProfile";
-import { TEXT_KYLE } from "@/lib/portalWords";
+import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 import { PORTAL_UPLOAD_MAX_BYTES, portalUploadTooBig } from "@/lib/portalUploadLimit";
 
 export const runtime = "nodejs";
@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
   const token = String(form.get("token") ?? "");
   const enrollmentId = String(form.get("enrollmentId") ?? "") || null;
   const r = await resolvePortalViewer({ token: token || null, enrollmentId, cookies: req.cookies });
-  if (!r.ok) return NextResponse.json({ ok: false, message: "This link is no longer active — sign in with your email to continue." }, { status: 401 });
+  if (!r.ok) return NextResponse.json({ ok: false, message: "This link is no longer active. Sign in with your email to continue." }, { status: 401 });
   if (!can(r.viewer, "editBrandProfile")) return NextResponse.json({ ok: false, message: refusalMessage(r.viewer, "editBrandProfile") }, { status: 403 });
   const { enrollment } = r.viewer;
 
@@ -61,10 +61,10 @@ export async function POST(req: NextRequest) {
   // single byte goes to Dropbox, so a forged id cannot even use the quota.
   const replaceId = String(form.get("assetId") ?? "") || null;
   if (replaceId && !(/^[a-z0-9]{10,40}$/i.test(replaceId) && (await replaceableAsset(enrollment.clientId, replaceId)))) {
-    return NextResponse.json({ ok: false, message: "That file isn't on your profile any more — upload it as a new one instead." }, { status: 400 });
+    return NextResponse.json({ ok: false, message: "That file isn't on your profile any more. Upload it as a new one instead." }, { status: 400 });
   }
   if (!NAME_OK.test(file.name) || !EXT_OK.test(file.name)) {
-    return NextResponse.json({ ok: false, message: "That file type isn't supported — images, PDFs, fonts, zips and videos work." }, { status: 400 });
+    return NextResponse.json({ ok: false, message: "That file type isn't supported. Images, PDFs, fonts, zips and videos work." }, { status: 400 });
   }
   if (file.size > MAX_BYTES) {
     return NextResponse.json({ ok: false, tooBig: true, message: portalUploadTooBig(file.size) }, { status: 413 });
@@ -85,22 +85,22 @@ export async function POST(req: NextRequest) {
     const used = parseInt(rows[0]?.value ?? "", 10);
     if (!Number.isFinite(used)) throw new Error("counter unreadable");
     if (used > DAILY_CAP) {
-      return NextResponse.json({ ok: false, message: `That's the daily upload limit — ${TEXT_KYLE} and we'll add the rest.` }, { status: 429 });
+      return NextResponse.json({ ok: false, message: `That's the daily upload limit. ${TEXT_KYLE_START} and we'll add the rest.` }, { status: 429 });
     }
   } catch {
-    return NextResponse.json({ ok: false, message: "Uploads are briefly unavailable — try again in a minute." }, { status: 503 });
+    return NextResponse.json({ ok: false, message: "Uploads are briefly unavailable. Try again in a minute." }, { status: 503 });
   }
 
   const folder = await ensureClientBrandFolder(enrollment.clientId);
   if (!folder.ok || !folder.path) {
-    return NextResponse.json({ ok: false, message: `We couldn't reach the asset folder — ${TEXT_KYLE} and send the file there instead.` }, { status: 502 });
+    return NextResponse.json({ ok: false, message: `We couldn't reach your brand folder. ${TEXT_KYLE_START} and send the file there instead.` }, { status: 502 });
   }
   let landedAt: string;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     landedAt = (await dropboxUpload(`${folder.path}/${file.name}`, bytes)).pathDisplay; // autorename on collision
   } catch {
-    return NextResponse.json({ ok: false, message: `The upload didn't stick — try again, or ${TEXT_KYLE} and send the file there.` }, { status: 502 });
+    return NextResponse.json({ ok: false, message: `The upload didn't stick. Try again, or ${TEXT_KYLE} and send the file there.` }, { status: 502 });
   }
   const landedName = landedAt.slice(landedAt.lastIndexOf("/") + 1) || file.name;
 

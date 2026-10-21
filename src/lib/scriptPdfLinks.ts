@@ -86,23 +86,49 @@ export async function shootScriptsForPdf(projectId: string, opts: { scriptId?: s
   };
 }
 
-/** One script the agent approved, from their portal (the version on their page). */
-export async function approvedScriptForPdf(enrollmentId: string, scriptId: string): Promise<{ script: PdfScript; fileName: string } | { refused: string }> {
-  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { id: true, enrollmentId: true, historical: true, releaseState: true, sharedVersionId: true } });
-  if (!s || s.enrollmentId !== enrollmentId || s.historical || s.releaseState !== "released" || !s.sharedVersionId) return { refused: "That script isn't on your page." };
+type ApprovedPdf = { script: PdfScript; fileName: string } | { refused: string };
+const NOT_ON_PAGE: ApprovedPdf = { refused: "That script isn't on your page." };
+
+/**
+ * The scripts the agent approved, by id: each the version on their page, or
+ * why not. Batched (Oct 20 2026, audit E16): a month's PDF used to re-read the
+ * decisions, the version and the pillar once per script.
+ */
+async function approvedScriptsForPdf(enrollmentId: string, scriptIds: string[]): Promise<Map<string, ApprovedPdf>> {
+  const out = new Map<string, ApprovedPdf>();
+  const ids = scriptIds.filter((id) => ID_RE.test(id));
+  const rows = ids.length ? await prisma.contentScript.findMany({ where: { id: { in: ids } }, select: { id: true, enrollmentId: true, historical: true, releaseState: true, sharedVersionId: true } }) : [];
+  const onPage = rows.filter((s) => s.enrollmentId === enrollmentId && !s.historical && s.releaseState === "released" && !!s.sharedVersionId);
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
-  const d = (await scriptDecisionsFor(enrollmentId, [s.id])).get(s.id);
-  if (d?.decision !== "APPROVED") return { refused: "Approve the script first. The PDF is there once it's approved." };
-  const v = await prisma.contentScriptVersion.findUnique({ where: { id: s.sharedVersionId }, select: { title: true, pillarId: true, categoryLabel: true, hook: true, pointsJson: true, close: true, captionCta: true, body: true, versionNo: true } });
-  if (!v) return { refused: "That script isn't on your page." };
-  const pillar = v.pillarId ? await prisma.contentPillar.findFirst({ where: { id: v.pillarId, enrollmentId }, select: { name: true } }) : null;
+  const [decisions, versions] = onPage.length
+    ? await Promise.all([
+      scriptDecisionsFor(enrollmentId, onPage.map((s) => s.id)),
+      prisma.contentScriptVersion.findMany({ where: { id: { in: onPage.map((s) => s.sharedVersionId!) } }, select: { id: true, title: true, pillarId: true, categoryLabel: true, hook: true, pointsJson: true, close: true, captionCta: true, body: true, versionNo: true } }),
+    ])
+    : [new Map() as Awaited<ReturnType<typeof scriptDecisionsFor>>, []];
+  const pillarIds = [...new Set(versions.map((v) => v.pillarId).filter((x): x is string => !!x))];
+  const pillarName = new Map((pillarIds.length ? await prisma.contentPillar.findMany({ where: { id: { in: pillarIds }, enrollmentId }, select: { id: true, name: true } }) : []).map((p) => [p.id, p.name]));
   const { sessionPartsOf } = await import("@/lib/deliverableOutputs");
-  const parts = sessionPartsOf(v);
-  const approvedOn = d.decidedAt ? new Date(d.decidedAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : null;
-  return {
-    script: { title: v.title, pillarName: pillar?.name ?? (v.categoryLabel && !/^\(?\s*no\s+pillar/i.test(v.categoryLabel) ? v.categoryLabel : null), parts: parts ? { title: v.title, ...parts } : null, body: v.body, note: approvedOn ? `Approved ${approvedOn}` : "Approved" },
-    fileName: pdfFileName(v.title),
-  };
+  for (const id of scriptIds) {
+    const s = onPage.find((x) => x.id === id);
+    if (!s) { out.set(id, NOT_ON_PAGE); continue; }
+    const d = decisions.get(s.id);
+    if (d?.decision !== "APPROVED") { out.set(id, { refused: "Approve the script first. The PDF is there once it's approved." }); continue; }
+    const v = versions.find((x) => x.id === s.sharedVersionId);
+    if (!v) { out.set(id, NOT_ON_PAGE); continue; }
+    const parts = sessionPartsOf(v);
+    const approvedOn = d.decidedAt ? new Date(d.decidedAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : null;
+    out.set(id, {
+      script: { title: v.title, pillarName: (v.pillarId ? pillarName.get(v.pillarId) : null) ?? (v.categoryLabel && !/^\(?\s*no\s+pillar/i.test(v.categoryLabel) ? v.categoryLabel : null), parts: parts ? { title: v.title, ...parts } : null, body: v.body, note: approvedOn ? `Approved ${approvedOn}` : "Approved" },
+      fileName: pdfFileName(v.title),
+    });
+  }
+  return out;
+}
+
+/** One script the agent approved, from their portal (the version on their page). */
+export async function approvedScriptForPdf(enrollmentId: string, scriptId: string): Promise<ApprovedPdf> {
+  return (await approvedScriptsForPdf(enrollmentId, [scriptId])).get(scriptId) ?? NOT_ON_PAGE;
 }
 
 /**
@@ -172,19 +198,22 @@ async function monthScriptRows(enrollmentId: string, monthId: string) {
   });
 }
 
-/** The months whose scripts are all approved: what the Scripts view offers to download. */
+/** The months whose scripts are all approved: what the Scripts view offers to download.
+ *  One read of the six newest months' scripts and one of their decisions (audit E16). */
 export async function monthsReadyForPdf(enrollmentId: string): Promise<{ monthKey: string; count: number }[]> {
-  const months = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false }, orderBy: { monthKey: "desc" }, select: { id: true, monthKey: true } });
+  const months = await prisma.contentMonth.findMany({ where: { enrollmentId, historical: false }, orderBy: { monthKey: "desc" }, take: 6, select: { id: true, monthKey: true } });
   if (!months.length) return [];
+  const rows = await prisma.contentScript.findMany({
+    where: { enrollmentId, monthId: { in: months.map((m) => m.id) }, historical: false, releaseState: "released", sharedVersionId: { not: null } },
+    select: { id: true, monthId: true },
+  });
+  if (!rows.length) return [];
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
-  const out: { monthKey: string; count: number }[] = [];
-  for (const m of months.slice(0, 6)) {
-    const rows = await monthScriptRows(enrollmentId, m.id);
-    if (!rows.length) continue;
-    const d = await scriptDecisionsFor(enrollmentId, rows.map((r) => r.id));
-    if (rows.every((r) => d.get(r.id)?.decision === "APPROVED")) out.push({ monthKey: m.monthKey, count: rows.length });
-  }
-  return out;
+  const d = await scriptDecisionsFor(enrollmentId, rows.map((r) => r.id));
+  return months.flatMap((m) => {
+    const mine = rows.filter((r) => r.monthId === m.id);
+    return mine.length && mine.every((r) => d.get(r.id)?.decision === "APPROVED") ? [{ monthKey: m.monthKey, count: mine.length }] : [];
+  });
 }
 
 export async function monthScriptsForPdf(enrollmentId: string, monthKey: string): Promise<{ heading: string; subheading: string | null; scripts: PdfScript[]; fileName: string } | { refused: string }> {
@@ -194,8 +223,9 @@ export async function monthScriptsForPdf(enrollmentId: string, monthKey: string)
   const rows = await monthScriptRows(enrollmentId, month.id);
   if (!rows.length) return { refused: "There are no scripts on your page for that month yet." };
   const scripts: PdfScript[] = [];
+  const approved = await approvedScriptsForPdf(enrollmentId, rows.map((r) => r.id));
   for (const r of rows) {
-    const one = await approvedScriptForPdf(enrollmentId, r.id);
+    const one = approved.get(r.id) ?? NOT_ON_PAGE;
     if ("refused" in one) return { refused: "Approve every script for the month first. The PDF of all of them is there once they're all approved." };
     scripts.push(one.script);
   }

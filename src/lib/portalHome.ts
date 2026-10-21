@@ -1,7 +1,7 @@
 import type { PortalTopic, PortalTopicsData, PortalTopicMonth } from "@/lib/portal";
 import type { ClientVideoState, VideoListRow } from "@/lib/contentVideos";
 import { portalHref, type PortalDest } from "@/lib/portalNav";
-import { CTA_WORDS, LIBRARY_FILTERS, answerCta, type LibraryFilterKey } from "@/lib/portalWords";
+import { CTA_WORDS, LIBRARY_FILTERS, TEXT_KYLE, answerCta, type LibraryFilterKey } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // WHAT THE v2 PORTAL PUTS IN FRONT OF THE CLIENT (UI-01, Sep 24 2026) — pure.
@@ -150,7 +150,7 @@ export type HomeActionsInput = {
    * email sign-in is live for this client, else null (they sign in from their
    * invitation email).
    */
-  linkVisitor?: { signInHref: string | null } | null;
+  linkVisitor?: { signInHref: string | null; /** Oct 20 2026 (audit E2): anyone holds a seat; none = the office sets one up. */ hasSeat?: boolean } | null;
 };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -175,7 +175,9 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       add({
         kind: "REVIEW_VIDEOS", count: i.review.count,
         title: one ? `“${one.title}” is ready for your review` : `${plural(i.review.count, "video")} ready for your review`,
-        detail: i.linkVisitor.signInHref ? "Sign in to approve or request changes." : "Sign in from your invitation email to approve or request changes.",
+        detail: i.linkVisitor.signInHref ? "Sign in to approve or request changes."
+          : i.linkVisitor.hasSeat === false ? `To approve or request changes, ${TEXT_KYLE} and we'll set up your sign-in.`
+          : "Sign in from your invitation email to approve or request changes.",
         cta: i.linkVisitor.signInHref ? "Sign in" : one ? "Watch it" : "Watch them", dest: "library",
         extra: one ? `v=${one.id}` : "st=review",
         ...(i.linkVisitor.signInHref ? { href: i.linkVisitor.signInHref } : {}),

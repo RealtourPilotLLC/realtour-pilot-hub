@@ -126,7 +126,8 @@ async function main() {
   c.ok("Topic bank: keeps Choose and Suggest; hides Discuss, Not interested, the swap strip, the filter chips and the topic history", /CTA_WORDS\.CHOOSE/.test(tb) && /Suggest a video idea of your own/.test(tb) && !/> Discuss<|Not interested|Scripted, not filmed<|aria-label="Filter topics"|More about this topic/.test(tb) && /Topic area \(optional\)/.test(tb));
   c.ok("Posting kit: no 'Mark as posted'", !/Mark as posted|Posted\?/.test(code("src/components/portal/PostingKitPanel.tsx")));
   const plan = src("src/components/portal/tabs/PlanTab.tsx");
-  c.ok("Your Month: no Strategy sub-tab (an old link opens it read-only)", /\.\.\.\(d\.view === "strategy" \?/.test(plan) && /canSuggest=\{false\}/.test(plan));
+  // Oct 20 2026 (audit E9): the switched-off correction box is deleted, so read-only is the only shape left.
+  c.ok("Your Month: no Strategy sub-tab (an old link opens it read-only)", /\.\.\.\(d\.view === "strategy" \?/.test(plan) && !/canSuggest|ProposeCorrection/.test(src("src/components/portal/tabs/StrategyTab.tsx")));
   c.ok("Settings & Team: the shared link gets a sign-in prompt, never 'switched on'", /if \(d\.viewerKind === "TOKEN"\)/.test(src("src/components/portal/tabs/SettingsTab.tsx")) && !/switched on/.test(src("src/components/portal/tabs/SettingsTab.tsx")));
   c.ok("the videographer is chosen for the client when more than one is free (booking needs one named)", /const defaultCreative = /.test(src("src/components/portal/PortalScheduler.tsx")) && /!!slot && slotCreatives\.length > 1 && !chosenCreative/.test(src("src/components/portal/PortalScheduler.tsx")));
   c.ok("businessDaysWords: 72 → 'three business days', 96 → 'four business days', 24 → 'one business day'", businessDaysWords(72) === "three business days" && businessDaysWords(96) === "four business days" && businessDaysWords(24) === "one business day");

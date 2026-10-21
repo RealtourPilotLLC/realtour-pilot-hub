@@ -4,7 +4,7 @@ import type { PortalViewer } from "@/lib/portal";
 import { actorLabel } from "@/lib/portalAccess";
 import { clip } from "@/lib/text";
 import { contentHref } from "@/lib/contentNav";
-import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
+import { TEXT_KYLE_START } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT'S VERDICT ON A SCRIPT (spec §22, F09) — Sep 22 2026.
@@ -63,9 +63,9 @@ import { TEXT_KYLE, TEXT_KYLE_START } from "@/lib/portalWords";
 //     clientUserId, scriptVersionId and an OPEN → APPLIED/DISMISSED staff flow
 //     that the workspace reads today. A change request writes one, so it lands
 //     in the queue Jordan already looks at rather than a second one nobody
-//     opens. (The client-side box that used to write these,
-//     components/portal/PortalSuggestBox.tsx, was built and never rendered
-//     anywhere — the suggestion path has been reachable only by staff.)
+//     opens. (The client-side box that used to write these, PortalSuggestBox
+//     and its unpinned portalSuggestScript action, was never rendered; both
+//     were deleted Oct 20 2026, audit E9.)
 // ---------------------------------------------------------------------------
 
 const ID_RE = /^[a-z0-9]{10,40}$/i;
@@ -209,7 +209,7 @@ const stampActor = (v: PortalViewer) => ({
  * the second press says so rather than pretending a second approval happened.
  */
 export async function clientApproveScript(viewer: PortalViewer, scriptId: string, readVersionId: string): Promise<Outcome> {
-  if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now — ${TEXT_KYLE} and we'll sort it.` };
+  if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now. ${TEXT_KYLE_START} and we'll sort it.` };
   const s = await sharedScriptFor(viewer, scriptId);
   if (!s) return { ok: false, message: "That script isn't on your page." };
   const versionId = s.sharedVersionId!;
@@ -234,7 +234,7 @@ export async function clientApproveScript(viewer: PortalViewer, scriptId: string
     take: 50,
   });
   if (currentScriptDecision(versionId, priorLedger).decision === "APPROVED") {
-    return { ok: true, duplicate: true, message: "You've already signed off on this version — nothing more to do." };
+    return { ok: true, duplicate: true, message: "You've already signed off on this version. Nothing more to do." };
   }
   // Are they overturning their own change request on this same version? Allowed
   // — people do change their mind — but never silently: the writer may already
@@ -280,8 +280,8 @@ export async function clientApproveScript(viewer: PortalViewer, scriptId: string
     ok: true,
     duplicate: false,
     message: openRequest
-      ? "Got it — we'll film this one as written. You'd asked for a change on it, so we've told the team you're happy with it as it stands."
-      : "Got it — we'll film this one as written.",
+      ? "Got it. We'll film this one as written. You'd asked for a change on it, so we've told the team you're happy with it as it stands."
+      : "Got it. We'll film this one as written.",
   };
 }
 
@@ -296,8 +296,8 @@ const staleRefusal = (readVersionId: string | null): Outcome => ({
   ok: false,
   stale: true,
   message: readVersionId
-    ? "We've published a newer version of this script since this page loaded. Refresh and have a read — we'd rather you decide on the words we'd actually film."
-    : "Refresh the page and try again — we couldn't tell which version you were looking at.",
+    ? "We've published a newer version of this script since this page loaded. Refresh and have a read. We'd rather you decide on the words we'd actually film."
+    : "Refresh the page and try again. We couldn't tell which version you were looking at.",
 });
 
 /** A short stable digest of a note, for a bell key that distinguishes instructions. */
@@ -349,30 +349,29 @@ async function bellForChangeRequest(
  * brief is an instruction that can be overwritten by the next one.
  */
 export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId: string, note: string, readVersionId: string, opts: { editedParts?: { hook: string; points: string[]; close: string; captionCta?: string | null } | null } = {}): Promise<Outcome> {
-  if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now — ${TEXT_KYLE} and we'll sort it.` };
+  if (viewer.access !== "FULL") return { ok: false, message: `Your access is read-only right now. ${TEXT_KYLE_START} and we'll sort it.` };
   const s = await sharedScriptFor(viewer, scriptId);
   if (!s) return { ok: false, message: "That script isn't on your page." };
   // Oct 20 2026: the client's own edit of the words comes as the request,
   // with the parts kept exactly (the office can use them as written).
   const editedPartsJson = opts.editedParts ? JSON.stringify(opts.editedParts) : null;
   const body = clip((note ?? "").trim(), editedPartsJson ? 6000 : 2000);
-  if (body.length < 3) return { ok: false, message: "Tell us what to change — a line, a word, the whole angle." };
+  if (body.length < 3) return { ok: false, message: "Tell us what to change: a line, a word, the whole angle." };
   const versionId = s.sharedVersionId!;
   // R1: same rule as the approval. A note about v1 must not be filed against v2.
   if (!readVersionId || readVersionId !== versionId) return staleRefusal(readVersionId);
 
   const by = actorLabel(viewer);
 
-  // THE SAME CAP THE OTHER CLIENT-WRITE PATH CARRIES. portalSuggestScript has
-  // refused past fifteen open suggestions in thirty days since it was written;
-  // this path had no cap at all, only the ten-minute identical-text throttle —
-  // so a frustrated client could fill the writer's queue one distinct sentence
-  // at a time. Same number, same words, so the two behave alike.
+  // A CAP ON OPEN REQUESTS. The old portalSuggestScript (deleted Oct 20 2026)
+  // refused past fifteen open suggestions in thirty days; this path had no cap
+  // at all, only the ten-minute identical-text throttle — so a frustrated
+  // client could fill the writer's queue one distinct sentence at a time.
   const openCount = await prisma.scriptSuggestion.count({
     where: { enrollmentId: s.enrollmentId, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
   });
   if (openCount >= OPEN_SCRIPT_REQUEST_CAP) {
-    return { ok: false, message: `You have a lot of change requests in already — we're on them! ${TEXT_KYLE_START} if this one is urgent.` };
+    return { ok: false, message: `You have a lot of change requests in already, and we're on them! ${TEXT_KYLE_START} if this one is urgent.` };
   }
 
   // R2 — THE DUPLICATE GUARD IS NOW A REPAIR PATH.
@@ -394,7 +393,7 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
   });
   if (dupe) {
     const item = await prisma.scriptSuggestion.findFirst({ where: { scriptId: s.id, scriptVersionId: versionId, body }, select: { id: true } });
-    if (item) return { ok: true, duplicate: true, message: "We already have that note — it's with the writer." };
+    if (item) return { ok: true, duplicate: true, message: "We already have that note. It's with the writer." };
     // The ledger has it and the queue does not. Repair, then say so honestly.
     await prisma.scriptSuggestion.create({
       data: {
@@ -405,7 +404,7 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
     });
     await prisma.contentScript.update({ where: { id: s.id }, data: { clientChangesAt: new Date() } }).catch(() => {});
     await bellForChangeRequest(viewer, s, versionId, body, by, "repair");
-    return { ok: true, duplicate: true, repaired: true, message: "Sent — we'll rework it and share the new version here." };
+    return { ok: true, duplicate: true, repaired: true, message: "Sent. We'll rework it and share the new version here." };
   }
 
   // R2 — ONE TRANSACTION. The ledger row, the work item staff act on, and the
@@ -450,7 +449,7 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
   }
 
   await bellForChangeRequest(viewer, s, versionId, body, by);
-  return { ok: true, duplicate: false, message: "Sent — we'll rework it and share the new version here." };
+  return { ok: true, duplicate: false, message: "Sent. We'll rework it and share the new version here." };
 }
 
 // `openScriptChangeRequests` USED TO LIVE HERE and had no caller anywhere in

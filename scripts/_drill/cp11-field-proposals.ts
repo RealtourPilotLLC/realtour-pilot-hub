@@ -456,15 +456,20 @@ async function main() {
   }
 
   // =========================================================================
-  c.head("14 · a portal correction naming a section is aimed at it; the change goes in WHOLE");
+  c.head("14 · a client correction naming a section is aimed at it; the change goes in WHOLE");
   // =========================================================================
   {
-    const { portalProposeStrategyCorrection } = await import("@/app/portal/actions");
-    const token = `tok${"y".repeat(30)}`;
-    await prisma.contentEnrollment.update({ where: { id: W.enrollmentId }, data: { portalToken: token } });
-    const r = await portalProposeStrategyCorrection({ token }, { summary: "We don't do new construction any more", section: "content goals" });
+    // Oct 20 2026 (audit E9): the portal's correction box (switched off since
+    // Oct 13) and its action were deleted. The correction is made here the way
+    // that action aimed one: the named section resolved through profileFields.
+    const { resolveSection, SECTION_TARGET_PREFIX } = await import("@/lib/profileFields");
+    const hit = resolveSection((await cs.approvedStrategy(W.enrollmentId))?.stored ?? null, "content goals");
+    await cs.createStrategyProposal({
+      enrollmentId: W.enrollmentId, kind: "STRATEGY", summary: "[content goals] We don't do new construction any more", sourceKind: "client", sourceRef: "portal:drill",
+      ...(hit ? { targetKey: `${SECTION_TARGET_PREFIX}${hit.id}`, diff: [{ path: `${SECTION_TARGET_PREFIX}${hit.id}`, from: hit.text, to: "" }] } : {}),
+    });
     const p = await prisma.contentStrategyProposal.findFirst({ where: { enrollmentId: W.enrollmentId, sourceKind: "client" }, orderBy: { createdAt: "desc" } });
-    c.ok("the correction targets the Content Goals section", r.ok && p?.targetKey === "strategy.section:content-goals", `${r.message} · ${p?.targetKey}`);
+    c.ok("the correction targets the Content Goals section", p?.targetKey === "strategy.section:content-goals", `${p?.targetKey}`);
     const leak = await actions.resolveStrategyProposal(p!.id, true, "", "say [CONFIDENTIAL: their commission split]");
     c.ok("an instruction carrying a [CONFIDENTIAL] marker is refused, and nothing is drafted", !leak.ok && /confidential/i.test(leak.message) && (await prisma.contentStrategyProposal.findUnique({ where: { id: p!.id } }))?.status === "PROPOSED", leak.message);
     // The bug Jordan hit (Arielle Roemer, Oct 12): the model's "new text" was a
