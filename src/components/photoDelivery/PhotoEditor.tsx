@@ -76,7 +76,7 @@ async function loadImage(url: string): Promise<HTMLImageElement> {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     const j = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw Object.assign(new Error(j?.error ?? `The full-size photo answered ${res.status}.`), { source: true });
+    throw Object.assign(new Error(j?.error ?? `The full-size photo answered ${res.status}.`), { status: res.status });
   }
   const blob = await res.blob();
   const obj = URL.createObjectURL(blob);
@@ -289,8 +289,10 @@ export default function PhotoEditor({ photoId, onClose }: { photoId: string; onC
         setBusy({ label: "Straightening at full size…", pct: 0 });
         rendered = await renderInBrowser(img, p, (pct) => setBusy({ label: "Straightening at full size…", pct }));
       } catch (e) {
-        if ((e as { source?: boolean }).source) throw e;
-        rendered = null; // this device can't hold it: the server renders it with the same math
+        // Refused (not allowed, gone): say so. Anything else (too big to send or to hold here): the server renders it with the same math.
+        const status = (e as { status?: number }).status;
+        if (status && status < 500 && status !== 413) throw e;
+        rendered = null;
       }
       if (rendered) {
         setBusy({ label: "Uploading the edited photo…", pct: 0 });
