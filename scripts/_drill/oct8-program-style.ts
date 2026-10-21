@@ -363,11 +363,15 @@ async function main() {
     await clearSession();
     const form = (fields: Record<string, string | File>) => { const f = new FormData(); for (const [k, v] of Object.entries(fields)) f.set(k, v); return f; };
     const post = (f: FormData, cookie?: string) => upRoute.POST(new NextRequest("http://127.0.0.1/api/portal/brief", { method: "POST", body: f, headers: cookie ? { cookie } : {} }));
-    const pdf = (name: string, bytes = 2048) => new File([new Uint8Array(bytes).fill(37)], name, { type: "application/pdf" });
+    // Oct 21 2026: a brief file's first bytes must match its name (briefContentRefusal), so the fixtures carry real headers.
+    const withHead = (head: number[], size: number) => { const b = new Uint8Array(size).fill(37); b.set(head.slice(0, size)); return b; };
+    const PDF_HEAD = [...Buffer.from("%PDF-1.4\n")];
+    const pdf = (name: string, bytes = 2048) => new File([withHead(PDF_HEAD, bytes)], name, { type: "application/pdf" });
     const r1 = await post(form({ monthId: D.monthId, token: D.portalToken!, file: pdf("October plan.pdf") }));
     const j1 = await r1.json() as { ok: boolean; message: string; file?: { id: string; href: string } };
     c.ok("Mike (his link) adds a PDF to October", r1.status === 200 && j1.ok && !!j1.file && /\?m=/.test(j1.file.href), JSON.stringify(j1));
     const stored = uploads.at(-1) ?? "";
+    // Oct 21 2026: the client's own folder comes first; Dropbox is not connected here, so this is the fallback.
     c.ok("…stored in the app's private Dropbox prefix (never the public cut store)", stored.startsWith(`/AutoHDR/Hub/content-briefs/${D.enrollmentId}/2026-10/`), stored);
     const bell = await prisma.notification.findMany({ where: { kind: "content_brief" } });
     c.ok("…the office is belled: owner/admin and the creative manager", bell.length === 2 && bell.some((n) => n.userKey === null && /OWNER/.test(n.audience) && /ADMIN/.test(n.audience)) && bell.some((n) => n.userKey === `tm:${managerTm.id}`) && bell.every((n) => /Mike Ciunci/.test(n.title)), JSON.stringify(bell.map((n) => [n.userKey, n.audience, n.title])));
@@ -379,9 +383,9 @@ async function main() {
     const r5 = await post(form({ monthId: D.monthId, token: D.portalToken!, file: new File([new Uint8Array(10)], "tool.exe") }));
     const r6 = await post(form({ monthId: D.monthId, token: D.portalToken!, file: pdf("huge.pdf", core.BRIEF_MAX_BYTES + 1) }));
     c.ok("SVG and .exe are refused; over the size cap is a 413 with the limit said", r4.status === 400 && r5.status === 400 && r6.status === 413 && /over 4 MB/.test(((await r6.json()) as { message: string }).message));
-    const docx = new File([new Uint8Array(300)], "Shot list.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+    const docx = new File([withHead([0x50, 0x4b, 0x03, 0x04], 300)], "Shot list.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
     const r7 = await post(form({ monthId: D.monthId, token: D.portalToken!, file: docx }));
-    c.ok("a Word document and a picture are accepted", r7.status === 200 && (await post(form({ monthId: D.monthId, token: D.portalToken!, file: new File([new Uint8Array(100)], "storyboard.jpg", { type: "image/jpeg" }) }))).status === 200);
+    c.ok("a Word document and a picture are accepted", r7.status === 200 && (await post(form({ monthId: D.monthId, token: D.portalToken!, file: new File([withHead([0xff, 0xd8, 0xff], 100)], "storyboard.jpg", { type: "image/jpeg" }) }))).status === 200);
     await prisma.contentEnrollment.update({ where: { id: A.enrollmentId }, data: { status: "PAUSED" } });
     const r8 = await post(form({ monthId: A.monthId, token: A.portalToken!, file: pdf("paused.pdf") }));
     await prisma.contentEnrollment.update({ where: { id: A.enrollmentId }, data: { status: "ACTIVE" } });

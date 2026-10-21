@@ -4,8 +4,9 @@ import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { STORAGE_PREFIX, withinStorage } from "@/lib/storage";
 import { dropboxDownload, dropboxUpload } from "@/lib/integrations/dropbox";
+import { brandFolderPath, ensureClientBrandFolder } from "@/lib/clientFolders";
 import {
-  BRIEF_DAILY_CAP, BRIEF_FILES_MAX, BRIEF_ID_RE, BRIEF_NOTES_MAX, briefFileHref, briefFileKey, briefFileRefusal, briefMimeFor, briefMonthPrefix, briefNotesKey,
+  BRIEF_DAILY_CAP, BRIEF_FILES_MAX, BRIEF_ID_RE, BRIEF_NOTES_MAX, BRIEF_PLAN_FOLDER, briefClientFolderPath, briefContentRefusal, briefFileHref, briefFileKey, briefFileRefusal, briefMimeFor, briefMonthPrefix, briefNotesKey,
   type BriefBy, type BriefFile, type BriefNotes, type MonthBrief, type MonthBriefView,
 } from "@/lib/monthBriefCore";
 
@@ -15,11 +16,14 @@ import {
 // is monthBriefCore.ts; the doors are /api/portal/brief (upload) and
 // /api/portal/brief/<monthId>/<fileId> (read).
 //
-// PRIVATE BY CONSTRUCTION. The bytes go to the company Dropbox under the
-// app's own prefix (STORAGE_PREFIX/content-briefs/…), the same private store
-// every job upload uses — never the public review-cuts blob store. Nothing
-// here mints a shared link; the read door streams the bytes to an admitted
-// viewer with no-store caching.
+// PRIVATE BY CONSTRUCTION. The bytes go to the company Dropbox: since Oct 21
+// 2026 into the client's own folder (the brand folder the editors already
+// use), under "Content Plans/<YYYY-MM>/" with the client's file name, so the
+// team can find a plan there as well as on the hub; when that folder can't be
+// reached, under the app's own prefix (STORAGE_PREFIX/content-briefs/…) as
+// before. Never the public review-cuts blob store. Nothing here mints a
+// shared link; the read door streams the bytes to an admitted viewer with
+// no-store caching, so a client never sees a Dropbox address.
 //
 // A client adding a brief bells the office (owner/admin and the creative
 // manager); nothing here ever messages the client.
@@ -122,7 +126,7 @@ export type BriefWriteResult = { ok: boolean; message: string; file?: BriefFile 
 export async function addBriefFile(monthId: string, file: { name: string; size: number; bytes: Uint8Array }, by: BriefBy): Promise<BriefWriteResult> {
   const m = await monthRow(monthId);
   if (!m || m.historical) return { ok: false, message: "That month isn't open for a brief." };
-  const refusal = briefFileRefusal(file.name, file.size);
+  const refusal = briefFileRefusal(file.name, file.size) ?? briefContentRefusal(file.name, file.bytes);
   if (refusal) return { ok: false, message: refusal };
   if (file.bytes.byteLength !== file.size) return { ok: false, message: "That upload didn't arrive whole. Try again." };
   const existing = await prisma.appSetting.count({ where: { key: { startsWith: `${briefMonthPrefix(m.id)}f:` } } });
@@ -130,11 +134,23 @@ export async function addBriefFile(monthId: string, file: { name: string; size: 
   if (!(await underDailyCap(m.enrollmentId))) return { ok: false, message: "That's the upload limit for today. Try again tomorrow, or send it to us in Messages." };
   const id = randomBytes(12).toString("hex");
   const ext = path.extname(file.name).toLowerCase();
-  const stored = `${STORAGE_PREFIX}/content-briefs/${m.enrollmentId}/${m.monthKey}/${id}${ext}`;
-  try {
-    await dropboxUpload(stored, file.bytes, { autorename: false });
-  } catch {
-    return { ok: false, message: "The upload didn't stick. Try again in a minute." };
+  // Oct 21 2026: the client's own folder first, by the name they gave it
+  // (Dropbox renames a clash, "plan (1).pdf", and the path it wrote is the one
+  // recorded); the private prefix when that folder can't be reached.
+  let stored: string | null = null;
+  const folder = await ensureClientBrandFolder(m.clientId).catch(() => null);
+  if (folder?.ok && folder.path) {
+    try {
+      stored = (await dropboxUpload(`${briefClientFolderPath(folder.path, m.monthKey)}/${file.name}`, file.bytes, { autorename: true })).pathDisplay;
+    } catch { stored = null; }
+  }
+  if (!stored) {
+    stored = `${STORAGE_PREFIX}/content-briefs/${m.enrollmentId}/${m.monthKey}/${id}${ext}`;
+    try {
+      await dropboxUpload(stored, file.bytes, { autorename: false });
+    } catch {
+      return { ok: false, message: "The upload didn't stick. Try again in a minute." };
+    }
   }
   const row: BriefFile = { id, name: file.name, size: file.size, mime: briefMimeFor(file.name), path: stored, by, atISO: new Date().toISOString() };
   const { id: _omit, ...value } = row; void _omit;
@@ -172,10 +188,25 @@ export async function removeBriefFile(monthId: string, fileId: string): Promise<
   return r.count ? { ok: true, message: "Removed from the brief." } : { ok: false, message: "That file isn't on this brief." };
 }
 
-/** The stored bytes of one brief file — only from this month's own private folder. */
-export async function readBriefBytes(month: { enrollmentId: string }, file: BriefFile): Promise<Buffer | null> {
-  if (!withinStorage(file.path) || !file.path.startsWith(`${STORAGE_PREFIX}/content-briefs/${month.enrollmentId}/`)) return null;
-  try { return await dropboxDownload(file.path); } catch { return null; }
+/** "<client folder>/Content Plans/" for one client (Oct 21 2026), or null when the client is gone. */
+async function clientPlanRoot(clientId: string): Promise<string | null> {
+  const c = await prisma.client.findUnique({ where: { id: clientId }, select: { name: true, brandAssetsPath: true } });
+  return c ? `${(c.brandAssetsPath || brandFolderPath(c.name)).replace(/\/+$/, "")}/${BRIEF_PLAN_FOLDER}/` : null;
+}
+
+/**
+ * The stored bytes of one brief file: only from this enrollment's own
+ * private folder, or (Oct 21 2026) this client's own "Content Plans" folder.
+ * The path is the one we recorded, never one a browser sent; this is the
+ * second lock on the door.
+ */
+export async function readBriefBytes(month: { enrollmentId: string; clientId: string }, file: BriefFile): Promise<Buffer | null> {
+  const p = file.path;
+  if (p.split("/").includes("..")) return null;
+  const inPrivate = withinStorage(p) && p.startsWith(`${STORAGE_PREFIX}/content-briefs/${month.enrollmentId}/`);
+  const inClientFolder = !inPrivate && (await clientPlanRoot(month.clientId).then((root) => !!root && p.toLowerCase().startsWith(root.toLowerCase())).catch(() => false));
+  if (!inPrivate && !inClientFolder) return null;
+  try { return await dropboxDownload(p); } catch { return null; }
 }
 
 /** One file's record, for the read door. */

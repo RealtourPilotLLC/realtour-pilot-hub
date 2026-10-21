@@ -12,6 +12,8 @@ import { StrategyCallCard, NotesCard } from "@/components/content/Workspace";
 import { ScriptRequestsPanel } from "@/components/content/ScriptRequestsPanel";
 import { ScriptUploadPanel } from "@/components/content/ScriptUploadPanel";
 import { BulkPlanPanel } from "@/components/content/BulkPlanPanel";
+import { BriefReadOnly } from "@/components/brief/BriefReadOnly";
+import { contentHref } from "@/lib/contentNav";
 import { loadTopicsTab, loadScriptsTab, loadStrategyTab, loadFactsTab, loadCallsTab, loadScriptRequests, loadLegacyNotes } from "../programData";
 import { loadFieldProposals, loadStrategyTargets } from "../workspaceData";
 import { MonthHeader, SubNav, type TabCtx } from "./shared";
@@ -31,6 +33,27 @@ import { MonthHeader, SubNav, type TabCtx } from "./shared";
 const CALL_WORDS: Record<string, string> = { MONTHLY_STRATEGY: "Monthly strategy call", BRAND_DISCOVERY: "Brand discovery call" };
 const fmtWhen = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " ET" : "no time";
+
+/**
+ * Oct 21 2026 (Jordan: "Since Mike creates his own creatives … so our team can
+ * access it"): a client who plans their own videos has no topics or scripts
+ * from us, so their own plan for the month (the creative brief: PDF, Word,
+ * notes) sits where those would. Read-only here, opened through the brief's
+ * own door; files are added or removed on Overview.
+ */
+async function ClientOwnPlan({ ctx }: { ctx: TabCtx }) {
+  const { id, month } = ctx;
+  if (!month || month.historical || !ctx.progress?.topics.clientSupplies) return null;
+  const view = await import("@/lib/monthBrief").then(async (m) => m.briefView(await m.monthBrief(month.id), null)).catch(() => null);
+  return (
+    <div data-client-own-plan className="space-y-1.5">
+      <BriefReadOnly brief={view} clientPlanned monthName={monthLabel(month.monthKey).split(" ")[0]} />
+      <Link href={contentHref(id, { month: month.monthKey, anchor: "brief" })} className="inline-flex min-h-9 items-center text-[13px] font-medium text-brand hover:underline">
+        Add or remove files on Overview
+      </Link>
+    </div>
+  );
+}
 
 export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<string, number> }) {
   const { id, month, client, ownerEyes } = ctx;
@@ -74,6 +97,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
       <div className="space-y-5">
         {sub}
         <MonthHeader ctx={ctx} tab="plan" view="topics" title={`Topics — ${monthName}`} />
+        <ClientOwnPlan ctx={ctx} />
         <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort, key: month.monthKey } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
           suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} declined={d.declined} stock={d.stock} held={d.held}
           drafts={d.drafts} queueActive={d.queueActive} />
@@ -94,6 +118,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
       <div className="space-y-5">
         {sub}
         <MonthHeader ctx={ctx} tab="plan" view="scripts" title={`Scripts — ${monthName}`} />
+        <ClientOwnPlan ctx={ctx} />
         {uploadMonth && uploads && (
           <ScriptUploadPanel enrollmentId={id} monthId={uploadMonth.id} monthName={monthShort} clientName={client.name.split(" ")[0] || client.name} batches={uploads.batches} monthHasScripts={uploads.monthHasScripts} />
         )}
