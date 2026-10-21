@@ -1,7 +1,8 @@
 import { notFound, redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced, requirePageAccess } from "@/lib/auth/guards";
+import { authEnforced } from "@/lib/auth/guards";
+import { canAccess, homeFor } from "@/lib/auth/access";
 import { photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import {
   Image as ImageIcon,
@@ -64,7 +65,7 @@ export default async function UploadProjectPage({
   // middleware, and null used to skip the ownership check below and read as
   // the office: any job's client, address and brief.
   if (!viewer && authEnforced()) redirect(`/login?next=${encodeURIComponent(`/upload/${id}`)}`);
-  await requirePageAccess("upload");
+  if (viewer && !canAccess(viewer, "upload")) redirect(homeFor(viewer.role));
   if (viewer?.role === "PHOTOGRAPHER") {
     // New-process acknowledgment first (one time), then ownership.
     if (viewer.email) {

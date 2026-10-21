@@ -304,7 +304,7 @@ export async function approveJob(jobId: string, by: string, opts: { deliver: boo
     if (job.stage !== "DELIVERING") {
       const { deliveryGate } = await import("./delivery");
       const gate = await deliveryGate(jobId);
-      if (!gate.canDeliver) return { ok: false, started: false, message: `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
+      if (!gate.canDeliver) return { ok: false, started: false, message: gate.blockedForOverride ?? `Not yet: the checklist has open items (${gate.checks.filter((c) => !c.ok).map((c) => c.label.toLowerCase()).join("; ")}).`.slice(0, 400) };
     }
     if (run && !run.deliveredAt && (run.state === "WAITING" || run.state === "DONE") && !(await changedSince(jobId, run))) {
       const r = await approvePushDelivery(jobId, by);

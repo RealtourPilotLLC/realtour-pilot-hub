@@ -27,7 +27,8 @@ export async function acknowledgeShootBrief(projectId: string, expectedDigest: s
 
   const { assetRegistry } = await import("@/lib/clientAssets");
   const { shootBriefLines, briefSnapshot, briefDigest } = await import("@/lib/shootBriefRead");
-  const view = await getShoot(projectId);
+  // The same visit the page showed this person (audit C5): its access notes are in the brief.
+  const view = await getShoot(projectId, { viewerMemberId: shooterId });
   if (!view) return { ok: false, message: "Shoot not found." };
   // A released session read that failed must not become a false all-clear.
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { contentMonthId: true } });
@@ -373,7 +374,7 @@ export async function recordShootPreference(
 // SHOT (so the pipeline + Kyle see it’s captured), and drops a clear note in the
 // project’s team thread. Does NOT text the client — that’s the separate "Shoot
 // complete" status button the photographer reviews.
-export async function completeShoot(projectId: string): Promise<{ ok: boolean; message: string }> {
+export async function completeShoot(projectId: string, appointmentId?: string | null): Promise<{ ok: boolean; message: string }> {
   await requireShootAccess(projectId);
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -383,17 +384,27 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
       appointments: {
         where: { status: { not: "CANCELED" } },
         orderBy: { startAt: "asc" },
-        select: { id: true },
-        take: 1,
+        select: { id: true, startAt: true, assignedToId: true, completedAt: true },
       },
     },
   });
   if (!project) return { ok: false, message: "Shoot not found." };
 
-  const appt = project.appointments[0];
+  // WHO PRESSED DONE, AND FOR WHICH VISIT (audit C5, Oct 20 2026). The visit the
+  // screen showed (a return visit's own appointment), else the one the screen
+  // would pick for this person; the credit goes to the person pressing it (James
+  // on a second visit), the project's photographer only when the session has
+  // no roster row. A preview ("view as") is never the person who did it.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const { photographerMemberId, pickVisit } = await import("@/lib/shoot");
+  const myId = me && !me.impersonating ? await photographerMemberId(me).catch(() => null) : null;
+  const appt = (appointmentId ? project.appointments.find((a) => a.id === appointmentId) : null) ?? pickVisit(project.appointments, myId);
   if (appt) {
     await prisma.appointment.update({ where: { id: appt.id }, data: { completedAt: new Date() } });
   }
+  const meMember = myId ? await prisma.teamMember.findUnique({ where: { id: myId }, select: { id: true, name: true } }).catch(() => null) : null;
+  const author = meMember ?? project.photographer ?? null;
 
   // Captured → advance to SHOT (unless already further along the pipeline).
   // The photographer's word is a human status write, and a human write ends
@@ -424,7 +435,7 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
     } catch { /* the hourly sweep is the backstop */ }
   }
 
-  const who = project.photographer?.name ?? "The photographer";
+  const who = author?.name ?? "The photographer";
   const street = (project.title || "the property").split(",")[0].trim();
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Shoot marked complete on-site by ${who}.` },
@@ -443,7 +454,7 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
     .create({
       data: {
         projectId,
-        authorId: project.photographer?.id ?? null,
+        authorId: author?.id ?? null,
         authorName: who,
         body: `Shoot complete at ${street}. Ready to upload content.`,
       },

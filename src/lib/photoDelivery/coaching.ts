@@ -9,6 +9,7 @@ import { ruleById } from "./registry";
 import { photoDeliverySettings } from "./settings";
 import { logJobEvent } from "./jobState";
 import { alertOwnerAndKyle } from "./notifyOps";
+import { etDayKey } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // PHOTOGRAPHER COACHING NOTE (prompt pack 10, plan §12 item 3).
@@ -153,7 +154,8 @@ export async function draftCoachingNote(jobId: string): Promise<{ drafted: boole
     photographerFirstName: shooter.name.split(" ")[0] || shooter.name,
     streetName: (project.title || "the listing").split(",")[0],
     photoCount: photos.length,
-    shootDate: project.shootDate ? project.shootDate.toISOString().slice(0, 10) : "unavailable",
+    // The ET day (audit C18, Oct 20 2026): the UTC date put an evening or twilight shoot on the next day.
+    shootDate: project.shootDate ? etDayKey(project.shootDate) : "unavailable",
     photographerFindingRows: byRule.size
       ? [...byRule.entries()].map(([id, e]) => `${id} | ${ruleById(id)?.shortLabel ?? id} | ${e.count} | ${e.positions.sort((a, b) => a - b).join(", ") || "n/a"} | ${e.worst}`).join("\n")
       : "none",
@@ -228,7 +230,9 @@ export async function sendCoachingNote(jobId: string, by: string, edited?: { not
   const text = `${note}\n\nBefore your next shoot:\n${reminders.map((r) => `- ${r}`).join("\n")}`;
   const { notifyStaffSms } = await import("@/lib/notify");
   const out = await notifyStaffSms([c.photographerId], text, "photo_coaching_note");
-  await logJobEvent(jobId, by, "coaching:sent", { draftEventId: c.eventId, outcome: out[0]?.outcome ?? null, edited: !!edited });
+  // The words that went out are kept (audit C18): the photographer's feedback
+  // hub shows sent coaching notes, not only the text message.
+  await logJobEvent(jobId, by, "coaching:sent", { draftEventId: c.eventId, outcome: out[0]?.outcome ?? null, edited: !!edited, photographerId: c.photographerId, note, preShootReminders: reminders });
   return { ok: true, message: `Sent to ${c.photographerName.split(" ")[0]} (${out[0]?.outcome ?? "queued"}).` };
 }
 

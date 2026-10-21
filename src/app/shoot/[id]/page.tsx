@@ -12,7 +12,8 @@ import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canSeeMoney, homeFor } from "@/lib/auth/access";
-import { etDateTime, etDaysAgo } from "@/lib/datetime";
+import { etDateTime, etDayStartUtc, etDaysAgo } from "@/lib/datetime";
+import { SHOOT_STATUS_META, type ShootStatusKind } from "@/lib/statusTexts";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
 import { ShootMapCard, ShootMapCardSkeleton } from "@/components/shoot/ShootMapCard";
@@ -66,7 +67,11 @@ export default async function ShootDetailPage({
     redirect(homeFor(user.role));
   }
 
-  const view = await getShoot(id);
+  // Oct 20 2026 (audit C5): the visit this viewer is on, a return visit's own
+  // appointment rather than always the first. The same member the brief's "I
+  // read this" check uses below, so both read the same brief.
+  const visitMemberId = viewerMemberId ?? (user && !user.impersonating ? await photographerMemberId(user).catch(() => null) : null);
+  const view = await getShoot(id, { viewerMemberId: visitMemberId });
   if (!view) notFound();
   // Whose pay/route to show: a photographer viewer always sees THEIR OWN numbers
   // (a second shooter on someone else's project must never see the primary's
@@ -84,16 +89,17 @@ export default async function ShootDetailPage({
   // Read receipt: the real photographer opening their own shoot marks the
   // feedback SEEN (before the load below, so the receipts they see are fresh).
   // Previews never stamp — Jordan looking isn't Harrison reading.
-  if (!feedbackReadOnly && payMemberId) {
-    const { markFeedbackSeen } = await import("@/lib/review");
-    await markFeedbackSeen(payMemberId, id);
-  }
   // Capture feedback + client praise for the same pay-scoped member. Praise is
   // creative-safe by construction (getClientFeedback: POSITIVE/NEUTRAL only,
   // money-scrubbed) — negative client feedback never reaches this page.
-  const [feedback, praise] = payMemberId
-    ? await Promise.all([getPhotographerFeedback(id, payMemberId), getClientFeedback(id, payMemberId)])
-    : [[], []];
+  const loadFeedback = async (): Promise<[Awaited<ReturnType<typeof getPhotographerFeedback>>, Awaited<ReturnType<typeof getClientFeedback>>]> => {
+    if (!payMemberId) return [[], []];
+    if (!feedbackReadOnly) {
+      const { markFeedbackSeen } = await import("@/lib/review");
+      await markFeedbackSeen(payMemberId, id);
+    }
+    return Promise.all([getPhotographerFeedback(id, payMemberId), getClientFeedback(id, payMemberId)]);
+  };
 
   // THE MONEY RULE, on the one screen that carries a person's earnings: a pay
   // card is your OWN pay, or it isn't shown. Jordan, Sep 2 2026 — "Kyle should
@@ -130,31 +136,54 @@ export default async function ShootDetailPage({
 
   // The receipt is scoped to the real photographer. Owner previews and other
   // staff may inspect this brief but cannot make it look read by the shooter.
-  let briefAssets: AssetRow[] = [];
-  let briefUnavailable = false;
-  if (view.session || view.outputBriefs.length) {
-    try { briefAssets = await assetRegistry(view.client.id, { links: false }); }
-    catch { briefUnavailable = true; }
-  }
-  // Oct 8 2026: the client's own brief for this job's month (client-planned
-  // months above all) — the same door the editor's brief links through.
-  const monthBrief = view.project.contentSession
-    ? await import("@/lib/monthBrief").then(async (m) => { const b = await m.briefForProject(id); return b ? { view: await m.briefView(b, null), clientPlanned: b.clientPlanned } : null; }).catch(() => null)
-    : null;
-  const briefLines = shootBriefLines(view, briefAssets);
-  const briefDigestNow = briefDigest(briefSnapshot(briefLines));
   // WHOEVER IS SHOOTING IT marks it read (Oct 5): the photographer, or James
   // on his ADMIN login when the shoot is his — the same assignment test the
   // action applies. Previews and office readers can look, not acknowledge.
-  const shooterId = viewerMemberId ?? (user && !user.impersonating ? await photographerMemberId(user).catch(() => null) : null);
-  const canReadBrief = !!user && !user.impersonating && !!shooterId &&
-    (viewerMemberId != null || (await photographerOwnsShoot(id, shooterId).catch(() => false)));
-  let lastBriefRead: { snapshotJson: string; readAt: Date } | null = null;
-  if (canReadBrief && user) {
-    try {
-      lastBriefRead = await prisma.shootBriefRead.findFirst({ where: { projectId: id, readerUserId: user.id }, orderBy: { readAt: "desc" }, select: { snapshotJson: true, readAt: true } });
-    } catch { briefUnavailable = true; }
-  }
+  const shooterId = visitMemberId;
+  const chatMoney = user ? canSeeMoney(user.role) : !authEnforced();
+  // ONE ROUND OF INDEPENDENT READS (audit C16, Oct 20 2026): the feedback, the
+  // brief's assets, the month brief, the brief receipt, the job chat and the
+  // status texts already sent today used to load one after another.
+  const [[feedback, praise], assetsRead, monthBrief, briefReceipt, chatTeam, chatMsgs, sentStatusKinds] = await Promise.all([
+    loadFeedback(),
+    view.session || view.outputBriefs.length
+      ? assetRegistry(view.client.id, { links: false }).then((assets) => ({ assets, failed: false }), () => ({ assets: [] as AssetRow[], failed: true }))
+      : Promise.resolve({ assets: [] as AssetRow[], failed: false }),
+    // Oct 8 2026: the client's own brief for this job's month (client-planned
+    // months above all) — the same door the editor's brief links through.
+    view.project.contentSession
+      ? import("@/lib/monthBrief").then(async (m) => { const b = await m.briefForProject(id); return b ? { view: await m.briefView(b, null), clientPlanned: b.clientPlanned } : null; }).catch(() => null)
+      : Promise.resolve(null),
+    (async () => {
+      const can = !!user && !user.impersonating && !!shooterId &&
+        (viewerMemberId != null || (await photographerOwnsShoot(id, shooterId).catch(() => false)));
+      if (!can || !user) return { can, last: null as { snapshotJson: string; readAt: Date } | null, failed: false };
+      try {
+        const last = await prisma.shootBriefRead.findFirst({ where: { projectId: id, readerUserId: user.id }, orderBy: { readAt: "desc" }, select: { snapshotJson: true, readAt: true } });
+        return { can, last, failed: false };
+      } catch {
+        return { can, last: null, failed: true };
+      }
+    })(),
+    getTeam().catch(() => []),
+    // The newest 50 (audit C16: a long thread loaded whole), shown oldest first.
+    prisma.projectMessage
+      .findMany({
+        where: { projectId: id },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        include: { replyTo: { select: { authorName: true, body: true } } },
+      })
+      .then((rows) => rows.reverse())
+      .catch(() => []),
+    sentStatusToday(id),
+  ]);
+  const briefAssets = assetsRead.assets;
+  const briefUnavailable = assetsRead.failed || briefReceipt.failed;
+  const canReadBrief = briefReceipt.can;
+  const lastBriefRead = briefReceipt.last;
+  const briefLines = shootBriefLines(view, briefAssets);
+  const briefDigestNow = briefDigest(briefSnapshot(briefLines));
   const briefDelta = lastBriefRead ? briefChanges(parseBriefSnapshot(lastBriefRead.snapshotJson), briefLines) : [];
   // Oct 14 2026: editing a script and texting the PDF are real acts; a preview ("view as") only reads and downloads.
   const scriptsEditable = user ? !user.impersonating : !authEnforced();
@@ -196,17 +225,6 @@ export default async function ShootDetailPage({
   // MONEY: this is a field screen, so every body goes through the hub's
   // redactor unless the reader is the owner — the sentence stays, the figure
   // goes (the same rule the job page applies to its activity feed).
-  const chatMoney = user ? canSeeMoney(user.role) : !authEnforced();
-  const [chatTeam, chatMsgs] = await Promise.all([
-    getTeam().catch(() => []),
-    prisma.projectMessage
-      .findMany({
-        where: { projectId: id },
-        orderBy: { createdAt: "asc" },
-        include: { replyTo: { select: { authorName: true, body: true } } },
-      })
-      .catch(() => []),
-  ]);
   const chatScrub = (t: string) => (chatMoney ? t : redactMoney(t));
   // A preview ("view as") reads; so does an owner/admin who is only looking in
   // on someone else's field screen — no, they post too: this is the one place
@@ -235,7 +253,25 @@ export default async function ShootDetailPage({
   // scoped list. Photographers never carry an ?as= back link (fail-closed).
   const backHref = user?.role !== "PHOTOGRAPHER" && as ? `/shoot?as=${as}` : "/shoot";
 
-  return <ShootScreen view={view} pay={pay} map={map} briefRead={briefRead} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} />;
+  return <ShootScreen view={view} pay={pay} map={map} briefRead={briefRead} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} sentStatusKinds={sentStatusKinds} />;
+}
+
+/**
+ * The status texts already sent to the client today, read off the timeline
+ * lines sendShootStatusText writes (audit C12, Oct 20 2026): the ticks used
+ * to live only in the screen, so after a reload "On my way" looked unsent and
+ * could go twice. A read that fails shows nothing ticked, as before.
+ */
+async function sentStatusToday(projectId: string): Promise<ShootStatusKind[]> {
+  const kinds = Object.keys(SHOOT_STATUS_META) as ShootStatusKind[];
+  const rows = await prisma.activity
+    .findMany({
+      where: { projectId, type: "SYSTEM", createdAt: { gte: etDayStartUtc() }, OR: kinds.map((k) => ({ body: { startsWith: `${SHOOT_STATUS_META[k].sent} — texted` } })) },
+      select: { body: true },
+      take: 20,
+    })
+    .catch(() => []);
+  return kinds.filter((k) => rows.some((r) => r.body.startsWith(`${SHOOT_STATUS_META[k].sent} — texted`)));
 }
 
 /** One topic of a filming session, read on a phone mid-shoot (Oct 14 2026, Jordan: "make sure the text is formatted nicely and easily readable"). */

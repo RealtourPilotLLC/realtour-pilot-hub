@@ -54,11 +54,22 @@ export type HubPraise = {
   street: string;
 };
 
+/** A photo coaching note Jordan approved and texted (Photo Delivery, coaching.ts). */
+export type HubPhotoCoaching = {
+  at: string;
+  projectId: string;
+  street: string;
+  note: string;
+  reminders: string[];
+};
+
 export type FeedbackHub = {
   memberId: string;
   memberName: string;
   kpis: HubKpis;
   recentPraise: HubPraise[]; // latest client praise, capped for the card
+  /** Photo coaching notes sent by text (audit C18, Oct 20 2026): they never reached this page. */
+  photoCoaching?: HubPhotoCoaching[];
   active: HubGroup[]; // shoots with unresolved notes, newest note first
   resolved: HubGroup[]; // fully-resolved history (capped)
 };
@@ -70,7 +81,7 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
   const reviewLag = new Date(now - 3 * 24 * 3600_000); // shoots newer than this likely aren't reviewed yet
   const rootNotes = { photographerId: memberId, lane: "PHOTOGRAPHER", parentId: null } as const;
 
-  const [member, notes, statusRoll, inWindow, inPrev, shoots, prevShoots, ratingAgg, recentShoots, praiseRows] =
+  const [member, notes, statusRoll, inWindow, inPrev, shoots, prevShoots, ratingAgg, recentShoots, praiseRows, photoCoaching] =
     await Promise.all([
       prisma.teamMember.findUnique({ where: { id: memberId }, select: { id: true, name: true } }),
       prisma.mediaNote.findMany({
@@ -112,6 +123,7 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
         take: 3,
         select: { rating: true, body: true, authorName: true, createdAt: true, project: { select: { title: true } } },
       }),
+      sentPhotoCoaching(memberId, prevSince).catch(() => [] as HubPhotoCoaching[]),
     ]);
   if (!member) return null;
 
@@ -181,7 +193,61 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
       .filter((p) => p.body),
     active: all.filter((g) => g.openCount > 0),
     resolved: all.filter((g) => g.openCount === 0).slice(0, 8),
+    photoCoaching,
   };
+}
+
+/**
+ * The photo coaching notes texted to this photographer (audit C18): read off
+ * the Photo Delivery job log of their own shoots, newest first. Display only;
+ * they are not MediaNotes and never count toward the scorecard. Money-scrubbed
+ * like every other line on a creative's screen.
+ */
+async function sentPhotoCoaching(memberId: string, since: Date): Promise<HubPhotoCoaching[]> {
+  const projects = await prisma.project.findMany({
+    where: { ...ownsShoot(memberId), shootDate: { gte: since } },
+    select: { id: true, title: true },
+    take: 300,
+  });
+  if (!projects.length) return [];
+  const jobs = await prisma.photoJob.findMany({ where: { projectId: { in: projects.map((p) => p.id) } }, select: { id: true, projectId: true } });
+  if (!jobs.length) return [];
+  const events = await prisma.photoJobEvent.findMany({
+    where: { jobId: { in: jobs.map((j) => j.id) }, action: { in: ["coaching:draft", "coaching:sent"] } },
+    orderBy: { at: "desc" },
+    take: 200,
+    select: { id: true, jobId: true, at: true, action: true, dataJson: true },
+  });
+  const parse = (s: string | null) => {
+    try {
+      return s ? (JSON.parse(s) as { draftEventId?: string; photographerId?: string; note?: string; preShootReminders?: string[] }) : null;
+    } catch {
+      return null;
+    }
+  };
+  const drafts = new Map(events.filter((e) => e.action === "coaching:draft").map((e) => [e.id, parse(e.dataJson)]));
+  const titleOf = new Map(projects.map((p) => [p.id, p.title]));
+  const projectOf = new Map(jobs.map((j) => [j.id, j.projectId]));
+  const out: HubPhotoCoaching[] = [];
+  for (const e of events) {
+    if (e.action !== "coaching:sent") continue;
+    const sent = parse(e.dataJson);
+    const draft = sent?.draftEventId ? drafts.get(sent.draftEventId) : null;
+    // Only this photographer's own notes (a shoot can have more than one shooter).
+    if ((sent?.photographerId ?? draft?.photographerId) !== memberId) continue;
+    const note = stripMoneySentences(sent?.note ?? draft?.note ?? "");
+    if (!note) continue;
+    const projectId = projectOf.get(e.jobId) ?? "";
+    out.push({
+      at: e.at.toISOString(),
+      projectId,
+      street: streetOf(titleOf.get(projectId)),
+      note,
+      reminders: (sent?.preShootReminders ?? draft?.preShootReminders ?? []).map((r) => stripMoneySentences(r)).filter(Boolean).slice(0, 3),
+    });
+    if (out.length >= 5) break;
+  }
+  return out;
 }
 
 // --------------------------- My Shoots reminder ----------------------------

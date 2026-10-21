@@ -303,7 +303,7 @@ function CheckRow({ checked, onChange, title, text }: { checked: boolean; onChan
       "flex cursor-pointer items-start gap-2.5 rounded-xl border px-3.5 py-2.5 transition-colors",
       checked ? "border-success/40 bg-success-soft/30" : "border-border hover:bg-surface-2",
     )}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 size-4 shrink-0 accent-[var(--brand)]" />
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 size-5 shrink-0 accent-[var(--brand)]" />
       <span className="text-sm leading-snug">
         <span className={cn("font-semibold", checked && "text-success")}>{title}.</span>{" "}
         <span className="text-foreground/75">{text}</span>
@@ -1536,10 +1536,12 @@ export function UploadPortal({
     finally { sqftBusyRef.current = false; setSqftBusy(false); }
   }
 
-  const checkbox = "size-4 shrink-0 accent-[var(--brand)]";
+  // Phone-sized targets (audit C15, Oct 20 2026): this page is opened from
+  // the 7 PM text, on a phone. Every choice is at least 44px tall.
+  const checkbox = "size-5 shrink-0 accent-[var(--brand)]";
   const choiceBtn = (active: boolean, tone: "ok" | "warn" = "ok") =>
     cn(
-      "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium",
+      "inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium",
       active
         ? tone === "ok" ? "border-success bg-success/10 text-success" : "border-warning bg-warning/10 text-warning"
         : "border-border hover:bg-surface-2",
@@ -1844,19 +1846,19 @@ export function UploadPortal({
           <div className="mt-2.5 flex flex-wrap gap-2">
             {draftConflict.submitted ? (
               <>
-                <button onClick={() => window.location.reload()} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
+                <button onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90">
                   Reload to see what went in
                 </button>
-                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
+                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
                   Keep editing here
                 </button>
               </>
             ) : (
               <>
-                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">
+                <button onClick={keepMineAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg bg-brand px-3 py-1.5 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">
                   Keep this page&rsquo;s answers
                 </button>
-                <button onClick={takeTheirsAfterConflict} disabled={isPending || !!pendingAttempt} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
+                <button onClick={takeTheirsAfterConflict} disabled={isPending || !!pendingAttempt} className="min-h-11 rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50">
                   Load the other copy
                 </button>
               </>
@@ -1914,12 +1916,12 @@ export function UploadPortal({
           <div className="mt-3 flex flex-wrap gap-2">
             {pdfPath && (
               <a href={pdfPath} target="_blank" rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
                 <FileText className="size-4" /> View editor brief
               </a>
             )}
             <Link href={`/projects/${project.id}`}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg hover:opacity-90">
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg hover:opacity-90">
               View project
             </Link>
           </div>
@@ -1935,7 +1937,7 @@ export function UploadPortal({
                     value={processNote}
                     onChange={(e) => setProcessNote(e.target.value)}
                     placeholder="Optional — goes straight to Jordan."
-                    className="flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-brand"
+                    className="min-h-11 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-base outline-none focus:border-brand sm:text-sm"
                   />
                   <button
                     disabled={!processNote.trim() || isPending}
@@ -1949,7 +1951,7 @@ export function UploadPortal({
                         else setErr("Couldn't send the feedback — check your connection and try again.");
                       });
                     }}
-                    className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
+                    className="min-h-11 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
                   >
                     Send
                   </button>
@@ -2169,7 +2171,7 @@ export function UploadPortal({
                 onBlur={(e) => void saveSqft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
                 placeholder="e.g. 2400"
-                className="w-28 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+                className="min-h-11 w-28 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-base outline-none focus:border-brand sm:text-sm"
               />
               {sqftBusy
                 ? <span className="text-xs text-muted">saving…</span>
@@ -2326,7 +2328,7 @@ export function UploadPortal({
             placeholder="e.g. Trash cans in exterior 3–4 · dog bed in the primary bedroom · neighbor's car in the driveway shots."
             className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
-          <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-muted">
+          <label className="mt-2 flex min-h-11 cursor-pointer items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
               checked={nothingToRemove}
@@ -3112,11 +3114,11 @@ function VideoBriefRow({
               type="button"
               disabled={pending || !note.trim()}
               onClick={save}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-50"
             >
               {pending && <Loader2 className="size-3.5 animate-spin" />} Add to this video&apos;s brief
             </button>
-            <button type="button" onClick={() => { setOpen(false); setNote(""); }} className="text-xs font-medium text-muted hover:underline">
+            <button type="button" onClick={() => { setOpen(false); setNote(""); }} className="inline-flex min-h-11 items-center px-2 text-xs font-medium text-muted hover:underline">
               Cancel
             </button>
           </div>

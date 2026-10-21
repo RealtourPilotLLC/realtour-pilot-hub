@@ -251,7 +251,25 @@ export type ShootOutputBrief = {
   brandChoice?: OutputBrief["brandChoice"];
 };
 
-export async function getShoot(projectId: string): Promise<ShootView | null> {
+/**
+ * Which visit a screen is about (audit C5, Oct 20 2026). On a return visit (a
+ * twilight, a second day) the earliest appointment is not the one being shot:
+ * the screen showed visit 1's time, access notes and "Past", and Done stamped
+ * visit 1. Now: the viewer's own live visits when they have any; among them
+ * the first one today (ET) not yet done, else today's last; else the next
+ * upcoming; else the most recent. Pure, so the screen and Done agree.
+ */
+export function pickVisit<T extends { startAt: Date | null; assignedToId: string | null; completedAt?: Date | null }>(live: T[], memberId: string | null, now: Date = new Date()): T | null {
+  const mine = memberId ? live.filter((a) => a.assignedToId === memberId) : [];
+  const pool = (mine.length ? mine : live).filter((a) => a.startAt).sort((a, b) => a.startAt!.getTime() - b.startAt!.getTime());
+  if (!pool.length) return live[0] ?? null;
+  const today = etDayKey(now);
+  const todays = pool.filter((a) => etDayKey(a.startAt!) === today);
+  if (todays.length) return todays.find((a) => !a.completedAt) ?? todays[todays.length - 1];
+  return pool.find((a) => etDayKey(a.startAt!) > today) ?? pool[pool.length - 1];
+}
+
+export async function getShoot(projectId: string, opts: { viewerMemberId?: string | null; now?: Date } = {}): Promise<ShootView | null> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     include: {
@@ -272,7 +290,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
   if (!p) return null;
 
   const liveAppts = p.appointments.filter((a) => (a.status ?? "").toUpperCase() !== "CANCELED");
-  const primary = liveAppts[0] ?? p.appointments[0] ?? null;
+  const primary = pickVisit(liveAppts, opts.viewerMemberId ?? null, opts.now) ?? p.appointments[0] ?? null;
 
   const addressFull = [p.addressLine, p.city, p.state, p.zip].filter(Boolean).join(", ") || p.title;
   // The newest exact address a client gave for a session on this job that is
@@ -838,6 +856,8 @@ export async function getShootMapData(projectId: string, memberId: string | null
 
 export type MyShootRow = {
   id: string;
+  /** One row per live visit (audit C5): the appointment id, else the project id. */
+  key?: string;
   title: string;
   street: string;
   whenISO: string | null;
@@ -849,6 +869,8 @@ export type MyShootRow = {
   deliverableTypes: DeliverableType[];
   uploaded: boolean;
   completed: boolean;
+  /** The shoot happened and its upload page is not submitted yet (audit C20). */
+  uploadPageOpen?: boolean;
   photographerName: string | null;
   photographerId: string | null;
   photographerColor: string | null;
@@ -895,16 +917,20 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       client: { select: { name: true, avatarUrl: true } },
       photographer: { select: { id: true, name: true, avatarColor: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
+      // Every live visit (audit C5, Oct 20 2026): a return visit (twilight, a
+      // second day) is its own row on its own calendar day, not hidden behind
+      // the first one.
       appointments: {
         where: { status: { not: "CANCELED" }, startAt: { not: null } },
-        select: { startAt: true, completedAt: true },
+        select: { id: true, startAt: true, completedAt: true, assignedToId: true, assignedTo: { select: { id: true, name: true, avatarColor: true } } },
         orderBy: { startAt: "asc" },
-        take: 1,
       },
     },
     orderBy: { shootDate: "asc" },
     take: 250,
   });
+  const { DEBRIEF_PAY_GATE_FROM } = await import("@/lib/payroll");
+  const nowMs = Date.now();
 
   // Which months have a script the office approved (one read for the whole list).
   const monthIds = [...new Set(rows.map((p) => p.contentMonthId).filter((x): x is string => !!x))];
@@ -913,30 +939,43 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       ? (await prisma.contentScript.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, historical: false, OR: [{ sharedVersionId: { not: null } }, { approvedVersionId: { not: null } }] } }).catch(() => [])).map((g) => g.monthId)
       : [],
   );
-  return rows.map((p) => {
-    const appt = p.appointments[0];
-    const when = appt?.startAt ?? p.shootDate;
+  return rows.flatMap((p) => {
+    // A photographer sees their own visits (an unassigned visit on their own
+    // project counts); the office sees every visit. A project they hold only
+    // as its photographer, every visit assigned to someone else, still lists.
+    const mine = memberId ? p.appointments.filter((a) => a.assignedToId === memberId || (!a.assignedToId && p.photographerId === memberId)) : [];
+    const visits: (typeof p.appointments[number] | null)[] = mine.length ? mine : p.appointments.length ? p.appointments : [null];
     // Photos live on Aryeo → the real cover shot; until then, Street View.
     const sv = p.coverImageUrl ? null : streetViewSrc(p.lat, p.lng, p.title);
-    return {
-      id: p.id,
-      title: p.title,
-      street: streetOf(p.title) || p.title,
-      thumbUrl: p.coverImageUrl ?? sv,
-      thumbKind: p.coverImageUrl ? ("aryeo" as const) : sv ? ("street" as const) : null,
-      hasScripts: !!p.contentMonthId && scripted.has(p.contentMonthId),
-      whenISO: when?.toISOString() ?? null,
-      status: p.status,
-      clientName: p.client.name,
-      clientFirst: firstNameOf(p.client.name),
-      clientAvatarUrl: p.client.avatarUrl,
-      deliverableTypes: Array.from(new Set(p.deliverables.map((d) => d.type))),
-      uploaded: p.uploadedAt != null,
-      completed: appt?.completedAt != null,
-      photographerName: p.photographer?.name ?? null,
-      photographerId: p.photographer?.id ?? null,
-      photographerColor: p.photographer?.avatarColor ?? null,
-    };
+    // C20 (Oct 20 2026): the upload page hands the shoot to the editor; a shoot
+    // that happened with the page still unsubmitted says so on its row.
+    const happened = p.appointments.some((a) => a.completedAt != null || (a.startAt != null && a.startAt.getTime() <= nowMs)) || (!p.appointments.length && !!p.shootDate && p.shootDate.getTime() <= nowMs);
+    const uploadPageOpen = !p.debriefSubmittedAt && happened && (p.shootDate ?? p.createdAt).getTime() >= DEBRIEF_PAY_GATE_FROM;
+    return visits.map((appt) => {
+      const when = appt?.startAt ?? p.shootDate;
+      const who = appt?.assignedTo ?? p.photographer ?? null;
+      return {
+        id: p.id,
+        key: appt?.id ?? p.id,
+        title: p.title,
+        street: streetOf(p.title) || p.title,
+        thumbUrl: p.coverImageUrl ?? sv,
+        thumbKind: p.coverImageUrl ? ("aryeo" as const) : sv ? ("street" as const) : null,
+        hasScripts: !!p.contentMonthId && scripted.has(p.contentMonthId),
+        whenISO: when?.toISOString() ?? null,
+        status: p.status,
+        clientName: p.client.name,
+        clientFirst: firstNameOf(p.client.name),
+        clientAvatarUrl: p.client.avatarUrl,
+        deliverableTypes: Array.from(new Set(p.deliverables.map((d) => d.type))),
+        uploaded: p.uploadedAt != null,
+        completed: appt?.completedAt != null,
+        uploadPageOpen,
+        photographerName: who?.name ?? null,
+        photographerId: who?.id ?? null,
+        photographerColor: who?.avatarColor ?? null,
+      };
+    });
   });
 }
 
