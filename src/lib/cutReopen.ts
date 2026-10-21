@@ -25,6 +25,8 @@ import { prisma } from "@/lib/prisma";
 //   · the job goes to Revisions (a delivered job too), with the clock stamp;
 //   · a content-program video: the client's approval is set aside, the review
 //     window closes as changes requested, and the video reads "editing";
+//   · its 1080p pass stops if it has spent nothing, and Kyle's upload card
+//     for that version closes (Oct 20 2026);
 //   · a line on the job's timeline saying who reopened it and why.
 // The copy in 05-Final-Video stays until the next approval moves it aside
 // (startDropboxCopy), and the client keeps the delivered video in their
@@ -76,6 +78,15 @@ export async function reopenBookkeeping(sub: Sub, opts: { by: string; why: strin
     console.error("[reopen] program ledger", sub.id, e);
   }
   try {
+    // The 1080p pass of this version stops if it has spent nothing, and Kyle's
+    // upload card for it closes (Oct 20 2026, audit B1): a reopened version is
+    // not the file to send.
+    const { standDownTopazForReopen } = await import("@/lib/topazJobs");
+    await standDownTopazForReopen(sub.id);
+  } catch (e) {
+    console.error("[reopen] 1080p pass", sub.id, e);
+  }
+  try {
     const where = opts.source === "review_room" ? "in the Review Room" : opts.source === "portal" ? "from the client portal" : opts.source === "text" ? "from a client text" : opts.source === "email" ? "from a client email" : "from a client call";
     await prisma.activity.create({ data: { projectId: sub.projectId, type: "SYSTEM", body: `Reopened for revisions ${where}: version ${sub.round} was approved${opts.by ? `, reopened by ${opts.by}` : ""}. ${opts.why}`.slice(0, 1000) } });
   } catch { /* the timeline line is a courtesy */ }
@@ -110,6 +121,71 @@ export async function reopenApprovedCut(submissionId: string, opts: { by: string
   if (!won.count) return { ok: true, reopened: false, message: "Someone ruled on it a moment ago." };
   await reopenBookkeeping(sub, opts);
   return { ok: true, reopened: true, message: `Reopened for revisions (version ${sub.round}).` };
+}
+
+// ---------------------------------------------------------------------------
+// REPLACING AN APPROVED VIDEO, SAID WHEN THE UPLOAD LANDS (Oct 20 2026, audit
+// B10). An editor (or the office) replacing an approved version gives a
+// reason; the job's timeline and the office's bell say so. They used to be
+// written when the upload STARTED, so a failed or cancelled upload announced a
+// replacement that never happened. The facts are now kept on the reservation
+// (an AppSetting row keyed by its id) and said once, by the first caller that
+// sees the version exist; a cancelled upload drops them.
+// ---------------------------------------------------------------------------
+
+export type ReplacementIntent = { projectId: string; slot: number; slotLabel: string; by: string; reason: string; stillApproved: boolean; sent: boolean };
+
+const replacingKey = (submissionId: string) => `cut-replacing:${submissionId}`;
+
+/** Keep what a replacement upload will say, on its reservation. Never throws. */
+export async function recordReplacementIntent(submissionId: string, intent: ReplacementIntent): Promise<void> {
+  const key = replacingKey(submissionId);
+  const value = JSON.stringify(intent);
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } }).catch((e) => console.warn("[replace] could not keep the reason", submissionId, e));
+}
+
+/** A replacement upload that never landed: nothing to say. Never throws. */
+export async function dropReplacementIntent(submissionId: string): Promise<void> {
+  await prisma.appSetting.deleteMany({ where: { key: replacingKey(submissionId) } }).catch(() => {});
+}
+
+/**
+ * The replacement's version exists (in review, or landed and waiting on the
+ * editor's check): say it once, on the timeline and to the office. Claimed by
+ * deleting the kept row, so two callers never both say it. Never throws.
+ */
+export async function announceReplacement(submissionId: string): Promise<void> {
+  try {
+    const key = replacingKey(submissionId);
+    const kept = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } });
+    if (!kept) return;
+    const cut = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { status: true, round: true } });
+    if (!cut) return void (await dropReplacementIntent(submissionId));
+    if (["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"].includes(cut.status)) return; // not landed (yet)
+    const claimed = await prisma.appSetting.deleteMany({ where: { key } });
+    if (claimed.count !== 1) return; // another caller said it
+    const r = JSON.parse(kept.value) as ReplacementIntent;
+    const what = r.stillApproved ? `an approved ${r.slotLabel}` : `the ${r.slotLabel} on this job`;
+    await prisma.activity.create({
+      data: {
+        projectId: r.projectId,
+        type: "SYSTEM",
+        body: `${r.by} replaced ${what}${r.sent ? " that had already gone to the client" : ""} with version ${cut.round}: "${r.reason}". The version it supersedes keeps its file, its number and its verdict; the new one still has to be reviewed${r.sent ? " and re-sent" : ""}.`.slice(0, 500),
+      },
+    }).catch(() => {});
+    // The office decides what a client is told, so it is told first.
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "cut_uploaded",
+      title: `${r.stillApproved ? "An approved video" : "A video"} was replaced: ${r.slotLabel}`,
+      body: `${r.by}: "${r.reason.slice(0, 160)}"${r.sent ? " · this one had already gone to the client." : ""}`,
+      href: `/review/${r.projectId}`,
+      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      dedupeKey: `cut-reopen-${submissionId}`,
+    }).catch(() => {});
+  } catch (e) {
+    console.warn("[replace] could not announce", submissionId, e);
+  }
 }
 
 /**

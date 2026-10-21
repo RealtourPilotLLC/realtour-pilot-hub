@@ -179,6 +179,9 @@ export type ReadyVideo = {
    *  person pressed the button (or what the button would do). Null/absent:
    *  by hand. */
   push?: import("@/lib/videoAryeoPush").VideoPushLine | null;
+  /** The upload status could not be read just now (Oct 20 2026, audit B12):
+   *  a null `push` then means "unknown", never "by hand". */
+  pushUnknown?: boolean;
   destinationFingerprint?: string | null;
   deliveryDestination?: "client-portal" | "aryeo-listing";
   canChooseAryeo?: boolean;
@@ -430,12 +433,23 @@ async function deliveryFollowUps(projectId?: string, recordHealth = false, exclu
   };
 }
 
-async function deliveryExitExtras(projectId?: string, recordHealth = false, includeNoticeIncidents = false, excludeClientIds?: string[]): Promise<Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck" | "portalDelivered">> {
+type ExitExtras = Pick<ReadyBoard, "needsFinishing" | "notTold" | "followUpChecks" | "followUpLastSuccess" | "noticeIncidents" | "noticeIncidentCheck" | "portalDelivered">;
+
+async function deliveryExitExtras(opts: ReadyToSendOpts | undefined): Promise<ExitExtras> {
+  // READY ROWS ONLY (Oct 20 2026, audit H2/B3): the delivery alerts read
+  // nothing but `ready`, so they skip the follow-up lanes. Unchecked lanes say
+  // so (a null check time), never "nothing to finish".
+  if (opts?.readyOnly) return { needsFinishing: [], notTold: [], followUpChecks: { needsFinishing: null, notTold: null } };
+  const { projectId, recordFollowUpHealth: recordHealth = false, includeNoticeIncidents = false, excludeClientIds } = opts ?? {};
+  // The week-long "delivered via the content program" rows are read only on
+  // request (audit B6): no screen has shown them since the Oct 19 redesign.
   const [base, portalDelivered] = await Promise.all([
     deliveryFollowUps(projectId, recordHealth, excludeClientIds),
-    portalDeliveredRows(projectId, excludeClientIds).catch((e) => { console.warn("[delivery] portal-delivered rows unavailable", e); return [] as PortalDelivered[]; }),
+    opts?.withPortalDelivered
+      ? portalDeliveredRows(projectId, excludeClientIds).catch((e) => { console.warn("[delivery] portal-delivered rows unavailable", e); return [] as PortalDelivered[]; })
+      : Promise.resolve(undefined),
   ]);
-  const followUps = { ...base, portalDelivered };
+  const followUps = { ...base, ...(portalDelivered ? { portalDelivered } : {}) };
   if (!includeNoticeIncidents) return followUps;
   try {
     const { deliveryNoticeIncidents } = await import("@/lib/deliveryNoticeIncidents");
@@ -985,7 +999,18 @@ type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE
  * get that answer from this module rather than re-deriving the eligibility
  * rules beside it — see cutsOnTheCardFor.
  */
-export async function readyToSend(opts?: { projectId?: string; recordFollowUpHealth?: boolean; includeNoticeIncidents?: boolean; excludeClientIds?: string[] }): Promise<ReadyBoard> {
+type ReadyToSendOpts = {
+  projectId?: string;
+  recordFollowUpHealth?: boolean;
+  includeNoticeIncidents?: boolean;
+  excludeClientIds?: string[];
+  /** Only `ready` and `rendering` are wanted (the delivery alerts): the follow-up lanes are skipped. */
+  readyOnly?: boolean;
+  /** Also the week-long "delivered via the content program" information rows. */
+  withPortalDelivered?: boolean;
+};
+
+export async function readyToSend(opts?: ReadyToSendOpts): Promise<ReadyBoard> {
   const subs = await prisma.reviewSubmission.findMany({
     where: {
       ...(opts?.projectId ? { projectId: opts.projectId } : {}),
@@ -1010,13 +1035,13 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
     },
     select: CANDIDATE_SELECT,
   });
-  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
+  if (subs.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts)) };
 
   // Monthly portal release is distinct from final backup/check, notification,
   // client review and Kyle's delivery handoff. Keep its row until that handoff
   // is recorded; a seat on some other enrollment must never hide this work.
   const open = subs.filter((s) => !wentOut(s));
-  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
+  if (open.length === 0) return { ready: [], rendering: [], ...(await deliveryExitExtras(opts)) };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
   const byId = new Map(
@@ -1162,8 +1187,16 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   const listingRows = ready.filter((v) => v.deliveryDestination === "aryeo-listing" && !v.monthlyProgram);
   if (listingRows.length) {
     const uploadedBy = new Map(listingRows.filter((v) => v.uploaded).map((v) => [v.submissionId, v.uploaded!.by]));
-    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId), { uploadedBy })).catch(() => null);
-    for (const v of listingRows) v.push = lines?.get(v.submissionId) ?? null;
+    const lines = await import("@/lib/videoAryeoPush").then((m) => m.pushLinesFor(listingRows.map((v) => v.submissionId), { uploadedBy })).catch((e) => {
+      console.warn("[delivery] upload status unavailable", e);
+      return null;
+    });
+    for (const v of listingRows) {
+      v.push = lines?.get(v.submissionId) ?? null;
+      // A failed read is not "never checked" (Oct 20 2026, audit B12): the row
+      // says to reload rather than send Kyle to upload by hand.
+      if (!lines) v.pushUnknown = true;
+    }
   }
 
   // Late first, then oldest first — the order a person would work them in.
@@ -1171,7 +1204,7 @@ export async function readyToSend(opts?: { projectId?: string; recordFollowUpHea
   rendering.sort((a, b) => a.approvedAtISO.localeCompare(b.approvedAtISO));
   // R5: rows already recorded as sent whose own records did not finish. Derived
   // on every read, so a refresh keeps showing it until it is genuinely fixed.
-  return { ready, rendering, ...(await deliveryExitExtras(opts?.projectId, opts?.recordFollowUpHealth, opts?.includeNoticeIncidents, opts?.excludeClientIds)) };
+  return { ready, rendering, ...(await deliveryExitExtras(opts)) };
 }
 
 /**

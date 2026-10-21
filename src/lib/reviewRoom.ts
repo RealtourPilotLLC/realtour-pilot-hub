@@ -6,6 +6,7 @@ import { verdictOf, type Verdict } from "@/lib/reviewAttribution";
 import { isSyntheticClientRow } from "@/lib/testClients";
 import { editorMeta } from "@/lib/editors";
 import { photoQcWhere } from "@/lib/taskBoard";
+import { cutKeyOf as videoKeyOf } from "@/lib/reviewCuts";
 
 // ---------------------------------------------------------------------------
 // Read layer for the STANDALONE Review Room (/review) — the owner's quality
@@ -88,7 +89,6 @@ export type ReviewQueue = {
   waitingOnCheck: QueueSubmission[];
   waitingOnEditor: QueueSubmission[];
   recentlyApproved: QueueSubmission[];
-  photoQc: QueuePhotoQc[];
   followUps: QueueFollowUp[];
 };
 
@@ -100,9 +100,10 @@ export type ReviewQueue = {
 const DEAD_ROUNDS = ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"];
 
 // A cut is one owed video: the (deliverable, slot) pair on the rows that have
-// one, the file path on the legacy folder rows.
+// one, the file path on the legacy folder rows (reviewCuts.cutKeyOf, the one
+// definition; audit B23), scoped to its job.
 const cutKeyOf = (s: { projectId: string; deliverableId: string | null; slot: number; assetPath: string | null; id: string }) =>
-  `${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`;
+  `${s.projectId}:${videoKeyOf(s)}`;
 
 /**
  * THE 14-DAY WINDOW GOES HERE, AFTER THE COLLAPSE — NOT IN THE QUERY.
@@ -173,7 +174,8 @@ const projectsWithLiveReview = (since: Date) => ({
 /**
  * KYLE'S MEDIA CHECKS (media_qa cards). Shown on the Photo Delivery list page
  * since Oct 19 2026, when the Review Room became the VIDEO Review Room
- * (Jordan); still returned by getReviewQueue (photoQc) for its older readers.
+ * (Jordan). getReviewQueue no longer builds them (Oct 20 2026, audit B6: no
+ * reader of the queue read them).
  * Test clients are left out unless `includeTest`.
  */
 export async function photoQcCards(opts: { includeTest?: boolean; excludeClientIds?: string[] } = {}): Promise<QueuePhotoQc[]> {
@@ -207,15 +209,12 @@ export async function photoQcCards(opts: { includeTest?: boolean; excludeClientI
 }
 
 export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Promise<ReviewQueue> {
-  const excludeClientIds = opts.includeTest === false
-    ? (await prisma.client.findMany({ select: { id: true, name: true } })).filter(isSyntheticClientRow).map((c) => c.id)
-    : [];
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
   // Editor-authored notes are context for the reviewer, not owed fixes —
   // they must not inflate "open notes" badges or the follow-up tallies.
   // (One filter: the rollup and the follow-through rows' cut links read it.)
   const liveNoteWhere = { parentId: null, status: { in: ["OPEN", "FIXED"] }, NOT: { authorKey: { startsWith: "editor:" } } };
-  const [readSubs, photoQc, readNoteRollup, readThreadReplies] = await Promise.all([
+  const [readSubs, readNoteRollup, readThreadReplies] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: {
         // Every live round of the cut, at any age — see inWindow above for why
@@ -241,7 +240,6 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
         },
       },
     }),
-    photoQcCards({ includeTest: opts.includeTest, excludeClientIds }),
     prisma.mediaNote.groupBy({
       by: ["projectId", "lane", "status"],
       where: liveNoteWhere,
@@ -441,7 +439,6 @@ export async function getReviewQueue(opts: { includeTest?: boolean } = {}): Prom
     waitingOnCheck: latest.filter((s) => isHeldForSelfCheck(s)).map(toView),
     waitingOnEditor: latest.filter((s) => s.status === "CHANGES_REQUESTED").map(toView),
     recentlyApproved: latest.filter((s) => s.status === "APPROVED").map(toView),
-    photoQc,
     followUps: [...followMap.values()].sort((a, b) => b.open - a.open),
   };
 }

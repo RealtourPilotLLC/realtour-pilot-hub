@@ -11,7 +11,8 @@ async function main() {
   try {
     const { prisma } = await import("@/lib/prisma");
     const { boardWhere, photoQcWhere } = await import("@/lib/taskBoard");
-    const { getReviewQueue } = await import("@/lib/reviewRoom");
+    // Oct 20 2026 (audit B6): the media checks are photoQcCards (Photo Delivery); getReviewQueue no longer builds them.
+    const { photoQcCards } = await import("@/lib/reviewRoom");
     const real = await prisma.client.create({ data: { name: "Real Agent" } });
     const fixture = await prisma.client.create({ data: { name: "Avery TEST" } });
     const protectedReal = await prisma.client.create({ data: { id: NEVER_SYNTHETIC_CLIENT_IDS[0], name: "Renamed TEST" } });
@@ -52,11 +53,11 @@ async function main() {
     const holdJob = await prisma.project.create({ data: { clientId: real.id, title: "Paused real job", status: "ON_HOLD" } });
     const holdQc = await task("Paused media check", { projectId: holdJob.id, taskType: "media_qa" });
     const normalQc = await prisma.smartTask.findMany({ where: photoQcWhere(scope), select: { id: true } });
-    const review = await getReviewQueue({ includeTest: false });
+    const review = { photoQc: await photoQcCards({ includeTest: false }) };
     const qcIds = new Set(normalQc.map((row) => row.id));
     c.ok("Home media-check badge and Review Room show identical real rows", normalQc.length === 3 && review.photoQc.length === 3 && review.photoQc.every((row) => qcIds.has(row.taskId)) && [realQc, protectedQc, orphanQc].every((row) => qcIds.has(row.id)));
     c.ok("QC excludes linked fixtures and preserves the on-hold rule", [fixtureQc, fixtureOrphanQc, holdQc].every((row) => !qcIds.has(row.id)));
-    const reviewAll = await getReviewQueue({ includeTest: true });
+    const reviewAll = { photoQc: await photoQcCards({ includeTest: true }) };
     c.ok("Review Room full view and unscoped badge retain fixtures", reviewAll.photoQc.length === 5 && await prisma.smartTask.count({ where: photoQcWhere() }) === 5);
     c.ok("provider fence stayed closed", fence.blocked.length === 0, fence.blocked.join(", "));
     c.summary();

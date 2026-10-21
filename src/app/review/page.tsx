@@ -24,7 +24,8 @@ import { MarkDelivered } from "@/components/ops/MarkDelivered";
 import { HeldRender } from "@/components/ops/HeldRender";
 import { DeliveryFollowUps } from "@/components/ops/ReadyToSendCard";
 import { PushControls } from "@/components/videoDelivery/PushControls";
-import { AutoRefresh, SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
+import { SendAll, SendVideo } from "@/components/videoDelivery/SendVideo";
+import { AutoRefresh } from "@/components/ops/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Video Review Room" };
@@ -67,7 +68,9 @@ export const maxDuration = 60;
 // photographers, /edit for editors).
 // ---------------------------------------------------------------------------
 
-const quietBtn = "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+// The shared Button's secondary look (components/ui/Action.tsx), for the links
+// in "Done it by hand?" (Oct 20 2026, audit B21: one look per row).
+const quietBtn = "inline-flex min-h-11 min-w-11 max-w-full items-center justify-center gap-2 rounded-xl border border-border-strong bg-surface px-4 py-2 text-sm font-semibold leading-snug whitespace-normal text-foreground hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
 const PUSH_TONE: Record<string, string> = {
   progress: "text-foreground",
   waiting: "text-foreground",
@@ -118,11 +121,14 @@ function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
       {run && <Steps progress={p!.progress} stopped={stopped} />}
       {p && (run || s.uploaded) && <p className={cn("mt-1 text-sm", PUSH_TONE[p.tone])}>{p.says}</p>}
       {s.byHandWhy && <p className="mt-1 text-sm font-medium text-warning">{s.byHandWhy}</p>}
+      {!s.byHandWhy && s.pushUnknown && <p className="mt-1 text-sm font-medium text-warning">Couldn&rsquo;t read where this upload stands just now. Reload the page to send it.</p>}
       {!s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
       <WatchFile href={s.watchHref} fileName={s.fileName} isRender={s.fileSource === "topaz-1080p"} />
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} />}
-      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} street={r.street} canRetry={false} canDeliverNow={p.canDeliverNow} canHold={false} canRelease={p.canRelease} />}
-      {!run && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
+      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
+      {/* Not ready after all? Offered unless an upload is moving (Oct 20 2026,
+          audit B18: a failed or held run no longer hides it). */}
+      {(!run || stopped) && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
       <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={!!s.byHandWhy || (!!p?.canRetry && !p.canStart)}>
         <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Done it by hand?</summary>
         <div className="space-y-2 px-3 pb-3 text-sm">
@@ -152,7 +158,9 @@ function HeldRow({ r }: { r: VideoRow }) {
       {r.heldWhy && <p className="mt-1 text-sm font-medium text-warning">{r.heldWhy}</p>}
       {r.heldRender && <HeldRender jobId={r.heldRender.jobId} street={r.street} fileName={r.heldRender.fileName} dropboxUrl={r.heldRender.dropboxUrl} lastCheck={r.heldRender.lastCheck} />}
       {p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
-      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} street={r.street} canRetry={false} canDeliverNow={p.canDeliverNow} canHold={false} canRelease={p.canRelease} />}
+      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
+      {/* A held video can go back to the editor too (audit B18). */}
+      {r.submissionId && (!p?.state || p.tone === "failed" || p.tone === "held") && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
     </li>
   );
 }
@@ -285,14 +293,17 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   const heldRows = board?.lanes.held ?? [];
   const finishing = board?.lanes.finishing ?? [];
   // The job's open requests and shoot flags, once per job (the job box's own component).
-  const checksFor = new Map<string, React.ReactNode>();
-  for (const pid of [...new Set([...ready, ...heldRows].map((r) => r.projectId))]) {
-    try {
-      checksFor.set(pid, await BeforeYouSend({ projectId: pid, medium: "video", compact: true }));
-    } catch (e) {
-      console.warn("[video-review] job checks unavailable", e);
-    }
-  }
+  // Oct 20 2026 (audit B9): read together, not one job after another.
+  const checksFor = new Map<string, React.ReactNode>(
+    await Promise.all([...new Set([...ready, ...heldRows].map((r) => r.projectId))].map(async (pid) => {
+      try {
+        return [pid, await BeforeYouSend({ projectId: pid, medium: "video", compact: true })] as const;
+      } catch (e) {
+        console.warn("[video-review] job checks unavailable", e);
+        return [pid, null] as const;
+      }
+    })),
+  );
   const sendAllIds = ready.filter((r) => r.send && !r.send.byHandWhy && !r.send.openAsks.length && !r.send.asksUnknown && !r.send.listingWarning && r.push?.canStart && !r.push.state).map((r) => r.submissionId!);
   const moving = [...ready, ...heldRows].some((r) => !!r.push?.state && r.push.handledByHub && !r.push.waitingForKyle && r.push.tone === "progress");
   const fu = board?.followUps ?? null;
@@ -375,9 +386,11 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
       />
 
       <div className="space-y-6 p-4 sm:p-6">
-        {moving && <AutoRefresh active />}
+        {/* While a video is on its way (Oct 20 2026, audit B9): every 30 s,
+            not 20; the cron moves an upload once a minute. */}
+        {moving && <AutoRefresh seconds={30} />}
         <div className="flex justify-end">
-          <Link href={includeTest ? "/review" : "/review?test=1"} className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+          <Link href={includeTest ? "/review" : "/review?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
             {includeTest ? "Hide test records" : "Show test records"}
           </Link>
         </div>

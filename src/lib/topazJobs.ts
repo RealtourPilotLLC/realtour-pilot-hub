@@ -9,7 +9,7 @@ import { appBase } from "@/lib/appUrl";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { topazSettings, type TopazSettings } from "@/lib/settings";
 import { HELD_ATTESTATION, type HeldChoice } from "@/lib/topazHold";
-import { kyleTeamMemberId, noticeForKyle } from "@/lib/kyleNotice";
+import { kyleDesk, kyleTeamMemberId, noticeForKyle } from "@/lib/kyleNotice";
 import { portalReason } from "@/lib/deliveryReadyMessage";
 import { createHash } from "crypto";
 // The cut store's own rules about who may read these bytes (RTP-01). Every
@@ -201,6 +201,9 @@ export async function queueTopazRender(submissionId: string): Promise<QueueResul
     // P2002 = a job for this cut already exists. That is the guard working, not
     // a failure: say so and move on.
     if ((e as { code?: string } | null)?.code === "P2002") {
+      // Reopened before its pass started, and now approved again (audit B1).
+      const back = await requeueReopenedJob(submissionId).catch(() => null);
+      if (back) return { queued: true, jobId: back };
       return { queued: false, reason: "This cut has already been through the 1080p pass.", already: true };
     }
     console.warn("queueTopazRender failed", (e as Error).message);
@@ -336,6 +339,9 @@ async function loadJob(jobId: string) {
       submission: {
         select: {
           id: true,
+          // A cut reopened for revisions is not the file to render or send
+          // (audit B1, Oct 20 2026): advanceTopazJob and fileAsFinal read it.
+          status: true,
           blobUrl: true,
           fileName: true,
           sizeBytes: true,
@@ -408,7 +414,7 @@ export async function claimTopazJobs(limit: number, leaseBy: string): Promise<st
  *
  * WHY THIS IS A COMPARE-AND-SWAP (audit, Sep 17). hold() and finishAs() have
  * always fenced their writes; release() did not, and it is the one every step
- * ends on. Two drivers run (the five-minute lane and the hourly safety net) and
+ * ends on. Two drivers run (the every-minute lane and the hourly safety net) and
  * they overlap once an hour. If our lease expires mid-step — a slow Topaz call,
  * a big upload — the other driver claims the row and moves it on. An
  * unfenced release would then write OUR stale state over ITS progress and null
@@ -471,7 +477,7 @@ const SPEND_LOCK: [number, number] = (() => {
  * TAKE THE LAST SLOT, OR DO NOT TAKE IT.
  *
  * The old shape was: count, accept at Topaz, then count again and hand back an
- * overshoot. Two drivers run (the five-minute lane and the hourly safety net)
+ * overshoot. Two drivers run (the every-minute lane and the hourly safety net)
  * and both could be between the count and the write, so the recheck was doing
  * the real work — and a recheck that cannot write (see holdLease) does none.
  *
@@ -611,7 +617,7 @@ async function hold(job: { id: string; state: string }, reason: string, retryAt:
  * finish.
  *
  * The predicate is not decoration (Sep 16 review). Two drivers run — the
- * five-minute lane and the hourly sync's safety net — and they overlap once an
+ * every-minute lane and the hourly sync's safety net — and they overlap once an
  * hour. A tick
  * that decides to refuse a job spends up to a minute talking to Topaz first;
  * if the lease had expired in that window and the other driver had meanwhile
@@ -753,6 +759,23 @@ export async function advanceTopazJob(jobId: string, budget: { remainingMs: () =
   if (!LIVE_STATES.includes(job.state as TopazState)) {
     await release(job);
     return job.state;
+  }
+  // A CUT REOPENED BEFORE ITS PASS SPENT ANYTHING (Oct 20 2026, audit B1).
+  // Reopening (cutReopen) sends the version back to the editor, so rendering it
+  // buys credits for a file nobody will send. Queued and estimated jobs have
+  // spent nothing (credits are charged at complete-upload): hand any estimate
+  // back at Topaz and stop, quietly. A job already uploading, rendering or
+  // saving runs to the end, because that money is committed; fileAsFinal makes
+  // no upload card for it.
+  if (job.submission && job.submission.status !== "APPROVED" && (job.state === "queued" || job.state === "estimated") && !job.completeUploadAt) {
+    if (job.requestId) {
+      if (job.acceptedAt) await cancelVideoRequest(job.requestId);
+      else await cancelEstimate(job.requestId);
+    }
+    const stood = await prisma.topazJob
+      .updateMany({ where: { id: job.id, state: job.state, leaseBy: job.leaseBy }, data: { ...REOPENED_STAND_DOWN, finishedAt: new Date() } })
+      .catch(() => ({ count: 0 }));
+    return stood.count === 1 ? "cancelled" : job.state;
   }
   const s = await topazSettings();
 
@@ -2065,7 +2088,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
     path = settled.path;
   }
 
-  const { taskId, originalMoved } = await fileAsFinal(job, path);
+  const { taskId, originalMoved, reopened } = await fileAsFinal(job, path);
 
   await release(job, {
     state: "done",
@@ -2087,7 +2110,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
       },
     })
     .catch(() => {});
-  if (job.project.contentMonthId && job.submissionId) {
+  if (job.project.contentMonthId && job.submissionId && !reopened) {
     await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
   }
   return "done";
@@ -2099,7 +2122,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, landed: 
  * hand Kyle the job. Shared by the driver (a file that passed) and by a person
  * resolving a held file, so there is one tail and not two.
  */
-async function fileAsFinal(job: NonNullable<JobRow>, path: string): Promise<{ taskId: string | null; originalMoved: boolean }> {
+async function fileAsFinal(job: NonNullable<JobRow>, path: string): Promise<{ taskId: string | null; originalMoved: boolean; reopened: boolean }> {
   const sub = job.submission!;
   const folder = finalFolderOf(path);
 
@@ -2137,8 +2160,20 @@ async function fileAsFinal(job: NonNullable<JobRow>, path: string): Promise<{ ta
   //    A job that was HELD already did this when it was held.
   if (job.requestId && !job.heldAt) await deleteVideoFiles(job.requestId);
 
+  // 4. A CUT REOPENED WHILE ITS PASS RAN (Oct 20 2026, audit B1). The render
+  //    was paid for, so it is filed like any other; but this version is back
+  //    with the editor, so Kyle gets no "Upload the 1080p video" card for it and
+  //    a program cut is not published. The next approved version brings its own.
+  const live = await prisma.reviewSubmission.findUnique({ where: { id: sub.id }, select: { status: true } }).catch(() => null);
+  if (live && live.status !== "APPROVED") {
+    await prisma.activity
+      .create({ data: { projectId: job.projectId, type: "SYSTEM", body: `The 1080p pass of version ${sub.round} finished after that version was reopened for revisions, so no upload card was made. The next approved version gets its own.` } })
+      .catch(() => {});
+    return { taskId: null, originalMoved, reopened: true };
+  }
+
   const taskId = await pingKyle(job, path, originalMoved);
-  return { taskId, originalMoved };
+  return { taskId, originalMoved, reopened: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -2390,7 +2425,7 @@ async function finishHeldAsProcessed(
       ...(outcome.json ? { outputCheckJson: outcome.json, outputCheckedAt: now } : {}),
     },
   });
-  const { taskId, originalMoved } = await fileAsFinal(job, to);
+  const { taskId, originalMoved, reopened } = await fileAsFinal(job, to);
   await prisma.topazJob.updateMany({
     where: { id: job.id, state: "held" },
     data: { state: "done", taskId, finishedAt: now, error: null, errorAt: null },
@@ -2405,7 +2440,7 @@ async function finishHeldAsProcessed(
     })
     .catch(() => {});
   // A program video has no upload card (pingKyle's 9.6b branch makes none):
-  if (job.project.contentMonthId && job.submissionId) {
+  if (job.project.contentMonthId && job.submissionId && !reopened) {
     await import("@/lib/contentVideos").then((m) => m.publishApprovedCutToLibrary(job.submissionId)).catch(() => null);
   }
   // the client's portal gives them this file, or the Ready-to-send card lists
@@ -2676,9 +2711,12 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
   const folder = path.slice(0, path.lastIndexOf("/"));
   const aryeo = aryeoJobUrl(project);
 
-  const kyle = await prisma.teamMember
-    .findFirst({ where: { name: { contains: "Kyle", mode: "insensitive" }, active: true }, select: { id: true } })
-    .catch(() => null);
+  // THE DELIVERY OWNER, the same person the delivery alerts reach (Oct 20
+  // 2026, audit B16): this card used to go to whichever active roster row had
+  // "Kyle" in its name, while his Slack alert followed the DELIVERY duty, so a
+  // change of duty split the card from the ping. Unresolved: the card keeps
+  // the "kyle" desk key with no owner, as before.
+  const kyle = await kyleDesk();
 
   // Jordan, Sep 16: "it just triggers a notification to kyle and says Video for
   // [Address] is ready to upload. With a download link for the video and a link
@@ -2737,7 +2775,7 @@ async function pingKyle(job: NonNullable<JobRow>, path: string, originalMoved: b
     source: "system",
     sourceDetail: aryeo ?? path,
     priority: "HIGH" as const,
-    assignedKey: "kyle",
+    assignedKey: kyle?.key ?? "kyle",
     ownerId: kyle?.id ?? null,
     projectId: job.projectId,
     clientId: project.clientId,
@@ -2865,6 +2903,75 @@ export async function cancelTopazJob(jobId: string, by?: string | null): Promise
     data: { state: "cancelled", finishedAt: new Date(), leaseUntil: null, leaseBy: null, nextAttemptAt: null, error: by ? `Stopped by ${by}.` : "Stopped by hand." },
   });
   return { ok: true, message: "Stopped. Nothing more will be charged for that video." };
+}
+
+// ---------------------------------------------------------------------------
+// A REOPENED CUT (Oct 20 2026, audit B1).
+// ---------------------------------------------------------------------------
+
+/** What a pass stood down for a reopen is written as. skipReason carries the
+ *  marker queueTopazRender looks for: re-approving the SAME version brings the
+ *  job back, because nothing was spent on it. */
+const REOPENED_SKIP = "The cut was reopened for revisions before its 1080p pass started, so the pass was stopped. Nothing was charged.";
+const REOPENED_STAND_DOWN = {
+  state: "cancelled",
+  skipReason: REOPENED_SKIP,
+  nextAttemptAt: null,
+  leaseUntil: null,
+  leaseBy: null,
+  requestId: null,
+  estimateCredits: null,
+  estimateSeconds: null,
+  acceptedAt: null,
+} as const;
+const REOPENED_CARD_CLOSED = "Closed by the hub: this version was reopened for revisions, so it is not the file to upload. The next approved version gets its own card.";
+
+/**
+ * Every reopen calls this (cutReopen.reopenBookkeeping). A pass still queued
+ * stops here; an estimate is made due now, and the driver's next tick hands it
+ * back at Topaz and stops it (advanceTopazJob). A pass already uploading,
+ * rendering or saving runs to the end, without an upload card (fileAsFinal).
+ * Kyle's open "Upload the 1080p video" card for this version is closed with
+ * the reason, so nothing asks him to send a version the client turned down.
+ * Database-only, never throws.
+ */
+export async function standDownTopazForReopen(submissionId: string): Promise<{ stopped: boolean; cardsClosed: number }> {
+  try {
+    const job = await prisma.topazJob.findUnique({ where: { submissionId }, select: { id: true, state: true } });
+    if (!job) return { stopped: false, cardsClosed: 0 };
+    let stopped = false;
+    if (job.state === "queued") {
+      const now = new Date();
+      const r = await prisma.topazJob.updateMany({
+        where: { id: job.id, state: "queued", requestId: null, completeUploadAt: null, OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] },
+        data: { ...REOPENED_STAND_DOWN, finishedAt: now },
+      });
+      stopped = r.count === 1;
+    }
+    if (!stopped && (job.state === "queued" || job.state === "estimated")) {
+      await prisma.topazJob.updateMany({ where: { id: job.id, state: job.state }, data: { nextAttemptAt: null } });
+    }
+    const cards = await prisma.smartTask.updateMany({
+      where: { dedupeKey: `topaz-deliver-${job.id}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "CANCELLED", completedAt: new Date(), summary: REOPENED_CARD_CLOSED },
+    });
+    return { stopped, cardsClosed: cards.count };
+  } catch (e) {
+    console.warn("[topaz] stand down for reopen", submissionId, (e as Error).message);
+    return { stopped: false, cardsClosed: 0 };
+  }
+}
+
+/** A pass stood down for a reopen goes back to the queue when the SAME version
+ *  is approved again. Returns the job id when it did. */
+async function requeueReopenedJob(submissionId: string): Promise<string | null> {
+  const job = await prisma.topazJob.findUnique({ where: { submissionId }, select: { id: true, state: true, skipReason: true } });
+  if (!job || job.state !== "cancelled" || job.skipReason !== REOPENED_SKIP) return null;
+  const r = await prisma.topazJob.updateMany({
+    where: { id: job.id, state: "cancelled", skipReason: REOPENED_SKIP },
+    data: { state: "queued", skipReason: null, finishedAt: null, attempt: 0, error: null, errorAt: null, nextAttemptAt: null },
+  });
+  return r.count === 1 ? job.id : null;
 }
 
 /**

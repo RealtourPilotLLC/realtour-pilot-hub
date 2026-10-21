@@ -121,7 +121,8 @@ async function main() {
     c.ok("James Review retry retains the exact pending cut and assigned context", reviewHtml.includes(`cut=${cut.id}`) && reviewHtml.includes("grove-exact-round-one.mp4") && reviewHtml.includes("48 Grove Lane"));
 
     await signIn(kyle);
-    const editingFailed = await inject(prisma.project as unknown as { findMany: unknown }, (args) => Array.isArray(record(args.where).OR) && record(args.include).editor === true && record(args.include).photographer === true, () => editing(query));
+    // Oct 20 2026 (audit B14): the queue reads the editor and photographer by their columns ({ select }), not whole rows.
+    const editingFailed = await inject(prisma.project as unknown as { findMany: unknown }, (args) => Array.isArray(record(args.where).OR) && record(args.include).editor !== undefined && record(args.include).photographer !== undefined, () => editing(query));
     c.ok("Kyle Editing inflight read propagates unavailable, never an empty queue", editingFailed.hits === 1 && editingFailed.error instanceof Error && editingFailed.error.message === "isolated named page read unavailable" && editingFailed.value === null);
     const recoveredQueue = elements(await editing(query), "SimpleQueue")[0];
     c.ok("Kyle Editing retry restores the exact project and saved editor", (recoveredQueue.notDone as { id: string; editorKey: string | null }[]).some((row) => row.id === job.id && row.editorKey === "kim"));

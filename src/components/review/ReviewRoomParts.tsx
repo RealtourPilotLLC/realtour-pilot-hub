@@ -83,7 +83,7 @@ export function CutCard({ s, decided, viewerTeamMemberId = null, video = null, d
             {what ? `${what}, ` : ""}version {s.round}
           </span>
           {s.premium && (
-            <span className="rounded-md px-1.5 py-0.5 text-[11px] font-medium" style={{ backgroundColor: "#a78bfa1a", color: "#a78bfa" }}>
+            <span className="rounded-md bg-violet-400/10 px-1.5 py-0.5 text-[11px] font-medium text-violet-400 light:text-violet-600">
               Premium
             </span>
           )}

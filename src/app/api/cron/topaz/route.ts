@@ -14,17 +14,20 @@ export const maxDuration = 300;
 // is killed at 300 seconds — so the design is "one step per tick, resumable",
 // not "do the render".
 //
-// Why five minutes and not the hourly sync: an approval is something Jordan
-// does and then waits on. An hourly lane would mean a cut approved at 9:05 sat
-// untouched until 10:00 before the upload even started. Five minutes keeps the
-// whole pass — estimate, upload, render, file, ping Kyle — inside the window
-// where he is still thinking about that job.
+// Why not the hourly sync: an approval is something Jordan does and then
+// waits on. An hourly lane would mean a cut approved at 9:05 sat untouched
+// until 10:00 before the upload even started. A short tick keeps the whole
+// pass (estimate, upload, render, file, ping Kyle) inside the window where he
+// is still thinking about that job.
 //
 // EVERY MINUTE, NOT FIVE (Oct 19 2026, Jordan: "why is it taking so long to
 // send the videos to Topaz?"). One step per tick at five-minute ticks made the
 // median approve-to-filed time 28 minutes, about 6 of them real work (the
 // estimate, the upload, Topaz's render, the Dropbox copy) and the rest waiting
-// for the next tick. A tick with nothing to move does two reads and returns.
+// for the next tick. A tick with nothing to move does a few small reads and
+// returns: the delivery alerts build the Ready-to-send board only every fifth
+// minute, or when a cut was approved, a pass moved or an upload moved in the
+// last few minutes (Oct 20 2026, deliveryReadyNotify.deliveryAlertsDue).
 //
 // It is SAFE for this and the hourly sync's own topaz step to run at the same
 // time: every row is claimed by a compare-and-swap lease, so two ticks each get
@@ -39,8 +42,10 @@ export async function GET(req: NextRequest) {
 
   // Run first so a long render/upload cannot starve staff delivery alerts.
   await step("delivery-alerts", async () => {
-    const { notifyKyleDeliveryReady } = await import("@/lib/deliveryReadyNotify");
-    return notifyKyleDeliveryReady();
+    const { deliveryAlertsDue, notifyKyleDeliveryReady } = await import("@/lib/deliveryReadyNotify");
+    const due = await deliveryAlertsDue(new Date(startedAt));
+    if (!due.due) return { quiet: due.why };
+    return { ...(await notifyKyleDeliveryReady()), why: due.why };
   });
 
   await step("topaz", async () => {

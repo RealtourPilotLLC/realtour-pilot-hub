@@ -272,7 +272,7 @@ async function main() {
     const earlyPub = await cv.publishApprovedCutToLibrary(early.id);
     const earlyCut = await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: early.id } });
     c.ok("no one can sign in yet: the checked video still goes to the portal", earlyPub.published && !!earlyCut.clientReleasedAt && !!earlyCut.sentToClientAt, JSON.stringify(earlyPub));
-    const homeRows = async () => (await readyToSend({ projectId: project.id, recordFollowUpHealth: false, includeNoticeIncidents: false })).portalDelivered ?? [];
+    const homeRows = async () => (await readyToSend({ projectId: project.id, recordFollowUpHealth: false, includeNoticeIncidents: false, withPortalDelivered: true })).portalDelivered ?? [];
     c.ok("…and the home screen lists it as delivered via the content program, waiting for sign-up", (await homeRows()).find((r) => r.submissionId === early.id)?.waitingForSignUp === true);
     await windows.repairReviewWindows();
     c.ok("…with no review window or deadline while nobody can sign in", !(await prisma.contentReviewWindow.findUnique({ where: { submissionId: early.id } })) && !(await windows.openReviewWindow(early.id)));
