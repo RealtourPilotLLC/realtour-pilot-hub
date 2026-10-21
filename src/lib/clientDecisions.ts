@@ -1114,7 +1114,7 @@ async function lateRefusal(w: { id: string; enrollmentId: string; deadlineAt: Da
       title: `Late change request — ${viewer.enrollment.clientName || "a client"}`,
       body: `${actorLabel(viewer)} tried to send changes on v${w.round} after its review window closed (${deadlineLabel(w.deadlineAt)}). Restart the clock to let it through.`,
       href: `/content/${w.enrollmentId}?tab=content`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `review-late-${w.id}`,
     });
   } catch { /* the refusal still stands */ }

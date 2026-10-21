@@ -14,12 +14,34 @@ export type PageKey =
 // appear in PAGES — their routes are redirect stubs with NO PageKey (like
 // /texts), so pathKey() returns null and any signed-in user takes the hop.
 
-export type Role = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
+// CREATIVE_MANAGER (Jordan, Oct 21 2026): "instead of James being admin,
+// create a creative manager user type". The creative lead: oversees the whole
+// creative process (shoots, videos, photos, the content program, the editors,
+// the field team) without Kyle's office work (client inbox, scheduling admin,
+// Aryeo delivery approvals, the office task list) and without money.
+export type Role = "OWNER" | "ADMIN" | "CREATIVE_MANAGER" | "EDITOR" | "PHOTOGRAPHER";
 
-export const ROLES: Role[] = ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"];
+export const ROLES: Role[] = ["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"];
 export const ROLE_LABEL: Record<string, string> = {
-  OWNER: "Owner", ADMIN: "Admin", EDITOR: "Editor", PHOTOGRAPHER: "Photographer",
+  OWNER: "Owner", ADMIN: "Admin", CREATIVE_MANAGER: "Creative manager", EDITOR: "Editor", PHOTOGRAPHER: "Photographer",
 };
+
+// ---------------------------------------------------------------------------
+// TWO QUESTIONS, ASKED BY NAME (Oct 21 2026). Before the creative manager the
+// hub asked `role === "OWNER" || role === "ADMIN"` in a few hundred places and
+// meant one of two different things by it:
+//   · isOffice: the owner and the office (Kyle). Client comms, scheduling,
+//     billing questions, Aryeo deliveries, photo delivery approvals, the
+//     office task list, settings. A creative manager is NOT the office.
+//   · isCreativeLead: the owner, the office, and the creative manager. Review
+//     Room verdicts and notes, the content program (strategy, topics, scripts,
+//     script requests), editor briefs, shoot issues and photo flags, training.
+// Neither is a money question: money stays canSeeMoney (OWNER only) below.
+// ---------------------------------------------------------------------------
+export const isOffice = (role: string | null | undefined): boolean => role === "OWNER" || role === "ADMIN";
+export const isCreativeLead = (role: string | null | undefined): boolean => isOffice(role) || role === "CREATIVE_MANAGER";
+/** The roles isCreativeLead admits, for requireRole lists and notification targets. */
+export const CREATIVE_LEAD_ROLES: Role[] = ["OWNER", "ADMIN", "CREATIVE_MANAGER"];
 
 export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", href: "/" },
@@ -141,6 +163,26 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // override dialog, no other photographer's jobs, and no money on any row.
   // The page gates it, and every write behind it goes through requireShootAccess.
   PHOTOGRAPHER: ["shoot", "mypay", "upload", "resources", "training", "assistant", "review", "editing"],
+  // CREATIVE MANAGER (Oct 21 2026, James). Everything creative, nothing that
+  // is Kyle's office work or money:
+  //   granted: the creative dashboard, Shoots (pipeline) and the job pages
+  //   (money-blind like every non-owner page), the team schedule, the Video
+  //   Review Room, the Editing Room, the Upload Portal and My Shoots (James
+  //   still shoots premium work), the Content Program, Clients (brand,
+  //   profile, notes; never billing), their own tasks, the reference shelf
+  //   (resources, training, Ask the Hub at the ADMIN tier, the feedback
+  //   board), and My Performance ("mypay": pay stays hidden for everyone but
+  //   the owner, settings.payHiddenFor, so the page is the KPI scorecard).
+  //   NOT granted: "communications" (the client texts and email inbox Kyle
+  //   answers), "ops" (Photo delivery is Kyle's approval desk and Your list
+  //   is his checklist), "users", "settings", "catalog" (a price list),
+  //   "sales", "trends", "day", "connections". A per-user override still
+  //   opens or closes any of these in either direction (canAccess).
+  CREATIVE_MANAGER: [
+    "dashboard", "tasks", "review", "pipeline", "schedule", "shoot", "mypay",
+    "clients", "content", "upload", "editing",
+    "resources", "training", "assistant", "feedback",
+  ],
 };
 
 // Where to send a user who lands somewhere they can't access — and their
@@ -158,6 +200,9 @@ export function homeFor(role: string | null | undefined): string {
     // every middleware bounce an extra hop through that stub (audit, Sep 8
     // 2026). "dashboard" is in ADMIN's ROLE_PAGES, so there is no loop.
     case "ADMIN": return "/";
+    // The creative manager's home is "/" too: the dashboard draws its
+    // creative overview for this role (app/page.tsx), never Kyle's office list.
+    case "CREATIVE_MANAGER": return "/";
     default: return "/";
   }
 }
@@ -202,9 +247,12 @@ export function roleHasByDefault(role: string, key: PageKey): boolean {
 }
 
 // Map an app role to the content-sensitivity tier the Hub/comms gating uses.
+// The creative manager reads at the ADMIN tier (Oct 21 2026): it is money-free
+// below OWNER (canSeeMoney), and the client context a creative lead needs
+// (client profiles, strategies, the team's SOPs) sits there.
 export function contentTier(role: string): "OWNER" | "ADMIN" | "CREATIVE" {
   if (role === "OWNER") return "OWNER";
-  if (role === "ADMIN") return "ADMIN";
+  if (role === "ADMIN" || role === "CREATIVE_MANAGER") return "ADMIN";
   return "CREATIVE";
 }
 

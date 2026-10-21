@@ -215,7 +215,7 @@ export async function checkOpsGoDark(): Promise<{ alerts: number }> {
     // role MANAGER and must never be treated as ops (schema + deliveryWatch
     // both document this; review finding).
     where: { active: true, OR: [{ opsAlerts: true }, { creativeManager: true }] },
-    select: { id: true, name: true, email: true },
+    select: { id: true, name: true, email: true, creativeManager: true },
   });
   if (members.length === 0) return { alerts: 0 };
   const emails = members.map((m) => m.email).filter((e): e is string => !!e);
@@ -233,7 +233,9 @@ export async function checkOpsGoDark(): Promise<{ alerts: number }> {
   for (const m of members) {
     const user = users.find((u) => u.teamMemberId === m.id || (m.email && u.email === m.email));
     const first = m.name.split(/\s+/)[0];
-    if (user && user.status === "ACTIVE" && user.role !== "ADMIN" && user.role !== "OWNER") {
+    // A creative manager on the CREATIVE_MANAGER login is right where they belong (Oct 21 2026).
+    const rightRole = user?.role === "ADMIN" || user?.role === "OWNER" || (user?.role === "CREATIVE_MANAGER" && m.creativeManager);
+    if (user && user.status === "ACTIVE" && !rightRole) {
       await notifyInApp({
         kind: "system",
         title: `${first} runs ops but their login can't open it`,

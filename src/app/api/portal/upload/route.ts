@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
       title: `New brand asset — ${client?.name ?? "a client"}`,
       body: `${kind.toLowerCase()}: ${landedName}`,
       href: `/clients/${enrollment.clientId}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `portal-asset-${enrollment.id}-${day}`,
     });
   } catch { /* bell is best-effort */ }

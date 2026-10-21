@@ -329,7 +329,7 @@ async function bellForChangeRequest(
       title: `${reason === "repair" ? "Script change RE-FILED" : "Script change asked for"} — ${viewer.enrollment.clientName || "a client"}`,
       body: `${reason === "repair" ? "This request was missing from the queue and has been put back. " : ""}${by} on "${s.title}": ${clip(body, 140)}`,
       href: contentHref(s.enrollmentId, { tab: "plan", view: "scripts" }),
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       // Keyed on the WORDS as well as the version: a burst of identical text
       // rings once, but a second, different instruction on the same version is
       // a second thing the writer has to know about.

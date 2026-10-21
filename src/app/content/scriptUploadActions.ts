@@ -2,13 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireCreativeLead } from "@/lib/auth/guards";
 import type { UploadItemInput, UploadPreview } from "@/lib/scriptUpload";
 import type { UploadSource } from "@/lib/scriptUploadParse";
 
 // ---------------------------------------------------------------------------
 // "UPLOAD THIS MONTH'S SCRIPTS" (Jordan, Oct 12 2026) — the server actions.
-// Owner and admin only (requireAdmin: the REAL role, never an owner's "view
+// Owner, admin and the creative manager (requireCreativeLead: the REAL role, never an owner's "view
 // as"). The work lives in src/lib/scriptUpload.ts; these check who is asking,
 // read the files, and keep the page's caches honest. The month's
 // recalculation runs after the response where it can (Jordan: every action
@@ -55,7 +55,7 @@ function previewMessage(p: UploadPreview): string {
  * the AI can't answer, the parser's reading is shown with a plain note.
  */
 export async function previewScriptUploadAction(enrollmentId: string, monthId: string, form: FormData): Promise<PreviewResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { extractDocumentText, MAX_DOCUMENT_BYTES } = await import("@/lib/documentText");
     const files = form.getAll("file").filter((f): f is File => f instanceof File && f.size > 0);
@@ -88,7 +88,7 @@ export async function previewScriptUploadAction(enrollmentId: string, monthId: s
 
 /** Re-read a list the staff shaped (a merge). Writes nothing. */
 export async function rereadScriptUploadAction(enrollmentId: string, monthId: string, items: UploadItemInput[], sources: UploadSource[], parser: "house" | "ai" = "house", aiRunId: string | null = null): Promise<PreviewResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { buildUploadPreview } = await import("@/lib/scriptUpload");
     const preview = await buildUploadPreview({ enrollmentId, monthId, items: (items ?? []).slice(0, 40), keepSources: (sources ?? []).slice(0, MAX_FILES + 1), parser, aiRunId });
@@ -98,7 +98,7 @@ export async function rereadScriptUploadAction(enrollmentId: string, monthId: st
 
 /** "Let AI read it" — attended (a person clicked), logged as a ProgramAiRun, words checked against the document. */
 export async function aiSplitScriptUploadAction(enrollmentId: string, monthId: string, sources: UploadSource[]): Promise<PreviewResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { aiSplitUpload } = await import("@/lib/scriptUpload");
@@ -112,7 +112,7 @@ export async function confirmScriptUploadAction(input: {
   enrollmentId: string; monthId: string; fileNames: string[]; parser?: "house" | "ai"; aiRunId?: string | null;
   items: UploadItemInput[]; replaceTopicIds?: string[];
 }): Promise<Result & { batchId?: string }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { applyScriptUpload } = await import("@/lib/scriptUpload");
@@ -126,7 +126,7 @@ export async function confirmScriptUploadAction(input: {
 
 /** "Send to the client for review": approve + release the upload's scripts (the one share); the portal shows them. */
 export async function sendScriptUploadAction(batchId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { uploadScope, sendScriptUpload } = await import("@/lib/scriptUpload");
@@ -143,7 +143,7 @@ export async function sendScriptUploadAction(batchId: string): Promise<Result> {
 
 /** Take an upload back — only while nothing from it is with the client. */
 export async function undoScriptUploadAction(batchId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { undoScriptUpload } = await import("@/lib/scriptUpload");

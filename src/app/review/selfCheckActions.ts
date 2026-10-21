@@ -27,7 +27,8 @@ async function checkActorFor(row: { projectId: string; submittedByKey: string | 
     return { ok: false, message: "Sign in to finish the check." };
   }
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
-  if (me.realRole === "OWNER" || me.realRole === "ADMIN") {
+  // The creative manager may finish the check for an editor, like the office (Oct 21 2026).
+  if (me.realRole === "OWNER" || me.realRole === "ADMIN" || me.realRole === "CREATIVE_MANAGER") {
     return { ok: true, actor: { name: me.name ?? me.email, userId: me.id, editorKey: null, office: true } };
   }
   if (me.realRole !== "EDITOR") return { ok: false, message: "Only the editor, Kyle or Jordan can finish this check." };

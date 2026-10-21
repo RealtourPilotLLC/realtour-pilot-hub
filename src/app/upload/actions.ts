@@ -1990,9 +1990,10 @@ export async function planGapRecovery(
   gapId: string,
   input: { recovery: string; ownerKey: string; dueDay: string; shotList?: { shot: string; note?: string }[]; scopeNote?: string | null },
 ): Promise<{ ok: boolean; message: string }> {
-  const { requireAdmin } = await import("@/lib/auth/guards");
+  // The creative manager too (Oct 21 2026): reshoot plans and field reports are creative work.
+  const { requireCreativeLead } = await import("@/lib/auth/guards");
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Only the office can plan a recovery." };
   }
@@ -2012,9 +2013,10 @@ export async function planGapRecovery(
 
 /** The office closes a gap by hand — recovered, or not needed — with the note that is the record. */
 export async function closeProductionGap(gapId: string, how: "RESOLVED" | "CANCELLED", note: string): Promise<{ ok: boolean; message: string }> {
-  const { requireAdmin } = await import("@/lib/auth/guards");
+  // The creative manager too (Oct 21 2026): reshoot plans and field reports are creative work.
+  const { requireCreativeLead } = await import("@/lib/auth/guards");
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Only the office can close a gap." };
   }
@@ -2086,9 +2088,10 @@ export async function recordFieldPreference(
  * once per editor per report, and notes it on each live job.
  */
 export async function decideFieldReport(factId: string, decision: "ACCEPT" | "REJECT"): Promise<{ ok: boolean; message: string }> {
-  const { requireAdmin } = await import("@/lib/auth/guards");
+  // The creative manager too (Oct 21 2026): reshoot plans and field reports are creative work.
+  const { requireCreativeLead } = await import("@/lib/auth/guards");
   try {
-    await requireAdmin();
+    await requireCreativeLead();
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Only the office can confirm a field report." };
   }

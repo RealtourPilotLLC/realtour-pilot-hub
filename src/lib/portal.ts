@@ -115,7 +115,8 @@ async function enrollmentWithName(e: { id: string; clientId: string; status: str
  *  (Jordan, Kyle); an editor or photographer holding a client's link is just
  *  someone with the link and is treated as the link — subject to its expiry
  *  and never able to act on the client's behalf (review, Sep 17). */
-const STAFF_ON_BEHALF_ROLES = new Set(["OWNER", "ADMIN"]);
+// The creative manager runs the content program with them (Oct 21 2026).
+const STAFF_ON_BEHALF_ROLES = new Set(["OWNER", "ADMIN", "CREATIVE_MANAGER"]);
 
 /** A hub session on this request, if any — the staff path. Reads the JWT and
  *  the AppUser row directly (getCurrentUser needs next/headers and a request

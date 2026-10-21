@@ -40,8 +40,10 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
     : null;
   return (
     <div className="space-y-5">
-      {care && <ClientIssuesCard clientId={ctx.client.id} issues={care[1]} canEdit projects={care[3]} />}
-      {care?.[0] && <EntitlementsCard summary={care[0]} canEdit />}
+      {/* The complaint record and the entitlement ledger are the office's to
+          write (clientCareActions); the creative manager reads them (Oct 21 2026). */}
+      {care && <ClientIssuesCard clientId={ctx.client.id} issues={care[1]} canEdit={ctx.officeEyes} projects={care[3]} />}
+      {care?.[0] && <EntitlementsCard summary={care[0]} canEdit={ctx.officeEyes} />}
       {care?.[2] && <CreativeGuardEditor enrollmentId={ctx.id} guard={care[2]} canEdit />}
       {/* Oct 8 2026: strategy calls on/off and "we show up and shoot" — owner/admin. */}
       {/* Oct 13 2026: + video style, Direct-to-camera or Skits (overridesJson.videoStyle). */}
@@ -49,7 +51,7 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
       <ProgramStyleCard enrollmentId={ctx.id} callMode={s.callMode} callModeExplicit={s.callModeExplicit} noCallEligible={s.noCallEligible} clientPlanned={s.clientSuppliesTopics} videoStyle={videoStyleFromOverrides(s.overrides)} canEdit={ctx.staffEyes} />
       {/* ONE package and status card for Jordan and Kyle alike (Oct 21 2026,
           audit D13), through the ledgered staff actions both already passed. */}
-      {ctx.staffEyes && (
+      {ctx.officeEyes && (
         <EnrollmentControls
           enrollmentId={ctx.id} pkg={s.pkg} status={s.status} videosPerMonth={s.videosPerMonth} sessionsPerMonth={s.sessionsPerMonth}
           nextTerms={s.nextTerms} packages={s.packages} currentMonthKey={s.currentMonthKey} currentMonthLabel={s.currentMonthLabel}
@@ -59,7 +61,7 @@ export async function SettingsTab({ ctx }: { ctx: TabCtx }) {
       {/* The card above IS the package and status control; the panel shows
           them read-only only to a viewer who cannot change them. */}
       <SettingsPanel s={s} billing={d.billing} owners={d.owners} history={d.history} staff={d.staff} isOwner={ctx.ownerEyes}
-        packageHandledAbove={ctx.staffEyes} />
+        packageHandledAbove={ctx.officeEyes} />
       {/* W1-A: link status, seats and visits — self-guarded to OWNER. */}
       <PortalAccessCard enrollmentId={ctx.id} />
       {/* Oct 21 2026: sign-in emails, "Also email" copies, resend the welcome. Owner only. */}

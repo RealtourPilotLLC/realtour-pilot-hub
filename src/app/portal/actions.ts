@@ -56,7 +56,7 @@ const choiceBy = (v: PortalViewer): string =>
 async function ownerBell(kind: string, title: string, body: string, href: string, dedupeKey: string) {
   try {
     const { notifyInApp } = await import("@/lib/notify");
-    await notifyInApp({ kind, title, body, href, targets: [{ roles: ["OWNER", "ADMIN"] }], dedupeKey });
+    await notifyInApp({ kind, title, body, href, targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }], dedupeKey });
   } catch { /* bell is best-effort */ }
 }
 

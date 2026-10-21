@@ -1044,7 +1044,7 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
       const { notifyInApp } = await import("@/lib/notify");
       const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
       const inHouse = (k: string | null | undefined): k is string => !!k && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(k);
-      const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+      const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }];
       const holder = existing?.assignedManually ? existing.assignedKey : assignedKey;
       if (inHouse(holder) && !editorWaits) targets.push({ roles: ["EDITOR"], userKey: `editor:${holder}`, href: `/edit/${project.id}` });
       // The editor carrying THIS video, when it is not the job's editor.
@@ -1082,7 +1082,7 @@ async function runRevisionDetailed(opts: DetailedRevisionOpts, receiptTx?: { db:
     try {
       const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
       await notifyUrgent(`${data.title}: “${clip(note, 140)}”`);
-      const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+      const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }];
       // Editor row: ONLY in-house editors (kim/remar) have a channel + login,
       // and their href must be the editor workspace — /projects bounces the
       // EDITOR role, and the Slack/SMS bridge ships whatever href this row has.
@@ -1161,7 +1161,7 @@ export async function applySavedStaffRevision(briefId: string): Promise<void> {
   }
   const { notifyInApp, notifyUrgent } = await import("@/lib/notify");
   const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
-  const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+  const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }];
   for (const key of new Set([effects.assignedKey, effects.outputOwnerKey])) {
     if (key && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(key)) targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${receipt.projectId}` });
   }
@@ -1400,7 +1400,7 @@ export async function resolveRevision(projectId: string): Promise<void> {
   // the resolve). Day-bucketed key so a same-day re-resolve stays quiet.
   try {
     const { notifyInApp } = await import("@/lib/notify");
-    const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+    const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }];
     {
       const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
       if (revTask?.assignedKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(revTask.assignedKey)) {

@@ -4,7 +4,7 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin, requireOwner } from "@/lib/auth/guards";
+import { requireAdmin, requireCreativeLead, requireOwner } from "@/lib/auth/guards";
 import { contentProgramSweep, assertDutyOwner, setOwnerOverride, type OwnerDuty } from "@/lib/contentProgram";
 import type { ImportKind, ImportPreview, ItemMode } from "@/lib/contentImport";
 import type { FactCategory, FactScope } from "@/lib/clientFacts";
@@ -26,7 +26,7 @@ const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ?
 // copy and a client Jordan removed in Aryeo stayed ACTIVE until the daily
 // cron (Aug 24: Alex/Tony/Matthew removals looked like the button was broken).
 export async function runProgramSweep(): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   let flagNote = "";
   try {
     const { syncAryeoSocialPlans } = await import("@/lib/integrations/aryeo");
@@ -154,7 +154,7 @@ export async function setRosterView(form: FormData): Promise<void> {
 // ---------------------------------------------------------------------------
 const CALL_STATUSES = ["NOT_REQUIRED", "NOT_SCHEDULED", "SCHEDULED", "COMPLETED", "SKIPPED"];
 export async function setStrategyCallStatus(monthId: string, status: string, at?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!CALL_STATUSES.includes(status)) return { ok: false, message: "Unknown status." };
   await prisma.contentMonth.update({
     where: { id: monthId },
@@ -165,7 +165,7 @@ export async function setStrategyCallStatus(monthId: string, status: string, at?
 }
 
 export async function saveMonthTranscript(monthId: string, text: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   await prisma.contentMonth.update({
     where: { id: monthId },
     data: {
@@ -188,7 +188,7 @@ export async function addTopic(
   enrollmentId: string,
   t: { title: string; concept?: string; pillar?: string; pillarId?: string | null; monthId?: string | null; source?: string; audienceNeed?: string | null; businessGoal?: string | null; intendedMessage?: string | null },
 ): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const title = t.title.trim().slice(0, 200);
   if (!title) return { ok: false, message: "Give the topic a title." };
   try {
@@ -204,7 +204,7 @@ export async function addTopic(
 }
 
 export async function setTopicStatus(topicId: string, status: string, monthId?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const OK = ["IDEA", "RECOMMENDED", "SAVED", "SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED", "REJECTED", "ARCHIVED"];
   if (!OK.includes(status)) return { ok: false, message: "Unknown status." };
   // Every status change goes through the topic layer so it lands on the
@@ -233,7 +233,7 @@ export async function setTopicStatus(topicId: string, status: string, monthId?: 
 // ---------------------------------------------------------------------------
 const PROFILE_SECTIONS = ["brandJson", "voiceJson", "contentPrefsJson", "productionJson", "editingJson", "storiesJson"] as const;
 export async function saveProfileSection(clientId: string, section: string, values: Record<string, string>): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!(PROFILE_SECTIONS as readonly string[]).includes(section)) return { ok: false, message: "Unknown section." };
   const clean: Record<string, string> = {};
   for (const [k, v] of Object.entries(values)) {
@@ -254,7 +254,7 @@ export async function saveProfileSection(clientId: string, section: string, valu
 // Notes (intelligence flag = feeds AI context later; plain notes never do)
 // ---------------------------------------------------------------------------
 export async function addContentNote(clientId: string, body: string, intelligence: boolean): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const text = body.trim().slice(0, 8000);
   if (!text) return { ok: false, message: "Write the note first." };
   const { getCurrentUser } = await import("@/lib/auth/user");
@@ -294,7 +294,7 @@ export type StrategyPreview = {
 };
 
 export async function previewStrategyBackfill(form: FormData): Promise<StrategyPreview> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const ex = await extractUploadText(form);
   if (!ex.ok) return ex;
   const { text, name } = ex;
@@ -320,7 +320,7 @@ export async function saveStrategyBackfill(
   rawText: string,
   sourceFile: string,
 ): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!rawText.trim() && !Object.keys(sections).length) return { ok: false, message: "Nothing to save." };
   try {
     const { importStrategyVersion } = await import("@/lib/contentStrategy");
@@ -337,7 +337,7 @@ export async function saveStrategyBackfill(
 // Jordan approves it; nothing auto-delivers.
 // ---------------------------------------------------------------------------
 export async function analyzeTranscript(monthId: string, force = false): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { processMonthTranscript, generateScriptsForMonth } = await import("@/lib/contentPipeline");
     // A deliberate re-run clears the analyzed stamp first (topics already
@@ -356,7 +356,7 @@ export async function analyzeTranscript(monthId: string, force = false): Promise
 }
 
 export async function generateMonthScripts(monthId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { generateScriptsForMonth } = await import("@/lib/contentPipeline");
     const me = await actor();
@@ -386,7 +386,7 @@ export async function generateMonthScripts(monthId: string): Promise<Result> {
  * running the old bundle may post to it, and the CP-02 drill holds that rule.
  */
 export async function approveScript(scriptId: string, shownVersionNo: number | null, note?: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   // A tab still running the old bundle sends (scriptId) or (scriptId, note):
   // it never said which version it showed, so it may not approve anything.
   if (shownVersionNo !== null && !(typeof shownVersionNo === "number" && Number.isInteger(shownVersionNo) && shownVersionNo > 0)) {
@@ -455,7 +455,7 @@ async function tightenPlan(scriptId: string): Promise<{ ok: false; message: stri
 }
 
 export async function saveScriptText(scriptId: string, body: string, opts: { baseVersionId?: string | null; filmingNotes?: string | null } = {}): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const text = body.trim().slice(0, 20_000);
   if (!text) return { ok: false, message: "The script can't be empty." };
   // A manual edit is a NEW version (never an overwrite): the previous version
@@ -471,7 +471,7 @@ export async function saveScriptText(scriptId: string, body: string, opts: { bas
 
 /** Oct 14 2026: copy an earlier version back on top as a new version (nothing deleted). */
 export async function restoreScriptVersionAction(scriptId: string, versionId: string, baseVersionId?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { restoreScriptVersion } = await import("@/lib/contentScripts");
     const me = await actor();
@@ -493,7 +493,7 @@ export async function restoreScriptVersionAction(scriptId: string, versionId: st
 // 2026, audit D14: the topic bank is built by Refresh topics on Video Topics.)
 // ---------------------------------------------------------------------------
 export async function buildProfile(clientId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { buildAgentProfileFromHistory } = await import("@/lib/contentPipeline");
     const me = await actor();
@@ -545,7 +545,7 @@ export async function dismissSignupReview(formData: FormData): Promise<void> {
 // shows the new version.
 // ---------------------------------------------------------------------------
 export async function applyScriptSuggestion(suggestionId: string): Promise<QueueResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const sugg = await prisma.scriptSuggestion.findUnique({
     where: { id: suggestionId },
     select: { id: true, scriptId: true, enrollmentId: true, body: true, status: true },
@@ -604,7 +604,7 @@ async function assertScriptRequestOwner(suggestionId: string, me: Awaited<Return
 }
 
 export async function applyClientScriptVersion(suggestionId: string): Promise<Result & { versionNo?: number }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const me = await actor();
   try { await assertScriptRequestOwner(suggestionId, me); } catch (e) { return fail(e); }
   const { applyRequestWords } = await import("@/lib/scriptRequests");
@@ -614,7 +614,7 @@ export async function applyClientScriptVersion(suggestionId: string): Promise<Re
 }
 
 export async function applyEditedScriptRequest(suggestionId: string, words: { hook: string; points: string[]; close: string; captionCta?: string | null }): Promise<Result & { versionNo?: number }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const me = await actor();
   try { await assertScriptRequestOwner(suggestionId, me); } catch (e) { return fail(e); }
   const { applyRequestWords } = await import("@/lib/scriptRequests");
@@ -624,7 +624,7 @@ export async function applyEditedScriptRequest(suggestionId: string, words: { ho
 }
 
 export async function replyToScriptRequestAction(suggestionId: string, body: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const me = await actor();
   const { replyToScriptRequest } = await import("@/lib/scriptRequests");
   const r = await replyToScriptRequest(suggestionId, body, { id: me.id, name: me.name, email: me.email });
@@ -633,7 +633,7 @@ export async function replyToScriptRequestAction(suggestionId: string, body: str
 }
 
 export async function dismissScriptSuggestion(suggestionId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const me = await actor();
   await prisma.scriptSuggestion.updateMany({
     where: { id: suggestionId, status: "OPEN" },
@@ -904,7 +904,7 @@ export async function lateSessionMessageAction(lateMonthId: string): Promise<Res
 export type MonthPlanningChoice = "CALL" | "TOPICS" | "OFFICE";
 
 export async function setMonthPlanningAction(monthId: string, choice: MonthPlanningChoice): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
+  try { await requireCreativeLead(); } catch (e) { return { ...fail(e), outcome: "refused" }; }
   if (typeof monthId !== "string" || !ID.test(monthId) || !["CALL", "TOPICS", "OFFICE"].includes(choice)) return { ok: false, outcome: "refused", message: "Pick how this month is planned." };
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true, status: true, historical: true, planningChosenBy: true } });
   if (!month) return { ok: false, outcome: "refused", message: "Month not found." };
@@ -964,7 +964,7 @@ export async function setDutyOwner(enrollmentId: string, duty: OwnerDuty, appUse
 
 // ---- strategy ----------------------------------------------------------------------
 export async function approveStrategy(versionId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1062,7 +1062,7 @@ async function bellOwnerToRelease(enrollmentId: string, versionId: string, versi
 
 /** Oct 14 2026: "Rebuild" on the Strategy tab's Creative identity card: one AI call from the approved strategy, auto-approved. */
 export async function rebuildCreativeIdentityAction(enrollmentId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { deriveCreativeIdentity } = await import("@/lib/creativeIdentity");
@@ -1075,7 +1075,7 @@ export async function rebuildCreativeIdentityAction(enrollmentId: string): Promi
 
 /** Create the pillars the APPROVED version names but the client lacks (the four lifted v1s had none). Idempotent. */
 export async function createPillarsFromStrategy(versionId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1114,7 +1114,7 @@ export async function releaseStrategy(versionId: string): Promise<Result> {
 
 /** Draft the strategy NOW from the confirmed brand-discovery transcript — a person's click, so it runs with the sweep switches off. */
 export async function draftStrategyFromDiscovery(enrollmentId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     await assertDutyOwner("STRATEGY", enrollmentId, null, me);
@@ -1129,7 +1129,7 @@ export async function draftStrategyFromDiscovery(enrollmentId: string): Promise<
 
 /** Edit one section of a version by hand (text), or remove it (text null). A new version; no AI; the version edited is kept. */
 export async function editStrategySection(versionId: string, sectionId: string, text: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1146,7 +1146,7 @@ export async function editStrategySection(versionId: string, sectionId: string, 
 
 /** Revise a version with Jordan's notes and the client's suggestions — one AI run, only the sections the feedback touches change. */
 export async function reviseStrategy(versionId: string, notes: string, proposalIds: string[]): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1176,7 +1176,7 @@ export async function waiveDiscoveryAction(enrollmentId: string, reason: string)
 }
 
 export async function rejectStrategy(versionId: string, note: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentStrategyVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true, status: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1197,7 +1197,7 @@ export async function rejectStrategy(versionId: string, note: string): Promise<R
  * refused here — it is applied from the Facts tab.
  */
 export async function resolveStrategyProposal(proposalId: string, accept: boolean, note: string, text?: string | null, sectionId?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const p = await prisma.contentStrategyProposal.findUnique({ where: { id: proposalId }, select: { enrollmentId: true } });
     if (!p) return { ok: false, message: "Proposal not found." };
@@ -1224,7 +1224,7 @@ export async function resolveStrategyProposal(proposalId: string, accept: boolea
 }
 
 export async function saveMonthPriorities(monthId: string, text: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const m = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true } });
     if (!m) return { ok: false, message: "Month not found." };
@@ -1238,7 +1238,7 @@ export async function saveMonthPriorities(monthId: string, text: string): Promis
 
 // ---- pillars ------------------------------------------------------------------------
 export async function addPillar(enrollmentId: string, name: string, purpose: string, focusAreas: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
     if (!e) return { ok: false, message: "Enrollment not found." };
@@ -1251,7 +1251,7 @@ export async function addPillar(enrollmentId: string, name: string, purpose: str
 }
 
 export async function renamePillarAction(enrollmentId: string, pillarId: string, name: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { renamePillar } = await import("@/lib/contentPillars");
@@ -1269,7 +1269,7 @@ export async function renamePillarAction(enrollmentId: string, pillarId: string,
  * client's topic bank; nothing already in the bank is touched.
  */
 export async function setPillarEmphasisAction(enrollmentId: string, pillarId: string, emphasis: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     await assertDutyOwner("STRATEGY", enrollmentId, null, me);
@@ -1283,7 +1283,7 @@ export async function setPillarEmphasisAction(enrollmentId: string, pillarId: st
 }
 
 export async function confirmPillarMappingAction(enrollmentId: string, label: string, pillarId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { confirmPillarMapping } = await import("@/lib/contentPillars");
@@ -1294,7 +1294,7 @@ export async function confirmPillarMappingAction(enrollmentId: string, label: st
 }
 
 export async function dismissPillarLabelAction(enrollmentId: string, label: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { dismissPillarLabel } = await import("@/lib/contentPillars");
@@ -1306,7 +1306,7 @@ export async function dismissPillarLabelAction(enrollmentId: string, label: stri
 
 // ---- video topics ----------------------------------------------------------------------
 export async function editTopic(topicId: string, patch: { title?: string; concept?: string | null; pillarId?: string | null; audienceNeed?: string | null; businessGoal?: string | null; intendedMessage?: string | null }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { updateTopicFields } = await import("@/lib/contentTopics");
@@ -1317,7 +1317,7 @@ export async function editTopic(topicId: string, patch: { title?: string; concep
 }
 
 export async function reconcileTopicSelection(topicId: string, monthId: string, keep: boolean): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { reconcileSelection } = await import("@/lib/contentTopics");
@@ -1328,7 +1328,7 @@ export async function reconcileTopicSelection(topicId: string, monthId: string, 
 }
 
 export async function topicDecision(topicId: string, decision: "APPROVE" | "REJECT" | "ARCHIVE" | "REINTRODUCE", reason: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const lib = await import("@/lib/contentTopics");
@@ -1342,7 +1342,7 @@ export async function topicDecision(topicId: string, decision: "APPROVE" | "REJE
 }
 
 export async function discussTopicAction(topicId: string, note: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!note.trim()) return { ok: false, message: "Write the note first." };
   try {
     const me = await actor();
@@ -1354,7 +1354,7 @@ export async function discussTopicAction(topicId: string, note: string): Promise
 }
 
 export async function runTopicRefresh(enrollmentId: string, kind: "REFRESH" | "RECOMMENDATION", monthId?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { startTopicRefresh } = await import("@/lib/contentTopics");
@@ -1377,7 +1377,7 @@ export async function runTopicRefresh(enrollmentId: string, kind: "REFRESH" | "R
 }
 
 export async function suggestionAction(suggestionId: string, action: "ACCEPT" | "ARCHIVE" | "REGENERATE", opts: { monthId?: string | null; edits?: { title?: string; description?: string | null; audienceNeed?: string | null; businessGoal?: string | null; intendedMessage?: string | null } } = {}): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const lib = await import("@/lib/contentTopics");
@@ -1396,7 +1396,7 @@ export async function suggestionAction(suggestionId: string, action: "ACCEPT" | 
  * goes through the same single-suggestion function as its own button.
  */
 export async function suggestionBulkAction(ids: string[], action: "ACCEPT" | "HOLD" | "REGENERATE", opts: { monthId?: string | null; note?: string | null } = {}): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const lib = await import("@/lib/contentTopics");
@@ -1423,7 +1423,7 @@ export async function suggestionBulkAction(ids: string[], action: "ACCEPT" | "HO
 }
 
 export async function releaseSuggestionHoldAction(id: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { releaseSuggestionHold } = await import("@/lib/contentTopics");
@@ -1435,7 +1435,7 @@ export async function releaseSuggestionHoldAction(id: string): Promise<Result> {
 
 /** The one line a client reads beside a recommended topic (6.3). */
 export async function setSuggestionReasonAction(id: string, text: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { setSuggestionClientReason } = await import("@/lib/contentTopics");
     await setSuggestionClientReason(id, text);
@@ -1458,7 +1458,7 @@ export async function setTopicsPerPillarAction(n: number): Promise<Result> {
 
 /** Staff put a topic the client said "not interested" to back in their bank (on the record). */
 export async function undeclineTopicAction(topicId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { undeclineTopicForClient } = await import("@/lib/contentTopics");
@@ -1493,7 +1493,7 @@ export async function carryNowAction(enrollmentId: string, dryRun: boolean): Pro
  * their own message — this sends nothing, so it works with every switch off.
  */
 export async function answerFollowUpLinkAction(interviewId: string): Promise<Result & { url?: string; body?: string }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const [{ answerGapFollowUp }, { resolvePortalLink }] = await Promise.all([import("@/lib/programDeskTasks"), import("@/lib/programReminders")]);
@@ -1528,7 +1528,7 @@ export async function answerFollowUpLinkAction(interviewId: string): Promise<Res
  * puts the topic back on the call; otherwise it takes the questions back.
  */
 export async function setTopicAnswerRouteAction(topicId: string, monthId: string, route: "CALL" | "WRITTEN"): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const lib = await import("@/lib/contentInterview");
@@ -1551,7 +1551,7 @@ export async function setTopicAnswerRouteAction(topicId: string, monthId: string
 }
 
 export async function answerInterview(interviewId: string, questionKey: string, text: string, kind: "TYPED" | "SKIPPED" | "DONT_KNOW", questionText?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { answerQuestion } = await import("@/lib/contentInterview");
@@ -1566,7 +1566,7 @@ export async function answerInterview(interviewId: string, questionKey: string, 
  * sweep does before a client opens them, on demand.
  */
 export async function planInterviewQuestionsAction(interviewId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { planInterviewQuestions } = await import("@/lib/contentGeneration");
@@ -1577,7 +1577,7 @@ export async function planInterviewQuestionsAction(interviewId: string): Promise
 }
 
 export async function draftScriptFromInterview(interviewId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { submitInterview } = await import("@/lib/contentInterview");
@@ -1619,7 +1619,7 @@ export async function draftScriptFromInterview(interviewId: string): Promise<Res
  * alone" — never the default, and never what the unattended sweep does.
  */
 export async function draftOwedScriptsAction(monthId: string, includeThin = false): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { draftOwedScriptsForMonth } = await import("@/lib/contentDrafting");
@@ -1634,7 +1634,7 @@ export async function draftOwedScriptsAction(monthId: string, includeThin = fals
 }
 
 export async function generateScriptForTopicAction(topicId: string, monthId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { generateScriptForTopic } = await import("@/lib/contentGeneration");
@@ -1697,7 +1697,7 @@ async function queueTopicDraft(topicId: string, monthId: string, by: string): Pr
 
 /** "Draft script" on one topic of the month: queued, answered at once. */
 export async function queueScriptDraftAction(topicId: string, monthId: string): Promise<QueueResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const r = await queueTopicDraft(topicId, monthId, me.email);
@@ -1713,7 +1713,7 @@ export async function queueScriptDraftAction(topicId: string, monthId: string): 
  * topic line through the topic path — never one with a script already.
  */
 export async function queueOwedScriptsAction(monthId: string, includeThin = false): Promise<QueueResult & { queued?: number; already?: number }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const month = await prisma.contentMonth.findUnique({ where: { id: String(monthId ?? "") }, select: { id: true, enrollmentId: true, clientId: true, historical: true } });
@@ -1753,7 +1753,7 @@ export async function queueOwedScriptsAction(monthId: string, includeThin = fals
 
 /** "Ask AI to revise" (instructions) or "Tighten" (instruction built from the current version's estimate): queued; the current version is kept. */
 export async function queueScriptRevisionAction(scriptId: string, mode: "revise" | "tighten", instructions = "", lockSections: string[] = []): Promise<QueueResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const s = await prisma.contentScript.findUnique({ where: { id: String(scriptId ?? "") }, select: { id: true, title: true, historical: true, enrollmentId: true, clientId: true } });
@@ -1785,7 +1785,7 @@ export async function queueScriptRevisionAction(scriptId: string, mode: "revise"
 
 /** "Draft from the discovery call": every check the draft makes, at once; the AI in the background. STRATEGY duty owner only, as before. */
 export async function queueStrategyDraftAction(enrollmentId: string): Promise<QueueResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     await assertDutyOwner("STRATEGY", enrollmentId, null, me);
@@ -1803,7 +1803,7 @@ export async function queueStrategyDraftAction(enrollmentId: string): Promise<Qu
 
 /** "Try again" on a queued job that failed: the same request, checked again and queued again. */
 export async function retryAiJobAction(runId: string): Promise<QueueResult> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { queuedJobOf, enqueueAiJob } = await import("@/lib/aiQueue");
@@ -1834,7 +1834,7 @@ export async function retryAiJobAction(runId: string): Promise<QueueResult> {
  * deploy) is picked up the next time someone has the page open.
  */
 export async function aiQueueStatusAction(enrollmentId: string): Promise<Result & { active?: string[] }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { activeQueueRuns, queueWantsWorker, recoverStaleQueuedRuns } = await import("@/lib/aiQueue");
     await recoverStaleQueuedRuns();
@@ -1845,7 +1845,7 @@ export async function aiQueueStatusAction(enrollmentId: string): Promise<Result 
 }
 
 export async function approveScriptVersionAction(versionId: string, note?: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true, scriptId: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1881,7 +1881,7 @@ export async function approveScriptVersionAction(versionId: string, note?: strin
  * nothing here authorises a client email.
  */
 export async function releaseScriptAction(scriptId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, monthId: true, approvedVersionId: true } });
     if (!s) return { ok: false, message: "Script not found." };
@@ -1903,7 +1903,7 @@ export async function releaseScriptAction(scriptId: string): Promise<Result> {
  * shares a script on its own (script_auto_share stays locked).
  */
 export async function approveAndSendScriptAction(versionId: string, note?: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { enrollmentId: true, scriptId: true } });
     if (!v) return { ok: false, message: "Version not found." };
@@ -1925,7 +1925,7 @@ export async function approveAndSendScriptAction(versionId: string, note?: strin
  * person's to approve is left in the queue and named.
  */
 export async function approveAndSendScriptsAction(versionIds: string[]): Promise<Result & { done?: number; failed?: number }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const ids = [...new Set((Array.isArray(versionIds) ? versionIds : []).filter((x): x is string => typeof x === "string" && /^[a-z0-9]{10,40}$/i.test(x)))].slice(0, 50);
   if (!ids.length) return { ok: false, message: "Tick the scripts to approve and send first." };
   try {
@@ -1958,7 +1958,7 @@ export async function approveAndSendScriptsAction(versionIds: string[]): Promise
  * re-read so its stage follows.
  */
 export async function returnScriptAction(scriptId: string, note: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, monthId: true, sharedVersionId: true, releaseState: true } });
     if (!s) return { ok: false, message: "Script not found." };
@@ -1980,7 +1980,7 @@ export async function returnScriptAction(scriptId: string, note: string): Promis
 
 // ---- client facts ---------------------------------------------------------------------------
 export async function factDecision(factId: string, decision: "ACCEPT" | "REJECT" | "UNDO", opts: { scope?: FactScope; monthId?: string | null; projectId?: string | null; category?: FactCategory } = {}): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const lib = await import("@/lib/clientFacts");
@@ -2011,7 +2011,7 @@ export async function factDecision(factId: string, decision: "ACCEPT" | "REJECT"
  * proposal already handled; applying also remembers the fact.
  */
 export async function applyFieldProposalAction(proposalId: string, value?: string | null, note?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { applyFieldProposal } = await import("@/lib/profileFields");
@@ -2023,7 +2023,7 @@ export async function applyFieldProposalAction(proposalId: string, value?: strin
 
 /** CP-11: IGNORE a proposed profile change — the profile is untouched. */
 export async function ignoreFieldProposalAction(proposalId: string, note?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { ignoreFieldProposal } = await import("@/lib/profileFields");
@@ -2040,7 +2040,7 @@ export async function ignoreFieldProposalAction(proposalId: string, note?: strin
  * the portal's prefilled answers are rebuilt without it.
  */
 export async function factConfidential(factId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { markFactConfidential } = await import("@/lib/clientFacts");
@@ -2052,7 +2052,7 @@ export async function factConfidential(factId: string): Promise<Result> {
 }
 
 export async function setFactScopeAction(factId: string, scope: FactScope, monthId?: string | null, projectId?: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { setFactScope } = await import("@/lib/clientFacts");
     await setFactScope(factId, scope, { monthId, projectId });
@@ -2062,7 +2062,7 @@ export async function setFactScopeAction(factId: string, scope: FactScope, month
 }
 
 export async function addFact(clientId: string, body: string, category: FactCategory, confidential: boolean): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!body.trim()) return { ok: false, message: "Write the fact first." };
   try {
     const me = await actor();
@@ -2079,7 +2079,7 @@ export async function addFact(clientId: string, body: string, category: FactCate
 
 // ---- imports ------------------------------------------------------------------------------------
 export async function previewImportUpload(enrollmentId: string, kind: ImportKind, form: FormData): Promise<{ ok: true; preview: ImportPreview; message: string } | { ok: false; message: string }> {
-  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "No access." }; }
+  try { await requireCreativeLead(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "No access." }; }
   const ex = await extractUploadText(form);
   if (!ex.ok) return ex;
   try {
@@ -2091,7 +2091,7 @@ export async function previewImportUpload(enrollmentId: string, kind: ImportKind
 }
 
 export async function applyImportAction(preview: ImportPreview, decisions: { monthKey: string | null; modes: Record<number, ItemMode>; pillarMap?: Record<string, string | null> }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const me = await actor();
     const { applyImport } = await import("@/lib/contentImport");
@@ -2167,7 +2167,7 @@ async function bulkActor() {
 }
 
 export async function createBulkPlanAction(input: { enrollmentId: string; totalVideos: number; perSession: number; sessionsPlanned?: number | null; cadenceDays?: number | null; startsOn?: string | null; monthKey?: string | null; title?: string | null; editingNote?: string | null }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { createBulkPlan } = await import("@/lib/bulkPlan");
     const startsOn = input.startsOn && /^\d{4}-\d{2}-\d{2}$/.test(input.startsOn) ? new Date(`${input.startsOn}T12:00:00-05:00`) : null;
@@ -2178,7 +2178,7 @@ export async function createBulkPlanAction(input: { enrollmentId: string; totalV
 }
 
 export async function updateBulkPlanAction(planId: string, patch: { perSession?: number; sessionsPlanned?: number; cadenceDays?: number; startsOn?: string | null; editingNote?: string | null; title?: string | null; totalVideos?: number; status?: "ACTIVE" | "COMPLETE" | "CANCELLED" }): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { updateBulkPlan } = await import("@/lib/bulkPlan");
     const { startsOn, ...rest } = patch;
@@ -2190,7 +2190,7 @@ export async function updateBulkPlanAction(planId: string, patch: { perSession?:
 
 /** Read a script bank (uploaded file or pasted text) without saving anything. */
 export async function previewBulkScriptsAction(form: FormData): Promise<Result & { count?: number; titles?: string[]; problems?: string[]; note?: string | null }> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const text = await bankText(form);
     if (!text.ok) return { ok: false, message: text.message };
@@ -2208,7 +2208,7 @@ async function bankText(form: FormData): Promise<{ ok: true; text: string; name:
 
 /** Add the bank's scripts to the plan, in order; `release` puts them on the client's portal (no email). */
 export async function importBulkScriptsAction(planId: string, form: FormData): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const text = await bankText(form);
     if (!text.ok) return { ok: false, message: text.message };
@@ -2239,7 +2239,7 @@ export async function importBulkScriptsAction(planId: string, form: FormData): P
 }
 
 export async function releaseBulkScriptsAction(planId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { releaseBulkScripts } = await import("@/lib/bulkPlan");
     const r = await releaseBulkScripts(planId, null, await bulkActor(), null);
@@ -2249,7 +2249,7 @@ export async function releaseBulkScriptsAction(planId: string): Promise<Result> 
 }
 
 export async function undoBulkImportAction(batchId: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { undoBulkImport } = await import("@/lib/bulkPlan");
     const r = await undoBulkImport(batchId, await bulkActor());
@@ -2259,7 +2259,7 @@ export async function undoBulkImportAction(batchId: string): Promise<Result> {
 }
 
 export async function moveBulkScriptAction(planId: string, topicId: string, sessionNo: number): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { moveToSession } = await import("@/lib/bulkPlan");
     await moveToSession(planId, topicId, Math.trunc(Number(sessionNo)), await bulkActor());
@@ -2269,7 +2269,7 @@ export async function moveBulkScriptAction(planId: string, topicId: string, sess
 }
 
 export async function nudgeBulkScriptAction(planId: string, topicId: string, dir: "up" | "down"): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { nudgeOrder } = await import("@/lib/bulkPlan");
     await nudgeOrder(planId, topicId, dir === "up" ? "up" : "down");
@@ -2279,7 +2279,7 @@ export async function nudgeBulkScriptAction(planId: string, topicId: string, dir
 }
 
 export async function rebalanceBulkAction(planId: string, perSession?: number | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { rebalanceRemaining } = await import("@/lib/bulkPlan");
     const r = await rebalanceRemaining(planId, await bulkActor(), { perSession: perSession ?? null });
@@ -2299,7 +2299,7 @@ export async function setBulkShootSessionAction(projectId: string, sessionNo: nu
 }
 
 export async function setClientScriptFormatAction(enrollmentId: string, label: string | null): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try {
     const { setClientScriptFormat } = await import("@/lib/bulkPlan");
     await setClientScriptFormat(enrollmentId, label, (await bulkActor()).email);

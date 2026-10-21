@@ -51,10 +51,10 @@ export async function OverviewTab({ ctx }: { ctx: TabCtx }) {
   // Oct 7 2026: "Approve a catch-up session" — owner/admin only, an exception
   // (Oct 8: a missed month is forfeited); shown when this month carries a
   // catch-up, or an earlier month could be caught up here.
-  const catchUp = ctx.staffEyes ? await import("@/lib/monthCatchUp").then((m) => m.catchUpPanel(month.id)).catch(() => null) : null;
+  const catchUp = ctx.officeEyes ? await import("@/lib/monthCatchUp").then((m) => m.catchUpPanel(month.id)).catch(() => null) : null;
   // Oct 12 2026: "Bring September's session into October" — owner/admin only,
   // an exception: a planned month's session booked late, nothing moved.
-  const late = ctx.staffEyes ? await import("@/lib/monthLateSession").then((m) => m.lateSessionPanel(month.id)).catch(() => null) : null;
+  const late = ctx.officeEyes ? await import("@/lib/monthLateSession").then((m) => m.lateSessionPanel(month.id)).catch(() => null) : null;
   const mk = month.monthKey;
   // Oct 8 2026: the client's creative brief for this month — shown for a
   // client who plans their own content, or whenever one is on file.

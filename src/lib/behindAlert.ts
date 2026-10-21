@@ -315,7 +315,7 @@ async function ringBells(kind: BehindKind, state: BehindState, dedupeKey: string
         href: "/review",
         // Jordan and the office (Kyle, James: ADMIN logins) and the editors. An
         // editor's row loses its body (notify's money clamp); the title says it.
-        targets: [{ roles: ["OWNER", "ADMIN"] }, { roles: ["EDITOR"] }],
+        targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }, { roles: ["EDITOR"] }],
         dedupeKey,
       });
       return;

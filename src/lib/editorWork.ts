@@ -709,7 +709,7 @@ export async function startEditing(input: StartInput): Promise<WorkResult> {
         kind: "edit_started",
         title: onBehalf ? `${caller.actor.name} started ${outcome.street} for ${who}` : `${who} started editing ${outcome.street}`,
         href: `/edit/${projectId}`,
-        targets: [{ roles: ["OWNER", "ADMIN"] }],
+        targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       });
     } catch { /* bell is best-effort */ }
   }

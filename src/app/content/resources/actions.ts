@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, requireOwner } from "@/lib/auth/guards";
+import { requireCreativeLead, requireOwner } from "@/lib/auth/guards";
 import { createResource, updateResource, setResourcePublished, markResourceReviewed, ResourceWriteRefusedError, type ResourceInput } from "@/lib/portalResourcesAdmin";
 import { markReviewItemHandled, unmarkReviewItem } from "@/lib/programMonitoring";
 
@@ -22,7 +22,7 @@ async function who(): Promise<string> {
 }
 
 export async function createResourceAction(input: ResourceInput): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return resourceFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return resourceFailure(e, true); }
   try {
     await createResource(input, await who());
     revalidatePath("/content/resources");
@@ -31,7 +31,7 @@ export async function createResourceAction(input: ResourceInput): Promise<Result
 }
 
 export async function updateResourceAction(id: string, input: ResourceInput): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return resourceFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return resourceFailure(e, true); }
   try { await updateResource(id, input); revalidatePath("/content/resources"); return { ok: true, outcome: "confirmed", message: "Saved." }; }
   catch (e) { return resourceFailure(e); }
 }
@@ -46,7 +46,7 @@ export async function publishResourceAction(id: string, published: boolean): Pro
 }
 
 export async function reviewResourceAction(id: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return resourceFailure(e, true); }
+  try { await requireCreativeLead(); } catch (e) { return resourceFailure(e, true); }
   try { await markResourceReviewed(id, await who()); revalidatePath("/content/resources"); return { ok: true, outcome: "confirmed", message: "Marked as reviewed today." }; }
   catch (e) { return resourceFailure(e); }
 }
@@ -59,7 +59,7 @@ export async function reviewResourceAction(id: string): Promise<Result> {
  * record itself is done on the client's own Import tab, by hand, on purpose.
  */
 export async function markReviewItemAction(key: string, action: string, note: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   if (!note.trim()) return { ok: false, message: "Write what you concluded — an unexplained tick is not a decision anyone can act on later." };
   try {
     await markReviewItemHandled(key, { by: await who(), at: new Date().toISOString(), note: note.trim().slice(0, 500), action });
@@ -70,7 +70,7 @@ export async function markReviewItemAction(key: string, action: string, note: st
 }
 
 export async function unmarkReviewItemAction(key: string): Promise<Result> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try { await requireCreativeLead(); } catch (e) { return fail(e); }
   try { await unmarkReviewItem(key, await who()); revalidatePath("/content/monitoring"); return { ok: true, message: "Back on the list." }; }
   catch (e) { return fail(e); }
 }

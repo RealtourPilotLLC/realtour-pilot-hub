@@ -708,7 +708,7 @@ export async function rushAuthority(
     : await prisma.appUser.findFirst({ where: { role: "OWNER", status: "ACTIVE" }, select: { name: true } }).catch(() => null);
   const escalateTo = chain?.fallback?.name ?? owner?.name ?? "Jordan";
   if (!chain?.configured) {
-    const may = !me ? !opts.authEnforced : !me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN");
+    const may = !me ? !opts.authEnforced : !me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN" || me.realRole === "CREATIVE_MANAGER");
     return {
       may,
       as: may ? (me?.realRole === "OWNER" ? "OWNER" : "OFFICE") : null,

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
 import { addressableKeys, authEnforced } from "@/lib/auth/guards";
-import { canAccess } from "@/lib/auth/access";
+import { canAccess, isOffice } from "@/lib/auth/access";
 import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
 import { BoardView, boardNavigationCounts } from "@/components/tasks/BoardView";
 import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
@@ -27,7 +27,9 @@ export default async function TasksHubPage({ searchParams }: {
   // Editors only ever get their own scoped board (exactly the old /queue view) —
   // the Today stack and Done ledger cover the whole team's work, which was never
   // theirs to see. No tab bar for them: the board IS their tasks page.
-  const boardOnly = me?.role === "EDITOR";
+  // The creative manager the same (Oct 21 2026): their own tasks, never Kyle's
+  // office list (BoardView scopes them through taskScopeOf).
+  const boardOnly = me?.role === "EDITOR" || me?.role === "CREATIVE_MANAGER";
   const route = resolveTasksRoute(sp);
   let tab: TasksTab = boardOnly ? "work" : route.tab;
   const boardParams = { ...sp, who: route.who };
@@ -43,7 +45,7 @@ export default async function TasksHubPage({ searchParams }: {
     // before any per-row check, which told a caller whether an id exists and
     // where it came from. The office sees the whole board, so it stays
     // unscoped for them; anyone else must own the row by one of their keys.
-    const office = !me || me.role === "OWNER" || me.role === "ADMIN";
+    const office = !me || isOffice(me.role);
     const t = await prisma.smartTask
       .findFirst({
         where: office ? { id: sp.task } : { id: sp.task, assignedKey: { in: [...(await addressableKeys(me))] } },

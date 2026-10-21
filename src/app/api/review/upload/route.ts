@@ -101,7 +101,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         const { authEnforced } = await import("@/lib/auth/guards");
         const me = await getCurrentUser().catch(() => null);
         const devOpen = !me && !authEnforced(); // local dev without a session acts as the owner
-        if (!devOpen && (!me || me.impersonating || !["OWNER", "ADMIN", "EDITOR"].includes(me.role))) {
+        // The same list as review/actions uploadAuthor (the creative manager since Oct 21 2026).
+        if (!devOpen && (!me || me.impersonating || !["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR"].includes(me.role))) {
           throw new Error("Sign in as the editor, an admin or the owner to upload a cut.");
         }
         let submissionId = "";

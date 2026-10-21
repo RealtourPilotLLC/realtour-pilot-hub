@@ -302,8 +302,10 @@ async function main() {
   c.head("§A1 · the card on /edit/<id>: a live owner/admin sees it; an editor and a preview do not");
   {
     const src = fs.readFileSync(path.join(REPO, "src/app/edit/[id]/page.tsx"), "utf8");
-    c.ok("mounted under the strict desk gate (a LIVE owner/admin, never a preview), like the raise-gap form",
-      /const assetDesk = strictOwnerAdmin && !viewer\?\.impersonating;/.test(src) && /\{assetDesk && \(\s*<AssetDependencyCard/.test(src));
+    // Oct 21 2026: the creative manager runs this desk too (recordAssetDependencyAction
+    // accepts CREATIVE_MANAGER); still never a preview.
+    c.ok("mounted under the strict desk gate (a LIVE owner/admin or the creative manager, never a preview), like the raise-gap form",
+      /const assetDesk = \(strictOwnerAdmin \|\| viewer\?\.role === "CREATIVE_MANAGER"\) && !viewer\?\.impersonating;/.test(src) && /\{assetDesk && \(\s*<AssetDependencyCard/.test(src));
     const jo = await cardOf(jordan);
     const ky = await cardOf(kyle);
     c.ok("Jordan (OWNER) and Kyle (ADMIN): one card each", jo.n === 1 && ky.n === 1, `${jo.n}/${ky.n} ${jo.err}${ky.err}`);

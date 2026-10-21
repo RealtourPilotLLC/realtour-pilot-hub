@@ -181,7 +181,7 @@ export async function announceCutInReview(input: {
       targets: [
         ...(assigned ?? [
           {
-            roles: ["OWNER", "ADMIN"],
+            roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"],
             ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}`,
             // …and the owner's own upload takes his name off the fan-out inside
             // the bridge, one person at a time, instead of taking the sentence

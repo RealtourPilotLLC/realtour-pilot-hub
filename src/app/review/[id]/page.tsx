@@ -168,7 +168,7 @@ export default async function CutReviewPage({
           projectId: w.projectId,
           viewer: {
             teamMemberId: me && !me.impersonating ? me.teamMemberId : null,
-            office: !me || (!me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN")),
+            office: !me || (!me.impersonating && (me.realRole === "OWNER" || me.realRole === "ADMIN" || me.realRole === "CREATIVE_MANAGER")),
           },
           includeTest: isSyntheticClientRow({ name: w.clientName }),
         }).catch(() => null)

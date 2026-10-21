@@ -39,7 +39,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { canAccess, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
+import { canAccess, isCreativeLead, isOffice, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { groupSidebarDestinations, officeMenuDestinations, usesOfficeMenu } from "@/lib/sidebarNavigation";
@@ -259,8 +259,16 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
         (i) => i.href !== "/resources/video-styles" && i.href !== "/quality" && i.href !== "/coaching",
       );
     }
-    // Client activity is the owner's and admin's view (the page redirects anyone else).
-    if (user && user.role !== "OWNER" && user.role !== "ADMIN") items = items.filter((i) => i.href !== "/content/activity");
+    // The creative manager (Oct 21 2026) keeps Client & Team Feedback (their
+    // photographer and editor tabs) but not Communication coaching: that page
+    // is about how the office answers clients on the company line.
+    // Photo delivery (/ops/*) is Kyle's desk, and its pages admit the owner
+    // and the office only, so even an `ops` override would be a door that
+    // bounces: it stays off their menu.
+    if (user && user.role === "CREATIVE_MANAGER") items = items.filter((i) => i.href !== "/coaching" && !i.href.startsWith("/ops/"));
+    // Client activity is the owner's, the admin's and the creative manager's
+    // view of the content program (the page redirects anyone else).
+    if (user && !isCreativeLead(user.role)) items = items.filter((i) => i.href !== "/content/activity");
     // So is Your list (Oct 21 2026): the checklist page sends anyone else home.
     if (user && user.role !== "OWNER" && user.role !== "ADMIN") items = items.filter((i) => i.href !== "/ops/checklist");
     // The owner's door opens Kyle's list (the page's default for the owner), so it isn't "Your list" there.
@@ -270,8 +278,12 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // admin powers for the creative-manager role, his own pay visible, the
     // company financials blocked). The blanket role filter here was eating
     // the override (Aug 24).
+    // Oct 21 2026: the creative manager holds it by role default (My
+    // Performance), so the filter only strips it from the owner and the
+    // office; canAccess has already answered for everyone else, overrides
+    // included in both directions.
     const mypayGranted = "mypay" in perms && perms.mypay;
-    if (user && user.role !== "PHOTOGRAPHER" && !mypayGranted) items = items.filter((i) => i.key !== "mypay");
+    if (user && isOffice(user.role) && !mypayGranted) items = items.filter((i) => i.key !== "mypay");
     // Oct 14 2026: with pay hidden, the same page is their performance and bonus tracker.
     if (user?.payHidden) items = items.map((i) => (i.key === "mypay" ? { ...i, label: "My Performance" } : i));
     if (showScripting && s.title === "Creative") {
@@ -286,7 +298,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   // under More (Jordan, Oct 19 2026, night); editors and photographers keep
   // the groups.
   const destinations = authorized.flatMap((section) => section.items);
-  const sections = usesOfficeMenu(user?.role) ? officeMenuDestinations(destinations, pathname) : groupSidebarDestinations(destinations, pathname);
+  const sections = usesOfficeMenu(user?.role) ? officeMenuDestinations(destinations, pathname, user?.role) : groupSidebarDestinations(destinations, pathname);
   const renderItem = (item: NavItem) => {
     const active = sections.some((section) => section.activeHref === item.href);
     const Icon = item.icon;

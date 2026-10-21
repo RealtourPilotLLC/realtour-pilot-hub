@@ -61,7 +61,7 @@ export default async function ShootNotePage({ params }: { params: Promise<{ note
       (viewerMemberId === root.photographerId ||
         (await isMentionedIn([root.body, ...root.replies.map((r) => r.body)], viewerMemberId)));
     if (!admitted) redirect("/shoot");
-  } else if (user && user.role !== "OWNER" && user.role !== "ADMIN") {
+  } else if (user && user.role !== "OWNER" && user.role !== "ADMIN" && user.role !== "CREATIVE_MANAGER") {
     redirect("/shoot");
   }
 

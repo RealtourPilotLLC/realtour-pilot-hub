@@ -1,6 +1,6 @@
 "use server";
 
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireCreativeLead } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -20,7 +20,7 @@ function et(d: Date | null): string {
 
 // Airspace check for a project + a ready-to-send advisory draft for the creative.
 export async function projectAirspace(projectId: string): Promise<AirspaceResult> {
-  await requireAdmin();
+  await requireCreativeLead();
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -54,7 +54,7 @@ export async function sendDroneAdvisory(
   projectId: string,
   body: string,
 ): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCreativeLead();
   const text = body.trim();
   if (!text) return { ok: false, message: "Nothing to send." };
   const p = await prisma.project.findUnique({

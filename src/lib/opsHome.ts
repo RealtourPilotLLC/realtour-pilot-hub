@@ -868,6 +868,12 @@ type DashboardOpts = {
   roster?: Assignee[];
   /** take figures out of what people typed (everyone but the owner) */
   scrub?: boolean;
+  /** "creative" (Oct 21 2026): the creative manager's dashboard. No client
+   *  inbox read (Clients waiting is Kyle's), and Needs attention keeps the
+   *  creative lines only: late videos, cuts to review, the reader's own old
+   *  items. Sending, client replies and giving requests an owner stay on the
+   *  office's dashboard. */
+  focus?: "office" | "creative";
 };
 
 /**
@@ -887,9 +893,10 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   // instead of building it twice.
   const boardP: Promise<VideoDeliveryBoard | null> = videoDeliveryBoard(current ? {} : { now }).catch(warn("video board"));
   const isOwner = opts.viewer.role === "OWNER";
+  const creative = opts.focus === "creative";
   const [jobs, messages, special, review, video, board, queue, old, todos] = await Promise.all([
     jobsBoard(now, { includeTest: !!opts.includeTest }).catch(warn("shoots board")),
-    messagesBoard({ now, excludeClientIds: ex, team: true }).catch(warn("messages")),
+    creative ? Promise.resolve(null) : messagesBoard({ now, excludeClientIds: ex, team: true }).catch(warn("messages")),
     specialRequestsBoard(now, { countsOnly: true }).catch(warn("special requests")),
     getReviewQueue({ includeTest: !!opts.includeTest }).catch(warn("review queue")) as Promise<ReviewQueue | null>,
     boardP.then(() => videoSummary(now)).catch(warn("video summary")),
@@ -969,7 +976,7 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   const sendRows = (board?.lanes.sending ?? [])
     .filter((r) => r.late || (r.send?.openAsks.length ?? 0) > 0)
     .sort((a, b) => Number(b.late) - Number(a.late) || (b.lateHours ?? 0) - (a.lateHours ?? 0) || (b.send?.openAsks.length ?? 0) - (a.send?.openAsks.length ?? 0));
-  if (sendRows.length) {
+  if (!creative && sendRows.length) {
     const r = sendRows[0];
     const n = r.send?.openAsks.length ?? 0;
     const more = sendRows.length - 1;
@@ -1029,6 +1036,22 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
     });
   }
 
+  // 3b. The creative manager's desk (Oct 21 2026): every cut waiting on a
+  //     verdict, not only the ones assigned to them, oldest first.
+  const othersWaiting = creative && review ? review.pending.filter((c) => !mine.some((m) => m.id === c.id)) : [];
+  if (othersWaiting.length) {
+    const oldest = [...othersWaiting].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    const waitedH = Math.max(0, Math.round((now.getTime() - Date.parse(oldest.createdAt)) / HOUR));
+    add(2, {
+      key: "review-waiting",
+      tone: waitedH >= 24 ? "bad" : "warn",
+      lead: `${othersWaiting.length} ${plural0(othersWaiting.length, "cut")}`,
+      text: mine.length ? "more waiting on review" : "waiting on review",
+      owner: `The Video Review Room · oldest ${waitedWords(waitedH)}`,
+      action: othersWaiting.length === 1 ? { label: "Review", href: `/review/${oldest.projectId}?cut=${oldest.id}` } : { label: "Open Videos", href: "/review" },
+    });
+  }
+
   // 4. Clients waiting on a reply.
   if (health.clients && health.clients.waiting > 0) {
     const c = health.clients;
@@ -1043,7 +1066,7 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   }
 
   // 5. Client requests nobody owns yet.
-  if (needOwnerRows.length) {
+  if (!creative && needOwnerRows.length) {
     const total = needOwnerRows.reduce((n, r) => n + r.requests.needsOwner, 0);
     const one = needOwnerRows.length === 1 ? [...needOwnerRows].sort(jobOrder)[0] : null;
     add(4, {
@@ -1057,7 +1080,7 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   }
 
   // 5b. Client requests on no job yet: Kyle's list puts each on its job.
-  if (notOnJob) {
+  if (!creative && notOnJob) {
     add(4, {
       key: "requests-no-job",
       tone: "warn",
@@ -1081,7 +1104,8 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
       owner: "You · your list",
       // The owner's own list on the checklist (Oct 21 2026, audit A9: one
       // home for earlier items, not /tasks); everyone else's is the default.
-      action: { label: "Open", href: isOwner ? `${CHECKLIST_PATH}?who=me#earlier` : `${CHECKLIST_PATH}#earlier` },
+      // The creative manager has no checklist (Kyle's page): their own tasks.
+      action: { label: "Open", href: creative ? "/tasks" : isOwner ? `${CHECKLIST_PATH}?who=me#earlier` : `${CHECKLIST_PATH}#earlier` },
     });
   }
   const opsOld = isOwner && !viewerIsOps ? person(opts.ops.key) : null;
@@ -1111,7 +1135,7 @@ export async function buildDashboard(opts: DashboardOpts): Promise<Dashboard> {
   const items: AttentionItem[] = ranked.slice(0, ATTENTION_MAX).map((i) => ({ key: i.key, tone: i.tone, lead: i.lead, text: i.text, owner: i.owner, action: i.action }));
   const unavailable = [
     !board ? "videos" : null,
-    !messages ? "client messages" : null,
+    !messages && !creative ? "client messages" : null,
     !jobs ? "shoots" : null,
     !review ? "the review queue" : null,
     !old ? "old items" : null,

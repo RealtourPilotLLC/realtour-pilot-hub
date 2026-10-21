@@ -7,7 +7,8 @@ import { prisma } from "@/lib/prisma";
 import { IMAGE_FLAG_TAGS } from "@/lib/imageFlags";
 
 // Flags are worked by admins AND editors (fixes land on Kyle/Kim), so any staff role.
-const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
+// The creative manager too (Oct 21 2026): photo flags and job threads are creative work.
+const requireStaff = () => requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR"]);
 
 export type FlaggedImage = {
   id: string;

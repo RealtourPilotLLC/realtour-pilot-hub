@@ -1,6 +1,6 @@
 "use server";
 
-import { requireAdmin, requireRole } from "@/lib/auth/guards";
+import { requireAdmin, requireCreativeLead, requireRole } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -11,7 +11,7 @@ export type ActionResult = { ok: boolean; message: string; draft?: string };
 
 // (Re)build the client's AI working profile from comms, shoot notes, revisions.
 export async function regenerateClientProfile(clientId: string): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCreativeLead();
   const { buildClientProfile } = await import("@/lib/clientProfile");
   const r = await buildClientProfile(clientId);
   if (r.ok) revalidatePath(`/clients/${clientId}`);
@@ -385,7 +385,7 @@ export async function saveAgentProfile(
   clientPreferences: string,
   brandColors: string,
 ): Promise<ActionResult> {
-  await requireAdmin();
+  await requireCreativeLead();
   await prisma.client.update({
     where: { id: clientId },
     data: {
@@ -401,7 +401,7 @@ export async function saveAgentProfile(
 export async function setupBrandFolder(
   clientId: string,
 ): Promise<ActionResult & { url?: string }> {
-  await requireAdmin();
+  await requireCreativeLead();
   const { ensureClientBrandFolder } = await import("@/lib/clientFolders");
   const r = await ensureClientBrandFolder(clientId);
   if (r.ok) revalidatePath(`/clients/${clientId}`);

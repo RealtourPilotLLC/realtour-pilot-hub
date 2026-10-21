@@ -26,8 +26,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   if (!/^[a-z0-9]{10,40}$/i.test(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // The office only: this hands out a client's finished video. Kyle is ADMIN.
+  // Watching it (?watch=1, no hand-off stamp) is the creative manager's too
+  // (Oct 21 2026): they check the render on the Ready to send row.
+  const watching = req.nextUrl.searchParams.get("watch") === "1";
   try {
-    await requireRole(["OWNER", "ADMIN"]);
+    await requireRole(watching ? ["OWNER", "ADMIN", "CREATIVE_MANAGER"] : ["OWNER", "ADMIN"]);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 403 });
   }

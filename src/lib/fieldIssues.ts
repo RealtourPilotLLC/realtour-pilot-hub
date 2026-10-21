@@ -314,7 +314,7 @@ export async function fileFieldIssue(opts: {
           title: `${opts.label} — ${street}`.slice(0, 90),
           href,
           // Kyle and James run the day; Jordan wants field problems in view too.
-          targets: [{ roles: ["OWNER", "ADMIN"] }],
+          targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
           // Keyed on the flag, not on a row id — the old key was the board row's
           // id, so a re-submitted debrief rang the bell all over again.
           dedupeKey: `fieldflag-${flagKey}`,

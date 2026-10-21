@@ -162,7 +162,7 @@ export async function adoptEditedScript(scriptId: string, baseVersionId: string,
       title: by.kind === "CLIENT" ? `Script edited by ${clientName}` : `Script edited on site: ${clientName}`,
       body: `${who} changed the wording of "${base.title}" (v${base.versionNo} → v${created.versionNo}).${draftNo ? ` A newer office draft (v${draftNo}) was set aside under it.` : ""}`,
       href: by.kind === "CREW" ? `/shoot/${by.projectId}` : `/content/${s.enrollmentId}?tab=plan&view=scripts`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
       dedupeKey: `script-edited-${created.versionId}`,
     });
   } catch { /* the bell is best-effort */ }

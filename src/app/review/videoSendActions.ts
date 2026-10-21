@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, authEnforced } from "@/lib/auth/guards";
+import { requireAdmin, requireCreativeLead, authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { prisma } from "@/lib/prisma";
 
@@ -150,7 +150,9 @@ export async function releaseVideoPushAction(submissionId: string): Promise<Send
 /** Remind editor / Remind reviewer, for one video on the room. */
 export async function remindVideoAction(input: { key: string; projectId: string; submissionId: string | null }): Promise<SendResult & { atISO?: string; to?: string }> {
   try {
-    await requireAdmin();
+    // Chasing an editor or a reviewer is creative coordination: the creative
+    // manager too (Oct 21 2026). Sending a video stays requireAdmin above.
+    await requireCreativeLead();
   } catch (e) {
     return denied(e);
   }
@@ -216,7 +218,9 @@ export async function sendBackForRevisionsAction(submissionId: string, projectId
   const body = (note ?? "").trim().slice(0, 2000);
   if (body.length < 3) return { ok: false, message: "Say what needs changing, so the editor knows what to fix." };
   try {
-    await requireAdmin();
+    // A creative verdict (the reopen behind it asks requireCutReviewer too):
+    // the creative manager may send a video back (Oct 21 2026).
+    await requireCreativeLead();
   } catch (e) {
     return denied(e);
   }

@@ -72,7 +72,7 @@ export async function ClientProfileCard({
   const scope =
     variant ??
     (viewer
-      ? viewer.role === "OWNER" || viewer.role === "ADMIN" ? "full" : "brief"
+      ? viewer.role === "OWNER" || viewer.role === "ADMIN" || viewer.role === "CREATIVE_MANAGER" ? "full" : "brief"
       : authEnforced() ? "brief" : "full");
 
   if (scope === "brief") {

@@ -232,6 +232,7 @@ export async function StatusEvidenceCard({
   evidenceError,
   dropboxLinks,
   dropboxRootUrl,
+  canResolveRevision = true,
 }: {
   status: ProjectStatus;
   evidence: string | null;
@@ -247,6 +248,8 @@ export async function StatusEvidenceCard({
   evidenceError?: string | null;
   dropboxLinks?: DropboxLink[];
   dropboxRootUrl?: string;
+  /** Oct 21 2026: "Mark resolved" is the office's (resolveRevisionAction); the creative manager reads the card. */
+  canResolveRevision?: boolean;
 }) {
   // A cancelled job is not in revisions, whatever stamp it still carries
   // (265 Koser Rd rendered the revision banner twice — audit).
@@ -320,7 +323,7 @@ export async function StatusEvidenceCard({
               </p>
             )}
             <div className="mt-2">
-              <RevisionResolveButton projectId={projectId} />
+              {canResolveRevision && <RevisionResolveButton projectId={projectId} />}
             </div>
           </div>
         )}

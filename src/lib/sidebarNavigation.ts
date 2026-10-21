@@ -54,13 +54,29 @@ export const OFFICE_MENU = [
   { href: "/schedule", label: "Schedule" },
 ] as const;
 
-/** Who gets the six-door menu: the owner, the office (ADMIN), and open local dev. */
-export const usesOfficeMenu = (role: string | null | undefined) => role == null || role === "OWNER" || role === "ADMIN";
+// THE CREATIVE MANAGER'S DOORS (Oct 21 2026). The office's shape without
+// the two office desks: Photos (photo delivery, Kyle's approval desk; the
+// creative manager reviews photos on each shoot's job page) and Messages (the
+// client inbox) give way to the Editing Room and the Content Program.
+export const CREATIVE_MENU = [
+  { href: "/", label: "Dashboard" },
+  { href: "/jobs", label: "Shoots" },
+  { href: "/review", label: "Videos" },
+  { href: "/editing", label: "Editing Room" },
+  { href: "/content", label: "Content" },
+  { href: "/schedule", label: "Schedule" },
+] as const;
 
-export function officeMenuDestinations<T extends Destination & { label: string }>(items: readonly T[], pathname: string) {
+/** Who gets the six-door menu: the owner, the office (ADMIN), the creative
+ *  manager (their own doors, CREATIVE_MENU) and open local dev. */
+export const usesOfficeMenu = (role: string | null | undefined) =>
+  role == null || role === "OWNER" || role === "ADMIN" || role === "CREATIVE_MANAGER";
+
+export function officeMenuDestinations<T extends Destination & { label: string }>(items: readonly T[], pathname: string, role?: string | null) {
   const activeHref = activeSidebarHref(items, pathname);
   const primary: T[] = [];
-  for (const door of OFFICE_MENU) {
+  const doors: readonly { href: string; label: string }[] = role === "CREATIVE_MANAGER" ? CREATIVE_MENU : OFFICE_MENU;
+  for (const door of doors) {
     const item = items.find((i) => !i.external && i.href === door.href);
     if (item) primary.push({ ...item, label: door.label as string });
   }

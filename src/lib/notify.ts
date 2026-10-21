@@ -150,6 +150,23 @@ async function opsDestinationPerson(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 export type { Role };
+/** Screens whose whole subject is money (Finance, its old Unpaid and Payroll
+ *  doors, Trends). A bell row that reaches the creative manager and points at
+ *  one of these collapses to the owner (Oct 21 2026). */
+export const MONEY_HREF = /^\/(?:sales|billing|payouts|trends)(?:[/?#]|$)/;
+
+/** The roster rows of the active CREATIVE_MANAGER logins (Oct 21 2026), for
+ *  the money clamp on rows addressed to them by name. smsPrefs caches the
+ *  lookup ten minutes per lambda; a failed read is an empty set (the
+ *  emitters' own money-free sentences still stand). */
+async function creativeManagerMemberIds(): Promise<Set<string>> {
+  try {
+    const { teamMemberIdsForLoginRole } = await import("@/lib/smsPrefs");
+    return new Set(await teamMemberIdsForLoginRole("CREATIVE_MANAGER"));
+  } catch {
+    return new Set();
+  }
+}
 // Saying "the photographer on this job" without hard-coding an id:
 // photographerNotifyTarget() in src/lib/projectPhotographer.ts builds one of
 // these from a projectId (Sep 18, the Review Room's photographer bell).
@@ -1626,7 +1643,7 @@ export async function notifyInApp(n: {
     const title = n.title.slice(0, 90);
     const rule: BellRule = BELL_RULES[n.kind] ?? "all";
     for (let i = 0; i < n.targets.length; i++) {
-      const t = n.targets[i];
+      let t = n.targets[i];
       // Bell policy (BELL_RULES above) — silence the ROW, never the emitter:
       // the caller's Slack ping, task and timeline row all still happen. `i`
       // keeps counting through a skip, so the dedupeKey suffixes stay
@@ -1658,6 +1675,25 @@ export async function notifyInApp(n: {
           roles = ["OWNER"];
           console.warn("notifyInApp money clamp", n.kind);
         }
+      } else if (roles.includes("CREATIVE_MANAGER") || (t.userKey?.startsWith("tm:") && (await creativeManagerMemberIds()).has(t.userKey.slice(3)))) {
+        // THE CREATIVE MANAGER NEVER SEES MONEY (Oct 21 2026), whether a row
+        // reaches them as a role broadcast or by name. Their creative rows
+        // (cuts, script requests, shoot issues) keep their words, through the
+        // same money scrubber a tag uses, because the owner and the office
+        // read the same broadcast; so does the Slack/text sentence a named
+        // row carries. A broadcast pointing at a money screen collapses to the
+        // owner, exactly as it does for a creative; a named row pointing at
+        // one is not written at all (it is theirs alone).
+        body = body ? scrubMoney(body) : null;
+        if (MONEY_HREF.test(href) || n.kind === "order_paid") {
+          console.warn("notifyInApp money clamp", n.kind);
+          if (t.userKey) {
+            silenced++;
+            continue;
+          }
+          roles = ["OWNER"];
+        }
+        if (t.slackDm) t = { ...t, slackDm: scrubMoney(t.slackDm) };
       }
       // Who this row is addressed to, resolved BEFORE the insert (Sep 20) so
       // the dedupe branch below can reach the same person the bridge would

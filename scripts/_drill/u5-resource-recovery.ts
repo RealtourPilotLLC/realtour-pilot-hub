@@ -202,7 +202,7 @@ async function main() {
       update: async (args: unknown) => { fakeWrites.push({ op: "update", args }); if (failWrite) throw new Error("Unknown platform."); return {}; },
       findMany: async () => { if (failRead) throw new Error("fixture guide-list failure"); return []; },
     }, appUser: { findMany: async () => [], findUnique: async () => ({ id: "staff", name: "Fixture staff", email: "fixture@example.invalid", role: "OWNER", status: "ACTIVE", permissions: null, teamMemberId: null, editorKey: null, notificationsSeenAt: null }) } } });
-    stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (refuseAuth) throw new Error("Forbidden"); }, requireOwner: async () => { if (refuseAuth) throw new Error("Owner required"); }, authEnforced: () => true });
+    stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (refuseAuth) throw new Error("Forbidden"); }, requireCreativeLead: async () => { if (refuseAuth) throw new Error("Forbidden"); }, requireOwner: async () => { if (refuseAuth) throw new Error("Owner required"); }, authEnforced: () => true });
     stub(req.resolve("../../src/lib/auth/session.ts"), { getSession: async () => ({ uid: "staff" }) });
     stub(req.resolve("../../src/lib/auth/access.ts"), { canAccess: () => true });
     stub(req.resolve("../../src/lib/programOwners.ts"), { staffChoices: async () => { if (ownerReadFail) throw new Error("fixture staff-list failure"); return [{ id: "owner", name: "Guide owner" }]; } });

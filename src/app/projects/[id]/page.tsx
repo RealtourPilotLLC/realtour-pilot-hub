@@ -64,7 +64,7 @@ import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { photoTargetFor } from "@/lib/culling";
 import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
 import { formatMoney } from "@/lib/utils";
-import { canSeeMoney } from "@/lib/auth/access";
+import { canSeeMoney, isOffice } from "@/lib/auth/access";
 import { redactMoney } from "@/lib/hubTools";
 import { customerNote, creativeCustomerNote } from "@/lib/clientNotes";
 import { formatDistanceToNow } from "date-fns";
@@ -127,7 +127,10 @@ export default async function ProjectPage({
   // below as "owner-ish", which is this page's whole payload: order pricing,
   // invoice + payment links, balance owed, and the client's phone and email.
   if (!viewer && authEnforced()) redirect(`/login?next=/projects/${id}`);
-  if (viewer && viewer.role !== "OWNER" && viewer.role !== "ADMIN") {
+  // The creative manager reads the job file too (Oct 21 2026): money-blind
+  // like the office (showMoney below), and the office's controls stay the
+  // office's (canWaive, canMerge, the deadlines on task cards).
+  if (viewer && viewer.role !== "OWNER" && viewer.role !== "ADMIN" && viewer.role !== "CREATIVE_MANAGER") {
     redirect(viewer.role === "PHOTOGRAPHER" ? `/shoot/${id}` : "/");
   }
 
@@ -144,7 +147,9 @@ export default async function ProjectPage({
   // (editors and photographers never reach this page), so what is left is the
   // preview: "view as" is read-only, requireAdmin refuses it, and a button
   // that cannot work should not be on the screen (Sep 16 review).
-  const canWaive = !viewer?.impersonating;
+  // The office's controls on this page (Oct 21 2026): the creative manager reads them.
+  const officeControls = !viewer || isOffice(viewer.role);
+  const canWaive = !viewer?.impersonating && officeControls;
   // One money rule for every free-text block on this page. redactMoney (the
   // hub's rule, src/lib/hubTools.ts) keeps the sentence and removes the FIGURE,
   // so "chase the invoice on 12 Oak" still reads for Kyle while "$450" does not,
@@ -430,6 +435,7 @@ export default async function ProjectPage({
                 revisionRequestedAt={project.revisionRequestedAt}
                 dropboxLinks={dropboxLinks}
                 dropboxRootUrl={dropboxWebUrl(folders.listing)}
+                canResolveRevision={officeControls}
               />
 
             {/* Ordered deliverables — retired rows (item removed from the Aryeo
@@ -496,7 +502,7 @@ export default async function ProjectPage({
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {!d.removedFromOrderAt && !d.waivedAt && <DeliverableStatusSelect id={d.id} status={d.status} />}
+                      {!d.removedFromOrderAt && !d.waivedAt && <DeliverableStatusSelect id={d.id} status={d.status} readOnly={!officeControls} />}
                       {!d.removedFromOrderAt && canWaive && (
                         d.waivedAt ? (
                           <form action={unwaive}>
@@ -541,7 +547,7 @@ export default async function ProjectPage({
             <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {project.smartTasks.map((t) => (
-                  <TaskCard key={t.id} task={showMoney ? taskToView(t) : scrubTaskMoney(taskToView(t))} assignees={assignees} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
+                  <TaskCard key={t.id} task={showMoney ? taskToView(t) : scrubTaskMoney(taskToView(t))} assignees={assignees} editorView={!officeControls} deadlineOffice={viewer ? !viewer.impersonating && (viewer.role === "OWNER" || viewer.role === "ADMIN") : !authEnforced()} />
                 ))}
               </div>
             </Section>
@@ -809,7 +815,7 @@ export default async function ProjectPage({
           {/* The AutoHDR batch (§10 A53, Sep 26): what was sent and what came
               back, before anyone re-runs it — office, counts only. Then what
               the job's rework actually cost (§10 AU-26) — owner only. */}
-          <PhotoBatchPanel projectId={project.id} canAct={!viewer?.impersonating} />
+          <PhotoBatchPanel projectId={project.id} canAct={!viewer?.impersonating && officeControls} />
           {showMoney && <ReworkCostPanel projectId={project.id} />}
 
           {/* Team messages — editor/crew coordination on this job */}
@@ -953,6 +959,7 @@ export default async function ProjectPage({
                 editor: project.editorId,
                 va: project.vaId,
               }}
+              readOnly={!officeControls}
             />
           </Section>
         </div>

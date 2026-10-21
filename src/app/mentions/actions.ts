@@ -9,7 +9,7 @@ export type MentionPerson = { id: string; name: string };
 
 export async function listMentionablePeople(): Promise<MentionPerson[]> {
   try {
-    await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+    await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]);
   } catch {
     return [];
   }

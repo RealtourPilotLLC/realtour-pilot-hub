@@ -229,7 +229,7 @@ export async function hubUserMayReadBrief(monthId: string): Promise<boolean> {
   const { getCurrentUser } = await import("@/lib/auth/user");
   const u = await getCurrentUser().catch(() => null);
   if (!u) return false;
-  if (u.role === "OWNER" || u.role === "ADMIN") return true;
+  if (u.role === "OWNER" || u.role === "ADMIN" || u.role === "CREATIVE_MANAGER") return true;
   const jobs = await prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true }, take: 10 });
   for (const j of jobs) if (await canViewProject(j.id, u)) return true;
   return false;

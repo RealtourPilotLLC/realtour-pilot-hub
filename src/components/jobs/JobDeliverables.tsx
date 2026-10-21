@@ -8,6 +8,7 @@ import { CheckedButton } from "./CheckedButton";
 import { RequestOwnerPicker } from "./RequestOwnerPicker";
 import { StageChip, TONE_CLASS } from "./StageChip";
 import { SendVideo } from "@/components/videoDelivery/SendVideo";
+import { isOffice } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
 // ONE PAGE PER SHOOT: the Photos card and the Video card (Oct 19 2026), at the
@@ -46,7 +47,15 @@ export async function loadJobDeliverables(projectId: string, now: Date = new Dat
 
 export async function JobDeliverablesSection({ projectId }: { projectId: string }) {
   const d = await loadJobDeliverables(projectId);
-  return d ? <JobDeliverablesView {...d} /> : null;
+  if (!d) return null;
+  // Sending a video to Aryeo is the office's press (Oct 21 2026): the creative
+  // manager reads where it stands and gets the link to the room instead.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  if (me && !isOffice(me.role)) {
+    d.data.video.items = d.data.video.items.map((v) => (v.send ? { ...v, send: { ...v.send, canPress: false } } : v));
+  }
+  return <JobDeliverablesView {...d} />;
 }
 
 const STEP_BAR: Record<StageStep["state"], string> = { done: "bg-success", now: "bg-brand", todo: "bg-surface-2" };

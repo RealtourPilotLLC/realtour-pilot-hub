@@ -45,7 +45,8 @@ export async function POST(req: NextRequest) {
     const { authEnforced } = await import("@/lib/auth/guards");
     const { getCurrentUser } = await import("@/lib/auth/user");
     const u = await getCurrentUser().catch(() => null);
-    if (authEnforced() && (!u || u.impersonating || (u.realRole !== "OWNER" && u.realRole !== "ADMIN"))) return json(403, { ok: false, message: "Only the owner or an admin can add a brief here." });
+    // A content brief is creative work: the creative manager too (Oct 21 2026).
+    if (authEnforced() && (!u || u.impersonating || (u.realRole !== "OWNER" && u.realRole !== "ADMIN" && u.realRole !== "CREATIVE_MANAGER"))) return json(403, { ok: false, message: "Only the owner, an admin or the creative manager can add a brief here." });
     by = { kind: "staff", label: u?.name || u?.email || "Realtour Pilot staff", id: u?.id ?? null };
   } else {
     const token = String(form.get("token") ?? "");

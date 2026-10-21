@@ -176,7 +176,7 @@ async function main() {
     const domainCalls: unknown[][] = [], fakeWrites: string[] = [];
     const fakeDomain = async (...args: unknown[]) => { domainCalls.push(args); if (throwDomain) throw new Error("fixture DB/response ambiguity"); return domainResult; };
     stub(req.resolve("../../src/lib/contentVideos.ts"), { __esModule: true, correctVideoIdentity: fakeDomain, relinkDeliveredFile: fakeDomain, confirmPairing: fakeDomain, adoptTopicVideo: fakeDomain });
-    stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (authDenied) throw new Error("Forbidden"); }, requireOwner: async () => { if (authDenied) throw new Error("Owner required"); } });
+    stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (authDenied) throw new Error("Forbidden"); }, requireCreativeLead: async () => { if (authDenied) throw new Error("Forbidden"); }, requireOwner: async () => { if (authDenied) throw new Error("Owner required"); } });
     stub(req.resolve("../../src/lib/auth/session.ts"), { getSession: async () => ({ uid: "staff" }) });
     stub(req.resolve("../../src/lib/prisma.ts"), { prisma: {
       appUser: { findUnique: async () => ({ id: "staff", email: "fixture@example.invalid", role: "OWNER", status: "ACTIVE" }) },

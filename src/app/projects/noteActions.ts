@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { ActivityType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireCreativeLead } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { CHECKLIST_PATH } from "@/lib/homeAnchors";
 
@@ -42,7 +42,7 @@ export async function addProjectNote(
   /** a Request's subject: "photo", "video", "both", or "unclear" (the default) */
   medium?: string | null,
 ): Promise<NoteResult> {
-  await requireAdmin();
+  await requireCreativeLead();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write something first." };
   // Only the composer's three kinds are human rows; everything else on the

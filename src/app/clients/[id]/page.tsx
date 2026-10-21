@@ -29,7 +29,7 @@ import { getClientDetail } from "@/lib/queries";
 import { autoTextRules } from "@/lib/settings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced, requirePageAccess } from "@/lib/auth/guards";
-import { canSeeMoney } from "@/lib/auth/access";
+import { canSeeMoney, isCreativeLead } from "@/lib/auth/access";
 import { redactMoney } from "@/lib/hubTools";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney, stripHtml } from "@/lib/utils";
@@ -97,7 +97,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // the list; only a real owner/admin (not a "view as" preview) gets Confirm
   // and Reject, the same gate as the switches above — decideFieldReport
   // re-checks. A failed read shows no card.
-  const seesFieldReports = !enrollment && (me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced());
+  // The creative manager reads and decides them too (Oct 21 2026).
+  const seesFieldReports = !enrollment && (me ? isCreativeLead(me.role) : !authEnforced());
   const fieldReports = seesFieldReports
     ? await import("@/lib/clientFacts")
         .then((m) => m.fieldReportsForClient(client.id))
@@ -113,7 +114,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   // Oct 15 2026: the client's creative guardrails, what they're owed beyond
   // the package, and their complaints (lib/creativeGuard, lib/entitlements,
   // lib/clientIssues). Office eyes; money is scrubbed for anyone but the owner.
-  const seesCare = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // The creative manager reads the care cards (Oct 21 2026); only the guardrails are theirs to edit.
+  const seesCare = me ? isCreativeLead(me.role) : !authEnforced();
   const canEditGuard = canEditPrefs || (await import("@/lib/reviewChecklist").then((m) => m.isCreativeApprover(me, { authEnforced: authEnforced() })).catch(() => false));
   const [creativeGuard, entitlements, complaints] = seesCare
     ? await Promise.all([
@@ -214,7 +216,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
           />
 
           {/* §7.8: what photographers reported, waiting on the office. */}
-          {fieldReports.length > 0 && <FieldReportsCard reports={fieldReports} canDecide={canEditPrefs} />}
+          {fieldReports.length > 0 && <FieldReportsCard reports={fieldReports} canDecide={canEditPrefs || (me?.realRole === "CREATIVE_MANAGER" && !me.impersonating)} />}
 
           {seesCare && <ClientIssuesCard clientId={client.id} issues={complaints} canEdit={canEditPrefs} projects={client.projects.map((p) => ({ id: p.id, title: p.title }))} />}
           {entitlements && <EntitlementsCard summary={entitlements} canEdit={canEditPrefs} />}

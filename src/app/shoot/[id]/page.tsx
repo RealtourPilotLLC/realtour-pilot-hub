@@ -59,7 +59,7 @@ export default async function ShootDetailPage({
   if (user?.role === "PHOTOGRAPHER") {
     viewerMemberId = await photographerMemberId(user);
     if (!viewerMemberId || !(await photographerOwnsShoot(id, viewerMemberId))) redirect("/shoot");
-  } else if (user && user.role !== "OWNER" && user.role !== "ADMIN") {
+  } else if (user && user.role !== "OWNER" && user.role !== "ADMIN" && user.role !== "CREATIVE_MANAGER") {
     // Everyone else — an EDITOR above all — is bounced home (audit Sep 2: an
     // editor could open any /shoot/<id> and read the photographer's pay for
     // that job). The video lane's own screen is /edit/<id>; nothing links an

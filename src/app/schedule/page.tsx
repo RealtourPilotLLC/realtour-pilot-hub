@@ -1,5 +1,6 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { isCreativeLead } from "@/lib/auth/access";
 import Link from "next/link";
 import { CalendarDays, MapPin as MapPinIcon, Camera } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -217,7 +218,8 @@ async function MapView({ excludeClientIds, includeTest }: { excludeClientIds: st
 export default async function SchedulePage({ searchParams }: { searchParams: Promise<{ view?: string; test?: string }> }) {
   await requirePageAccess("schedule");
   const [sp, me] = await Promise.all([searchParams, getCurrentUser().catch(() => null)]);
-  const office = !me || me.role === "OWNER" || me.role === "ADMIN";
+  // The creative manager opens the job page too (Oct 21 2026).
+  const office = !me || isCreativeLead(me.role);
   const view: ScheduleView = sp.view === "map" ? "map" : "list";
   const includeTest = sp.test === "1";
   const excludeClientIds = includeTest ? [] : await syntheticClientIds();

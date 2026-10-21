@@ -17,7 +17,7 @@ type Result = { ok: boolean; message: string; url?: string };
 // emails). Confirms SCRIPTING_BASE_URL + SCRIPTING_API_KEY actually reach the
 // Studio, so we can verify the link without triggering an agent intake email.
 export async function testScriptingConnection(): Promise<Result> {
-  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]);
   if (!scriptingConfigured()) return { ok: false, message: "Not connected — SCRIPTING_BASE_URL / SCRIPTING_API_KEY aren't set on the server." };
   try {
     const projects = await scriptingListSince("1970-01-01T00:00:00.000Z", 5);
@@ -32,7 +32,7 @@ export async function testScriptingConnection(): Promise<Result> {
 // Studio side via external_id, so a second click just re-links. Any crew role;
 // blocked while impersonating.
 export async function createScriptProject(projectId: string): Promise<Result> {
-  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]);
   if (!scriptingConfigured()) return { ok: false, message: "Script Studio isn't connected yet." };
 
   const p = await prisma.project.findUnique({
@@ -84,7 +84,7 @@ export async function createScriptProject(projectId: string): Promise<Result> {
 // edit-page render + hourly cron + webhook) — this action remains as the
 // manual "pull right now" for anywhere that still offers one.
 export async function syncScriptFromStudio(projectId: string): Promise<Result> {
-  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  await requireRole(["OWNER", "ADMIN", "CREATIVE_MANAGER", "EDITOR", "PHOTOGRAPHER"]);
   if (!scriptingConfigured()) return { ok: false, message: "The Script Writing platform isn't connected yet." };
   try {
     const { pullScriptFromStudio } = await import("@/lib/scriptSync");

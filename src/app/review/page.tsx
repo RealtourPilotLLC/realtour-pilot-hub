@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { canAccess, homeFor } from "@/lib/auth/access";
+import { canAccess, homeFor, isOffice } from "@/lib/auth/access";
 import { getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
 import { VerdictReceipts } from "@/components/review/VerdictReceipts";
 import { CutRow, Holder, RowHead, ago, linkCls, type CutDue } from "@/components/review/ReviewRoomParts";
@@ -103,12 +103,16 @@ function Steps({ progress, stopped }: { progress: "uploading" | "on-listing" | "
   );
 }
 
-function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
+// `sendDesk` (Oct 21 2026): the office's buttons (Upload to Aryeo and send,
+// Deliver now / Release, Done it by hand). The creative manager reads the same
+// row as status, keeps Watch it and "Not ready? Send back", and leaves the
+// sending to Kyle (videos reach Aryeo only on a person's press, the office's).
+function ReadyRow({ r, checks, sendDesk = true }: { r: VideoRow; checks: React.ReactNode; sendDesk?: boolean }) {
   const s = r.send!;
   const p = r.push;
   const run = !!p?.state;
   const stopped = p?.tone === "failed" || p?.tone === "held";
-  const canPress = !s.byHandWhy && (p ? p.canStart : false);
+  const canPress = sendDesk && !s.byHandWhy && (p ? p.canStart : false);
   const label = p?.canRetry ? "Try again" : s.uploaded ? "Send" : "Upload to Aryeo and send";
   return (
     <li className="min-w-0 px-5 py-3">
@@ -120,16 +124,17 @@ function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
       {checks}
       {run && <Steps progress={p!.progress} stopped={stopped} />}
       {p && (run || s.uploaded) && <p className={cn("mt-1 text-sm", PUSH_TONE[p.tone])}>{p.says}</p>}
-      {s.byHandWhy && <p className="mt-1 text-sm font-medium text-warning">{s.byHandWhy}</p>}
-      {!s.byHandWhy && s.pushUnknown && <p className="mt-1 text-sm font-medium text-warning">Couldn&rsquo;t read where this upload stands just now. Reload the page to send it.</p>}
-      {!s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
+      {sendDesk && s.byHandWhy && <p className="mt-1 text-sm font-medium text-warning">{s.byHandWhy}</p>}
+      {sendDesk && !s.byHandWhy && s.pushUnknown && <p className="mt-1 text-sm font-medium text-warning">Couldn&rsquo;t read where this upload stands just now. Reload the page to send it.</p>}
+      {sendDesk && !s.byHandWhy && s.asksUnknown && <p className="mt-1 text-sm font-medium text-warning">The client&rsquo;s requests could not be read just now. Reload before sending.</p>}
+      {!sendDesk && !run && !s.uploaded && <p className="mt-1 text-sm text-muted">Waiting on the office to send it.</p>}
       <WatchFile href={s.watchHref} fileName={s.fileName} isRender={s.fileSource === "topaz-1080p"} />
       {canPress && <SendVideo submissionId={r.submissionId!} street={r.street} label={label} openAsks={s.openAsks} asksUnknown={s.asksUnknown} listingWarning={s.listingWarning} />}
-      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
+      {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
       {/* Not ready after all? Offered unless an upload is moving (Oct 20 2026,
           audit B18: a failed or held run no longer hides it). */}
       {(!run || stopped) && r.submissionId && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
-      <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={!!s.byHandWhy || (!!p?.canRetry && !p.canStart)}>
+      {sendDesk && <details className="mt-2 rounded-lg border border-border bg-surface-2/40" open={!!s.byHandWhy || (!!p?.canRetry && !p.canStart)}>
         <summary className="min-h-11 cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">Done it by hand?</summary>
         <div className="space-y-2 px-3 pb-3 text-sm">
           <p className="text-muted">{s.fileSays} <span className="break-all font-mono text-ui-status">{s.fileName}</span></p>
@@ -144,12 +149,12 @@ function ReadyRow({ r, checks }: { r: VideoRow; checks: React.ReactNode }) {
               ? <><p className="text-muted">Uploaded it and sent the listing in Aryeo yourself? Record it:</p><MarkDelivered submissionId={r.submissionId!} fingerprint={s.uploadFingerprint} /></>
               : null}
         </div>
-      </details>
+      </details>}
     </li>
   );
 }
 
-function HeldRow({ r }: { r: VideoRow }) {
+function HeldRow({ r, sendDesk = true }: { r: VideoRow; sendDesk?: boolean }) {
   const p = r.push;
   return (
     <li className="min-w-0 px-5 py-3">
@@ -157,8 +162,8 @@ function HeldRow({ r }: { r: VideoRow }) {
       <p className="mt-0.5 text-sm text-muted"><span className="font-medium text-foreground">{r.stage}</span> · <span className={cn(r.late && "font-semibold text-danger")}>{r.promiseWords}</span></p>
       {r.heldWhy && <p className="mt-1 text-sm font-medium text-warning">{r.heldWhy}</p>}
       {r.heldRender && <HeldRender jobId={r.heldRender.jobId} street={r.street} fileName={r.heldRender.fileName} dropboxUrl={r.heldRender.dropboxUrl} lastCheck={r.heldRender.lastCheck} />}
-      {p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
-      {p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
+      {sendDesk && p && p.canStart && r.send && !r.send.byHandWhy && <SendVideo submissionId={r.submissionId!} street={r.street} label="Try again" openAsks={r.send.openAsks} asksUnknown={r.send.asksUnknown} listingWarning={null} />}
+      {sendDesk && p && (p.canDeliverNow || p.canRelease) && <PushControls submissionId={r.submissionId!} canDeliverNow={p.canDeliverNow} canRelease={p.canRelease} />}
       {/* A held video can go back to the editor too (audit B18). */}
       {r.submissionId && (!p?.state || p.tone === "failed" || p.tone === "held") && <SendBack submissionId={r.submissionId} projectId={r.projectId} street={r.street} />}
     </li>
@@ -242,11 +247,15 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   // THE DELIVERY PARTS are the office's (owner/admin); a seated reviewer on
   // another login gets To review and the sent-back versions. View-as shows
   // what that login would see; its buttons are refused by the actions.
-  const deliveryDesk = !me || me.role === "OWNER" || me.role === "ADMIN";
+  const deliveryDesk = !me || isOffice(me.role);
+  // The creative manager (Oct 21 2026) oversees the whole room: the due
+  // dates, what is ready to send and with whom, the editors' list and its
+  // Remind buttons. The sending itself stays the office's (ReadyRow sendDesk).
+  const boardDesk = deliveryDesk || me?.role === "CREATIVE_MANAGER";
   const now = new Date();
   const [q, board] = await Promise.all([
     getReviewQueue({ includeTest }),
-    deliveryDesk
+    boardDesk
       ? import("@/lib/videoDelivery").then((m) => m.videoDeliveryBoard({ fresh: true, followUps: true })).catch((e) => {
           console.error("[video-review] delivery board failed", e);
           return null;
@@ -340,7 +349,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   const remindButtonFor = (e: EditorItem) => e.late || e.dueToday || (!!e.revisionSinceISO && now.getTime() - Date.parse(e.revisionSinceISO) > DAY);
 
   // Who holds each video, and when it was last reminded (one batch of reads).
-  const remindItems: RemindItem[] = deliveryDesk
+  const remindItems: RemindItem[] = boardDesk
     ? [
         ...editors.map((e) => ({ key: e.key, projectId: e.projectId, submissionId: e.submissionId, street: e.street, promiseISO: e.promiseISO, late: e.late, dueToday: e.dueToday, revisionSinceISO: e.revisionSinceISO })),
         // A late (or due today) cut waiting on someone else's review: Remind reviewer.
@@ -367,7 +376,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
   ].filter(Boolean).join(" · ");
   const editorRow = (e: EditorItem) => (
     <EditorRow key={e.key} e={e}>
-      {deliveryDesk && <Holder st={reminds.get(e.key)} rowKey={e.key} projectId={e.projectId} submissionId={e.submissionId} viewerName={viewerName} showButton={remindButtonFor(e)} now={now} />}
+      {boardDesk && <Holder st={reminds.get(e.key)} rowKey={e.key} projectId={e.projectId} submissionId={e.submissionId} viewerName={viewerName} showButton={remindButtonFor(e)} now={now} />}
     </EditorRow>
   );
 
@@ -396,7 +405,7 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
           </Link>
         </div>
 
-        {deliveryDesk && !board && (
+        {boardDesk && !board && (
           <p role="alert" className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4 text-sm text-warning">Ready to send and the due dates could not be read just now. Refresh to try again.</p>
         )}
 
@@ -445,16 +454,16 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
 
         {/* ————— 2 · READY TO SEND ————— */}
         {board && (
-          <Section icon={Send} title="Ready to send" count={ready.length} flush action={sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>
+          <Section icon={Send} title="Ready to send" count={ready.length} flush action={deliveryDesk && sendAllIds.length >= 2 ? <SendAll submissionIds={sendAllIds} /> : undefined}>
             {ready.length ? (
-              <ul className="divide-y divide-border">{ready.map((r) => <ReadyRow key={r.key} r={r} checks={checksFor.get(r.projectId) ?? null} />)}</ul>
+              <ul className="divide-y divide-border">{ready.map((r) => <ReadyRow key={r.key} r={r} checks={checksFor.get(r.projectId) ?? null} sendDesk={deliveryDesk} />)}</ul>
             ) : (
               <p className="px-5 py-4 text-sm text-muted">No approved listing video is waiting to go out.</p>
             )}
             {heldRows.length > 0 && (
               <>
                 <h3 className="border-t border-border px-5 pt-3 text-sm font-semibold text-warning">Held ({heldRows.length})</h3>
-                <ul className="divide-y divide-border">{heldRows.map((r) => <HeldRow key={r.key} r={r} />)}</ul>
+                <ul className="divide-y divide-border">{heldRows.map((r) => <HeldRow key={r.key} r={r} sendDesk={deliveryDesk} />)}</ul>
               </>
             )}
             {finishing.length > 0 && (
@@ -465,14 +474,14 @@ export default async function ReviewRoomPage({ searchParams }: { searchParams: P
             )}
             {/* Branding videos still in the 1080p pass, which can still go to
                 Aryeo instead of the portal (Oct 21 2026). */}
-            {fu && fu.portalFinishing.length > 0 && (
+            {deliveryDesk && fu && fu.portalFinishing.length > 0 && (
               <div className="border-t border-border px-5 py-3">
                 <PortalFinishing rows={fu.portalFinishing} />
               </div>
             )}
             {/* The delivery card's follow-up lanes (here since Home stopped
                 showing the card), one compact fold, only when there are any. */}
-            {fu && (followUpCount > 0 || followUpUnchecked) && (
+            {deliveryDesk && fu && (followUpCount > 0 || followUpUnchecked) && (
               <details className="border-t border-border" open={followUpUnchecked} data-follow-ups={followUpCount}>
                 <summary className="min-h-11 cursor-pointer px-5 py-3 text-sm font-medium text-warning focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                   <span>Needs a follow-up</span> <span className="font-normal text-muted">({followUpCount})</span>
