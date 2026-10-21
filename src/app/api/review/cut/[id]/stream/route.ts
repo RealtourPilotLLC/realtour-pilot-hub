@@ -390,7 +390,7 @@ async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | n
     // A generic answer to the viewer; the detail belongs in the log, where it
     // names the half-finished configuration rather than the video.
     console.error("[review] private cut object on a store this deployment holds no token for:", decision.host);
-    return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
+    return NextResponse.json({ error: "That video couldn't be fetched right now. Try again." }, { status: 502 });
   }
   return relay(req, blobUrl, decision.authorization ?? null, fileName, asAttachment);
 }
