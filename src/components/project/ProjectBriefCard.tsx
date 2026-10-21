@@ -119,7 +119,7 @@ export function ProjectBriefCardView({ brief, evidence }: { brief: ProjectBrief;
 
       <Link
         href={`/edit/${brief.projectId}`}
-        className="flex items-center gap-1.5 border-t border-border px-5 py-2 text-xs font-medium text-brand hover:bg-surface-2/60"
+        className="flex min-h-11 items-center gap-1.5 border-t border-border px-5 py-2 text-xs font-medium text-brand hover:bg-surface-2/60"
       >
         Open the edit tracker
         <ArrowRight className="size-3.5" />

@@ -88,13 +88,13 @@ export function PhotoTargetControl({
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
             placeholder="Custom"
-            className="w-20 rounded-full border bg-surface px-2.5 py-1 text-xs outline-none focus:border-brand"
+            className="w-20 rounded-full border bg-surface px-2.5 py-1 text-base sm:text-xs outline-none focus:border-brand"
           />
           {custom !== "" && (
             <button
               type="submit"
               disabled={pending}
-              className="rounded-full bg-brand-action px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+              className="min-h-9 rounded-full bg-brand-action px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
             >
               Set
             </button>

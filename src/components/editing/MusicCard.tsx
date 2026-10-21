@@ -573,7 +573,7 @@ export function MusicCard({
                 onChange={(e) => setTerm(e.target.value)}
                 placeholder="calm morning at a hilltop home"
                 maxLength={500}
-                className="w-full rounded-lg border border-border bg-bg py-2 pl-8 pr-2.5 text-sm outline-none focus:border-brand"
+                className="w-full rounded-lg border border-border bg-background py-2 pl-8 pr-2.5 text-sm outline-none focus:border-brand"
               />
             </div>
             <button

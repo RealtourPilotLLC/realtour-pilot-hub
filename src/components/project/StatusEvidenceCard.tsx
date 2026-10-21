@@ -461,7 +461,7 @@ export async function StatusEvidenceCard({
                   href={dropboxRootUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline"
+                  className="inline-flex min-h-9 items-center gap-1 text-[11px] font-medium text-brand hover:underline"
                 >
                   Open listing folder <ExternalLink className="size-3" />
                 </a>

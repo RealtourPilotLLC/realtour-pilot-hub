@@ -239,7 +239,7 @@ export function TeamMessagesPanel({
             name="q"
             defaultValue={term}
             placeholder="Search by street or client…"
-            className="w-full rounded-xl border border-border bg-surface py-2 pl-8 pr-3 text-sm outline-none focus:border-brand"
+            className="w-full rounded-xl border border-border bg-surface py-2 pl-8 pr-3 text-base outline-none focus:border-brand sm:text-sm"
           />
         </form>
         <nav aria-label="Team conversation filters" className="mb-3 flex flex-wrap gap-1.5">
@@ -263,7 +263,7 @@ export function TeamMessagesPanel({
                   message on any of them moves it back up on its own. */}
               {data.closed.length > 0 && (
                 <details className="border-t border-border/60" open={!!selected?.closed}>
-                  <summary className="flex cursor-pointer items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-muted hover:bg-surface-2/60">
+                  <summary className="flex min-h-11 cursor-pointer items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-muted hover:bg-surface-2/60">
                     <Archive className="size-3.5" /> Closed
                     <span className="rounded-full bg-surface-2 px-1.5 text-[10px] font-medium">{data.closed.length}</span>
                   </summary>
@@ -279,8 +279,8 @@ export function TeamMessagesPanel({
       {selected && thread ? (
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border border-b-0 border-border bg-surface px-4 py-3">
-            <Link href={hrefFor(base, { q, view: view === "all" ? undefined : view })} className="lg:hidden">
-              <ArrowLeft className="size-4 text-muted" />
+            <Link href={hrefFor(base, { q, view: view === "all" ? undefined : view })} aria-label="Back to the conversations" className="-ml-2 inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2 lg:hidden">
+              <ArrowLeft aria-hidden className="size-4 text-muted" />
             </Link>
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold">

@@ -68,7 +68,7 @@ export function OldItemActions({ taskId, minDay, maxDay, allowNewDate = true }: 
             max={maxDay}
             value={day}
             onChange={(e) => setDay(e.target.value)}
-            className="min-h-11 rounded-lg border border-border bg-surface px-3 text-sm"
+            className="min-h-11 rounded-lg border border-border bg-surface px-3 text-base sm:text-sm"
           />
           <button type="submit" disabled={busy || !day} className={`${btn} border-brand/40 bg-brand-action text-white hover:opacity-90`}>
             {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : null} Save date

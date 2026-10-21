@@ -33,7 +33,7 @@ export function ReworkCostForm({ projectId, candidates }: { projectId: string; c
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="mt-3 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
+      <button type="button" onClick={() => setOpen(true)} className="mt-3 min-h-9 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
         Add rework cost…
       </button>
     );
@@ -56,21 +56,21 @@ export function ReworkCostForm({ projectId, candidates }: { projectId: string; c
     >
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-xs text-muted">What
-          <select value={kind} onChange={(e) => setKind(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm">
+          <select value={kind} onChange={(e) => setKind(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-base sm:text-sm">
             {KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
         </label>
         <label className="text-xs text-muted">Amount ($)
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="0.00" className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm" />
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="0.00" className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-base sm:text-sm" />
         </label>
         <label className="text-xs text-muted">Actual or estimate
-          <select value={basis} onChange={(e) => setBasis(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm">
+          <select value={basis} onChange={(e) => setBasis(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-base sm:text-sm">
             <option value="actual">Actual (it was paid / given)</option>
             <option value="estimate">Estimate</option>
           </select>
         </label>
         <label className="text-xs text-muted">Cause (optional)
-          <select value={cause} onChange={(e) => setCause(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm">
+          <select value={cause} onChange={(e) => setCause(e.target.value)} className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-base sm:text-sm">
             <option value="">Not tagged</option>
             {ISSUE_CAUSES.filter((c) => c !== "UNCLASSIFIED").map((c) => <option key={c} value={c}>{CAUSE_LABEL[c]}</option>)}
           </select>
@@ -84,18 +84,18 @@ export function ReworkCostForm({ projectId, candidates }: { projectId: string; c
             const hint = candidates.find((c) => c.ref === e.target.value)?.kindHint;
             if (hint && KINDS.some(([k]) => k === hint)) setKind(hint);
           }}
-          className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-sm"
+          className="mt-0.5 w-full rounded-lg border bg-surface px-2 py-1.5 text-base sm:text-sm"
         >
           <option value="manual">Manual — my own figure</option>
           {candidates.map((c) => <option key={c.ref} value={c.ref}>{c.label}</option>)}
         </select>
       </label>
-      <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-sm" />
+      <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="w-full rounded-lg border bg-surface px-2 py-1.5 text-base sm:text-sm" />
       <div className="flex gap-2">
-        <button type="submit" disabled={pending || !amount} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+        <button type="submit" disabled={pending || !amount} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
           {pending && <Loader2 className="size-3.5 animate-spin" />} Record
         </button>
-        <button type="button" onClick={() => setOpen(false)} className="rounded-lg px-3 py-1.5 text-xs text-muted hover:bg-surface-2">Cancel</button>
+        <button type="button" onClick={() => setOpen(false)} className="min-h-9 rounded-lg px-3 py-1.5 text-xs text-muted hover:bg-surface-2">Cancel</button>
       </div>
       {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-warning"}`}>{msg.text}</p>}
     </form>

@@ -197,7 +197,7 @@ export function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: Op
               </span>
             )}
             {s.comms && (
-              <Link href={`/communications`} className={cn("inline-flex items-center gap-1 hover:underline", s.comms.count > 0 && s.comms.latestInbound ? "font-semibold text-brand" : "text-muted")}>
+              <Link href={`/communications`} className={cn("inline-flex min-h-9 items-center gap-1 hover:underline", s.comms.count > 0 && s.comms.latestInbound ? "font-semibold text-brand" : "text-muted")}>
                 <MessageSquare className="size-3.5" />
                 {s.comms.count > 0 && (
                   <>

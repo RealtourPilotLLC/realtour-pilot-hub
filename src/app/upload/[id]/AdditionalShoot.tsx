@@ -187,7 +187,7 @@ export function AdditionalShoot({
               min={minKey}
               max={todayKey}
               onChange={(e) => setShotOn(e.target.value)}
-              className="mt-1 block w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-brand"
+              className="mt-1 block w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-base text-foreground outline-none focus:border-brand sm:text-sm"
             />
           </label>
           {jobShootISO && (

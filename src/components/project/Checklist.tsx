@@ -52,7 +52,7 @@ export function Checklist({ items }: { items: Item[] }) {
           <li key={item.id}>
             <button
               onClick={() => toggle(item.id, !item.done)}
-              className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-surface-2"
+              className="flex min-h-9 w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-surface-2"
             >
               <span
                 className={cn(

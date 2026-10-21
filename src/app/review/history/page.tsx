@@ -217,7 +217,7 @@ export default async function ReviewHistoryPage({ searchParams }: { searchParams
                       <span className="tabular-nums text-muted">{p.count}</span>
                     </span>
                   ))}
-                  <Link href="/shoot/feedback" className="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-xs font-medium text-brand hover:bg-surface-2">
+                  <Link href="/shoot/feedback" className="inline-flex min-h-9 items-center rounded-full border border-border px-2.5 py-1 text-xs font-medium text-brand hover:bg-surface-2">
                     Photographer scoreboard →
                   </Link>
                 </div>

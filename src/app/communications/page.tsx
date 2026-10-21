@@ -186,7 +186,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           {tabBar()}
           <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
             <span>{includeTest ? "Showing real and test records" : "Showing real client drafts"}</span>
-            <Link href={messagesHref("outbox", { test: !includeTest })} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
+            <Link href={messagesHref("outbox", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
           </div>
           {/* The batch send-all lives HERE: the Outbox is the one home for
               drafted texts (it was also a panel on /tasks + a rollup card, three
@@ -251,7 +251,7 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
           )}
           <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
             <span>{includeTest ? "Showing real and test records" : "Test records hidden"}</span>
-            <Link href={messagesHref("email", { test: !includeTest })} className="rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
+            <Link href={messagesHref("email", { test: !includeTest })} className="inline-flex min-h-9 items-center rounded-lg border border-border px-2.5 py-1 font-medium hover:bg-surface-2">{includeTest ? "Hide test records" : "Show test records"}</Link>
           </div>
           <EmailThreadList key={match?.key ?? "all"} threads={ordered} focusKey={match?.key ?? null} />
         </div>
@@ -328,8 +328,8 @@ export default async function MessagesPage({ searchParams }: { searchParams: Pro
       </dl>
       <blockquote className="mt-2 whitespace-pre-wrap rounded-lg border border-border bg-surface p-3 text-sm">{incident.body}</blockquote>
       <div className="mt-2 flex flex-wrap gap-3 text-sm">
-        <Link href={`/projects/${incident.projectId}`} className="font-medium text-brand underline">Open job</Link>
-        <Link href={messagesHref("all")} className="font-medium text-muted underline">All conversations</Link>
+        <Link href={`/projects/${incident.projectId}`} className="inline-flex min-h-9 items-center font-medium text-brand underline">Open job</Link>
+        <Link href={messagesHref("all")} className="inline-flex min-h-9 items-center font-medium text-muted underline">All conversations</Link>
       </div>
     </section>
   ) : sp.incident ? (

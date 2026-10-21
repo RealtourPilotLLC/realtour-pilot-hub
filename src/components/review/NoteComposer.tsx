@@ -92,7 +92,7 @@ export function NoteComposer({
             value={clock}
             onChange={(e) => setClock(e.target.value)}
             placeholder="mm:ss"
-            className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm tabular-nums outline-none focus:border-brand"
+            className="w-20 rounded-lg border border-border bg-surface-2 px-2 py-1 text-base sm:text-sm tabular-nums outline-none focus:border-brand"
           />
         </div>
       )}
@@ -100,11 +100,11 @@ export function NoteComposer({
         <button
           onClick={save}
           disabled={saving || !body.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
         >
           {saving ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />} Save note
         </button>
-        <button onClick={onCancel} className="px-1 text-xs font-medium text-muted hover:text-foreground">
+        <button onClick={onCancel} className="inline-flex min-h-11 items-center px-2 text-xs font-medium text-muted hover:text-foreground">
           Cancel
         </button>
         {err && <span className="text-xs text-danger">{err}</span>}

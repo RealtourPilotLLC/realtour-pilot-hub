@@ -14,7 +14,7 @@ type WeekShoot = ShootWindow["week"][number];
 export function WeekStrip({ week, includeTest = false }: { week: WeekShoot[]; includeTest?: boolean }) {
   if (week.length === 0) {
     return (
-      <Link href={homeRecordHref("/schedule", includeTest)} className="block border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
+      <Link href={homeRecordHref("/schedule", includeTest)} className="flex min-h-11 items-center border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
         No shoots in the next 7 days → Schedule
       </Link>
     );
@@ -38,14 +38,14 @@ export function WeekStrip({ week, includeTest = false }: { week: WeekShoot[]; in
           // `open:basis-full` drops an expanded day onto its own full-width row
           // so the detail rows don't wedge between the sibling chips.
           <details key={etDayKey(shoots[0].shootDate)} className="open:basis-full">
-            <summary className="inline-flex cursor-pointer select-none list-none items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-surface-2 [&::-webkit-details-marker]:hidden">
+            <summary className="inline-flex min-h-9 cursor-pointer select-none list-none items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-surface-2 [&::-webkit-details-marker]:hidden">
               {/* "Wed 2" — weekday + shoot count, per the strip design */}
               <span className="text-muted">{etDate(shoots[0].shootDate).split(",")[0]}</span>
               <span className="font-semibold tabular-nums">{shoots.length}</span>
               {/* amber dot = at least one visit that day still has no photographer */}
               {shoots.some((s) => !s.photographer) && <span className="size-1.5 rounded-full bg-warning" />}
             </summary>
-            <Link href={homeRecordHref("/schedule", includeTest)} className="mt-1 block px-1 text-[10px] font-semibold uppercase tracking-wide text-muted hover:text-foreground">
+            <Link href={homeRecordHref("/schedule", includeTest)} className="mt-1 flex min-h-9 items-center px-1 text-[10px] font-semibold uppercase tracking-wide text-muted hover:text-foreground">
               {etDate(shoots[0].shootDate)} → Schedule
             </Link>
             <div className="mb-1 mt-1 divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60">

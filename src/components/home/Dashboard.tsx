@@ -190,7 +190,7 @@ export function ShootsInProgress({ jobs, includeTest = false, doors = ALL_DOORS 
   return (
     <section aria-labelledby="in-progress-title" data-shoots-in-progress className="panel-shadow min-w-0 overflow-hidden rounded-2xl border border-border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <h2 id="in-progress-title" className="text-[15px] font-semibold">Shoots in progress</h2>
+        <h2 id="in-progress-title" className="text-base font-semibold">Shoots in progress</h2>
         {!jobs.unavailable && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{jobs.total}</span>}
         {all && (
           <Link href={all} className="ml-auto inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
@@ -251,7 +251,7 @@ export function NeedsAttention({ attention, includeTest = false, doors = ALL_DOO
       {/* Old links into the review desk and /ops's stuck jobs and exceptions land here. */}
       {["needs-you", "stuck", "exceptions"].map((id) => <span key={id} id={id} aria-hidden className="block scroll-mt-32 md:scroll-mt-28" />)}
       <div className="flex flex-wrap items-center gap-2">
-        <h2 id="needs-attention-title" className="text-[15px] font-semibold">Needs attention now</h2>
+        <h2 id="needs-attention-title" className="text-base font-semibold">Needs attention now</h2>
         {items.length > 0 && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium tabular-nums">{items.length}</span>}
       </div>
       {items.length === 0 ? (
@@ -279,8 +279,8 @@ export function KylesDayCard({ day, includeTest = false, doors = ALL_DOORS }: { 
   const title = day.you ? "Your list" : `${day.name}’s day`;
   return (
     <section id="kyles-day" aria-labelledby="kyles-day-title" data-kyles-day className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
-        <h2 id="kyles-day-title" className="text-[15px] font-semibold">{title}</h2>
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+        <h2 id="kyles-day-title" className="text-base font-semibold">{title}</h2>
         {opens(day.href, doors) && (
           <Link href={homeRecordHref(day.href, includeTest)} className="ml-auto inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand hover:underline">
             {day.you ? "Open your list" : `Open ${day.name}’s list`} <ArrowRight aria-hidden className="size-3.5" />

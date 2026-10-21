@@ -36,7 +36,7 @@ export function RoutingRulesForm({ initial }: { initial: EditorRoutingRules }) {
             value={form[lane.key]}
             onChange={(e) => { setForm((f) => ({ ...f, [lane.key]: e.target.value })); }}
             aria-label={lane.label}
-            className="min-h-11 rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-brand"
+            className="min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-brand"
           >
             {CHOICES.map((c) => (
               <option key={c.value} value={c.value}>{c.label}</option>

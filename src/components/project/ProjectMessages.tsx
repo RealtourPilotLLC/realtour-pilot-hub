@@ -175,7 +175,7 @@ function ProjectMessagesForProject({
                   <button
                     type="button"
                     onClick={() => { setReplyTo({ id: m.id, authorName: m.authorName, body: m.body }); taFocus(); }}
-                    className="ml-auto inline-flex items-center gap-0.5 text-[10px] text-muted-2 opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                    className="ml-auto inline-flex items-center gap-0.5 text-[10px] text-muted-2 transition-opacity hover:text-foreground focus-visible:opacity-100 pointer-coarse:min-h-9 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100"
                   >
                     <Reply className="size-3" /> Reply
                   </button>
@@ -189,7 +189,7 @@ function ProjectMessagesForProject({
               <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">{renderBody(m.body, team)}</p>
               {canRequestRevision && !readOnly && (
                 <div className="mt-1.5 space-y-1.5">
-                  <button type="button" disabled={revision?.messageId === m.id && revision.busy} onClick={() => sendRevision(m.id)} className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline disabled:opacity-60">
+                  <button type="button" disabled={revision?.messageId === m.id && revision.busy} onClick={() => sendRevision(m.id)} className="inline-flex min-h-9 items-center gap-1 text-[11px] font-medium text-brand hover:underline disabled:opacity-60">
                     {revision?.messageId === m.id && revision.busy && <Loader2 className="size-3 animate-spin" />} Send to the editor as a revision
                   </button>
                   {revision?.messageId === m.id && revision.text && (
@@ -198,7 +198,7 @@ function ProjectMessagesForProject({
                   {revision?.messageId === m.id && revision.choices.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {revision.choices.map((c) => (
-                        <button key={c.submissionId} type="button" onClick={() => sendRevision(m.id, c.submissionId)} className="rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-2">{c.label} (v{c.round})</button>
+                        <button key={c.submissionId} type="button" onClick={() => sendRevision(m.id, c.submissionId)} className="min-h-9 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-2">{c.label} (v{c.round})</button>
                       ))}
                     </div>
                   )}
@@ -223,7 +223,7 @@ function ProjectMessagesForProject({
               <span className="min-w-0 flex-1 truncate">
                 Replying to <span className="font-medium">{replyTo.authorName ?? "Team"}</span>: {replyTo.body.replace(/\s+/g, " ").slice(0, 80)}
               </span>
-              <button type="button" onClick={() => setReplyTo(null)} className="shrink-0 text-muted-2 hover:text-foreground"><X className="size-3.5" /></button>
+              <button type="button" onClick={() => setReplyTo(null)} aria-label="Cancel the reply" className="-my-1.5 inline-flex size-9 shrink-0 items-center justify-center text-muted-2 hover:text-foreground"><X aria-hidden className="size-3.5" /></button>
             </div>
           )}
           <div className="relative">
@@ -235,7 +235,7 @@ function ProjectMessagesForProject({
               minRows={2}
               aria-label="Note for the team"
               placeholder="Leave a note for the team… (@ to tag)"
-              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-base sm:text-sm outline-none focus:border-brand"
             />
             {suggestions.length > 0 && (
               <ul className="absolute bottom-full left-0 z-[1200] mb-1 max-h-44 w-56 overflow-auto rounded-lg border border-border bg-surface py-1 shadow-lg">

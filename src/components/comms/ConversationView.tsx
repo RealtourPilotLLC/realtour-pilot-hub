@@ -219,7 +219,7 @@ export function ChatPanel({
             value={body} onChange={(e) => setBody(e.target.value)} minRows={1}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
             placeholder="Type a message…"
-            className="max-h-32 min-h-[36px] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="max-h-32 min-h-[36px] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-base sm:text-sm outline-none focus:border-brand"
           />
           <button onClick={() => startDraft(async () => {
             const transcript = msgs.map((m) => ({ kind: m.kind, direction: m.direction, text: m.text, at: m.at, from: m.from }));

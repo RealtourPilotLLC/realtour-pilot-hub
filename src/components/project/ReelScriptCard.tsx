@@ -93,7 +93,7 @@ export function ReelScriptCard({
             href={studioUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"
+            className="ml-auto inline-flex min-h-9 items-center gap-1 text-xs font-medium text-brand hover:underline"
           >
             Script Writing <ExternalLink className="size-3" />
           </a>

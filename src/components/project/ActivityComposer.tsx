@@ -124,7 +124,7 @@ export function ActivityComposer({ projectId, readOnly = false }: { projectId: s
               ? "An office note on this job…  (⌘/Ctrl + Enter to post)"
               : "What's wrong on this job…  (⌘/Ctrl + Enter to post)"
         }
-        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
       />
       {type === ActivityType.SPECIAL_REQUEST && (
         <label className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -145,7 +145,7 @@ export function ActivityComposer({ projectId, readOnly = false }: { projectId: s
           type="button"
           onClick={submit}
           disabled={isPending || !value.trim()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-medium text-brand-fg transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           <Send className="size-3.5" />
           {type === ActivityType.SPECIAL_REQUEST ? "Post request" : "Post"}

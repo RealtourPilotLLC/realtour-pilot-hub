@@ -86,7 +86,7 @@ export function JobNoteEditor({
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
         rows={5}
-        className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm leading-relaxed outline-none focus:border-brand"
+        className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-base sm:text-sm leading-relaxed outline-none focus:border-brand"
       />
       <div className="mt-1.5 flex items-center gap-1.5">
         <button

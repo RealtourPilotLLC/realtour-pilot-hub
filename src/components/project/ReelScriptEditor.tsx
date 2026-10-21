@@ -49,7 +49,7 @@ export function ReelScriptEditor({ projectId, script }: { projectId: string; scr
         onChange={(e) => setDraft(e.target.value)}
         rows={14}
         autoFocus
-        className="w-full resize-y rounded-xl border border-border bg-surface px-3 py-2 text-sm leading-relaxed outline-none focus:border-brand"
+        className="w-full resize-y rounded-xl border border-border bg-surface px-3 py-2 text-base sm:text-sm leading-relaxed outline-none focus:border-brand"
       />
       <div className="flex flex-wrap items-center gap-2">
         <button

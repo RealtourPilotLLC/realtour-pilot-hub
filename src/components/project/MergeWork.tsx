@@ -83,7 +83,7 @@ export function MergeWork({
           type="button"
           disabled={busy}
           onClick={() => undo(projectId)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
+          className="mt-2 inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
         >
           <Undo2 className="size-3.5" /> Bring the work back here
         </button>
@@ -105,7 +105,7 @@ export function MergeWork({
                   type="button"
                   disabled={busy}
                   onClick={() => undo(m.fromId)}
-                  className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted hover:bg-surface disabled:opacity-60"
+                  className="min-h-9 rounded-md border border-border px-2 py-0.5 text-[11px] text-muted hover:bg-surface disabled:opacity-60"
                 >
                   Undo
                 </button>
@@ -119,7 +119,7 @@ export function MergeWork({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
         >
           <GitMerge className="size-3.5" /> Merge this job&rsquo;s work into another
         </button>
@@ -143,7 +143,7 @@ export function MergeWork({
             value={pick}
             onChange={(e) => setPick(e.target.value)}
             disabled={rows === null}
-            className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-brand disabled:opacity-50"
+            className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-base sm:text-sm outline-none focus:border-brand disabled:opacity-50"
           >
             <option value="">{rows === null ? "Loading this client’s other jobs…" : rows.length ? "Pick the job it belongs to" : "This client has no other job"}</option>
             {(rows ?? []).map((r) => (
@@ -158,7 +158,7 @@ export function MergeWork({
             value={why}
             onChange={(e) => setWhy(e.target.value)}
             placeholder="Why? (optional — it goes on both timelines)"
-            className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand"
+            className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-base sm:text-xs outline-none focus:border-brand"
           />
           {msg && <p className="mt-1.5 text-xs text-foreground/85">{msg}</p>}
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -184,7 +184,7 @@ export function MergeWork({
               type="button"
               disabled={busy}
               onClick={() => { setOpen(false); setMsg(null); }}
-              className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
+              className="min-h-9 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
             >
               Cancel
             </button>

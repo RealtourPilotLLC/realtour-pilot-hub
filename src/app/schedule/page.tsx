@@ -61,7 +61,7 @@ async function ListView({ excludeClientIds, includeTest, office }: { excludeClie
         subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days · ${includeTest ? "real and test records" : "test records hidden"}`}
         actions={<ScheduleViewToggle view="list" includeTest={includeTest} />}
       />
-      <div className="space-y-6 p-6">
+      <div className="space-y-6 p-4 sm:p-6">
         {appts.length === 0 && <p className="text-sm text-muted">No shoots scheduled in the next {WINDOW_DAYS} days.</p>}
         {[...groups.entries()].map(([day, items]) => (
           <div key={day}>
@@ -82,7 +82,7 @@ async function ListView({ excludeClientIds, includeTest, office }: { excludeClie
                     // shoots does (audit A14); /shoot is the photographer's
                     // field screen, kept for anyone else this page is opened to.
                     href={office ? `/projects/${p.id}` : `/shoot/${p.id}`}
-                    className="flex items-center gap-4 border-b px-5 py-3 last:border-0 hover:bg-surface-2"
+                    className="flex items-center gap-3 border-b px-4 py-3 last:border-0 hover:bg-surface-2 sm:gap-4 sm:px-5"
                   >
                     <div className="w-16 shrink-0 text-sm font-semibold text-foreground/80">{time}</div>
                     <div className="min-w-0 flex-1">

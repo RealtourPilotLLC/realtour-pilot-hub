@@ -82,7 +82,7 @@ export function NoteThread({
           {STATUS_LABEL[note.status]}
         </span>
         {note.timeSec != null && <span className="shrink-0 text-[10px] tabular-nums text-muted">at {fmtClock(note.timeSec)}</span>}
-        <button onClick={onClose} aria-label="Close note" className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground">
+        <button onClick={onClose} aria-label="Close note" className="ml-auto flex size-9 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground">
           <X className="size-4" />
         </button>
       </div>
@@ -118,7 +118,7 @@ export function NoteThread({
             onClick={sendReply}
             disabled={busy || !reply.trim()}
             aria-label="Send reply"
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-action text-white disabled:opacity-50"
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-action text-white disabled:opacity-50"
           >
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
           </button>
@@ -131,7 +131,7 @@ export function NoteThread({
                 key={b.to}
                 onClick={() => void run(() => onSetStatus(b.to))}
                 disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
+                className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
               >
                 <Icon className="size-3" /> {b.label}
               </button>
