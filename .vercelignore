@@ -1,0 +1,45 @@
+# What a CLI deploy never uploads (Oct 20 2026, audit H21).
+#
+# KEEP EVERYTHING FROM .gitignore HERE. Until this file existed the CLI
+# uploaded whatever git does not ignore; with it, this list may be the only
+# one the CLI reads. So the local .env (it points at the LIVE database), the
+# agent worktrees (60k files once broke a deploy) and the rest of .gitignore
+# are repeated below. Never ignore what the build or the running app needs:
+# src/, public/, prisma/ (prisma generate), package.json, package-lock.json,
+# next.config.ts, tsconfig.json, postcss.config.mjs, eslint.config.mjs,
+# vercel.json.
+
+# --- from .gitignore -------------------------------------------------------
+/node_modules
+/.pnp
+.pnp.*
+/.next/
+/out/
+next-env.d.ts
+/build
+.env
+.env*.local
+/prisma/*.db
+/prisma/*.db-journal
+.DS_Store
+*.pem
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.vercel
+/coverage
+/src/generated/prisma
+/storage
+tsconfig.tsbuildinfo
+.claude/
+/tools/realpg/node_modules/
+
+# --- local-only work: never read by the build or at runtime ----------------
+# Scripts and drills run on this machine (tsx), never on Vercel; nothing in
+# src/ imports them. Docs and the long project notes are for people.
+/scripts/
+/tools/
+/docs/
+/SYSTEM.md
+/HANDOFF.md
+/CONTENT_PROGRAM_PLAN.md

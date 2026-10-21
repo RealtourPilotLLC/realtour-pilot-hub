@@ -16,14 +16,13 @@
 //      on both DST changeovers. The OLD one-call date+time format is run too,
 //      to show the cause: Node "Thu, Oct 8, 7:30 PM", Safari "Thu, Oct 8 at
 //      7:30 PM". (Skipped, visibly, on a machine without osascript.)
-//   2  TIME ZONE. The actual client components that print times on Home
-//      (ReadyToSendCard's "last successful check", DeliveryBoardView's due,
-//      shot and upload lines) render the same HTML with the process in UTC (the
-//      server) and in America/New_York (Jordan's browser), clock pinned at
-//      2026-10-08 23:30Z — after the UTC day has rolled, before ET's has.
-//   3  THE CLOCK. DeliveryBoardView rendered at the server's moment and again
-//      two minutes later (the hydration), with a shoot starting in between:
-//      the same HTML, because the view measures against the board's asOf.
+//   2  TIME ZONE. The actual client component that prints times on Home
+//      (ReadyToSendCard's "last successful check") renders the same HTML with
+//      the process in UTC (the server) and in America/New_York (Jordan's
+//      browser), clock pinned at 2026-10-08 23:30Z — after the UTC day has
+//      rolled, before ET's has.
+//   3  (THE CLOCK, the delivery board's view rendered twice, went with the
+//      view: Oct 20 2026, audit H13, no page rendered it any more.)
 //   4  THE GUARD. Every "use client" module reachable from the root layout,
 //      Home and /review/[id]: no date/time Intl call without an explicit
 //      timeZone, no single call asking for a date AND a time, no bare
@@ -135,47 +134,19 @@ JSON.stringify(out);`;
   const nav = createRequire(__filename)("next/navigation") as Record<string, unknown>;
   nav.useRouter = () => ({ refresh() {}, push() {}, replace() {}, back() {}, forward() {}, prefetch() {} });
   const { ReadyToSendCard } = await import("@/components/ops/ReadyToSendCard");
-  const { DeliveryBoardView } = await import("@/components/tracker/DeliveryBoardView");
-  type Board = Parameters<typeof DeliveryBoardView>[0]["board"];
   type ReadyBoard = Parameters<typeof ReadyToSendCard>[0]["board"];
   const readyBoard = {
     ready: [], rendering: [], needsFinishing: [], notTold: [],
     followUpChecks: { needsFinishing: null, notTold: "2026-10-08T23:29:00.000Z" },
     followUpLastSuccess: { needsFinishing: "2026-10-08T22:05:00.000Z", notTold: null },
   } as unknown as ReadyBoard;
-  const shoot = new RealDate("2026-10-08T23:31:00Z"); // starts one minute after the server reads the board
-  const job = {
-    id: "job1", title: "12 Main St", address: null, client: "Drill Client", status: "SCHEDULED", shootDate: shoot,
-    photographer: "James", dueAt: new RealDate("2026-10-09T21:00:00Z"), dueTierLabel: "Standard", dueFor: null,
-    settled: false, overdue: false, reopened: false, revisionAskedAt: null, deliveredAt: null,
-    blocker: "awaiting_upload", blockerLabel: "Awaiting upload", notes: null, items: [{ title: "Photos", quantity: 1, tierLabel: "Standard", dueAt: new RealDate("2026-10-09T21:00:00Z") }],
-    photos: "none", video: "none",
-    media: { photos: { liveOnAryeo: 0, rawInDropbox: 0, ordered: true }, video: { liveOnAryeo: 0, rawInDropbox: 0, ordered: true }, known: false, checkedAt: new RealDate("2026-10-08T20:00:00Z"), reason: "stale" },
-  };
-  const board = { today: [job], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, asOf: new RealDate(REPORT_INSTANT).toISOString() } as unknown as Board;
   {
     const readyUtc = inZone("UTC", () => renderToStaticMarkup(createElement(ReadyToSendCard, { board: readyBoard })));
     const readyNy = inZone("America/New_York", () => renderToStaticMarkup(createElement(ReadyToSendCard, { board: readyBoard })));
     c.ok("Ready to send's 'last successful check' is the same text in both zones", readyUtc === readyNy, readyUtc === readyNy ? "" : `${/last successful check[^.<]*/.exec(readyUtc)?.[0]} vs ${/last successful check[^.<]*/.exec(readyNy)?.[0]}`);
     c.ok("…and says the ET time, marked ET", /last successful check Thu, Oct 8, 6:05 PM ET/.test(readyNy), /last successful check[^.<]*/.exec(readyNy)?.[0]);
-
-    const boardUtc = inZone("UTC", () => renderToStaticMarkup(createElement(DeliveryBoardView, { board })));
-    const boardNy = inZone("America/New_York", () => renderToStaticMarkup(createElement(DeliveryBoardView, { board })));
-    c.ok("the delivery board's due / shot / upload lines are the same HTML in both zones", boardUtc === boardNy);
-    c.ok("…and its days are ET days (Thu Oct 8's evening shoot, not UTC's Fri Oct 9)", boardNy.includes("Shot Thu, Oct 8") && boardNy.includes("Fri, Oct 9"), /Shot [^<]*/.exec(boardNy)?.[0]);
-  }
-
-  // =========================================================================
-  c.head("3 · THE SERVER'S MOMENT, NOT THE HYDRATION'S");
-  {
-    setClock(REPORT_INSTANT);
-    const server = renderToStaticMarkup(createElement(DeliveryBoardView, { board }));
-    setClock("2026-10-08T23:32:00Z"); // two minutes on — the shoot started in between
-    const hydration = renderToStaticMarkup(createElement(DeliveryBoardView, { board }));
-    c.ok("a shoot starting between the render and the hydration prints the same upload line", server === hydration, server === hydration ? "" : "the upload line moved with the browser's clock");
-    c.ok("…measured at the board's read, the shoot has not happened yet ('not checked', not 'nothing yet')", server.includes("not checked") && !server.includes("nothing yet"));
-    const later = { ...board, asOf: "2026-10-08T23:32:00.000Z" } as unknown as Board;
-    c.ok("…and the next refresh, read after the shoot began, says 'nothing yet'", renderToStaticMarkup(createElement(DeliveryBoardView, { board: later })).includes("nothing yet"));
+    // (The delivery board's view and its section 3 went with the view itself,
+    // Oct 20 2026, audit H13: no page rendered it since /pipeline became Shoots.)
   }
 
   // =========================================================================
@@ -193,10 +164,9 @@ JSON.stringify(out);`;
     // with them its Ready-to-send card and the delivery board. The card is
     // walked as its own root (the video build decides where it renders now).
     // Later that evening /pipeline became a redirect to Shoots (/jobs), which
-    // replaced the delivery board's view: Shoots is walked as a page, and the
-    // board's view (no longer on a page, kept, and rendered above) as its own
-    // root.
-    const files = clientModules(["src/app/layout.tsx", "src/app/page.tsx", "src/app/review/[id]/page.tsx", "src/app/jobs/page.tsx", "src/components/tracker/DeliveryBoardView.tsx", "src/components/ops/ReadyToSendCard.tsx"]);
+    // replaced the delivery board's view: Shoots is walked as a page. (The
+    // board's view itself was deleted Oct 20 2026, audit H13.)
+    const files = clientModules(["src/app/layout.tsx", "src/app/page.tsx", "src/app/review/[id]/page.tsx", "src/app/jobs/page.tsx", "src/components/ops/ReadyToSendCard.tsx"]);
     // Oct 9 follow-up: the other client components that printed a one-call
     // date+time (or no zone). The formatting rules apply to them and their
     // imports; the clock rule stays with the three trees above.
@@ -207,7 +177,7 @@ JSON.stringify(out);`;
     ];
     const extra = clientModules(EXTRA).filter((f) => !files.includes(f));
     c.ok("the eight extra components are in the formatting scan", EXTRA.every((f) => files.includes(f) || extra.includes(f)), `${extra.length} more modules`);
-    c.ok("the walk found the trees (the layout's shell, Home's cards, the Review Room panel)", ["src/components/Shell.tsx", "src/components/ops/ReadyToSendCard.tsx", "src/components/tracker/DeliveryBoardView.tsx", "src/components/review/CutReviewPanel.tsx"].every((f) => files.includes(f)), `${files.length} modules`);
+    c.ok("the walk found the trees (the layout's shell, Home's cards, the Review Room panel)", ["src/components/Shell.tsx", "src/components/ops/ReadyToSendCard.tsx", "src/components/review/CutReviewPanel.tsx"].every((f) => files.includes(f)), `${files.length} modules`);
     const noZone: string[] = [];
     const oneCall: string[] = [];
     const bare: string[] = [];

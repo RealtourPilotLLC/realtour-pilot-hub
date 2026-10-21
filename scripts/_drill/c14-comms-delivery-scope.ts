@@ -17,7 +17,6 @@ async function main() {
     const { getClientTextTasks } = await import("@/lib/queries");
     const { listDraftedTexts } = await import("@/app/tasks/sendAllActions");
     const { readyToSend } = await import("@/lib/readyToSend");
-    const { reviewDeliveryBoard } = await import("@/lib/reviewDelivery");
     const now = new Date();
     const day = 86_400_000;
     const real = await prisma.client.create({ data: { name: "Real Agent", phone: "2025550101" } });
@@ -71,7 +70,9 @@ async function main() {
     c.ok("normal delivery candidates keep exact real approved and rendering versions", board.ready.length === 2 && board.ready.every((r) => readyIds.includes(r.submissionId)) && board.rendering.length === 2 && board.rendering.every((r) => renderingIds.includes(r.submissionId)));
     c.ok("real follow-up lanes survive synthetic rows above both caps", board.needsFinishing.length === 2 && board.notTold?.length === 2 && board.needsFinishing.every((r) => r.projectId !== fixtureJob.id) && board.notTold.every((r) => r.projectId !== fixtureJob.id));
     c.ok("normal delivery incidents exclude fixture messages", board.noticeIncidents?.length === 2 && board.noticeIncidents.every((r) => r.projectId !== fixtureJob.id));
-    const review = await reviewDeliveryBoard({ includeTest: false });
+    // Oct 20 2026 (H13): lib/reviewDelivery had no reader but this drill; the
+    // room's read is videoDelivery's readyToSend with the same excluded clients.
+    const review = await readyToSend({ ...scope, includeNoticeIncidents: true });
     c.ok("Review Room and Home share the same filtered follow-up lanes", review.ready.length === board.ready.length && review.needsFinishing.length === board.needsFinishing.length && review.notTold?.length === board.notTold?.length);
     const full = await readyToSend({ includeNoticeIncidents: true });
     c.ok("full delivery reader retains fixture candidates and follow-ups", full.ready.length === 3 && full.rendering.length === 3 && full.needsFinishing.some((r) => r.projectId === fixtureJob.id) && !!full.notTold?.some((r) => r.projectId === fixtureJob.id) && full.noticeIncidents?.length === 3);

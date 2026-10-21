@@ -26,11 +26,11 @@ export async function relayFile(req: NextRequest, url: string, authorization: st
     // cache: "no-store" — a 368 MB video must never enter Next's fetch cache.
     upstream = await fetch(url, { headers, cache: "no-store", redirect: "follow" });
   } catch {
-    return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
+    return NextResponse.json({ error: "That file couldn't be fetched right now. Try again." }, { status: 502 });
   }
   if (upstream.status === 404) return NextResponse.json({ error: "That cut's file is no longer in the store" }, { status: 404 });
   if (!upstream.ok && upstream.status !== 206) {
-    return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
+    return NextResponse.json({ error: "That file couldn't be fetched right now. Try again." }, { status: 502 });
   }
   const out = new Headers();
   // fetch() hands us a DECOMPRESSED body when upstream compressed it, while

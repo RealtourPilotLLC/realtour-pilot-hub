@@ -11,6 +11,7 @@ import { can } from "@/lib/portalAccess";
 import { programReach, rolloutSweepClientIds } from "@/lib/programRollout";
 import { effectiveSince } from "@/lib/programRolloutCore";
 import type { PortalViewer } from "@/lib/portal";
+import { OFFICE_LINE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // CLIENT REVIEW WINDOWS + THE PER-VIDEO REVISION LEDGER (completion audit
@@ -56,8 +57,8 @@ import type { PortalViewer } from "@/lib/portal";
  *  ET on the day this shipped — the same instant as CLIENT_APPROVAL_GATE_SINCE. */
 export const REVIEW_WINDOW_EPOCH = new Date("2026-09-24T04:00:00Z");
 
-/** Kyle's number, for anything that has to happen inside 24 hours. */
-export const URGENT_CONTACT = "(215) 645-4889";
+/** Kyle's number, for anything that has to happen inside 24 hours (the one copy: portalWords.OFFICE_LINE). */
+export const URGENT_CONTACT: string = OFFICE_LINE.display;
 
 /** Who may acknowledge the extra-round fee. Jordan, Sep 24 2026: the account
  *  owner OR their assistant. So it follows the right to ASK for the round

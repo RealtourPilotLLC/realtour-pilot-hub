@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
   } else {
     const token = String(form.get("token") ?? "");
     const r = await resolvePortalViewer({ token: token || null, enrollmentId: String(form.get("enrollmentId") ?? "") || month.enrollmentId, cookies: req.cookies });
-    if (!r.ok) return json(401, { ok: false, message: "This link is no longer active — sign in with your email to continue." });
+    if (!r.ok) return json(401, { ok: false, message: "This link is no longer active. Sign in with your email to continue." });
     // THIS enrollment's month only: a valid link for one client never writes to another's.
     if (r.viewer.enrollment.id !== month.enrollmentId) return json(403, { ok: false, message: "That month isn't on your page." });
     if (!can(r.viewer, "suggest")) return json(403, { ok: false, message: refusalMessage(r.viewer, "suggest") });

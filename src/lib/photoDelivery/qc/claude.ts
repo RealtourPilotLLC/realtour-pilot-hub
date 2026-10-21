@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getSecret } from "@/lib/integrations/connections";
+import { postMessages } from "@/lib/integrations/ai";
 import { qcModel, type QcModelSlot } from "../settings";
 import { costOf, ZERO_USAGE, type Usage } from "./cost";
 import type { PromptDef, RequestShape, Validation } from "./prompts/shared";
@@ -39,9 +40,6 @@ import type { PromptDef, RequestShape, Validation } from "./prompts/shared";
 // No secret is ever logged: the key lives in the request header only, and
 // error messages carry the API's own message, never the request.
 // ---------------------------------------------------------------------------
-
-const API_URL = "https://api.anthropic.com/v1/messages";
-const API_VERSION = "2023-06-01";
 
 export const FALLBACK_MODEL = "claude-sonnet-4-6";
 export const FALLBACK_HAIKU = "claude-haiku-4-5-20251001";
@@ -135,24 +133,13 @@ function parseRetryAfter(v: string | null): number | null {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
 }
 
+// The hub's one Anthropic transport (ai.ts postMessages, Oct 20 2026 audit
+// H1): one request, bounded by this pass's own timeout; the retries stay here.
 const realTransport: Transport = async (body, { timeoutMs }) => {
   const key = await apiKey();
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: { "x-api-key": key, "anthropic-version": API_VERSION, "content-type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  const text = await res.text();
-  let json: unknown = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
+  const res = await postMessages(body, key, { timeoutMs });
   if (res.status === 401 || res.status === 403) keyCache = null; // a rotated key is re-read next call
-  return { status: res.status, json, requestId: res.headers.get("request-id"), retryAfterMs: parseRetryAfter(res.headers.get("retry-after")) };
+  return { status: res.status, json: res.json, requestId: res.requestId, retryAfterMs: parseRetryAfter(res.retryAfter) };
 };
 
 // ---- what each model accepts (learned per process) -------------------------------

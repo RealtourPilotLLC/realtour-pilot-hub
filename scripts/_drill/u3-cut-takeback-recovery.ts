@@ -168,7 +168,8 @@ async function main() {
       update: async () => { dbWrites++; return {}; },
     }, smartTask: { findUnique: async () => null }, activity: { create: async () => { dbWrites++; return {}; } } } });
     stub(req.resolve("../../src/lib/auth/user.ts"), { getCurrentUser: async () => user });
-    stub(req.resolve("../../src/lib/auth/guards.ts"), { authEnforced: () => true, requireAdmin: async () => { if (user?.realRole !== "OWNER" && user?.realRole !== "ADMIN") throw new Error("Office only"); } });
+    // Oct 20 2026: takeBackActor reads the caller's keys from guards.addressableKeys (an editor's assigned key, never the login name's first-name slug).
+    stub(req.resolve("../../src/lib/auth/guards.ts"), { authEnforced: () => true, requireAdmin: async () => { if (user?.realRole !== "OWNER" && user?.realRole !== "ADMIN") throw new Error("Office only"); }, addressableKeys: async (u: { role?: string; editorKey?: string | null } | null) => new Set(u?.role === "EDITOR" && u.editorKey ? [u.editorKey] : []) });
     stub(req.resolve("../../src/lib/actorName.ts"), { displayNameFor: async () => "Fixture owner" });
     stub(req.resolve("../../src/lib/integrations/dropbox.ts"), { __esModule: true, dropboxDelete: async () => { fileDeletes++; if (providerFails) throw new Error("fake provider timeout"); } });
     const cache = req("next/cache") as { revalidatePath: () => void };

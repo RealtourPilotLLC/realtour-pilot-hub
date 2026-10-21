@@ -35,7 +35,6 @@ const fail = (m: string): R => ({ ok: false, message: m });
 const LINK_DEAD = "This link is no longer active. Sign in with your email to continue.";
 
 const OPEN_COMMENT_CAP = 30; // per enrollment — a review session, not a firehose
-const OPEN_SUGGESTION_CAP = 15;
 
 /** Resolve + permission gate in one call; a string is the refusal to return. */
 async function viewerFor(auth: PortalAuth, permission: PortalPermission): Promise<PortalViewer | string> {
@@ -59,39 +58,6 @@ async function ownerBell(kind: string, title: string, body: string, href: string
     const { notifyInApp } = await import("@/lib/notify");
     await notifyInApp({ kind, title, body, href, targets: [{ roles: ["OWNER", "ADMIN"] }], dedupeKey });
   } catch { /* bell is best-effort */ }
-}
-
-/** Client suggests a change to one of their scripts. Creates a record — never edits the script. */
-export async function portalSuggestScript(auth: PortalAuth, scriptId: string, body: string): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
-  if (typeof v === "string") return fail(v);
-  const { enrollment } = v;
-  const text = (body ?? "").trim();
-  if (text.length < 3) return fail("Tell us what you'd like changed.");
-  const script = await scriptForEnrollment(enrollment.id, scriptId);
-  if (!script) return fail("That script isn't on your page.");
-  const open = await prisma.scriptSuggestion.count({
-    where: { enrollmentId: enrollment.id, status: "OPEN", createdAt: { gte: new Date(Date.now() - 30 * 86_400_000) } },
-  });
-  if (open >= OPEN_SUGGESTION_CAP) return fail("You have a lot of suggestions in already, and we're on them. If it's urgent, send us a message on the Messages page.");
-  await prisma.scriptSuggestion.create({
-    data: { scriptId, enrollmentId: enrollment.id, body: clip(text, 2000), ...stamp(v) },
-  });
-  // Land the owner on the MONTH the script lives in — the scripts tab defaults
-  // to the current month and a past-month suggestion would render an empty tab.
-  const scriptMonth = script.monthId
-    ? await prisma.contentMonth.findUnique({ where: { id: script.monthId }, select: { monthKey: true } })
-    : null;
-  await ownerBell(
-    "portal_suggestion",
-    `Script suggestion — ${enrollment.clientName || "a client"}`,
-    `${actorLabel(v)} on "${script.title}": ${clip(text, 120)}`,
-    contentHref(enrollment.id, { tab: "plan", view: "scripts", month: scriptMonth?.monthKey ?? null }),
-    // Hour-bucketed: several suggestions in one sitting ring once.
-    `portal-sugg-${enrollment.id}-${new Date().toISOString().slice(0, 13)}`,
-  );
-  revalidatePath(`/content/${enrollment.id}`);
-  return { ok: true, message: "Got it. We'll take a look and update the script." };
 }
 
 /**
@@ -340,14 +306,6 @@ export async function portalSaveProfile(
   }
   try { revalidatePath(`/content/${enrollment.id}`); } catch { /* outside a request */ }
   return { ok: true, message: r.message, saved: r.saved, cleared: r.cleared };
-}
-
-/** The account-setup checklist (CP-06), as this person sees it. */
-export async function portalSetupChecklist(auth: PortalAuth): Promise<{ ok: boolean; message: string; checklist?: import("@/lib/portalSetup").SetupChecklist }> {
-  const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? null });
-  if (!r.ok) return fail(r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : LINK_DEAD);
-  const { setupChecklist } = await import("@/lib/portalSetup");
-  return { ok: true, message: "", checklist: await setupChecklist(r.viewer) };
 }
 
 /** "Skip for now" on a setup step, or put it back. Never marks anything done. */
@@ -913,20 +871,6 @@ export async function portalSwapCarriedTopic(auth: PortalAuth, selectionId: stri
   }
 }
 
-/** A note on a topic — lands on its history as a discussion, changes nothing else. */
-export async function portalDiscussTopic(auth: PortalAuth, topicId: string, note: string): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
-  if (typeof v === "string") return fail(v);
-  const topic = await topicForEnrollment(v.enrollment.id, topicId);
-  if (!topic) return fail("That topic isn't in your bank.");
-  const text = clip((note ?? "").trim(), 1000);
-  if (text.length < 2) return fail("Write a quick note first.");
-  const { discussTopic } = await import("@/lib/contentTopics");
-  await discussTopic(topic.id, text, topicActor(v), "portal");
-  await ownerBell("portal_topic_note", `Topic note — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} on "${topic.title}": ${clip(text, 120)}`, contentHref(v.enrollment.id, { tab: "plan", view: "topics" }), `portal-topic-note-${topic.id}-${new Date().toISOString().slice(0, 13)}`);
-  return { ok: true, message: "Noted. It's saved on this topic for us to read." };
-}
-
 /** Opening a topic for a month starts (or resumes) its guided interview. */
 export async function portalOpenInterview(auth: PortalAuth, topicId: string, monthId: string): Promise<RId> {
   const v = await viewerFor(auth, "suggest");
@@ -1086,36 +1030,6 @@ export async function portalSetTopicAnswerRoute(auth: PortalAuth, topicId: strin
     };
   } catch (e) {
     return fail(e instanceof Error ? e.message : "That didn't save. Try again.");
-  }
-}
-
-/** A correction to the released strategy → a proposal for staff, never an edit. */
-export async function portalProposeStrategyCorrection(auth: PortalAuth, input: { summary: string; section?: string | null }): Promise<R> {
-  const v = await viewerFor(auth, "suggest");
-  if (typeof v === "string") return fail(v);
-  const summary = clip((input.summary ?? "").trim(), 500);
-  if (summary.length < 3) return fail("Tell us what to correct.");
-  const open = await prisma.contentStrategyProposal.count({ where: { enrollmentId: v.enrollment.id, status: "PROPOSED", sourceKind: "client" } });
-  if (open >= 10) return fail("You have a few corrections in already, and we'll go through them with you. If it's urgent, send us a message on the Messages page.");
-  const { createStrategyProposal } = await import("@/lib/contentStrategy");
-  try {
-    const section = clip((input.section ?? "").trim(), 120);
-    // CP-11: a correction that names a section of the strategy in force is
-    // aimed at THAT section (Jordan writes the replacement when he accepts it);
-    // one that names nothing recognisable stays unplaced, as before.
-    const { approvedStrategy } = await import("@/lib/contentStrategy");
-    const { resolveSection, SECTION_TARGET_PREFIX } = await import("@/lib/profileFields");
-    const hit = section ? resolveSection((await approvedStrategy(v.enrollment.id).catch(() => null))?.stored ?? null, section) : null;
-    await createStrategyProposal({
-      enrollmentId: v.enrollment.id, kind: "STRATEGY", summary: section ? `[${section}] ${summary}` : summary, sourceKind: "client", sourceRef: `portal:${actorLabel(v)}`,
-      clientUserId: v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, impact: "Client correction from the portal — review against the released version before accepting.",
-      ...(hit ? { targetKey: `${SECTION_TARGET_PREFIX}${hit.id}`, diff: [{ path: `${SECTION_TARGET_PREFIX}${hit.id}`, from: hit.text, to: "" }] } : {}),
-    });
-    await ownerBell("portal_strategy_proposal", `Strategy correction — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(summary, 120)}`, contentHref(v.enrollment.id, { tab: "plan", view: "strategy" }), `portal-strategy-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
-    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
-    return { ok: true, message: "Got it. We'll review the correction and update your strategy if it changes anything. Your current version stays as is until then." };
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : "That didn't send. Try again.");
   }
 }
 

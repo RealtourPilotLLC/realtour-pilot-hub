@@ -58,6 +58,8 @@ export type VideoDetailData = {
   signInHref: string | null;
   /** A1 (Oct 13 2026): the plain shared link. It watches; signing in is how to approve or request changes. */
   linkVisitor?: boolean;
+  /** Oct 20 2026 (audit E2): someone holds a seat on this program. Without one there is no sign-in to send them to yet. */
+  linkHasSeat?: boolean;
   /** 9.6b: the current version is still in its 1080p pass — nothing to play yet. */
   finishing?: boolean;
 };
@@ -142,7 +144,7 @@ export function LibraryV2({ d, failed, href }: { d: LibraryV2Data | null; failed
             <input type="hidden" name="tab" value="library" />
             {view.st !== "all" && <input type="hidden" name="st" value={view.st} />}
             <label htmlFor="library-search" className="sr-only">Search your videos by title</label>
-            <input id="library-search" type="search" name="q" defaultValue={view.q} placeholder="Search by title" className="min-h-11 min-w-0 flex-1 rounded-xl border border-border bg-surface px-3 text-sm outline-none focus:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand" />
+            <input id="library-search" type="search" name="q" defaultValue={view.q} placeholder="Search by title" className="min-h-11 min-w-0 flex-1 rounded-xl border border-border bg-surface px-3 text-base outline-none sm:text-sm focus:border-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand" />
             <button type="submit" className={cn("inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-border bg-surface px-3 text-sm font-semibold", focus)}><Search className="size-4" aria-hidden /> Search</button>
           </form>
           <nav aria-label="Filter by status" className="flex flex-wrap gap-1.5">
@@ -254,7 +256,7 @@ export function VideoDetailV2({ d, href }: { d: VideoDetailData; href: Href }) {
         ) : hasCut ? (
           <div className="mt-2">
             {d.perms.request && !d.readOnly && !d.linkVisitor && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note. Send them all as one change request, or approve this version.</p>}
-            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} />
+            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} linkVisitor={!!d.linkVisitor} linkHasSeat={d.linkHasSeat !== false} />
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>

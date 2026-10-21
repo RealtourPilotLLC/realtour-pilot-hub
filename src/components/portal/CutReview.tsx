@@ -44,7 +44,7 @@ const STATE_LABEL: Record<CutVersion["clientState"], [mine: string, theirs: stri
   NOT_RELEASED: ["Not shared with you", "Not shared with you"],
 };
 
-export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null, linkVisitor = false }: {
+export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null, linkVisitor = false, linkHasSeat = true }: {
   /** Oldest → newest; assetUrl already carries the media token. */
   versions: CutVersion[];
   perms: { comment: boolean; request: boolean; approve: boolean };
@@ -59,6 +59,9 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
    * no note box, no request or approve buttons, one clear line instead.
    */
   linkVisitor?: boolean;
+  /** Oct 20 2026 (audit E2): a seat exists on this program. Without one there
+   *  is no invitation email to sign in from; the office sets one up. */
+  linkHasSeat?: boolean;
 }) {
   const router = useRouter();
   const current = versions.find((v) => v.isCurrent) ?? null;
@@ -225,14 +228,14 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               <Note c={c} onSeek={(t) => player.current?.seek(t)} />
               <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
                 {c.status === "OPEN" && !c.resolvedAtISO && c.mine && canWrite && (
-                  <button type="button" onClick={() => remove(c.id)} disabled={busy} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-2 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Trash2 className="size-3" /> Remove</button>
+                  <button type="button" onClick={() => remove(c.id)} disabled={busy} className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-xs text-muted-2 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><Trash2 className="size-3" /> Remove</button>
                 )}
                 {c.status === "SENT" && !c.resolvedAtISO && <span className="inline-flex items-center gap-1 text-success"><CheckCircle2 className="size-3" /> sent</span>}
                 {canWrite && (
-                  <button type="button" onClick={() => resolve(c.id, !c.resolvedAtISO)} disabled={busy} className="rounded-md px-1.5 py-0.5 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{c.resolvedAtISO ? "Reopen" : "Mark resolved"}</button>
+                  <button type="button" onClick={() => resolve(c.id, !c.resolvedAtISO)} disabled={busy} className="inline-flex min-h-11 items-center rounded-md px-2 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{c.resolvedAtISO ? "Reopen" : "Mark resolved"}</button>
                 )}
                 {c.resolvedAtISO && <span className="text-muted-2">resolved by {c.resolvedBy}</span>}
-                {canWrite && <button type="button" onClick={() => { setReplyTo(replyTo === c.id ? null : c.id); setReply(""); }} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><CornerDownRight className="size-3" /> Reply</button>}
+                {canWrite && <button type="button" onClick={() => { setReplyTo(replyTo === c.id ? null : c.id); setReply(""); }} className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-xs text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"><CornerDownRight className="size-3" /> Reply</button>}
               </div>
               {c.replies.length > 0 && (
                 <ul className="mt-1.5 space-y-1 border-l-2 border-border pl-2.5">
@@ -241,7 +244,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
               )}
               {replyTo === c.id && (
                 <div className="mt-1.5 flex items-start gap-2">
-                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Your reply…" aria-label="Reply" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand" />
+                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={2} placeholder="Your reply…" aria-label="Reply" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-base outline-none focus:border-brand sm:text-sm" />
                   <button type="button" onClick={() => sendReply(c.id)} disabled={busy || !reply.trim()} className="min-h-11 shrink-0 rounded-lg bg-brand-action px-3 text-sm font-semibold text-white disabled:opacity-50">Reply</button>
                 </div>
               )}
@@ -254,7 +257,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
       {canWrite && (
         <div>
           <div className="flex items-start gap-2">
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change, or leave a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change, or leave a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand sm:text-sm" />
             <button type="button" onClick={add} disabled={busy || !note.trim()} className="min-h-11 shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
               {busy ? <Loader2 className="size-4 animate-spin" /> : "Save note"}
             </button>
@@ -272,7 +275,9 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           <p className="font-semibold">Sign in to approve or request changes.</p>
           {signInHref
             ? <a href={signInHref} className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-2 text-sm font-semibold text-white hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Sign in</a>
-            : <p className="mt-1 text-xs text-muted">Use the sign-in link in your invitation email, or {contactLine()} and we&rsquo;ll send you one.</p>}
+            : linkHasSeat
+              ? <p className="mt-1 text-xs text-muted">Use the sign-in link in your invitation email, or {contactLine()} and we&rsquo;ll send you one.</p>
+              : <p className="mt-1 text-xs text-muted">{contactLine().replace(/^c/, "C")} and we&rsquo;ll set up your sign-in.</p>}
         </div>
       )}
 
@@ -304,7 +309,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
           {asking && (
             <div className="space-y-2">
               <p className="text-xs text-muted">Your {open.length} open note{open.length === 1 ? " goes" : "s go"} with this request as one change list for your editor.{requested ? " A request is already open on this version, so new notes join it." : ""}</p>
-              <textarea value={overall} onChange={(e) => setOverall(e.target.value)} placeholder="Anything overall? (optional)" rows={2} aria-label="Overall note" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
+              <textarea value={overall} onChange={(e) => setOverall(e.target.value)} placeholder="Anything overall? (optional)" rows={2} aria-label="Overall note" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-base outline-none focus:border-brand sm:text-sm" />
               {needsAck && ackText && (review?.mayAcknowledge ?? perms.approve) && (
                 <label className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-soft/30 p-2.5 text-xs">
                   <input type="checkbox" checked={feeAck} onChange={(e) => setFeeAck(e.target.checked)} className="mt-0.5 accent-[var(--brand)]" />
@@ -345,7 +350,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null, si
       {/* Version history — visible, with what happened to each. */}
       {versions.length > 1 && (
         <div className="border-t border-border pt-2">
-          <button type="button" onClick={() => setShowHistory((s) => !s)} className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+          <button type="button" onClick={() => setShowHistory((s) => !s)} className="inline-flex min-h-11 items-center gap-1.5 text-xs font-semibold text-muted hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
             <History className="size-3.5" /> Version history ({versions.length})
           </button>
           {showHistory && (
@@ -375,7 +380,7 @@ function Note({ c, onSeek }: { c: CommentView; onSeek: (t: number) => void }) {
   return (
     <div className="flex items-start gap-2 text-sm">
       {c.timeSec != null ? (
-        <button type="button" onClick={() => onSeek(c.timeSec!)} className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand" aria-label={`Jump to ${fmtT(c.timeSec)}`}>
+        <button type="button" onClick={() => onSeek(c.timeSec!)} className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md bg-brand-soft px-2 text-xs font-semibold text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand" aria-label={`Jump to ${fmtT(c.timeSec)}`}>
           <Clock className="size-3" /> {fmtT(c.timeSec)}
         </button>
       ) : (

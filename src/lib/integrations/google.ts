@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSecret } from "./connections";
 import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 import { originOrBase } from "@/lib/appUrl";
+import { fetchWithTimeout } from "@/lib/http";
 
 // ---------------------------------------------------------------------------
 // Google / Gmail integration (OAuth2 with offline refresh tokens, read-only).
@@ -43,7 +44,7 @@ export async function googleScopeHealth(): Promise<
     accounts.map(async ({ email, refreshToken }) => {
       try {
         const token = await accessTokenFor(refreshToken);
-        const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`, {
+        const res = await fetchWithTimeout(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`, {
           cache: "no-store",
         });
         const info = (await res.json().catch(() => ({}))) as { scope?: string };
@@ -118,7 +119,7 @@ export async function gmailSendHealth(): Promise<Array<{ email: string; canSend:
   for (const acct of accounts) {
     try {
       const token = await accessTokenFor(acct.refreshToken);
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`,
         { cache: "no-store" },
       );
@@ -386,7 +387,7 @@ export function googleConsentUrl(state: string, origin?: string | null): string 
 }
 
 async function tokenRequest(params: Record<string, string>): Promise<Record<string, unknown>> {
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ ...params, client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
@@ -492,8 +493,10 @@ export async function addGmailAccount(refreshToken: string): Promise<string> {
   return email;
 }
 
+// Every Gmail read (Oct 20 2026, audit H7): 30 s, so one mailbox that stops
+// answering cannot hold the 5-minute comms cron to its 100 s budget.
 async function gmail<T = unknown>(path: string, token: string): Promise<T> {
-  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
+  const res = await fetchWithTimeout(`https://gmail.googleapis.com/gmail/v1/users/me${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });

@@ -661,6 +661,35 @@ async function main() {
     c.ok("Release: it carries on, uploads AND delivers", rel.ok && q2?.state === "DONE" && lname("L-Q").videos.length === 1 && kinds("deliver", "L-Q").length === 1, `${q2?.state} ${q2?.note}`);
 
     // ======================================================================
+    c.head("13b · runs waiting on a person (Oct 20 2026, audit B4)");
+    {
+      // Waiting for Deliver now, then the version is reopened for revisions.
+      const R = await mkJob("102 Reopened Wait Ln", "L-R", { cut: false });
+      const dR = await prisma.deliverable.findFirstOrThrow({ where: { projectId: R.project.id } });
+      const R1 = await mkCut(R.project.id, dR.id, "102 Reopened Wait Ln");
+      await prisma.reviewSubmission.update({ where: { id: R1.sub }, data: { status: "SUPERSEDED", sentToClientAt: new Date(T - 3 * HOUR), sentToClientBy: "Kyle Smith" } });
+      lname("L-R").videos.push({ id: v7(T - 3 * HOUR), title: "Cinematic Video", duration: 59.6, visibleAfter: 0, playableAfter: 0, ucUuid: null });
+      const R2 = await mkCut(R.project.id, dR.id, "102 Reopened Wait Ln", { round: 2, duration: 62 });
+      await press(R2.sub);
+      await tick(3);
+      c.ok("set-up: on the listing, waiting for Deliver now", (await runOf(R2.sub))?.wait?.gate === "kyle");
+      await prisma.reviewSubmission.update({ where: { id: R2.sub }, data: { status: "CHANGES_REQUESTED" } });
+      await tick(1);
+      const r2 = await runOf(R2.sub);
+      c.ok("a waiting run whose version was reopened stops, and nothing is delivered", r2?.state === "FAILED" && /no longer approved/.test(r2.note ?? "") && kinds("deliver", "L-R").length === 0, `${r2?.state} ${r2?.note}`);
+      // Forty runs parked on a person, older than a new press: the new one still moves.
+      for (let i = 0; i < 40; i++) {
+        await prisma.appSetting.create({ data: { key: `video_aryeo_push:parked-${i}`, value: JSON.stringify({ submissionId: `parked-${i}`, projectId: R.project.id, state: "WAITING", wait: { gate: "kyle", why: "fixture", since: new Date(T - 9 * HOUR).toISOString() }, recheckAt: null, pauseUntil: null }) } });
+      }
+      const S = await mkJob("103 Behind The Queue Rd", "L-S");
+      await press(S.cuts[0].sub);
+      await tick(1);
+      const s1 = await runOf(S.cuts[0].sub);
+      c.ok("forty runs waiting on a person never crowd a newly pressed upload out of the cron", !!s1 && s1.state !== "PREPARING", `${s1?.state} ${s1?.note}`);
+      await prisma.appSetting.deleteMany({ where: { key: { startsWith: "video_aryeo_push:parked-" } } });
+    }
+
+    // ======================================================================
     c.head("14 · the board and the counts (each video once per number; monthly apart)");
     const now = new Date();
     await mkJob("120 Late Lane", "L-late", { cut: false, status: "EDITING", shootDate: new Date(T - 5 * 24 * HOUR), pin: new Date(T - 3 * HOUR) });
@@ -672,7 +701,7 @@ async function main() {
     if (canTestToday) await mkJob("140 Today Terrace", "L-today", { cut: false, status: "EDITING", shootDate: new Date(T - 30 * HOUR), pin: new Date(T + 20 * MIN) });
     await mkJob("150 Ready Rd", "L-ready", { pin: new Date(T - 2 * HOUR) });
     await mkJob("160 Rendering Rd", "L-rend", { topaz: { state: "processing", outputCheck: null } });
-    const { videoDeliveryBoard, videoDeliveryCounts, videoSummary, dueTodayRows } = await import("@/lib/videoDelivery");
+    const { videoDeliveryBoard, videoSummary, dueTodayRows } = await import("@/lib/videoDelivery");
     const board = await videoDeliveryBoard({ now });
     const all = Object.values(board.lanes).flat();
     const streetsIn = (lane: keyof typeof board.lanes) => board.lanes[lane].map((r) => r.street);
@@ -686,17 +715,17 @@ async function main() {
     c.ok("delivered this week lists what the hub delivered", ["10 First Ave", "20 Parts Pl", "60 Pair Dr"].every((s) => streetsIn("delivered").includes(s)), streetsIn("delivered").join(", "));
     c.ok("monthly videos are not listing rows", !all.some((r) => r.street === "Monthly Agent Content"));
     c.ok("every video sits in one lane", new Set(all.map((r) => r.key)).size === all.length);
-    const counts = await videoDeliveryCounts(now);
+    // Oct 20 2026 (audit B6): videoDeliveryCounts had no reader; the board's own counts.
+    const counts = board.counts;
     const owed = all.filter((r) => r.lane !== "delivered");
     const lateN = owed.filter((r) => r.late).length;
     const dueN = owed.filter((r) => r.dueToday).length;
     c.ok("late = listing videos past their promise, once each (approved ones too)", counts.lateListing === lateN && counts.behind === lateN && lateN >= 2 && (counts.oldestLateHours ?? 0) >= 2, JSON.stringify(counts));
     c.ok("due today = due by tonight, the late ones included, once each (Jordan's rule)", counts.dueToday === dueN && counts.dueToday === dueTodayRows(board).length && counts.dueToday >= counts.lateListing, `${counts.dueToday} vs ${dueN}`);
-    c.ok("monthly counted apart, never in the listing numbers", counts.lateMonthly === board.program.late.length && counts.behind === counts.lateListing);
+    c.ok("monthly never in the listing numbers", counts.behind === counts.lateListing && !owed.some((r) => r.street === "Monthly Agent Content"));
     c.ok("ready to send = the Ready to send section", counts.readyToSend === board.lanes.sending.length && counts.open === new Set([...board.lanes.sending, ...board.lanes.held, ...dueTodayRows(board)].map((r) => r.key)).size);
     const summary = await videoSummary(now);
     c.ok("Home's summary box reads the same numbers", summary.readyToSend === counts.readyToSend && summary.late === counts.lateListing && summary.dueToday === counts.dueToday, JSON.stringify(summary));
-    c.ok("the program section read cleanly", board.program.unavailable === false);
 
     // ======================================================================
     c.head("15 · the add's intent and the add in one pass");

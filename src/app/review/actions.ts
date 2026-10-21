@@ -5,14 +5,14 @@ import { revalidatePath } from "next/cache";
 // measurement in here that nobody is waiting on (finishCutUpload, below).
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { authEnforced, requireAdmin, requireCutReviewer } from "@/lib/auth/guards";
+import { addressableKeys, authEnforced, requireAdmin, requireCutReviewer } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
-import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 import { reportError } from "@/lib/errorTracker";
 import { advisoryKeyPair } from "@/lib/dbLocks";
+import { cutKeyOf } from "@/lib/reviewCuts";
 import { editorHoldsAssignedWork, editorMayReviseAnyTime } from "@/lib/editorWork";
 // Who wrote / ruled, in one vocabulary (Review Room attribution, Sep 28).
 import { attributeLines, LOCAL_DEV_AUTHOR, PREVIEW_REFUSED } from "@/lib/reviewAttribution";
@@ -41,10 +41,9 @@ import type { Prisma } from "@prisma/client";
 // ---------------------------------------------------------------------------
 
 const streetOf = (title?: string | null) => (title || "this job").split(",")[0].trim();
-// A cut's identity across rounds: uploaded cuts by (deliverable, slot),
-// legacy folder rows by file path — see reviewCuts.cutKeyOf.
-const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
-  s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
+// A cut's identity across rounds (uploaded cuts by deliverable and slot,
+// legacy folder rows by file path) is reviewCuts.cutKeyOf, imported above
+// (Oct 20 2026, audit B23: this file kept its own copy).
 
 /** The standing round for an office verdict, using the library's identity
  * for legacy filenames too. Reserved uploads and checks still held with the
@@ -678,7 +677,7 @@ export async function addCutNote(input: {
   lane: "EDITOR" | "PHOTOGRAPHER";
   kind: "fix" | "coaching";
   timeSec: number | null;
-}): Promise<{ ok: boolean; message?: string }> {
+}): Promise<{ ok: boolean; message?: string; noteId?: string }> {
   { const refused = await previewRefusal(); if (refused) return refused; }
   try {
     // The review desk: owner/admin, or a named review seat (§8.1, Sep 25).
@@ -707,7 +706,10 @@ export async function addCutNote(input: {
       const onJob = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
       if (!onJob || onJob.projectId !== input.projectId) return { ok: false, message: "That video isn't on this job." };
     } else {
-      const myKey = me.realRole === "EDITOR" && me.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
+      // An assigned editorKey or nothing (Oct 20 2026): the first-name
+      // fallback here was the one the Sep 17 audit removed from
+      // guards.editorScopeOf (audit B2's fault, in this action).
+      const myKey = me.realRole === "EDITOR" && me.role === "EDITOR" ? (me.editorKey || null) : null;
       if (!myKey || input.lane !== "EDITOR") {
         return { ok: false, message: "Only the crew can note a cut." };
       }
@@ -778,7 +780,7 @@ export async function addCutNote(input: {
     await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorTmId, authorName, context: "a cut note", noteId: note.id, cutId: input.submissionId, surface: "cut" });
   }
   refresh(input.projectId);
-  return { ok: true };
+  return { ok: true, noteId: note.id };
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,15 +1143,9 @@ export async function approveCut(submissionId: string, opts?: { verifyIssueIds?:
   const { approvalGate } = await import("@/lib/revisionIssues");
   const issueGate = await approvalGate(submission, { checked: !!submission.selfCheckId && !!submission.selfCheckedAt, verifyIssueIds: opts?.verifyIssueIds ?? null, approveUncheckedFixes: opts?.approveUncheckedFixes === true });
   if (!issueGate.ok) return { ok: false, message: issueGate.message, canApproveAnyway: issueGate.canApproveAnyway };
-  // THE REVIEWER'S TWO-PART CHECK (Oct 15 2026, lib/reviewChecklist.ts): the
-  // technical and creative blocks saved on THIS version, the creative one by
-  // James or Jordan on program and premium videos. Only while the
-  // review_checklist switch is on; off, approval is exactly as before.
-  {
-    const { checklistRefusal } = await import("@/lib/reviewChecklist");
-    const refusal = await checklistRefusal(submissionId);
-    if (refusal) return { ok: false, message: refusal };
-  }
+  // No reviewer checklist (Jordan, Oct 16 2026: "We know what to look for").
+  // Its dead server gate was removed on Oct 20 2026 (audit B5); the approval
+  // itself is the sign-off.
 
   const { authorName, authorUserId } = await sessionAuthor();
   const ruler = await rulerOf();
@@ -2083,6 +2079,20 @@ export async function canReplaceApprovedCut(input: {
 }
 
 /**
+ * Why the server would refuse an ordinary upload on this job from whoever is
+ * asking, in the words startCutUpload would use; null when it would take one
+ * (Oct 20 2026, audit B20). The /edit page asks it for an editor so a locked-out
+ * editor sees the reason where "Upload version N" would be, instead of meeting
+ * it after picking a file and finishing the check. Read-only, decides nothing:
+ * startCutUpload re-runs the real test on the upload itself.
+ */
+export async function cutUploadRefusal(projectId: string): Promise<string | null> {
+  if (typeof projectId !== "string" || !projectId) return null;
+  const who = await uploadAuthor(projectId).catch(() => ({ ok: true as const }));
+  return who.ok ? null : who.message;
+}
+
+/**
  * A stable key pair for pg_advisory_xact_lock, scoped to ONE cut slot. Two
  * FNV-1a passes with different seeds give the lock's two-int4 form: same slot →
  * same pair on every worker, different slots → different pairs, so two editors
@@ -2238,8 +2248,15 @@ export async function startCutUpload(input: {
   // this gate then dropped both: no Activity row, no bell, reopenReason
   // persisted nowhere. An already-sent video replaced, and nobody told. The
   // page asks the server's predicate now, and this no longer depends on either.
+  //
+  // SAID ONCE THE UPLOAD LANDS (Oct 20 2026, audit B10). The line and the
+  // office's bell used to be written here, before a byte moved, so a failed
+  // or cancelled upload told the office about a replacement that never
+  // happened. The facts are read here and kept on the reservation
+  // (cutReopen.recordReplacementIntent); finishCutUpload says it,
+  // abandonCutUpload forgets it.
+  let replacing: import("@/lib/cutReopen").ReplacementIntent | null = null;
   if (reason) {
-    const stillApproved = last?.status === "APPROVED";
     const sent = await prisma.reviewSubmission.findFirst({
       where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, sentToClientAt: { not: null } },
       select: { sentToClientAt: true },
@@ -2248,27 +2265,7 @@ export async function startCutUpload(input: {
     // pressing send, the reviewer can have bounced the very cut they are
     // replacing, and a timeline that calls that "approved" is a timeline that
     // lies about which decision was undone.
-    const what = stillApproved ? `an approved ${slot.label}` : `the ${slot.label} on this job`;
-    await prisma.activity.create({
-      data: {
-        projectId: input.projectId,
-        type: "SYSTEM",
-        body: `${who.name ?? "Somebody"} is replacing ${what}${sent ? " that had already gone to the client" : ""} — "${reason.slice(0, 200)}". The version it supersedes keeps its file, its number and its verdict; the new one still has to be reviewed${sent ? " and re-sent" : ""}.`.slice(0, 500),
-      },
-    }).catch(() => {});
-    // The office decides what a client is told, so it is told first.
-    await import("@/lib/notify")
-      .then(({ notifyInApp }) =>
-        notifyInApp({
-          kind: "cut_uploaded",
-          title: `${stillApproved ? "An approved video" : "A video"} is being replaced — ${slot.label}`,
-          body: `${who.name ?? "Somebody"}: "${reason.slice(0, 160)}"${sent ? " · this one had already gone to the client." : ""}`,
-          href: `/review/${input.projectId}`,
-          targets: [{ roles: ["OWNER", "ADMIN"] }],
-          dedupeKey: `cut-reopen-${input.projectId}-${slot.slot}-${Date.now().toString(36)}`,
-        }),
-      )
-      .catch(() => {});
+    replacing = { projectId: input.projectId, slot: slot.slot, slotLabel: slot.label, by: who.name ?? "Somebody", reason: reason.slice(0, 200), stillApproved: last?.status === "APPROVED", sent: !!sent };
   }
   // Rounds count in-flight uploads too, so two tabs starting at once don't
   // both become "Version 1" (a failed one leaves a harmless gap). A WITHDRAWN
@@ -2331,6 +2328,10 @@ export async function startCutUpload(input: {
     await tx.reviewSubmission.update({ where: { id: created.id }, data: { selfCheckId: check.id } });
     return { round: next, row: created };
   });
+  if (replacing) {
+    const { recordReplacementIntent } = await import("@/lib/cutReopen");
+    await recordReplacementIntent(row.id, replacing);
+  }
   // An override is a decision, so it goes in the job's history in words — the
   // same place a removed cut leaves its one line. Best-effort: the upload is
   // already reserved, and a missing note must not cost the editor the upload.
@@ -2383,6 +2384,8 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   if (row.status !== "UPLOADING" && !awaitingBytes) {
     const { settleUploadHandIn } = await import("@/lib/reviewCuts");
     await settleUploadHandIn(input.submissionId);
+    // The store's callback entered it: a replacement is said now (audit B10).
+    await import("@/lib/cutReopen").then((m) => m.announceReplacement(input.submissionId)).catch(() => {});
     return { ok: true, message: "Already in review." };
   }
   // The blob must live in a store WE HOLD A TOKEN FOR, under THIS row's prefix
@@ -2442,6 +2445,11 @@ export async function finishCutUpload(input: { submissionId: string; url: string
     const { settleUploadHandIn } = await import("@/lib/reviewCuts");
     await settleUploadHandIn(input.submissionId);
   }
+  // A replacement of an approved video is said once its version exists
+  // (entered review, or landed and waiting on the editor's check): audit B10.
+  // announceReplacement reads the row and says nothing for an upload that
+  // did not land.
+  await import("@/lib/cutReopen").then((m) => m.announceReplacement(input.submissionId)).catch(() => {});
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
   if (sub) {
     await syncOutputs(sub.projectId);
@@ -2471,6 +2479,8 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
   // The callback may have filed the cut after our read. Only the atomic winner
   // may discard bytes; a failed database write never authorizes deletion.
   if (claimed.count !== 1) return;
+  // A replacement that never landed is never announced (audit B10).
+  await import("@/lib/cutReopen").then((m) => m.dropReplacementIntent(submissionId)).catch(() => {});
   // Bytes that landed but never became a cut have no reason to stay anywhere.
   // deleteCutObject makes the same two checks the hard-coded `.public.` regex
   // used to make — a Vercel blob host, a review-cuts/ path — and then one the
@@ -2550,14 +2560,10 @@ async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { o
   if (!office && me.realRole !== "EDITOR") {
     return { ok: false, message: "Only the editor who sent this cut in, Jordan or Kyle can take it back." };
   }
-  const keys = new Set<string>();
-  if (me.editorKey) keys.add(me.editorKey);
-  if (me.name) keys.add(slugForName(me.name));
-  if (me.teamMemberId) {
-    const tm = await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { name: true } }).catch(() => null);
-    if (tm?.name) keys.add(slugForName(tm.name));
-  }
-  keys.delete("");
+  // The one answer to "which keys are theirs" (guards.addressableKeys, Oct 20
+  // 2026): an editor's assigned key and roster name, never the free-text login
+  // name, whose first-name slug could match another editor's cuts.
+  const keys = await addressableKeys(me).catch(() => new Set<string>());
   return { ok: true, actor: { office, owner: me.realRole === "OWNER", keys, name: (await displayNameFor(me)) ?? "Someone" } };
 }
 
@@ -2708,14 +2714,11 @@ async function strandedFinalTask(input: {
   kind: "hub-copy" | "folder-source";
   dropboxRefused: boolean;
 }): Promise<void> {
-  // The house pattern for "whoever holds the office queue" — twenty-odd call
-  // sites resolve Kyle exactly this way. The ROUTING rides on assignedKey,
-  // which is a constant; this lookup only puts a face on the card, so it is
-  // matched the careful way notify.ts does it: case-insensitive, and never a
-  // roster row that has been deactivated.
-  const kyle = await prisma.teamMember
-    .findFirst({ where: { name: { contains: "Kyle", mode: "insensitive" }, active: true }, select: { id: true } })
-    .catch(() => null);
+  // Whoever holds the office queue: the DELIVERY duty owner (kyleNotice.
+  // kyleDesk), the same person the delivery alerts reach (Oct 20 2026, audit
+  // B16; this was a search for a roster name containing "Kyle"). Unresolved:
+  // the "kyle" desk key with no owner, as before.
+  const kyle = await import("@/lib/kyleNotice").then((m) => m.kyleDesk()).catch(() => null);
   // The path whole is longer than a title should be; keep its tail (the folder
   // and the file are what identify it) and put the whole thing in the body.
   const parts = input.path.split("/").filter(Boolean);
@@ -2743,7 +2746,7 @@ async function strandedFinalTask(input: {
     // once the ReviewSubmission that used to carry it no longer exists.
     sourceDetail: input.path,
     priority: "MEDIUM",
-    assignedKey: "kyle",
+    assignedKey: kyle?.key ?? "kyle",
     ownerId: kyle?.id ?? null,
     projectId: input.projectId,
     dedupeKey: `stranded-final-${input.submissionId}`,

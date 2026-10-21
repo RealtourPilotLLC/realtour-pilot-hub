@@ -1,9 +1,10 @@
 import { videoNavigationFor } from "@/lib/videoNavigation";
 import { notFound, redirect } from "next/navigation";
+import { after } from "next/server";
 import { requestsForEditors } from "@/lib/specialRequests";
 import Link from "next/link";
 import {
-  ChevronDown, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote, Wrench,
+  ChevronDown, Film, FolderOpen, MessageSquare, ExternalLink, PlayCircle, Quote, Wrench,
 } from "lucide-react";
 import { VIDEO_TIER, VIDEO_TYPES, defaultMakeThis, listingFlowFor, makeThisFor, musicRuleFor, videoStyleByKey, videoStyleFor, videoTypeForDeliverable } from "@/lib/videoStyles";
 // Oct 16 2026: the names to spell exactly, and this video's own words on the final check.
@@ -20,7 +21,7 @@ import { Section } from "@/components/ui/Section";
 import { Button } from "@/components/ui/Action";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced, canViewProject } from "@/lib/auth/guards";
+import { authEnforced, canViewProject, editorScopeOf } from "@/lib/auth/guards";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelScriptCard, currentScriptOf } from "@/components/project/ReelScriptCard";
 // Oct 5: the brief's own script block (no "(empty)" sections, one Copy), the
@@ -38,7 +39,7 @@ import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
 import { CutUploader } from "@/components/editing/CutUploader";
 // The server's own answer to "may this viewer replace the approved cut on this
 // slot" — the panel draws the door from it rather than guessing (Sep 18).
-import { canReplaceApprovedCut } from "@/app/review/actions";
+import { canReplaceApprovedCut, cutUploadRefusal } from "@/app/review/actions";
 // §7.5 / §7.7: the per-video brief and the Luma Visuals packet record, posted
 // from plain server-rendered forms on this page.
 import { recordEditorPacketAckForm, recordEditorPacketSentForm, saveVideoBriefForm } from "@/app/editing/actions";
@@ -75,7 +76,6 @@ import { aryeoCustomerNote } from "@/lib/shoot";
 // Per-CLIENT note (the merged, Aryeo-mirrored one) — distinct from
 // aryeoCustomerNote just above, which is the note on THIS order.
 import { getEditorFeedback } from "@/lib/reviewRoom";
-import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel, isMonthlyContentJob, videoTypeLabel } from "@/lib/pipeline";
 import { stripMoneySentences } from "@/lib/text";
 import { prisma } from "@/lib/prisma";
@@ -164,10 +164,19 @@ export default async function EditBriefPage({
   if (!(await canViewProject(id, viewer))) notFound();
 
   // Scripts sync THEMSELVES from the Script Writing platform (by this project
-  // id) — cheap freshness gate inside; run before getProject so a just-pulled
-  // script renders on this very load. Owner preview is read-only: even this
+  // id) — cheap freshness gate inside. Owner preview is read-only: even this
   // background refresh can replace saved words and stamp sync timestamps.
-  if (!viewer?.impersonating) await autoSyncScript(id);
+  // Oct 20 2026 (audit B8/H11): after the page is sent, not before it. It
+  // could hold the brief for up to three 6 s calls to the platform; a script
+  // it pulls shows on the next load, and the webhook, the 15-minute reconcile
+  // and the hourly sweep keep every job current anyway.
+  if (!viewer?.impersonating) {
+    try {
+      after(() => autoSyncScript(id).then(() => undefined));
+    } catch {
+      await autoSyncScript(id); // no request scope (a drill, a script): sync now, as before
+    }
+  }
 
   const [project, team, submissions] = await Promise.all([
     getProject(id),
@@ -205,9 +214,9 @@ export default async function EditBriefPage({
   // each — the editor's upload panel and the cut switcher both hang off it.
   const { cutSlots, videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
   const slots = await cutSlots(id);
-  const { owedSlotKeyOf } = await import("@/lib/reviewCuts");
+  const { owedSlotKeyOf, cutKeyOf: videoKeyOf } = await import("@/lib/reviewCuts");
   const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
-    owedSlotKeyOf(s, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) ?? (s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id));
+    owedSlotKeyOf(s, slots.map((slot) => `${slot.deliverableId}:${slot.slot}`)) ?? videoKeyOf(s);
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
   // THE OFFICE'S ONE SWITCH (Oct 15 2026, the brief audit). Owner/admin are
@@ -225,11 +234,13 @@ export default async function EditBriefPage({
 
   // Review Room feedback addressed to this editor (owner/admin see all lanes'
   // editor notes read-only — their interactive desk is /review).
-  const editorScope =
-    viewer?.role === "EDITOR" ? (viewer.editorKey || (viewer.name ? slugForName(viewer.name) : null)) : null;
+  // The one editor scope (guards.editorScopeOf): an assigned editorKey or the
+  // fail-closed sentinel. Oct 20 2026: this page used to rebuild it with the
+  // first-name fallback the Sep 17 audit removed (the same fault as B2).
+  const editorScope = editorScopeOf(viewer);
   // Fail CLOSED for an editor whose scope can't resolve — a null scope meant
   // "all lanes" and leaked every editor's notes to a keyless EDITOR login (audit).
-  const feedback = await getEditorFeedback(id, isOwnerAdmin ? null : editorScope ?? "__none__").catch(() => []);
+  const feedbackRead = getEditorFeedback(id, isOwnerAdmin ? null : editorScope ?? "__none__").catch(() => []);
   // The client's change requests, itemised. Money-scrubbed unless a LIVE
   // owner/admin is looking — this is the client's raw wording and they do talk
   // price, so the gate is the strict one the revision asks use (an unknown or
@@ -237,14 +248,14 @@ export default async function EditBriefPage({
   // as well as the owner's; a "view as" preview is read-only, and the server
   // re-checks either way.
   const strictOwnerAdmin = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
-  const briefs = await getRevisionBriefs(id, !strictOwnerAdmin).catch(() => []);
+  const briefsRead = getRevisionBriefs(id, !strictOwnerAdmin).catch(() => []);
   // §8.2 / §8.3 (Sep 25): the send-for-review checklist per video, the cuts
   // waiting on a check, and the job's revision issues — read BY THE JOB, so an
   // editor who inherits it sees what the last one was asked. Reviewers
   // (owner/admin or a named review seat) also get the controls and the checks
   // each version came in with. Each read fails soft: the page never breaks
   // over its own quality bookkeeping.
-  const quality = await (async () => {
+  const qualityRead = (async () => {
     const { checkContextsForProject, heldCutsFor, attestationFor } = await import("@/lib/selfCheckStore");
     const { issuesForProject } = await import("@/lib/revisionIssues");
     let canReview = strictOwnerAdmin && !viewer?.impersonating;
@@ -263,8 +274,11 @@ export default async function EditBriefPage({
     ]);
     const attestations: AttestationView[] = [];
     if (canReview) {
-      for (const s of submissions.filter((x) => x.status !== "WITHDRAWN")) {
-        const a = await attestationFor(s.id).catch(() => null);
+      // Read together, not one version after another (Oct 20 2026, audit H11).
+      const live = submissions.filter((x) => x.status !== "WITHDRAWN");
+      const read = await Promise.all(live.map((s) => attestationFor(s.id).catch(() => null)));
+      for (const [i, s] of live.entries()) {
+        const a = read[i];
         if (!a) continue;
         const slotLabel = slots.find((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(s))?.label ?? s.fileName ?? "Video";
         attestations.push({
@@ -284,14 +298,26 @@ export default async function EditBriefPage({
   })();
   // The client's asset shelf (logos, endcards, brand kit) — folder truth from
   // Dropbox; editors upload here too.
-  const assets = await listClientAssets(project.client.id).catch(() => null);
+  const assetsRead = listClientAssets(project.client.id).catch(() => null);
   // The job's spec JSON — the office's Luma-form fields plus, since Sep 15,
   // the Epidemic Sound pick under `music` (src/lib/musicPick.ts).
   const editSpec = parseEditSpec(project.editSpec);
   const musicPick = musicPickOf(editSpec);
   // Is the music catalogue wired? Owner/admin see the card either way (with a
   // "connect it" note until the key is in); editors only once it works.
-  const musicConnected = await epidemicSoundConnected().catch(() => false);
+  const musicRead = epidemicSoundConnected().catch(() => false);
+  // The video lane's open revision asks (read here so it rides the same batch;
+  // the reasoning is where it is used, below).
+  const videoRevisionTasksRead = prisma.smartTask.findMany({
+    where: videoLaneRevisionWhere(id),
+    select: { id: true, createdAt: true, summary: true, description: true, contactName: true, source: true, title: true, reasonCreated: true, outputId: true },
+    orderBy: { createdAt: "asc" },
+  });
+  // ONE BATCH (Oct 20 2026, audit B8/H11): these reads need nothing from each
+  // other, so they run together instead of one after another.
+  const [feedback, briefs, quality, assets, musicConnected, videoRevisionTasks] = await Promise.all([
+    feedbackRead, briefsRead, qualityRead, assetsRead, musicRead, videoRevisionTasksRead,
+  ]);
   const folders = actualFolderPaths(project); // the job's OWN folder, not the convention path (audit, Sep 8)
   // The live folder at click time (a renamed "…_02-RAW-Video" no longer breaks it).
   const rawUrl = `/api/dropbox/open/${project.id}?folder=rawVideo`;
@@ -384,12 +410,8 @@ export default async function EditBriefPage({
   // video door, took the editor's reason and dropped it on the floor. Seven
   // jobs carry editorVendorKey = external_agency, so the shape is live; no row
   // is sitting in it as this ships. Asking the same question in the same words
-  // is the only way the two cannot drift apart again.
-  const videoRevisionTasks = await prisma.smartTask.findMany({
-    where: videoLaneRevisionWhere(id),
-    select: { id: true, createdAt: true, summary: true, description: true, contactName: true, source: true, title: true, reasonCreated: true, outputId: true },
-    orderBy: { createdAt: "asc" },
-  });
+  // is the only way the two cannot drift apart again. (videoRevisionTasks is
+  // read in the batch above.)
   // THE OFFICE'S OWN REOPEN (the Editing Room's "New cut" queue-add) is not a
   // client's ask — the pill and the tracker say who put it back instead
   // (review, Sep 28). Read from the row's own sentence while it is still the
@@ -505,24 +527,44 @@ export default async function EditBriefPage({
   // WHO EACH WAITING CUT IS WITH (unified handoff §8.1, Sep 25). Read here so
   // the tracker's "with …" and the strip below say the same name. A failed
   // read shows no strip; nothing on the page waits on it.
-  const reviewerStrip = await import("@/lib/reviewerAssignment")
-    .then((m) => m.reviewerStripFor(id, viewer, { authEnforced: authEnforced() }))
-    .catch(() => null);
+  //
+  // ONE BATCH (Oct 20 2026, audit B8/H11): the strip, the work bar, the footage
+  // ladder and the brief's own reads (brand, field reports, filming, the
+  // per-video briefs, the month) need nothing from each other, so they run
+  // together. Each keeps its own soft failure.
+  const canSeeRaw = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  const { brandBriefFor } = await import("@/lib/brandProfile");
+  const { fieldReportsForProject } = await import("@/lib/clientFacts");
+  const { filmingBriefFor, outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
+  const { editorMonthFor } = await import("@/lib/editorMonth");
+  const [reviewerStrip, workBar, footage, brandBrief, fieldReports, filming, navigation, outputBriefs, rawSafeBriefs, monthRead] = await Promise.all([
+    import("@/lib/reviewerAssignment")
+      .then((m) => m.reviewerStripFor(id, viewer, { authEnforced: authEnforced() }))
+      .catch(() => null),
+    // WHO IS ON THIS JOB RIGHT NOW (§7.1, Sep 25) — the editor's own Start,
+    // not the status. Read-only here: opening this page never starts anything.
+    // A failed read shows no bar and the tracker says "not confirmed".
+    import("@/lib/editorWork").then((m) => m.workBarFor(id, viewer)).catch(() => null),
+    // §7.3: what is true about the footage, rung by rung — the video half of
+    // the ladder the project summary prints (lib/handoffLadder, one read, one
+    // set of words). A failed read draws no row.
+    import("@/lib/handoffLadder")
+      .then((m) => m.handoffLadderRows(id))
+      .then((rows) => rows.filter((r) => r.category === "video"))
+      .catch(() => null),
+    brandBriefFor(project.client.id, { projectId: project.id, scrub: !canSeeRaw, editorKey: viewer?.role === "EDITOR" ? viewer.editorKey : null }).catch(() => null),
+    fieldReportsForProject(project.id).catch(() => []),
+    filmingBriefFor(project.id).catch(() => null),
+    videoNavigationFor(project.id),
+    outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []),
+    // The creative-safe briefs for the receipt (below), only when the viewer reads raw ones.
+    canSeeRaw ? outputBriefsFor(project.id, { scrub: true }).catch(() => []) : Promise.resolve(null),
+    editorMonthFor(project.id, viewer).then((data) => ({ data, failed: false })).catch(() => ({ data: null, failed: true })),
+  ]);
   const latestReviewer =
     activeSub?.status === "PENDING"
       ? reviewerStrip?.rows.find((r) => r.submissionId === activeSub.id)?.reviewer?.name ?? null
       : null;
-  // WHO IS ON THIS JOB RIGHT NOW (§7.1, Sep 25) — the editor's own Start,
-  // not the status. Read-only here: opening this page never starts anything.
-  // A failed read shows no bar and the tracker says "not confirmed".
-  const workBar = await import("@/lib/editorWork").then((m) => m.workBarFor(id, viewer)).catch(() => null);
-  // §7.3: what is true about the footage, rung by rung — the video half of
-  // the ladder the project summary prints (lib/handoffLadder, one read, one
-  // set of words). A failed read draws no row.
-  const footage = await import("@/lib/handoffLadder")
-    .then((m) => m.handoffLadderRows(id))
-    .then((rows) => rows.filter((r) => r.category === "video"))
-    .catch(() => null);
   const { stage, label: statusLine } = deriveEditStage({
     projectStatus: project.status,
     revisionOpen: activeSub?.status === "CHANGES_REQUESTED" || quality.issues.some((issue) => !issue.duplicateOfId && ["OPEN", "REOPENED"].includes(issue.state) && (selectedKey ? issue.cutKey === selectedKey : issue.raisedOnSubmissionId === activeSub?.id)),
@@ -542,8 +584,8 @@ export default async function EditBriefPage({
   // description ("\n\nNew request: …"). Money never reaches an editor's screen
   // — and the gate is STRICT (an unknown/expired session scrubs too; only a
   // live OWNER/ADMIN sees raw text). Scrubbed-empty asks become placeholders,
-  // never dropped, so the round labels stay on the right ask.
-  const canSeeRaw = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  // never dropped, so the round labels stay on the right ask. (canSeeRaw is
+  // set above, before the batch that reads with it.)
   // The customer-notes trio, money-scrubbed for editor eyes like everything
   // else on this screen (owner/admin see raw — they're also the only ones who
   // can edit, so the editor never rewrites over a scrubbed value).
@@ -572,14 +614,11 @@ export default async function EditBriefPage({
   // version of every asset, the structured slots (fonts, links, music), the
   // standing production defaults and accepted call preferences (both dead code
   // until now), and the changes the editor has not yet said "Got it" to.
-  // Money-scrubbed exactly like the notes above.
-  const { brandBriefFor } = await import("@/lib/brandProfile");
-  const brandBrief = await brandBriefFor(project.client.id, { projectId: project.id, scrub: !canSeeRaw, editorKey: viewer?.role === "EDITOR" ? viewer.editorKey : null }).catch(() => null);
+  // Money-scrubbed exactly like the notes above. (brandBrief: the batch above.)
   // §7.8 (Sep 25): what the client ASKED for on site, for this job, that the
   // office has not confirmed yet. Shown to the editor as exactly that — never
   // as a preference (a photographer's own guess is not listed here at all).
-  const { fieldReportsForProject } = await import("@/lib/clientFacts");
-  const unconfirmedAsks = (await fieldReportsForProject(project.id).catch(() => []))
+  const unconfirmedAsks = fieldReports
     .filter((f) => f.status === "PROPOSED" && f.basis === "client_said" && f.scope === "PROJECT")
     .map((f) => ({ id: f.id, body: scrub(f.body) ?? "", by: f.speaker }))
     .filter((f) => f.body);
@@ -589,23 +628,17 @@ export default async function EditBriefPage({
   // script the client approved and the topic's raw folder. The same rows the
   // printed brief and the project summary read (filmingBriefFor), so the three
   // cannot describe one video differently. Money-scrubbed like the notes above.
-  const { filmingBriefFor } = await import("@/lib/deliverableOutputs");
-  const filming = await filmingBriefFor(project.id).catch(() => null);
+  // (filming: the batch above.)
   // §7.5 (Sep 25): each owed video's OWN brief, with the version it is — the
   // same rows the printed brief, the shoot screen and the outside agency's
   // packet read (deliverableOutputs.outputBriefsFor). Money-scrubbed for an
-  // editor, exactly like the notes above.
-  const { outputBriefsFor, OUTPUT_BRIEF_FIELDS, OUTPUT_BRIEF_FIELD_CAP } = await import("@/lib/deliverableOutputs");
-  const navigation = await videoNavigationFor(project.id);
-  const outputBriefs = await outputBriefsFor(project.id, { scrub: !canSeeRaw }).catch(() => []);
+  // editor, exactly like the notes above. (outputBriefs: the batch above.)
   // A receipt belongs to the creative-safe assignment the editor sees. An
   // owner may see raw customer wording elsewhere, but that must not produce a
   // different digest for the same editor's brief.
-  const receiptBriefs = canSeeRaw ? await outputBriefsFor(project.id, { scrub: true }).catch(() => []) : outputBriefs;
+  const receiptBriefs = rawSafeBriefs ?? outputBriefs;
   const { assignmentReceiptStates } = await import("@/lib/editorBriefReceipt");
   const receiptStates = await assignmentReceiptStates(project.id, receiptBriefs, project).catch(() => null);
-  const { editorMonthFor } = await import("@/lib/editorMonth");
-  const monthRead = await editorMonthFor(project.id, viewer).then((data) => ({ data, failed: false })).catch(() => ({ data: null, failed: true }));
   const editorMonth = monthRead.data;
   const canWriteBriefs = canSeeRaw && !viewer?.impersonating;
   // §7.6: the gaps raised off a video's brief, so its card says so instead of
@@ -825,6 +858,11 @@ export default async function EditBriefPage({
     };
   });
   const canUploadCuts = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
+  // AN EDITOR SOMEBODY ELSE HOLDS THE JOB FROM (Oct 20 2026, audit B20): the
+  // server's own refusal, asked before the page offers "Upload version N", so
+  // the editor reads it here instead of after choosing a file and finishing
+  // the check. The approved-video door below is asked per row, as before.
+  const uploadRefusal = canUploadCuts && viewer?.role === "EDITOR" ? await cutUploadRefusal(id).catch(() => null) : null;
   // WHOSE DOOR IT IS, asked of the server that answers it (drill, Sep 18). The
   // replace-the-approved-video control used to be drawn from the viewer's role
   // and the cut's status alone, while uploadAuthor scoped an EDITOR to a job
@@ -1364,6 +1402,7 @@ export default async function EditBriefPage({
     <CutUploader
       projectId={project.id}
       canUpload={canUploadCuts}
+      uploadRefusal={uploadRefusal}
       checks={checksWithFacts}
       onBehalfOf={quality.onBehalfOf}
       // Only Jordan and Kyle may send an over-spec file anyway, and
@@ -1434,8 +1473,9 @@ export default async function EditBriefPage({
             {statusSentence && <p className="mt-3 text-base font-medium leading-snug" data-job-status={situation}>{statusSentence}</p>}
             {/* ONE main button for where the video is (the audit's table). */}
             <div className="mt-3 flex flex-wrap items-center gap-2" data-job-actions>
-              {situation === "editing" && <UploadTrigger label={uploadLabel} />}
-              {situation === "back" && !heldOnly && <UploadTrigger label={selLatest && selStatus !== "WITHDRAWN" ? `Upload version ${nextRound}` : uploadLabel} redo={!!selLatest} />}
+              {situation === "editing" && !uploadRefusal && <UploadTrigger label={uploadLabel} />}
+              {situation === "back" && !heldOnly && !uploadRefusal && <UploadTrigger label={selLatest && selStatus !== "WITHDRAWN" ? `Upload version ${nextRound}` : uploadLabel} redo={!!selLatest} />}
+              {(situation === "editing" || (situation === "back" && !heldOnly)) && uploadRefusal && <p className="text-sm text-muted" data-upload-refused>{uploadRefusal}</p>}
               {situation === "check" && <a href="#self-check" className={MAIN_BTN}>Finish the check</a>}
               {bar && (
                 <WorkStateBar
@@ -1584,7 +1624,7 @@ export default async function EditBriefPage({
                   </div>
                 </details>
               )}
-              {canUploadCuts && !heldOnly && (
+              {canUploadCuts && !heldOnly && !uploadRefusal && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-danger/20 pt-3">
                   <UploadTrigger label={selLatest && selStatus !== "WITHDRAWN" ? `Upload version ${nextRound}` : uploadLabel} redo={!!selLatest} />
                   <span className="text-xs text-muted">A short final check asks which of these you fixed.</span>

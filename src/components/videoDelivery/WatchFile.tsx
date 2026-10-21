@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { PlayCircle, X } from "lucide-react";
+import { Button } from "@/components/ui/Action";
 
 // "Watch it" on a Ready to send row (Jordan, Oct 19 2026: "add a 'watch it'
 // option so we can watch before upload and sending to ensure the topaz render
@@ -14,13 +15,9 @@ export function WatchFile({ href, fileName, isRender }: { href: string; fileName
   return (
     <div className="mt-2">
       {!open ? (
-        <button
-          type="button"
-          onClick={() => { setBroken(false); setOpen(true); }}
-          className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-border-strong px-3 text-sm font-semibold hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-        >
+        <Button variant="secondary" onClick={() => { setBroken(false); setOpen(true); }}>
           <PlayCircle aria-hidden className="size-4" /> Watch it
-        </button>
+        </Button>
       ) : (
         <div className="space-y-2 rounded-lg border border-border bg-surface-2/40 p-2">
           <div className="flex items-center justify-between gap-2 px-1">

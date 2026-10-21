@@ -1,20 +1,16 @@
 // ---------------------------------------------------------------------------
-// DRILL: the reviewer's two-part check in the Review Room (Oct 15 2026).
+// DRILL: no reviewer checklist in the Review Room (Oct 15 2026, trimmed Oct 20).
 //
-//   1. The rules: every line answered, N/A only where allowed and with a
-//      reason; the editor's own check pre-fills the technical block; Approve
-//      waits until both are saved (creative by James or Jordan on program and
-//      premium videos).
-//   2. The switch OFF (the shipped default): approveCut is exactly as before.
-//   3. The switch ON: approval refused until the checks cover THIS version;
-//      Kyle saves the technical check, cannot sign the creative one on a
-//      program video; James (the creative approver seat) can; then Kyle's
-//      approval goes through. Who checked each block, and when, is stored.
-//   4. The file changed after the check: the check no longer counts.
-//   5. A standard listing reel: any reviewer signs the creative check.
-//   6. Nobody checks their own version; a "view as" preview saves nothing.
-//   7. The screens: both blocks above the verdict, Approve held with the
-//      reason, the approved script / brand / style beside the cut.
+// Oct 15 built a two-part reviewer check (technical + creative blocks) with a
+// server gate behind an AppSetting switch. Jordan took the checklist out of the
+// room on Oct 16 ("We know what to look for"), and on Oct 20 2026 (audit B5)
+// the dead gate, its save action and the component were removed. What stays:
+//   1. approveCut approves with no checks saved, even with the old
+//      `review_checklist` switch row left ON in the database;
+//   2. who is a creative approver (Jordan; the creative-approver seat, James;
+//      never Kyle's admin login, never a "view as" preview);
+//   3. the screens: no checklist, Approve is one press, and the approved
+//      script / brand / style beside the cut.
 //
 // ISOLATION: PGlite via the shared harness; the login seam and after() are
 // intercepted; Dropbox / Slack fenced.
@@ -53,10 +49,8 @@ async function main() {
   try {
     const { prisma } = await import("@/lib/prisma");
     const { putSetting } = await import("@/lib/settings");
-    const core = await import("@/lib/reviewChecklistCore");
     const store = await import("@/lib/reviewChecklist");
     const actions = await import("@/app/review/actions");
-    const checks = await import("@/app/review/checklistActions");
 
     const member = (name: string, role: "PHOTOGRAPHER" | "MANAGER" | "EDITOR") => prisma.teamMember.create({ data: { name, email: `${name.split(" ")[0].toLowerCase()}@chk.invalid`, role, active: true }, select: { id: true, name: true } });
     const jordan = await member("Jordan Spackman", "PHOTOGRAPHER");
@@ -90,119 +84,39 @@ async function main() {
       await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: `/api/review/cut/${row.id}/stream` } });
       return row.id;
     };
-    const all = (block: "TECH" | "CREATIVE", over: Record<string, { answer: "OK" | "NA"; reason?: string }> = {}) =>
-      core.ITEMS_FOR[block].map((i) => ({ key: i.key, answer: over[i.key]?.answer ?? "OK", reason: over[i.key]?.reason ?? null } as const));
     const status = (id: string) => prisma.reviewSubmission.findUniqueOrThrow({ where: { id } }).then((s) => s.status);
 
     // ======================================================================
-    c.head("1 · the rules");
-    c.ok("every line must be answered", !core.validateAnswers("TECH", all("TECH").slice(1)).ok);
-    c.ok("'doesn't apply' needs a reason", !core.validateAnswers("TECH", all("TECH", { spelling_names: { answer: "NA", reason: "no" } })).ok);
-    c.ok("…and only where it is allowed (black frames can't be skipped)", !core.validateAnswers("TECH", all("TECH", { black_frames: { answer: "NA", reason: "there are none" } })).ok);
-    c.ok("a full answer passes, a reasoned N/A on captions too", core.validateAnswers("TECH", all("TECH", { spelling_names: { answer: "NA", reason: "No text in this cut" } })).ok);
-    const pre = core.prefillFromSelfCheck([{ key: "audio_visual", answer: "YES", reason: null }, { key: "captions_text", answer: "NA", reason: "There are no captions" }, { key: "export_upload", answer: "YES", reason: null }]);
-    c.ok("the editor's check pre-fills the technical block", pre.audio_music?.answer === "OK" && pre.spelling_names?.answer === "NA" && pre.spelling_names?.reason === "There are no captions" && pre.export?.answer === "OK" && !pre.black_frames);
-    const st = (saved: boolean, stale = false, block: "TECH" | "CREATIVE" = "TECH") => ({ block, saved: saved ? { by: "x", atISO: "2026-10-15T00:00:00Z", role: null, answers: [], note: null } : null, stale });
-    c.ok("Approve waits for both", !!core.approvalBlockedReason({ tech: st(true), creative: st(false, false, "CREATIVE"), creativeRequired: false, creativeSignedByApprover: false }));
-    c.ok("program/premium: a creative check by somebody else is not enough", /James or Jordan/.test(core.approvalBlockedReason({ tech: st(true), creative: st(true, false, "CREATIVE"), creativeRequired: true, creativeSignedByApprover: false }) ?? ""));
-    c.ok("both saved, creative by the approver: Approve may be pressed", core.approvalBlockedReason({ tech: st(true), creative: st(true, false, "CREATIVE"), creativeRequired: true, creativeSignedByApprover: true }) === null);
-    c.ok("no dashes in the reasons Approve shows", ![st(false), st(true, true)].some((t) => /[—–]/.test(core.approvalBlockedReason({ tech: t, creative: st(false, false, "CREATIVE"), creativeRequired: true, creativeSignedByApprover: false }) ?? "")));
-
-    // ======================================================================
-    c.head("2 · the switch OFF (the shipped default): approval exactly as before");
-    c.ok("the switch reads off by default", (await store.reviewChecklistSettings()).enforce === false);
+    c.head("1 · approval is the sign-off: no checklist gate");
     const J0 = await mkJob("Listing Reel");
     const cut0 = await mkCut(J0);
     viewer = V.kyle;
     const r0 = await actions.approveCut(cut0);
-    c.ok("approveCut with no checks still approves", r0.ok && (await status(cut0)) === "APPROVED", r0.message);
-
-    // ======================================================================
-    c.head("3 · the switch ON: a program video");
-    await putSetting(store.REVIEW_CHECKLIST_SETTING, { enforce: true });
+    c.ok("approveCut with no checks approves", r0.ok && (await status(cut0)) === "APPROVED", r0.message);
+    // The old switch row may still be in the live database: it no longer means anything.
+    await putSetting("review_checklist", { enforce: true });
     const M = await buildContentMonth(prisma as never, { name: "Checklist Monthly TEST", package: "Starter", videosPerMonth: 1, project: { status: "REVIEW" } });
     const cutM = await mkCut({ id: M.projectId!, deliverableId: M.deliverableId });
-    const refused = await actions.approveCut(cutM);
-    c.ok("approval refused until the checks are saved", !refused.ok && /technical check/.test(refused.message) && (await status(cutM)) === "PENDING", refused.message);
-    const s0 = await store.checklistStatus(cutM);
-    c.ok("a program video needs the creative approver", s0?.creativeRequired === true);
-    viewer = V.kyle;
-    const kTech = await checks.saveReviewCheck({ submissionId: cutM, block: "TECH", answers: all("TECH"), note: "Levels fine." });
-    c.ok("Kyle saves the technical check", kTech.ok, kTech.message);
-    const kCre = await checks.saveReviewCheck({ submissionId: cutM, block: "CREATIVE", answers: all("CREATIVE") });
-    c.ok("Kyle cannot sign the creative check on a program video", !kCre.ok && /James's or Jordan's/.test(kCre.message), kCre.message);
-    const still = await actions.approveCut(cutM);
-    c.ok("still refused: the creative check is James's or Jordan's", !still.ok && /James or Jordan/.test(still.message), still.message);
-    viewer = V.james;
-    const bad = await checks.saveReviewCheck({ submissionId: cutM, block: "CREATIVE", answers: all("CREATIVE").slice(0, 2) });
-    c.ok("a half-ticked block is refused", !bad.ok && /Tick every line/.test(bad.message));
-    const jCre = await checks.saveReviewCheck({ submissionId: cutM, block: "CREATIVE", answers: all("CREATIVE", { script: { answer: "NA", reason: "Client-planned video, no script" } }) });
-    c.ok("James (the creative approver seat) signs the creative check", jCre.ok, jCre.message);
-    const rows = await prisma.cutReviewCheck.findMany({ where: { submissionId: cutM, voidedAt: null }, orderBy: { checkedAt: "asc" } });
-    c.ok("both blocks are stored with who, when and in what role", rows.length === 2 && rows[0].block === "TECH" && rows[0].checkedBy === "Kyle Cabrera" && rows[0].checkedByRole === "ADMIN" && rows[1].block === "CREATIVE" && rows[1].checkedBy === "James Livingston" && rows[1].checkedByRole === "CREATIVE_APPROVER" && !!rows[1].checkedAt);
-    c.ok("…against the exact bytes", rows.every((r) => r.contentHash && r.checklistKey.endsWith("@v1")));
-    viewer = V.kyle;
-    const ok = await actions.approveCut(cutM);
-    c.ok("now Kyle's approval goes through", ok.ok && (await status(cutM)) === "APPROVED", ok.message);
-    viewer = V.kyle;
-    const again = await checks.saveReviewCheck({ submissionId: cutM, block: "TECH", answers: all("TECH") });
-    const tRows = await prisma.cutReviewCheck.findMany({ where: { submissionId: cutM, block: "TECH" } });
-    c.ok("saving a block again keeps the earlier one as history", again.ok && tRows.length === 2 && tRows.filter((r) => r.voidedAt).length === 1);
+    const rM = await actions.approveCut(cutM);
+    c.ok("a program video approves with the old switch left on", rM.ok && (await status(cutM)) === "APPROVED", rM.message);
+    c.ok("nothing was stored as a review check", (await prisma.cutReviewCheck.count()) === 0);
 
     // ======================================================================
-    c.head("4 · the file changed after the check");
-    const J4 = await mkJob("Listing Reel");
-    const cut4 = await mkCut(J4);
-    viewer = V.kyle;
-    await checks.saveReviewCheck({ submissionId: cut4, block: "TECH", answers: all("TECH") });
-    await checks.saveReviewCheck({ submissionId: cut4, block: "CREATIVE", answers: all("CREATIVE") });
-    await prisma.reviewSubmission.update({ where: { id: cut4 }, data: { contentHash: "different-bytes" } });
-    const s4 = await store.checklistStatus(cut4);
-    c.ok("both checks read stale", !!s4?.tech.stale && !!s4.creative.stale);
-    const r4 = await actions.approveCut(cut4);
-    c.ok("approval refused: the file changed after the check", !r4.ok && /file changed/.test(r4.message), r4.message);
+    c.head("2 · who is a creative approver");
+    c.ok("Jordan (the owner)", await store.isCreativeApprover(V.jordan, { authEnforced: true }));
+    c.ok("James (the creative-approver seat)", await store.isCreativeApprover(V.james, { authEnforced: true }));
+    c.ok("not Kyle's admin login", !(await store.isCreativeApprover(V.kyle, { authEnforced: true })));
+    c.ok("not an editor", !(await store.isCreativeApprover(V.kim, { authEnforced: true })));
+    c.ok("not a 'view as' preview, even of the owner", !(await store.isCreativeApprover({ ...V.jordan, impersonating: true }, { authEnforced: true })));
 
     // ======================================================================
-    c.head("5 · a standard listing reel: any reviewer signs the creative check");
-    const J5 = await mkJob("Listing Reel");
-    const cut5 = await mkCut(J5);
-    viewer = V.kyle;
-    await checks.saveReviewCheck({ submissionId: cut5, block: "TECH", answers: all("TECH") });
-    const k5 = await checks.saveReviewCheck({ submissionId: cut5, block: "CREATIVE", answers: all("CREATIVE") });
-    c.ok("Kyle signs the creative check on a standard reel", k5.ok && (await store.checklistStatus(cut5))?.creativeRequired === false);
-    const r5 = await actions.approveCut(cut5);
-    c.ok("…and it approves", r5.ok && (await status(cut5)) === "APPROVED", r5.message);
-    const J5p = await mkJob("Premium Social Media Reel");
-    const cut5p = await mkCut(J5p);
-    c.ok("a premium reel needs the creative approver", (await store.checklistStatus(cut5p))?.creativeRequired === true);
-
-    // ======================================================================
-    c.head("6 · nobody checks their own version; a preview saves nothing");
-    const J6 = await mkJob("Listing Reel");
-    const cut6 = await mkCut(J6, { submittedByKey: "kyle" });
-    viewer = { ...V.kyle, editorKey: "kyle" };
-    const own = await checks.saveReviewCheck({ submissionId: cut6, block: "TECH", answers: all("TECH") });
-    c.ok("a check on your own version is refused", !own.ok && /your own version/.test(own.message), own.message);
-    viewer = { ...V.jordan, impersonating: true };
-    const prev = await checks.saveReviewCheck({ submissionId: cut6, block: "TECH", answers: all("TECH") });
-    c.ok("a 'view as' preview saves nothing", !prev.ok);
-    viewer = V.kim;
-    const ed = await checks.saveReviewCheck({ submissionId: cut6, block: "TECH", answers: all("TECH") });
-    c.ok("an editor cannot save a review check", !ed.ok);
-    c.ok("nothing was stored for any of them", (await prisma.cutReviewCheck.count({ where: { submissionId: cut6 } })) === 0);
-
-    // ======================================================================
-    c.head("7 · the screens");
+    c.head("3 · the screens");
     const page = read("src/app/review/[id]/page.tsx");
     const panel = read("src/components/review/CutReviewPanel.tsx");
-    // Oct 16 2026 (Jordan: "Make sure you didn't overcomplicate the review
-    // portion ... We know what to look for"): the Review Room asks for no
-    // checklist; the approval is the sign-off. The store and the server gate
-    // stay (switched off), and nothing on the page holds Approve back.
-    c.ok("the Review Room shows no checklist: Approve is one press", !page.includes("<ReviewChecklist") && !/approveBlockedReason=\{checklist/.test(page));
-    c.ok("…and the panel still honours a reason if one is ever passed", /disabled=\{pending \|\| needsReload \|\| !!approveBlockedReason\}/.test(panel));
+    c.ok("the Review Room shows no checklist: Approve is one press", !page.includes("<ReviewChecklist") && !/approveBlockedReason/.test(page) && !/approveBlockedReason/.test(panel));
+    c.ok("the checklist component and its save action are gone", !fs.existsSync("src/components/review/ReviewChecklist.tsx") && !/function saveReviewCheck/.test(read("src/app/review/checklistActions.ts")));
+    c.ok("approveCut asks no checklist", !/checklistRefusal\(/.test(read("src/app/review/actions.ts")));
     c.ok("the approved script, their brand and style sit beside the cut", /<JudgeAgainst topicTitle=\{judgeTopic\} script=\{judgeScript\} brand=\{judgeBrand\} style=\{judgeStyle\} \/>/.test(page));
-    c.ok("the server gate sits after the issue gate in approveCut", (() => { const a = read("src/app/review/actions.ts"); return a.indexOf("checklistRefusal(submissionId)") > a.indexOf("issueGate.canApproveAnyway") && a.indexOf("checklistRefusal(submissionId)") < a.indexOf("const ruler = await rulerOf()"); })());
 
     c.head("isolation");
     c.ok("nothing left the machine but fenced Slack", fence.blocked.every((u) => /dropbox|blob\.vercel/i.test(u)), fence.blocked.slice(0, 3).join(", "));

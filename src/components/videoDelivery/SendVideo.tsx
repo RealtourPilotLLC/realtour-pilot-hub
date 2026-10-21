@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, BellRing, Loader2, RotateCcw, Send, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/Action";
 import { remindVideoAction, sendAllVideosAction, sendVideoToAryeoAction } from "@/app/review/videoSendActions";
 
 // ---------------------------------------------------------------------------
@@ -14,16 +15,16 @@ import { remindVideoAction, sendAllVideosAction, sendVideoToAryeoAction } from "
 // open client requests, the first press shows them and asks "Checked, upload
 // and send"; when the Aryeo listing already shows a video that could be this
 // one, the first press says so and asks "Upload anyway". After the press the
-// row shows the upload's own progress (the page refreshes itself while a
+// row shows the upload's own progress (the page refreshes itself every 30 s while a
 // video is on its way).
 // SendAll: every ready row with no open request, one press.
 // RemindButton: "Remind editor" / "Remind reviewer", at most once every 4
 // hours per video (the server decides; the row then says who was reminded).
 // ---------------------------------------------------------------------------
 
-const btn =
-  "inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-2 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
-const primary = cn(btn, "border-brand bg-brand text-white hover:bg-brand/90");
+// One look for the room's buttons (Oct 20 2026, audit B21): the shared Button
+// (components/ui/Action.tsx), primary for the press that sends, secondary for
+// the rest. The old primary was white on bg-brand, below text contrast.
 
 type Ask = { summary: string; askedBy: string | null };
 
@@ -70,9 +71,9 @@ export function SendVideo(props: {
   return (
     <div className="mt-2 space-y-2">
       {step === "idle" && (
-        <button type="button" disabled={pending} className={props.label === "Try again" ? btn : primary} onClick={press}>
+        <Button variant={props.label === "Try again" ? "secondary" : "primary"} disabled={pending} onClick={press}>
           {pending ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Icon aria-hidden className="size-4" />} {pending ? "Starting" : props.label}
-        </button>
+        </Button>
       )}
       {step === "asks" && (
         <div role="group" aria-label={`Client requests for ${props.street}`} className="rounded-lg border border-warning/40 bg-warning-soft/30 p-3 text-sm">
@@ -83,10 +84,10 @@ export function SendVideo(props: {
             ))}
           </ul>
           <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" disabled={pending} className={primary} onClick={() => go(true)}>
+            <Button variant="primary" disabled={pending} onClick={() => go(true)}>
               <UploadCloud aria-hidden className="size-4" /> Checked, upload and send
-            </button>
-            <button type="button" className={btn} onClick={() => setStep("idle")}>Cancel</button>
+            </Button>
+            <Button variant="secondary" onClick={() => setStep("idle")}>Cancel</Button>
           </div>
         </div>
       )}
@@ -95,10 +96,10 @@ export function SendVideo(props: {
           <p className="flex items-start gap-1.5 font-medium"><AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" /> {props.listingWarning}</p>
           <p className="mt-1 text-muted">Play it in Aryeo first. If it is this video, record it under &ldquo;Done it by hand?&rdquo; instead.</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" disabled={pending} className={primary} onClick={() => go(false)}>
+            <Button variant="primary" disabled={pending} onClick={() => go(false)}>
               <UploadCloud aria-hidden className="size-4" /> Upload anyway
-            </button>
-            <button type="button" className={btn} onClick={() => setStep("idle")}>Cancel</button>
+            </Button>
+            <Button variant="secondary" onClick={() => setStep("idle")}>Cancel</Button>
           </div>
         </div>
       )}
@@ -116,16 +117,15 @@ export function SendAll(props: { submissionIds: string[] }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       {!confirming ? (
-        <button type="button" disabled={pending} className={btn} onClick={() => setConfirming(true)}>
+        <Button variant="secondary" disabled={pending} onClick={() => setConfirming(true)}>
           {pending ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <Send aria-hidden className="size-4" />} Send all ({n})
-        </button>
+        </Button>
       ) : (
         <>
           <span className="text-sm">Upload and send all {n} to their Aryeo listings?</span>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             disabled={pending}
-            className={primary}
             onClick={() => {
               setConfirming(false);
               start(async () => {
@@ -140,8 +140,8 @@ export function SendAll(props: { submissionIds: string[] }) {
             }}
           >
             Yes, send all {n}
-          </button>
-          <button type="button" className={btn} onClick={() => setConfirming(false)}>Cancel</button>
+          </Button>
+          <Button variant="secondary" onClick={() => setConfirming(false)}>Cancel</Button>
         </>
       )}
       {msg && <p role="status" className={cn("w-full text-sm", msg.ok ? "text-muted" : "font-medium text-warning")}>{msg.text}</p>}
@@ -157,10 +157,9 @@ export function RemindButton(props: { rowKey: string; projectId: string; submiss
   return (
     <div className="flex flex-wrap items-center gap-2">
       {!done && (
-        <button
-          type="button"
+        <Button
+          variant="secondary"
           disabled={pending}
-          className={btn}
           aria-label={`${props.label}: ${props.name}`}
           onClick={() =>
             start(async () => {
@@ -178,22 +177,9 @@ export function RemindButton(props: { rowKey: string; projectId: string; submiss
           }
         >
           {pending ? <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" /> : <BellRing aria-hidden className="size-4" />} {props.label}
-        </button>
+        </Button>
       )}
       {msg && <p role="status" className={cn("text-sm", msg.ok ? "text-muted" : "text-warning")}>{msg.text}</p>}
     </div>
   );
-}
-
-/** While a video is on its way, look again every 20 seconds (only while the tab is visible). */
-export function AutoRefresh({ active }: { active: boolean }) {
-  const router = useRouter();
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => {
-      if (typeof document === "undefined" || document.visibilityState === "visible") router.refresh();
-    }, 20_000);
-    return () => clearInterval(t);
-  }, [active, router]);
-  return null;
 }

@@ -177,9 +177,8 @@ const SECTIONS: NavSection[] = [
     // (old Payouts) as one page's tabs. The three-item "Sales & Finance" section
     // collapses to a single item. Service Catalog moved out to Knowledge (it's a
     // price reference, not money that moves). Marketing is retired from the nav
-    // entirely (coming-soon stub) — re-add a { label: "Marketing", href:
-    // "/marketing", icon: Megaphone, key: "marketing" } item here once social
-    // scheduling actually ships; the /marketing route stays reachable meanwhile.
+    // and its coming-soon page is gone (there is no /marketing route); add a
+    // page and an item here if social scheduling ever ships.
     title: "Finance",
     items: [
       { label: "Finance", href: "/sales", icon: DollarSign, key: "sales" },

@@ -1,5 +1,9 @@
 // @drill-run: conditions=none require=./scripts/_drill/_client-drill-preload.cjs
 // Actual delivery component handlers/SSR; server actions are explicit fakes.
+// Oct 20 2026 (audit H13): the parts for MarkUploaded (and its
+// recordUploadRequest + /api/ops/video-upload chain), ChooseAryeoDelivery (and
+// /api/ops/video-destination) and DeliveryExitSummary went with those files:
+// no screen rendered any of them.
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { createElement, isValidElement, type ReactNode } from "react";
@@ -44,11 +48,8 @@ async function until(test: () => boolean) { for (let i = 0; i < 100 && !test(); 
 async function main() {
   const c = makeChecker(), req = createRequire(__filename);
   let groupResult = deferred<GroupDeliveryResult>();
-  let destinationResponse = Response.json({ ok: false, message: "Link an Aryeo listing first." });
-  let destinationCalls = 0;
   const groupCalls: { projectId: string; cuts: UploadedTarget[] }[] = [];
   const fence = fenceFetch((url, init) => {
-    if (url.startsWith("/api/ops/video-destination")) { destinationCalls++; return destinationResponse; }
     if (url !== "/api/ops/project-sent") return null;
     groupCalls.push(JSON.parse(init?.body as string));
     return groupResult.promise.then(value => Response.json(value));
@@ -68,7 +69,7 @@ async function main() {
     { id: "listing-notice", projectId: "listing-job", fileName: "listing-v1.mp4", assetPath: null, sentToClientAt: new Date("2026-10-01T16:00:00Z"), sentToClientBy: "Original office actor", clientNoticeBy: null, project: { title: "Monthly content words in an ordinary listing title", contentMonthId: null } },
   ];
   stub(req.resolve("../../src/lib/prisma.ts"), { prisma: { auditLog: { findMany: async () => [] }, reviewSubmission: { findMany: async (args: NonNullable<typeof noticeQuery.args>) => { noticeQuery.args = args; if (noticeQuery.fail) throw new Error("fixture reader unavailable"); return readerRows; } } } });
-  const uploadCalls: { id: string; fingerprint: string }[] = []; let uploadResult = deferred<{ ok: boolean; message: string }>();
+  const uploadCalls: { id: string; fingerprint: string }[] = []; const uploadResult = deferred<{ ok: boolean; message: string }>();
   const undoCalls: { id: string; fingerprint: string }[] = []; let undoResult = deferred<{ ok: boolean; message: string }>();
   stub(req.resolve("../../src/app/ops/actions.ts"), {
     undoVideoUploadAction: async (id: string, fingerprint: string) => { undoCalls.push({ id, fingerprint }); return undoResult.promise; },
@@ -82,10 +83,9 @@ async function main() {
     recordFinalFileCheckAction: () => { throw new Error("save not invoked by this fixture"); },
     readFinalFileCheckReceiptAction: () => { throw new Error("receipt not invoked by this fixture"); },
   });
-  stub(req.resolve("../../src/lib/recordUploadRequest.ts"), { recordUploadRequest: async (id: string, fingerprint: string) => { uploadCalls.push({ id, fingerprint }); return uploadResult.promise; } });
   stub(req.resolve("../../src/lib/recordDeliveryRequest.ts"), { recordDeliveryRequest: async (id: string, notice?: string) => { calls.push({ id, notice }); return result.promise; } });
   const windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window");
-  let confirms = true, removed = 0;
+  const confirms = true;
   Object.defineProperty(globalThis, "window", { configurable: true, value: { confirm: () => confirms } });
   let card: ReturnType<typeof mountHooks> | null = null;
   try {
@@ -96,29 +96,6 @@ async function main() {
     const button = (label: string) => elements(tree(), "Button").find((p) => words(p.children).trim() === label);
     const click = (label: string) => { const p = button(label); if (!p) throw new Error(`Missing button ${label}`); (p.onClick as () => void)(); if (label === "Mark as Uploaded") { const confirm = button(confirms ? "Confirm uploaded" : "Cancel"); if (confirm) (confirm.onClick as () => void)(); } };
     const status = () => elements(tree(), "SaveStatus")[0];
-    const { MarkUploaded } = await import("../../src/components/ops/MarkUploaded");
-    const mountUpload = async () => { card?.stop(); card = mountHooks(() => MarkUploaded({ submissionId: props.submissionId, fingerprint: "exact-file-v3", onUploaded: () => removed++ })); tree(); await Promise.resolve(); };
-    await mountUpload(); confirms = false; click("Mark as Uploaded"); confirms = true;
-    c.ok("cancelling confirmation submits nothing", uploadCalls.length === 0 && markers.size === 0);
-    click("Mark as Uploaded"); click("Mark as Uploaded");
-    c.ok("confirmed upload serializes exact version despite repeated clicks", uploadCalls.length === 1 && uploadCalls[0].fingerprint === "exact-file-v3");
-    uploadResult.reject(new Error("lost response")); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("lost response ends spinner with ordinary retry and no reconciliation control", !!button("Mark as Uploaded") && !button("Reconcile upload record") && markers.size === 1 && removed === 0);
-    await mountUpload(); uploadResult = deferred(); click("Mark as Uploaded");
-    c.ok("ordinary confirmed retry preserves exact source after remount", uploadCalls.length === 2 && uploadCalls[1].fingerprint === "exact-file-v3");
-    uploadResult.resolve({ ok: true, message: "Already recorded by original actor" }); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("authoritative receipt removes row immediately without dashboard refresh", removed === 1 && markers.size === 0 && !!button("Uploaded") && elements(tree(), "Button")[0].disabled === true && refreshes === 0);
-    await mountUpload(); uploadResult = deferred(); click("Mark as Uploaded"); uploadResult.resolve({ ok: false, message: "This cut changed" }); await until(() => elements(tree(), "Button")[0].busy === false);
-    c.ok("refusal keeps row visible with reason", removed === 1 && words(tree()).includes("This cut changed"));
-    markers.clear(); await mountUpload(); uploadResult = deferred();
-    const realTimer = globalThis.setTimeout;
-    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => realTimer(callback, ms === 15_000 || ms === 20_000 ? 1 : ms, ...args)) as typeof setTimeout;
-    try { click("Mark as Uploaded"); await until(() => elements(tree(), "Button")[0].busy === false); }
-    finally { globalThis.setTimeout = realTimer; }
-    c.ok("hung confirmation ends spinner and retains recoverable ordinary retry", markers.size === 1 && removed === 1 && !!button("Mark as Uploaded") && !elements(tree(), "Button")[0].disabled);
-    uploadResult.resolve({ ok: true, message: "Late response" }); await Promise.resolve(); await Promise.resolve();
-    c.ok("late response cannot falsely remove the row", removed === 1 && markers.size === 1);
-    markers.clear();
     await mount(false); click("Mark as sent");
     const staleChoice = button("Mark as sent")!.onClick as () => void;
     staleChoice();
@@ -160,7 +137,6 @@ async function main() {
     c.ok("late known response never clears another attempt's guard", markers.get("rtp:delivery-record:fixture-exact-cut") === other && elements(tree(), "Button")[0].disabled === true && words(tree()).includes("different unconfirmed change"));
 
     const { ReadyToSendCard } = await import("../../src/components/ops/ReadyToSendCard");
-    const { DeliveryExitSummary } = await import("../../src/components/review/DeliveryExitSummary");
     const ready: ReadyVideo = {
       submissionId: props.submissionId, projectId: "fixture-project", monthlyProgram: true, monthKey: "2026-10", topicTitle: "Exact topic", monthlyPortalReleased: true, monthlyPortalAccess: true, monthlyFinalCheckRecorded: false,
       topazJobId: null, street: props.street, clientName: "Fixture Grove Client", clientAvatarUrl: null, cutLabel: "Output 2", round: 3, approvedAtISO: "2026-10-01T15:00:00Z", approvedBy: "James", waitingHours: 1, overdue: false,
@@ -175,18 +151,6 @@ async function main() {
     const branding = { ...ready, deliveryDestination: "client-portal" as const, canChooseAryeo: true, destinationFingerprint: "branding-choice", uploadFingerprint: "branding-final" };
     const brandingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [branding] } }));
     c.ok("a branding video is never offered 'Upload to Aryeo instead?' on the card", !brandingHTML.includes("Upload to Aryeo instead?"));
-    const { ChooseAryeoDelivery } = await import("../../src/components/ops/ChooseAryeoDelivery");
-    let chosen = 0;
-    card!.stop(); card = mountHooks(() => ChooseAryeoDelivery({ submissionId: "branding-cut", fingerprint: "branding-final", onChosen: () => chosen++ }));
-    await (elements(tree(), "button")[0].onClick as () => Promise<void>)();
-    c.ok("destination refusal ends busy state and displays actionable error", chosen === 0 && words(tree()).includes("Link an Aryeo listing first.") && !elements(tree(), "button")[0].disabled);
-    const { destinationReceiptHeaders, confirmedAryeoDestination } = await import("../../src/lib/videoDestinationReceipt");
-    const accepted = new Response(new ReadableStream({ start() {} }), { headers: destinationReceiptHeaders("branding-cut", "branding-final") });
-    c.ok("destination receipt rejects a different source", !confirmedAryeoDestination(accepted, "branding-cut", "wrong-final"));
-    destinationResponse = accepted;
-    const beforeChoices = destinationCalls;
-    await (elements(tree(), "button")[0].onClick as () => Promise<void>)();
-    c.ok("committed headers finish choice even when the response body never completes", chosen === 1 && destinationCalls === beforeChoices + 1 && !elements(tree(), "button")[0].disabled);
     const listingHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [{ ...ready, monthlyProgram: false, uploadFingerprint: "fixture-source" }] } }));
     // Oct 13 2026: listing videos close themselves (upload seen on the listing + Aryeo's delivered event); one fallback button.
     c.ok("actual listing row keeps its Aryeo link and ONE fallback: Mark as delivered", listingHTML.includes("example.test/listing") && listingHTML.includes("Mark as delivered") && !listingHTML.includes("Mark as Uploaded") && !listingHTML.includes(">Mark as sent<"));
@@ -260,8 +224,7 @@ async function main() {
     c.ok("direct send receipt removes row once without heavy dashboard refresh", sentRemoved === 1 && refreshes === refreshBeforeSend && markers.size === 0);
     const partialHTML = renderToStaticMarkup(createElement(ReadyToSendCard, { board: { ...board, ready: [], needsFinishing: [{ submissionId: ready.submissionId, projectId: ready.projectId, street: ready.street, sentAtISO: ready.approvedAtISO, sentBy: "Kyle", why: "Fixture partial" }] } }));
     c.ok("partial follow-up no longer claims client possession from a handoff stamp", !partialHTML.includes("The client has these") && partialHTML.includes("does not prove client approval, notification or receipt"));
-    const exitHTML = renderToStaticMarkup(createElement(DeliveryExitSummary, { board }));
-    c.ok("James-to-Kyle handoff keeps exact version link and separate approval/notification with accessible control", exitHTML.includes("fixture-exact-cut") && exitHTML.includes("Notification and client approval remain separate") && exitHTML.includes("min-h-11") && exitHTML.includes("focus-visible:outline"));
+    // Oct 20 2026 (B7/H13): DeliveryExitSummary was never rendered and is deleted, with its two checks.
 
     const { clientNotToldYet } = await import("../../src/lib/readyToSend");
     const noticeRows = await clientNotToldYet({ projectId: "exact-requested-project", excludeClientIds: ["excluded-fixture"], max: 7 });
@@ -296,30 +259,10 @@ async function main() {
     c.ok("listing follow-up retains all three original notice choices", !!button("Aryeo emailed them") && !!button("We texted them") && !!button("Call or in person") && words(tree()).includes("delivery recorded"));
     noticeResult = deferred(); click("Aryeo emailed them"); noticeResult.resolve({ ok: false, message: "Known no-write refusal." }); await until(() => elements(tree(), "Button")[0].busy === false);
     c.ok("first known refusal preserves exact reason and permits corrected notice recording", !markers.size && words(tree()).includes("Known no-write refusal") && !elements(tree(), "Button")[0].disabled);
-    const noticeExit = renderToStaticMarkup(createElement(DeliveryExitSummary, { board: { ...board, ready: [], notTold: [noticeRows[0]] } }));
-    c.ok("review-exit monthly notification state names portal handoff without claiming delivery to or approval by client", noticeExit.includes("Portal handoff recorded; client notification owed") && noticeExit.includes("does not establish client approval or receipt") && !noticeExit.includes("video is marked sent"));
-    let apiAllowed = true, apiWrites = 0;
+    let apiAllowed = true;
     stub(req.resolve("../../src/lib/auth/guards.ts"), { requireAdmin: async () => { if (!apiAllowed) throw new Error("Forbidden"); } });
     stub(req.resolve("../../src/lib/auth/user.ts"), { getCurrentUser: async () => ({ id: "fixture-office", name: "Kyle", impersonating: false }) });
-    stub(req.resolve("../../src/lib/deliveryUploads.ts"), { uploadReceiptStatus: async () => ({ ok: true, recorded: true, message: "Original saved receipt" }), recordUploaded: async (id: string, actor: { id: string }, fingerprint: string) => { apiWrites++; return { ok: id === props.submissionId && actor.id === "fixture-office" && fingerprint === "exact-file-v3", message: "Receipt saved" }; } });
-    const { POST, GET: uploadGET } = await import("../../src/app/api/ops/video-upload/route");
-    const apiRequest = (origin = "https://hub.example.test", body: unknown = { submissionId: props.submissionId, fingerprint: "exact-file-v3" }) => new Request("https://hub.example.test/api/ops/video-upload", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    c.ok("upload API rejects cross-origin requests before any write", (await POST(apiRequest("https://other.example.test"))).status === 403 && apiWrites === 0);
-    apiAllowed = false;
-    c.ok("upload API enforces office permissions before any write", (await POST(apiRequest())).status === 403 && apiWrites === 0);
-    apiAllowed = true;
-    c.ok("upload API rejects malformed confirmation before any write", (await POST(apiRequest(undefined, {}))).status === 400 && apiWrites === 0);
-    const apiResponse = await POST(apiRequest()), apiReceipt = await apiResponse.json();
-    c.ok("upload API returns exact authenticated receipt directly without dashboard render", apiReceipt.ok === true && apiWrites === 1);
-    const { confirmedUploadResponse } = await import("../../src/lib/uploadReceiptResponse");
-    c.ok("committed upload API publishes a source-bound immediate receipt", confirmedUploadResponse(apiResponse, props.submissionId, "exact-file-v3")?.ok === true && !confirmedUploadResponse(apiResponse, props.submissionId, "other-version") && apiResponse.headers.get("cache-control") === "private, no-store");
-    const statusRequest = new Request("https://hub.example.test/api/ops/video-upload?submissionId=exact-cut&fingerprint=exact-source");
-    apiAllowed = false;
-    c.ok("upload receipt reader preserves office authorization", (await uploadGET(statusRequest)).status === 403 && apiWrites === 1);
-    apiAllowed = true;
-    c.ok("upload receipt reader requires exact ID and source", (await uploadGET(new Request("https://hub.example.test/api/ops/video-upload"))).status === 400 && apiWrites === 1);
-    const readReceipt = await uploadGET(statusRequest);
-    c.ok("upload receipt reader is uncached and writes nothing", (await readReceipt.json()).recorded === true && readReceipt.headers.get("cache-control") === "private, no-store" && apiWrites === 1);
+    const apiRequest = (origin = "https://hub.example.test", body: unknown = { submissionId: props.submissionId, fingerprint: "exact-file-v3" }) => new Request("https://hub.example.test/api/ops/video-sent", { method: "POST", headers: { origin, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const { POST: sentPOST } = await import("../../src/app/api/ops/video-sent/route");
     const callsBeforeAPI = calls.length;
     c.ok("sent API rejects cross-origin before recording", (await sentPOST(apiRequest("https://other.example.test"))).status === 403 && calls.length === callsBeforeAPI);
@@ -346,7 +289,7 @@ async function main() {
     completeResponse.json = () => { throw new Error("Body lost after successful delivery response headers"); };
     c.ok("committed group response confirms its exact attempt without waiting on the body", confirmedProjectDeliveryResponse(completeResponse, "group-project", groupCuts, attemptId)?.completed.length === 2);
     c.ok("group receipt cannot confirm another attempt or project", !confirmedProjectDeliveryResponse(completeResponse, "other-project", groupCuts, attemptId) && !confirmedProjectDeliveryResponse(completeResponse, "group-project", groupCuts, randomUUID()));
-    c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === groupCalls.length - 1 + destinationCalls && fence.blocked.length === 0);
+    c.ok("isolated UI checks performed no real providers, database action or send", fence.faked.length === groupCalls.length - 1 && fence.blocked.length === 0);
     c.summary();
   } finally {
     card?.stop();

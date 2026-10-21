@@ -1,5 +1,6 @@
 import "server-only";
 import { ownerGoogleToken } from "./google";
+import { fetchWithTimeout } from "@/lib/http";
 
 // ---------------------------------------------------------------------------
 // GOOGLE DRIVE — read Meet transcripts, and nothing else.
@@ -28,7 +29,8 @@ export class DriveNotConnected extends Error {
 }
 
 async function driveFetch(url: string, token: string): Promise<Response> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  // 30 s (Oct 20 2026, audit H7): a transcript is a Doc exported as text.
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
   if (res.ok) return res;
   const body = await res.text();
   const msg = (() => {

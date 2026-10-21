@@ -16,6 +16,8 @@ import { prisma } from "@/lib/prisma";
 //   · Send all: every ready row with no open request, in one press.
 //   · Remind editor / Remind reviewer (lib/remindEditor): at most once every
 //     4 hours per video.
+//   · Deliver now and Release, on a video a person already started sending
+//     (moved here from ops/video-delivery/actions on Oct 20 2026, audit B15).
 // A server action is a public POST: each one checks requireAdmin first (Jordan
 // or Kyle; the REAL role, "view as" refused). Every answer is { ok, message }
 // in plain words; nothing throws to the page.
@@ -93,7 +95,7 @@ export async function sendAllVideosAction(submissionIds: string[]): Promise<Send
       if (r.started) started.push(id);
       else if (!r.ok) refused.push(r.message);
     }
-    // Move them on a little now; the cron (every 5 minutes) carries on.
+    // Move them on a little now; the cron (every minute) carries on.
     const t0 = Date.now();
     for (const id of started) {
       const left = 40_000 - (Date.now() - t0);
@@ -109,6 +111,42 @@ export async function sendAllVideosAction(submissionIds: string[]): Promise<Send
   }
 }
 
+/** Deliver now: the video is on the listing and waiting for a person (lib/videoAryeoPush.deliverVideoNow). */
+export async function deliverVideoNowAction(submissionId: string): Promise<SendResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (typeof submissionId !== "string" || !ID.test(submissionId)) return { ok: false, message: "That video id is not valid." };
+  try {
+    const { deliverVideoNow } = await import("@/lib/videoAryeoPush");
+    const r = await deliverVideoNow(submissionId, (await actor()).name);
+    refresh();
+    return r;
+  } catch (e) {
+    return failed("deliver now", e);
+  }
+}
+
+/** Release: a run a person held goes on (lib/videoAryeoPush.releaseVideoPush). */
+export async function releaseVideoPushAction(submissionId: string): Promise<SendResult> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return denied(e);
+  }
+  if (typeof submissionId !== "string" || !ID.test(submissionId)) return { ok: false, message: "That video id is not valid." };
+  try {
+    const { releaseVideoPush } = await import("@/lib/videoAryeoPush");
+    const r = await releaseVideoPush(submissionId, (await actor()).name);
+    refresh();
+    return r;
+  } catch (e) {
+    return failed("release", e);
+  }
+}
+
 /** Remind editor / Remind reviewer, for one video on the room. */
 export async function remindVideoAction(input: { key: string; projectId: string; submissionId: string | null }): Promise<SendResult & { atISO?: string; to?: string }> {
   try {
@@ -121,9 +159,11 @@ export async function remindVideoAction(input: { key: string; projectId: string;
   }
   try {
     // What the room shows is the truth the message is written from (never
-    // the browser's word for how late it is).
+    // the browser's word for how late it is). The room's own read, when it is
+    // under 15 s old, rather than a whole new board per press (Oct 20 2026,
+    // audit B17); who holds the video is read fresh by remindVideo itself.
     const { videoDeliveryBoard } = await import("@/lib/videoDelivery");
-    const board = await videoDeliveryBoard({ fresh: true });
+    const board = await videoDeliveryBoard();
     const row = Object.values(board.lanes).flat().find((r) => r.key === input.key && r.projectId === input.projectId);
     let item: import("@/lib/remindEditor").RemindItem | null = row
       ? { key: row.key, projectId: row.projectId, submissionId: row.submissionId, street: row.street, promiseISO: row.promiseISO, late: row.late, dueToday: row.dueToday, revisionSinceISO: row.cutStatus === "CHANGES_REQUESTED" ? row.sinceISO : null }
@@ -142,6 +182,22 @@ export async function remindVideoAction(input: { key: string; projectId: string;
     return { ok: r.ok, message: r.message, atISO: r.atISO, to: r.to };
   } catch (e) {
     return failed("remind", e);
+  }
+}
+
+/** Remove a note this action wrote and could not use: the note, and the
+ *  revision issue made from it (revisionIssues.ingestReviewNote) with its
+ *  history. Best-effort; never throws. */
+async function dropUnsentNote(noteId: string): Promise<void> {
+  try {
+    const issues = await prisma.revisionIssue.findMany({ where: { sourceKind: "REVIEW_NOTE", sourceId: noteId }, select: { id: true } });
+    if (issues.length) {
+      await prisma.revisionIssueEvent.deleteMany({ where: { issueId: { in: issues.map((i) => i.id) } } });
+      await prisma.revisionIssue.deleteMany({ where: { id: { in: issues.map((i) => i.id) } } });
+    }
+    await prisma.mediaNote.deleteMany({ where: { id: noteId, status: "OPEN" } });
+  } catch (e) {
+    console.warn("[video-review] could not remove the unsent note", noteId, e);
   }
 }
 
@@ -172,6 +228,16 @@ export async function sendBackForRevisionsAction(submissionId: string, projectId
   const n = await addCutNote({ projectId, submissionId, body, lane: "EDITOR", kind: "fix", timeSec: null });
   if (!n.ok) return { ok: false, message: n.message ?? "The note couldn't be saved." };
   const r = await requestCutChanges(submissionId, { reopen: true });
+  // A REFUSED REOPEN LEAVES NO NOTE BEHIND (Oct 20 2026, audit B19). The note
+  // was written first because the reopen needs one; if the reopen was refused
+  // (a newer version is in, the version is waiting on the editor's check) and
+  // the video is still approved, an open editor note on an approved cut would
+  // only inflate the "open notes" count. A video somebody else reopened in
+  // the meantime keeps it: it is a real note on a cut that is with the editor.
+  if (!r.ok && n.noteId) {
+    const still = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { status: true } }).catch(() => null);
+    if (still?.status === "APPROVED") await dropUnsentNote(n.noteId);
+  }
   revalidatePath("/review");
   revalidatePath("/");
   return { ok: r.ok, message: r.ok ? "Sent back to the editor. It's off Ready to send." : r.message };

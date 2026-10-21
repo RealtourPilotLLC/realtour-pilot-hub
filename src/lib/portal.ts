@@ -262,18 +262,6 @@ export async function enrollmentHasMembership(enrollmentId: string): Promise<boo
   return (await prisma.clientMembership.count({ where: { enrollmentId, revokedAt: null } })) > 0;
 }
 
-/**
- * Thin legacy wrapper — the pre-Sep-16 signature. Resolves a token visit ONLY
- * (no cookies, no staff) and only when the program is running. Kept so nothing
- * that still imports it breaks; new code calls resolvePortalViewer.
- */
-export async function portalEnrollment(token: string): Promise<Pick<PortalEnrollment, "id" | "clientId" | "videosPerMonth"> | null> {
-  const r = await resolvePortalViewer({ token, cookies: { get: () => undefined } });
-  if (!r.ok || r.viewer.access !== "FULL") return null;
-  const { id, clientId, videosPerMonth } = r.viewer.enrollment;
-  return { id, clientId, videosPerMonth };
-}
-
 /** One PortalVisit per render — the log that answers "has anyone opened it".
  *  Best-effort: a failed write must never break the page. */
 export async function recordPortalVisit(viewer: PortalViewer, path: string): Promise<void> {
@@ -1736,7 +1724,6 @@ export type PortalStrategyView = {
   summary: { brandMessage: string | null; brandVoice: string | null; coreValues: string | null; audience: string[]; goals: string[]; pillars: { name: string; purpose: string | null; focusAreas: string | null }[] } | null;
   /** Newer versions exist internally but are not released — the client sees this one. */
   newerPending: boolean;
-  proposalsOpen: number;
 };
 
 // Internal production mechanics never render on the client's page (Jordan,
@@ -1774,13 +1761,11 @@ export async function portalStrategy(enrollment: { id: string; clientId: string 
       };
     }
   } catch { summary = null; }
-  const [newer, proposalsOpen] = await Promise.all([
-    prisma.contentStrategyVersion.count({ where: { enrollmentId: enrollment.id, versionNo: { gt: released.versionNo }, status: { in: ["APPROVED", "INTERNAL_REVIEW", "DRAFT"] } } }),
-    prisma.contentStrategyProposal.count({ where: { enrollmentId: enrollment.id, status: "PROPOSED", sourceKind: "client" } }),
-  ]);
+  // (The open-corrections count went with the portal's correction box, Oct 20 2026, audit E9.)
+  const newer = await prisma.contentStrategyVersion.count({ where: { enrollmentId: enrollment.id, versionNo: { gt: released.versionNo }, status: { in: ["APPROVED", "INTERNAL_REVIEW", "DRAFT"] } } });
   return {
     versionNo: released.versionNo, approvedAtISO: released.approvedAt?.toISOString() ?? null, releasedAtISO: released.releasedAt.toISOString(), sourceKind: released.sourceKind,
-    sections, summary, newerPending: newer > 0, proposalsOpen,
+    sections, summary, newerPending: newer > 0,
   };
 }
 

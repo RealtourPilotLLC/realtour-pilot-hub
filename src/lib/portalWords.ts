@@ -116,15 +116,22 @@ export const isLibraryFilter = (k: unknown): k is LibraryFilterKey => LIBRARY_FI
 // ---------------------------------------------------------------------------
 // THE OFFICE LINE IN A SENTENCE (Sep 24). A refusal or a hint that cannot hold
 // a link used to end "text us" — with no name and no number (audit §6: generic
-// "text us" instructions are friction). These name Kyle and the office line,
-// the same values as ContactTeam's DEFAULT_PORTAL_CONTACT and
-// reviewWindows.URGENT_CONTACT (the ui01 drill asserts they agree). The contact
-// card beside every page reads the owner-editable `portal-contact` setting;
-// these sentences are written where no async read is possible (constant maps,
-// sync refusals), so they follow the default.
+// "text us" instructions are friction). These name Kyle and the office line.
+// The contact card beside every page reads the owner-editable `portal-contact`
+// setting; these sentences are written where no async read is possible
+// (constant maps, sync refusals), so they follow the default.
+//
+// ONE COPY OF THE DEFAULT (Oct 20 2026, audit E12). Kyle's name and number
+// were typed out in ten places (the scheduler, the address page and its
+// action, the Terms, the paused refusal, ContactTeam, programMessages,
+// reviewWindows, sessionBooking), so changing the contact meant hunting them
+// down. OFFICE_LINE is now the one literal; every other default reads it, and
+// pages that can read `portal-contact` print that instead. Pure, so a client
+// component may import it.
 // ---------------------------------------------------------------------------
-export const TEXT_KYLE = "text Kyle at (215) 645-4889";
-export const TEXT_KYLE_START = "Text Kyle at (215) 645-4889";
+export const OFFICE_LINE = { name: "Kyle", display: "(215) 645-4889", e164: "+12156454889" } as const;
+export const TEXT_KYLE = `text ${OFFICE_LINE.name} at ${OFFICE_LINE.display}`;
+export const TEXT_KYLE_START = `Text ${OFFICE_LINE.name} at ${OFFICE_LINE.display}`;
 
 const COUNT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 /**

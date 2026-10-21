@@ -86,6 +86,8 @@ const KEY = (submissionId: string) => `video_aryeo_push:${submissionId}`;
 const DELIVER_KEY = (listingId: string) => `video_aryeo_deliver:${listingId}`;
 const ADD_LOCK_KEY = (listingId: string) => `video_aryeo_adding:${listingId}`;
 const PREFIX = "video_aryeo_push:";
+/** The run records' key prefix, for the delivery alerts' quick check (deliveryReadyNotify). */
+export const VIDEO_PUSH_PREFIX = PREFIX;
 /** Time a pass must still have before it saves an add's intent (the add itself follows at once). */
 const ADD_MARGIN_MS = 30_000;
 /** Automatic tries after a sign-in failure of a run a person started. */
@@ -689,6 +691,21 @@ function afterUpload(r: VideoPushRun): VideoPushRun {
   return { ...r, state: "DELIVERING", note: null, wait: null };
 }
 
+/** A run that waits on a person: Kyle's Deliver now, or a person's own hold. Nothing moves it but them, a sent stamp, or its version going away. */
+const parkedOnPerson = (r: VideoPushRun): boolean => (r.state === "WAITING" && r.wait?.gate === "kyle") || (r.state === "HELD" && r.hold?.gate === "manual");
+
+/**
+ * Where a parked run ends without a press (Oct 20 2026, audit B4): the video
+ * was recorded sent (delivered in Aryeo by hand), or its version is no longer
+ * the approved one (reopened for revisions, replaced). Null: it keeps waiting.
+ */
+async function parkedOutcome(r: VideoPushRun): Promise<VideoPushRun | null> {
+  const cut = await prisma.reviewSubmission.findUnique({ where: { id: r.submissionId }, select: { sentToClientAt: true, sentToClientBy: true, status: true } });
+  if (cut?.sentToClientAt) return done(r, `Delivered (recorded by ${cut.sentToClientBy ?? "a person"}).`);
+  if (!cut || cut.status !== "APPROVED") return fail(r, "This version is no longer approved (reopened for revisions or replaced), so the hub stopped. The next approved version goes on its own press.");
+  return null;
+}
+
 /** A step that changed nothing returns null, so a pass never spins on it (Oct 19 audit). */
 const unlessSame = (n: VideoPushRun, r0: VideoPushRun): VideoPushRun | null => (n.state === r0.state && n.note === r0.note && n.recheckAt === r0.recheckAt ? null : n);
 
@@ -701,14 +718,16 @@ async function step(r0: VideoPushRun, ctx: Ctx): Promise<VideoPushRun | null> {
   try {
     // ---- the two waiting states look again when their time comes
     if (r.state === "HELD") {
-      if (!r.hold || r.hold.gate === "manual") return null;
+      if (r.hold?.gate === "manual") return await parkedOutcome(r);
+      if (!r.hold) return null;
       if (r.recheckAt && Date.parse(r.recheckAt) > now) return null;
       return { ...r, state: r.hold.resume, hold: null, recheckAt: null };
     }
     if (r.state === "WAITING") {
-      // Somebody marked it sent meanwhile (Kyle delivered in Aryeo by hand): nothing left to do.
-      const sent = await prisma.reviewSubmission.findUnique({ where: { id: r.submissionId }, select: { sentToClientAt: true, sentToClientBy: true } });
-      if (sent?.sentToClientAt) return done(r, `Delivered (recorded by ${sent.sentToClientBy ?? "a person"}).`);
+      // Somebody marked it sent meanwhile (Kyle delivered in Aryeo by hand),
+      // or the version was reopened or replaced while it waited: it ends here.
+      const parked = await parkedOutcome(r);
+      if (parked) return parked;
       if (!r.wait || r.wait.gate === "kyle") return null;
       if (r.recheckAt && Date.parse(r.recheckAt) > now) return null;
       return { ...r, state: "DELIVERING", wait: r.wait, recheckAt: null };
@@ -1225,8 +1244,9 @@ export async function advanceVideoPush(submissionId: string, opts: { budgetMs?: 
   const token = randomBytes(6).toString("hex");
   let { run, raw } = await load(submissionId);
   if (!run || !MOVABLE.includes(run.state)) return run;
-  // Kyle's Deliver now and a sent stamp are looked at by the step even while it waits for him.
-  if (!dueNow(run) && !(run.state === "WAITING" && run.wait?.gate === "kyle")) return run;
+  // Kyle's Deliver now, a sent stamp and a reopened version are looked at by
+  // the step even while a run waits on a person.
+  if (!dueNow(run) && !parkedOnPerson(run)) return run;
   if (run.lease && run.lease.until > Date.now() && run.lease.token !== token) return run;
   const leased = await save(submissionId, { ...run, lease: { token, until: Date.now() + LEASE_MS } }, raw);
   if (!leased) return run;
@@ -1262,7 +1282,7 @@ export async function advanceVideoPush(submissionId: string, opts: { budgetMs?: 
 // ---- the cron -------------------------------------------------------------------------------
 
 /**
- * Cron (every 5 minutes, from /api/cron/topaz right after the 1080p step):
+ * Cron (every minute, from /api/cron/topaz right after the 1080p step):
  * moves on the runs PEOPLE STARTED, and nothing else (button only, Oct 19
  * 2026). It never starts a run for a video nobody pressed, whatever the
  * AppSetting switch says. The one thing it restarts by itself is a run a
@@ -1275,11 +1295,14 @@ export async function driveVideoPushes(opts: { budgetMs?: number } = {}): Promis
   const t0 = Date.now();
   const budget = opts.budgetMs ?? 60_000;
   const started: string[] = [];
-  // Login retries: only runs written since Oct 19 carry loginRetries; an older
-  // FAILED record (a practice-era refusal) is never picked up.
+  // Login retries: only a FAILED run a sign-in failure stamped with a retry
+  // time (retryAfter) is a candidate. Oct 20 2026 (audit B4): this used to
+  // match '"loginRetries":', which every run since Oct 19 carries, so 20 rows
+  // in no order could crowd the real candidates out.
   const retryRows = await prisma.appSetting.findMany({
-    where: { key: { startsWith: PREFIX }, AND: [{ value: { contains: '"state":"FAILED"' } }, { value: { contains: '"loginRetries":' } }] },
+    where: { key: { startsWith: PREFIX }, AND: [{ value: { contains: '"state":"FAILED"' } }, { value: { contains: '"retryAfter":"' } }] },
     select: { value: true },
+    orderBy: { updatedAt: "asc" },
     take: 20,
   });
   for (const row of retryRows) {
@@ -1297,25 +1320,41 @@ export async function driveVideoPushes(opts: { budgetMs?: number } = {}): Promis
     const r = await requestVideoPush(f.submissionId, { by: f.by, auto: true }).catch(() => null);
     if (r?.started) started.push(f.submissionId);
   }
-  const live = await prisma.appSetting.findMany({
-    where: { key: { startsWith: PREFIX }, NOT: [{ value: { contains: '"state":"DONE"' } }, { value: { contains: '"state":"FAILED"' } }, { value: { contains: '"state":"SHADOW"' } }] },
-    select: { key: true, value: true },
-    orderBy: { updatedAt: "asc" },
-    take: 40,
-  });
-  const moved: string[] = [];
-  const parsed = live.flatMap((row) => {
+  // PARKED RUNS STAY OUT OF THE WINDOW (Oct 20 2026, audit B4). A run waiting
+  // for Kyle's Deliver now or on a person's hold never changes on its own, so
+  // it kept the oldest place in the 40-row window for ever; forty of them and
+  // the cron stopped moving newly pressed uploads. They get their own read.
+  const waitingOnKyle = { AND: [{ value: { contains: '"state":"WAITING"' } }, { value: { contains: '"gate":"kyle"' } }] };
+  const heldByPerson = { AND: [{ value: { contains: '"state":"HELD"' } }, { value: { contains: '"gate":"manual"' } }] };
+  const parse = (rows: { value: string }[]) => rows.flatMap((row) => {
     try {
       return [JSON.parse(row.value) as VideoPushRun];
     } catch {
       return [];
     }
   });
-  // Waiting for a person's Deliver now: moved only once somebody marked it sent (delivered in Aryeo by hand).
-  const forKyle = parsed.filter((r) => r.state === "WAITING" && r.wait?.gate === "kyle").map((r) => r.submissionId);
-  const sentNow = new Set(forKyle.length ? (await prisma.reviewSubmission.findMany({ where: { id: { in: forKyle }, sentToClientAt: { not: null } }, select: { id: true } })).map((x) => x.id) : []);
+  const [live, parkedRows] = await Promise.all([
+    prisma.appSetting.findMany({
+      where: { key: { startsWith: PREFIX }, NOT: [{ value: { contains: '"state":"DONE"' } }, { value: { contains: '"state":"FAILED"' } }, { value: { contains: '"state":"SHADOW"' } }, waitingOnKyle, heldByPerson] },
+      select: { key: true, value: true },
+      orderBy: { updatedAt: "asc" },
+      take: 40,
+    }),
+    prisma.appSetting.findMany({ where: { key: { startsWith: PREFIX }, OR: [waitingOnKyle, heldByPerson] }, select: { value: true }, take: 200 }),
+  ]);
+  const moved: string[] = [];
+  // A parked run moves only once somebody marked it sent (delivered in Aryeo
+  // by hand) or its version is no longer the approved one (reopened, replaced).
+  const parked = parse(parkedRows).filter(parkedOnPerson);
+  const endedIds = parked.length
+    ? new Set((await prisma.reviewSubmission.findMany({
+        where: { id: { in: parked.map((r) => r.submissionId) }, OR: [{ sentToClientAt: { not: null } }, { status: { not: "APPROVED" } }] },
+        select: { id: true },
+      })).map((x) => x.id))
+    : new Set<string>();
+  const parsed = [...parse(live), ...parked.filter((r) => endedIds.has(r.submissionId))];
   for (const r of parsed) {
-    if (!dueNow(r) && !sentNow.has(r.submissionId)) continue;
+    if (!dueNow(r) && !endedIds.has(r.submissionId)) continue;
     const left = budget - (Date.now() - t0);
     if (left < 10_000) break;
     await advanceVideoPush(r.submissionId, { budgetMs: Math.min(left, 90_000) }).catch(() => null);

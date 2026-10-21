@@ -324,18 +324,8 @@ async function main() {
     });
 
     // =========================================================================
-    await section("§3 · Home never folds a red or amber queue (item 6)", async () => {
-      const { foldNeeds } = await import("@/lib/homeNeeds");
-      const n = (key: string, tone: "brand" | "danger" | "warning" | "muted") => ({ key, tone });
-      const needs = [n("mytodos", "brand"), n("cuts", "brand"), n("tosend", "brand"), n("stuck", "muted"), n("tomorrow", "warning"), n("late", "warning"), n("incidents", "danger"), n("assign", "muted")];
-      const f = foldNeeds(needs, 3);
-      const shown = [f.lead, ...f.next].map((x) => x?.key);
-      c.ok("every amber and red row is on screen, however far down it sat", ["tomorrow", "late", "incidents"].every((k) => shown.includes(k)), shown.join(", "));
-      c.ok("…the fold holds only calm rows, and its count is what it holds", f.later.every((x) => x.tone === "brand" || x.tone === "muted") && f.later.length === needs.length - 1 - f.next.length, f.later.map((x) => x.key).join(", "));
-      c.ok("…calm rows only fill the room the urgent ones leave (3 under the lead, here all three urgent)", f.next.length === 3 && f.next.every((x) => x.tone !== "brand" && x.tone !== "muted"));
-      const calm = foldNeeds([n("a", "brand"), n("b", "brand"), n("c", "muted"), n("d", "muted"), n("e", "muted")], 3);
-      c.ok("with nothing urgent: lead + 3, the rest folded (unchanged)", calm.next.length === 3 && calm.later.length === 1);
-    });
+    // (§3, Home's needs fold, went with lib/homeNeeds on Oct 20 2026, audit
+    // H13: the Oct 19 dashboard no longer folds a needs list.)
 
     // =========================================================================
     await section("§4 · a pending verdict receipt is never evicted or lost (item 12)", async () => {

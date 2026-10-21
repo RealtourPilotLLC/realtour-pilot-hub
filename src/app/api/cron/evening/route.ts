@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendEveningUploadDigests, sendNightlyUploadNags } from "@/lib/uploadDigest";
 import { COMMS_COACHING_ET_HOUR } from "@/lib/commsCoaching";
-import { cronBudget } from "@/lib/cron";
+import { cronBudget, authorizeCron } from "@/lib/cron";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,16 +13,9 @@ export const maxDuration = 120;
 // only acts at the right Eastern hour; per-day markers make the extra firing
 // a no-op either way.
 export async function GET(req: NextRequest) {
-  // FAIL CLOSED — same rule as every other cron.
-  const secret = process.env.CRON_SECRET;
-  const enforced = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
-  if (!secret && enforced) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
-  if (secret) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  // FAIL CLOSED — the one shared rule every cron uses (lib/cron authorizeCron).
+  const denied = authorizeCron(req);
+  if (denied) return denied;
 
   // EVERY FIRING IS RECORDED (A01-cron-health, Sep 28 2026). This was the one
   // scheduled route that never passed a job name to cronBudget, so it wrote no

@@ -6,7 +6,7 @@ import { resolveEditorAssignment } from "@/lib/editorAssignment";
 import { appBase } from "@/lib/appUrl";
 import { cutKeyOf, videoStatesFor } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
-import { isMonthlyContentJob } from "@/lib/pipeline";
+import { isMonthlyContentJob, stageMeta } from "@/lib/pipeline";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
 import { EDIT_ROUND_SUMMARY, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
@@ -88,6 +88,17 @@ export const EXTRA_SHOOT_STATUS = "Extra video owed";
  * WAITING_ON_OFFICE. Worn, not picked — the check is finished on /edit/<id>.
  */
 export const CHECK_NEEDED_STATUS = "Check needed";
+
+/** The client, editor and photographer columns a queue row reads (Oct 20 2026,
+ *  audit B14): the office's Editing Room rebuilds the queue every minute, and
+ *  whole client rows (notes, brand fields) were read for a name and a flag. */
+const QUEUE_CLIENT_SELECT = { id: true, name: true, avatarUrl: true } as const;
+const QUEUE_PERSON_SELECT = { id: true, name: true } as const;
+
+/** The timeline line the Editing Room's "New cut" queue-add writes (editing/
+ *  actions.ts), read back below as the office's own reopen. One string for the
+ *  writer and the reader (Oct 20 2026, audit B11). */
+export const OFFICE_NEW_CUT_LINE = "Queued a new cut (as a revision)";
 
 /**
  * The files are in and the handoff is not (O01/A32, Sep 25): the engine could
@@ -176,7 +187,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
         aryeoMissingAt: null,
       },
       orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
-      include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
+      include: { client: { select: QUEUE_CLIENT_SELECT }, editor: { select: QUEUE_PERSON_SELECT }, photographer: { select: QUEUE_PERSON_SELECT }, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
     // Upcoming edits — Jordan: "any shoot on the schedule upcoming should be in
     // an upcoming edits tab". Every future-dated booked/scheduled job with a
@@ -184,13 +195,13 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     prisma.project.findMany({
       where: { ...clientScope, status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now }, aryeoMissingAt: null },
       orderBy: { shootDate: "asc" },
-      include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
+      include: { client: { select: QUEUE_CLIENT_SELECT }, editor: { select: QUEUE_PERSON_SELECT }, photographer: { select: QUEUE_PERSON_SELECT }, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
     prisma.project.findMany({
       where: { ...clientScope, status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
       orderBy: { deliveredAt: "desc" },
       take: 60,
-      include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
+      include: { client: { select: QUEUE_CLIENT_SELECT }, editor: { select: QUEUE_PERSON_SELECT }, photographer: { select: QUEUE_PERSON_SELECT }, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
   ]);
 
@@ -400,7 +411,15 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
   // on REVISION whose videos all read approved counts as in revisions when
   // the office's reopen is NEWER than its newest approval; a version handed
   // in and approved after the reopen answers it. Nothing is written.
+  //
+  // Oct 20 2026 (audit B11): read from the two timeline lines the office's
+  // reopens write, with their wording shared with their writers (the stage
+  // label from the pipeline config, OFFICE_NEW_CUT_LINE) so a renamed stage no
+  // longer silently brings the bug back. The proper fix is a column the two
+  // writers stamp (Project.officeReopenedAt); it needs a schema change.
   {
+    const revisionsLabel = stageMeta("REVISION").label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const toRevisions = new RegExp(` to ${revisionsLabel}\\b`);
     const settled = inflight
       .filter((p) => p.status === "REVISION")
       .map((p) => p.id)
@@ -411,7 +430,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     if (settled.length) {
       const moves = await prisma.activity
         .findMany({
-          where: { projectId: { in: settled }, OR: [{ body: { startsWith: "Moved from " } }, { body: { startsWith: "Queued a new cut (as a revision)" } }] },
+          where: { projectId: { in: settled }, OR: [{ body: { startsWith: "Moved from " } }, { body: { startsWith: OFFICE_NEW_CUT_LINE } }] },
           orderBy: { createdAt: "desc" },
           select: { projectId: true, body: true, createdAt: true },
         })
@@ -419,7 +438,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
       const reopenedAt = new Map<string, number>();
       for (const m of moves) {
         if (!m.projectId || reopenedAt.has(m.projectId)) continue;
-        if (m.body.startsWith("Moved from ") && !/ to Revisions\b/.test(m.body)) continue;
+        if (m.body.startsWith("Moved from ") && !toRevisions.test(m.body)) continue;
         reopenedAt.set(m.projectId, m.createdAt.getTime());
       }
       for (const [pid, at] of reopenedAt) {

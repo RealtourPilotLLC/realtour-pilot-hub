@@ -27,6 +27,8 @@ export type SettingsData = {
   team: { seats: TeamSeat[]; invitationsOn: boolean } | null;
   teamFailed: boolean;
   signInEmailOn: boolean;
+  /** Oct 20 2026 (audit E2): on the shared link, does anyone hold a seat yet? None = no invitation email to sign in from. */
+  linkHasSeat?: boolean;
   profileHref: string;
   /** The Brand Profile page's name, as the nav names it ("Brand Profile"). */
   profileLabel: string;
@@ -52,6 +54,8 @@ export function SettingsTab({ d }: { d: SettingsData }) {
               <p className="text-muted">Sign in with your email to see your account and add your team.</p>
               <Link href="/portal/login" className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-brand-action px-3 py-1.5 text-sm font-semibold text-white"><KeyRound className="size-3.5" /> Sign in</Link>
             </div>
+          ) : d.linkHasSeat === false ? (
+            <p className="mt-2 text-sm text-muted">To set up your sign-in, {d.contactLine} and we&rsquo;ll get you started. Send the names and emails of anyone on your team too, and we&rsquo;ll add them.</p>
           ) : (
             <p className="mt-2 text-sm text-muted">Use the sign-in link in your invitation email. To add a teammate, {d.contactLine} with their name and email and we&rsquo;ll add them for you.</p>
           )}

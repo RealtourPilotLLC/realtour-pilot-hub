@@ -668,6 +668,11 @@ model Project {
   topazJobs         TopazJob[]
   revisionBriefs    RevisionBrief[]
 
+  // Oct 20 2026 (audit B11): when the office last put a finished job back to
+  // the editor (moved to Revisions, or a new cut added to a done job). The
+  // editor queue and the brief read this instead of matching Activity text.
+  officeReopenedAt DateTime?
+
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
   ownerTodos          OwnerTodo[]

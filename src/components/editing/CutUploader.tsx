@@ -491,9 +491,12 @@ type HandIn = {
 // every owed video's number and topic). Optional — the panel reads them itself
 // (selfCheckActions.uploadPanelSummary) and re-reads whenever a version moves.
 export function CutUploader({
-  projectId, cuts, canUpload, reopenedSlotKeys = [], officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null, jobSummary = null,
+  projectId, cuts, canUpload, uploadRefusal = null, reopenedSlotKeys = [], officeReopen = null, canOverrideExport = false, checks = {}, onBehalfOf = null, stillWorking = null, jobSummary = null,
 }: {
-  projectId: string; cuts: CutRow[]; canUpload: boolean; reopenedSlotKeys?: string[];
+  projectId: string; cuts: CutRow[]; canUpload: boolean;
+  /** Why the server would refuse this editor's ordinary upload right now (somebody else holds the job); shown in place of "Upload version N" (Oct 20 2026, audit B20). */
+  uploadRefusal?: string | null;
+  reopenedSlotKeys?: string[];
   /** Every open video-lane ask is the office's reopen (officeReopenOf). */
   officeReopen?: { by: string | null } | null;
   canOverrideExport?: boolean;
@@ -1201,7 +1204,10 @@ export function CutUploader({
                   onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void begin(c, f, approvedRound !== null); }}
                 />
               )}
-              {canUpload && next && !handed && (
+              {canUpload && next && !handed && uploadRefusal && (
+                <p className="mt-2 text-xs leading-relaxed text-muted" data-upload-refused>{uploadRefusal}</p>
+              )}
+              {canUpload && next && !handed && !uploadRefusal && (
                 <button
                   type="button"
                   disabled={!!b}

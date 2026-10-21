@@ -18,5 +18,5 @@ const mb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 10
 /** The refusal for one file, or null when it fits. */
 export function portalUploadTooBig(sizeBytes: number): string | null {
   if (sizeBytes <= PORTAL_UPLOAD_MAX_BYTES) return null;
-  return `This file is ${mb(sizeBytes)}. Files up to ${PORTAL_UPLOAD_MAX_LABEL} upload here — for anything bigger, ${TEXT_KYLE} and he'll send you a link to drop it in.`;
+  return `This file is ${mb(sizeBytes)}. Files up to ${PORTAL_UPLOAD_MAX_LABEL} upload here. For anything bigger, ${TEXT_KYLE} and we'll send you a link to drop it in.`;
 }

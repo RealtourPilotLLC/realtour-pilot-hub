@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { MessageSquare, MessageCircle, Phone } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { OFFICE_LINE } from "@/lib/portalWords";
 
 // ---------------------------------------------------------------------------
 // CONTACTING THE OFFICE (CP-13, Sep 24 2026).
@@ -32,7 +33,8 @@ export type PortalContact = {
   e164: string;
 };
 
-export const DEFAULT_PORTAL_CONTACT: PortalContact = { name: "Kyle", display: "(215) 645-4889", e164: "+12156454889" };
+/** The default, from the one copy (portalWords.OFFICE_LINE, audit E12). */
+export const DEFAULT_PORTAL_CONTACT: PortalContact = { ...OFFICE_LINE };
 
 /** "call or text Kyle at (215) 645-4889" — for a sentence that cannot hold a link. */
 export const contactLine = (c: PortalContact = DEFAULT_PORTAL_CONTACT) => `call or text ${c.name} at ${c.display}`;
@@ -49,7 +51,7 @@ export function ContactTeam({ contact, messagesHref, note, className }: {
   note?: string | null;
   className?: string;
 }) {
-  const btn = "inline-flex min-h-10 items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
+  const btn = "inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand";
   return (
     <div className={cn("rounded-2xl border border-border bg-surface/70 p-4 text-sm", className)}>
       <div className="font-semibold">Questions or topic ideas?</div>
