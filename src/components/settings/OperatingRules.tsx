@@ -169,6 +169,7 @@ const ALERT_SWITCH_READERS: Record<keyof InternalAlertRules, { words: string; fi
   photographerBrief: { words: "the 6 PM shoot briefs for tomorrow", files: ["src/lib/eveningPush.ts"] },
   shootDayText: { words: "the shoot start check, every 5 minutes", files: ["src/lib/shootDayText.ts"] },
   uploadGap: { words: "the upload check, every 5 minutes (each job at most every 15)", files: ["src/lib/uploadGaps.ts"] },
+  missingInstructions: { words: "the morning instructions check, every 5 minutes from 10 AM", files: ["src/lib/missingInstructions.ts"] },
   promiseWatch: { words: "the promise check, every 5 minutes", files: ["src/lib/promiseWatch.ts"] },
   coverage: { words: "the client-reply pager, the late-photos alert and the review cover clock", files: ["src/lib/coverage.ts"] },
 };
@@ -405,6 +406,15 @@ export function InternalAlertSettings({
           <ReadBy k="uploadGap" />
         </div>
         <Toggle on={r.uploadGap.enabled} onChange={(v) => set({ uploadGap: { enabled: v } })} label="Missing from the upload" />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Missing instructions, the morning after</p>
+          <p className="text-[13px] text-muted">From 10 AM the morning after a shoot, if the upload page is still missing what the edit or the photos wait on (the flow and vision, the intro script, the cull, the removal notes), the photographer gets one text from the company line naming exactly what is missing, with their upload page. The creative manager is pinged at the same time, on their own notification settings. Again each morning, up to 3 mornings; it stops as soon as the page is submitted.</p>
+          <ReadBy k="missingInstructions" />
+        </div>
+        <Toggle on={r.missingInstructions.enabled} onChange={(v) => set({ missingInstructions: { enabled: v } })} label="Missing instructions, the morning after" />
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">

@@ -114,6 +114,10 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   appointment_change: "shoot_change",
   order_canceled: "shoot_change",
   raws_missing: "shoot_change",
+  // Oct 21 2026 (lib/missingInstructions): the creative manager told a
+  // photographer's instructions are still missing the morning after. A shoot
+  // follow-up like footage missing, so it rides the same "Shoot changes" switch.
+  instructions_missing: "shoot_change",
   cull: "shoot_change",
   task_assigned: "shoot_change",
   // The day-before "Still needed? It closes tomorrow" nudge on a Slack ask

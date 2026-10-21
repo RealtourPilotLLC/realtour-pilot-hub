@@ -105,7 +105,11 @@ export type OutboxKind =
   /** Oct 19 2026: a TEAM text. A job's upload is missing part of what was
    *  ordered (only drone photos, no ground photos): its creative gets one text
    *  per gap (lib/uploadGaps). Not a CLIENT_KIND. */
-  | "upload_gap";
+  | "upload_gap"
+  /** Oct 21 2026: a TEAM text. From 10 AM the morning after a shoot, a job
+   *  whose upload-page instructions are still missing texts its photographer
+   *  once a morning, up to three (lib/missingInstructions). Not a CLIENT_KIND. */
+  | "instructions_missing";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
 /** CONTENT-PROGRAM kinds (W2-F, Sep 17 2026). Client-facing EMAILS from the
  *  program: a §24 reminder, a §22 "your scripts are ready" notice, a §21
@@ -120,7 +124,7 @@ const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcom
  *  enqueued unless its ProgramAutomation switch (`reminders`,
  *  `script_share_email`) is on — a missing row is off. */
 const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready", "program_message"];
-const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding", "shoot_day", "upload_gap"];
+const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS, "onboarding", "shoot_day", "upload_gap", "instructions_missing"];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
 export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
 /** R03 (Sep 28 2026): the kinds the rollout scope governs — the four program

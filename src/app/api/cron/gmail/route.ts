@@ -141,6 +141,18 @@ export async function GET(req: NextRequest) {
           }
           return true;
         }
+        // A missing-instructions text (lib/missingInstructions), the same way.
+        if (kind === "instructions_missing") {
+          if (!switchOn.has("missingInstructions")) {
+            const { internalAlertRules } = await import("@/lib/settings");
+            switchOn.set("missingInstructions", await internalAlertRules().then((r) => r.missingInstructions.enabled).catch(() => false));
+          }
+          if (!switchOn.get("missingInstructions")) {
+            switchedOff.push("instructions_missing: Missing instructions, the morning after is off");
+            return false;
+          }
+          return true;
+        }
         if (!isClientKind(kind)) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
         if (!windowOpen) return false;
@@ -171,7 +183,9 @@ export async function GET(req: NextRequest) {
               ? await import("@/lib/shootDayText").then(({ recordDrainedShootDayText }) => recordDrainedShootDayText(row, providerId))
               : kind === "upload_gap"
                 ? await import("@/lib/uploadGaps").then(({ recordDrainedUploadGapText }) => recordDrainedUploadGapText(row))
-                : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
+                : kind === "instructions_missing"
+                  ? await import("@/lib/missingInstructions").then(({ recordDrainedInstructionsText }) => recordDrainedInstructionsText(row, providerId))
+                  : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
         if (note) recovered.push(note);
       },
     });
@@ -227,6 +241,16 @@ export async function GET(req: NextRequest) {
     const { sweepUploadGaps } = await import("@/lib/uploadGaps");
     return sweepUploadGaps();
   }, { maxMs: 40_000 });
+
+  // MISSING INSTRUCTIONS, THE MORNING AFTER (Oct 21 2026, lib/missingInstructions):
+  // from 10 AM ET, a job whose upload page is still missing what the edit or
+  // the photos wait on texts its photographer exactly what is missing and
+  // pings the creative manager, once a morning per job for up to 3 mornings.
+  // Database reads only; idle before 10 AM. Its own Settings switch.
+  await step("missingInstructions", async () => {
+    const { sweepMissingInstructions } = await import("@/lib/missingInstructions");
+    return sweepMissingInstructions();
+  }, { maxMs: 15_000 });
 
   // From 6 PM ET: tomorrow's shoot brief to each photographer, and Jordan's
   // 6 PM wrap (Mon to Sat) with a copy to Kyle. Idle every other tick. Ahead
