@@ -388,6 +388,12 @@ async function sendBatch(batchId: string, p: Project, files: IntakeFile[], now: 
   if (batch.batchNo === 1) {
     const jobId = await jobIdFor(p.id);
     if (jobId) await prisma.photoJob.update({ where: { id: jobId }, data: { autohdrPhotoshootId: created.photoshoot_id, autohdrShootName: address, autohdrLinkedAt: now, autohdrCreatedAt: now } });
+  } else {
+    // Oct 22 2026 (615 Cliff Ln): a later batch becomes the job's shoot when the
+    // job has none (the first batch failed or was stopped), so the free check,
+    // fixes and geometry have a shoot to work on.
+    const jobId = await jobIdFor(p.id);
+    if (jobId) await prisma.photoJob.updateMany({ where: { id: jobId, autohdrPhotoshootId: null }, data: { autohdrPhotoshootId: created.photoshoot_id, autohdrShootName: address, autohdrLinkedAt: now, autohdrCreatedAt: now } });
   }
   await note(p.id, `sent to AutoHDR: "${address}", ${files.length} files (about ${expectedPhotosFor(files)} photos), shoot ${created.photoshoot_id}`, { photoshootId: created.photoshoot_id, files: files.length, balance });
   await alertOwnerAndKyle({
@@ -546,8 +552,10 @@ async function failBatch(batchId: string, projectId: string, address: string | n
 }
 
 /** The hub-sent AutoHDR gallery for a job, as the job sync reads it (DONE batches, in order). */
-export async function intakeGallery(projectId: string): Promise<{ shootId: number; image_uuid: string; image_version_uuid: string; name: string; url: string | null }[]> {
-  const done = await prisma.photoIntakeBatch.findMany({ where: { projectId, state: "DONE", photosJson: { not: null } }, orderBy: { batchNo: "asc" }, select: { photoshootId: true, photosJson: true } });
+export async function intakeGallery(projectId: string, opts: { sentSince?: Date | null } = {}): Promise<{ shootId: number; image_uuid: string; image_version_uuid: string; name: string; url: string | null }[]> {
+  // Oct 22 2026 (615 Cliff Ln): `sentSince` keeps only the batches sent for the
+  // latest visit of a split job (sent on or after that visit's ET day).
+  const done = await prisma.photoIntakeBatch.findMany({ where: { projectId, state: "DONE", photosJson: { not: null }, ...(opts.sentSince ? { sentAt: { gte: opts.sentSince } } : {}) }, orderBy: { batchNo: "asc" }, select: { photoshootId: true, photosJson: true } });
   const out: { shootId: number; image_uuid: string; image_version_uuid: string; name: string; url: string | null }[] = [];
   for (const b of done) {
     try {

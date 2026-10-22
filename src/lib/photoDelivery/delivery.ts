@@ -436,7 +436,11 @@ async function verifyDeliveryOnce(jobId: string, by: string): Promise<VerifyResu
   if (floorMissing) problems.push("a floor plan was ordered but is not on the listing");
   if (problems.length) {
     const line = problems.join("; ");
-    await setStage(jobId, ["DELIVERING", "DELIVERED", "READY", "QC_REVIEW", "EDITED"], "DELIVERY_MISMATCH", by, { why: line, extra: { deliveryDiffJson: JSON.stringify(diff) } });
+    // Oct 22 2026 (859 N Lawrence St): a job already in mismatch keeps its
+    // stage but always gets the fresh diff; the board showed "8 approved
+    // photos are not on the listing" from a check the listing had moved past.
+    if (job.stage === "DELIVERY_MISMATCH") await prisma.photoJob.update({ where: { id: jobId }, data: { deliveryDiffJson: JSON.stringify(diff) } });
+    else await setStage(jobId, ["DELIVERING", "DELIVERED", "READY", "QC_REVIEW", "EDITED"], "DELIVERY_MISMATCH", by, { why: line, extra: { deliveryDiffJson: JSON.stringify(diff) } });
     const street = (project.title ?? "").split(",")[0];
     // Shadow mode (the first two weeks): the mismatch is recorded on the job
     // page, nobody is pinged, while the checks are calibrated.

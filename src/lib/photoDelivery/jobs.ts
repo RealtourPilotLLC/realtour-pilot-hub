@@ -235,6 +235,24 @@ export function galleryFingerprint(entries: GalleryEntry[]): string {
   return h.digest("hex").slice(0, 32);
 }
 
+/**
+ * The photo deadline (Oct 22 2026, 615 Cliff Ln: a split job's board read
+ * "Late by 8 days" because the deadline stayed the first visit's). The
+ * promised time counts only while it is after the latest visit that has
+ * started; once a later visit has started, the project's own due date (Aryeo's,
+ * set for the order as a whole) is the deadline. Pure.
+ */
+export function photoDueFor(p: { promisedDueAt: Date | null; deliveryDue: Date | null }, latestVisitStart: Date | null): Date | null {
+  const promised = p.promisedDueAt && (!latestVisitStart || p.promisedDueAt > latestVisitStart) ? p.promisedDueAt : null;
+  return promised ?? p.deliveryDue ?? p.promisedDueAt ?? null;
+}
+
+/** The start of the latest appointment that has started (cancelled ones never count). Pure. */
+export function latestStartedVisit(appointments: { startAt: Date | null; status: string | null }[], now: Date): { start: Date | null; started: number } {
+  const started = appointments.filter((a) => a.startAt && a.startAt <= now && !/cancel/i.test(a.status ?? "")).map((a) => a.startAt!.getTime());
+  return { start: started.length ? new Date(Math.max(...started)) : null, started: started.length };
+}
+
 /** Open a PhotoJob for each photo job shot since the epoch that is not delivered yet. */
 export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
   const settings = await photoDeliverySettings();
@@ -248,7 +266,7 @@ export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
       deliverables: { some: { removedFromOrderAt: null, waivedAt: null, type: { in: [...PHOTO_TYPES] } } },
     },
     orderBy: { shootDate: "asc" },
-    select: { id: true, shootDate: true, promisedDueAt: true, deliveryDue: true },
+    select: { id: true, shootDate: true, promisedDueAt: true, deliveryDue: true, appointments: { select: { startAt: true, status: true } } },
     take: 200,
   });
   if (!projects.length) return 0;
@@ -263,7 +281,7 @@ export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
         data: {
           projectId: p.id,
           stage: "EDITING",
-          slaDueAt: p.promisedDueAt ?? p.deliveryDue ?? null,
+          slaDueAt: photoDueFor(p, latestStartedVisit(p.appointments, now).start),
           expectedJson: JSON.stringify(await expectedFor(p.id)),
           nextCheckAt: now,
         },
@@ -281,9 +299,9 @@ const N_OF_M = /\((\d+) of (\d+)\)\.[a-z0-9]+$/i;
 const CANCELLED_NOTE = "project cancelled: sync stopped";
 
 /** The hub's own AutoHDR shoot(s) for a project, as gallery entries. */
-async function autohdrGallery(projectId: string): Promise<GalleryEntry[]> {
+async function autohdrGallery(projectId: string, sentSince: Date | null = null): Promise<GalleryEntry[]> {
   const { intakeGallery } = await import("./intake");
-  const photos = await intakeGallery(projectId).catch(() => []);
+  const photos = await intakeGallery(projectId, { sentSince }).catch(() => []);
   const used = new Set<string>();
   return photos.map((p, n) => {
     let name = p.name.slice(0, 200);
@@ -315,10 +333,12 @@ async function autohdrGallery(projectId: string): Promise<GalleryEntry[]> {
  * on the listing so far (an upload lands over several minutes), so nothing
  * is carried over yet and the AutoHDR gallery stays the one to read.
  */
-async function adoptListing(jobId: string, entries: GalleryEntry[]): Promise<"adopted" | "uploading" | "no"> {
+async function adoptListing(jobId: string, entries: GalleryEntry[], opts: { besideEarlierVisit?: boolean } = {}): Promise<"adopted" | "uploading" | "no"> {
   const rows = await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "AUTOHDR", status: { in: ["ACTIVE", "EXCLUDED"] } }, orderBy: { sequence: "asc" }, select: { id: true, contentHash: true, inspectedHash: true, classifiedHash: true } });
   if (!rows.length) return "no";
-  if (await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } })) return "no";
+  // A split job's earlier visit is already ARYEO rows on the job; the caller
+  // passes only the listing photos that are not theirs (Oct 22 2026).
+  if (!opts.besideEarlierVisit && (await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } }))) return "no";
   // Oct 14 2026 (huddle): Kyle uploads the 06-Ready-for-Aryeo files, named in
   // delivery order ("01-Front-Exterior.jpg"). When every listing image is one
   // of them, each carries over to its own AutoHDR photo, so its versions,
@@ -382,7 +402,7 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   if (!job) return { changed: false, count: null, stage: "missing", source: null };
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, aryeoListingId: true, client: { select: { name: true } } },
+    select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, status: true, aryeoListingId: true, promisedDueAt: true, deliveryDue: true, appointments: { select: { startAt: true, status: true } }, client: { select: { name: true } } },
   });
   if (!project?.client) return { changed: false, count: null, stage: job.stage, source: null };
   if (project.status === "CANCELLED") {
@@ -396,20 +416,67 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   // Source 2: the Dropbox finals folder (empty today; read so the hub follows
   // the day AutoHDR delivers there again).
   const folder = actualFolderPaths({ ...project, client: project.client }).finalPhotos;
-  const [listing, finals, hubShoot] = await Promise.all([
+  // A SPLIT JOB (Oct 22 2026, 615 Cliff Ln): two visits, one job. The earlier
+  // visit's photos are already delivered on the listing; the latest visit's
+  // raws went to AutoHDR from the hub (intake batches sent on or after that
+  // visit's ET day). Until this visit's photos are on the listing too, the job
+  // reads THEM (the hub's AutoHDR gallery) and goes through the normal check
+  // and Kyle's approval; the earlier visit's rows are set aside (GONE, never
+  // deleted) and come back when the listing shows both sets.
+  const visits = latestStartedVisit(project.appointments, now);
+  const split = visits.started > 1;
+  const { uploadFloorFor } = await import("./intake");
+  const floor = split ? uploadFloorFor(project.appointments, project.shootDate, now) : null;
+  const [listing, finals, hubShoot, hubNew] = await Promise.all([
     project.aryeoListingId ? listingGallery(project.aryeoListingId) : Promise.resolve(null),
     listFinals(folder),
     autohdrGallery(job.projectId),
+    floor ? autohdrGallery(job.projectId, floor) : Promise.resolve([] as GalleryEntry[]),
   ]);
+  // The deadline follows the latest visit (never a past visit's promise).
+  const due = photoDueFor(project, visits.start);
+  if (due && visits.start && (!job.slaDueAt || job.slaDueAt < visits.start) && job.slaDueAt?.getTime() !== due.getTime()) {
+    await prisma.photoJob.update({ where: { id: jobId }, data: { slaDueAt: due } });
+    await logJobEvent(jobId, "sync", `deadline moved to the latest visit's: ${due.toISOString()}${job.slaDueAt ? ` (was ${job.slaDueAt.toISOString()}, an earlier visit's)` : ""}`);
+  }
+  let newVisit = false;
+  if (hubNew.length > 0 && listing && listing.entries.length > 0) {
+    const uuids = hubNew.map((e) => e.autohdrImageUuid).filter((u): u is string => !!u);
+    const onListing = await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO", autohdrImageUuid: { in: uuids } } });
+    if (onListing < hubNew.length) {
+      const earlier = await prisma.photoAsset.findMany({ where: { jobId, sourceKind: "ARYEO", sourceRef: { not: null }, OR: [{ autohdrImageUuid: null }, { autohdrImageUuid: { notIn: uuids } }] }, select: { sourceRef: true } });
+      if (earlier.length > 0) {
+        const known = new Set(earlier.map((r) => r.sourceRef!));
+        const fresh = listing.entries.filter((e) => !e.sourceRef || !known.has(e.sourceRef));
+        const partial = fresh.length > 0 && fresh.length < hubNew.length && fresh.every((e) => Number(N_OF_M.exec(e.name)?.[2]) === hubNew.length);
+        const adopted = fresh.length > 0 && !partial ? await adoptListing(jobId, fresh, { besideEarlierVisit: true }) : "no";
+        // "adopted": this visit is on the listing now, read below as usual.
+        // "no" with photos it doesn't recognise: the usual listing read.
+        newVisit = fresh.length === 0 || partial || adopted === "uploading";
+      }
+    }
+  }
+  if (newVisit) {
+    const shootId = Number(String(hubNew.at(-1)?.sourceRef ?? "").split("/")[0]) || null;
+    const shoots = new Set(hubNew.map((e) => Number(String(e.sourceRef ?? "").split("/")[0])));
+    if (shootId && (!job.autohdrPhotoshootId || !shoots.has(job.autohdrPhotoshootId))) {
+      const b = await prisma.photoIntakeBatch.findFirst({ where: { projectId: job.projectId, photoshootId: shootId }, select: { address: true, sentAt: true } });
+      await prisma.photoJob.update({ where: { id: jobId }, data: { autohdrPhotoshootId: shootId, autohdrShootName: b?.address ?? null, autohdrLinkedAt: now, autohdrCreatedAt: b?.sentAt ?? now } });
+      await logJobEvent(jobId, "sync", `linked to this visit's AutoHDR shoot ${shootId}${b?.address ? ` ("${b.address}")` : ""}`);
+    }
+  }
   let entries: GalleryEntry[] | null = null;
   let source: string | null = null;
   // Kyle's push from AutoHDR to Aryeo lands photo by photo: while the listing
   // holds only part of the hub's AutoHDR gallery ("(N of M)" with M = the
   // hub's count), the AutoHDR gallery is still the one to read.
   // The same while only part of the 06-Ready-for-Aryeo files are on it.
-  let pushing = hubShoot.length > 0 && !!listing && listing.entries.length > 0 && listing.entries.length < hubShoot.length && listing.entries.every((e) => Number(N_OF_M.exec(e.name)?.[2]) === hubShoot.length);
-  if (listing && listing.entries.length > 0 && !pushing) pushing = (await adoptListing(jobId, listing.entries)) === "uploading" && hubShoot.length > 0;
-  if (listing && listing.entries.length > 0 && !pushing) {
+  let pushing = !newVisit && hubShoot.length > 0 && !!listing && listing.entries.length > 0 && listing.entries.length < hubShoot.length && listing.entries.every((e) => Number(N_OF_M.exec(e.name)?.[2]) === hubShoot.length);
+  if (!newVisit && listing && listing.entries.length > 0 && !pushing) pushing = (await adoptListing(jobId, listing.entries)) === "uploading" && hubShoot.length > 0;
+  if (newVisit) {
+    entries = hubNew;
+    source = "autohdr";
+  } else if (listing && listing.entries.length > 0 && !pushing) {
     entries = listing.entries;
     source = "aryeo";
   } else if (pushing) {
@@ -528,6 +595,16 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     await linkAutohdrShoot(jobId).catch((e) => console.warn("photo delivery: relink failed", jobId, (e as Error).message));
   }
 
+  // A split job's new visit: out of the earlier visit's delivery, into the
+  // normal flow (EDITING → EDITED → free check → Kyle's approval).
+  if (newVisit && ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"].includes(job.stage)) {
+    const earlier = await prisma.photoAsset.count({ where: { jobId, sourceKind: "ARYEO" } });
+    await setStage(jobId, ["DELIVERING", "DELIVERY_MISMATCH", "DELIVERED"], "EDITING", "sync", {
+      why: `a new visit: ${hubNew.length} photo${hubNew.length === 1 ? "" : "s"} back from AutoHDR. The earlier visit's ${earlier} stay on the listing and join these once they are delivered`,
+      extra: { deliveryDiffJson: null, deliveryCheckNote: null },
+    });
+  }
+
   // EDITING → EDITED once the gallery has landed and stopped changing.
   const fresh = await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, finalsChangedAt: true, finalsCount: true } });
   let stage = fresh?.stage ?? job.stage;
@@ -539,7 +616,8 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
   // Only the listing's own delivery_status says so: Project.deliveredAt can be
   // the hub's guess from the status sweep, before Aryeo has delivered.
   const deliveredOnAryeo = listing?.deliveryStatus === "DELIVERED";
-  if (deliveredOnAryeo && !["DELIVERED", "DELIVERY_MISMATCH"].includes(stage)) {
+  // A new visit not on the listing yet: the listing's "delivered" is the earlier visit's.
+  if (deliveredOnAryeo && !newVisit && !["DELIVERED", "DELIVERY_MISMATCH"].includes(stage)) {
     const from: JobStage[] = ["EDITING", "EDITED", "QC_RUNNING", "QC_REVIEW", "FIXING", "ON_HOLD", "READY", "DELIVERING", "REVISION_REQUESTED", "EDIT_FAILED"];
     if (stage !== "DELIVERING") await setStage(jobId, from, "DELIVERING", "sync", { why: "delivered in Aryeo", extra: { deliveryStartedAt: now } });
     try {

@@ -26,6 +26,9 @@ import { logJobEvent } from "./jobState";
 // the job stays DELIVERING.
 // ---------------------------------------------------------------------------
 
+/** A job in DELIVERY_MISMATCH: checked again hourly. */
+export const MISMATCH_RECHECK_MS = 60 * 60_000;
+
 /** How long to wait between checks of one job, by how long it has been waiting. */
 export function checkEveryMs(waitingMs: number): number {
   if (waitingMs < 3_600_000) return 4 * 60_000;
@@ -35,13 +38,16 @@ export function checkEveryMs(waitingMs: number): number {
 
 export async function verifyDeliveringJobs(opts: { max?: number; now?: Date } = {}): Promise<{ checked: number; verified: number; mismatched: number; reminded: number; errors: number; notDue: number }> {
   const now = opts.now ?? new Date();
+  // Oct 22 2026: a job in DELIVERY_MISMATCH is looked at again hourly, so a
+  // fixed listing (a floor plan added, a photo put back) clears by itself and
+  // the board never shows a mismatch Aryeo has moved past.
   const all = await prisma.photoJob.findMany({
-    where: { stage: "DELIVERING" },
+    where: { stage: { in: ["DELIVERING", "DELIVERY_MISMATCH"] } },
     orderBy: [{ deliveryCheckedAt: { sort: "asc", nulls: "first" } }, { deliveryStartedAt: "asc" }],
-    select: { id: true, projectId: true, deliveryStartedAt: true, deliveryCheckedAt: true },
+    select: { id: true, projectId: true, stage: true, deliveryStartedAt: true, deliveryCheckedAt: true },
     take: 50,
   });
-  const due = all.filter((j) => !j.deliveryCheckedAt || now.getTime() - j.deliveryCheckedAt.getTime() >= checkEveryMs(now.getTime() - (j.deliveryStartedAt ?? now).getTime()));
+  const due = all.filter((j) => !j.deliveryCheckedAt || now.getTime() - j.deliveryCheckedAt.getTime() >= (j.stage === "DELIVERY_MISMATCH" ? MISMATCH_RECHECK_MS : checkEveryMs(now.getTime() - (j.deliveryStartedAt ?? now).getTime())));
   const jobs = due.slice(0, opts.max ?? 8);
   let verified = 0, mismatched = 0, reminded = 0, errors = 0;
   for (const j of jobs) {
@@ -49,7 +55,7 @@ export async function verifyDeliveringJobs(opts: { max?: number; now?: Date } = 
     if (r.ok) verified++;
     else if (r.error) errors++;
     else if (!r.waiting) mismatched++;
-    else if (j.deliveryStartedAt && now.getTime() - j.deliveryStartedAt.getTime() > 2 * 3_600_000) {
+    else if (j.stage === "DELIVERING" && j.deliveryStartedAt && now.getTime() - j.deliveryStartedAt.getTime() > 2 * 3_600_000) {
       const p = await prisma.project.findUnique({ where: { id: j.projectId }, select: { title: true } });
       const street = (p?.title ?? "this listing").split(",")[0];
       const sent = await alertOwnerAndKyle({
