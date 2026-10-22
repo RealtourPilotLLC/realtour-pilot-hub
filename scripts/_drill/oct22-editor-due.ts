@@ -45,9 +45,11 @@ async function main() {
     c.ok("the words for Kim are in Manila time too", /\(.* Manila\)$/.test(await ed.editDueWords(reel.id, "kim")), await ed.editDueWords(reel.id, "kim"));
 
     c.head("3 · the messages carry it");
-    c.ok("Ready for editing", /editDueWords\(projectId, routedKey\)[\s\S]{0,400}Ready for editing — \$\{street\}`\}\$\{due \?/.test(read("src/lib/tasks.ts")));
-    c.ok("Reassigned to you and New edit", /Reassigned to you — \$\{street\}\$\{await \(await import\("@\/lib\/editorDue"\)\)/.test(read("src/app/editing/actions.ts")) && /New edit — \$\{street\}\$\{queuedDue/.test(read("src/app/editing/actions.ts")));
-    c.ok("Task for you", /editDueWords\(t\.projectId, assignedKey\)/.test(read("src/app/actions.ts")));
+    // Oct 22 2026 (audit L1): each title is built by editDueTitle, which keeps
+    // the due words whole under the bell's 90-character cut.
+    c.ok("Ready for editing", /Ready for editing — \$\{street\}`;\s*const title = await \(await import\("@\/lib\/editorDue"\)\)\.editDueTitle\(head, projectId, routedKey\)/.test(read("src/lib/tasks.ts")));
+    c.ok("Reassigned to you and New edit", /editDueTitle\(`Reassigned to you — \$\{street\}`, projectId, key\)/.test(read("src/app/editing/actions.ts")) && /editDueTitle\(`New edit — \$\{street\}`, projectId, key\)/.test(read("src/app/editing/actions.ts")));
+    c.ok("Task for you", /editDueTitle\(head, t\.projectId, assignedKey\)/.test(read("src/app/actions.ts")));
     c.ok("the desk list shows the hour in their time", /your time/.test(read("src/components/editing/EditorDesk.tsx")) && /dueWords\(j, tz\)/.test(read("src/components/editing/EditorDesk.tsx")));
 
     c.head("isolation");

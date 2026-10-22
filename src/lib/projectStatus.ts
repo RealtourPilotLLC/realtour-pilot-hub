@@ -7,6 +7,7 @@ import { getSecret } from "@/lib/integrations/connections";
 import { actualFolderPaths, folderFileCount } from "@/lib/dropboxFolders";
 import { deliveryPromiseFor, deliveryDueFrom, slaTierOf, videoAnchorFor, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
+import type { PromiseRules } from "@/lib/turnaround";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, type UnitTallyView } from "@/lib/statusEvidence";
@@ -115,19 +116,28 @@ export function getVideoSlaStatus(p: {
   /** the office's tier (Sep 16) — branding → monthly, premium → 72h */
   tierOverride?: string | null;
   packageName?: string | null;
-}): { tier: VideoTier; due: Date; overdue: boolean; msRemaining: number } | null {
+},
+  // Oct 22 2026 (audit H1/H2): the clock a replay reads at (which visits have
+  // happened yet) and the office's editable promises (Settings → Turnaround
+  // promises), so every reader of the one video due (editorDue.videoDueOf)
+  // gets the same date. Both optional: a caller that passes neither reads
+  // exactly as before.
+  opts: { now?: number; rules?: PromiseRules } = {},
+): { tier: VideoTier; due: Date; overdue: boolean; msRemaining: number } | null {
   const tier = videoTier(p.deliverables);
   if (!tier || !p.shootDate) return null;
   const v = p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"));
   // THE OFFICE'S TIER decides the window when it is set; otherwise the hub's
   // own reading of the product (slaTierOf is that ladder, stated once).
   const sla = slaTierOf({ tierOverride: p.tierOverride ?? null, packageName: p.packageName ?? null, deliverables: p.deliverables });
-  const anchor = videoAnchorFor(p) ?? p.shootDate;
+  const now = opts.now ?? Date.now();
+  const anchor = videoAnchorFor(p, now) ?? p.shootDate;
   const due = deliveryDueFrom(anchor, v?.type ?? "SOCIAL_REEL", {
     premium: sla === "premium",
     monthlyContent: sla === "branding",
+    ...(opts.rules ? { rules: opts.rules } : {}),
   });
-  const msRemaining = due.getTime() - Date.now();
+  const msRemaining = due.getTime() - now;
   // A video already delivered isn't "overdue" even past its window.
   const delivered = (p.status ?? "").toUpperCase() === "DELIVERED";
   return { tier, due, overdue: !delivered && msRemaining < 0, msRemaining };
