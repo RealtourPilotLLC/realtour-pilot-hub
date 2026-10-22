@@ -163,6 +163,7 @@ const SELECT = {
       type: true, label: true, productTitle: true, videoStyle: true, uploadedAt: true,
       notCompletedReason: true, waivedAt: true, removedFromOrderAt: true,
       quantity: true, // Oct 22 2026: how many videos, against the ones waiting on a second shoot
+      createdAt: true, // Oct 22 2026 (audit M9): what the job owed AT the handoff, not today
     },
   },
   orderItems: { where: { isCanceled: false }, select: { title: true } },
@@ -212,6 +213,34 @@ function finishedAt(r: Row, now: Date): Date | null {
 export type Evidence = { shoots: ShootFact[]; entries: KpiEntryBase[]; coachingNotes: number };
 
 /**
+ * WHAT THE JOB OWED AT A MOMENT (audit M9, Oct 22 2026): the rows that existed
+ * then (created by it) and were live then (a row retired later still counts;
+ * one retired before it does not). Today's rows judged a photographer on a
+ * video the order added after they had handed in (538 Onward Ave's second
+ * reel). Pure.
+ */
+export function rowsAt<T extends { createdAt?: Date | null; removedFromOrderAt: Date | null }>(rows: T[], at: Date): T[] {
+  return rows
+    .filter((d) => !d.createdAt || d.createdAt.getTime() <= at.getTime())
+    .map((d) => (d.removedFromOrderAt && d.removedFromOrderAt.getTime() > at.getTime() ? { ...d, removedFromOrderAt: null } : d));
+}
+
+/** Who may have submitted a half on the photographer's behalf: the office's logins and roster names. */
+async function officeSubmitters(): Promise<{ office: Set<string>; byMember: Map<string, Set<string>> }> {
+  const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+  const users = await prisma.appUser.findMany({ select: { name: true, email: true, role: true, teamMemberId: true } }).catch(() => []);
+  const roster = new Map((await prisma.teamMember.findMany({ where: { id: { in: users.map((u) => u.teamMemberId).filter((x): x is string => !!x) } }, select: { id: true, name: true } }).catch(() => [])).map((t) => [t.id, t.name]));
+  const office = new Set<string>();
+  const byMember = new Map<string, Set<string>>();
+  for (const u of users) {
+    const names = [norm(u.name), norm(u.email), norm(u.teamMemberId ? roster.get(u.teamMemberId) : null)].filter(Boolean);
+    if (u.role === "OWNER" || u.role === "ADMIN" || u.role === "CREATIVE_MANAGER") for (const n of names) office.add(n);
+    if (u.teamMemberId) byMember.set(u.teamMemberId, new Set([...(byMember.get(u.teamMemberId) ?? []), ...names]));
+  }
+  return { office, byMember };
+}
+
+/**
  * Everything the scorecard needs about one person over [startKey, endKey]
  * (ET days), counting only work that happened by `windowEnd`. Reads only.
  */
@@ -235,6 +264,25 @@ export async function loadEvidence(
   const waitingByJob = await import("@/lib/reviewCuts")
     .then((m) => m.waitingHoldsByProject(rows.map((r) => r.id)))
     .catch(() => new Map<string, Map<string, unknown>>());
+  // THE PHOTOGRAPHER'S OWN HANDOFF, NEVER THE OFFICE'S (audit M9, Oct 22
+  // 2026). 538 Onward Ave counted "Video late" from Jordan's 12:06 PM submit
+  // though Harrison's raws were in the night before. A half the office
+  // submitted is judged by the photographer's own footage landing (the raw
+  // video first confirmed in Dropbox, DeliverableOutput.rawInAt; the raws
+  // first recorded for the photos); with none on record it is not judged.
+  const submitters = await officeSubmitters();
+  const memberNames = submitters.byMember.get(memberId) ?? new Set<string>();
+  const rosterName = (await prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } }).catch(() => null))?.name?.trim().toLowerCase();
+  if (rosterName) memberNames.add(rosterName);
+  const officeSubmit = (by: string | null | undefined) => {
+    const n = (by ?? "").trim().toLowerCase();
+    return !!n && !memberNames.has(n) && (submitters.office.has(n) || n === "the office");
+  };
+  const rawIn = new Map<string, Date>();
+  for (const o of await prisma.deliverableOutput.findMany({ where: { projectId: { in: rows.map((r) => r.id) }, rawInAt: { not: null } }, select: { projectId: true, rawInAt: true } }).catch(() => [])) {
+    const cur = rawIn.get(o.projectId);
+    if (!cur || o.rawInAt! < cur) rawIn.set(o.projectId, o.rawInAt!);
+  }
 
   for (const r of rows) {
     const shotAt = finishedAt(r, now);
@@ -255,7 +303,9 @@ export async function loadEvidence(
       ? r.videosOwedOverride
       : r.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL")).reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
     const allVideoWaiting = held > 0 && held >= owedVideos;
-    const halves = liveHandoffCategories(r.deliverables).filter((h) => !(h === "video" && allVideoWaiting));
+    // Every half the job could have owed (rows retired later included); each
+    // is then judged against the rows as they stood at its own handoff.
+    const halves = liveHandoffCategories(r.deliverables.map((d) => ({ ...d, removedFromOrderAt: null }))).filter((h) => !(h === "video" && allVideoWaiting));
     const terms = uploadDeadlines(day);
     const ov: KpiDeadlineOverride | undefined = overrides.get(r.id);
     const dbx = dropboxCounts(r.statusEvidence);
@@ -265,9 +315,17 @@ export async function loadEvidence(
     for (const half of halves) {
       const agreed = half === "photos" ? ov?.photos : ov?.video;
       const due = agreed && Number.isFinite(Date.parse(agreed)) ? new Date(agreed) : terms[half];
-      const handedIn = categoryHandoffAt(r, half);
+      const submitted = categoryHandoffAt(r, half);
       const passed = now.getTime() > due.getTime();
-      if (!handedIn && !passed) continue;
+      if (!submitted && !passed) continue;
+      // Owed at the handoff (or, not handed in, at the deadline)?
+      if (!liveHandoffCategories(rowsAt(r.deliverables, submitted ?? due)).includes(half)) continue;
+      const by = half === "photos" ? r.photosHandoffBy : r.videoHandoffBy;
+      // The office's submit is not the photographer's: their own footage landing stands in.
+      const byOffice = !!submitted && officeSubmit(by);
+      const footage = half === "video" ? rawIn.get(r.id) ?? null : r.uploadedAt;
+      if (byOffice && !footage) continue; // nothing of theirs on record: not judged
+      const handedIn = byOffice ? footage : submitted;
       judged++;
       const late = handedIn ? handedIn.getTime() > due.getTime() : true;
       if (!late || !owner) continue;
@@ -277,15 +335,16 @@ export async function loadEvidence(
         .filter((x): x is Date => !!x);
       const tick = ticks.length ? new Date(Math.max(...ticks.map((t) => t.getTime()))) : null;
       const what = half === "photos" ? "photos and photo notes" : "video files and video notes";
-      const by = half === "photos" ? r.photosHandoffBy : r.videoHandoffBy;
       const detail = [
         `Shoot day: ${etDateTime(shotAt)}.`,
         agreed
           ? `Due ${etDateTime(due)}: a deadline agreed for this shoot${ov?.note ? ` (${ov.note})` : ""}.`
           : `Due ${etDateTime(due)}: ${what} are due ${half === "photos" ? "by midnight on the shoot day" : "by 9:00 AM the next morning"}.`,
-        handedIn
-          ? `Submitted on the upload page ${etDateTime(handedIn)}${by ? ` by ${by}` : ""}, ${howLong(handedIn.getTime() - due.getTime())} after the deadline.`
-          : `Not submitted on the upload page yet: ${howLong(now.getTime() - due.getTime())} past the deadline.`,
+        byOffice && handedIn && submitted
+          ? `Submitted on the upload page ${etDateTime(submitted)} by ${by} for you (not counted as yours). Your raw ${half === "photos" ? "photos" : "video"} first landed ${etDateTime(handedIn)}, ${howLong(handedIn.getTime() - due.getTime())} after the deadline.`
+          : handedIn
+            ? `Submitted on the upload page ${etDateTime(handedIn)}${by ? ` by ${by}` : ""}, ${howLong(handedIn.getTime() - due.getTime())} after the deadline.`
+            : `Not submitted on the upload page yet: ${howLong(now.getTime() - due.getTime())} past the deadline.`,
         ...(tick ? [`Marked uploaded on the upload page ${etDateTime(tick)}.`] : []),
         ...(half === "photos" && r.uploadedAt ? [`Raws first recorded by the hub ${etDateTime(r.uploadedAt)}.`] : []),
         ...(dbx && typeof (half === "photos" ? dbx.rawPhotos : dbx.rawVideo) === "number"
@@ -309,22 +368,26 @@ export async function loadEvidence(
       if (half === "video") lateVideo.push({ entry, row: r, due });
     }
 
-    // Video instructions, once the video half is in.
+    // Video instructions, once the video half is in — the photographer's own
+    // submit only (audit M9): words the office typed in for them are not
+    // theirs to be scored on, thin or full. Judged against the rows the job
+    // owed at that handoff.
     if (owner && halves.includes("video")) {
+      const handedIn = categoryHandoffAt(r, "video");
       const readiness = await handoffReadinessOf({
         ...r,
-        deliverables: r.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt),
+        deliverables: (handedIn ? rowsAt(r.deliverables, handedIn) : r.deliverables).filter((d) => !d.removedFromOrderAt && !d.waivedAt),
         photographer: r.photographer,
       }).catch(() => null);
-      const handedIn = categoryHandoffAt(r, "video");
-      if (readiness && !readiness.minimalReel && handedIn) {
+      const theirs = !!handedIn && !officeSubmit(r.videoHandoffBy) && liveHandoffCategories(rowsAt(r.deliverables, handedIn)).includes("video");
+      if (readiness && !readiness.minimalReel && handedIn && theirs) {
         videoHandoff = true;
         // TWO VIDEOS, TWO SETS OF INSTRUCTIONS (Oct 22 2026): a later video of
         // a multi-video job with no words of its own is incomplete (the
         // readiness above already names it), and a premium one with too few
         // is thin. A video the hub only set up AFTER this handoff is the hub's
         // miss, not the photographer's, and is not held against them.
-        const liveVideoRows = r.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL"));
+        const liveVideoRows = rowsAt(r.deliverables, handedIn).filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL"));
         const { laterVideoGap, perVideoRuleApplies } = await import("@/lib/perVideoInstructions");
         const later = liveVideoRows.length > 1 && perVideoRuleApplies(handedIn)
           ? (await import("@/lib/deliverableOutputs").then((m) => m.videoInstructionsFor(r.id)).catch(() => [])).filter((v) => v.number > 1)
