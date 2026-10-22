@@ -4,6 +4,7 @@ import { etMonthKey } from "@/lib/contentProgram";
 import { contentHref } from "@/lib/contentNav";
 import type { ScriptReadiness } from "@/lib/contentDrafting";
 import type { MonthProgress } from "@/lib/monthProgress";
+import type { PlanStep } from "@/lib/planningState";
 import { monthStarted, monthTouched } from "@/lib/forfeit";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,19 @@ import { monthStarted, monthTouched } from "@/lib/forfeit";
 // the client has done something on it (topics chosen, answers, a script, a
 // session or call booked: forfeit.monthTouched); an untouched next month
 // stays quiet.
+//
+// THE MONTH PAGE IS THE SOURCE OF TRUTH (Oct 22 2026, audit M5). The card
+// reads the month page's own reader (monthProgress) and must never say
+// something that page does not:
+//   · "Needs N scripts" counts a topic only when the month page puts it on
+//     our side. A topic whose step is the client's (choose the route, answer
+//     the questions, fill a gap) or the call's is not a script we owe yet:
+//     Ashley Brunner's October read "Needs 4 scripts" while her month page
+//     said she had not chosen how to plan it.
+//   · scripts to approve: the month page's two counts (in review, drafts) in
+//     its own words (monthProgress.scriptsAwaitingWords).
+//   · a FINISHED month (every video owed delivered: staffMonthView's
+//     deliveredDone) is off the card; leftover drafts on it are not work.
 // ---------------------------------------------------------------------------
 
 export type ActionItem = { key: string; words: string; tone: "warn" | "brand" | "muted"; href: string };
@@ -41,6 +55,14 @@ export type ContentActionRow = { key: string; clientName: string; monthKey: stri
 export type ContentActions = { rows: ContentActionRow[] };
 
 const NEEDS_A_PERSON: ReadonlySet<ScriptReadiness> = new Set<ScriptReadiness>(["THIN", "THIN_ANSWERS", "WAITING_ON_PLANNING"]);
+/**
+ * A topic at one of these steps (the planning reader's, as the month page
+ * shows them) waits on the client or on the call, not on us: the route is
+ * not chosen (CHOSEN), the answers are theirs to give (NEEDS_ANSWERS,
+ * NEEDS_MORE: the month page says "waiting on their answers"), or the call
+ * has not happened (ON_CALL). Audit M5, Oct 22 2026.
+ */
+export const NOT_OURS_YET: ReadonlySet<PlanStep> = new Set<PlanStep>(["CHOSEN", "NEEDS_ANSWERS", "NEEDS_MORE", "ON_CALL"]);
 const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
 
 export function nextMonthKey(key: string): string {
@@ -97,7 +119,7 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
   const clientIds = [...new Set(owed.map((m) => m.clientId))];
   const enrollmentIds = [...live.keys()];
 
-  const [{ monthProgressMany, progressKey }, { scriptWorkForMonth }, { strategyAwaitingCounts }] = await Promise.all([
+  const [{ monthProgressMany, progressKey, staffMonthView, scriptsAwaitingWords }, { scriptWorkForMonth }, { strategyAwaitingCounts }] = await Promise.all([
     import("@/lib/monthProgress"),
     import("@/lib/contentDrafting"),
     import("@/lib/contentStrategy"),
@@ -120,20 +142,40 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
 
   // Oct 21 2026: next month before its 1st, untouched, is quiet (read off the same progress).
   const quiet = new Set(owed.filter((m) => !monthStarted(m.monthKey, now) && !progressTouched(progress.get(progressKey(m.enrollmentId, m.id, m.monthKey)))).map((m) => m.id));
+  // Oct 22 2026 (audit M5): a month the month page calls finished (every
+  // video owed delivered) carries nothing; its leftover drafts are not work.
+  const finished = new Set(owed.filter((m) => {
+    const p = progress.get(progressKey(m.enrollmentId, m.id, m.monthKey));
+    return !!p && staffMonthView(p).deliveredDone;
+  }).map((m) => m.id));
   // Videos that need a person to get a script, per month (six months at a
   // time): this month and next only, and never a month the reader mutes
   // (skipped, imported or forfeited: nothing is owed on it).
   const needScript = new Map<string, number>();
-  const toCheck = owed.filter((m) => !isEarlier.has(m.id) && !quiet.has(m.id) && !live.get(m.enrollmentId)?.clientSuppliesTopics && !progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted);
+  const toCheck = owed.filter((m) => !isEarlier.has(m.id) && !quiet.has(m.id) && !finished.has(m.id) && !live.get(m.enrollmentId)?.clientSuppliesTopics && !progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted);
   for (let i = 0; i < toCheck.length; i += 6) {
     await Promise.all(toCheck.slice(i, i + 6).map(async (m) => {
       const work = await scriptWorkForMonth(m.id).catch(() => []);
-      needScript.set(m.id, work.filter((w) => !w.scriptId && NEEDS_A_PERSON.has(w.readiness)).length);
+      // Audit M5: only a topic the month page puts on our side.
+      const stepOf = new Map((progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.planning?.topics ?? []).map((t) => [t.topicId, t.step] as const));
+      needScript.set(m.id, work.filter((w) => {
+        const step = stepOf.get(w.topicId);
+        return !w.scriptId && NEEDS_A_PERSON.has(w.readiness) && !(step && NOT_OURS_YET.has(step));
+      }).length);
     }));
   }
 
+  // The account-wide items ride on the client's first row the card shows:
+  // the first month that is not finished, else (only finished months on the
+  // card) the first one, so a waiting message never drops off with them.
+  const home = new Map<string, string>();
+  for (const m of owed) {
+    if (progress.get(progressKey(m.enrollmentId, m.id, m.monthKey))?.muted) continue;
+    const had = home.get(m.enrollmentId);
+    if (!had || (finished.has(had) && !finished.has(m.id))) home.set(m.enrollmentId, m.id);
+  }
+
   const rows: ContentActionRow[] = [];
-  const enrollmentDone = new Set<string>();
   for (const m of owed) {
     const p = progress.get(progressKey(m.enrollmentId, m.id, m.monthKey));
     // A forfeited (or otherwise muted) month owes nothing (Oct 8 2026).
@@ -141,20 +183,25 @@ export async function monthlyContentActions(opts: { now?: Date; excludeClientIds
     const at = (tab: "plan" | "messages", view?: "topics" | "scripts" | "strategy") => contentHref(m.enrollmentId, { tab, view, month: m.monthKey, now });
     const items: ActionItem[] = [];
     // An untouched next month carries nothing of its own (only, if it is the
-    // client's first row, the account-wide items below).
+    // client's home row, the account-wide items below). Nor does a finished
+    // one (audit M5), unless its month page asks for its history to be
+    // reconciled: that page's own next step.
     const na = quiet.has(m.id) ? null : p?.nextAction;
-    if (!isEarlier.has(m.id) && na && na.blocked === "us" && (na.ownerDuty === "strategy" || na.ownerDuty === "month reconciliation")) items.push({ key: "topics", words: na.text, tone: "warn", href: at("plan", "topics") });
-    const write = needScript.get(m.id) ?? 0;
-    if (write) items.push({ key: "write", words: `Needs ${n(write, "script")}`, tone: "warn", href: at("plan", "scripts") });
-    // Oct 20 2026 (audit D9): a DRAFT waits for the same OK as INTERNAL_REVIEW
-    // (the Scripts tab lists both under "needs your OK"), so it is one count.
-    const toApprove = (p?.scripts.needsJordan ?? 0) + (p?.scripts.drafting ?? 0);
-    if (toApprove) items.push({ key: "approve", words: `${n(toApprove, "script")} to approve`, tone: "brand", href: at("plan", "scripts") });
-    if (p?.scripts.changesRequested) items.push({ key: "changes", words: `Changes asked on ${n(p.scripts.changesRequested, "script")}`, tone: "warn", href: at("plan", "scripts") });
-    if (p?.scripts.openSuggestions) items.push({ key: "suggestions", words: `${n(p.scripts.openSuggestions, "script suggestion")} from the client`, tone: "brand", href: at("plan", "scripts") });
-    // The account-wide ones ride on the client's first row.
-    if (!enrollmentDone.has(m.enrollmentId)) {
-      enrollmentDone.add(m.enrollmentId);
+    const done = finished.has(m.id);
+    if (!isEarlier.has(m.id) && na && na.blocked === "us" && (na.ownerDuty === "month reconciliation" || (!done && na.ownerDuty === "strategy"))) items.push({ key: "topics", words: na.text, tone: "warn", href: at("plan", "topics") });
+    if (!done) {
+      const write = needScript.get(m.id) ?? 0;
+      if (write) items.push({ key: "write", words: `Needs ${n(write, "script")}`, tone: "warn", href: at("plan", "scripts") });
+      // Oct 20 2026 (audit D9): a DRAFT waits for the same OK as INTERNAL_REVIEW
+      // (the Scripts tab lists both under "needs your OK"), so it is one count;
+      // Oct 22 (M5): in the month page's words, its split said when both wait.
+      const toApprove = p ? scriptsAwaitingWords(p.scripts, "to approve") : null;
+      if (toApprove) items.push({ key: "approve", words: toApprove, tone: "brand", href: at("plan", "scripts") });
+      if (p?.scripts.changesRequested) items.push({ key: "changes", words: `Changes asked on ${n(p.scripts.changesRequested, "script")}`, tone: "warn", href: at("plan", "scripts") });
+      if (p?.scripts.openSuggestions) items.push({ key: "suggestions", words: `${n(p.scripts.openSuggestions, "script suggestion")} from the client`, tone: "brand", href: at("plan", "scripts") });
+    }
+    // The account-wide ones ride on the client's home row.
+    if (home.get(m.enrollmentId) === m.id) {
       const msgs = waiting.get(m.enrollmentId) ?? 0;
       if (msgs) items.push({ key: "messages", words: `${n(msgs, "message")} waiting on a reply`, tone: "warn", href: at("messages") });
       if (strategiesWaiting.get(m.enrollmentId)) items.push({ key: "strategy", words: "Strategy to approve", tone: "brand", href: at("plan", "strategy") });

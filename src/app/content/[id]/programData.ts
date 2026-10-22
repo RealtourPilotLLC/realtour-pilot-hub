@@ -193,6 +193,8 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
   // whether it is safe to put on a call sheet, and the one nobody could see.
   const verdicts = scripts.length ? await scriptDecisionsFor(enrollmentId, scripts.map((s) => s.id)).catch(() => new Map()) : new Map();
   const months = new Map((await prisma.contentMonth.findMany({ where: { enrollmentId }, select: { id: true, monthKey: true } })).map((m) => [m.id, m.monthKey]));
+  // Oct 22 2026 (audit M5): a bulk plan's months (bulkPlan.ts): its released scripts are the client's bank, never awaiting their approval.
+  const bulkMonths = new Set((await prisma.contentBulkPlan.findMany({ where: { enrollmentId, status: { not: "CANCELLED" } }, select: { monthId: true } })).map((b) => b.monthId));
   const rows: ScriptUi[] = scripts.map((s) => {
     const vs = versions.filter((v) => v.scriptId === s.id);
     const toV = (v: (typeof vs)[number]): VersionUi => {
@@ -227,6 +229,7 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       // Oct 22 2026: filmed (lib/scriptFilmed). Not the client's verdict: a chip of its own, and no "hasn't answered yet".
       filmed: verdicts.get(s.id)?.filmed ? { atISO: verdicts.get(s.id)!.filmed!.atISO, signal: verdicts.get(s.id)!.filmed!.signal } : null,
       topicFormat: s.topicId ? resolvedTopicFormat(topicFormats.get(s.topicId) ?? null, accountStyle) : null,
+      bulkBank: !!s.monthId && bulkMonths.has(s.monthId),
     };
   });
   // 6.5: the client changed an answer after this script was drafted — nothing
