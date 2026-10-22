@@ -322,13 +322,36 @@ let providerCache: { at: number; byProduct: Map<string, AryeoProductProvider[]> 
  * a caller must not be handed an empty roster that looks like "nobody is
  * assigned" when it means "we could not ask".
  */
+/**
+ * WHO TAKES PROGRAM SESSIONS (Oct 22 2026). Jordan: "make sure Jordan is not
+ * able to be scheduled. Just James Livingston for now." Aryeo assigns BOTH
+ * Jordan and James to the session products, and Jordan has no working hours
+ * there, so a mixed request filed Erica Walker's picks under him and every
+ * booking failed. The hub's own list (AppSetting program_session_creatives,
+ * {"emails": [...]}) narrows Aryeo's: when it names anyone, only those people
+ * are offered and booked; an empty or missing list leaves Aryeo's assignment
+ * as the only rule. Read with the provider cache, so a change lands within a
+ * minute. A read that fails keeps the previous behaviour (Aryeo's list) rather
+ * than offering nobody.
+ */
+export const SESSION_CREATIVES_KEY = "program_session_creatives";
+export async function sessionCreativeEmails(): Promise<string[]> {
+  const row = await prisma.appSetting.findUnique({ where: { key: SESSION_CREATIVES_KEY }, select: { value: true } }).catch(() => null);
+  if (!row) return [];
+  try {
+    const v = JSON.parse(row.value) as { emails?: unknown };
+    return Array.isArray(v.emails) ? v.emails.filter((e): e is string => typeof e === "string" && e.includes("@")).map((e) => e.trim().toLowerCase()) : [];
+  } catch { return []; }
+}
+
 export async function productProviders(): Promise<Map<string, AryeoProductProvider[]>> {
   const hit = providerCache;
   if (hit && Date.now() - hit.at < PROVIDER_TTL_MS) return hit.byProduct;
 
-  const [products, team] = await Promise.all([
+  const [products, team, onlyThese] = await Promise.all([
     Aryeo.products({ include: "providers" }),
     Aryeo.companyTeamMembers(),
+    sessionCreativeEmails(),
   ]);
   const byTm = new Map<string, AryeoCompanyTeamMember>();
   for (const t of team) if (t.id) byTm.set(t.id, t);
@@ -351,6 +374,7 @@ export async function productProviders(): Promise<Map<string, AryeoProductProvid
         !tm ? "Aryeo assigned this person to the product but we could not find their team-member record."
         : !isSp ? "Assigned to the product but not marked as a service provider in Aryeo."
         : status && status.toLowerCase() !== "active" ? `Assigned to the product but their Aryeo account is ${status}.`
+        : onlyThese.length && !onlyThese.includes(String(tm?.company_user?.email ?? "").trim().toLowerCase()) ? "Not taking program sessions right now (the hub's session list names other people)."
         : null;
       rows.push({
         teamMemberId: ref.id,
