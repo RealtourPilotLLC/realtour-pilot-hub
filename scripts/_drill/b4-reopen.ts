@@ -122,13 +122,17 @@ async function main() {
   const { raiseRevision } = await import("@/lib/comms");
   const editingActions = await import("@/app/editing/actions");
   const appActions = await import("@/app/actions");
-  const { scoreQuarter } = await import("@/lib/kpi");
+  // Oct 22 2026: the seven-area scorecard (and its revision rate) lives on,
+  // frozen, in lib/kpiLegacy for the quarters before the compensation terms;
+  // the contract scorecard (lib/kpi) counts no client revision at all
+  // (oct22-kpi-contract.ts). This section checks the frozen one still holds.
+  const { scoreQuarter } = await import("@/lib/kpiLegacy");
   const { setSession } = await import("@/lib/auth/session");
 
   const oldBoard = (await import(baseline("src/lib/deliveryBoard.ts"))) as typeof import("@/lib/deliveryBoard");
   const oldQueue = (await import(baseline("src/lib/editorQueue.ts"))) as typeof import("@/lib/editorQueue");
   const oldBrief = (await import(baseline("src/lib/projectBrief.ts"))) as typeof import("@/lib/projectBrief");
-  const oldKpi = (await import(baseline("src/lib/kpi.ts"))) as typeof import("@/lib/kpi");
+  const oldKpi = (await import(baseline("src/lib/kpi.ts"))) as typeof import("@/lib/kpiLegacy");
 
   /** An ET wall-clock instant: et(9, 25, 14) = Sep 25 2026 2:00 PM ET. */
   const et = (month: number, day: number, hour: number, minute = 0) =>
