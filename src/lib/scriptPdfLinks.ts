@@ -113,13 +113,19 @@ async function approvedScriptsForPdf(enrollmentId: string, scriptIds: string[]):
     const s = onPage.find((x) => x.id === id);
     if (!s) { out.set(id, NOT_ON_PAGE); continue; }
     const d = decisions.get(s.id);
-    if (d?.decision !== "APPROVED") { out.set(id, { refused: "Approve the script first. The PDF is there once it's approved." }); continue; }
+    // Oct 22 2026: a script filmed before they approved it is done too (nothing
+    // is asked of them): its PDF is theirs, and it says "Filmed", never "Approved".
+    const approved = d?.decision === "APPROVED";
+    if (!approved && !d?.filmed) { out.set(id, { refused: "Approve the script first. The PDF is there once it's approved." }); continue; }
     const v = versions.find((x) => x.id === s.sharedVersionId);
     if (!v) { out.set(id, NOT_ON_PAGE); continue; }
     const parts = sessionPartsOf(v);
-    const approvedOn = d.decidedAt ? new Date(d.decidedAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : null;
+    const day = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }) : null);
+    const approvedOn = approved ? day(d?.decidedAt) : null;
+    const filmedOn = approved ? null : day(d?.filmed?.atISO);
+    const note = approved ? (approvedOn ? `Approved ${approvedOn}` : "Approved") : filmedOn ? `Filmed ${filmedOn}` : "Filmed";
     out.set(id, {
-      script: { title: v.title, pillarName: (v.pillarId ? pillarName.get(v.pillarId) : null) ?? (v.categoryLabel && !/^\(?\s*no\s+pillar/i.test(v.categoryLabel) ? v.categoryLabel : null), parts: parts ? { title: v.title, ...parts } : null, body: v.body, note: approvedOn ? `Approved ${approvedOn}` : "Approved" },
+      script: { title: v.title, pillarName: (v.pillarId ? pillarName.get(v.pillarId) : null) ?? (v.categoryLabel && !/^\(?\s*no\s+pillar/i.test(v.categoryLabel) ? v.categoryLabel : null), parts: parts ? { title: v.title, ...parts } : null, body: v.body, note },
       fileName: pdfFileName(v.title),
     });
   }
@@ -188,7 +194,9 @@ export async function bulkScriptsForPdf(enrollmentId: string): Promise<{ heading
  * PDFs once they are all approved, just like Rick can"). The month's scripts
  * that are on the client's page (released, not history); offered only when
  * every one of them carries the client's approval of the version on their
- * page. Each page is that approved version, as in approvedScriptForPdf.
+ * page, or was filmed (Oct 22 2026: filmed counts as done; its page says
+ * "Filmed", never "Approved"). Each page is the version on their page, as in
+ * approvedScriptForPdf.
  */
 async function monthScriptRows(enrollmentId: string, monthId: string) {
   return prisma.contentScript.findMany({
@@ -210,9 +218,11 @@ export async function monthsReadyForPdf(enrollmentId: string): Promise<{ monthKe
   if (!rows.length) return [];
   const { scriptDecisionsFor } = await import("@/lib/scriptDecisions");
   const d = await scriptDecisionsFor(enrollmentId, rows.map((r) => r.id));
+  // Oct 22 2026: a script filmed before they approved it counts as done.
+  const done = (id: string) => d.get(id)?.decision === "APPROVED" || !!d.get(id)?.filmed;
   return months.flatMap((m) => {
     const mine = rows.filter((r) => r.monthId === m.id);
-    return mine.length && mine.every((r) => d.get(r.id)?.decision === "APPROVED") ? [{ monthKey: m.monthKey, count: mine.length }] : [];
+    return mine.length && mine.every((r) => done(r.id)) ? [{ monthKey: m.monthKey, count: mine.length }] : [];
   });
 }
 
@@ -235,7 +245,10 @@ export async function monthScriptsForPdf(enrollmentId: string, monthKey: string)
   const monthName = new Date(Date.UTC(y, mo - 1, 15)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" });
   return {
     heading: `${who ? `${who}: ` : ""}${monthName} scripts`,
-    subheading: `${scripts.length} approved script${scripts.length === 1 ? "" : "s"}.`,
+    // "approved" only when every page is: a filmed one never reads as their sign-off.
+    subheading: scripts.every((s) => s.note?.startsWith("Approved"))
+      ? `${scripts.length} approved script${scripts.length === 1 ? "" : "s"}.`
+      : `${scripts.length} script${scripts.length === 1 ? "" : "s"}, approved or filmed.`,
     scripts,
     fileName: pdfFileName(`${who ?? "Your"} ${monthName} scripts`),
   };

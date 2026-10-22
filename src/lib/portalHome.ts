@@ -22,9 +22,23 @@ import { CTA_WORDS, LIBRARY_FILTERS, TEXT_KYLE, answerCta, type LibraryFilterKey
  * THIS version. It must carry the shared version's id — R1: the decision is
  * recorded against the version the page rendered, and a card that could not
  * send it would approve words nobody read.
+ *
+ * Oct 22 2026 (Jordan): and not filmed. A script whose video is filmed is no
+ * longer the client's to approve: it reads "Filmed" (filmedScript), and no
+ * count, badge or Home step asks for it.
  */
 export function awaitingScript(t: PortalTopic): boolean {
-  return !t.declined && !!t.script?.shared && !t.script.decision && !!t.script.sharedVersionId && !!t.scriptText && !t.scriptText.historical;
+  return !t.declined && !!t.script?.shared && !t.script.decision && !t.script.filmed && !!t.script.sharedVersionId && !!t.scriptText && !t.scriptText.historical;
+}
+
+/**
+ * Filmed, and the client never approved it (Oct 22 2026): shown as "Filmed",
+ * readable, with nothing asked. A change request they sent before the shoot
+ * stays with the office; the client is not asked again. An approved script
+ * is not this: it reads approved, as it always has.
+ */
+export function filmedScript(t: PortalTopic): boolean {
+  return !t.declined && !!t.script?.shared && !!t.script.filmed && t.script.decision !== "APPROVED" && !!t.scriptText && !t.scriptText.historical;
 }
 
 /** On the bank rather than on a month's plan: no selection in any month still open. */
@@ -47,8 +61,10 @@ export type PlanModel = {
   toAnswer: PortalTopic[];
   /** Shared, undecided, readable — see awaitingScript. */
   scripts: PortalTopic[];
-  /** Scripts they already answered (approved or asked to change), for reference. */
+  /** Scripts they already answered (approved or asked to change), for reference. A filmed one they never approved is in `filmedScripts` instead. */
   decidedScripts: PortalTopic[];
+  /** Oct 22 2026: filmed without their approval — read-only, "Filmed", never counted as waiting. */
+  filmedScripts: PortalTopic[];
   /**
    * Of those, the ones answered in the last few minutes. The Scripts view keeps
    * each as a card (Sep 24): answering a script used to drop it from `scripts`
@@ -67,7 +83,7 @@ export function planModel(t: PortalTopicsData, monthKey: string, now: Date = new
   const open = new Set(t.months.map((m) => m.id));
   const month = t.months.find((m) => m.monthKey === monthKey) ?? t.months[0] ?? null;
   const monthTopics = month ? active.filter((x) => x.selection?.monthId === month.id) : [];
-  const decidedScripts = active.filter((x) => !!x.script?.shared && !!x.script.decision && !!x.scriptText && !x.scriptText.historical);
+  const decidedScripts = active.filter((x) => !!x.script?.shared && !!x.script.decision && !!x.scriptText && !x.scriptText.historical && !filmedScript(x));
   return {
     month,
     monthTopics,
@@ -75,6 +91,7 @@ export function planModel(t: PortalTopicsData, monthKey: string, now: Date = new
     toAnswer: monthTopics.filter((x) => x.plan?.step === "NEEDS_ANSWERS" || x.plan?.step === "NEEDS_MORE"),
     scripts: active.filter(awaitingScript),
     decidedScripts,
+    filmedScripts: active.filter(filmedScript),
     justDecided: decidedScripts.filter((x) => !!x.script?.decidedAtISO && now.getTime() - Date.parse(x.script.decidedAtISO) < JUST_DECIDED_MS),
     bank: active.filter((x) => inBank(x, open)),
   };

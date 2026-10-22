@@ -5,6 +5,7 @@ import { actorLabel } from "@/lib/portalAccess";
 import { clip } from "@/lib/text";
 import { contentHref } from "@/lib/contentNav";
 import { TEXT_KYLE_START } from "@/lib/portalWords";
+import { readScriptsFilmed, type ScriptFilmed } from "@/lib/scriptFilmed";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT'S VERDICT ON A SCRIPT (spec §22, F09) — Sep 22 2026.
@@ -85,7 +86,30 @@ export type ScriptDecisionState = {
   staleApproval: boolean;
   /** The change requests on record, newest first. Never removed. */
   requests: { at: string; by: string | null; note: string | null; versionNo: number | null }[];
+  /**
+   * Oct 22 2026 (Jordan): the video for this script has been filmed
+   * (lib/scriptFilmed, the hub's one rule). Not a client decision and never
+   * recorded as one: `decision` stays what the client said. When they never
+   * approved it, filmed ENDS the ask: no approval card, count, reminder or
+   * chase. Null = not filmed, or the read failed (the ask stands, as before).
+   */
+  filmed: ScriptFilmed | null;
 };
+
+/**
+ * Is the client still being asked to approve this script? Shared, no
+ * approval of theirs on the shared version, and not filmed. A change request
+ * on a filmed script stays the office's to see (scriptRequests), but nothing
+ * asks the client to approve it any more.
+ */
+export function clientApprovalAsked(d: Pick<ScriptDecisionState, "sharedVersionId" | "decision" | "filmed"> | null | undefined): boolean {
+  return !!d && !!d.sharedVersionId && d.decision !== "APPROVED" && !d.filmed;
+}
+
+/** Filmed without the client's approval: what the portal shows as "Filmed". */
+export function filmedWithoutApproval(d: Pick<ScriptDecisionState, "decision" | "filmed"> | null | undefined): boolean {
+  return !!d && !!d.filmed && d.decision !== "APPROVED";
+}
 
 /**
  * THE ONE RULE for "where does the client stand on this script", so the portal,
@@ -116,9 +140,16 @@ export async function scriptDecisionsFor(enrollmentId: string, scriptIds: string
   if (!ids.length) return out;
   const scripts = await prisma.contentScript.findMany({
     where: { id: { in: ids }, enrollmentId },
-    select: { id: true, sharedVersionId: true, releaseState: true, clientApprovedVersionId: true, clientApprovedAt: true, clientChangesAt: true, clientApprovedByUserId: true },
+    select: { id: true, topicId: true, videoId: true, sharedVersionId: true, releaseState: true, clientApprovedVersionId: true, clientApprovedAt: true, clientChangesAt: true, clientApprovedByUserId: true },
   });
   if (!scripts.length) return out;
+  // Oct 22 2026: filmed, by the hub's one rule. A failed read is logged and
+  // leaves `filmed` null, so the page falls back to asking (never a decision
+  // read that fails because of it).
+  const filmed = await readScriptsFilmed(scripts).catch((e) => {
+    console.error("[scripts] filmed read failed; the approval ask stands", e instanceof Error ? e.message : e);
+    return new Map<string, ScriptFilmed>();
+  });
   const versionIds = [...new Set(scripts.flatMap((s) => [s.sharedVersionId, s.clientApprovedVersionId]).filter((x): x is string => !!x))];
   const versions = versionIds.length
     ? await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, versionNo: true } })
@@ -174,6 +205,7 @@ export async function scriptDecisionsFor(enrollmentId: string, scriptIds: string
       requests: history
         .filter((r) => r.scriptId === s.id)
         .map((r) => ({ at: r.createdAt.toISOString(), by: r.actorEmail, note: r.note, versionNo: noOf.get(r.scriptVersionId) ?? null })),
+      filmed: filmed.get(s.id) ?? null,
     });
   }
   return out;
@@ -189,7 +221,7 @@ async function sharedScriptFor(viewer: PortalViewer, scriptId: string) {
   if (!ID_RE.test(scriptId)) return null;
   const s = await prisma.contentScript.findUnique({
     where: { id: scriptId },
-    select: { id: true, enrollmentId: true, clientId: true, monthId: true, title: true, historical: true, releaseState: true, sharedVersionId: true, clientApprovedVersionId: true },
+    select: { id: true, enrollmentId: true, clientId: true, monthId: true, topicId: true, videoId: true, title: true, historical: true, releaseState: true, sharedVersionId: true, clientApprovedVersionId: true },
   });
   if (!s || s.enrollmentId !== viewer.enrollment.id || s.clientId !== viewer.enrollment.clientId) return null;
   if (s.historical) return null; // an old script we hold is not this month's script
@@ -235,6 +267,11 @@ export async function clientApproveScript(viewer: PortalViewer, scriptId: string
   });
   if (currentScriptDecision(versionId, priorLedger).decision === "APPROVED") {
     return { ok: true, duplicate: true, message: "You've already signed off on this version. Nothing more to do." };
+  }
+  // Oct 22 2026: filmed already (a tab opened before the shoot). There is
+  // nothing to approve, and nothing is recorded: filmed is not a sign-off.
+  if ((await readScriptsFilmed([s])).has(s.id)) {
+    return { ok: true, duplicate: true, message: "This one has already been filmed, so there's nothing to approve." };
   }
   // Are they overturning their own change request on this same version? Allowed
   // — people do change their mind — but never silently: the writer may already
@@ -365,6 +402,12 @@ export async function clientRequestScriptChanges(viewer: PortalViewer, scriptId:
   const versionId = s.sharedVersionId!;
   // R1: same rule as the approval. A note about v1 must not be filed against v2.
   if (!readVersionId || readVersionId !== versionId) return staleRefusal(readVersionId);
+  // Oct 22 2026: filmed already. The words on camera can't change now; a note
+  // about the video belongs on its review. (A request filed before the shoot
+  // stays on the office's card.)
+  if ((await readScriptsFilmed([s])).has(s.id)) {
+    return { ok: false, message: "This one has already been filmed, so the script can't change now. If something in the video should be different, tell us when you review it, or send us a message." };
+  }
 
   const by = actorLabel(viewer);
 

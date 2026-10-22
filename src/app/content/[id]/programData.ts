@@ -210,6 +210,8 @@ export async function loadScriptsTab(enrollmentId: string, month: { id: string }
       id: s.id, title: s.title, status: s.status, historical: s.historical, releaseState: s.releaseState, monthKey: s.monthId ? months.get(s.monthId) ?? null : null, pillarName: pillars.find((p) => p.id === s.pillarId)?.name ?? null,
       currentVersionId: s.currentVersionId, approvedVersionId: s.approvedVersionId, sharedVersionId: s.sharedVersionId, approvedBy: s.approvedBy, approvedAt: iso(s.approvedAt), sharedAt: iso(s.sharedAt), versions: vlist, sourceFile: s.sourceFile,
       clientVerdict: verdicts.get(s.id)?.decision ?? (verdicts.get(s.id)?.staleApproval ? "STALE" : null), clientVerdictAt: verdicts.get(s.id)?.decidedAt ?? null,
+      // Oct 22 2026: filmed (lib/scriptFilmed). Not the client's verdict: a chip of its own, and no "hasn't answered yet".
+      filmed: verdicts.get(s.id)?.filmed ? { atISO: verdicts.get(s.id)!.filmed!.atISO, signal: verdicts.get(s.id)!.filmed!.signal } : null,
     };
   });
   // 6.5: the client changed an answer after this script was drafted — nothing

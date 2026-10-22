@@ -11,8 +11,8 @@ import { ScriptView } from "@/components/script/ScriptView";
 import { ScriptApprovalCard } from "@/components/portal/ScriptApprovalCard";
 import { TopicQuestions } from "@/components/portal/TopicQuestions";
 import { StatusChip } from "@/components/portal/ui";
-import { awaitingScript, inBank } from "@/lib/portalHome";
-import { CTA_WORDS, SCRIPT_WORDS, TOPIC_WORDS, answerCta, planStepWord } from "@/lib/portalWords";
+import { awaitingScript, filmedScript, inBank } from "@/lib/portalHome";
+import { CTA_WORDS, SCRIPT_WORDS, TOPIC_WORDS, answerCta, filmedWords, planStepWord } from "@/lib/portalWords";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
 import { portalMonthHref } from "@/lib/portalScheduling";
 
@@ -241,6 +241,8 @@ export function TopicBank({ groups, months, total, canAct, readOnly, initialFilt
                   server's, so it survives a refresh; the bank keeps its states. */}
               <StatusChip word={t.plan ? planStepWord(t.plan.step, t.plan.missing) : TOPIC_WORDS[t.state]} />
               {!t.plan && awaitingScript(t) && <StatusChip word={SCRIPT_WORDS.AWAITING} />}
+              {/* Oct 22 2026: filmed before they approved it — said once, with the day when known. */}
+              {filmedScript(t) && (t.plan ? t.plan.step !== "FILMED" : t.state !== "FILMED") && <StatusChip word={{ ...SCRIPT_WORDS.FILMED, label: filmedWords(t.script?.filmed?.atISO) }} />}
               {t.mine && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">your idea</span>}
               {t.selection && <span className="text-[11px] text-muted-2">{t.selection.status === "PROPOSED" ? "proposed on your call for" : "for"} {shortMonth(t.selection.monthKey)}{t.selection.overflow ? " (extra)" : ""}</span>}
             </div>

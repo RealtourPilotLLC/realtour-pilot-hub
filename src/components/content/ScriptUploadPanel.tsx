@@ -438,16 +438,18 @@ const STATE_WORD: Record<UploadBatchUi["scripts"][number]["state"], { label: str
   released: { label: "with the client", cls: "bg-surface-2 text-foreground" },
   client_approved: { label: "client approved", cls: "bg-success-soft text-success" },
   changes: { label: "client asked for changes", cls: "bg-warning-soft text-warning" },
+  // Oct 22 2026: filmed before the client answered. Nothing is asked of them.
+  filmed: { label: "filmed", cls: "bg-success-soft text-success" },
 };
 
 function BatchCard({ b, clientName, onResult }: { b: UploadBatchUi; clientName: string; onResult: (r: { ok: boolean; text: string }) => void }) {
   const [working, setWorking] = useState<null | "send" | "undo">(null);
   const [, start] = useTransition();
   const c = b.counts;
-  const withClient = c.released + c.clientApproved + c.changes;
+  const withClient = c.released + c.clientApproved + c.changes + c.filmed;
   const notSent = b.scripts.length - withClient;
   const summary = withClient
-    ? `With ${clientName}: ${[c.clientApproved && `${c.clientApproved} approved`, c.changes && `${c.changes} asked for changes`, c.released && `${c.released} to read`].filter(Boolean).join(", ")}.${notSent ? ` ${notSent} not sent yet.` : ""}`
+    ? `With ${clientName}: ${[c.clientApproved && `${c.clientApproved} approved`, c.changes && `${c.changes} asked for changes`, c.filmed && `${c.filmed} filmed`, c.released && `${c.released} to read`].filter(Boolean).join(", ")}.${notSent ? ` ${notSent} not sent yet.` : ""}`
     : `${plural(b.scripts.length, "script")} — ${c.review ? `${c.review} waiting for your OK` : "all approved"}. Not sent yet.`;
   const send = () => {
     if (!window.confirm(`Send ${plural(b.canSend, "script")} to ${clientName}'s portal for review?\n\nThey can approve each one or ask for changes. They'll see them on their portal.`)) return;

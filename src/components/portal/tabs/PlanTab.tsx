@@ -4,7 +4,7 @@ import { monthLabel } from "@/lib/contentProgram";
 import type { PortalInterviewView, PortalStrategyView, PortalTopicsData } from "@/lib/portal";
 import { planModel } from "@/lib/portalHome";
 import type { PlanView } from "@/lib/portalNav";
-import { SCRIPT_WORDS } from "@/lib/portalWords";
+import { SCRIPT_WORDS, filmedWords } from "@/lib/portalWords";
 import { Card, Empty, LoadFailed, StatusChip, SubNav, fmtShort } from "@/components/portal/ui";
 import { TopicBank } from "@/components/portal/TopicBank";
 import { InterviewFlow } from "@/components/portal/InterviewFlow";
@@ -244,6 +244,24 @@ function ScriptsView({ plan, canAct, canApprove, readOnly, monthHref, pdfs, upda
               <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
                 <span className="min-w-0 flex-1 basis-40 break-words font-medium">{t.title}<span className="ml-1 text-xs font-normal text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}{t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}</span></span>
                 <StatusChip word={SCRIPT_WORDS.APPROVED} />
+              </summary>
+              {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
+              {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />}
+            </details>
+          ))}
+        </section>
+      )}
+      {/* Oct 22 2026 (Jordan): filmed before they approved it. Nothing is
+          asked: they can read it and download it, and it says when it was filmed. */}
+      {plan.filmedScripts.length > 0 && (
+        <section aria-labelledby="filmed-scripts" className="space-y-2">
+          <h2 id="filmed-scripts" className="text-sm font-semibold">Filmed ({plan.filmedScripts.length})</h2>
+          <p className="text-xs text-muted">We&rsquo;ve filmed these, so there&rsquo;s nothing for you to approve. Open one to read it or download it as a PDF.</p>
+          {plan.filmedScripts.map((t) => (
+            <details key={t.id} id={`script-${t.id}`} className="scroll-mt-24 rounded-2xl border border-border bg-surface/70 p-3 text-sm">
+              <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-1.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                <span className="min-w-0 flex-1 basis-40 break-words font-medium">{t.title}<span className="ml-1 text-xs font-normal text-muted">· {t.selection ? monthLabel(t.selection.monthKey) : "No month assigned"}{t.scriptText?.versionLabel ? ` · script ${t.scriptText.versionLabel}` : ""}</span></span>
+                <StatusChip word={{ ...SCRIPT_WORDS.FILMED, label: filmedWords(t.script?.filmed?.atISO) }} />
               </summary>
               {t.scriptText && <div className="mt-2 rounded-xl border border-border bg-surface-2/40 px-4 py-4"><div className="max-w-[70ch]"><ScriptBody body={t.scriptText.body} size="lg" /></div></div>}
               {canAct && !readOnly && t.script && <ScriptApprovalCard script={t.script} parts={t.scriptText?.parts ?? null} large canApprove={canApprove} />}

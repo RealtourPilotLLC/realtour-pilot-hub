@@ -264,7 +264,9 @@ export function monthPlanning(facts: readonly TopicPlanFacts[], ctx: { route: Pl
   return {
     route: ctx.route, call: ctx.call, videosOwed: owed, chosen, extras, counts, answersOwed, missingAnswers, approved, topics,
     headline: headlineFor({ route: ctx.route, call: ctx.call, owed, chosen, counts, answersOwed, missingAnswers, approved }),
-    progress: chosen === 0 ? null : `${approved} of ${n(target, "script")} approved`,
+    // Oct 22 2026: a filmed one counts as done, and is never called "approved"
+    // on its own: the words say "approved or filmed" once one is filmed.
+    progress: chosen === 0 ? null : `${approved} of ${n(target, "script")} approved${topics.some((t) => t.inAllowance && t.step === "FILMED") ? " or filmed" : ""}`,
     clientPlanned: false,
   };
 }
@@ -292,5 +294,5 @@ function headlineFor(m: { route: PlanningRoute; call: CallState; owed: number; c
   if (c.ON_CALL > 0) return h("ON_CALL", "We'll plan these on your call");
   if (m.chosen === 0) return h("EMPTY", "Nothing planned for this month yet");
   const filmedAll = c.FILMED > 0 && c.APPROVED === 0;
-  return h("DONE", filmedAll ? "Filmed, and we're editing your videos" : `All ${n(m.chosen, "script")} approved`);
+  return h("DONE", filmedAll ? "Filmed, and we're editing your videos" : `All ${n(m.chosen, "script")} approved${c.FILMED > 0 ? " or filmed" : ""}`);
 }

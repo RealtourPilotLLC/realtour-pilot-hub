@@ -87,12 +87,21 @@ export function answerCta(missing: number): string {
   return missing === 1 ? CTA_WORDS.ANSWER_MORE : missing > 1 ? `Answer ${missing} more questions` : CTA_WORDS.ANSWER;
 }
 
-export type ScriptWordKey = "AWAITING" | "APPROVED" | "CHANGES_REQUESTED";
+export type ScriptWordKey = "AWAITING" | "APPROVED" | "CHANGES_REQUESTED" | "FILMED";
 export const SCRIPT_WORDS: Record<ScriptWordKey, Word> = {
   AWAITING: { label: "Script ready for your read", tone: "brand", icon: "script" },
   APPROVED: { label: "You approved the script", tone: "success", icon: "check" },
   CHANGES_REQUESTED: { label: "Script changes requested", tone: "warning", icon: "changes" },
+  // Oct 22 2026: filmed without their approval. Not "approved": nothing is asked.
+  FILMED: { label: "Filmed", tone: "success", icon: "filmed" },
 };
+
+/** "Filmed" or "Filmed Oct 14" (Eastern), for a script's line in the portal. */
+export function filmedWords(atISO: string | null | undefined): string {
+  if (!atISO) return "Filmed";
+  const d = new Date(atISO);
+  return Number.isNaN(d.getTime()) ? "Filmed" : `Filmed ${d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}`;
+}
 
 /** A session as the client reads it — the month-progress reader's four states plus an open request. */
 export const SESSION_WORDS: Record<ClientSessionCard["state"] | "REQUESTED", Word> = {
