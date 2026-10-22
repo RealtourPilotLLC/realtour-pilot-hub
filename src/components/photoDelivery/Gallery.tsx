@@ -7,6 +7,7 @@ import { etMonthDay } from "@/lib/datetime";
 import { saveDeliveryOrderAction } from "@/app/ops/photo-delivery/actions";
 import { PhotoImg } from "./PhotoImg";
 import { photoTitle, useJob } from "./JobContext";
+import { AddPhotosButton } from "./PhotoFiles";
 import { SEVERITY_CLASS, SEVERITY_LABEL, intakeLine, moveTogether, worstOf } from "./format";
 import type { PhotoView, Severity } from "./types";
 
@@ -236,6 +237,10 @@ export function Gallery() {
           {sev && <span className={cn("rounded-md px-1.5 py-0.5 text-[12px] font-semibold ring-1 ring-inset backdrop-blur", SEVERITY_CLASS[sev])}>{SEVERITY_LABEL[sev]}</span>}
         </div>
 
+        {p.sourceKind === "UPLOAD" && (
+          <span className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[12px] text-white">Added by hand</span>
+        )}
+
         {p.fixing && (
           <span className="pointer-events-none absolute left-1.5 top-9 inline-flex items-center gap-1 rounded-md bg-black/65 px-1.5 py-0.5 text-[12px] text-white">
             <Loader2 aria-hidden className="size-3 animate-spin motion-reduce:animate-none" /> Fixing
@@ -319,6 +324,8 @@ export function Gallery() {
         </span>
         {!readOnly && (
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {/* Oct 22 2026: photos added by hand (PhotoFiles.tsx), at the end of the delivery order. */}
+            <AddPhotosButton />
             <button
               type="button"
               aria-pressed={reorder}

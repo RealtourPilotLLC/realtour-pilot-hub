@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Crop, ExternalLink, Eye, EyeOff, Layers, Star, X } from "lucide-react";
+import dynamic from "next/dynamic";
+import { ChevronLeft, ChevronRight, Crop, ExternalLink, Eye, EyeOff, LandPlot, Layers, Star, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { ModalDialog } from "@/components/ui/ModalDialog";
@@ -9,6 +10,7 @@ import { PhotoImg } from "./PhotoImg";
 import { BoxOverlay } from "./BoxOverlay";
 import { FindingActions } from "./FindingActions";
 import { HubEditPanel, ReeditBox, StraightenButtons } from "./EditTools";
+import { DownloadLinks, ReplaceWithUpload } from "./PhotoFiles";
 import { photoTitle, useJob } from "./JobContext";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SEVERITY_ORDER, photoSrc } from "./format";
 import { loadVersionsAction, restoreVersionAction } from "@/app/ops/photo-delivery/actions";
@@ -21,6 +23,9 @@ import type { FindingView, PhotoView, VersionView } from "./types";
 // for the owner only), every version the hub has seen (the original vs the
 // current one), and previous / next with the arrow keys.
 // ---------------------------------------------------------------------------
+
+// Oct 22 2026: loaded when first opened (its drawing code is only needed then).
+const LotLinesEditor = dynamic(() => import("./LotLinesEditor"), { ssr: false });
 
 const navBtn = "inline-flex size-11 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-30";
 
@@ -73,6 +78,8 @@ export function Lightbox() {
   const [overlays, setOverlays] = useState(true);
   const [view, setView] = useState<{ photoId: string; versionId: string | null } | null>(null);
   const versionId = photo && view?.photoId === photo.id ? view.versionId : null;
+  // Oct 22 2026: the photo open in the Lot lines tool (LotLinesEditor), the office's only.
+  const [lotFor, setLotFor] = useState<string | null>(null);
 
   const go = (d: number) => {
     const next = photos[idx + d];
@@ -113,6 +120,7 @@ export function Lightbox() {
   const title = photoTitle(photo);
 
   return (
+    <>
     <ModalDialog label={`${title}: ${photo.roomLabel}`} onCancel={() => openLightbox(null)} className="w-[min(98vw,100rem)] max-h-[96dvh] p-0 sm:p-0">
       <div className="flex max-h-[96dvh] flex-col lg:flex-row">
         <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center bg-black p-2 sm:p-4">
@@ -182,6 +190,7 @@ export function Lightbox() {
                 </p>
               )}
               {!listed && photo.status === "ACTIVE" && (data.listing?.delivered ?? 0) > 0 && <p className="mt-1 text-[13px] font-medium text-warning">Not delivered yet: it goes out with this delivery.</p>}
+              {photo.sourceKind === "UPLOAD" && <p className="mt-1 text-[13px] text-muted">Added to the gallery by hand.</p>}
             </div>
             <button type="button" onClick={() => openLightbox(null)} aria-label="Close" className="inline-flex size-11 items-center justify-center rounded-lg hover:bg-surface-2">
               <X aria-hidden className="size-5" />
@@ -216,10 +225,22 @@ export function Lightbox() {
                 <Crop aria-hidden className="size-3.5" /> Straighten and crop
               </button>
             )}
+            {/* Oct 22 2026: the property boundary on a drone or aerial photo (free, drawn at full size on the server). */}
+            {photo.status !== "GONE" && !listed && !readOnly && (
+              <button type="button" disabled={pending || photo.fixing} onClick={() => setLotFor(photo.id)} title={photo.fixing ? "An AI fix is running on this photo" : "Draw the property's lot lines on this photo (free)"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 bg-brand-soft px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
+                <LandPlot aria-hidden className="size-3.5" /> Lot lines
+              </button>
+            )}
             <a href={photoSrc(photo.id, "qc2048", photo.contentHash)} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <ExternalLink aria-hidden className="size-3.5" /> Full size
             </a>
+            {/* Oct 22 2026: the file at full size (the view-only desk too); a replacement upload is the office's. */}
+            <DownloadLinks photo={photo} />
+            {!listed && <ReplaceWithUpload photo={photo} />}
           </div>
+          {photo.hubEdit?.kind === "lotLines" && !readOnly && !listed && (
+            <p className="mt-1.5 text-[12px] text-muted">This photo has lot lines. Straighten and crop starts again from the photo without them: open Lot lines after it, the drawing is kept.</p>
+          )}
 
           <section className="mt-4">
             <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Findings on this photo ({findings.length})</h3>
@@ -268,6 +289,8 @@ export function Lightbox() {
         </aside>
       </div>
     </ModalDialog>
+    {lotFor && !readOnly && <LotLinesEditor photoId={lotFor} onClose={() => setLotFor(null)} />}
+    </>
   );
 }
 
