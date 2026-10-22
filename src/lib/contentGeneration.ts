@@ -489,7 +489,7 @@ export async function generateScriptForTopic(o: GenerateScriptOpts): Promise<{ s
  * front: the call passages, the topic brief and five scored hooks, then the
  * draft from the brief with the winning hook. The version carries the brief
  * (validationJson.writer) and a review owed (judge.writer = 2), which the
- * automatic check runs: the 12 checks, up to two fix rounds, one trim pass.
+ * automatic check runs: the 12 checks and the craft block, up to two fix rounds, one trim pass.
  */
 async function generateWithWriter(o: {
   topicId: string; monthId: string | null; pillarId: string | null; enrollmentId: string; clientId: string; title: string; requestedBy: string; unattended: boolean;
@@ -615,7 +615,7 @@ export type ReviseScriptOpts = {
   /**
    * Oct 14 2026: an automatic fix round (scriptJudge.ts) — written as the draft's own next version (source AI, same author), judged again.
    * Oct 22 2026, the new writer: `trim` = this is a length trim pass ("cap": to the 110 cap, true means the same;
-   * "aim", v2.1: the one pass toward 75 to 80 of a passing draft, from version `aimTrimOf`); `trimmed` /
+   * "aim", v2.1: the one pass toward WRITER_LENGTH.trimTo of a passing draft, from version `aimTrimOf`); `trimmed` /
    * `aimTrimmed` = an earlier version already had that trim (carried forward).
    */
   autoFix?: { round: number; trim?: boolean | "cap" | "aim"; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null } | null;

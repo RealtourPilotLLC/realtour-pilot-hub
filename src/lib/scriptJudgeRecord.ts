@@ -17,7 +17,7 @@
 //
 // Oct 22 2026: a draft by the new script writer (src/lib/scriptWriter) is
 // checked by its independent creative review instead of this judge. Its record
-// is the same shape with `writer: 2` and the review's 12 checks (`checks`, each
+// is the same shape with `writer: 2` and the review's checks (`checks`, 13 since v2.3, each
 // must-fix or flag), the code's hard numbers (`hard`), the word count and
 // whether the trim pass ran. readJudge keeps those fields, so every state
 // change written through it keeps saying which reviewer owns the version.
@@ -25,7 +25,7 @@
 // No I/O here, so the server pages and the drill can read it.
 // ---------------------------------------------------------------------------
 
-import type { ReviewCheckResult, HardFinding } from "./scriptWriter/rules";
+import type { ReviewCheckResult, HardFinding, CraftScores } from "./scriptWriter/rules";
 
 export type JudgeState = "pending" | "fixing" | "passed" | "flagged" | "not_checked" | "trimming";
 export type JudgeCriterionResult = { key: string; pass: boolean; note: string };
@@ -54,9 +54,11 @@ export type JudgeRecord = {
   /** The trim pass for the 110-word cap ran. */
   trimmed?: boolean;
   summary?: string | null;
+  /** v2.3: the review's craft block (hook, re-hook, build-up, payoff, close scored 1 to 5, a note each). */
+  craft?: CraftScores | null;
   /**
-   * Oct 22 2026 (v2.1): the ONE trim pass toward 75 to 80 for a passing draft
-   * over 85 ran (aimTrimmed); on the version it produced, aimTrimOf names the
+   * Oct 22 2026 (v2.1): the ONE aim trim (v2.3: toward 65 to 75, for a passing draft
+   * over 78) ran (aimTrimmed); on the version it produced, aimTrimOf names the
    * version it was trimmed from, so a trim that lost a must-keep point is
    * undone; trimKind says which trim a "trimming" state owes.
    */
@@ -95,7 +97,7 @@ export function readJudge(validationJson: string | null | undefined): JudgeRecor
       keptVersionNo: typeof j.keptVersionNo === "number" ? j.keptVersionNo : null,
       ...(j.writer === 2
         ? {
-            writer: 2 as const, checks: Array.isArray(j.checks) ? j.checks : [], hard: Array.isArray(j.hard) ? j.hard : [], words: Number(j.words) || 0, trimmed: j.trimmed === true, summary: typeof j.summary === "string" ? j.summary : null,
+            writer: 2 as const, checks: Array.isArray(j.checks) ? j.checks : [], hard: Array.isArray(j.hard) ? j.hard : [], words: Number(j.words) || 0, trimmed: j.trimmed === true, summary: typeof j.summary === "string" ? j.summary : null, craft: j.craft && typeof j.craft === "object" ? j.craft : null,
             aimTrimmed: j.aimTrimmed === true, aimTrimOf: typeof j.aimTrimOf === "string" ? j.aimTrimOf : null, ...(j.trimKind === "aim" || j.trimKind === "cap" ? { trimKind: j.trimKind } : {}),
           }
         : {}),

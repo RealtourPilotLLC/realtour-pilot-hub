@@ -173,50 +173,61 @@ export type AutoCheckResult = { state: JudgeRecord["state"] | "skipped"; fixRoun
 /**
  * THE TRIM THAT LOST SUBSTANCE IS UNDONE (Oct 22 2026, v2.1). Jordan: "aim for
  * 55 - 85 words without making it dry, or incomplete". When the one trim pass
- * toward 75 to 80 (automatic, or a person's "Fix with AI") breaks a must-fix
+ * toward WRITER_LENGTH.trimTo (automatic, or a person's "Fix with AI") breaks a must-fix
  * check other than length (Enough substance, when a must-keep point went),
  * the version it was trimmed from is copied forward as the newest version,
  * with its review and a note saying why; the trimmed attempt stays in the
- * trail. "Longer than the 55 to 85 aim" stays on it as advice.
+ * trail. "Longer than the 55 to 85 aim" stays on it as advice. v2.3: when the
+ * kept version says the very line the trim's review failed on (the same close,
+ * the same hook), it is copied forward FLAGGED, with that check failing on it.
  */
-async function restoreBeforeTrim(current: VersionRow, record: JudgeRecord, requestedBy: string): Promise<string> {
+async function restoreBeforeTrim(current: VersionRow, record: JudgeRecord, requestedBy: string): Promise<{ versionId: string; state: JudgeRecord["state"] }> {
   const from = record.aimTrimOf ? await prisma.contentScriptVersion.findUnique({ where: { id: record.aimTrimOf } }) : null;
   if (!from || from.scriptId !== current.scriptId) {
     // Nothing to go back to: the trimmed version stands, flagged for a person.
     await writeJudge(current.id, { ...record, state: "flagged" });
-    return current.id;
+    return { versionId: current.id, state: "flagged" };
   }
-  await writeJudge(current.id, { ...record, state: "flagged", error: `This trim dropped a must-keep point; v${from.versionNo} is kept.` });
+  const { keptLongerNote, carryConflicts, partsOfVersion, trimFailWhy } = await import("@/lib/scriptWriter/pipeline");
+  // v2.3: the close is must-fix now, so a trim can be undone for more than a lost must-keep point; say which.
+  const trimFails = (record.checks ?? []).filter((c) => !c.pass && c.level === "must-fix");
+  const why = trimFailWhy(trimFails);
+  await writeJudge(current.id, { ...record, state: "flagged", error: `This trim ${why}; v${from.versionNo} is kept.` });
   const s = await prisma.contentScript.findUnique({ where: { id: current.scriptId } });
-  if (!s) return current.id;
-  const { keptLongerNote } = await import("@/lib/scriptWriter/pipeline");
+  if (!s) return { versionId: current.id, state: "flagged" };
+  const { keptLongerConflicts, WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
   let bag: Record<string, unknown> = {};
   try { bag = from.validationJson ? (JSON.parse(from.validationJson) as Record<string, unknown>) : {}; } catch { bag = {}; }
   let gaps: never[] | null = null;
   try { gaps = from.gapsJson ? JSON.parse(from.gapsJson) : null; } catch { gaps = null; }
   const fj = readJudge(from.validationJson);
+  // v2.3: the kept version may not say the line the trim's review failed on (the same close, the same hook): then it is flagged.
+  const conflicts = keptLongerConflicts({ parts: partsOfVersion(current), checks: record.checks ?? [] }, partsOfVersion(from));
   // Its review as it stood before the trim was asked for ("trimming" meant: passed, then trimmed).
   const settled: JudgeRecord["state"] | null = !fj ? null
+    : conflicts.length ? "flagged"
     : fj.state === "passed" || fj.state === "flagged" || fj.state === "not_checked" ? fj.state
     : (fj.checks ?? []).some((c) => !c.pass && c.level === "must-fix") ? "flagged" : "passed";
+  const keptChecks = fj && conflicts.length ? carryConflicts(fj.checks ?? [], record.checks ?? [], conflicts) : fj?.checks;
+  const note = keptLongerNote(`v${from.versionNo}`, from.spokenWordCount ?? 0, conflicts, trimFails);
   // A plain variable: the version's bag carries the note beside the usual keys.
   const validation = {
     ...bag, ok: bag.ok !== false, findings: (bag.findings as never[]) ?? [], angle: bag.angle ?? null,
-    ...(fj && settled ? { judge: { ...fj, state: settled, aimTrimmed: true, aimTrimOf: null, trimKind: undefined, keptVersionNo: from.versionNo } } : {}),
-    lengthNote: keptLongerNote(`v${from.versionNo}`, from.spokenWordCount ?? 0),
+    ...(fj && settled ? { judge: { ...fj, state: settled, aimTrimmed: true, aimTrimOf: null, trimKind: undefined, keptVersionNo: from.versionNo, ...(conflicts.length ? { checks: keptChecks, error: note } : {}) } } : {}),
+    lengthNote: note,
   };
   const r = await createScriptVersion({
     scriptId: s.id, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts: partsOf(from), source: "AI", createdBy: requestedBy, status: "INTERNAL_REVIEW",
     basedOnVersionId: current.id, interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: from.strategyVersionId, policyVersionId: from.policyVersionId, aiRunId: from.aiRunId,
-    validation, gaps, changeSummary: `Creative review: kept v${from.versionNo}; the trim toward 75 to 80 words dropped a must-keep point.`,
+    validation, gaps, changeSummary: `Creative review: kept v${from.versionNo}; the trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words ${why}.${conflicts.length ? ` Flagged: the trim's review failed a line v${from.versionNo} says too.` : ""}`,
   });
-  return r.versionId;
+  return { versionId: r.versionId, state: settled ?? "flagged" };
 }
 
 /**
  * ONE STEP OF THE NEW WRITER'S REVIEW LOOP (Oct 22 2026, src/lib/scriptWriter).
  *
- *   pending / not_checked → the independent creative review (12 checks + the
+ *   pending / not_checked → the independent creative review (12 checks, the craft block + the
  *                           code's hard numbers). Then, by nextWriterStep:
  *                           passed; or the trim pass when only the length
  *                           fails; or a fix round (two at most); or, still over
@@ -264,15 +275,16 @@ async function writerReviewStep(
     }
     const failing = r.checks.filter((c) => !c.pass);
     const record: JudgeRecord = {
-      ...j, writer: 2, checks: r.checks, hard: r.hard, words: r.words, summary: r.summary, trimmed: !!j.trimmed,
+      ...j, writer: 2, checks: r.checks, hard: r.hard, craft: r.craft, words: r.words, summary: r.summary, trimmed: !!j.trimmed,
       criteria: r.checks.map((c) => ({ key: c.key, pass: c.pass, note: c.reason })), issues: failing.map((c) => `${c.n}. ${c.label}: ${c.reason}`),
       fixInstruction: r.fixInstruction, checkedAt: new Date().toISOString(), runId: r.runId, error: null,
     };
     const next = w.nextWriterStep({ mustFails: r.mustFails, words: r.words, fixRounds: j.fixRounds, trimmed: !!j.trimmed, aimTrimmed: !!j.aimTrimmed, isAimTrim: !!j.aimTrimOf, maxFixRounds: MAX_FIX_ROUNDS });
     if (next === "revert") {
-      // Oct 22 2026 (v2.1): the trim toward 75 to 80 dropped a must-keep point: the longer passing version stands.
+      // Oct 22 2026 (v2.1): the aim trim dropped a must-keep point: the longer passing version stands.
+      // v2.3: flagged instead when it says the line the trim's review failed on.
       const kept = await restoreBeforeTrim(v, record, o.requestedBy);
-      return { state: "passed", fixRounds: j.fixRounds, versionId: kept, reason: "the trim lost a must-keep point; the longer version is kept" };
+      return { state: kept.state, fixRounds: j.fixRounds, versionId: kept.versionId, reason: kept.state === "flagged" ? "the trim failed a must-fix check; the longer version is kept, flagged: it says the line the trim failed on" : "the trim failed a must-fix check; the longer version is kept" };
     }
     if (next === "pass") {
       await writeJudge(v.id, { ...record, state: "passed" });
