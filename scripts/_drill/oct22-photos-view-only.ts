@@ -72,7 +72,7 @@ const LONG_DASH = /[–—]/;
 const DOLLARS = /\$\s?\d/;
 const CREDIT_AMOUNT = /\b\d[\d,]*\s+(?:AutoHDR\s+)?credits?\b/i;
 // What a view-only page must never offer (button, link or menu text).
-const FORBIDDEN = /Approve|Deliver in Aryeo|Mark as delivering|Update on Aryeo|Upload again|\bFix\b|In cart|Run selected|Re-edit|re-edit|Not worth fixing|Not there|Send to editor|Reshoot|Override|Stop flagging|Undo|Skip all|Accept with reason|It is in the gallery|Recommend a reshoot|Deliver without it|Done \(fixed\)|Answer with a note|Verify now|Put on hold|Release hold|Check again|Sync from AutoHDR|Straighten|Make hero|Leave out|Put back|Reorder|Restore|Load every version|Download|Get them ready again|\bCart\b|Credits|Settings|Select all|Critical \+ Major|^\s*More\b/;
+const FORBIDDEN = /Approve|Deliver in Aryeo|Mark as delivering|Update on Aryeo|Upload again|\bFix\b|In cart|Run selected|Re-edit|re-edit|Not worth fixing|Not there|Send to editor|Reshoot|Override|Stop flagging|Undo|Skip all|Accept with reason|It is in the gallery|Recommend a reshoot|Deliver without it|Done \(fixed\)|Answer with a note|Verify now|Put on hold|Release hold|Check again|Sync from AutoHDR|Straighten|Edit manually|Make hero|Leave out|Put back|Reorder|Restore|Load every version|Download|Get them ready again|\bCart\b|Credits|Settings|Select all|Critical \+ Major|^\s*More\b/;
 
 const html = (tree: unknown) => renderToStaticMarkup(tree as ReactElement);
 const text = (h: string) =>
@@ -336,8 +336,8 @@ async function main() {
     const kp = await pages();
     const kc = (h: string) => controls(h).join(" | ");
     c.ok("Kyle's job page: the decisions, Skip all, Reorder, the Fix Cart tab, credits spent, Put on hold", /Not worth fixing/.test(kc(kp.job)) && /Skip all/.test(kc(kp.job)) && /Reorder/.test(kc(kp.job)) && /Fix Cart/.test(kp.job) && /7 AutoHDR credits spent/.test(text(kp.job)) && /Put on hold/.test(kc(kp.job)), kc(kp.job).slice(0, 300));
-    c.ok("…his lightbox: Make hero, Leave out, Straighten and crop, AI re-edit", /Make hero|Hero/.test(kc(kp.lightbox)) && /Leave out/.test(kc(kp.lightbox)) && /Straighten and crop/.test(kc(kp.lightbox)) && /AI re-edit/.test(kc(kp.lightbox)));
-    c.ok("…his Coverage tab: Accept with reason; his review mode: Hero, Leave out, Cart", /Accept with reason/.test(kc(kp.coverage)) && /Hero/.test(kc(kp.review)) && /Leave out/.test(kc(kp.review)) && /Cart/.test(kc(kp.review)));
+    c.ok("…his lightbox: Make hero, Leave out, Edit manually (crop and straighten, lot lines, AI re-edit)", /Make hero|Hero/.test(kc(kp.lightbox)) && /Leave out/.test(kc(kp.lightbox)) && /Edit manually/.test(kc(kp.lightbox)));
+    c.ok("…his Coverage tab: Accept with reason; his review mode: Hero, Leave out, Cart", /Accept with reason/.test(kc(kp.coverage)) && /Hero/.test(kc(kp.review)) && /Leave out/.test(kc(kp.review)) && /Cart/.test(kc(kp.review)) && /Edit manually/.test(kc(kp.review)));
     c.ok("…the credits chip and the Credits tab; no view-only note anywhere", /AutoHDR/.test(text(kp.queue)) && /href="\/ops\/photo-delivery\/credits"/.test(kp.queue) && Object.values(kp).every((h) => !text(h).includes(VIEW_ONLY_NOTE)));
     c.ok("…the Unpaid chip on the board, as before", /Unpaid/.test(text(kp.queue)));
     c.ok("…his Credits page renders; Settings still sends him to the queue (owner only)", (await redirectOf(() => CreditsPage({ searchParams: Promise.resolve({}) }))) === null && (await redirectOf(() => SettingsPage())) === "/ops/photo-delivery");

@@ -14,8 +14,9 @@ import { cn } from "@/lib/utils";
 // boxes stay exactly on the picture at any zoom (BoxOverlay reads --zoom to
 // keep its lines thin). The stage around it clips (overflow-hidden on the
 // parent), so a zoomed photo fills the black area.
-//   · scroll, pinch, or the + and - buttons; double-click or double-tap jumps
-//     in at that spot, and again jumps back out;
+//   · click (or tap) the photo to jump in at that spot, click again to come
+//     back out (Jordan: "I want to be able to click to zoom on the photo");
+//     scroll, pinch, or the + and - buttons for finer steps;
 //   · drag (or one finger) to move around while zoomed;
 //   · keys: Z in and out at the middle, + and -, 0 fits;
 //   · past 2x the full-size file is loaded behind the scenes and swapped in
@@ -28,7 +29,7 @@ import { cn } from "@/lib/utils";
 
 const Z_MAX = 8;
 const STEP = 1.5;
-const DOUBLE_TAP_Z = 2.5;
+const CLICK_Z = 2.5;
 const clampN = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 type View = { z: number; x: number; y: number };
@@ -57,7 +58,6 @@ export function ZoomStage({
   const boxRef = useRef<HTMLDivElement>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ kind: "pan"; sx: number; sy: number; vx: number; vy: number; moved: boolean } | { kind: "pinch"; d0: number; z0: number; mx: number; my: number } | null>(null);
-  const lastTap = useRef<{ t: number; x: number; y: number } | null>(null);
   const [wantHi, setWantHi] = useState(false);
   const [hi, setHi] = useState<"loading" | "ready" | "failed">("loading");
 
@@ -138,7 +138,10 @@ export function ZoomStage({
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
-      if (e.key === "z" || e.key === "Z") zoomTo(viewRef.current.z > 1.001 ? 1 : DOUBLE_TAP_Z);
+      // An editor open on top (crop and straighten, lot lines, the AI re-edit): its keys are its own.
+      const dlg = t?.closest?.("dialog");
+      if (dlg && boxRef.current && !dlg.contains(boxRef.current)) return;
+      if (e.key === "z" || e.key === "Z") zoomTo(viewRef.current.z > 1.001 ? 1 : CLICK_Z);
       else if (e.key === "+" || e.key === "=") zoomTo(viewRef.current.z * STEP);
       else if (e.key === "-" || e.key === "_") zoomTo(viewRef.current.z / STEP);
       else if (e.key === "0") apply(FIT);
@@ -191,13 +194,9 @@ export function ZoomStage({
     }
     gesture.current = null;
     if (e.type === "pointercancel" || !g || g.kind !== "pan" || g.moved) return;
-    // A tap (no drag): two in a row, close together, jump in at that spot or back out.
-    const now = Date.now();
-    const prev = lastTap.current;
-    if (prev && now - prev.t < 320 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 30) {
-      lastTap.current = null;
-      zoomTo(viewRef.current.z > 1.001 ? 1 : DOUBLE_TAP_Z, e.clientX, e.clientY);
-    } else lastTap.current = { t: now, x: e.clientX, y: e.clientY };
+    // A click or tap (no drag): in at that spot, or back out to the whole photo.
+    if (viewRef.current.z > 1.001) apply(FIT);
+    else zoomTo(CLICK_Z, e.clientX, e.clientY);
   };
 
   const showHi = !!hiRes && wantHi && hi !== "failed";
@@ -211,7 +210,8 @@ export function ZoomStage({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        className={cn("relative inline-block max-w-full select-none", zoomed ? "cursor-grab touch-none active:cursor-grabbing" : "cursor-zoom-in touch-pan-y", className)}
+        title={zoomed ? "Drag to move around; click to see the whole photo" : "Click to zoom in"}
+        className={cn("relative inline-block max-w-full select-none", zoomed ? "cursor-zoom-out touch-none active:cursor-grabbing" : "cursor-zoom-in touch-pan-y", className)}
         style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`, transformOrigin: "0 0", willChange: "transform", ["--zoom" as string]: view.z }}
       >
         {showHi && (
@@ -237,7 +237,7 @@ export function ZoomStage({
         <span className="min-w-[3.25rem] text-center text-[12px] font-semibold tabular-nums" aria-live="polite">
           {Math.round(view.z * 100)}%
         </span>
-        <button type="button" className={btn} onClick={() => zoomTo(view.z * STEP)} disabled={view.z >= Z_MAX} aria-label="Zoom in" title="Zoom in (Z or +, scroll, or double-click the photo)">
+        <button type="button" className={btn} onClick={() => zoomTo(view.z * STEP)} disabled={view.z >= Z_MAX} aria-label="Zoom in" title="Zoom in (click the photo, Z or +, or scroll)">
           <Plus aria-hidden className="size-4" />
         </button>
         <button type="button" className={btn} onClick={() => apply(FIT)} disabled={!zoomed} aria-label="Fit the photo" title="Fit (0)">

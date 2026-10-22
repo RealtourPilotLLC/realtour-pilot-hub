@@ -459,6 +459,8 @@ async function main() {
     const ownerOpen = await F.loadLotLinesAction(job.id, A.id);
     c.ok("the owner may", ownerOpen.ok, ownerOpen.message);
     // The lightbox, as Kyle and as the creative manager's view-only desk.
+    const fs0 = await import("node:fs");
+    const path0 = await import("node:path");
     const { JobWorkspace } = await import("@/components/photoDelivery/JobWorkspace");
     await signIn(kyle);
     const kv = (await data.loadViewer())!;
@@ -467,8 +469,10 @@ async function main() {
     const jv = (await data.loadViewer())!;
     const jFrame = html(createElement(JobWorkspace, { data: (await data.loadJobDetail(job.id, { viewer: jv }))!, viewer: jv, initialPhoto: A.id, history: null }));
     const kc = controls(kFrame), jc = controls(jFrame);
-    c.ok("Kyle's lightbox: Lot lines next to Straighten and crop, Download (and the original), Replace with an upload; Add photos on the gallery", kc.includes("Lot lines") && kc.includes("Straighten and crop") && kc.includes("Download") && kc.includes("Download original") && kc.includes("Replace with an upload") && kc.includes("Add photos"), kc.filter((t) => /Lot|Download|Replace|Add/.test(t)).join(" | "));
-    c.ok("the view-only lightbox: no Lot lines button (nor Replace, Add photos or Straighten), Download only", jv.readOnly === true && !jc.includes("Lot lines") && !jc.some((t) => /Replace with an upload|Add photos|Straighten/.test(t)) && jc.includes("Download") && /\/api\/photo-delivery\/download\//.test(jFrame), jc.filter((t) => /Lot|Download|Replace|Add|Straighten/.test(t)).join(" | "));
+    // Oct 22 2026: Lot lines, Crop and straighten and the AI re-edit sit behind one "Edit manually" (EditMenu).
+    const editMenu = fs0.readFileSync(path0.resolve(__dirname, "../../src/components/photoDelivery/EditMenu.tsx"), "utf8");
+    c.ok("Kyle's lightbox: Edit manually (Crop and straighten, Lot lines, AI re-edit), Download (and the original), Replace with an upload; Add photos on the gallery", kc.includes("Edit manually") && ["Crop and straighten", "Lot lines", "AI re-edit", "<LotLinesEditor"].every((w) => editMenu.includes(w)) && kc.includes("Download") && kc.includes("Download original") && kc.includes("Replace with an upload") && kc.includes("Add photos"), kc.filter((t) => /Lot|Download|Replace|Add/.test(t)).join(" | "));
+    c.ok("the view-only lightbox: no Edit manually or Lot lines (nor Replace, Add photos or Straighten), Download only", jv.readOnly === true && !jc.some((t) => /Edit manually/.test(t) || t === "Lot lines") && !jc.some((t) => /Replace with an upload|Add photos|Straighten/.test(t)) && jc.includes("Download") && /\/api\/photo-delivery\/download\//.test(jFrame), jc.filter((t) => /Lot|Download|Replace|Add|Straighten/.test(t)).join(" | "));
     const fs = await import("node:fs");
     const ours = ["src/components/photoDelivery/LotLinesEditor.tsx", "src/components/photoDelivery/PhotoFiles.tsx", "src/lib/photoDelivery/hubFiles.ts", "src/lib/photoDelivery/lotLines.ts", "src/app/ops/photo-delivery/fileActions.ts"].map((f) => fs.readFileSync(f, "utf8"));
     c.ok("no long dashes anywhere in the new tools' words", ours.every((src) => !/[\u2013\u2014]/.test(src)));

@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import dynamic from "next/dynamic";
-import { ChevronLeft, ChevronRight, Crop, ExternalLink, Eye, EyeOff, LandPlot, Layers, Star, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, Eye, EyeOff, Layers, Star, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
 import { ModalDialog } from "@/components/ui/ModalDialog";
@@ -10,7 +9,8 @@ import { PhotoImg } from "./PhotoImg";
 import { BoxOverlay } from "./BoxOverlay";
 import { ZoomStage, fullSizeSrc } from "./ZoomStage";
 import { FindingActions } from "./FindingActions";
-import { HubEditPanel, ReeditBox, StraightenButtons } from "./EditTools";
+import { HubEditPanel, StraightenButtons } from "./EditTools";
+import { EditMenu } from "./EditMenu";
 import { DownloadLinks, ReplaceWithUpload } from "./PhotoFiles";
 import { photoTitle, useJob } from "./JobContext";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, SEVERITY_ORDER, photoSrc } from "./format";
@@ -25,9 +25,6 @@ import type { FindingView, PhotoView, VersionView } from "./types";
 // current one), and previous / next with the arrow keys. Oct 22 2026: zoom
 // (scroll, pinch, double-click, Z / + / - / 0; ZoomStage) with the boxes on.
 // ---------------------------------------------------------------------------
-
-// Oct 22 2026: loaded when first opened (its drawing code is only needed then).
-const LotLinesEditor = dynamic(() => import("./LotLinesEditor"), { ssr: false });
 
 const navBtn = "inline-flex size-11 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-30";
 
@@ -73,15 +70,13 @@ export function PhotoFacts({ photo }: { photo: PhotoView }) {
 }
 
 export function Lightbox() {
-  const { data, lightbox, openLightbox, findingsByPhoto, excludePhoto, makeHero, pending, promptOpen, shown, openEditor, readOnly } = useJob();
+  const { data, lightbox, openLightbox, findingsByPhoto, excludePhoto, makeHero, pending, promptOpen, shown, readOnly } = useJob();
   const photos = useMemo(() => data.photos.filter((p) => p.status !== "GONE"), [data.photos]);
   const idx = photos.findIndex((p) => p.id === lightbox);
   const photo = idx >= 0 ? photos[idx] : null;
   const [overlays, setOverlays] = useState(true);
   const [view, setView] = useState<{ photoId: string; versionId: string | null } | null>(null);
   const versionId = photo && view?.photoId === photo.id ? view.versionId : null;
-  // Oct 22 2026: the photo open in the Lot lines tool (LotLinesEditor), the office's only.
-  const [lotFor, setLotFor] = useState<string | null>(null);
 
   const go = (d: number) => {
     const next = photos[idx + d];
@@ -126,7 +121,7 @@ export function Lightbox() {
     <ModalDialog label={`${title}: ${photo.roomLabel}`} onCancel={() => openLightbox(null)} className="w-[min(98vw,100rem)] max-h-[96dvh] p-0 sm:p-0">
       <div className="flex max-h-[96dvh] flex-col lg:flex-row">
         <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center overflow-hidden bg-black p-2 sm:p-4">
-          <ZoomStage key={`${photo.id}:${showing && !showing.current ? showing.id : "current"}`} keys={!promptOpen && !lotFor} hiRes={!showing || showing.current ? fullSizeSrc(photo.id, photo.contentHash) : null}>
+          <ZoomStage key={`${photo.id}:${showing && !showing.current ? showing.id : "current"}`} keys={!promptOpen} hiRes={!showing || showing.current ? fullSizeSrc(photo.id, photo.contentHash) : null}>
             {showing && !showing.current ? (
               // An earlier version beside the current one, same size (huddle finding 1).
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -222,17 +217,8 @@ export function Lightbox() {
             <button type="button" aria-pressed={overlays} onClick={() => setOverlays((v) => !v)} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <Layers aria-hidden className="size-3.5" /> Boxes {overlays ? "on" : "off"} <kbd className="text-[11px] text-muted">O</kbd>
             </button>
-            {photo.status !== "GONE" && !listed && !readOnly && (
-              <button type="button" disabled={pending || photo.fixing} onClick={() => openEditor(photo.id)} title={photo.fixing ? "An AI fix is running on this photo" : "Straighten, fix the vertical perspective or crop (free, exact)"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 bg-brand-soft px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
-                <Crop aria-hidden className="size-3.5" /> Straighten and crop
-              </button>
-            )}
-            {/* Oct 22 2026: the property boundary on a drone or aerial photo (free, drawn at full size on the server). */}
-            {photo.status !== "GONE" && !listed && !readOnly && (
-              <button type="button" disabled={pending || photo.fixing} onClick={() => setLotFor(photo.id)} title={photo.fixing ? "An AI fix is running on this photo" : "Draw the property's lot lines on this photo (free)"} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-brand/50 bg-brand-soft px-2.5 text-[13px] font-medium hover:bg-surface-2 disabled:opacity-60">
-                <LandPlot aria-hidden className="size-3.5" /> Lot lines
-              </button>
-            )}
+            {/* Oct 22 2026: one Edit manually (crop and straighten, lot lines, AI re-edit); EditMenu hides itself on a view-only page or a photo already on the listing. */}
+            <EditMenu photo={photo} />
             <a href={photoSrc(photo.id, "qc2048", photo.contentHash)} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-border-strong px-2.5 text-[13px] font-medium hover:bg-surface-2">
               <ExternalLink aria-hidden className="size-3.5" /> Full size
             </a>
@@ -240,9 +226,6 @@ export function Lightbox() {
             <DownloadLinks photo={photo} />
             {!listed && <ReplaceWithUpload photo={photo} />}
           </div>
-          {photo.hubEdit?.kind === "lotLines" && !readOnly && !listed && (
-            <p className="mt-1.5 text-[12px] text-muted">This photo has lot lines. Straighten and crop starts again from the photo without them: open Lot lines after it, the drawing is kept.</p>
-          )}
 
           <section className="mt-4">
             <h3 className="text-[12px] font-semibold uppercase tracking-wide text-muted">Findings on this photo ({findings.length})</h3>
@@ -284,14 +267,10 @@ export function Lightbox() {
 
           <VersionsStrip photo={photo} showingId={showing?.id ?? null} currentId={current?.id ?? null} onShow={(id) => setView({ photoId: photo.id, versionId: id })} />
 
-          {/* An AI re-edit spends credits: the office's (Oct 22 2026). */}
-          {!readOnly && !listed && <ReeditBox photo={photo} />}
-
           <PhotoFacts photo={photo} />
         </aside>
       </div>
     </ModalDialog>
-    {lotFor && !readOnly && <LotLinesEditor photoId={lotFor} onClose={() => setLotFor(null)} />}
     </>
   );
 }

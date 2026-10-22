@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Crop, Download, Sparkles, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { etMonthDayTime } from "@/lib/datetime";
@@ -94,8 +94,10 @@ export function HubEditPanel({ photo }: { photo: PhotoView }) {
   );
 }
 
-/** An AI re-edit in Kyle's own words, for one photo: the price shown first, spent only on his press. */
-export function ReeditBox({ photo }: { photo: PhotoView }) {
+/** An AI re-edit in Kyle's own words, for one photo: the price shown first, spent only on his press.
+ *  Oct 22 2026: opened from Edit manually (EditMenu), in its own small window: `inDialog` shows it
+ *  open, reads the price straight away, and `onDone` closes the window once the re-edit is sent. */
+export function ReeditBox({ photo, inDialog = false, onDone }: { photo: PhotoView; inDialog?: boolean; onDone?: () => void }) {
   const { jobId, run, confirm, pending, readOnly } = useJob();
   const [text, setText] = useState("");
   const [quote, setQuote] = useState<{ credits: number | null; message: string; ok: boolean } | null>(null);
@@ -121,15 +123,22 @@ export function ReeditBox({ photo }: { photo: PhotoView }) {
       confirmLabel: `Re-edit (${credits} credit${credits === 1 ? "" : "s"})`,
     });
     if (!ok) return;
-    if (await run(() => customReeditAction({ jobId, photoId: photo.id, prompt: words, expectCredits: credits }))) setText("");
+    if (await run(() => customReeditAction({ jobId, photoId: photo.id, prompt: words, expectCredits: credits }))) {
+      setText("");
+      onDone?.();
+    }
   };
+  // The price, read once when the window opens (after it has painted).
+  useEffect(() => {
+    if (!inDialog || readOnly) return;
+    const t = setTimeout(() => void load(), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // It spends credits: never on a view-only page (Oct 22 2026), not even the price read; never on a photo already delivered on the listing.
   if (photo.status === "GONE" || photo.status === "ON_LISTING" || readOnly) return null;
-  return (
-    <details className="mt-4 rounded-xl border border-border p-3" onToggle={(ev) => (ev.currentTarget.open ? void load() : undefined)}>
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-semibold [&::-webkit-details-marker]:hidden">
-        <Sparkles aria-hidden className="size-4" /> AI re-edit in your own words
-      </summary>
+  const body = (
+    <>
       <p className="mt-1 text-[12px] text-muted">For what straightening and cropping can&apos;t do (&quot;remove the wooden sidewalk forms&quot;). Your approval limit and the shoot&apos;s fix budget apply.</p>
       <label className="mt-2 block text-[12px] font-medium text-muted" htmlFor={`reedit-${photo.id}`}>What should change</label>
       <textarea
@@ -147,6 +156,15 @@ export function ReeditBox({ photo }: { photo: PhotoView }) {
         {asking && <span className="text-[12px] text-muted">Reading the price…</span>}
       </div>
       {quote && !quote.ok && quote.message && <p className="mt-1 text-[12px] text-danger">{quote.message}</p>}
+    </>
+  );
+  if (inDialog) return body;
+  return (
+    <details className="mt-4 rounded-xl border border-border p-3" onToggle={(ev) => (ev.currentTarget.open ? void load() : undefined)}>
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-semibold [&::-webkit-details-marker]:hidden">
+        <Sparkles aria-hidden className="size-4" /> AI re-edit in your own words
+      </summary>
+      {body}
     </details>
   );
 }

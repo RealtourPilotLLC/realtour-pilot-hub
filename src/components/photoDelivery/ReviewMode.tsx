@@ -9,6 +9,7 @@ import { BoxOverlay } from "./BoxOverlay";
 import { ZoomStage, fullSizeSrc } from "./ZoomStage";
 import { FindingActions } from "./FindingActions";
 import { FixCartPanel } from "./FixCartPanel";
+import { EditMenu } from "./EditMenu";
 import { JobProvider, photoTitle, useJob } from "./JobContext";
 import { PhotoFacts, sortFindings } from "./Lightbox";
 import { FINDING_STATUS_LABEL, RESPONSIBILITY_LABEL, SEVERITY_CLASS, SEVERITY_LABEL, intakeLine } from "./format";
@@ -25,8 +26,8 @@ import type { JobDetail, Viewer } from "./types";
 //   X       leave the photo out (asks why) or put it back
 //   H       make the photo the hero       B  original vs current version
 //   O       finding boxes on or off       ?  these shortcuts
-//   Z       zoom in or out (Oct 22 2026; also + and -, 0 fits, scroll, pinch,
-//           double-click or double-tap the spot; drag to move around)
+//   Z       zoom in or out (Oct 22 2026; also click or tap the spot, + and -,
+//           0 fits, scroll, pinch; drag to move around)
 // On a phone: swipe left or right, or the buttons along the bottom (not while
 // zoomed in: then one finger moves the photo).
 // VIEW ONLY (Oct 22 2026, the creative manager): the same walk through the
@@ -44,7 +45,7 @@ const KEYS: [string, string][] = [
   ["H", "Make the photo the hero"],
   ["B", "Original vs current (when there is more than one version)"],
   ["O", "Finding boxes on or off"],
-  ["Z", "Zoom in or out (+ and - step, 0 fits; or scroll, pinch, double-click the spot, and drag to move)"],
+  ["Z", "Zoom in or out (or click the photo; + and - step, 0 fits, scroll or pinch, drag to move)"],
   ["?", "Show or hide these shortcuts"],
   ["Esc", "Close the cart or this list"],
 ];
@@ -190,6 +191,8 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
               <button type="button" className={tool} disabled={pending || listed} onClick={() => void excludePhoto(photo, !excluded)} title={listed ? "Already delivered on the Aryeo listing" : excluded ? "Put back (X)" : "Leave out (X)"}>
                 {excluded ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />} <span className="hidden sm:inline">{excluded ? "Put back" : "Leave out"}</span> <kbd className="text-[11px] text-muted">X</kbd>
               </button>
+              {/* Oct 22 2026: crop and straighten, lot lines or an AI re-edit, without leaving review mode. */}
+              <EditMenu photo={photo} buttonClassName={tool} align="right" />
               <button type="button" className={tool} aria-pressed={cartOpen} onClick={() => setCartOpen(!cartOpen)} title="Fix Cart">
                 <ShoppingCart aria-hidden className="size-4" /> Cart{cartCount ? ` (${cartCount})` : ""}
               </button>
