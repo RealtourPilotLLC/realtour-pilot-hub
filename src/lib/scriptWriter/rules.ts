@@ -23,12 +23,23 @@
 
 import { GENERATION_POLICY, BANNED_OPENERS, SCRIPT_PART_BUDGETS, countSpokenWords } from "../contentPolicy/policy";
 
-/** Stamped on every brief, run and version the writer makes. Bump on any rule change below. */
-export const WRITER_VERSION = "writer.v2-2026-10-22";
+/**
+ * Stamped on every brief, run and version the writer makes. Bump on any rule change below.
+ * v2.1 (Oct 22 2026, after the offline test on Marcee's three scripts landed
+ * every one at 105 to 109 words): the aim is made real. The draft targets
+ * about 75 spoken words; a passing draft over 85 gets ONE trim pass toward 75
+ * to 80 that may drop nothing the brief marks must-keep, and is reviewed
+ * again; when the trim loses substance, the longer passing version is kept.
+ */
+export const WRITER_VERSION = "writer.v2.1-2026-10-22";
 
 /** Words and seconds (Jordan, Oct 22 2026). Seconds are an estimate at the hub's speaking rate, never a measurement. */
 export const WRITER_LENGTH = {
   aim: [55, 85] as const,
+  /** What the draft writes toward. */
+  target: 75,
+  /** Where the trim pass aims. */
+  trimTo: [75, 80] as const,
   cap: 110,
   wordsPerSec: GENERATION_POLICY.timing.wordsPerSec,
 } as const;
@@ -59,12 +70,29 @@ export function lengthLabel(words: number): { band: LengthBand; text: string; se
   return { band, seconds, text: `${words} words, about ${seconds} seconds` };
 }
 
-/** The trim instruction behind "A bit long: needs a fix" (the automatic trim pass and the card's one press). */
-export function trimInstruction(words: number): string {
+/** Every trim instruction starts with this, so a revision can tell a length trim from any other request. */
+export const LENGTH_TRIM_MARK = "LENGTH TRIM";
+export function isLengthTrimInstruction(instruction: string | null | undefined): boolean {
+  return (instruction ?? "").trimStart().startsWith(LENGTH_TRIM_MARK);
+}
+
+/**
+ * The trim instruction: the automatic trim passes (over the 110 cap, and the
+ * one pass toward 75 to 80 for a passing draft over 85) and the card's
+ * one-press "Fix with AI". The brief's must-keep points are named when known;
+ * none of them may be dropped to hit the number.
+ */
+export function trimInstruction(words: number, mustKeep: readonly string[] = []): string {
+  const over = words > WRITER_LENGTH.cap;
+  const [lo, hi] = WRITER_LENGTH.trimTo;
   return [
-    `This version is ${words} spoken words, about ${estimateSeconds(words)} seconds. The cap is ${WRITER_LENGTH.cap} words and the aim is ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]}.`,
-    `Trim it to ${WRITER_LENGTH.cap} words or fewer, as close to the ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} aim as the substance allows.`,
-    "Cut repeated setup, hedges, a second example that makes the same point, and any sentence that restates the one before it. Never cut a must-keep fact, the client's own process or the payoff, and never make it dry or incomplete to hit the number.",
+    `${LENGTH_TRIM_MARK}: this version is ${words} spoken words, about ${estimateSeconds(words)} seconds.${over ? ` That is over the ${WRITER_LENGTH.cap}-word cap.` : ""}`,
+    `Trim it toward ${lo} to ${hi} spoken words (the aim is ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]}${over ? `; it must end at ${WRITER_LENGTH.cap} words or fewer` : ""}).`,
+    mustKeep.length
+      ? `These must-keep points from the brief survive, in substance: ${mustKeep.map((m) => `"${m.replace(/\s+/g, " ").trim()}"`).join("; ")}.`
+      : "Every must-keep point in the topic brief survives, in substance (with no brief: her own process, her facts and the payoff).",
+    "Cut optional material first: a second example that makes the same point, repeated setup, hedges, and any sentence that restates the one before it.",
+    "Never drop a must-keep point, her process or the payoff to hit the number: if the range cannot be reached without losing one, stop at the shortest version that keeps them all. Never make it dry or incomplete.",
     "Keep the hook unless it is the long part, exactly three talking points in the order Re-hook, Build up, Payoff, and the close.",
     "No em dash or en dash anywhere; never write a duration or a timing note into the script.",
   ].join(" ");
@@ -74,11 +102,42 @@ export function trimInstruction(words: number): string {
 // Rules text the writer, the reviser and the reviewer all read.
 // ---------------------------------------------------------------------------
 
-export const CLOSE_RULE = `CLOSE (Jordan, Oct 22 2026): depending on the message, the close is EITHER a call to action OR a callback to the hook.
-- Call to action: a natural spoken next step tied to this topic, in the client's voice ("Let's talk about what actually matters before you change anything." / "You don't need all the answers before calling me. That's what I'm here for."). Never a hard sell, never "DM me" slang the client would not say.
-- Callback: return to the hook's idea, belief or image and resolve it ("And your home is different. That's why it deserves a strategy built for today's market.").
-- A personal story may end on the feeling, with a soft invitation at most. A slogan or a rhyming aphorism is not a close.
-- The brief decides which one (closeType), and says why. The caption CTA still carries the contact line.`;
+// v2.1 (Jordan on the retro test, Oct 22 2026: every one of his finals ends on
+// a warm spoken invitation): the invitation is the DEFAULT; a callback alone
+// only for a story with no service angle, and a callback may carry the invite.
+export const CLOSE_RULE = `CLOSE (Jordan, Oct 22 2026): the close completes the message and, by default, ends on a natural, warm invitation tied to it, in the client's voice. Jordan's finals for one agent all end this way (examples of the SHAPE only, from another agent's videos: never reuse their words or their content): "Whether it's your first home or your next chapter, you don't need all the answers before calling me. That's what I'm here for." / "There are still great opportunities. And your home is different. That's why it deserves a strategy built for today's market. Let's talk." / "I'm here to help you see your home through their eyes. Before you change everything, let's talk about what actually matters."
+- "cta" (the default): the invitation, tied to what the video just said, often after a line that returns to the hook's idea. Never a hard sell, never "DM me" slang the client would not say.
+- "callback": only when the video is purely a story with no service angle; it returns to the hook's idea and resolves it, and may still carry a soft invitation.
+- A slogan or a rhyming aphorism is not a close. The brief decides which one (closeType) and says why. The caption CTA still carries the contact line.`;
+
+// ---------------------------------------------------------------------------
+// HER MATERIAL, OUR WORDING (Jordan on the retro test, Oct 22 2026: the seniors
+// draft was her transcript lines stitched together, "My finals were much
+// better"). What she said is the material; how it is said on camera is the
+// craft Realtour Pilot brings.
+// ---------------------------------------------------------------------------
+export const WORDING_RULE = `HER MATERIAL, OUR WORDING: her facts, stories, chronology, motivations, opinions and meaning are the material; the WORDING is ours: tight, natural, spoken and polished, the way she would say it on her best take. Use her exact phrasing only where it is strong and natural on camera: short, vivid, her own vocabulary (the kind of phrase one agent had in "fiercely protect" or "every bit as scary"; use THIS client's phrases, never those). Never paste her spoken sentences from a call: transcript speech rambles, restarts and fills ("um", "you know", "I guess", "it's just that"). A faithful paraphrase of something she said is supported; adding something she did not say is not.`;
+
+/**
+ * Jordan's lessons from Marcee's three scripts (JORDAN-BRIEF.md, cases 1 to 3,
+ * "Lessons for future scripts"), as house craft for EVERY client.
+ */
+export const HOUSE_CRAFT_RULES = `HOUSE CRAFT (Jordan's lessons, for every client; the examples in it come from another agent's videos and show the shape only: never put their story, facts or words in this client's script)
+PERSONAL BRAND STORIES (her background, a career change, why she does this work):
+- An understandable narrative progression, in the order it happened: where she was and what she loved; her ACTUAL reason for the change, in her terms (for example wanting the freedom or the final say to build her own business: that reason is the heart of the story, never "biography" to cut); what she expected; what actually happened (the turn); the insight that connects her past to the viewer's need; how she helps the viewer now.
+- Correct chronology. Never invent a motivation to create drama.
+- Keep the emotionally meaningful words she uses about her purpose.
+- One compelling story, not a complete biography: job duties, side facts and a second turn go.
+- The insight is the point: why her experience matters to THIS viewer (for example, that a first-time buyer and a senior leaving a home of sixty years need the same things: someone to explain their options and fiercely protect their interests). A fun fact about her ("they are my favorite clients") is not the message.
+- Give the viewer a reason to trust or remember her.
+EDUCATIONAL VIDEOS:
+- Understand the underlying topic, not the title's wording; do not change an established topic because other angles came up.
+- Hook on a relatable belief or misconception, in the words a homeowner or buyer would actually say ("But my house is different.").
+- Explain why the belief no longer holds, or why it is not the whole story.
+- Show her actual process and what she does differently; keep the specific details of her process.
+- Use a meaningful contrast (a cosmetic refresh versus a costly property issue); never an invented analogy or a forced example.
+- Balanced: explain the challenge without creating fear. Never add a market claim because it sounds plausible; background reasoning is not spoken content.
+EVERY SCRIPT: the payoff explains why it matters and what she does differently or how she helps; the close is a natural next step tied to the premise.`;
 
 export const HOMEOWNER_LANGUAGE_RULE = `PLAIN WORDS FOR HOMEOWNERS AND BUYERS: speak the way a homeowner or a buyer talks, never in industry terms. "Buyer avatar", "comps", "CMA", "absorption rate", "list-to-sale ratio", "DOM" and similar are the client's working vocabulary, not words to say to a viewer: say what they mean ("who is most likely to buy your house", "what similar homes sold for"). Prefer a line the viewer might say themselves ("But my house is different.") over addressing them by category ("Sellers, ..."). Never open by naming the audience ("Sellers," / "Buyers,").`;
 
@@ -92,7 +151,7 @@ export const NO_DURATION_RULE = "Never write a duration, a timestamp or a timing
 
 export const NO_DASH_RULE = GENERATION_POLICY.punctuation.rule;
 
-export const LENGTH_RULE = `LENGTH (Jordan, Oct 22 2026): aim for ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} spoken words (about ${estimateSeconds(WRITER_LENGTH.aim[0])} to ${estimateSeconds(WRITER_LENGTH.aim[1])} seconds), without making it dry or incomplete. ${WRITER_LENGTH.cap} spoken words is the hard cap. ${WRITER_LENGTH.aim[1] + 1} to ${WRITER_LENGTH.cap} is allowed when the substance needs it. Under ${WRITER_LENGTH.aim[0]} is fine only when nothing the brief marks must-keep is missing. Never cut substance to hit the number: each sentence creates interest, builds understanding, delivers value, earns trust or moves the story.`;
+export const LENGTH_RULE = `LENGTH (Jordan, Oct 22 2026: "aim for 55 to 85 words without making it dry or incomplete"): write about ${WRITER_LENGTH.target} spoken words (about ${estimateSeconds(WRITER_LENGTH.target)} seconds), inside the ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} range. The brief's must-keep points are the ONLY things that must survive; optional material, a second example, extra setup and anything that restates a point go first. Count your words before you answer. ${WRITER_LENGTH.cap} spoken words is the hard cap; ${WRITER_LENGTH.aim[1] + 1} to ${WRITER_LENGTH.cap} is a miss, allowed only when the must-keep points cannot fit in fewer. Under ${WRITER_LENGTH.aim[0]} is fine only when nothing the brief marks must-keep is missing. Never make it dry or incomplete to hit the number: each sentence creates interest, builds understanding, delivers value, earns trust or moves the story.`;
 
 export const NEITHER_WINS_RULE = "NEITHER VERSION WINS AUTOMATICALLY: when there is an earlier version, a client's rewrite or a reviewer's instruction, keep the strongest information and language from each while staying on the topic's one message. A client's longer rewrite is mined for its facts and phrases, not accepted for its length; our draft is not defended for being ours.";
 
@@ -106,12 +165,12 @@ export const REVIEW_CHECKS = [
   { key: "her_meaning", n: 2, label: "Her meaning", level: "must-fix", passes: "Nothing she said is bent; the chronology matches her account." },
   { key: "hook", n: 3, label: "Hook", level: "must-fix", passes: "A relatable belief, contrast, question or real moment. No \"Today I want to talk about\", no greeting, no naming the audience." },
   { key: "rehook", n: 4, label: "Re-hook", level: "must-fix", passes: "Adds something new: tension, a turn, a surprise. Never restates the hook." },
-  { key: "story", n: 5, label: "Story holds together", level: "must-fix", passes: "Each beat follows from the last." },
-  { key: "substance", n: 6, label: "Enough substance", level: "must-fix", passes: "Uses the brief's must-keep facts and her actual process. Not dry, not incomplete." },
-  { key: "payoff", n: 7, label: "Payoff", level: "must-fix", passes: "Answers what the hook promised." },
-  { key: "close", n: 8, label: "Close", level: "flag", passes: "Natural, tied to the premise: the call to action or the callback the brief chose. Not a slogan." },
-  { key: "her_voice", n: 9, label: "Sounds like her", level: "flag", passes: "Her phrases, none of her avoid-words, no industry terms spoken to homeowners." },
-  { key: "claims", n: 10, label: "Every claim supported", level: "must-fix", passes: "Each factual line traces to something she said or approved. Topic descriptions and our assumptions do not count." },
+  { key: "story", n: 5, label: "Story holds together", level: "must-fix", passes: "Each beat follows from the last. A personal story progresses in order: what she loved, her real reason for the change, what she expected, the turn, the insight, how she helps now." },
+  { key: "substance", n: 6, label: "Enough substance", level: "must-fix", passes: "Every must-keep point of the brief is there in meaning, with the insight and how she helps. Not dry, not incomplete." },
+  { key: "payoff", n: 7, label: "Payoff", level: "must-fix", passes: "Answers what the hook promised, with why it matters and what she does differently or how she helps." },
+  { key: "close", n: 8, label: "Close", level: "flag", passes: "Natural and tied to the premise: by default a warm invitation tied to the message (a callback alone only for a story with no service angle). Not a slogan." },
+  { key: "her_voice", n: 9, label: "Sounds like her", level: "flag", passes: "Her voice at its best on camera: her vocabulary and her strongest short phrases in tight, natural, polished spoken sentences. No transcript sentences pasted in, none of her avoid-words, no industry terms spoken to homeowners." },
+  { key: "claims", n: 10, label: "Every claim supported", level: "must-fix", passes: "Each factual line traces to something she said (anywhere in the call) or approved; a faithful paraphrase counts. Topic descriptions and our assumptions do not count." },
   { key: "length", n: 11, label: "Length", level: "must-fix", passes: `At most ${WRITER_LENGTH.cap} spoken words (the cap); ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} is the aim. Seconds shown.` },
   { key: "nothing_extra", n: 12, label: "Nothing extra", level: "flag", passes: "Every sentence creates interest, builds understanding, delivers value, earns trust or moves the story." },
 ] as const;
@@ -119,7 +178,7 @@ export type ReviewCheckKey = (typeof REVIEW_CHECKS)[number]["key"];
 export const REVIEW_CHECK_KEYS = REVIEW_CHECKS.map((c) => c.key) as ReviewCheckKey[];
 
 export type ReviewCheckResult = { key: ReviewCheckKey; n: number; label: string; level: CheckLevel; pass: boolean; reason: string };
-export type HardFinding = { key: "greeting" | "dash" | "duration" | "market_claim" | "jargon" | "hook_length" | "audience_vocative"; level: CheckLevel; detail: string };
+export type HardFinding = { key: "greeting" | "dash" | "duration" | "market_claim" | "jargon" | "hook_length" | "audience_vocative" | "pasted"; level: CheckLevel; detail: string };
 
 // ---------------------------------------------------------------------------
 // Hard numbers, by code (never by the model).
@@ -184,7 +243,7 @@ const norm = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").replace(/\
  * `sourceText` is everything the client said or approved that the writer read
  * (passages, answers, facts, her strategy), never our assumptions.
  */
-export function hardNumbers(parts: ScriptParts, sourceText: string): { words: number; seconds: number; band: LengthBand; hookWords: number; findings: HardFinding[] } {
+export function hardNumbers(parts: ScriptParts, sourceText: string, /** What she SAID (calls and passages), for the pasted-sentence check; default sourceText. */ spokenSourceText?: string): { words: number; seconds: number; band: LengthBand; hookWords: number; findings: HardFinding[] } {
   const spoken = spokenTextOf(parts);
   const words = countSpokenWords(spoken);
   const hookWords = countSpokenWords(parts.hook);
@@ -202,12 +261,44 @@ export function hardNumbers(parts: ScriptParts, sourceText: string): { words: nu
   if (unsupportedTerms.length) findings.push({ key: "market_claim", level: "must-fix", detail: `Market statements she did not make: ${unsupportedTerms.join(", ")}.` });
   const jargon = JARGON_RES.filter((j) => j.re.test(spoken)).map((j) => j.say);
   if (jargon.length) findings.push({ key: "jargon", level: "flag", detail: `Industry terms spoken to homeowners: ${jargon.join(", ")}.` });
+  // A long run is a transcript sentence stitched in (must-fix); a medium one may be a strong line of hers, so it is a flag to look at.
+  const spokenSrc = spokenSourceText ?? sourceText;
+  const pastedLong = pastedRuns(spoken, spokenSrc, PASTED_MUST_FIX_WORDS);
+  const pastedMid = pastedRuns(spoken, spokenSrc).filter((s) => !pastedLong.includes(s));
+  if (pastedLong.length) findings.push({ key: "pasted", level: "must-fix", detail: `Pasted from the call word for word: ${pastedLong.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep her meaning and her best short phrases; write the sentence for camera.` });
+  if (pastedMid.length) findings.push({ key: "pasted", level: "flag", detail: `Close to her words from the call: ${pastedMid.slice(0, 2).map((p) => `"${p}"`).join("; ")}. Keep it only if it is strong and natural on camera.` });
   return { words, seconds: estimateSeconds(words), band: lengthBand(words), hookWords, findings };
+}
+
+/** How many words in a row a script may share with the call before it reads as pasted, not written (Oct 22 2026, v2.1). */
+export const PASTED_RUN_WORDS = 11;
+/** At this many, it is a transcript sentence stitched in: must-fix. */
+export const PASTED_MUST_FIX_WORDS = 14;
+const wordsOf = (s: string) => s.toLowerCase().replace(/[‘’]/g, "'").split(/[^a-z0-9']+/).filter(Boolean);
+
+/**
+ * Stretches of the script that repeat the sources word for word for
+ * PASTED_RUN_WORDS words or more: her transcript stitched in instead of
+ * written. A short vivid phrase of hers ("fiercely protect") is far under it.
+ */
+export function pastedRuns(spoken: string, sourceText: string, min = PASTED_RUN_WORDS): string[] {
+  const src = wordsOf(sourceText);
+  if (src.length < min) return [];
+  const grams = new Set<string>();
+  for (let i = 0; i + min <= src.length; i++) grams.add(src.slice(i, i + min).join(" "));
+  const out: string[] = [];
+  for (const sentence of spoken.split(/(?<=[.!?])\s+|\n+/)) {
+    const w = wordsOf(sentence);
+    for (let i = 0; i + min <= w.length; i++) {
+      if (grams.has(w.slice(i, i + min).join(" "))) { out.push(sentence.trim().slice(0, 160)); break; }
+    }
+  }
+  return out;
 }
 
 /** Which of the 12 checks a hard finding counts against. */
 export const HARD_TO_CHECK: Record<HardFinding["key"], ReviewCheckKey> = {
-  greeting: "hook", audience_vocative: "hook", hook_length: "hook", dash: "nothing_extra", duration: "nothing_extra", market_claim: "claims", jargon: "her_voice",
+  greeting: "hook", audience_vocative: "hook", hook_length: "hook", dash: "nothing_extra", duration: "nothing_extra", market_claim: "claims", jargon: "her_voice", pasted: "her_voice",
 };
 
 /** The length check (11), by code: over the cap fails (must-fix); 86 to 110 is advice (flag); the rest passes. */

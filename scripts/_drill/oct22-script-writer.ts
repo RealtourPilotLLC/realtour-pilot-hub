@@ -71,7 +71,11 @@ const TRANSCRIPT = [
   "00:20:00",
   `${CLIENT}: I used to run sales and marketing for a retirement community before I got my license.`,
   `${CLIENT}: I wanted the freedom to build my own business, so I left.`,
-  `${CLIENT}: Then the first-time buyers started calling, and they were every bit as scared as the seniors moving out of their homes.`,
+  `${CLIENT}: Then the first-time buyers started calling, and they felt the need to be protected and cared for.`,
+  "Jordan Spackman: Mhm.",
+  `${CLIENT}: It's every bit as scary as when a senior is moving out of a home they've lived in for sixty years.`,
+  "Jordan Spackman: That is a great way to put it. So what do you do for them?",
+  `${CLIENT}: I explain their options and I fiercely protect their interests.`,
 ].join("\n");
 const OLDER = [
   "00:05:00",
@@ -82,12 +86,16 @@ const OLDER = [
 const Q_INSPECTION = "I always recommend a pre-listing inspection, it runs about $350 to $500, so we can make controlled repairs before the buyer has leverage.";
 const Q_PAINT = "Fresh paint and rearranging furniture help a sale more than big repairs before listing.";
 const Q_SENIOR = "I used to run sales and marketing for a retirement community before I got my license.";
-const Q_TURN = "Then the first-time buyers started calling, and they were every bit as scared as the seniors moving out of their homes.";
+const Q_TURN = "Then the first-time buyers started calling, and they felt the need to be protected and cared for.";
 
 const TOPIC_A = "The Repairs That Actually Protect Your Sale";
 const TOPIC_B = "I Used to Think I Would Only Work With Seniors";
 const TOPIC_C = "What Sellers Need to Know This Month";
 const TOPIC_D = "A Topic the Old Writer Drafts";
+const TOPIC_E = "Why the First Weekend Sets Your Price";
+const TOPIC_F = "What I Check Before Every Listing";
+const TOPIC_H = "Offline Topic That Passes After a Trim";
+const TOPIC_I = "Offline Topic Whose Trim Loses Substance";
 const CONCEPT_A = "Items buyers and inspectors flag every single time, and most are never cosmetic.";
 const HOOK_WIN = "The repairs you think your house needs might not be where your money should go.";
 const HOOK_WIN_B = "I loved working in senior living. So why did I leave?";
@@ -106,7 +114,7 @@ const ctl = {
 };
 const usage = { input_tokens: 1200, output_tokens: 400, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 const ok = (json: unknown, extra: Record<string, unknown> = {}) => new Response(JSON.stringify({ id: "msg_drill", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "thinking", thinking: "" }, { type: "text", text: JSON.stringify(json) }], stop_reason: "end_turn", usage, ...extra }), { status: 200, headers: { "content-type": "application/json" } });
-const topicOf = (prompt: string) => (prompt.includes(TOPIC_A) ? "A" : prompt.includes(TOPIC_B) ? "B" : prompt.includes(TOPIC_C) ? "C" : "?");
+const topicOf = (prompt: string) => (prompt.includes(TOPIC_A) ? "A" : prompt.includes(TOPIC_B) ? "B" : prompt.includes(TOPIC_C) ? "C" : prompt.includes(TOPIC_E) ? "E" : prompt.includes(TOPIC_F) ? "F" : prompt.includes(TOPIC_H) ? "H" : prompt.includes(TOPIC_I) ? "I" : "?");
 const stepOf = (system: string, prompt: string) =>
   /^You read call transcripts for ONE video topic/.test(system) ? "retrieval"
   : /^You write the TOPIC BRIEF/.test(system) ? "brief"
@@ -163,7 +171,7 @@ const fence = fenceFetch(async (url, init) => {
       return ok({
         centralMessage: t === "B" ? "The same fear, the same protection: why first-time buyers found her." : "Spend on what buyers and their agents will judge, not on what you would change.",
         viewer: "A homeowner getting ready to sell", whyChosen: "Picked on her October call.", pillar: "Seller Strategy",
-        whatSheSaid: ["P1", "P2", "P9"], mustKeep: [{ text: "She recommends a pre-listing inspection", source: "P1" }], optional: [{ text: "Fresh paint and furniture over renovation", source: "P2" }],
+        whatSheSaid: ["P1", "P2", "P9"], mustKeep: [{ text: "She recommends a pre-listing inspection", source: "P1" }], herPhrases: [{ text: "fiercely protect their interests", source: "call at 00:20:00" }], optional: [{ text: "Fresh paint and furniture over renovation", source: "P2" }],
         excluded: [{ text: "Filming logistics", reason: "internal talk" }], contradictions: [], verifiedFacts: [{ text: "Pre-listing inspection costs $350 to $500", source: "P1" }],
         opinions: [{ text: "Paint beats a renovation", source: "P2" }], creativeIdeas: [], ourAssumptions: [{ text: CONCEPT_A, source: "our assumption" }], closeType: "cta", closeWhy: "An educational topic: a natural next step.",
       });
@@ -216,9 +224,9 @@ async function main() {
     await saveSecret("ai", ["sk", "ant", "drill", "0000000000"].join("-"));
     const f = await buildContentMonth(prisma, {
       name: CLIENT, package: "Pro", monthKey: "2026-10",
-      topics: [{ title: TOPIC_A, selection: "SELECTED", source: "ai" }, { title: TOPIC_B, selection: "SELECTED", source: "ai" }, { title: TOPIC_C, selection: "SELECTED", source: "ai" }, { title: TOPIC_D, selection: "SELECTED", source: "ai" }],
+      topics: [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E, TOPIC_F, TOPIC_H, TOPIC_I].map((title) => ({ title, selection: "SELECTED" as const, source: "ai" })),
     });
-    const [tA, tB, tC, tD] = f.topicIds;
+    const [tA, tB, tC, tD, tE, tF, tH, tI] = f.topicIds;
     await prisma.contentTopic.update({ where: { id: tA }, data: { concept: CONCEPT_A, intendedMessage: "Inspectors flag the same things every time." } });
     await prisma.contentEnrollment.update({ where: { id: f.enrollmentId }, data: { overridesJson: JSON.stringify({ creative: { discontinued: [{ name: "Fairy God Realtor", by: "jordan", at: "2026-10-01T00:00:00.000Z", reason: "she stopped the series" }] } }) } });
     // The topic's call, confirmed, with its transcript; an older month's pasted transcript.
@@ -330,7 +338,9 @@ async function main() {
       const vs = await prisma.contentScriptVersion.findMany({ where: { scriptId: rA.scriptId }, orderBy: { versionNo: "asc" } });
       const j1 = (await import("@/lib/scriptJudgeRecord")).readJudge(vs[0].validationJson);
       c.ok("v1: 135 spoken words, the length check failed by CODE (must-fix: A bit long: needs a fix)", vs[0].spokenWordCount === 135 && j1?.checks?.find((x) => x.key === "length")?.pass === false && /A bit long: needs a fix/.test(j1?.checks?.find((x) => x.key === "length")?.reason ?? ""), `${vs[0].spokenWordCount} words`);
-      c.ok("…straight to the trim pass (no fix round for length alone)", step("trim").length === 1 && step("fix").length === 0 && /The cap is 110 words and the aim is 55 to 85/.test(step("trim")[0]?.prompt ?? ""));
+      const trimP = step("trim")[0]?.prompt ?? "";
+      c.ok("…straight to the trim pass (no fix round for length alone)", step("trim").length === 1 && step("fix").length === 0 && /LENGTH TRIM: this version is 135 spoken words[\s\S]*over the 110-word cap[\s\S]*Trim it toward 75 to 80 spoken words[\s\S]*it must end at 110 words or fewer/.test(trimP), trimP.slice(trimP.indexOf("LENGTH TRIM"), trimP.indexOf("LENGTH TRIM") + 200));
+      c.ok("…naming the brief's must-keep points, none of which may be dropped", /These must-keep points from the brief survive, in substance: "She recommends a pre-listing inspection"/.test(trimP) && /Never drop a must-keep point/.test(trimP));
       const last = vs[vs.length - 1];
       const jl = (await import("@/lib/scriptJudgeRecord")).readJudge(last.validationJson);
       c.ok("v2: trimmed to 85 words, reviewed again: passed, 12 of 12", vs.length === 2 && last.spokenWordCount === 85 && jl?.state === "passed" && jl.trimmed === true && rules.reviewHeadline(jl.checks ?? []) === "Creative review: 12 of 12 pass", `${last.spokenWordCount} · ${jl?.state}`);
@@ -368,7 +378,7 @@ async function main() {
     const rC = await gen.generateScriptForTopic({ topicId: tC, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
     {
       const mineC = reqs.slice(c0);
-      c.ok("the trim pass once, then two fix rounds (each told to trim), then no more", mineC.filter((r) => r.step === "trim").length === 1 && mineC.filter((r) => r.step === "fix").length === 2 && mineC.filter((r) => r.step === "fix").every((r) => /Trim it to 110 words or fewer/.test(r.prompt)));
+      c.ok("the trim pass once, then two fix rounds (each told to trim), then no more", mineC.filter((r) => r.step === "trim").length === 1 && mineC.filter((r) => r.step === "fix").length === 2 && mineC.filter((r) => r.step === "fix").every((r) => /it must end at 110 words or fewer/.test(r.prompt)));
       const s = await prisma.contentScript.findUniqueOrThrow({ where: { id: rC.scriptId } });
       const cur = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: s.currentVersionId! } });
       const j = (await import("@/lib/scriptJudgeRecord")).readJudge(cur.validationJson);
@@ -376,16 +386,113 @@ async function main() {
       c.ok("flagged, over the cap, and the card's length line reads \"A bit long: needs a fix\" with its seconds", j?.state === "flagged" && (cur.spokenWordCount ?? 0) > 110 && label?.band === "over" && /^A bit long: needs a fix \(\d+ words, about \d+ seconds; the cap is 110\)/.test(label.text), `${cur.spokenWordCount} · ${label?.text}`);
       const releases = await prisma.contentScriptRelease.count({ where: { scriptId: rC.scriptId } });
       c.ok("never shared: no approval, no release, nothing in the portal", !s.sharedVersionId && !s.approvedVersionId && releases === 0 && !s.clientVisible);
-      c.ok("the one-press fix sends the trim instruction (the card's button)", rules.trimInstruction(124).includes("124 spoken words") && rules.trimInstruction(124).includes("never make it dry or incomplete"));
+      c.ok("the one-press fix sends the trim instruction (the card's button)", rules.trimInstruction(124).includes("124 spoken words") && rules.trimInstruction(124).includes("Never make it dry or incomplete") && rules.isLengthTrimInstruction(rules.trimInstruction(124)));
+    }
+
+    // =======================================================================
+    c.head("8d · the aim made real: a passing 98-word draft gets ONE trim toward 75 to 80, reviewed again → 78 words, passed");
+    ctl.sizes.set("E", [[26, 24, 20, 13], [18, 18, 16, 11]]);
+    ctl.reviews.set("E", [[], []]);
+    const e0 = reqs.length;
+    const rE = await gen.generateScriptForTopic({ topicId: tE, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
+    {
+      const mineE = reqs.slice(e0);
+      const draftP = mineE.find((r) => r.step === "draft")?.prompt ?? "";
+      c.ok("the draft prompt asks for about 75 spoken words, plainly, with the must-keep points as the only things that must survive", draftP.includes("Write the script in about 75 spoken words (55 to 85; 110 is the hard cap). The brief's must-keep points are the only things that must survive"));
+      const trims = mineE.filter((r) => r.step === "trim");
+      c.ok("one trim pass toward 75 to 80 (not a cap trim), its must-keep points named", trims.length === 1 && /Trim it toward 75 to 80 spoken words \(the aim is 55 to 85\)/.test(trims[0].prompt) && !/over the 110-word cap/.test(trims[0].prompt) && /"She recommends a pre-listing inspection"/.test(trims[0].prompt));
+      c.ok("…then reviewed again (two reviews), no fix round", mineE.filter((r) => r.step === "review").length === 2 && !mineE.some((r) => r.step === "fix"), mineE.map((r) => r.step).join(","));
+      const vs = await prisma.contentScriptVersion.findMany({ where: { scriptId: rE.scriptId }, orderBy: { versionNo: "asc" } });
+      const jl = (await import("@/lib/scriptJudgeRecord")).readJudge(vs[vs.length - 1].validationJson);
+      c.ok("98 → 78 words: the trimmed version is current and passed", vs.length === 2 && vs[0].spokenWordCount === 98 && vs[1].spokenWordCount === 78 && jl?.state === "passed" && jl.aimTrimmed === true && /Trimmed toward 75 to 80 words by the creative review/.test(vs[1].changeSummary ?? ""), vs.map((v) => v.spokenWordCount).join(" → "));
+      c.ok("…the 98-word draft's review said \"Longer than the 55 to 85 aim\" as a flag, not a must-fix", (() => { const j0 = (JSON.parse(vs[0].validationJson ?? "{}") as { judge?: { checks?: { key: string; level: string; pass: boolean; reason: string }[] } }).judge; const l = j0?.checks?.find((x) => x.key === "length"); return !!l && !l.pass && l.level === "flag" && /Longer than the 55 to 85 aim/.test(l.reason); })());
+    }
+
+    // =======================================================================
+    c.head("8e · a trim that drops a must-keep point is undone: the longer passing version stands, the advisory flag stays");
+    ctl.sizes.set("F", [[24, 24, 20, 13], [14, 14, 14, 13]]);
+    ctl.reviews.set("F", [[], ["substance"]]);
+    const rF = await gen.generateScriptForTopic({ topicId: tF, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
+    {
+      const vs = await prisma.contentScriptVersion.findMany({ where: { scriptId: rF.scriptId }, orderBy: { versionNo: "asc" } });
+      const head = await prisma.contentScript.findUniqueOrThrow({ where: { id: rF.scriptId } });
+      const cur = vs.find((v) => v.id === head.currentVersionId)!;
+      const jr = (await import("@/lib/scriptJudgeRecord")).readJudge;
+      c.ok("v1 96 words passed → v2 trimmed to 70 failed Enough substance → v3 = v1 again, current", vs.length === 3 && vs[0].spokenWordCount === 96 && vs[1].spokenWordCount === 70 && cur.id === vs[2].id && cur.body === vs[0].body, vs.map((v) => `v${v.versionNo}:${v.spokenWordCount}`).join(" "));
+      c.ok("…v3 carries v1's passing review, marked trimmed; v2 is flagged with the reason", jr(cur.validationJson)?.state === "passed" && jr(cur.validationJson)?.aimTrimmed === true && jr(vs[1].validationJson)?.state === "flagged" && /dropped a must-keep point; v1 is kept/.test(jr(vs[1].validationJson)?.error ?? ""));
+      const card = record.writerCardOf(cur.validationJson);
+      c.ok("the card says why the longer version stands, and the length line keeps its advice", /Kept v1 \(96 words, about 44 seconds\): the trim toward 75 to 80 words dropped a must-keep point/.test(card?.lengthNote ?? "") && rules.lengthLabel(96)?.band === "long" && /Longer than the 55 to 85 aim/.test(rules.lengthLabel(96)?.text ?? ""), card?.lengthNote ?? "none");
+    }
+
+    // =======================================================================
+    c.head("8f · the same on a person's \"Fix with AI\" / revise: a trim that loses substance comes back; one that keeps it stands");
+    {
+      const head0 = await prisma.contentScript.findUniqueOrThrow({ where: { id: rF.scriptId } });
+      const before = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: head0.currentVersionId! } });
+      ctl.sizes.set("F", [[16, 14, 14, 13], [16, 14, 14, 13]]);
+      ctl.reviews.set("F", [["substance"], []]);
+      const p0 = reqs.length;
+      await gen.reviseScript(rF.scriptId, rules.trimInstruction(96, ["She recommends a pre-listing inspection"]), STAFF, "REVISION");
+      const steps1 = reqs.slice(p0).map((r) => r.step);
+      const head1 = await prisma.contentScript.findUniqueOrThrow({ where: { id: rF.scriptId } });
+      const cur1 = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: head1.currentVersionId! } });
+      c.ok("the press: one trim by the writer, reviewed straight away", steps1.join(",") === "trim,review", steps1.join(","));
+      c.ok("…it dropped a must-keep point, so the 96-word version is current again", cur1.body === before.body && cur1.spokenWordCount === 96 && cur1.id !== before.id);
+      const p1 = reqs.length;
+      await gen.reviseScript(rF.scriptId, rules.trimInstruction(96, ["She recommends a pre-listing inspection"]), STAFF, "REVISION");
+      const head2 = await prisma.contentScript.findUniqueOrThrow({ where: { id: rF.scriptId } });
+      const cur2 = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: head2.currentVersionId! } });
+      c.ok("pressed again, the trim keeps its substance: 72 words, passed, current", reqs.slice(p1).map((r) => r.step).join(",") === "trim,review" && cur2.spokenWordCount === 72 && (await import("@/lib/scriptJudgeRecord")).readJudge(cur2.validationJson)?.state === "passed");
+    }
+
+    // =======================================================================
+    c.head("8g · draftOffline (the retro test) takes the same steps, writes no script");
+    {
+      ctl.sizes.set("H", [[26, 24, 20, 13], [18, 18, 16, 10]]);
+      ctl.reviews.set("H", [[], []]);
+      const off = await pipe.draftOffline({ topicId: tH, monthId: f.monthId, requestedBy: STAFF });
+      c.ok("offline: 98 → one trim toward 75 to 80 → 77 words, passed", off.state === "passed" && off.attempts.map((a) => `${a.label}:${a.words}`).join(",") === "draft:98,trim to aim:77" && off.final.words === 77 && !off.keptLonger, off.attempts.map((a) => `${a.label}:${a.words}`).join(","));
+      ctl.sizes.set("I", [[24, 24, 20, 13], [14, 14, 14, 13]]);
+      ctl.reviews.set("I", [[], ["substance"]]);
+      const offI = await pipe.draftOffline({ topicId: tI, monthId: f.monthId, requestedBy: STAFF });
+      c.ok("offline: a trim that loses substance → the 96-word draft is the result, with the note", offI.state === "passed" && offI.keptLonger && offI.final.words === 96 && offI.final.label === "draft" && /Kept draft \(96 words/.test(offI.final.note ?? ""), `${offI.final.label}:${offI.final.words}`);
+      c.ok("…and nothing was written for either topic but AI run rows", (await prisma.contentScript.count({ where: { topicId: { in: [tH, tI] } } })) === 0);
+    }
+
+    // =======================================================================
+    c.head("9b · her material, our wording; the whole call; Jordan's craft rules; the insight and how she helps");
+    {
+      const lines = (await import("@/lib/scriptWriter/passages")).segmentTranscript(TRANSCRIPT);
+      const P = await import("@/lib/scriptWriter/passages");
+      const range = P.locateQuote(lines, Q_TURN)!;
+      const ctxText = P.contextAround(lines, range);
+      c.ok("a passage window finishes her thought past the listener's \"Mhm.\" and takes the next turn with her answer", !!range && ctxText.includes("every bit as scary as when a senior is moving out of a home") && ctxText.includes("I fiercely protect their interests"), ctxText.slice(-160));
+      const wB = record.readWriter((await prisma.contentScriptVersion.findFirst({ where: { scriptId: rB.scriptId, versionNo: 1 } }))?.validationJson);
+      c.ok("…so the stored passage for the turn carries the central line too", (wB?.passages ?? []).some((p) => p.quote === Q_TURN && p.context.includes("every bit as scary")));
+      const briefReq = reqs.find((r) => r.step === "brief" && r.prompt.includes(TOPIC_B));
+      const reviewReq = reqs.find((r) => r.step === "review" && r.prompt.includes(TOPIC_B));
+      c.ok("the brief and the review are given THE FULL CALL to check what she said", !!briefReq && /THE FULL CALL \(to check what she said, anywhere in it/.test(briefReq.prompt) && briefReq.prompt.includes("every bit as scary") && !!reviewReq && /THE FULL CALL/.test(reviewReq.prompt) && reviewReq.prompt.includes("Buyers and their agents look at the roof"));
+      c.ok("brief rules: the insight plus how she helps (not a fun fact); must-keep are POINTS; her real reason is never \"biography\"; check the whole call", prompts.BRIEF_SYSTEM.includes("the INSIGHT plus HOW SHE HELPS") && prompts.BRIEF_SYSTEM.includes("NOT \"first-time buyers are her favorite clients\"") && prompts.BRIEF_SYSTEM.includes("the POINTS the script cannot lose") && prompts.BRIEF_SYSTEM.includes("never excluded as \"biography\"") && prompts.BRIEF_SYSTEM.includes("CHECK AGAINST THE WHOLE CALL"));
+      c.ok("…and her best short phrases are kept apart (herPhrases), stored with the brief", wB?.brief.herPhrases?.[0]?.text === "fiercely protect their interests");
+      for (const [name, sys] of [["writer", prompts.WRITER_SYSTEM], ["brief", prompts.BRIEF_SYSTEM], ["hooks", prompts.HOOKS_SYSTEM], ["review", prompts.REVIEW_SYSTEM]] as const) {
+        c.ok(`${name}: her material, our wording, and Jordan's craft rules (story progression, her ACTUAL reason, the insight, educational contrast)`, sys.includes("HER MATERIAL, OUR WORDING") && sys.includes("Never paste her spoken sentences") && sys.includes("her ACTUAL reason for the change") && sys.includes("the insight that connects her past to the viewer's need") && sys.includes("meaningful contrast"));
+      }
+      c.ok("close: a warm invitation by default, a callback alone only for a story with no service angle", rules.CLOSE_RULE.includes("by default, ends on a natural, warm invitation") && rules.CLOSE_RULE.includes("only when the video is purely a story with no service angle") && prompts.REVIEW_SYSTEM.includes("by default a warm, natural invitation tied to the message"));
+      c.ok("review: transcript sentences pasted in fail her voice; a faithful paraphrase is supported; a fun fact is not a payoff", prompts.REVIEW_SYSTEM.includes("Her transcript sentences pasted in (rambling, filler, restarts) fail") && prompts.REVIEW_SYSTEM.includes("a faithful paraphrase is supported") && prompts.REVIEW_SYSTEM.includes("a fun fact about her (\"they are my favorite clients\") is not a payoff"));
+      const pasted = rules.hardNumbers({ hook: "I loved working in senior living.", points: [{ role: "re-hook", text: "I used to run sales and marketing for a retirement community before I got my license." }], close: "Let's talk." }, TRANSCRIPT);
+      const phrase = rules.hardNumbers({ hook: "I loved working in senior living.", points: [{ role: "payoff", text: "Both needed someone to explain their options and fiercely protect their interests." }], close: "Let's talk." }, TRANSCRIPT);
+      c.ok("code: a sentence pasted from the call (11 words or more in a row) fails Sounds like her, must-fix; her short phrase does not", pasted.findings.some((x) => x.key === "pasted" && x.level === "must-fix") && !phrase.findings.some((x) => x.key === "pasted"), JSON.stringify(pasted.findings.map((x) => x.key)));
+      c.ok("…and it counts against check 9 at must-fix level", (() => { const m = rules.mergeReview([{ key: "her_voice", pass: true, reason: "ok" }], pasted.findings, 40).find((x) => x.key === "her_voice"); return !!m && !m.pass && m.level === "must-fix"; })());
+      c.ok("retrieval: whole thoughts, and a reader's summary is never her words", prompts.RETRIEVAL_SYSTEM.includes("Return WHOLE THOUGHTS") && prompts.RETRIEVAL_SYSTEM.includes("not her words"));
     }
 
     // =======================================================================
     c.head("9 · the close rule and the length aim, in the writer, the review and the brief");
     {
       const sys = prompts.WRITER_SYSTEM;
-      c.ok("writer: EITHER a call to action OR a callback to the hook; the old caption-only rule gone", sys.includes("EITHER a call to action OR a callback to the hook") && !/contact ask goes in the caption|memorable final line/i.test(sys));
-      c.ok("writer: aim 55 to 85, cap 110, never dry or incomplete", sys.includes("aim for 55 to 85 spoken words") && sys.includes("110 spoken words is the hard cap") && sys.includes("without making it dry or incomplete"));
-      c.ok("review: the close must be the close type the brief chose; 86 to 110 is advice only", prompts.REVIEW_SYSTEM.includes("close type the brief chose") && prompts.REVIEW_SYSTEM.includes("86 to 110 is advice only"));
+      c.ok("writer: a warm invitation by default, a callback where the story has no service angle; the old caption-only rule gone", sys.includes("by default, ends on a natural, warm invitation") && sys.includes("\"callback\": only when the video is purely a story") && !/contact ask goes in the caption|memorable final line/i.test(sys));
+      c.ok("writer: about 75 words inside 55 to 85, cap 110, never dry or incomplete", sys.includes("write about 75 spoken words") && sys.includes("inside the 55 to 85 range") && sys.includes("110 spoken words is the hard cap") && sys.includes("Never make it dry or incomplete"));
+      c.ok("review: 86 to 110 is advice only; over 110 is must-fix", prompts.REVIEW_SYSTEM.includes("86 to 110 is advice only") && prompts.REVIEW_SYSTEM.includes("Over 110 words is must-fix"));
       c.ok("brief: closeType cta or callback, decided per message", prompts.BRIEF_SYSTEM.includes("closeType") && (prompts.BRIEF_SCHEMA as { properties: { closeType: { enum: string[] } } }).properties.closeType.enum.join() === "cta,callback");
       const l = rules.lengthCheck(96), a = rules.lengthCheck(80), s = rules.lengthCheck(40);
       c.ok("96 words: \"Longer than the 55 to 85 aim\", a flag, never must-fix", !l.pass && l.level === "flag" && /Longer than the 55 to 85 aim/.test(l.reason));

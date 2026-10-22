@@ -50,23 +50,28 @@ export function WriterNotes({ writer, words, skit, canFix, busy, onFix }: { writ
   const showLength = !!length && (length.band === "over" || length.band === "long" || !!writer);
   if (!writer && !showLength) return null;
   const r = writer?.review ?? null;
+  // v2.1: the one press trims toward 75 to 80 and names the brief's must-keep points. Over the cap on
+  // any script; 86 to 110 only on a script the new writer drafted (its review undoes a trim that lost one).
+  const fixable = canFix && !!length && (length.band === "over" || (length.band === "long" && !!writer));
+  const mustKeep = (writer?.brief.mustKeep ?? []).map((m) => m.text);
   return (
     <div className="mt-1.5 space-y-1 rounded-lg border border-border bg-surface-2/40 px-2.5 py-1.5 text-[11px]">
       {showLength && length && (
         <p className={`flex flex-wrap items-center gap-1.5 ${length.band === "over" ? "font-medium text-warning" : length.band === "long" ? "text-warning" : "text-muted"}`}>
           <span>{length.text}</span>
-          {length.band === "over" && canFix && (
+          {fixable && (
             <button
               disabled={busy}
-              onClick={() => onFix(trimInstruction(words!))}
-              title={`Asks the AI for a new version at ${WRITER_LENGTH.cap} words or fewer, as close to ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} as the substance allows. This version is kept.`}
+              onClick={() => onFix(trimInstruction(words!, mustKeep))}
+              title={`Asks the AI for a new version toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words${length.band === "over" ? ` (${WRITER_LENGTH.cap} at most)` : ""}, dropping none of the brief's must-keep points. This version is kept${writer ? ", and comes back if the trim loses one" : ""}.`}
               className="inline-flex min-h-7 items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50"
             >
-              <Scissors className="size-3" />Fix with AI
+              <Scissors className="size-3" />{length.band === "over" ? "Fix with AI" : `Trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]}`}
             </button>
           )}
         </p>
       )}
+      {writer?.lengthNote && <p className="text-muted">{writer.lengthNote}</p>}
       {r && (
         <div>
           {r.note && <p className={r.state === "flagged" ? "font-medium text-warning" : "text-muted"}>{r.note}</p>}
@@ -102,15 +107,16 @@ export function WriterNotes({ writer, words, skit, canFix, busy, onFix }: { writ
             <p><span className="font-semibold">Viewer:</span> {writer.brief.viewer}</p>
             <p><span className="font-semibold">Why chosen:</span> {writer.brief.whyChosen}</p>
             {writer.brief.pillar && <p><span className="font-semibold">Pillar:</span> {writer.brief.pillar}</p>}
-            <p><span className="font-semibold">Close:</span> {writer.brief.closeType === "callback" ? "a callback to the hook" : "a call to action"}{writer.brief.closeWhy ? `. ${writer.brief.closeWhy}` : ""}</p>
-            <p><span className="font-semibold">Target:</span> {writer.brief.target.aim[0]} to {writer.brief.target.aim[1]} words (about {writer.brief.target.seconds[0]} to {writer.brief.target.seconds[1]} seconds), {writer.brief.target.cap} at most</p>
+            <p><span className="font-semibold">Close:</span> {writer.brief.closeType === "callback" ? "a callback to the hook" : "a warm invitation tied to the message"}{writer.brief.closeWhy ? `. ${writer.brief.closeWhy}` : ""}</p>
+            <p><span className="font-semibold">Target:</span> about {writer.brief.target.words ?? WRITER_LENGTH.target} words, inside {writer.brief.target.aim[0]} to {writer.brief.target.aim[1]} (about {writer.brief.target.seconds[0]} to {writer.brief.target.seconds[1]} seconds), {writer.brief.target.cap} at most</p>
             {writer.brief.whatSheSaid.length > 0 && (
               <div className="mt-1">
                 <p className="font-semibold">What she said</p>
                 <ul className={LIST}>{writer.brief.whatSheSaid.map((q, i) => <li key={i}>&ldquo;{q.quote}&rdquo; <span className="text-muted-2">({q.source})</span></li>)}</ul>
               </div>
             )}
-            <Items label="Must keep" xs={writer.brief.mustKeep} />
+            <Items label="Must keep (points)" xs={writer.brief.mustKeep} />
+            <Items label="Her phrases worth saying exactly" xs={writer.brief.herPhrases ?? []} />
             <Items label="Optional" xs={writer.brief.optional} />
             <Items label="Left out" xs={writer.brief.excluded} />
             <Items label="Contradictions (flagged, not resolved)" xs={writer.brief.contradictions} />

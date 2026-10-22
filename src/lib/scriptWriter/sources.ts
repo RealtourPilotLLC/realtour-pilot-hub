@@ -56,7 +56,11 @@ export type GatherOpts = {
   /** The script being revised or reviewed: never its own voice example. */
   excludeScriptId?: string | null;
   asOf?: Date | null;
-  /** The review and the revisions: the context only. The passages they need travel with the version (validationJson.writer). */
+  /**
+   * The review and the revisions: the context and the topic's own call (so a
+   * claim can be checked against everything she said), but no older calls and
+   * no recorded excerpts. The passages travel with the version (validationJson.writer).
+   */
   light?: boolean;
 };
 
@@ -73,6 +77,12 @@ export type Gathered = {
   lines: Map<string, TranscriptLine[]>;
   /** For the hard numbers: everything she said or approved that the writer read (never our assumptions). */
   clientText: string;
+  /**
+   * The topic's own call(s) in full, labelled (Oct 22 2026, v2.1): the brief and
+   * the review check what she said against ALL of it, not only the passages
+   * (the seniors test excluded her central line as "only in the summary").
+   */
+  callText: string;
   keywords: string[];
   /** Hold back a passage: confidential, or naming another client. */
   holdBack: (text: string) => Promise<boolean>;
@@ -199,13 +209,13 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
     lines.set(id, segmentTranscript(text));
     callLabels.push(label);
   };
-  for (const tr of o.light ? [] : transcripts) {
+  for (const tr of transcripts) {
     if (superseded.has(tr.id) || !tr.callRecordId || seenCall.has(tr.callRecordId) || budget < 2000) continue;
     seenCall.add(tr.callRecordId);
     const call = calls.find((c) => c.id === tr.callRecordId);
     await addFull(`${call?.callType === "BRAND_DISCOVERY" ? "brand discovery call" : "strategy call"} of ${fmtDate(call?.scheduledStart ?? tr.recordedAt)} (this topic's call)`, tr.text!);
   }
-  if (!o.light && !sources.length && month?.transcriptText && (!asOf || !month.strategyCallAt || month.strategyCallAt <= asOf)) {
+  if (!sources.length && month?.transcriptText && (!asOf || !month.strategyCallAt || month.strategyCallAt <= asOf)) {
     await addFull(`strategy call for ${month.monthKey} (this topic's month, pasted transcript)`, month.transcriptText);
   }
 
@@ -305,7 +315,20 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
   const picked = pickScripts(cands, keywords, guard);
 
   // --- the context -------------------------------------------------------------
-  const doc = built.ctx.strategy?.document ?? null;
+  // asOf (phase 3): the strategy version that was approved at that moment, not a later one.
+  let doc = built.ctx.strategy?.document ?? null;
+  let strategyVersionId = built.strategyVersionId;
+  if (asOf) {
+    const then = await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: t.enrollmentId, approvedAt: { lte: asOf }, status: { in: ["APPROVED", "SUPERSEDED"] } }, orderBy: { approvedAt: "desc" }, select: { id: true, sectionsJson: true } });
+    if (then && then.id !== strategyVersionId) {
+      const { parseStoredSections } = await import("@/lib/contentStrategy");
+      const { withCanonicalFramework, isFrameworkSection } = await import("@/lib/contentPolicy");
+      const stored = parseStoredSections(then.sectionsJson);
+      const fw = stored?.sections.find((x) => isFrameworkSection(x));
+      doc = stored?.document ? withCanonicalFramework(stored.document, fw?.text ?? null) : null;
+      strategyVersionId = then.id;
+    } else if (!then) { doc = null; strategyVersionId = null; }
+  }
   let strategyText = doc ? renderStrategy(doc, { preserveSourceHeadings: true }) : null;
   if (strategyText && strategyText.length > 14_000) strategyText = `${strategyText.slice(0, 14_000)} ...`;
   const ctx: WriterContext = {
@@ -329,13 +352,14 @@ export async function gatherForTopic(o: GatherOpts): Promise<Gathered> {
     ...picked.related.map((r) => r.text),
     strategyText ?? "",
   ].join("\n");
+  const callText = sources.filter((s) => s.kind === "call").map((s) => `[${s.id}] ${s.label}\n${s.text}`).join("\n\n");
   return {
-    ctx, enrollmentId: t.enrollmentId, clientId, pillarId: t.pillarId, strategyVersionId: built.strategyVersionId, policyVersionId: built.policyVersionId,
-    sources, lines, clientText, keywords,
+    ctx, enrollmentId: t.enrollmentId, clientId, pillarId: t.pillarId, strategyVersionId, policyVersionId: built.policyVersionId,
+    sources, lines, clientText, callText, keywords,
     holdBack: async (text: string) => secret(text) || !(await scrubOne(text)),
     labels: { calls: callLabels, olderWindows: oN, relatedScripts: picked.related.map((r) => `${r.title} (${r.label})`), voiceRefs: picked.voice.map((v) => ({ title: v.title, why: v.why })), answers: answers.length },
     inputRefs: {
-      writer: true, strategyVersionId: built.strategyVersionId, callRecordIds: [...seenCall], olderWindows: oN, recordedExcerpts: recorded.length, interviewId,
+      writer: true, strategyVersionId, callRecordIds: [...seenCall], olderWindows: oN, recordedExcerpts: recorded.length, interviewId,
       factIds: facts.map((f) => f.factId), unreviewedFacts: facts.filter((f) => f.label.startsWith("not reviewed")).length,
       relatedScriptIds: picked.related.map((r) => r.id), voiceScriptIds: picked.voice.map((v) => v.id), asOf: asOf?.toISOString() ?? null,
     },

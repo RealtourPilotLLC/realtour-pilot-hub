@@ -34,7 +34,10 @@ export type TopicBrief = {
   whyChosen: string;
   pillar: string;
   whatSheSaid: { passageId: string; quote: string; source: string; time: string | null }[];
+  /** v2.1: POINTS in plain words (meaning), never quotes of her sentences. */
   mustKeep: BriefItem[];
+  /** v2.1: up to five short phrases of hers, strong and natural on camera, worth saying exactly. */
+  herPhrases?: BriefItem[];
   optional: BriefItem[];
   excluded: { text: string; reason: string }[];
   contradictions: { text: string; sources: string }[];
@@ -44,7 +47,8 @@ export type TopicBrief = {
   ourAssumptions: BriefItem[];
   closeType: "cta" | "callback";
   closeWhy: string;
-  target: { aim: [number, number]; cap: number; seconds: [number, number] };
+  /** `words` (Oct 22 2026, v2.1): what the draft writes toward; a brief written before it has none (75). */
+  target: { aim: [number, number]; cap: number; seconds: [number, number]; words?: number };
 };
 
 export type WriterRationale = { hook: string; takeaway: string; strategy: string };
@@ -94,7 +98,7 @@ export function readWriterJudge(validationJson: string | null | undefined): (Jud
   try {
     const raw = (JSON.parse(validationJson!) as { judge?: Partial<WriterJudgeExtra> }).judge ?? {};
     if (raw.writer !== 2) return null;
-    return { ...j, writer: 2, checks: Array.isArray(raw.checks) ? raw.checks : [], hard: Array.isArray(raw.hard) ? raw.hard : [], words: Number(raw.words) || 0, trimmed: raw.trimmed === true, summary: typeof raw.summary === "string" ? raw.summary : null };
+    return { ...j, writer: 2, checks: Array.isArray(raw.checks) ? raw.checks : [], hard: Array.isArray(raw.hard) ? raw.hard : [], words: Number(raw.words) || 0, trimmed: raw.trimmed === true, summary: typeof raw.summary === "string" ? raw.summary : null, aimTrimmed: j.aimTrimmed === true };
   } catch { return null; }
 }
 
@@ -112,6 +116,8 @@ export type WriterCardUi = {
     trimmed: boolean;
     note: string | null;
   } | null;
+  /** v2.1: why a longer version was kept (the trim toward 75 to 80 dropped a must-keep point). */
+  lengthNote: string | null;
   rationale: WriterRationale | null;
   brief: Omit<TopicBrief, "whatSheSaid"> & { whatSheSaid: { quote: string; source: string }[] };
   hooks: { text: string; total: number; chosen: boolean; disqualified: string | null }[];
@@ -132,7 +138,10 @@ export function writerCardOf(validationJson: string | null | undefined): WriterC
   if (!w) return null;
   const j = readWriterJudge(validationJson);
   const checks = j?.checks ?? [];
+  let lengthNote: string | null = null;
+  try { const n = (JSON.parse(validationJson!) as { lengthNote?: unknown }).lengthNote; lengthNote = typeof n === "string" && n.trim() ? n : null; } catch { lengthNote = null; }
   return {
+    lengthNote,
     review: j
       ? {
           state: j.state,
@@ -140,7 +149,7 @@ export function writerCardOf(validationJson: string | null | undefined): WriterC
           failing: checks.filter((c) => !c.pass).map((c) => ({ n: c.n, label: c.label, level: c.level, reason: c.reason })),
           passing: checks.filter((c) => c.pass).map((c) => ({ n: c.n, label: c.label })),
           fixRounds: j.fixRounds,
-          trimmed: j.trimmed,
+          trimmed: j.trimmed || j.aimTrimmed === true,
           note: j.state === "not_checked" && j.error ? `${REVIEW_STATE_NOTE.not_checked}: ${j.error}` : REVIEW_STATE_NOTE[j.state],
         }
       : null,

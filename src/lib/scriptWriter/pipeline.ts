@@ -151,12 +151,12 @@ export function briefFrom(out: BriefOut, passages: WriterPassage[]): TopicBrief 
   return {
     centralMessage: s400(out.centralMessage), viewer: s400(out.viewer), whyChosen: s400(out.whyChosen), pillar: s400(out.pillar),
     whatSheSaid: [...new Set(said)].slice(0, 8).map((p) => ({ passageId: p.id, quote: p.quote, source: p.source, time: p.time })),
-    mustKeep: items(out.mustKeep), optional: items(out.optional),
+    mustKeep: items(out.mustKeep), herPhrases: items(out.herPhrases).slice(0, 5), optional: items(out.optional),
     excluded: (Array.isArray(out.excluded) ? out.excluded : []).map((x) => ({ text: s400((x as { text?: unknown }).text), reason: s400((x as { reason?: unknown }).reason) })).filter((x) => x.text).slice(0, 14),
     contradictions: (Array.isArray(out.contradictions) ? out.contradictions : []).map((x) => ({ text: s400((x as { text?: unknown }).text), sources: s400((x as { sources?: unknown }).sources) })).filter((x) => x.text).slice(0, 8),
     verifiedFacts: items(out.verifiedFacts), opinions: items(out.opinions), creativeIdeas: items(out.creativeIdeas), ourAssumptions: items(out.ourAssumptions),
     closeType: out.closeType === "callback" ? "callback" : "cta", closeWhy: s400(out.closeWhy),
-    target: { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.aim[1]], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.aim[1])] },
+    target: { aim: [WRITER_LENGTH.aim[0], WRITER_LENGTH.aim[1]], cap: WRITER_LENGTH.cap, seconds: [estimateSeconds(WRITER_LENGTH.aim[0]), estimateSeconds(WRITER_LENGTH.aim[1])], words: WRITER_LENGTH.target },
   };
 }
 
@@ -191,7 +191,8 @@ export async function prepareDraft(o: GatherOpts & { requestedBy: string; unatte
     overview = s400(r.output?.overview) || null;
     retrievalRun = r.runId;
   }
-  const b = await runWriterStep<BriefOut>("brief", buildBriefPrompt(g.ctx, passages, excluded, overview), rc, { dedupeKey: key("brief") });
+  // v2.1: the brief checks against the whole call, not only the passages.
+  const b = await runWriterStep<BriefOut>("brief", buildBriefPrompt(g.ctx, passages, excluded, overview, g.callText), rc, { dedupeKey: key("brief") });
   const brief = briefFrom(b.output, passages);
   const h = await runWriterStep<{ hooks?: Parameters<typeof pickHook>[0] }>("hooks", buildHooksPrompt(g.ctx, brief), rc, { dedupeKey: key("hooks") });
   const picked = pickHook(h.output?.hooks ?? []);
@@ -242,15 +243,21 @@ export function writerRecordOf(p: Prepared, draft: { output: DraftOut; runId: st
 type ReviewOut = { checks?: { key?: string; pass?: boolean; reason?: string }[]; fixInstruction?: string; summary?: string };
 export type ReviewResult = { checks: ReviewCheckResult[]; hard: HardFinding[]; mustFails: ReviewCheckResult[]; fixInstruction: string | null; summary: string | null; words: number; seconds: number; runId: string };
 
-/** What she said or approved, as the hard numbers read it (never our assumptions). */
-export function clientTextOf(rec: Pick<WriterRecord, "passages" | "facts">, ctx: Pick<WriterContext, "answers" | "strategyText" | "relatedScripts">): string {
-  return [...rec.passages.flatMap((p) => [p.quote, p.context]), ...rec.facts.map((f) => f.body), ...ctx.answers.map((a) => a.answer), ...ctx.relatedScripts.map((r) => r.text), ctx.strategyText ?? ""].join("\n");
+/** What she said or approved, as the hard numbers read it (never our assumptions); v2.1: the whole call too. */
+export function clientTextOf(rec: Pick<WriterRecord, "passages" | "facts">, ctx: Pick<WriterContext, "answers" | "strategyText" | "relatedScripts">, callText = ""): string {
+  return [...rec.passages.flatMap((p) => [p.quote, p.context]), ...rec.facts.map((f) => f.body), ...ctx.answers.map((a) => a.answer), ...ctx.relatedScripts.map((r) => r.text), ctx.strategyText ?? "", callText].join("\n");
 }
 
-export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: ScriptParts & { closeType?: string | null }, rc: RunCtx, opts: { dedupeKey?: string | null } = {}): Promise<ReviewResult> {
-  const numbers = hardNumbers(parts, clientTextOf(rec, ctx));
+/** What she SAID out loud (the passages and the whole call): the text a pasted sentence is looked for in. */
+export function spokenSourceOf(rec: Pick<WriterRecord, "passages">, callText = ""): string {
+  return [...rec.passages.flatMap((p) => [p.quote, p.context]), callText].join("\n");
+}
+
+export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: ScriptParts & { closeType?: string | null }, rc: RunCtx, opts: { dedupeKey?: string | null; callText?: string | null } = {}): Promise<ReviewResult> {
+  const callText = opts.callText ?? "";
+  const numbers = hardNumbers(parts, clientTextOf(rec, ctx, callText), spokenSourceOf(rec, callText));
   const body = [`HOOK: ${parts.hook}`, ...parts.points.map((p, i) => `${["RE-HOOK", "BUILD-UP", "PAYOFF"][i] ?? "POINT"}: ${p.text}`), `CLOSE: ${parts.close}`].join("\n");
-  const prompt = buildReviewPrompt({ ...ctx, facts: rec.facts }, rec.brief, rec.passages, { body, closeType: parts.closeType ?? null }, { words: numbers.words, seconds: numbers.seconds, hookWords: numbers.hookWords, hard: numbers.findings.map((f) => f.detail) });
+  const prompt = buildReviewPrompt({ ...ctx, facts: rec.facts }, rec.brief, rec.passages, { body, closeType: parts.closeType ?? null }, { words: numbers.words, seconds: numbers.seconds, hookWords: numbers.hookWords, hard: numbers.findings.map((f) => f.detail) }, callText);
   // Every version gets its own review run (never a reused verdict): the ledger shows each check.
   const r = await runWriterStep<ReviewOut>("review", prompt, rc, { dedupeKey: opts.dedupeKey ?? null, reuse: false });
   const checks = mergeReview(Array.isArray(r.output?.checks) ? r.output.checks : [], numbers.findings, numbers.words);
@@ -260,24 +267,42 @@ export async function reviewParts(ctx: WriterContext, rec: WriterRecord, parts: 
 }
 
 /**
- * After a review, what happens next (the automatic check and the offline run
- * share this order):
- *   nothing must-fix fails            → pass (flags stay on the card)
- *   only the length fails, no trim yet → the trim pass
- *   fix rounds left (two at most)      → a fix round (it trims too when over)
- *   still over the cap, no trim yet    → the trim pass
- *   otherwise                          → flagged for Jordan, never quietly passed
+ * After a review, what happens next (the automatic check, a person's "Fix
+ * with AI" and the offline run share this order):
+ *   the version IS the aim trim, and it  → revert: the longer version it came
+ *     broke a must-fix check other than     from is kept (never dry or
+ *     length ("Enough substance" when it    incomplete); "Longer than the 55
+ *     dropped a must-keep point)            to 85 aim" stays as advice
+ *   nothing must-fix fails, over 85 words,→ the aim trim: ONE pass toward 75
+ *     no aim trim yet                         to 80, must-keep points kept
+ *   nothing must-fix fails                → pass (flags stay on the card)
+ *   only the length fails, no cap trim yet→ the cap trim (110 or fewer)
+ *   fix rounds left (two at most)         → a fix round (it trims too when over)
+ *   still over the cap, no cap trim yet   → the cap trim
+ *   otherwise                             → flagged for Jordan, never quietly passed
  */
-export function nextWriterStep(o: { mustFails: ReviewCheckResult[]; words: number; fixRounds: number; trimmed: boolean; maxFixRounds?: number }): "pass" | "trim" | "fix" | "flag" {
-  if (!o.mustFails.length) return "pass";
+export type WriterStep = "pass" | "trim" | "aim-trim" | "revert" | "fix" | "flag";
+export function nextWriterStep(o: { mustFails: ReviewCheckResult[]; words: number; fixRounds: number; trimmed: boolean; aimTrimmed?: boolean; isAimTrim?: boolean; maxFixRounds?: number }): WriterStep {
+  if (o.isAimTrim && o.mustFails.some((c) => c.key !== "length")) return "revert";
+  if (!o.mustFails.length) return o.words > WRITER_LENGTH.aim[1] && !o.aimTrimmed && !o.isAimTrim ? "aim-trim" : "pass";
   if (o.mustFails.every((c) => c.key === "length") && !o.trimmed) return "trim";
   if (o.fixRounds < (o.maxFixRounds ?? 2)) return "fix";
   if (o.words > WRITER_LENGTH.cap && !o.trimmed) return "trim";
   return "flag";
 }
 
+/** The brief's must-keep points as the trim instruction names them. */
+export function mustKeepTexts(brief: Pick<TopicBrief, "mustKeep"> | null | undefined): string[] {
+  return (brief?.mustKeep ?? []).map((m) => m.text).filter(Boolean);
+}
+
+/** The note a kept-longer version carries on the card (and in the offline result). */
+export function keptLongerNote(versionLabel: string, words: number): string {
+  return `Kept ${versionLabel} (${words} words, about ${estimateSeconds(words)} seconds): the trim toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words dropped a must-keep point, so the longer passing version stands. "Longer than the ${WRITER_LENGTH.aim[0]} to ${WRITER_LENGTH.aim[1]} aim" stays as advice.`;
+}
+
 /** What a fix round is told: every failing check (must-fix first), the reviewer's instruction, the trim when over the cap, and no invention. */
-export function writerFixInstruction(j: { checks?: ReviewCheckResult[]; hard?: HardFinding[]; fixInstruction?: string | null; words?: number }): string {
+export function writerFixInstruction(j: { checks?: ReviewCheckResult[]; hard?: HardFinding[]; fixInstruction?: string | null; words?: number }, mustKeep: readonly string[] = []): string {
   const checks = j.checks ?? [];
   const must = checks.filter((c) => !c.pass && c.level === "must-fix");
   const flags = checks.filter((c) => !c.pass && c.level === "flag");
@@ -286,7 +311,7 @@ export function writerFixInstruction(j: { checks?: ReviewCheckResult[]; hard?: H
     must.length ? `MUST FIX:\n${must.map((c) => `- ${c.n}. ${c.label}: ${c.reason}`).join("\n")}` : "",
     flags.length ? `ALSO IMPROVE IF YOU CAN WITHOUT LOSING ANYTHING:\n${flags.map((c) => `- ${c.n}. ${c.label}: ${c.reason}`).join("\n")}` : "",
     j.fixInstruction ? `THE REVIEWER'S INSTRUCTION: ${j.fixInstruction}` : "",
-    (j.words ?? 0) > WRITER_LENGTH.cap ? trimInstruction(j.words ?? 0) : "",
+    (j.words ?? 0) > WRITER_LENGTH.cap ? trimInstruction(j.words ?? 0, mustKeep) : "",
     "Use only her sources. Anything they do not support stays a gap: never invent a story, number, result, reason or credential to fix a problem.",
   ].filter(Boolean).join("\n");
 }
@@ -305,12 +330,12 @@ export async function latestWriterRecord(scriptId: string, preferVersionId?: str
   return readWriter(vs[0]?.validationJson);
 }
 
-/** The context for a review or a revision of a script the writer drafted (no transcript reading: the record carries the passages). */
-export async function contextForScript(s: { topicId: string | null; monthId: string | null; id: string }, rec: WriterRecord): Promise<{ ctx: WriterContext }> {
+/** The context for a review or a revision of a script the writer drafted: the record carries the passages; the topic's call is read again in full (v2.1) so a claim is checked against all of it. */
+export async function contextForScript(s: { topicId: string | null; monthId: string | null; id: string }, rec: WriterRecord): Promise<{ ctx: WriterContext; callText: string }> {
   if (!s.topicId) throw new Error("This script has no topic, so the new writer cannot rebuild its context.");
   const g = await gatherForTopic({ topicId: s.topicId, monthId: s.monthId, excludeScriptId: s.id, light: true, asOf: rec.asOf ? new Date(rec.asOf) : null });
   // The facts the brief was built on, not whatever the file holds today.
-  return { ctx: { ...g.ctx, facts: rec.facts } };
+  return { ctx: { ...g.ctx, facts: rec.facts }, callText: g.callText };
 }
 
 /** A version's parts as the review reads them. */
@@ -328,11 +353,11 @@ export async function reviewVersion(versionId: string, o: { requestedBy: string;
   if (!s) throw new Error("Script not found.");
   const rec = readWriter(v.validationJson) ?? (await latestWriterRecord(s.id));
   if (!rec) throw new Error("This version has no topic brief to review against.");
-  const { ctx } = await contextForScript(s, rec);
+  const { ctx, callText } = await contextForScript(s, rec);
   let closeType: string | null = null;
   try { closeType = (JSON.parse(v.validationJson ?? "{}") as { closeType?: string }).closeType ?? null; } catch { closeType = null; }
   const rc: RunCtx = { requestedBy: o.requestedBy, unattended: o.unattended, deadline: o.deadline ?? null, scope: { scriptId: s.id, versionId }, enrollmentId: s.enrollmentId, clientId: s.clientId, strategyVersionId: v.strategyVersionId, policyVersionId: v.policyVersionId, inputRefs: { versionId, briefRunId: rec.runs.brief } };
-  const r = await reviewParts(ctx, rec, { ...partsOfVersion(v), closeType: closeType ?? rec.brief.closeType }, rc, { dedupeKey: `review:${versionId}` });
+  const r = await reviewParts(ctx, rec, { ...partsOfVersion(v), closeType: closeType ?? rec.brief.closeType }, rc, { dedupeKey: `review:${versionId}`, callText });
   return { ...r, closeType };
 }
 
@@ -348,9 +373,9 @@ export async function writerRevisePrompt(s: { id: string; topicId: string | null
 // No script, no version, no portal, no message. For the go / no-go test.
 // ---------------------------------------------------------------------------
 
-export type OfflineAttempt = { label: string; parts: ScriptParts; closeType: string | null; words: number; seconds: number; review: ReviewResult | null };
+export type OfflineAttempt = { label: string; parts: ScriptParts; closeType: string | null; words: number; seconds: number; review: ReviewResult | null; note?: string | null };
 
-export async function draftOffline(o: { topicId: string; monthId: string | null; asOf?: Date | null; requestedBy: string; callRecordId?: string | null }): Promise<{ prepared: Omit<Prepared, "g">; record: WriterRecord; attempts: OfflineAttempt[]; final: OfflineAttempt; state: "passed" | "flagged" }> {
+export async function draftOffline(o: { topicId: string; monthId: string | null; asOf?: Date | null; requestedBy: string; callRecordId?: string | null }): Promise<{ prepared: Omit<Prepared, "g">; record: WriterRecord; attempts: OfflineAttempt[]; final: OfflineAttempt; state: "passed" | "flagged"; keptLonger: boolean }> {
   const p = await prepareDraft({ topicId: o.topicId, monthId: o.monthId, callRecordId: o.callRecordId ?? null, asOf: o.asOf ?? null, requestedBy: o.requestedBy, unattended: false, offline: true });
   const scope = { topicId: o.topicId, monthId: o.monthId, offline: true, asOf: o.asOf?.toISOString() ?? null };
   const draft = await runWriterStep<DraftOut>("draft", buildDraftPrompt(p.g.ctx, p.brief, p.passages, p.chosen >= 0 ? { text: p.hooks[p.chosen].text, rehook: p.hooks[p.chosen].rehook } : null), { requestedBy: o.requestedBy, unattended: false, scope, enrollmentId: p.g.enrollmentId, clientId: p.g.clientId, strategyVersionId: p.g.strategyVersionId, policyVersionId: p.g.policyVersionId, inputRefs: p.g.inputRefs });
@@ -358,25 +383,32 @@ export async function draftOffline(o: { topicId: string; monthId: string | null;
   const toParts = (out: DraftOut, hook: string | null) => { const j = generatedFromDraft(out, hook, p.g.ctx.topic.pillar); return { parts: { hook: j.hook, points: j.points.map((x) => ({ role: String(x.role), text: x.text })), close: j.close } as ScriptParts, closeType: out?.closeType ?? null }; };
   const rc: RunCtx = { requestedBy: o.requestedBy, unattended: false, scope, enrollmentId: p.g.enrollmentId, clientId: p.g.clientId, strategyVersionId: p.g.strategyVersionId, policyVersionId: p.g.policyVersionId };
   const attempts: OfflineAttempt[] = [];
+  const mustKeep = mustKeepTexts(p.brief);
   let cur = toParts(draft.output, p.chosen >= 0 ? p.hooks[p.chosen].text : null);
-  let fixRounds = 0, trimmed = false, label = "draft";
-  for (let guard = 0; guard < 5; guard++) {
-    const review = await reviewParts(p.g.ctx, rec, { ...cur.parts, closeType: cur.closeType }, rc);
-    attempts.push({ label, parts: cur.parts, closeType: cur.closeType, words: review.words, seconds: review.seconds, review });
-    if (!review.mustFails.length) return { prepared: strip(p), record: rec, attempts, final: attempts[attempts.length - 1], state: "passed" };
+  let fixRounds = 0, trimmed = false, aimTrimmed = false, label = "draft";
+  // The passing attempt the aim trim started from, while the next review is of that trim.
+  let aimFrom: OfflineAttempt | null = null;
+  for (let guard = 0; guard < 7; guard++) {
+    const review = await reviewParts(p.g.ctx, rec, { ...cur.parts, closeType: cur.closeType }, rc, { callText: p.g.callText });
+    const attempt: OfflineAttempt = { label, parts: cur.parts, closeType: cur.closeType, words: review.words, seconds: review.seconds, review };
+    attempts.push(attempt);
     // The same order as the automatic check on the version trail (scriptJudge.ts).
-    const next = nextWriterStep({ mustFails: review.mustFails, words: review.words, fixRounds, trimmed });
-    if (next === "flag") break;
+    const next = nextWriterStep({ mustFails: review.mustFails, words: review.words, fixRounds, trimmed, aimTrimmed, isAimTrim: !!aimFrom });
+    if (next === "revert" && aimFrom) return { prepared: strip(p), record: rec, attempts, final: { ...aimFrom, note: keptLongerNote(aimFrom.label, aimFrom.words) }, state: "passed", keptLonger: true };
+    if (next === "pass") return { prepared: strip(p), record: rec, attempts, final: attempt, state: "passed", keptLonger: false };
+    if (next === "flag" || next === "revert") break;
     let instruction: string, who: "review" | "trim";
-    if (next === "trim") { instruction = trimInstruction(review.words); who = "trim"; trimmed = true; label = "trim"; }
-    else { instruction = writerFixInstruction({ checks: review.checks, hard: review.hard, fixInstruction: review.fixInstruction, words: review.words }); who = "review"; fixRounds++; label = `fix ${fixRounds}`; }
+    aimFrom = null;
+    if (next === "aim-trim") { instruction = trimInstruction(review.words, mustKeep); who = "trim"; aimTrimmed = true; aimFrom = attempt; label = "trim to aim"; }
+    else if (next === "trim") { instruction = trimInstruction(review.words, mustKeep); who = "trim"; trimmed = true; label = "trim"; }
+    else { instruction = writerFixInstruction({ checks: review.checks, hard: review.hard, fixInstruction: review.fixInstruction, words: review.words }, mustKeep); who = "review"; fixRounds++; label = `fix ${fixRounds}`; }
     const body = spokenTextOf(cur.parts);
     const step = buildReviseWriterPrompt(p.g.ctx, p.brief, p.passages, { versionNo: attempts.length, body }, instruction, { who });
     const revised = await runWriterStep<DraftOut>("revise", step, rc);
     cur = toParts(revised.output, null);
   }
   const best = attempts.reduce((a, b) => (score(b) < score(a) ? b : a), attempts[0]);
-  return { prepared: strip(p), record: rec, attempts, final: best, state: "flagged" };
+  return { prepared: strip(p), record: rec, attempts, final: best, state: "flagged", keptLonger: false };
 }
 
 const score = (a: OfflineAttempt) => (a.review ? a.review.mustFails.length * 100 + a.review.checks.filter((c) => !c.pass).length : 999);

@@ -10,7 +10,7 @@ import { assembleInterviewInputs } from "@/lib/contentInterview";
 import { createScriptVersion, ensureScriptVersioned, pointsFromJson, pillarNameOf, type VersionParts } from "@/lib/contentScripts";
 import { factsForPrompt, factLines, confidentialFilter, CONFIDENTIAL_RE, CONFIDENTIAL_PHRASE_RE, type FactCategory } from "@/lib/clientFacts";
 import { CONTENT_RULES } from "@/lib/contentPipeline";
-import { pendingJudge } from "@/lib/scriptJudgeRecord";
+import { pendingJudge, readJudge } from "@/lib/scriptJudgeRecord";
 import {
   buildScriptPrompt, buildTopicBankPrompt, buildStrategyPrompt, buildStrategyRevisionPrompt, scriptFromGeneratorOutput, validateNewScript, validateTopicBank, renderStrategy, policyFrameworkSection, isFrameworkSection, canonicalFrameworkSectionText,
   GENERATION_POLICY, GENERATION_POLICY_VERSION, SPEAKER_ATTRIBUTION_RULE, NO_INVENTION_RULE, makeTopic, normalizeTitle, policyStamp, videoStyleFromOverrides, titleSimilarity, NEAR_DUPLICATE_THRESHOLD,
@@ -590,9 +590,11 @@ export type ReviseScriptOpts = {
   unattended?: boolean;
   /**
    * Oct 14 2026: an automatic fix round (scriptJudge.ts) — written as the draft's own next version (source AI, same author), judged again.
-   * Oct 22 2026, the new writer: `trim` = this is the length trim pass; `trimmed` = an earlier version already had it (carried forward).
+   * Oct 22 2026, the new writer: `trim` = this is a length trim pass ("cap": to the 110 cap, true means the same;
+   * "aim", v2.1: the one pass toward 75 to 80 of a passing draft, from version `aimTrimOf`); `trimmed` /
+   * `aimTrimmed` = an earlier version already had that trim (carried forward).
    */
-  autoFix?: { round: number; trim?: boolean; trimmed?: boolean } | null;
+  autoFix?: { round: number; trim?: boolean | "cap" | "aim"; trimmed?: boolean; aimTrimmed?: boolean; aimTrimOf?: string | null } | null;
   /** Oct 21 2026 (audit H1): a sweep's clock (ms epoch); the model call ends by it. */
   deadline?: number | null;
 };
@@ -633,11 +635,15 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   // "Apply with AI"). Everything else revises exactly as before.
   const w = skit ? null : await import("@/lib/scriptWriter/pipeline");
   const writerRec = w ? await w.latestWriterRecord(scriptId, baseId) : null;
+  // Oct 22 2026 (v2.1): a person's "Fix with AI" sends a length trim (rules.trimInstruction). On a script
+  // the new writer drafted it is reviewed straight after, and undone when it dropped a must-keep point.
+  const { isLengthTrimInstruction } = await import("@/lib/scriptWriter/rules");
+  const personTrim = !autoFix && !!writerRec && isLengthTrimInstruction(instructions);
   let raw: GeneratedScriptJson;
   let runId: string;
   let writerOut: import("@/lib/scriptWriter/prompts").DraftOut | null = null;
   if (w && writerRec) {
-    const who = autoFix ? (autoFix.trim ? "trim" : "review") : source === "CLIENT_REQUEST" ? "client" : "person";
+    const who = autoFix ? (autoFix.trim ? "trim" : "review") : personTrim ? "trim" : source === "CLIENT_REQUEST" ? "client" : "person";
     const step = await w.writerRevisePrompt(s, writerRec, { versionNo: base.versionNo, body: base.body }, instructions, { lockedLabels: locks.map((k) => LOCKABLE_SECTION_LABEL[k]), who });
     const r = await w.runWriterStep<import("@/lib/scriptWriter/prompts").DraftOut>("revise", step, {
       requestedBy, unattended: opts.unattended ?? false, deadline: opts.deadline ?? null, scope: { scriptId, basedOnVersionId: baseId, ...(autoFix ? { autoFixRound: autoFix.round, ...(autoFix.trim ? { trim: true } : {}) } : {}) },
@@ -687,17 +693,25 @@ export async function reviseScript(scriptId: string, instructions: string, reque
   const changed = (["hook", "points", "close", "captionCta"] as const).filter((k) => JSON.stringify(k === "points" ? parts.points.map((p) => p.text) : parts[k] ?? null) !== JSON.stringify(k === "points" ? pointsFromJson(base.pointsJson).map((p) => p.text) : base[k] ?? null));
   // The version's bag (a plain variable: it may carry the writer's record):
   // the instruction in full, and for the new writer its brief carried forward
-  // with this version's rationale, and the review owed on an automatic round.
+  // with this version's rationale, and the review owed on an automatic round
+  // or after a person's length trim.
+  const baseJudge = readJudge(base.validationJson);
+  const aimTrim = autoFix?.trim === "aim" || personTrim;
+  const owedJudge = autoFix
+    ? pendingJudge(autoFix.round, { writer: true, trimmed: autoFix.trim === true || autoFix.trim === "cap" || !!autoFix.trimmed, aimTrimmed: aimTrim || !!autoFix.aimTrimmed, aimTrimOf: autoFix.trim === "aim" ? autoFix.aimTrimOf ?? baseId : null })
+    : personTrim ? pendingJudge(baseJudge?.fixRounds ?? 0, { writer: true, trimmed: !!baseJudge?.trimmed, aimTrimmed: true, aimTrimOf: baseId }) : null;
   const bag = w && writerRec
     ? {
         ok: validation.ok, findings: validation.findings, angle: null, instruction: instructions,
         closeType: writerOut?.closeType === "callback" ? "callback" : writerOut?.closeType === "cta" ? "cta" : writerRec.brief.closeType,
         writer: { ...writerRec, rationale: w.rationaleOf(writerOut) ?? writerRec.rationale },
-        ...(autoFix ? { judge: pendingJudge(autoFix.round, { writer: true, trimmed: !!(autoFix.trim || autoFix.trimmed) }) } : {}),
+        ...(owedJudge ? { judge: owedJudge } : {}),
       }
     : { ...(autoFix ? draftValidation(validation, angle, autoFix.round) : { ok: validation.ok, findings: validation.findings, angle }), instruction: instructions };
-  const summary = autoFix?.trim
-    ? `Trimmed by the creative review to the ${(await import("@/lib/scriptWriter/rules")).WRITER_LENGTH.cap}-word cap`
+  const { WRITER_LENGTH } = await import("@/lib/scriptWriter/rules");
+  const summary = aimTrim
+    ? `Trimmed toward ${WRITER_LENGTH.trimTo[0]} to ${WRITER_LENGTH.trimTo[1]} words${personTrim ? "" : " by the creative review"}, must-keep points kept; reviewed again`
+    : autoFix?.trim ? `Trimmed by the creative review to the ${WRITER_LENGTH.cap}-word cap`
     : autoFix ? `Auto-fixed after the ${writerRec ? "creative review" : "automatic check"} (round ${autoFix.round}): ${instructions.trim().slice(0, 160)}` : `${source === "CLIENT_REQUEST" ? "Client suggestion applied" : "Revised"}: ${instructions.trim().slice(0, 160)}`;
   const r = await createScriptVersion({
     scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts, source: autoFix ? "AI" : source, basedOnVersionId: baseId, regeneratedSections: changed, createdBy: requestedBy, status: "INTERNAL_REVIEW",
@@ -705,6 +719,8 @@ export async function reviseScript(scriptId: string, instructions: string, reque
     validation: bag, gaps, changeSummary: summary,
   });
   await setRunOutputRef(runId, `ContentScriptVersion:${r.versionId}`);
+  // A person's length trim is reviewed now, and undone if it lost a must-keep point (never on a shared script: autoCheckScript refuses those).
+  if (personTrim) await checkDraft(scriptId, { requestedBy, unattended: opts.unattended ?? false, deadline: opts.deadline ?? null });
   return { versionId: r.versionId, versionNo: r.versionNo, scriptId };
 }
 
