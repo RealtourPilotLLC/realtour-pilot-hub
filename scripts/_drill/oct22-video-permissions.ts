@@ -36,7 +36,7 @@ async function main() {
     const { establishSession } = await import("@/lib/auth/session");
     const actions = await import("@/app/review/actions");
 
-    const tm = (name: string, role: string, extra: Record<string, unknown> = {}) => prisma.teamMember.create({ data: { name, email: `${name.split(" ")[0].toLowerCase()}-vp@drill.invalid`, role, active: true, ...extra } });
+    const tm = (name: string, role: "ADMIN" | "PHOTOGRAPHER" | "EDITOR", extra: Record<string, unknown> = {}) => prisma.teamMember.create({ data: { name, email: `${name.split(" ")[0].toLowerCase()}-vp@drill.invalid`, role, active: true, ...extra } });
     const login = (name: string, role: string, teamMemberId: string | null, editorKey: string | null = null) =>
       prisma.appUser.create({ data: { name, email: `${name.split(" ")[0].toLowerCase()}-vp@drill.invalid`, role, status: "ACTIVE", teamMemberId, editorKey } });
     const jordan = await login("Jordan Drill", "OWNER", (await tm("Jordan Drill", "ADMIN")).id);
