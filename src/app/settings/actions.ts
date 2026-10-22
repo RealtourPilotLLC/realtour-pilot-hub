@@ -486,11 +486,25 @@ export async function loadCreativeApproverCandidates(): Promise<
 // stale tab) can put an out-of-range number in front of an API that charges
 // per render. The clamped result is returned so the form can re-seed from what
 // was actually stored rather than from what was typed.
+/** The limits that bound the Topaz bill (auto top-up makes credits real
+ *  money): the owner's alone (audit L6 / P-L1, Oct 22 2026). Kyle keeps the
+ *  rest of the card, and Retry stays his (ops/renderActions.ts). */
+const TOPAZ_SPEND_FIELDS = ["maxCreditsPerVideo", "maxCreditsPerMonth", "maxRendersPerDay", "maxRendersPerMonth", "minBalanceCredits"] as const;
+
 export async function saveTopazRules(
   input: TopazSettings,
 ): Promise<{ ok: boolean; message: string; settings?: TopazSettings }> {
   try {
     const me = await requireSettingsActor();
+    // An admin's save keeps the owner's spending limits exactly as stored. A
+    // changed limit from anyone but the owner is refused in words, never
+    // quietly dropped (sessionless local dev acts as the owner, like every guard).
+    if (me && me.role !== "OWNER") {
+      const current = await topazSettings();
+      const changed = TOPAZ_SPEND_FIELDS.filter((k) => input?.[k] !== undefined && Number(input[k]) !== current[k]);
+      if (changed.length) return { ok: false, message: "Only Jordan changes the spending limits. Everything else on this card can be saved; put the limits back and save again." };
+      input = { ...input, ...Object.fromEntries(TOPAZ_SPEND_FIELDS.map((k) => [k, current[k]])) } as TopazSettings;
+    }
     const saved = await saveTopazSettings(input, me?.email ?? null);
     revalidatePath("/settings");
     revalidatePath("/connections");

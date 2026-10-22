@@ -88,6 +88,16 @@ export default async function CutReviewPage({
       ? await (await import("@/lib/shoot")).photographerOwnsShoot(id, me.teamMemberId).catch(() => false)
       : false;
   if (!ownerDesk && !shotThis) redirect(homeFor(me?.role));
+  // THE CLIENT'S WORDS, MONEY-SCRUBBED (audit M6 / P-M3, Oct 22 2026): the same
+  // scrub /edit/<id> gives an editor (lib/text stripMoneySentences), for
+  // everyone but a live owner or Kyle. The creative manager and a seated
+  // photographer read client wording here, and clients do talk price. Applied
+  // to every client sentence this page prints: this round's ask, the portal
+  // notes, the fixes to check and the creative reviews.
+  const canSeeRaw = me?.role === "OWNER" || me?.role === "ADMIN";
+  const { stripMoneySentences } = await import("@/lib/text");
+  const { HELD_BACK_NOTE } = await import("@/lib/clientDecisions");
+  const clientWords = (s: string) => (canSeeRaw ? s : stripMoneySentences(s) || HELD_BACK_NOTE);
 
   // The photographer's lens is applied in the query, not in the markup: the
   // editor brief, the reel recipe and every lane that is not their own never
@@ -100,7 +110,7 @@ export default async function CutReviewPage({
   // replies sit under it, and the notes are grouped by the cut they are on.
   const clientNoteGroups = shotThis
     ? []
-    : await import("@/lib/clientDecisions").then((m) => m.clientNotesForReviewRoom(id, 30)).catch(() => []);
+    : await import("@/lib/clientDecisions").then((m) => m.clientNotesForReviewRoom(id, 30, { scrub: !canSeeRaw })).catch(() => []);
   const clientNoteCount = clientNoteGroups.reduce((n, g) => n + g.notes.length, 0);
   // The client's own words to the office are not the photographer's to read.
   if (!w) notFound();
@@ -153,8 +163,8 @@ export default async function CutReviewPage({
   const fixesToCheck =
     active && !shotThis && active.status === "PENDING"
       ? await import("@/lib/revisionIssues")
-          .then((m) => m.issuesForProject(w.projectId, { scrub: false }))
-          .then((all) => all.filter((i) => i.state === "ADDRESSED" && i.addressedInSubmissionId === active.id).map((i) => ({ id: i.id, text: (i.summary ?? i.text).slice(0, 200) })))
+          .then((m) => m.issuesForProject(w.projectId, { scrub: !canSeeRaw }))
+          .then((all) => all.filter((i) => i.state === "ADDRESSED" && i.addressedInSubmissionId === active.id).map((i) => ({ id: i.id, text: clientWords(i.summary ?? i.text).slice(0, 200) })))
           .catch(() => [])
       : [];
   const takeBack = active ? (cutFlags.find((f) => f.submissionId === active.id) ?? null) : null;
@@ -174,7 +184,9 @@ export default async function CutReviewPage({
         }).catch(() => null)
       : null;
   const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
-  const clientAsk = active
+  // Never read for a seated photographer (audit P-M3): the client's ask is the
+  // office's and the editor's, and the box that prints it is the desk's.
+  const clientAsk = active && !shotThis
     ? await prisma.smartTask.findFirst({
         where: videoLaneRevisionWhere(w.projectId),
         orderBy: { createdAt: "desc" },
@@ -213,7 +225,14 @@ export default async function CutReviewPage({
   // away beside the video (JudgeAgainst), folded.
   const { isCreativeApprover } = await import("@/lib/reviewChecklist");
   const creativeApprover = !shotThis && (await isCreativeApprover(me, { authEnforced: authEnforced() }).catch(() => false));
-  const creativeReviews = shotThis ? [] : await import("@/lib/creativeReview").then((m) => m.openCreativeReviews(w.projectId)).catch(() => []);
+  const creativeReviews = (shotThis ? [] : await import("@/lib/creativeReview").then((m) => m.openCreativeReviews(w.projectId)).catch(() => [])).map((r) =>
+    canSeeRaw ? r : {
+      ...r,
+      originalText: clientWords(r.originalText),
+      questions: r.questions.map(clientWords),
+      held: r.held.map((h) => ({ ...h, ask: clientWords(h.ask), quote: h.quote ? clientWords(h.quote) : null })),
+    },
+  );
   // "BEFORE YOU APPROVE" (Oct 19 2026): ONE box above the player with what
   // the client asked for this round (the revision ask) and the job's own
   // checks (components/jobs/BeforeYouSend, lib/jobChecks): what was flagged
@@ -255,7 +274,7 @@ export default async function CutReviewPage({
   }
 
   // The box's parts: this round's ask (until the cut is approved) and the job's own checks.
-  const roundAsk = !!clientAsk && !!active && active.status !== "APPROVED";
+  const roundAsk = !shotThis && !!clientAsk && !!active && active.status !== "APPROVED";
   const boxHasChecks = !!jobBox && (jobBox.data.flags.length > 0 || jobBox.data.requests.length > 0 || jobBox.data.notes.length > 0);
   const boxTitle = active?.status === "APPROVED" ? "Before you send" : "Before you approve";
 
@@ -372,7 +391,7 @@ export default async function CutReviewPage({
                       </p>
                       {askedByLine && <p className="text-xs text-muted">{askedByLine}</p>}
                       {(clientAsk.description ?? clientAsk.summary) && (
-                        <p className="mt-1 whitespace-pre-wrap text-foreground/85">{plainAsk(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
+                        <p className="mt-1 whitespace-pre-wrap text-foreground/85">{clientWords(plainAsk(clientAsk.description ?? clientAsk.summary ?? "")).slice(0, 600)}</p>
                       )}
                     </div>
                   )}
