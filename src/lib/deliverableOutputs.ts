@@ -8,6 +8,7 @@ import { stripMoneySentences } from "@/lib/text";
 import { shownVersionFormat, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { etDateTime, etMonthDay } from "@/lib/datetime";
 import { perVideoInstructions, type PerVideoRow } from "@/lib/perVideoInstructions";
+import { SECOND_SHOOT_KEY, isWaitingHold, readSecondShoot, waitingLine, type SecondShootHold } from "@/lib/secondShootCore";
 
 /** Rounds that are not a version of anything — the same list reviewCuts keeps. */
 const NOT_A_ROUND = ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] as const;
@@ -87,8 +88,10 @@ export type EnsureResult = {
 export async function planOutputsForProject(projectId: string): Promise<OutputPlan> {
   // ONE call, with the waived slots included, so the live set and the waived
   // set come out of the same arithmetic rather than two passes that could
-  // disagree about which row the office's total landed on.
-  const all = await cutSlots(projectId, { includeWaived: true });
+  // disagree about which row the office's total landed on. A video waiting on
+  // a second shoot (Oct 22 2026) is still owed and keeps its row: it is a live
+  // slot here, never retired.
+  const all = await cutSlots(projectId, { includeWaived: true, includeWaiting: true });
   if (all.length === 0) return { projectId, slots: [], waived: [] };
   const rows = await prisma.deliverable.findMany({
     where: { id: { in: [...new Set(all.map((s) => s.deliverableId))] } },
@@ -404,6 +407,9 @@ export type OutputRowView = {
   topicTitle: string | null;
   /** The photographer's note to the editor about this video. */
   filmingNote: string | null;
+  /** Oct 22 2026 (lib/secondShootCore): the video is WAITING ON A SECOND
+   *  SHOOT — no due date, no editor's work yet. Null otherwise. */
+  waitingOnShoot: SecondShootHold | null;
 };
 
 /** "v3 " when there is more than one version, "" otherwise. */
@@ -468,6 +474,7 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       select: {
         id: true, deliverableId: true, slot: true, title: true, ownerName: true, ownerKey: true, promisedAt: true, targetAt: true,
         waivedAt: true, removedFromOrderAt: true, deliveredAt: true, deliveredVia: true, topicId: true, filmingNote: true,
+        briefJson: true, // Oct 22 2026: the second-shoot hold rides in it (secondShootCore)
       },
     }),
     prisma.reviewSubmission.findMany({
@@ -487,7 +494,8 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
   // a topic renamed after filming renames its video everywhere this is read.
   const topicIds = [...new Set(outputs.map((o) => o.topicId).filter((x): x is string => !!x))];
   const [slots, planning, topics] = await Promise.all([
-    cutSlots(projectId, { includeWaived: true }).catch(() => []),
+    // A video waiting on a second shoot keeps its name and its number here.
+    cutSlots(projectId, { includeWaived: true, includeWaiting: true }).catch(() => []),
     jobPlanningFor(projectId),
     topicIds.length
       ? prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, title: true } }).catch(() => [])
@@ -560,7 +568,12 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
                     ? `${priorBit}no replacement uploaded yet`
                     : "No cut uploaded yet";
     const owner = ownerForOutput(o, planning, o.deliverableId);
-    const isLive = !o.waivedAt && !o.removedFromOrderAt;
+    // WAITING ON A SECOND SHOOT (Oct 22 2026): owed, but not due and nobody's
+    // work until its footage is in. It says so, with the office's note, and
+    // carries no date (the job's date belongs to the other videos).
+    const hold = readSecondShoot(o.briefJson);
+    const waitingOnShoot = isWaitingHold(hold) && !o.waivedAt && !o.removedFromOrderAt ? hold : null;
+    const isLive = !o.waivedAt && !o.removedFromOrderAt && !waitingOnShoot;
     const topicTitle = o.topicId ? topicTitleOf.get(o.topicId)?.trim() || null : null;
     return {
       id: o.id,
@@ -577,8 +590,10 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       // missed one.
       // A video of another tier than the job's (the standard reel on a premium
       // job, Oct 22 2026) is due on its OWN turnaround, not the premium one.
-      promisedAt: isLive ? o.promisedAt ?? planning.ownDueByDeliverable.get(o.deliverableId) ?? planning.promisedAt : o.promisedAt,
-      targetAt: isLive ? o.targetAt ?? (planning.ownDueByDeliverable.has(o.deliverableId) ? null : planning.targetAt) : o.targetAt,
+      // A video waiting on a second shoot has no date at all until it is
+      // released; then its own clock (promiseSource "second-shoot") is its date.
+      promisedAt: waitingOnShoot ? null : isLive ? o.promisedAt ?? planning.ownDueByDeliverable.get(o.deliverableId) ?? planning.promisedAt : o.promisedAt,
+      targetAt: waitingOnShoot ? null : isLive ? o.targetAt ?? (planning.ownDueByDeliverable.has(o.deliverableId) ? null : planning.targetAt) : o.targetAt,
       promiseFromJob: isLive && !o.promisedAt && !planning.ownDueByDeliverable.has(o.deliverableId) && planning.promisedAt !== null,
       state,
       round: latest?.round ?? null,
@@ -586,10 +601,11 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       deliveredAt: everSentAt,
       priorDelivery: prior,
       awaitingSend: state === "approved",
-      detail,
+      detail: waitingOnShoot ? waitingLine(waitingOnShoot, { expectedWords: (iso) => etMonthDay(iso) }) : detail,
       topicId: o.topicId,
       topicTitle,
       filmingNote: o.filmingNote,
+      waitingOnShoot,
     };
   });
 }
@@ -1378,7 +1394,12 @@ export async function saveOutputBrief(input: {
   }
   const version = (curVersion ?? 0) + 1;
   const actor = (input.actor || "the office").trim().slice(0, 120);
-  const json = JSON.stringify({ version, sections: orderedSections(next), brandAssetVersionId, ...(brandChoice === "none" ? { brandChoice } : {}) });
+  // The second-shoot hold rides in the same JSON (Oct 22 2026, secondShootCore):
+  // a brief save carries it across untouched.
+  const carried = (() => {
+    try { return row.briefJson ? (JSON.parse(row.briefJson) as Record<string, unknown>)[SECOND_SHOOT_KEY] : undefined; } catch { return undefined; }
+  })();
+  const json = JSON.stringify({ version, sections: orderedSections(next), brandAssetVersionId, ...(brandChoice === "none" ? { brandChoice } : {}), ...(carried ? { [SECOND_SHOOT_KEY]: carried } : {}) });
   // Compare-and-set on what was READ: a save that raced this one wins, and
   // this one is refused rather than overwriting it.
   const res = await prisma.deliverableOutput.updateMany({
@@ -1394,7 +1415,7 @@ export async function saveOutputBrief(input: {
       version: now?.version ?? null,
     };
   }
-  const slotLabel = await cutSlots(row.projectId)
+  const slotLabel = await cutSlots(row.projectId, { includeWaiting: true })
     .then((ss) => ss.find((x) => x.deliverableId === row.deliverableId && x.slot === row.slot)?.label ?? null)
     .catch(() => null);
   const name = row.title?.trim() || slotLabel || `video ${row.slot}`;
@@ -1504,6 +1525,8 @@ export type OutputBrief = {
   targetAtISO: string | null;
   promiseFromJob: boolean;
   state: OutputRowView["state"];
+  /** Oct 22 2026: waiting on a second shoot (no date, not the editor's yet); null otherwise */
+  waitingOnShoot: SecondShootHold | null;
 };
 
 /**
@@ -1524,7 +1547,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       where: { id: { in: rows.map((r) => r.id) } },
       select: { id: true, briefJson: true, briefUpdatedAt: true, briefUpdatedBy: true },
     }),
-    cutSlots(projectId).catch(() => [] as CutSlot[]),
+    cutSlots(projectId, { includeWaiting: true }).catch(() => [] as CutSlot[]),
     filmingBriefFor(projectId).catch(() => null),
     prisma.project.findUnique({ where: { id: projectId }, select: { videoInstructions: true, clientId: true } }),
     prisma.reviewSubmission.findMany({
@@ -1628,6 +1651,7 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
       targetAtISO: o.targetAt?.toISOString() ?? null,
       promiseFromJob: o.promiseFromJob,
       state: o.state,
+      waitingOnShoot: o.waitingOnShoot,
     };
   });
 }
@@ -1640,7 +1664,9 @@ export async function outputBriefsFor(projectId: string, opts: { scrub?: boolean
 // ===========================================================================
 export async function videoInstructionsFor(projectId: string): Promise<PerVideoRow[]> {
   const [slots, project, outputs] = await Promise.all([
-    cutSlots(projectId).catch(() => [] as CutSlot[]),
+    // A video waiting on a second shoot keeps its number and its instructions
+    // box (flagged `waiting`); the completeness checks pass it by (Oct 22 2026).
+    cutSlots(projectId, { includeWaiting: true }).catch(() => [] as CutSlot[]),
     prisma.project.findUnique({
       where: { id: projectId },
       select: {
