@@ -6,6 +6,7 @@ import { actualFolderPaths } from "@/lib/dropboxFolders";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { photoDeliverySettings } from "./settings";
+import { deliveryDueFrom, sameDayTypes } from "@/lib/tasks";
 import { logJobEvent, setStage, type JobStage } from "./jobState";
 
 // ---------------------------------------------------------------------------
@@ -236,15 +237,61 @@ export function galleryFingerprint(entries: GalleryEntry[]): string {
 }
 
 /**
- * The photo deadline (Oct 22 2026, 615 Cliff Ln: a split job's board read
- * "Late by 8 days" because the deadline stayed the first visit's). The
- * promised time counts only while it is after the latest visit that has
- * started; once a later visit has started, the project's own due date (Aryeo's,
- * set for the order as a whole) is the deadline. Pure.
+ * THE PHOTO DEADLINE (Oct 22 2026). A photo job is due on the PHOTOS
+ * turnaround (next morning, or the same day when the order bought a same-day
+ * photo add-on) counted from the visit whose photos it is delivering, never
+ * from the order's slowest item. 615 Cliff Ln read "Late by 8 days" and then
+ * "5 days left" because the job carried the order's promise and then its
+ * delivery date, both dated by the Social Influencer reel; Jordan: "they are
+ * due today", and "split jobs should be treated as a normal SLA for each
+ * appointment and depend on what was uploaded to Dropbox / submitted in the
+ * upload portal". Pure: the caller picks the visit (photoVisitFor).
  */
-export function photoDueFor(p: { promisedDueAt: Date | null; deliveryDue: Date | null }, latestVisitStart: Date | null): Date | null {
-  const promised = p.promisedDueAt && (!latestVisitStart || p.promisedDueAt > latestVisitStart) ? p.promisedDueAt : null;
-  return promised ?? p.deliveryDue ?? p.promisedDueAt ?? null;
+export function photoDueFor(visitStart: Date | null, sameDay: boolean): Date | null {
+  return visitStart ? deliveryDueFrom(visitStart, "PHOTOS", { sameDay }) : null;
+}
+
+/**
+ * The visit whose photos the job is delivering: the latest visit that has
+ * started AND has photo raws uploaded on or after its ET day (an intake batch
+ * that saw them; a batch whose files carry upload times counts only when one
+ * of them is on or after that day, so the earlier visit's files never move the
+ * clock); else the earliest visit; else the shoot date. A later visit that
+ * uploaded no photos (a video-only return) leaves the photo clock where it was.
+ */
+export async function photoVisitFor(
+  projectId: string,
+  appointments: { startAt: Date | null; status: string | null }[],
+  shootDate: Date | null,
+  now: Date,
+): Promise<Date | null> {
+  const visits = appointments
+    .filter((a) => a.startAt && a.startAt <= now && !/cancel/i.test(a.status ?? ""))
+    .map((a) => a.startAt!)
+    .sort((a, b) => a.getTime() - b.getTime());
+  if (!visits.length) return shootDate && shootDate <= now ? shootDate : null;
+  if (visits.length === 1) return visits[0];
+  const { etDayStartUtc } = await import("@/lib/datetime");
+  const batches = await prisma.photoIntakeBatch.findMany({ where: { projectId }, select: { state: true, seenAt: true, filesJson: true } });
+  const uploadedSince = (floor: Date) =>
+    batches.some((b) => {
+      let times: number[] = [];
+      try {
+        times = (JSON.parse(b.filesJson ?? "[]") as { uploadedAt?: string | null }[]).map((f) => (f.uploadedAt ? Date.parse(f.uploadedAt) : NaN)).filter((t) => Number.isFinite(t));
+      } catch { /* no file list: fall back to when the batch was seen */ }
+      return times.length ? times.some((t) => t >= floor.getTime()) : b.state !== "FAILED" && b.seenAt >= floor;
+    });
+  for (let i = visits.length - 1; i > 0; i--) if (uploadedSince(etDayStartUtc(visits[i]))) return visits[i];
+  return visits[0];
+}
+
+/** Whether this order bought same-day photos (the add-on outranks next morning). */
+async function sameDayPhotos(projectId: string): Promise<boolean> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { deliverables: { where: { removedFromOrderAt: null, waivedAt: null }, select: { type: true, label: true, productTitle: true } }, orderItems: { select: { title: true, isCanceled: true } } },
+  }).catch(() => null);
+  return !!p && sameDayTypes(p.deliverables, p.orderItems).has("PHOTOS");
 }
 
 /** The start of the latest appointment that has started (cancelled ones never count). Pure. */
@@ -281,7 +328,7 @@ export async function openNewJobs(now = new Date(), max = 40): Promise<number> {
         data: {
           projectId: p.id,
           stage: "EDITING",
-          slaDueAt: photoDueFor(p, latestStartedVisit(p.appointments, now).start),
+          slaDueAt: photoDueFor(await photoVisitFor(p.id, p.appointments, p.shootDate, now), await sameDayPhotos(p.id)),
           expectedJson: JSON.stringify(await expectedFor(p.id)),
           nextCheckAt: now,
         },
@@ -433,11 +480,17 @@ export async function syncJobFinals(jobId: string, now = new Date()): Promise<{ 
     autohdrGallery(job.projectId),
     floor ? autohdrGallery(job.projectId, floor) : Promise.resolve([] as GalleryEntry[]),
   ]);
-  // The deadline follows the latest visit (never a past visit's promise).
-  const due = photoDueFor(project, visits.start);
-  if (due && visits.start && (!job.slaDueAt || job.slaDueAt < visits.start) && job.slaDueAt?.getTime() !== due.getTime()) {
-    await prisma.photoJob.update({ where: { id: jobId }, data: { slaDueAt: due } });
-    await logJobEvent(jobId, "sync", `deadline moved to the latest visit's: ${due.toISOString()}${job.slaDueAt ? ` (was ${job.slaDueAt.toISOString()}, an earlier visit's)` : ""}`);
+  // The photo deadline: the photos turnaround from the visit whose photos
+  // these are (photoDueFor). Re-read every pass while the job is open; a
+  // delivered job keeps the deadline it was delivered against.
+  if (job.stage !== "DELIVERED") {
+    const visit = await photoVisitFor(job.projectId, project.appointments, project.shootDate, now);
+    const due = photoDueFor(visit, await sameDayPhotos(job.projectId));
+    if (due && job.slaDueAt?.getTime() !== due.getTime()) {
+      await prisma.photoJob.update({ where: { id: jobId }, data: { slaDueAt: due } });
+      const { etDateTime } = await import("@/lib/datetime");
+      await logJobEvent(jobId, "sync", `photo deadline set to ${etDateTime(due)} ET: the photos turnaround from the ${etDateTime(visit)} visit${job.slaDueAt ? ` (was ${etDateTime(job.slaDueAt)})` : ""}`);
+    }
   }
   // WAITING ON THE LATEST VISIT (Oct 22 2026, Jordan on 615 Cliff Ln: "it
   // says delivered… we didn't even deliver the interior photos because only
