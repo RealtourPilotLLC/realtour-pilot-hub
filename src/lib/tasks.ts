@@ -3113,9 +3113,11 @@ async function announceReady(
   const routedKey = key === "kim" || key === "john" ? key : null;
   // Their brief — the one page the EDITOR role can act from.
   if (routedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${routedKey}`, href: `/edit/${projectId}` });
+  // Oct 22 2026: the editor hears WHEN it is due, in their own time too (lib/editorDue).
+  const due = await (await import("@/lib/editorDue")).editDueWords(projectId, routedKey).catch(() => "");
   const { bridged } = await notifyInApp({
     kind: "raws_landed", // the editors' "job pings" switch, as it always was
-    title: opts.combined ? `Raws in — ${street}: ready for editing` : `Ready for editing — ${street}`,
+    title: `${opts.combined ? `Raws in — ${street}: ready for editing` : `Ready for editing — ${street}`}${due ? `, ${due}` : ""}`,
     href: "/editing",
     targets,
     dedupeKey: since ? `ready-${projectId}-h${since.getTime()}` : `ready-${projectId}`,

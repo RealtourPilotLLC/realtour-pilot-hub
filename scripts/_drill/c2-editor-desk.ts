@@ -411,8 +411,8 @@ async function main() {
       t("idle").includes("Current work") && t("idle").includes("No job started in the hub.") && buttonWords("idle").includes("Start a job") && jobButtons("idle") === 0, t("idle").slice(0, 120));
     c.ok("…one big button per job, the first 5, then \"Show all 7\"", jobButtons("idleOpen") === 5 && t("idleOpen").includes("Show all 7"), `${jobButtons("idle")} job buttons`);
     c.ok("…107 E first, with its due day and its per-video line",
-      t("idleOpen").indexOf("107 E Old Baltimore Pike") < t("idleOpen").indexOf("22 Switch Ave") && t("idleOpen").includes("Due Sep 29") && t("idleOpen").includes("2 approved · 2 more to edit"));
-    c.ok("…a late job says \"Late · was due Sep 27\" in red", t("idleOpen").includes("Late · was due Sep 27") && /text-danger[^>]*>Late · was due Sep 27/.test(r.idleOpen ?? ""));
+      t("idleOpen").indexOf("107 E Old Baltimore Pike") < t("idleOpen").indexOf("22 Switch Ave") && /Due [A-Z][a-z]{2}, Sep (29|30), [^·]*your time/.test(t("idleOpen")) && t("idleOpen").includes("2 approved · 2 more to edit"), t("idleOpen").slice(0, 400)); // Oct 22 2026: the day and hour, in their time
+    c.ok("…a late job says \"Late · was due <day, hour> your time\" in red", /Late · was due [A-Z][a-z]{2}, Sep 2[78], [^<]*your time/.test(t("idleOpen")) && /text-danger[^>]*>Late · was due [A-Z][a-z]{2}, Sep 2[78]/.test(r.idleOpen ?? ""));
     c.ok("…a job they paused says \"Paused 12:10am your time\" and one with no date \"No due date\"", t("idleOpen").includes("Paused 12:10am your time") && t("idleOpen").includes("No due date"));
     c.ok("…no Pause button while on nothing", !buttonWords("idle").some((w) => /\bPause\b/.test(w)), buttonWords("idle").join(" | "));
     c.ok("…footer: \"Not editing right now? You don't need to press anything.\", How this works (4 lines), the office link",

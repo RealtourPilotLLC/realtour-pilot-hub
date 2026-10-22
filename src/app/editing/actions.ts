@@ -173,7 +173,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
             }
           : {
               kind: "edit_assigned",
-              title: `Reassigned to you — ${street}`,
+              title: `Reassigned to you — ${street}${await (await import("@/lib/editorDue")).editDueWords(projectId, key).then((w) => (w ? `, ${w}` : "")).catch(() => "")}`,
               body: "This edit was moved to your queue.",
               href: `/edit/${projectId}`,
               targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
@@ -564,7 +564,8 @@ export async function addToEditorQueue(
       body: `Added to the Editing Room — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
     },
   });
-  await notifyQueued("edit_assigned", `New edit — ${street}`);
+  const queuedDue = await (await import("@/lib/editorDue")).editDueWords(projectId, key).catch(() => "");
+  await notifyQueued("edit_assigned", `New edit — ${street}${queuedDue ? `, ${queuedDue}` : ""}`);
   return done(`${street} is in the queue — ${editorName} has it.`);
 }
 

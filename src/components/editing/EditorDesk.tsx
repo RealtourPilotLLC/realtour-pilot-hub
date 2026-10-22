@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowLeftRight, Loader2, Pause, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { etMonthDay } from "@/lib/datetime";
 import { confirmCurrentWorkAction, pauseEditingAction, startEditingAction } from "@/app/editing/workActions";
 import type { UnconfirmedClaim } from "@/lib/editorWork";
 import { HOW_START_WORKS, yourClock, type DeskJob } from "@/lib/editorDesk";
@@ -51,9 +50,13 @@ const newId = () =>
 
 type ActiveWork = { projectId: string; street: string; sinceISO: string | null; outputTitle: string | null };
 
-function dueWords(j: DeskJob): { text: string; late: boolean } {
+// Oct 22 2026 (Jordan: "it would be helpful for the editors to know when a
+// project is due"): the day AND the hour, in the editor's own time.
+function dueWords(j: DeskJob, tz: string): { text: string; late: boolean } {
   if (!j.dueISO) return { text: "No due date", late: false };
-  return j.late ? { text: `Late · was due ${etMonthDay(j.dueISO)}`, late: true } : { text: `Due ${etMonthDay(j.dueISO)}`, late: false };
+  const when = new Date(j.dueISO).toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).replace(":00", "");
+  const yours = tz === "America/New_York" ? `${when} ET` : `${when} your time`;
+  return j.late ? { text: `Late · was due ${yours}`, late: true } : { text: `Due ${yours}`, late: false };
 }
 
 export function EditorDesk({
@@ -133,7 +136,7 @@ export function EditorDesk({
   const jobButtons = (
     <div className="space-y-1.5">
       {shown.map((j) => {
-        const due = dueWords(j);
+        const due = dueWords(j, tz);
         const what = `${confirms(j) ? "confirm" : "start"}:${j.projectId}`;
         const second = [j.pausedSinceISO ? `Paused ${yourClock(j.pausedSinceISO, tz)}` : null, j.note].filter(Boolean).join(" · ");
         return (
