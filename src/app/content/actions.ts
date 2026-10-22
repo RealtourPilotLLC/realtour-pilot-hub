@@ -635,12 +635,11 @@ export async function replyToScriptRequestAction(suggestionId: string, body: str
 export async function dismissScriptSuggestion(suggestionId: string): Promise<Result> {
   try { await requireCreativeLead(); } catch (e) { return fail(e); }
   const me = await actor();
-  await prisma.scriptSuggestion.updateMany({
-    where: { id: suggestionId, status: "OPEN" },
-    data: { status: "DISMISSED", resolvedAt: new Date(), resolvedBy: me.email },
-  });
+  // Oct 22 2026: through the one dismiss, so the decision is on the record for the learning phase.
+  const { dismissScriptRequest } = await import("@/lib/scriptRequests");
+  const r = await dismissScriptRequest(suggestionId, { email: me.email, appUserId: me.id, name: me.name });
   revalidatePath("/content");
-  return { ok: true, message: "Dismissed." };
+  return r.ok ? { ok: true, message: "Dismissed." } : r;
 }
 
 // ---------------------------------------------------------------------------
