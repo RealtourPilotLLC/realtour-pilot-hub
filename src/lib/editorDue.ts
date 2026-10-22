@@ -15,15 +15,20 @@ import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 // override or a pinned promise: editOverrides.effectiveDue), worded in Eastern
 // time with the editor's own time beside it.
 //
-// ONE VIDEO DUE FOR EVERY SCREEN (Oct 22 2026, audit H1). The Video Review
-// Room's board (and the behind alert that reads it) dated a listing video by
-// the order line whose NAME had a video word in it, and "Social Influencer",
-// "Standard Package" and "Agent on Camera" have none — so those videos took
-// the job's earliest item instead (the next-day Zillow tour, the photos) and
-// read late the day after the shoot. videoDueOf is the date, stated once: it
-// reads the job's VIDEO DELIVERABLE ROWS through the SLA engine (the tier, the
-// visit that shot it, the office's editable promises), never a product name,
-// and the board, the ping and the brief all call it.
+// ONE VIDEO DUE FOR EVERY SCREEN (Oct 22 2026, audits H1 and H2). The Video
+// Review Room's board (and the behind alert that reads it) dated a listing
+// video by the order line whose NAME had a video word in it, and "Social
+// Influencer", "Standard Package" and "Agent on Camera" have none, so those
+// videos took the job's earliest item instead (the next-day Zillow tour, the
+// photos) and read late the day after the shoot. And the same edit showed up
+// to four different dates: the ping (the SLA engine), the editor's desk
+// (Project.deliveryDue), the edit card (the SLA minus a 12-hour buffer, from
+// the shoot date, capped by the pin) and the board (the order's earliest
+// item). videoDueOf is the date, stated once: it reads the job's VIDEO
+// DELIVERABLE ROWS through the SLA engine (the tier, the visit that shot it,
+// the office's editable promises), never a product name, and the board, the
+// ping, the desk, the edit card and the brief all call it. The 12 hours the
+// edit card used to take off is the AIM (aimAt), shown in words, never the due.
 // ---------------------------------------------------------------------------
 
 const ET = "America/New_York";
@@ -52,13 +57,19 @@ export type VideoDue = {
   /** When the video is due (late after this). Null: no video owed, or nothing dates it. */
   at: Date | null;
   source: VideoDueSource | null;
-  /** When to aim to hand the edit in (EDIT_AIM_HOURS before `at`) — words only, never a due date. Null on an office or reopened date. */
+  /** When to aim to hand the edit in (EDIT_AIM_HOURS before `at`): words only, never a due date. Null on an office or reopened date. */
   aimAt: Date | null;
+  /** What the hub says on its own, before the office or a reopen speak: the
+   *  pin, else the SLA (the override dialog's "hub's value"). */
+  computedAt: Date | null;
 };
 
-/** The select videoDueOf needs. */
+const NONE: VideoDue = { at: null, source: null, aimAt: null, computedAt: null };
+
+/** The select videoDueOf needs (plus what videoDuesFor reads to find a reopened job). */
 export const VIDEO_DUE_SELECT = {
   shootDate: true, status: true, tierOverride: true, packageName: true, dueOverrideAt: true, promisedDueAt: true,
+  deliveredAt: true, revisionRequestedAt: true, overrideAt: true,
   appointments: { select: { status: true, startAt: true } },
   deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
   client: { select: { socialClient: true } },
@@ -73,22 +84,28 @@ export const VIDEO_DUE_SELECT = {
  *      office's tier, else the hub's reading of the rows; the clock from the
  *      last visit that has happened).
  * A job that owes no video has no date (the photos are not the edit's clock).
+ * The pin is the promise as it was SOLD: a pin frozen before Oct 22 2026, when
+ * premium reels and monthly batches moved to calendar days, keeps its later
+ * date (the ping has always read it that way).
  */
 export function videoDueOf(
   p: VideoDueInput,
   opts: { now?: Date; rules?: PromiseRules | null; reopened?: { at: Date | null } | null } = {},
 ): VideoDue {
-  if (!videoTier(p.deliverables)) return { at: null, source: null, aimAt: null };
-  if (opts.reopened) return { at: opts.reopened.at, source: opts.reopened.at ? "reopened" : null, aimAt: null };
-  if (p.dueOverrideAt) return { at: p.dueOverrideAt, source: "office", aimAt: null };
+  if (!videoTier(p.deliverables)) return NONE;
   const aim = (at: Date) => new Date(at.getTime() - EDIT_AIM_HOURS * HOUR);
   const pin = pinnedPromise(p);
-  if (pin) return { at: pin, source: "promise", aimAt: aim(pin) };
-  const sla = getVideoSlaStatus(
-    { shootDate: p.shootDate, status: p.status ?? null, deliverables: p.deliverables, client: p.client ?? null, appointments: p.appointments ?? [], tierOverride: p.tierOverride ?? null, packageName: p.packageName ?? null },
-    { now: (opts.now ?? new Date()).getTime(), ...(opts.rules ? { rules: opts.rules } : {}) },
-  );
-  return sla ? { at: sla.due, source: "sla", aimAt: aim(sla.due) } : { at: null, source: null, aimAt: null };
+  const sla = pin
+    ? null
+    : getVideoSlaStatus(
+        { shootDate: p.shootDate, status: p.status ?? null, deliverables: p.deliverables, client: p.client ?? null, appointments: p.appointments ?? [], tierOverride: p.tierOverride ?? null, packageName: p.packageName ?? null },
+        { now: (opts.now ?? new Date()).getTime(), ...(opts.rules ? { rules: opts.rules } : {}) },
+      );
+  const computedAt = pin ?? sla?.due ?? null;
+  if (opts.reopened) return { at: opts.reopened.at, source: opts.reopened.at ? "reopened" : null, aimAt: null, computedAt };
+  if (p.dueOverrideAt) return { at: p.dueOverrideAt, source: "office", aimAt: null, computedAt };
+  if (pin) return { at: pin, source: "promise", aimAt: aim(pin), computedAt };
+  return sla ? { at: sla.due, source: "sla", aimAt: aim(sla.due), computedAt } : NONE;
 }
 
 /** The office's editable promises, or the built-in ones when they cannot be read. */
@@ -96,7 +113,13 @@ async function promiseRules(): Promise<PromiseRules | undefined> {
   return import("@/lib/settings").then((m) => m.turnaroundRules()).catch(() => undefined);
 }
 
-/** The video due for many jobs in one read (the board). Jobs not found are absent. */
+/**
+ * The video due for many jobs in one read (the board, the desk; one id for the
+ * ping and the edit card). A job delivered once and owed again reads its
+ * REOPEN clock (A52), by the delivery board's own test and reader
+ * (isReopenedJob, reopenedDueFor), never the promise it already kept. Jobs not
+ * found are absent.
+ */
 export async function videoDuesFor(projectIds: string[], opts: { now?: Date } = {}): Promise<Map<string, VideoDue>> {
   const ids = [...new Set(projectIds)];
   if (!ids.length) return new Map();
@@ -104,25 +127,70 @@ export async function videoDuesFor(projectIds: string[], opts: { now?: Date } = 
     prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, ...VIDEO_DUE_SELECT } }),
     promiseRules(),
   ]);
-  return new Map(rows.map((p) => [p.id, videoDueOf(p, { now: opts.now, rules })]));
+  const deliveredOnce = rows.filter((p) => !!p.deliveredAt);
+  const board = deliveredOnce.length ? await import("@/lib/deliveryBoard") : null;
+  const [clocks, dueSet] = board
+    ? await Promise.all([
+        board.reopenedClocksFor(deliveredOnce.map((p) => p.id)),
+        board.dueSetTimesFor(deliveredOnce.filter((p) => !!p.dueOverrideAt).map((p) => p.id)),
+      ])
+    : [new Map(), new Map()];
+  return new Map(
+    rows.map((p) => {
+      const clock = clocks.get(p.id) ?? null;
+      const reopened = board && board.isReopenedJob(p, clock) ? board.reopenedDueFor({ ...p, dueSetAt: dueSet.get(p.id) ?? null }, clock) : null;
+      return [p.id, videoDueOf(p, { now: opts.now, rules, reopened: reopened ? { at: reopened.at } : null })];
+    }),
+  );
+}
+
+/** The one job's video due (the edit card, the brief). Null when the job is not found. */
+export async function videoDueFor(projectId: string, opts: { now?: Date } = {}): Promise<VideoDue | null> {
+  return (await videoDuesFor([projectId], opts)).get(projectId) ?? null;
 }
 
 /** When this job's edit is due, or null when it owes no video. */
 export async function editDueFor(projectId: string): Promise<Date | null> {
-  const p = await prisma.project.findUnique({ where: { id: projectId }, select: VIDEO_DUE_SELECT }).catch(() => null);
-  if (!p) return null;
-  return videoDueOf(p, { rules: await promiseRules() }).at;
+  const d = await videoDueFor(projectId).catch(() => null);
+  return d?.at ?? null;
 }
 
-const fmt = (d: Date, tz: string) =>
-  d.toLocaleString("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).replace(":00", "");
+const fmt = (d: Date, tz: string, weekday = true) =>
+  d.toLocaleString("en-US", { timeZone: tz, ...(weekday ? { weekday: "short" as const } : {}), month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).replace(":00", "");
 
-/** "due Thu, Oct 23, 4 PM ET (Fri, Oct 24, 4 AM Manila)". Pure. */
-export function dueWordsFor(due: Date, editorTz?: string | null): string {
-  const et = `due ${fmt(due, ET)} ET`;
+/** "due Thu, Oct 23, 4 PM ET (Fri, Oct 24, 4 AM Manila)". Pure. `short` drops the weekdays. */
+export function dueWordsFor(due: Date, editorTz?: string | null, short = false): string {
+  const et = `due ${fmt(due, ET, !short)} ET`;
   if (!editorTz || editorTz === ET) return et;
   const city = editorTz.split("/").pop()?.replace(/_/g, " ") ?? editorTz;
-  return `${et} (${fmt(due, editorTz)} ${city})`;
+  return `${et} (${fmt(due, editorTz, !short)} ${city})`;
+}
+
+/** "Oct 24, 1 PM ET". Pure. */
+export function etWhen(d: Date): string {
+  return `${fmt(d, ET)} ET`;
+}
+
+/** The bell's title cap (notify.notifyInApp cuts every title here). */
+export const PING_TITLE_MAX = 90;
+
+/**
+ * A ping title that keeps the due words WHOLE (Oct 22 2026, audit L1). The
+ * bell cuts titles at 90 characters, and "Ready for editing — 538 Onward Ave,
+ * due Sat, Oct 24, 2:07 PM ET (Sun, Oct 25, 2:07 AM Manila)" lost the end of
+ * the editor's own time ("…2:07 AM Mani"). So: the full words when they fit;
+ * then the words without the weekdays; then the head is shortened (with "…"),
+ * never the time. Pure.
+ */
+export function titleWithDue(head: string, due: Date | null, editorTz?: string | null, max = PING_TITLE_MAX): string {
+  if (!due) return head.slice(0, max);
+  for (const short of [false, true]) {
+    const t = `${head}, ${dueWordsFor(due, editorTz, short)}`;
+    if (t.length <= max) return t;
+  }
+  const words = dueWordsFor(due, editorTz, true);
+  const room = Math.max(0, max - words.length - 3); // ", " and "…"
+  return `${head.slice(0, room).trimEnd()}…, ${words}`.slice(0, max);
 }
 
 /** The words for one job and one editor key, or "" when there is no date. */
@@ -132,4 +200,12 @@ export async function editDueWords(projectId: string | null | undefined, editorK
   if (!due) return "";
   const { editorMeta } = await import("@/lib/editors");
   return dueWordsFor(due, editorKey ? editorMeta(editorKey)?.tz ?? null : null);
+}
+
+/** The whole ping title for one job and one editor key: `head`, then the due words, which always survive the bell's cut. */
+export async function editDueTitle(head: string, projectId: string | null | undefined, editorKey?: string | null): Promise<string> {
+  const due = projectId ? await editDueFor(projectId).catch(() => null) : null;
+  if (!due) return head.slice(0, PING_TITLE_MAX);
+  const { editorMeta } = await import("@/lib/editors");
+  return titleWithDue(head, due, editorKey ? editorMeta(editorKey)?.tz ?? null : null);
 }

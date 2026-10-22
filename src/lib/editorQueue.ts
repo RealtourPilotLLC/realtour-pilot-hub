@@ -256,6 +256,14 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     // rather than hiding a job.
     holdersFor(inflight.map((p) => p.id)).catch(() => null),
   ]);
+  // THE video due per job (editorDue.videoDueOf, Oct 22 2026 audit H2): the
+  // same instant the editor's ping, the edit card, the brief and the Video
+  // Review Room show. The desk used to print Project.deliveryDue (a stored
+  // column of the whole order) under the office's date or the pin. A failed
+  // read is an empty map: each row then reads as it did before.
+  const videoDues = await import("@/lib/editorDue")
+    .then((m) => m.videoDuesFor([...inflight, ...deliveredRaw].map((p) => p.id), { now }))
+    .catch(() => new Map<string, import("@/lib/editorDue").VideoDue>());
   const inflightIds = new Set(inflight.map((p) => p.id));
   // This queue narrates the VIDEO lane only. A photo-retouch revision (Kyle's)
   // also lives on the project — it must not flip the video row to "Revisions",
@@ -720,7 +728,10 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     const videosToEdit = cut && !upcoming && p.status !== "DELIVERED" ? notStarted + cut.revising + cut.checking : 0;
 
     const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
-    const computedDue = upcoming ? null : p.deliveryDue ?? null;
+    // THE video due (audit H2, see videoDues): the hub's own date (the pin,
+    // else the SLA) for the override dialog, and the row's date below.
+    const vd = videoDues.get(p.id);
+    const computedDue = upcoming ? null : vd?.source ? vd.computedAt : p.deliveryDue ?? null;
     // A job delivered once and owed again reads its REOPEN clock (A52, see
     // `clocks`): the extra video's promise, a client round's, the same-day
     // one, or a person's — and the office's own date only if it was set for
@@ -731,6 +742,7 @@ export async function buildEditorQueue(opts: { excludeClientIds?: string[] } = {
     const rd = reopenedWork ? reopenedDueFor({ ...p, dueSetAt: dueSet.get(p.id) ?? null }, clocks.get(p.id) ?? null) : null;
     const due = upcoming ? p.shootDate ?? null
       : rd ? rd.at
+      : vd?.source ? vd.at
       : effectiveDue(p, computedDue);
     const rowStatus = upcoming && !pinned ? "Waiting" : reopened ? EXTRA_SHOOT_STATUS : wl.label;
     // Only a row the ladder calls Revisions is folded (Oct 6, see above).
