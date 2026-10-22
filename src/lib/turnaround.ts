@@ -243,6 +243,13 @@ const RULES: { re: RegExp; tier: TierKey }[] = [
   // ship alongside the stills, not standard videos — and the whole default is
   // "next day unless it's a premium reel", so the shorter clock is the safer
   // reading of an ambiguous name.
+  // Oct 22 2026 (859 N Lawrence: "Agent on Camera" was dated next day and the
+  // behind alert called it 15 hours late on the morning it was due). Jordan:
+  // "Standard videos have a 48-hour turnaround." Video products whose names
+  // carry no "video"/"reel" word, read before the add-on rules below so
+  // "Drone Videography" is the video it is, not a drone still.
+  { re: /\b(social\s+(media\s+)?influencer)\b/i, tier: "premium_reel" },
+  { re: /\b(agent\s+on\s+camera|intro\s+edit|videography)\b/i, tier: "video_48h" },
   { re: /\bstag(ing|e)\b/i, tier: "next_day" },
   { re: /\b(drone|aerial|twilight|headshot|lot lines?)\b/i, tier: "next_day" },
   { re: /\b(floor\s*plan|floorplan|cubicasa)\b/i, tier: "next_day" },
