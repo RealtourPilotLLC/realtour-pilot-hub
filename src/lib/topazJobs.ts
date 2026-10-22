@@ -940,6 +940,28 @@ async function skip(job: NonNullable<JobRow>, reason: string) {
  * Quiet: this is the expected path for nearly every video now, and it is not
  * a problem anybody has to hear about.
  */
+/**
+ * Did an EARLIER round of the same owed video (same job, deliverable and slot)
+ * go through the 1080p pass and come out checked? Then this round is a
+ * revision of a video the client has seen processed, and it is processed too
+ * (see the already-finished rule in stepQueued). A read that fails answers
+ * false: the rule then applies as before.
+ */
+export async function earlierRoundProcessed(submissionId: string): Promise<boolean> {
+  try {
+    const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, deliverableId: true, slot: true, round: true } });
+    if (!sub) return false;
+    const hit = await prisma.reviewSubmission.findFirst({
+      where: {
+        id: { not: submissionId }, projectId: sub.projectId, deliverableId: sub.deliverableId, slot: sub.slot, round: { lt: sub.round },
+        topazJob: { state: "done", outputCheck: { in: ["verified", "resolved-processed"] } },
+      },
+      select: { id: true },
+    });
+    return !!hit;
+  } catch { return false; }
+}
+
 async function finishAlreadyFinished(job: NonNullable<JobRow>, header: VideoMeta, rule: string): Promise<string | null> {
   const { judgeFinalSound } = await import("@/lib/finalRendition");
   const sound = judgeFinalSound({ audio: header.audio, timing: header.timing ?? null });
@@ -1268,7 +1290,13 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   // asked for. Checked only on a job that has committed nothing, and never on
   // one a person explicitly sent back through ("Try the pass again" on an
   // already-finished skip writes resolution "force-pass").
-  if (job.resolution !== "force-pass" && !job.acceptedAt && !job.completeUploadAt && seen.header) {
+  //
+  // A REVISION KEEPS ITS VIDEO'S LOOK (Oct 22 2026). Jordan, on 859 N Lawrence
+  // St: "It should have [gone through Topaz]. It was a revision." Its first
+  // round went through the pass and was sent to the client; the revised round
+  // was skipped as "already 1080p" and would have gone out looking different.
+  // So a round of a video whose EARLIER round was processed runs the pass too.
+  if (job.resolution !== "force-pass" && !job.acceptedAt && !job.completeUploadAt && seen.header && !(await earlierRoundProcessed(job.submissionId))) {
     const h = seen.header;
     const rule = alreadyFinishedRule({ width: h.width, height: h.height, codec: h.codec, audio: h.audio }, s);
     if (rule.skip) {
