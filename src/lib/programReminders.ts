@@ -1419,7 +1419,11 @@ async function evaluateMonth(
   // "how many times have we asked for THIS thing" is an action question.
   const monthRows = (await prisma.programReminder.findMany({ where: { enrollmentId: e.id, monthKey: month.monthKey }, orderBy: { attempt: "desc" } }))
     .filter((r) => r.id !== ignoreReminderId);
-  const prior = monthRows.filter((r) => r.action === action);
+  // Oct 22 2026 (M1): PICK_TOPICS shares the answers ask's cadence. Before it
+  // existed, a month with nothing picked was sent COMPLETE_ANSWERS ("the next
+  // step is choosing your video topics"), so those sends were this ask: a
+  // client chased four times is not started again at attempt 1.
+  const prior = monthRows.filter((r) => r.action === action || (action === "PICK_TOPICS" && r.action === "COMPLETE_ANSWERS"));
   const laneOf = (k: string | null) => ledgerLaneOf(k, e.id, month.monthKey, action);
   const sameSession = (k: string | null) => laneOf(k).sessionTag === sessionTag;
   const isCounted = (r: { state: string; leaseUntil: Date | null }) =>
@@ -1556,7 +1560,8 @@ async function evaluateMonth(
         : answerGap?.paragraph ?? null;
   // Oct 22 2026: the link opens the page the email is about (lib/portalLanding):
   // videos to review, or Your Month for the call, the route and filming.
-  const linkPath = answerGap?.path ?? (lane === "REVIEW" ? PORTAL_LANDING.reviewVideos : action === "PICK_TOPICS" ? `${PORTAL_LANDING.yourMonth}&pv=bank` : action === "BOOK_SESSION" || action === "BOOK_CALL" || action === "CHOOSE_PATH" || action === "COMPLETE_ANSWERS" ? PORTAL_LANDING.yourMonth : null);
+  // Oct 22 2026 (M1): the pick ask opens Your Month, where choosing the topics is the step.
+  const linkPath = answerGap?.path ?? (action === "PICK_TOPICS" ? PORTAL_LANDING.yourMonth : lane === "REVIEW" ? PORTAL_LANDING.reviewVideos : action === "BOOK_SESSION" || action === "BOOK_CALL" || action === "CHOOSE_PATH" || action === "COMPLETE_ANSWERS" ? PORTAL_LANDING.yourMonth : null);
 
   // §12/A28: the roll-over note is the one message that must never reach a
   // client in their first paid production cycle, or a client whose shortfall we
