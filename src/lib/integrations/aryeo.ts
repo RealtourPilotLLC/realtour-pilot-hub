@@ -503,18 +503,22 @@ export async function productAvailability(opts: {
     await Promise.all(
       wanted.slice(i, i + 4).map(async (d) => {
         try {
-          const r = await aryeoRequest<{ data?: { start_at?: string; users?: { id?: string }[] }[] }>("/scheduling/available-timeslots", {
-            query: {
-              timezone: tz,
-              interval,
-              duration: opts.durationMin,
-              date: d.date,
-              ...userFilter,
-            },
-          });
-          const slots = (r?.data ?? []).map((s) => s.start_at).filter((s): s is string => !!s);
+          // ONE CREATIVE AT A TIME (Oct 22 2026, Erica Walker could not book
+          // October). Asked for several creatives at once, Aryeo returns the
+          // starts with an EMPTY users list, so the portal could not tell who
+          // was free and offered every start under the first creative (Jordan,
+          // who has no hours in Aryeo); the pre-booking recheck then refused
+          // each pick as "taken". Asking per creative says exactly who is free
+          // at each start.
+          const per = await Promise.all(ids.map(async (id) => {
+            const r = await aryeoRequest<{ data?: { start_at?: string }[] }>("/scheduling/available-timeslots", {
+              query: { timezone: tz, interval, duration: opts.durationMin, date: d.date, "filter[user_ids][0]": id },
+            });
+            return { id, starts: (r?.data ?? []).map((x) => x.start_at).filter((x): x is string => !!x) };
+          }));
           const slotUsers: Record<string, string[]> = {};
-          for (const s of r?.data ?? []) if (s.start_at) slotUsers[s.start_at] = (s.users ?? []).map((u) => u.id).filter((x): x is string => !!x);
+          for (const p of per) for (const st of p.starts) (slotUsers[st] ??= []).push(p.id);
+          const slots = Object.keys(slotUsers).sort((a, b) => Date.parse(a) - Date.parse(b));
           if (slots.length) days.push({ date: d.date, slots, slotUsers });
         } catch { /* a missing day is fine */ }
       }),

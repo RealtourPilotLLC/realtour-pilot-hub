@@ -236,13 +236,13 @@ async function main() {
     const slotsOct = await sessionSlotsFor({ enrollmentId: S.enrollmentId, monthId: S.monthId, sessionIndex: 1, package: "Starter", now: now() });
     const slotsNov = await sessionSlotsFor({ enrollmentId: S.enrollmentId, monthId: nS!.id, sessionIndex: 1, package: "Starter", now: now() });
     const allOct = slotsOct.days.flatMap((d) => d.slots), allNov = slotsNov.days.flatMap((d) => d.slots);
-    c.ok("October offers only October dates", allOct.length > 0 && allOct.every((s) => etMonth(new RealDate(s)) === "2026-10"), `${allOct.length} ${allOct[0]} … ${allOct.at(-1)} ${slotsOct.ok} ${slotsOct.message}`);
+    c.ok("October offers October dates and the first week of November only (Oct 22 2026)", allOct.length > 0 && allOct.every((s) => etMonth(new RealDate(s)) === "2026-10" || (etMonth(new RealDate(s)) === "2026-11" && new RealDate(s).getTime() < et(11, 8, 0).getTime())), `${allOct.length} ${allOct[0]} … ${allOct.at(-1)} ${slotsOct.ok} ${slotsOct.message}`);
     c.ok("November offers only November dates, from Monday November 2", allNov.length > 0 && allNov.every((s) => etMonth(new RealDate(s)) === "2026-11") && allNov[0] === et(11, 2, 10).toISOString(), `${allNov.length} ${allNov[0]} … ${allNov.at(-1)} ${slotsNov.ok} ${slotsNov.message}`);
     const ask = (monthId: string, slot: Date, planId: string) => portalActions.portalRequestSession({ token: S.portalToken }, { monthId, slotISO: slot.toISOString(), planId, addressVersion: 1 });
     const early = await ask(nS!.id, et(10, 27, 10), sNovPlan.id);
-    c.ok("an October date for November is refused, as the wrong month", !early.ok && early.message === "October dates are booked under October. Pick a date in November for this session.", early.message);
-    const crossed = await ask(S.monthId, et(11, 4, 10), sOctPlan.id);
-    c.ok("a November date for October is refused, in plain words", !crossed.ok && crossed.message === "November dates are booked under November. Pick a date in October for this session.", crossed.message);
+    c.ok("an October date for November is refused, as the wrong month", !early.ok && early.message === "October dates are booked under October. Pick a date in November or the first week of December for this session.", early.message);
+    const crossed = await ask(S.monthId, et(11, 9, 10), sOctPlan.id);
+    c.ok("a November date past the first week is refused for October, in plain words", !crossed.ok && crossed.message === "November dates are booked under November. Pick a date in October or the first week of November for this session.", crossed.message);
     const weekend = await ask(nS!.id, et(11, 7, 10), sNovPlan.id);
     c.ok("weekends still refused in November", !weekend.ok && /Monday through Friday/.test(weekend.message ?? ""), weekend.message);
     const booked = await ask(nS!.id, et(11, 4, 10), sNovPlan.id);
@@ -257,14 +257,15 @@ async function main() {
     const octBooked = await ask(S.monthId, et(10, 27, 10), sOctPlan.id);
     const octRow = await prisma.programSessionRequest.findFirst({ where: { enrollmentId: S.enrollmentId, monthId: S.monthId } });
     c.ok("October books on its own (Oct 27), on October's month", octBooked.ok && !!octRow && octRow.slotStart?.getTime() === et(10, 27, 10).getTime(), octBooked.message);
-    const moved = await portalActions.portalRescheduleSession({ token: S.portalToken }, octRow!.id, { slotISO: et(11, 5, 10).toISOString() });
-    c.ok("moving October's session onto a November date is refused", !moved.ok && /November dates are booked under November/.test(moved.message ?? ""), moved.message);
+    const moved = await portalActions.portalRescheduleSession({ token: S.portalToken }, octRow!.id, { slotISO: et(11, 10, 10).toISOString() });
+    c.ok("moving October's session past the first week of November is refused", !moved.ok && /November dates are booked under November/.test(moved.message ?? ""), moved.message);
     // The rule itself (portal.sessionDateFits), on the edges the portal can't show today.
     const fits = portal.sessionDateFits;
     const octRule = { own: ["2026-10"], elsewhere: ["2026-11"] };
-    c.ok("rule: this month keeps its old reach only where the date's month has no open workspace", !fits(octRule, et(11, 4, 10), et(10, 22, 10)) && fits({ ...octRule, elsewhere: [] }, et(11, 4, 10), et(10, 22, 10)));
-    c.ok("rule: a preparation window that already runs past the month's end books on from its earliest start (A18/A20)", fits(octRule, et(11, 4, 10), et(11, 3, 10)) && !fits(octRule, et(11, 2, 10), et(11, 3, 10)));
-    c.ok("rule: next month the same way: with December open it keeps to November; with none, its old reach", !fits({ own: ["2026-11"], elsewhere: ["2026-12"] }, et(12, 2, 10), et(11, 2, 0)) && fits({ own: ["2026-11"], elsewhere: [] }, et(12, 2, 10), et(11, 2, 0)) && fits({ own: ["2026-11"], elsewhere: ["2026-12"] }, et(11, 30, 10), et(11, 2, 0)));
+    c.ok("rule: this month keeps its old reach only where the date's month has no open workspace", !fits(octRule, et(11, 9, 10), et(10, 22, 10)) && fits({ ...octRule, elsewhere: [] }, et(11, 9, 10), et(10, 22, 10)));
+    c.ok("rule (Oct 22 2026): a month's session may fall in the first 7 days of the next month even when it is open", fits(octRule, et(11, 4, 10), et(10, 22, 10)) && fits(octRule, et(11, 6, 10), et(10, 22, 10)) && !fits(octRule, et(11, 9, 10), et(10, 22, 10)));
+    c.ok("rule: a preparation window that already runs past the month's end books on from its earliest start (A18/A20)", fits(octRule, et(11, 11, 10), et(11, 10, 10)) && !fits(octRule, et(11, 9, 10), et(11, 10, 10)));
+    c.ok("rule: next month the same way: with December open it keeps to November; with none, its old reach", !fits({ own: ["2026-11"], elsewhere: ["2026-12"] }, et(12, 9, 10), et(11, 2, 0)) && fits({ own: ["2026-11"], elsewhere: [] }, et(12, 9, 10), et(11, 2, 0)) && fits({ own: ["2026-11"], elsewhere: ["2026-12"] }, et(11, 30, 10), et(11, 2, 0)));
     const schedS = await portal.portalScheduleMonths(vS.enrollment);
     const sNovCard = schedS.find((m) => m.monthId === nS!.id);
     c.ok("Your Month's November card: its own session, 'from November 2'", !!sNovCard && sNovCard.capacity.remaining === 0 && sNovCard.requests.length === 1 && sNovCard.earliestISO === et(11, 2, 0).toISOString(), JSON.stringify({ cap: sNovCard?.capacity, earliest: sNovCard?.earliestISO }));

@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, aryeoProductFor, monthLabel, portalLastMonthKey, RESUBSCRIBE_URL } from "@/lib/contentProgram";
-import { etAt } from "@/lib/datetime";
+import { etAt, etDayKey } from "@/lib/datetime";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 import type { ClientMonthProgress, ClientSessionCard } from "@/lib/monthProgress";
@@ -780,12 +780,23 @@ export async function sessionDateRule(enrollmentId: string, monthId: string, now
 }
 
 /** Does this date fit the month's rule (sessionDateRule)? `earliest`: the session's gate. */
+/** Oct 22 2026 (Jordan: "Even if it goes into the first week of November, we
+ *  need to be able to allow clients to book a session"): a month's session may
+ *  also fall in the first days of the month after it, even when that month is
+ *  already open for its own sessions. */
+export const SESSION_SPILL_DAYS = 7;
+const nextMonthKey = (k: string) => {
+  const [y, m] = k.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+};
+
 export function sessionDateFits(rule: SessionDateRule | null, slot: Date, earliest: Date | null): boolean {
   if (!rule) return true;
   const at = etMonthKey(slot);
   if (rule.own.includes(at)) return true;
   const last = rule.own[rule.own.length - 1];
   if (!last) return false;
+  if (at === nextMonthKey(last) && Number(etDayKey(slot).slice(8, 10)) <= SESSION_SPILL_DAYS) return true;
   if (earliest && etMonthKey(earliest) > last && slot >= earliest) return true;
   return at > last && !rule.elsewhere.includes(at);
 }
@@ -797,7 +808,7 @@ export async function sessionMonthRefusal(enrollmentId: string, monthId: string,
   const name = (k: string) => monthLabel(k).split(" ")[0];
   const at = etMonthKey(slot);
   return rule?.own.length
-    ? `${name(at)} dates are booked under ${name(at)}. Pick a date in ${name(rule.own[0])} for this session.`
+    ? `${name(at)} dates are booked under ${name(at)}. Pick a date in ${name(rule.own[0])} or the first week of ${name(nextMonthKey(rule.own[rule.own.length - 1]))} for this session.`
     : "Pick one of your program months.";
 }
 
