@@ -140,6 +140,12 @@ export type PhotoFacts = {
   late: boolean;
   /** A photo-only job the client reopened (the board's open revision). */
   reopened?: boolean;
+  /**
+   * Oct 22 2026 (photo audit M3, photo delivery builder): the photo job is in
+   * Editing but the hub never saw its raws (no intake batch) and read no
+   * edited photo: "Not uploaded" (the photographer's), not "Editing" (AutoHDR's).
+   */
+  noRawsSeen?: boolean;
 };
 
 type PhotoRead = DeliverableStage & { at: number; revision: boolean };
@@ -161,7 +167,8 @@ const PHOTO_BY_STAGE: Record<string, { label: string; tone: StageTone; at: numbe
 
 function readPhotos(f: PhotoFacts): PhotoRead {
   let r: { label: string; tone: StageTone; at: number };
-  if (f.jobStage && PHOTO_BY_STAGE[f.jobStage]) r = PHOTO_BY_STAGE[f.jobStage];
+  if (f.jobStage === "EDITING" && f.noRawsSeen) r = { label: "Not uploaded", tone: "waiting", at: 1 }; // photo audit M3
+  else if (f.jobStage && PHOTO_BY_STAGE[f.jobStage]) r = PHOTO_BY_STAGE[f.jobStage];
   else if (f.liveOnAryeo) r = f.reopened ? PHOTO_BY_STAGE.REVISION_REQUESTED : PHOTO_BY_STAGE.DELIVERED;
   else if (!f.shootOver) r = { label: "Not shot yet", tone: "waiting", at: 0 };
   else if (!f.rawsIn) r = { label: "Not uploaded", tone: "waiting", at: 1 };
@@ -330,7 +337,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
   const nearNow = Math.abs(now.getTime() - Date.now()) < 60_000;
   const [extras, photoJobs, asks, editTasks, room] = await Promise.all([
     prisma.project.findMany({ where: { id: { in: ids } }, select: { id: true, contentMonthId: true } }),
-    prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, stage: true } }),
+    prisma.photoJob.findMany({ where: { projectId: { in: ids } }, select: { projectId: true, stage: true, finalsCount: true } }),
     prisma.clientAsk.findMany({
       where: { projectId: { in: ids }, state: "OPEN", kind: "SPECIAL_REQUEST", source: { in: [...ca.ASK_SOURCES] } },
       select: { projectId: true, medium: true, kind: true, askedAt: true },
@@ -361,6 +368,12 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
     .catch(() => new Map<string, { words: string }>());
   const monthlyIds = new Set(extras.filter((p) => p.contentMonthId).map((p) => p.id));
   const photoStageBy = new Map(photoJobs.map((p) => [p.projectId, p.stage]));
+  // Photo audit M3 (Oct 22 2026): photo jobs in Editing whose raws the hub never saw (no intake batch, no photos read). A read that fails marks none.
+  const editingNoFinals = photoJobs.filter((p) => p.stage === "EDITING" && !p.finalsCount).map((p) => p.projectId);
+  const withRaws = editingNoFinals.length
+    ? await prisma.photoIntakeBatch.groupBy({ by: ["projectId"], where: { projectId: { in: editingNoFinals } }, _count: { _all: true } }).then((rows) => new Set(rows.map((r) => r.projectId))).catch(() => null)
+    : new Set<string>();
+  const noRawsSeen = new Set(withRaws ? editingNoFinals.filter((id) => !withRaws.has(id)) : []);
   const asksBy = new Map<string, { medium: string | null; kind: string; askedAt: Date }[]>();
   for (const a of asks) if (a.projectId) asksBy.set(a.projectId, [...(asksBy.get(a.projectId) ?? []), a]);
   // The job's editor: the open edit card's person, else the newest card's (newest first).
@@ -416,6 +429,7 @@ export async function shootsBoard(now: Date = new Date(), opts: { limit?: number
           liveOnAryeo: (j.media.photos.liveOnAryeo ?? 0) > 0,
           late: !delivered && !!photoDue && photoDue.getTime() < now.getTime(),
           reopened: j.blocker === "revision" && !videoOrdered,
+          noRawsSeen: noRawsSeen.has(j.id),
         })
       : null;
 
@@ -675,6 +689,8 @@ export async function jobDeliverables(projectId: string, now: Date = new Date())
     liveOnAryeo: (ev?.aryeo?.photos ?? 0) > 0,
     late: pastDue(dueOf("Photos")),
     reopened: (p.status === "REVISION" || (!!p.revisionRequestedAt && (!p.deliveredAt || p.revisionRequestedAt > p.deliveredAt))) && videoRows.length === 0,
+    // Photo audit M3 (Oct 22 2026): in Editing with no raws ever seen and no photos read.
+    noRawsSeen: photoJob?.stage === "EDITING" && !photoJob.finalsCount ? (await prisma.photoIntakeBatch.count({ where: { projectId } }).catch(() => 1)) === 0 : false,
   };
 
   // ---- video ----

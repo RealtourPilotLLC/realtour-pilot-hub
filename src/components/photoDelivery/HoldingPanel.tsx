@@ -4,9 +4,9 @@ import { useMemo } from "react";
 import Link from "next/link";
 import { CheckCircle2, ChevronDown, CircleAlert, Clock, ExternalLink, Quote, Send, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { holdingFor, type HoldingAction, type HoldingItem } from "@/lib/photoDelivery/holding";
+import { SETTLED_REASON_MIN, holdingFor, type HoldingAction, type HoldingItem } from "@/lib/photoDelivery/holding";
 import {
-  clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, startDeliveryAction, verifyDeliveryAction,
+  clientAskedAnswerAction, clientAskedDoneAction, confirmAddOnAction, overrideWrapUpAction, releaseHoldAction, requestQcAction, settleRevisionAction, startDeliveryAction, verifyDeliveryAction,
 } from "@/app/ops/photo-delivery/actions";
 import { updateOnAryeoAction } from "@/app/ops/photo-delivery/editActions";
 import { useJob } from "./JobContext";
@@ -94,6 +94,17 @@ export function HoldingPanel() {
     const go = await confirm({ title: "Mark as delivering?", body: ignored ? `${ignored} Go back to look at them first, or deliver as they are.` : "Deliver the photos in Aryeo; the hub confirms when Aryeo says they were delivered.", confirmLabel: "Mark as delivering" });
     if (go) await run(() => startDeliveryAction(jobId));
   };
+  // Oct 22 2026 (photo audit C1): the client's photo revision settled with them, nothing goes out again.
+  const settleRevision = async () => {
+    const reason = await ask({
+      title: "Settled with the client: nothing to resend?",
+      description: "Only when the client agreed the photos stay as they are (they withdrew it, or it was answered). Write what was settled. The job goes back to Delivered, and each photo request from this revision is answered with your note.",
+      required: true,
+      minLength: SETTLED_REASON_MIN,
+      confirmLabel: "Settled: nothing to resend",
+    });
+    if (reason !== null) await run(() => settleRevisionAction(jobId, reason));
+  };
 
   const action = (a: HoldingAction, main?: boolean) => {
     const cls = cn(btn, main ? primary : secondary);
@@ -156,6 +167,8 @@ export function HoldingPanel() {
             <UploadCloud aria-hidden className="size-4" /> {a.label}
           </button>
         );
+      case "settle":
+        return <button type="button" disabled={pending} onClick={() => void settleRevision()} className={cls}>{a.label}</button>;
     }
   };
 
@@ -193,7 +206,7 @@ export function HoldingPanel() {
             <p className="mt-0.5 text-[12px] text-muted">{it.said.from}</p>
           </details>
         )}
-        {!readOnly && (it.action || it.link) && (
+        {!readOnly && (it.action || it.link || it.alt) && (
           <div className="mt-2 flex flex-wrap gap-2">
             {it.link && (
               <a href={it.link.href} target="_blank" rel="noreferrer" className={cn(btn, secondary)}>
@@ -201,6 +214,7 @@ export function HoldingPanel() {
               </a>
             )}
             {it.action && action(it.action, n === 1)}
+            {it.alt && action(it.alt)}
           </div>
         )}
       </div>
@@ -217,7 +231,7 @@ export function HoldingPanel() {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="pd-holding-h" className="flex items-center gap-2 text-base font-semibold">
           {held ? <CircleAlert aria-hidden className="size-5 text-warning" /> : <CheckCircle2 aria-hidden className="size-5 text-success" />}
-          {held ? "What's holding this" : view.ready ? view.ready.text : "Nothing to send yet"}
+          {held ? (delivered ? "Delivered, still open" : "What's holding this") : view.ready ? view.ready.text : "Nothing to send yet"}
         </h2>
         {held && <span className="text-[13px] text-muted">{view.items.length === 1 ? "1 thing to settle" : `${view.items.length} things, in order`}</span>}
       </div>

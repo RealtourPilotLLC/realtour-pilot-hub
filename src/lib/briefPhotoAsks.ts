@@ -138,7 +138,7 @@ async function route(briefId: string, dryRun: boolean, now: Date, itemsJsonOverr
     where: { id: briefId },
     select: {
       id: true, projectId: true, source: true, originalText: true, itemsJson: true, createdAt: true, requestedBy: true, decisionId: true,
-      project: { select: { title: true, clientId: true, client: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true } } } },
+      project: { select: { title: true, clientId: true, client: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } } } },
     },
   });
   if (!brief?.project?.clientId || VIDEO_ONLY_SOURCES.has(brief.source) || brief.decisionId) return null;
@@ -179,7 +179,10 @@ async function route(briefId: string, dryRun: boolean, now: Date, itemsJsonOverr
     // are the line only when there is no work named (the line IS the question
     // then); the client's words are on the ask either way.
     const qs = officeQs.map((q) => (/[?!]$/.test(q) ? q : `${q}.`)).join(" ");
-    const summary = clip(asks ? `${asks}. Not on the order: confirm the scope or price with the client first.` : qs, 240);
+    // Oct 22 2026 (photo audit M11, 859 N Lawrence St): staging IS on that
+    // order; only the count ordered was exceeded. Said so (officeWhy).
+    const stagedOrdered = brief.project.deliverables.filter((d) => d.type === "VIRTUAL_STAGING").reduce((s, d) => s + Math.max(1, d.quantity ?? 1), 0) * STAGED_PHOTOS_PER_LINE;
+    const summary = clip(asks ? `${asks}. ${officeWhy(office.map((it) => `${it.ask ?? ""} ${it.detail ?? ""} ${it.quote ?? ""}`), stagedOrdered)}` : qs, 240);
     plan.steps.push({ what: "office", key: `${PHOTO_OFFICE_KEY_PREFIX}${brief.projectId}:${nums || "job"}`, medium: "photo", summary, core: clip(asks || qs, 200), action: "create", askId: null, items: office.map((it) => it.ask), questions: officeQs });
   }
   if (shared.length || sharedQs.length) {
@@ -256,6 +259,25 @@ async function route(briefId: string, dryRun: boolean, now: Date, itemsJsonOverr
   });
   plan.reopened = r.reopened;
   return plan;
+}
+
+/**
+ * Staged photos one "Virtual Staging" order line buys (photo audit M11: 859 N
+ * Lawrence St's one line covered 3 photos, "only the count of 3 was exceeded";
+ * the books read "pics + 3 virtual staging" the same way).
+ */
+export const STAGED_PHOTOS_PER_LINE = 3;
+
+/**
+ * Why an office question is the office's (pure; photo audit M11). Staging
+ * asked for on an order that has staging is more than was ordered, never "not
+ * on the order": "More than the 3 staged photos ordered: confirm …".
+ */
+export function officeWhy(itemWords: string[], stagedOrdered: number): string {
+  const tail = "confirm the scope or price with the client first.";
+  const staging = itemWords.some((w) => /\bstag(?:e|ed|ing)\b/i.test(w));
+  if (staging && stagedOrdered > 0) return `More than the ${stagedOrdered} staged photo${stagedOrdered === 1 ? "" : "s"} ordered: ${tail}`;
+  return `Not on the order: ${tail}`;
 }
 
 /**

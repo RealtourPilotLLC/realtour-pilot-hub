@@ -17,6 +17,17 @@
 // the browser. HOLDING_ORDER is the order.
 // ---------------------------------------------------------------------------
 
+/**
+ * Oct 22 2026 (photo audit H2): "Approve and upload to Aryeo" checks the same
+ * holds as Approve and deliver (aryeoPush.approveJob). Its refusal starts with
+ * this, and the page then asks Kyle for a reason (at least
+ * UPLOAD_OVERRIDE_MIN characters) to put the photos up anyway.
+ */
+export const UPLOAD_HELD_PREFIX = "Held:";
+export const UPLOAD_OVERRIDE_MIN = 10;
+/** Oct 22 2026 (photo audit C1): the typed reason for "Settled with the client: nothing to resend". */
+export const SETTLED_REASON_MIN = 10;
+
 /** The kinds of blocker, in the order they are shown (and the order they are usually settled in). */
 export const HOLDING_ORDER = [
   "hold", // the job is on hold
@@ -37,7 +48,8 @@ export const HOLDING_ORDER = [
   "confirming", // waiting for Aryeo to confirm the delivery
   "mismatch", // the delivery check found a problem
 ] as const;
-export type HoldingKind = (typeof HOLDING_ORDER)[number] | "flags" | "redeliver";
+/** Oct 22 2026 (photo audit H2): "delivered" heads a delivered job's list when it went out with holds still open (ranked first). */
+export type HoldingKind = (typeof HOLDING_ORDER)[number] | "flags" | "redeliver" | "delivered";
 
 export type HoldingAction =
   | { kind: "release"; label: string }
@@ -51,7 +63,9 @@ export type HoldingAction =
   | { kind: "mark"; label: string }
   | { kind: "verify"; label: string }
   | { kind: "rerun"; label: string }
-  | { kind: "update"; label: string; photoIds: string[] };
+  | { kind: "update"; label: string; photoIds: string[] }
+  /** Oct 22 2026 (photo audit C1): "Settled with the client: nothing to resend", with a typed reason. */
+  | { kind: "settle"; label: string };
 
 export type HoldingItem = {
   key: string;
@@ -68,6 +82,8 @@ export type HoldingItem = {
   /** Oct 22 2026: the client's full message behind a summarised request ("Everything they said"). */
   said?: { from: string; text: string } | null;
   action: HoldingAction | null;
+  /** Oct 22 2026: a second button beside the action (the revision's "Settled with the client: nothing to resend"). */
+  alt?: HoldingAction | null;
   /** A second way in (the listing to look at before Deliver). */
   link: { label: string; href: string; external?: boolean } | null;
 };
@@ -143,6 +159,14 @@ export type HoldingBase = {
   deliveryCheckNote: string | null;
   /** Photos edited in the hub whose old file is still on the Aryeo listing (needsListingUpdate): their ids and names. */
   listingUpdates: { photoIds: string[]; names: string[] };
+  /**
+   * Oct 22 2026 (photo audit M3): how many raw uploads the hub has seen for
+   * the job (intake batches). 0 on a job in Editing with no photos: the raws
+   * never came, so it is the photographer's, not AutoHDR's. Null: not read.
+   */
+  rawBatches?: number | null;
+  /** How many edited photos the job has read (finalsCount); with 0 raws and 0 photos the job is not uploaded yet. */
+  photosRead?: number | null;
 };
 
 /**
@@ -174,8 +198,13 @@ const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const clipTo = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 const first = (name: string | null) => (name ?? "").trim().split(/\s+/)[0] || null;
 
-function item(kind: HoldingKind, key: string, text: string, short: string, waitingOn: string, action: HoldingAction | null, extra: Partial<Pick<HoldingItem, "detail" | "quotes" | "link" | "said">> = {}): HoldingItem {
-  return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], said: extra.said ?? null, action, link: extra.link ?? null };
+function item(kind: HoldingKind, key: string, text: string, short: string, waitingOn: string, action: HoldingAction | null, extra: Partial<Pick<HoldingItem, "detail" | "quotes" | "link" | "said" | "alt">> = {}): HoldingItem {
+  return { key, kind, text, short, waitingOn, detail: extra.detail ?? null, quotes: extra.quotes ?? [], said: extra.said ?? null, action, ...(extra.alt ? { alt: extra.alt } : {}), link: extra.link ?? null };
+}
+
+/** Oct 22 2026 (photo audit M3): a job in Editing that never had raws (no upload seen, no photos): the photographer's, not AutoHDR's. Pure. */
+export function notUploadedYet(stage: string, rawBatches: number | null | undefined, photosRead: number | null | undefined): boolean {
+  return stage === "EDITING" && rawBatches === 0 && !photosRead;
 }
 
 /** The upload is on and the hub has its Aryeo login (AryeoPushControls.aryeoPushOn). */
@@ -216,6 +245,9 @@ export function holdingFor(input: HoldingInput): HoldingView {
   }
   if (stage === "EDITING" && input.waitingForVisit) {
     add(true, item("edits", "edits", `Waiting for the photos from the ${input.waitingForVisit} visit. The earlier visit's photos are already on the listing.`, "Waiting for the next visit's photos", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
+  } else if (notUploadedYet(stage, input.rawBatches, input.photosRead)) {
+    // Oct 22 2026 (photo audit M3, 913 Lakeview and 1316 Blair): no raws ever reached the hub, so nothing went to AutoHDR.
+    add(true, item("edits", "edits", `Not uploaded yet: the raw photos have not reached the hub, so nothing has gone to AutoHDR.`, "Not uploaded yet", photographer, { kind: "link", label: "Open the upload page", href: `/upload/${input.projectId}` }));
   } else if (stage === "EDITING") {
     // Nothing to press: the hub looks at AutoHDR every few minutes by itself.
     add(true, item("edits", "edits", "AutoHDR is still editing the photos. The hub looks again every few minutes.", "Waiting for AutoHDR's edits", "Waiting on AutoHDR", null));
@@ -227,14 +259,23 @@ export function holdingFor(input: HoldingInput): HoldingView {
     add(true, item("fixing", "fixing", "Approved fixes are running in AutoHDR.", "Fixes running", "Waiting on AutoHDR", { kind: "tab", label: "See the fixes", tab: "cart" }));
   } else if (stage === "REVISION_REQUESTED") {
     const again: HoldingAction = pushOn(push) && input.listingUrl ? { kind: "approve", label: "Approve and deliver again" } : { kind: "mark", label: "Mark as delivering" };
-    add(true, item("revision", "revision", "The client asked for changes after delivery. Once the photos are fixed and each request is settled, send them again.", "Client asked for changes", "Waiting on Kyle", again));
+    // Oct 22 2026 (photo audit C1): the revision leaves only by sending again, or by this, with a reason (never by Aryeo's old "delivered").
+    add(true, item("revision", "revision", "The client asked for changes after delivery. Once the photos are fixed and each request is settled, send them again. If it was settled with the client and nothing goes out again, say so instead.", "Client asked for changes", "Waiting on Kyle", again, { alt: { kind: "settle", label: "Settled with the client: nothing to resend" } }));
   }
 
   // ---- the delivery checklist ----
   if (!gate && !delivered && APPROVE_STAGES.has(stage)) {
     add(true, item("checks", "gate", `The delivery checklist could not be read${input.gateError ? ` (${input.gateError})` : ""}.`, "Checklist unreadable", "Waiting on the hub", { kind: "rerun", label: "Read it again" }));
   }
-  for (const c of delivered ? [] : gate?.checks ?? []) {
+  // Oct 22 2026 (photo audit H2): photos delivered (in Aryeo, past the hub)
+  // while a hold line was open: those lines stay on the job, each settled by a
+  // person; the hub no longer closes them by itself.
+  // (What the client asked and the add-on work; the wrap-up only informs a delivery, and its removal notes are an ask.)
+  const openAfter = delivered ? (gate?.checks ?? []).filter((c) => c.hold && !c.ok && !c.advisory && (c.key.startsWith("ask") || c.key.startsWith("addon"))) : [];
+  if (openAfter.length) {
+    add(true, item("delivered", "delivered-open", `The photos went out with ${plural(openAfter.length, "thing")} still open. Settle each one below.`, `Delivered with ${plural(openAfter.length, "thing")} open`, "Waiting on Kyle", null));
+  }
+  for (const c of delivered ? openAfter : gate?.checks ?? []) {
     // The checklist's Update on Aryeo line is the job's own fact here (listingUpdates, below), delivered or not.
     if (c.ok || c.key === "listing-update") continue;
     const holds = holdsKyle(c);
@@ -335,6 +376,7 @@ export function holdingFor(input: HoldingInput): HoldingView {
   }
 
   const rank = (k: HoldingKind) => {
+    if (k === "delivered") return -1;
     const i = (HOLDING_ORDER as readonly string[]).indexOf(k === "redeliver" ? "aryeo" : k);
     return i < 0 ? HOLDING_ORDER.length : i;
   };

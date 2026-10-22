@@ -1305,15 +1305,25 @@ async function revisionLanding(
 // return the job to whatever it genuinely was — Delivered only if it really had
 // been delivered, otherwise back to Review / Ready for editing (see revisionLanding).
 // A REVIEW job that merely carried a revision note keeps its stage.
-export async function resolveRevision(projectId: string): Promise<void> {
+export async function resolveRevision(projectId: string, opts: { includePhotoLane?: boolean } = {}): Promise<void> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { status: true, title: true, deliveredAt: true },
   });
+  // PHOTO AUDIT H1 (Oct 22 2026, photo delivery builder): the photo lane's
+  // to-do (its own key, raiseRevision's photoLane = photoDelivery/clientAsked
+  // photoRevisionTaskKey) is not closed from the video side (the editing
+  // queue, the Review Room's approval). 859 N Lawrence St's "Add outdoor
+  // staging to pic 38" closed when the video v2 was approved and the job moved
+  // to Completed; it closes from the photo job (delivered again, or settled
+  // with the client: clientAsked.closePhotoRevisionTask). Only the job page's
+  // whole-job "Mark resolved" (resolveRevisionWholeJob) still takes it, as
+  // designed. Nullable key: OR null.
+  const notPhotoLane = opts.includePhotoLane ? {} : { OR: [{ dedupeKey: null }, { dedupeKey: { not: dedupeKey([projectId, "revision", "photo"]) } }] };
   // Who the revision was delegated to — read BEFORE the close below wipes the
   // open task, so the bell can tell that editor their revision cleared.
   const revTask = await prisma.smartTask.findFirst({
-    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, ...notPhotoLane },
     select: { assignedKey: true },
   });
   // Sep 8 (revision lifecycle): a DELIVERED job whose corrected cut went
@@ -1364,7 +1374,7 @@ export async function resolveRevision(projectId: string): Promise<void> {
       },
     });
     await tx.smartTask.updateMany({
-      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, ...notPhotoLane }, // photo audit H1: not the photo lane's
       data: { status: "COMPLETED", completedAt: new Date() },
     });
   }, "the revision's resolve");
@@ -1631,7 +1641,8 @@ export async function resolveRevisionWholeJob(projectId: string, actor?: string 
     where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
     select: { id: true, title: true, dedupeKey: true, assignedKey: true },
   });
-  await resolveRevision(projectId);
+  // Photo audit H1 (Oct 22 2026): the whole job, the photo lane included (the video side's resolve leaves it).
+  await resolveRevision(projectId, { includePhotoLane: true });
   // An AppUser row with an empty name is not nobody — `??` only catches null,
   // so the unguarded version wrote a timeline line that opened with a space
   // (dismissTask in actions.ts has used the trimmed idiom since Sep 8).

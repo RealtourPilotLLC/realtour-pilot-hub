@@ -105,12 +105,16 @@ export function uploadFloorFor(appointments: { startAt: Date | null; status: str
   return latest == null ? null : etDayStartUtc(new Date(latest));
 }
 
-/** The files uploaded on or after the floor (a file Dropbox gave no date for is kept). Pure. */
-export function filesSince(files: IntakeFile[], floor: Date | null): { kept: IntakeFile[]; older: number } {
-  if (!floor) return { kept: files, older: 0 };
+/** The files uploaded on or after the floor (a file Dropbox gave no date for is kept). Pure. `olderFiles`: the ones left out. */
+export function filesSince(files: IntakeFile[], floor: Date | null): { kept: IntakeFile[]; older: number; olderFiles: IntakeFile[] } {
+  if (!floor) return { kept: files, older: 0, olderFiles: [] };
   const kept = files.filter((f) => !f.uploadedAt || !(Date.parse(f.uploadedAt) < floor.getTime()));
-  return { kept, older: files.length - kept.length };
+  const olderFiles = files.filter((f) => !kept.includes(f));
+  return { kept, older: olderFiles.length, olderFiles };
 }
+
+/** The job event the floor's warning writes (photo audit M10), once per set of never-sent older files. */
+export const OLDER_NEVER_SENT_ACTION = "raws from before this visit were never sent to AutoHDR";
 
 export function filesFingerprint(files: IntakeFile[]): string {
   const h = createHash("sha256");
@@ -199,6 +203,14 @@ export type IntakeSummary = {
 const SETTLED = ["DONE", "LINKED", "FAILED"];
 const RELIST_MS = 60 * MIN;
 const RELIST_LATE_MS = 6 * 60 * MIN;
+/** Oct 22 2026 (photo audit, low): in-flight errors in a row before a batch stops (an hour at five minutes), and when AutoHDR says the shoot is gone. */
+export const ERROR_TRIES = 12;
+export const GONE_TRIES = 3;
+/** The tries counted so far on a batch's lastError ("[try 3] …"), 0 when none. Pure. */
+export function intakeTries(lastError: string | null | undefined): number {
+  const m = /^\[try (\d+)\]/.exec(lastError ?? "");
+  return m ? Number(m[1]) : 0;
+}
 
 /**
  * One bounded pass: move in-flight batches on, then look for new uploads.
@@ -217,7 +229,7 @@ export async function driveIntake(opts: { budgetMs: number; now?: Date; listShoo
   const live = await prisma.photoIntakeBatch.findMany({
     where: { state: { in: ["LANDING", "PROCESSING", "UNCERTAIN", "SENDING"] }, OR: [{ nextCheckAt: null }, { nextCheckAt: { lte: now } }] },
     orderBy: { updatedAt: "asc" },
-    select: { id: true, state: true, address: true },
+    select: { id: true, state: true, address: true, projectId: true, lastError: true },
     take: 20,
   });
   let shoots: AutohdrPhotoshoot[] | null = null;
@@ -236,7 +248,18 @@ export async function driveIntake(opts: { budgetMs: number; now?: Date; listShoo
       }
     } catch (e) {
       out.errors.push(`${b.address ?? b.id}: ${(e as Error).message.slice(0, 160)}`);
-      await prisma.photoIntakeBatch.update({ where: { id: b.id }, data: { lastError: (e as Error).message.slice(0, 300), nextCheckAt: new Date(now.getTime() + 5 * MIN) } }).catch(() => {});
+      // Oct 22 2026 (photo audit, low): a shoot deleted in AutoHDR answered
+      // every five minutes for ever. The tries are counted on the batch's
+      // error ("[try n] …"); past the cap (3 when AutoHDR says it is gone, 12
+      // otherwise: an hour) the batch stops and ONE alert goes out (failBatch).
+      const tries = intakeTries(b.lastError) + 1;
+      const gone = e instanceof AutohdrError && (e.status === 404 || e.expired);
+      if (tries >= (gone ? GONE_TRIES : ERROR_TRIES)) {
+        await failBatch(b.id, b.projectId, b.address, `${gone ? "AutoHDR no longer has this shoot (deleted or expired)" : "AutoHDR kept failing on this shoot"}: stopped after ${tries} tries (${(e as Error).message.slice(0, 160)})`).catch(() => {});
+        out.failed.push(b.address ?? b.id);
+      } else {
+        await prisma.photoIntakeBatch.update({ where: { id: b.id }, data: { lastError: `[try ${tries}] ${(e as Error).message}`.slice(0, 300), nextCheckAt: new Date(now.getTime() + 5 * MIN) } }).catch(() => {});
+      }
     }
   }
 
@@ -299,12 +322,19 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
   const rawPath = actualFolderPaths(p).rawPhotos;
   const entries = await dropboxListFolder(rawPath, { recursive: true }).catch(() => null);
   if (!entries) return "error"; // unreadable is not empty
-  const { kept: all, older } = filesSince(eligibleFiles(entries), floor);
+  const { kept: all, older, olderFiles } = filesSince(eligibleFiles(entries), floor);
   // A file belongs to the first batch that listed it (any state but WAITING).
   const claimed = batches.filter((b) => b.state !== "WAITING").flatMap((b) => parseFiles(b.filesJson));
   const claimedIds = new Set(claimed.map((f) => f.id).filter(Boolean));
   const claimedHashes = new Set(claimed.map((f) => f.hash).filter(Boolean));
-  const fresh = all.filter((f) => !(f.id && claimedIds.has(f.id)) && !(f.hash && claimedHashes.has(f.hash)));
+  const unclaimed = (f: IntakeFile) => !(f.id && claimedIds.has(f.id)) && !(f.hash && claimedHashes.has(f.hash));
+  const fresh = all.filter(unclaimed);
+  // Oct 22 2026 (photo audit M10): the floor keeps an earlier visit's raws
+  // out. When some of them were NEVER sent by the hub (no batch ever claimed
+  // them), they are not dropped silently: said once on the job, and Kyle hears
+  // it once, so a person decides (edited another way, or send them by hand).
+  const neverSent = olderFiles.filter(unclaimed);
+  if (neverSent.length) await warnOlderNeverSent(p, neverSent, floor).catch((e) => console.warn("photo intake: older-raws warning failed", p.id, (e as Error).message));
   const waiting = batches.find((b) => b.state === "WAITING") ?? null;
   if (!fresh.length) {
     if (waiting) await prisma.photoIntakeBatch.delete({ where: { id: waiting.id } }).catch(() => {});
@@ -330,6 +360,25 @@ async function watchProject(p: Project, now: Date, ctx: { canSend: boolean; list
   if (now.getTime() - waiting.seenAt.getTime() < settle) return "waiting";
   if (!ctx.canSend) return "waiting";
   return sendBatch(waiting.id, p, fresh, now, ctx.listShoots);
+}
+
+/** Photo audit M10: once per job and set of files, on the job's activity and to Kyle. */
+async function warnOlderNeverSent(p: Project, files: IntakeFile[], floor: Date | null): Promise<void> {
+  const jobId = await jobIdFor(p.id);
+  if (!jobId) return;
+  const key = filesFingerprint(files);
+  if (await prisma.photoJobEvent.count({ where: { jobId, action: { startsWith: OLDER_NEVER_SENT_ACTION }, dataJson: { contains: key } } })) return;
+  const when = floor ? etDate(floor) : "this visit";
+  await logJobEvent(jobId, "autohdr-intake", `${OLDER_NEVER_SENT_ACTION}: ${files.length} file${files.length === 1 ? "" : "s"} in 01-RAW-Photos uploaded before ${when} (an earlier visit). They are not sent with this visit; if they belong to it, send them by hand`, { key, files: files.length, sample: files.slice(0, 5).map((f) => f.name), floor: floor?.toISOString() ?? null });
+  await alertOwnerAndKyle({
+    kind: "photo_autohdr_older_raws",
+    title: `${streetOf(p)}: earlier raws never sent`.slice(0, 90),
+    body: `${files.length} raw file${files.length === 1 ? "" : "s"} uploaded before ${when} never went to AutoHDR.`,
+    href: `/ops/photo-delivery`,
+    dedupeKey: `pd-intake-older-${p.id}-${key}`,
+    text: `${streetOf(p)}: ${files.length} raw file${files.length === 1 ? "" : "s"} in 01-RAW-Photos were uploaded before ${when} (an earlier visit) and the hub never sent them to AutoHDR. They are not sent with this visit. If they belong to it, send them by hand. ${appBase()}/ops/photo-delivery`,
+    to: "kyle",
+  }).catch(() => null);
 }
 
 async function sendBatch(batchId: string, p: Project, files: IntakeFile[], now: Date, listShoots: () => Promise<AutohdrPhotoshoot[]>): Promise<WatchResult> {
@@ -479,11 +528,14 @@ async function pollProcessing(batchId: string, now: Date): Promise<"waiting" | "
     await failBatch(batchId, b.projectId, b.address, "AutoHDR reported the edit failed");
     return "failed";
   }
+  let slowNow = false;
   if (b.committedAt && now.getTime() - b.committedAt.getTime() > SLOW_AFTER_MS && !b.lastError?.startsWith("slow")) {
+    slowNow = true;
     await prisma.photoIntakeBatch.update({ where: { id: batchId }, data: { lastError: "slow: still editing after 3 hours" } });
     await alertOwnerAndKyle({ kind: "photo_autohdr_slow", title: `AutoHDR still editing: ${b.address ?? "a shoot"}`.slice(0, 90), href: "/ops/photo-delivery", dedupeKey: `pd-intake-slow-${batchId}`, text: `AutoHDR has been editing ${b.address ?? "a shoot"} for over 3 hours (usually 30 to 60 minutes). Check it in AutoHDR. ${appBase()}/ops/photo-delivery`, to: "both" }).catch(() => null);
   }
-  await prisma.photoIntakeBatch.update({ where: { id: batchId }, data: { nextCheckAt: new Date(now.getTime() + 5 * MIN) } });
+  // A clean answer ends a run of errors (the "[try n]" count, photo audit low).
+  await prisma.photoIntakeBatch.update({ where: { id: batchId }, data: { nextCheckAt: new Date(now.getTime() + 5 * MIN), ...(intakeTries(b.lastError) && !slowNow ? { lastError: null } : {}) } });
   return "waiting";
 }
 
@@ -494,18 +546,25 @@ async function pollProcessing(batchId: string, now: Date): Promise<"waiting" | "
  * hears about it once; Kyle's own downloads can cause the same drop, so this
  * is a question, not a verdict.
  */
-async function checkCreatorBilling(b: { id: string; address: string | null; balanceAtSend: number | null }, photos: number) {
+export async function checkCreatorBilling(b: { id: string; address: string | null; balanceAtSend: number | null; sentAt?: Date | null }, photos: number) {
   if (b.balanceAtSend == null || photos < 5) return;
   const now = await autohdr.credits().then((c) => c.credit_balance).catch(() => null);
   if (now == null) return;
-  const drop = b.balanceAtSend - now;
+  // Oct 22 2026 (photo audit, low): the hub's OWN spending while this shoot
+  // was editing (its downloads for display, fixes, restyles, all in the credit
+  // ledger) is not AutoHDR billing the edit: it came off before comparing. The
+  // "credits fell while a shoot was editing" alert was set off by them.
+  const ours = b.sentAt
+    ? (await prisma.autohdrCreditEntry.findMany({ where: { at: { gte: b.sentAt }, credits: { lt: 0 }, kind: { in: ["DOWNLOAD", "TRANSFORM", "STYLE", "PRESET"] } }, select: { credits: true } }).catch(() => [])).reduce((s, r) => s - r.credits, 0)
+    : 0;
+  const drop = b.balanceAtSend - now - ours;
   if (drop < Math.round(photos * 0.9)) return;
   await alertOwnerAndKyle({
     kind: "photo_autohdr_billing",
     title: "AutoHDR credits fell while a shoot was editing",
     href: "/ops/photo-delivery/credits",
     dedupeKey: `pd-intake-billing-${b.id}`,
-    text: `AutoHDR credits fell by ${drop} while ${b.address ?? "a shoot"} (${photos} photos) was editing, before anything was downloaded. If the account's default look is a creator model, editing itself is billed. Check the default look in AutoHDR. ${appBase()}/ops/photo-delivery/credits`,
+    text: `AutoHDR credits fell by ${drop} while ${b.address ?? "a shoot"} (${photos} photos) was editing, not counting the hub's own downloads and fixes${ours ? ` (${ours} credit${ours === 1 ? "" : "s"})` : ""}. If the account's default look is a creator model, editing itself is billed. Check the default look in AutoHDR. ${appBase()}/ops/photo-delivery/credits`,
     to: "owner",
   }).catch(() => null);
 }

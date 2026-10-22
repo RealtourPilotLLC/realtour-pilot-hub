@@ -234,9 +234,25 @@ export function jsonFrom<T>(text: string): T | null {
 export function secondLookPrompt(items: { label: string; where: string | null }[]): string {
   return [
     "Look closely at this real estate photo. For each numbered item below, say whether it is really visible in this photo.",
-    'Answer ONLY with JSON: {"items":[{"n":1,"present":true}]}, one entry per number, present true or false.',
+    'Answer ONLY with JSON: {"items":[{"n":1,"present":true,"confidence":0.9}]}, one entry per number, present true or false, confidence from 0 to 1 (how sure you are).',
     ...items.map((it, i) => `${i + 1}. ${it.label}${it.where ? `: ${it.where}` : ""}`),
   ].join("\n");
+}
+
+/**
+ * Oct 22 2026 (photo audit M6): checks a single "not there" from the second
+ * look must not dismiss: the editing mistakes a client notices (615 Cliff Ln's
+ * floating lamp). Dismissed only when the second look says not there with at
+ * least this confidence; anything less (or no confidence given) keeps it.
+ */
+export const STRICT_SECOND_LOOK: Record<string, number> = { AIEDIT_FLOATING_OBJECT: 0.85 };
+
+/** Does this second-look answer dismiss the finding? Pure. */
+export function secondLookDismisses(ruleId: string, hit: { present?: unknown; confidence?: unknown }): boolean {
+  if (hit.present !== false) return false;
+  const need = STRICT_SECOND_LOOK[ruleId];
+  if (need == null) return true;
+  return typeof hit.confidence === "number" && Number.isFinite(hit.confidence) && hit.confidence >= need;
 }
 
 type Photo = { id: string; sourceKind: string; sourceRef: string | null; autohdrImageUuid: string | null; sequence: number; status: string };
@@ -272,7 +288,7 @@ export async function secondLookJob(jobId: string, deadline: number): Promise<{ 
           return;
         }
         const items = list.map((f) => ({ label: ruleById(f.ruleId)?.shortLabel ?? f.ruleId, where: f.locationText }));
-        let answer: { items?: { n?: number; present?: boolean }[] } | null = null;
+        let answer: { items?: { n?: number; present?: boolean; confidence?: number }[] } | null = null;
         try {
           answer = jsonFrom(await describePhoto(shoot, p.autohdrImageUuid, secondLookPrompt(items)));
         } catch (e) {
@@ -291,7 +307,8 @@ export async function secondLookJob(jobId: string, deadline: number): Promise<{ 
             await prisma.photoQcFinding.update({ where: { id: f.id }, data: tries >= 1 ? { arbitration: "CONFIRMED" } : { coercedJson: JSON.stringify({ secondLookTries: tries + 1 }) } });
             continue;
           }
-          if (hit.present) {
+          // Oct 22 2026 (photo audit M6): a floating object is dismissed only by a confident "not there".
+          if (!secondLookDismisses(f.ruleId, hit)) {
             confirmed++;
             await prisma.photoQcFinding.update({ where: { id: f.id }, data: { arbitration: "CONFIRMED" } });
           } else {
@@ -310,9 +327,20 @@ export async function secondLookJob(jobId: string, deadline: number): Promise<{ 
 
 /** Recompute the verdict and stage after findings changed (second look, fixes, a re-check): the one review rule (decisions.reviewStage). */
 export async function refreshVerdict(jobId: string, actor: string): Promise<void> {
-  const [r, job] = await Promise.all([reviewStage(jobId), prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, qcVerdict: true } })]);
+  const [r, job] = await Promise.all([reviewStage(jobId), prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true, qcVerdict: true, holdReason: true } })]);
   if (!job) return;
-  if (r.stage !== "stay" && ["QC_REVIEW", "READY"].includes(job.stage) && job.stage !== r.stage) await setStage(jobId, ["QC_REVIEW", "READY"], r.stage, actor, { why: `verdict now ${r.verdict}`, extra: { qcVerdict: r.verdict } });
+  // Oct 22 2026 (photo audit H4): a hold the check put on for a critical issue
+  // lifts by itself once no critical issue is left (decided, fixed, set aside
+  // by the second look). A hold a person put on, or for credits or a reshoot,
+  // stays until a person releases it. It resumes in QC review (resumeStageFor).
+  let stage = job.stage;
+  if (stage === "ON_HOLD" && job.holdReason === "CRITICAL" && r.verdict !== "HOLD") {
+    const { releaseHold } = await import("./jobState");
+    if (await releaseHold(jobId, actor, `no critical issue left (verdict ${r.verdict}): the hold lifts by itself`)) {
+      stage = (await prisma.photoJob.findUnique({ where: { id: jobId }, select: { stage: true } }))?.stage ?? stage;
+    }
+  }
+  if (r.stage !== "stay" && ["QC_REVIEW", "READY"].includes(stage) && stage !== r.stage) await setStage(jobId, ["QC_REVIEW", "READY"], r.stage, actor, { why: `verdict now ${r.verdict}`, extra: { qcVerdict: r.verdict } });
   else if (job.qcVerdict !== r.verdict) await prisma.photoJob.update({ where: { id: jobId }, data: { qcVerdict: r.verdict } });
 }
 

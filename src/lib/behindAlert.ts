@@ -122,6 +122,8 @@ const PHOTO_STAGE_WHO: Record<string, string> = {
   DELIVERY_MISMATCH: "The delivery needs a look",
   REVISION_REQUESTED: "The client asked for changes",
 };
+/** Oct 22 2026 (photo audit M3): a photo job in Editing that never had raws. */
+export const NOT_UPLOADED_WHO = "Not uploaded yet (the photographer's)";
 
 type Source = (now: Date, opts: { fresh: boolean }) => Promise<BehindItem[]>;
 let sourceImpl: Source | null = null;
@@ -160,7 +162,7 @@ async function lateVideos(now: Date, fresh: boolean): Promise<BehindItem[]> {
 async function latePhotos(now: Date): Promise<BehindItem[]> {
   const jobs = await prisma.photoJob.findMany({
     where: { stage: { not: "DELIVERED" }, slaDueAt: { lt: now } },
-    select: { id: true, projectId: true, stage: true, slaDueAt: true },
+    select: { id: true, projectId: true, stage: true, slaDueAt: true, finalsCount: true },
     take: 200,
   });
   if (!jobs.length) return [];
@@ -169,13 +171,19 @@ async function latePhotos(now: Date): Promise<BehindItem[]> {
     where: { id: { in: jobs.map((j) => j.projectId) } },
     select: { id: true, title: true, status: true, client: { select: { id: true, name: true } } },
   });
+  // Oct 22 2026 (photo audit M3): a job in Editing whose raws never reached the hub (no intake batch, no photos read) is the photographer's, not AutoHDR's.
+  const editingEmpty = jobs.filter((j) => j.stage === "EDITING" && !j.finalsCount).map((j) => j.projectId);
+  const withRaws = editingEmpty.length
+    ? await prisma.photoIntakeBatch.groupBy({ by: ["projectId"], where: { projectId: { in: editingEmpty } }, _count: { _all: true } }).then((rows) => new Set(rows.map((r) => r.projectId))).catch(() => null)
+    : null;
   const byId = new Map(projects.map((p) => [p.id, p]));
   const out: BehindItem[] = [];
   for (const j of jobs) {
     const p = byId.get(j.projectId);
     // A cancelled shoot is not work (the queue drops it too); a test client is not real.
     if (!p || p.status === "CANCELLED" || isSyntheticClientRow({ id: p.client?.id, name: p.client?.name })) continue;
-    out.push({ kind: "photo", projectId: j.projectId, street: streetOf(p.title), lateHours: (now.getTime() - j.slaDueAt!.getTime()) / HOUR, who: PHOTO_STAGE_WHO[j.stage] ?? j.stage, href: `/ops/photo-delivery/${j.id}` });
+    const notUploaded = !!withRaws && editingEmpty.includes(j.projectId) && !withRaws.has(j.projectId);
+    out.push({ kind: "photo", projectId: j.projectId, street: streetOf(p.title), lateHours: (now.getTime() - j.slaDueAt!.getTime()) / HOUR, who: notUploaded ? NOT_UPLOADED_WHO : PHOTO_STAGE_WHO[j.stage] ?? j.stage, href: `/ops/photo-delivery/${j.id}` });
   }
   return out;
 }
