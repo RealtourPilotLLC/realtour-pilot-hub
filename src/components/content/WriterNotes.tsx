@@ -14,8 +14,9 @@ import { lengthLabel, trimInstruction, WRITER_LENGTH } from "@/lib/scriptWriter/
 //              needs a fix" with a one-press AI fix (the trim instruction, a
 //              new version; this one is kept); 86 to 110 reads "Longer than the
 //              55 to 85 aim" as advice; the estimated seconds either way
-//   review     "Creative review: 11 of 12 pass", each failing check with its
-//              reason (must-fix or flag), the fix rounds and the trim
+//   review     "Creative review: 12 of 13 pass", each failing check with its
+//              reason (must-fix or flag), the fix rounds and the trim; v2.3:
+//              the craft block (the five parts scored, a note each), folded
 //   rationale  the hook, the takeaway, how her strategy shaped it
 //   brief      the topic brief, folded: the one message, the viewer, why it
 //              was chosen, what she said (verbatim, with source and time),
@@ -50,7 +51,7 @@ export function WriterNotes({ writer, words, skit, canFix, busy, onFix }: { writ
   const showLength = !!length && (length.band === "over" || length.band === "long" || !!writer);
   if (!writer && !showLength) return null;
   const r = writer?.review ?? null;
-  // v2.1: the one press trims toward 75 to 80 and names the brief's must-keep points. Over the cap on
+  // v2.1: the one press trims toward WRITER_LENGTH.trimTo and names the brief's must-keep points. Over the cap on
   // any script; 86 to 110 only on a script the new writer drafted (its review undoes a trim that lost one).
   const fixable = canFix && !!length && (length.band === "over" || (length.band === "long" && !!writer));
   const mustKeep = (writer?.brief.mustKeep ?? []).map((m) => m.text);
@@ -91,6 +92,20 @@ export function WriterNotes({ writer, words, skit, canFix, busy, onFix }: { writ
               ))}
             </ul>
           )}
+          {r.craft.length > 0 && (
+            <details className="mt-0.5">
+              <summary className="cursor-pointer text-muted">
+                <span className="font-semibold">Craft:</span> {r.craft.map((c) => `${c.label} ${c.score || "?"}`).join(" · ")}
+              </summary>
+              <ul className={LIST}>
+                {r.craft.map((c) => (
+                  <li key={c.label} className={c.under ? "text-warning" : "text-muted"}>
+                    {c.label} {c.score ? `${c.score} of 5` : "not scored"}{c.note ? `: ${c.note}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       )}
       {writer?.rationale && (
@@ -130,10 +145,11 @@ export function WriterNotes({ writer, words, skit, canFix, busy, onFix }: { writ
                 <ul className={LIST}>
                   {writer.hooks.map((h, i) => (
                     <li key={i} className={h.chosen ? "font-medium text-foreground" : ""}>
-                      {h.chosen ? "Chosen: " : ""}{h.text} <span className="text-muted-2">({h.total}/35{h.disqualified ? `, set aside: ${h.disqualified}` : ""})</span>
+                      {h.chosen ? "Chosen: " : ""}{h.text} <span className="text-muted-2">({h.total}/{h.max}{h.disqualified ? `, set aside: ${h.disqualified}` : h.weak ? `, below the bar: ${h.weak}` : ""})</span>
                     </li>
                   ))}
                 </ul>
+                {writer.hookFallback && <p className="mt-0.5 text-warning">{writer.hookFallback}</p>}
               </div>
             )}
             {r && r.passing.length > 0 && <p className="mt-1 text-muted-2">Passing checks: {r.passing.map((p) => `${p.n}. ${p.label}`).join(", ")}</p>}

@@ -22,8 +22,8 @@
 // ---------------------------------------------------------------------------
 
 import { readJudge, type JudgeRecord } from "../scriptJudgeRecord";
-import type { HookCandidate, ReviewCheckResult, HardFinding } from "./rules";
-import { reviewHeadline } from "./rules";
+import type { HookCandidate, ReviewCheckResult, HardFinding, CraftScores } from "./rules";
+import { reviewHeadline, CRAFT_PARTS, CRAFT_PASS } from "./rules";
 
 export type BriefItem = { text: string; source: string };
 export type WriterPassage = { id: string; source: string; time: string | null; speaker: string; kind: string; quote: string; context: string; why: string };
@@ -37,7 +37,8 @@ export type TopicBrief = {
   videoType?: "story" | "educational";
   whatWeAsked?: string;
   angle?: string;
-  proof?: BriefItem | null;
+  /** v2.3: isHerStory is true when the proof is a real moment she told (her own moment then wins a hook tie). */
+  proof?: (BriefItem & { isHerStory?: boolean }) | null;
   centralMessage: string;
   viewer: string;
   whyChosen: string;
@@ -72,6 +73,8 @@ export type WriterRecord = {
   excludedPassages: { quote: string; source: string; reason: string }[];
   hooks: HookCandidate[];
   chosen: number;
+  /** v2.3: why the chosen hook was a fallback (no hook reached curiosity 4 and tension 4), or null. */
+  hookFallback?: string | null;
   rationale: WriterRationale | null;
   facts: WriterFact[];
   sources: { calls: string[]; olderWindows: number; relatedScripts: string[]; voiceRefs: { title: string; why: string }[]; answers: number };
@@ -81,7 +84,7 @@ export type WriterRecord = {
 };
 
 /** The automatic check's record, as the new reviewer fills it (scriptJudgeRecord.JudgeRecord plus these). */
-export type WriterJudgeExtra = { writer: 2; checks: ReviewCheckResult[]; hard: HardFinding[]; words: number; trimmed: boolean; summary: string | null };
+export type WriterJudgeExtra = { writer: 2; checks: ReviewCheckResult[]; hard: HardFinding[]; words: number; trimmed: boolean; summary: string | null; /** v2.3: the five parts scored. */ craft?: CraftScores | null };
 
 /** The writer's record on a version, or null (a version the old writer, a person or an import made). */
 export function readWriter(validationJson: string | null | undefined): WriterRecord | null {
@@ -92,7 +95,7 @@ export function readWriter(validationJson: string | null | undefined): WriterRec
     return {
       v: 2, version: String(w.version ?? ""), brief: w.brief as TopicBrief,
       passages: Array.isArray(w.passages) ? w.passages : [], excludedPassages: Array.isArray(w.excludedPassages) ? w.excludedPassages : [],
-      hooks: Array.isArray(w.hooks) ? w.hooks : [], chosen: typeof w.chosen === "number" ? w.chosen : -1, rationale: w.rationale ?? null,
+      hooks: Array.isArray(w.hooks) ? w.hooks : [], chosen: typeof w.chosen === "number" ? w.chosen : -1, hookFallback: typeof w.hookFallback === "string" ? w.hookFallback : null, rationale: w.rationale ?? null,
       facts: Array.isArray(w.facts) ? w.facts : [],
       sources: w.sources ?? { calls: [], olderWindows: 0, relatedScripts: [], voiceRefs: [], answers: 0 },
       runs: w.runs ?? { retrieval: null, brief: null, hooks: null, draft: null }, asOf: typeof w.asOf === "string" ? w.asOf : null,
@@ -107,7 +110,7 @@ export function readWriterJudge(validationJson: string | null | undefined): (Jud
   try {
     const raw = (JSON.parse(validationJson!) as { judge?: Partial<WriterJudgeExtra> }).judge ?? {};
     if (raw.writer !== 2) return null;
-    return { ...j, writer: 2, checks: Array.isArray(raw.checks) ? raw.checks : [], hard: Array.isArray(raw.hard) ? raw.hard : [], words: Number(raw.words) || 0, trimmed: raw.trimmed === true, summary: typeof raw.summary === "string" ? raw.summary : null, aimTrimmed: j.aimTrimmed === true };
+    return { ...j, writer: 2, checks: Array.isArray(raw.checks) ? raw.checks : [], hard: Array.isArray(raw.hard) ? raw.hard : [], words: Number(raw.words) || 0, trimmed: raw.trimmed === true, summary: typeof raw.summary === "string" ? raw.summary : null, aimTrimmed: j.aimTrimmed === true, craft: raw.craft && typeof raw.craft === "object" ? raw.craft : null };
   } catch { return null; }
 }
 
@@ -124,12 +127,17 @@ export type WriterCardUi = {
     fixRounds: number;
     trimmed: boolean;
     note: string | null;
+    /** v2.3: the craft block, part by part (score, the psychology note, under the bar or not). */
+    craft: { label: string; score: number; note: string; under: boolean }[];
   } | null;
-  /** v2.1: why a longer version was kept (the trim toward 75 to 80 dropped a must-keep point). */
+  /** v2.1: why a longer version was kept (the aim trim dropped a must-keep point). */
   lengthNote: string | null;
   rationale: WriterRationale | null;
   brief: Omit<TopicBrief, "whatSheSaid"> & { whatSheSaid: { quote: string; source: string }[] };
-  hooks: { text: string; total: number; chosen: boolean; disqualified: string | null }[];
+  /** v2.3: `max` is the most the scores could add to (35 before tension was scored, 40 since); `weak` why a hook was under the bar. */
+  hooks: { text: string; total: number; max: number; chosen: boolean; disqualified: string | null; weak: string | null }[];
+  /** v2.3: why the chosen hook was a fallback, or null. */
+  hookFallback: string | null;
 };
 
 const REVIEW_STATE_NOTE: Record<JudgeRecord["state"], string | null> = {
@@ -160,10 +168,12 @@ export function writerCardOf(validationJson: string | null | undefined): WriterC
           fixRounds: j.fixRounds,
           trimmed: j.trimmed || j.aimTrimmed === true,
           note: j.state === "not_checked" && j.error ? `${REVIEW_STATE_NOTE.not_checked}: ${j.error}` : REVIEW_STATE_NOTE[j.state],
+          craft: j.craft ? CRAFT_PARTS.map((p) => ({ label: p.label, score: Number(j.craft?.[p.key]?.score) || 0, note: String(j.craft?.[p.key]?.note ?? ""), under: (Number(j.craft?.[p.key]?.score) || 0) < CRAFT_PASS })) : [],
         }
       : null,
     rationale: w.rationale,
     brief: { ...w.brief, whatSheSaid: (w.brief.whatSheSaid ?? []).map((p) => ({ quote: p.quote, source: [p.source, p.time].filter(Boolean).join(" at ") })) },
-    hooks: w.hooks.map((h, i) => ({ text: h.text, total: h.total, chosen: i === w.chosen, disqualified: h.disqualified })),
+    hooks: w.hooks.map((h, i) => ({ text: h.text, total: h.total, max: Object.keys(h.scores ?? {}).length * 5 || 35, chosen: i === w.chosen, disqualified: h.disqualified, weak: h.disqualified ? null : h.weak ?? null })),
+    hookFallback: w.hookFallback ?? null,
   };
 }

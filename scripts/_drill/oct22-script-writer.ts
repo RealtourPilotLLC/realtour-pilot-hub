@@ -40,6 +40,17 @@
 //       keeps a live deal; a story's hook opens on her moment; a failed
 //       re-hook starts the next round from the runner-up hook (the automatic
 //       check and the offline run); no client's finals in any rule
+//   15. v2.3, the craft fix (Oct 22 2026): hooks eligible on curiosity and
+//       tension, ranked by curiosity + tension + specificity (her moment on a
+//       tie when the proof is her story), the month's other openings in the
+//       hooks step; hook_echo and the hedge re-hook; the proof is her story;
+//       how she helps once, must-keep 3, never the invitation; the close rule,
+//       generic_close and the close check at must-fix; the aim trim above 78
+//       and the kept-longer guard; the jargon list; the craft block (a hook or
+//       re-hook under 4 goes to the runner-up hook)
+//   16. v2.3, the model map: each step's model and effort, nothing the 5.5
+//       models refuse, the cached prefix of a second review round byte for
+//       byte, and the cost of each model with cache reads and writes
 //
 // ISOLATION: PGlite on 127.0.0.1 via the shared harness; the Anthropic API is
 // faked at fetch with canned answers; nothing else may leave.
@@ -107,6 +118,11 @@ const TOPIC_H = "Offline Topic That Passes After a Trim";
 const TOPIC_I = "Offline Topic Whose Trim Loses Substance";
 const TOPIC_G = "A Topic Whose Re-hook Fails Review";
 const TOPIC_J = "Offline Topic Whose Re-hook Fails Once";
+// v2.3 (the craft fix)
+const TOPIC_K = "Offline Topic Drafted At Eighty Words";
+const TOPIC_L = "Offline Topic Whose Trim Fails The Same Close";
+const TOPIC_M = "A Topic Whose Trim Fails The Same Close";
+const TOPIC_N = "A Topic Whose Re-hook Scores Three On Craft";
 const HOOK_RUNNER_UP = "Fresh paint can do more than a new kitchen.";
 const HOOK_THIRD = "Before you renovate, look at your house the way a buyer will.";
 const CONCEPT_A = "Items buyers and inspectors flag every single time, and most are never cosmetic.";
@@ -124,10 +140,19 @@ const ctl = {
   sizes: new Map<string, number[][]>(),
   /** Per topic: a queue of review verdicts: the keys that fail. */
   reviews: new Map<string, string[][]>(),
+  /** v2.3: per topic, a queue of craft scores the review gives (a part left out scores 4). */
+  craft: new Map<string, Record<string, number>[]>(),
 };
 const usage = { input_tokens: 1200, output_tokens: 400, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-const ok = (json: unknown, extra: Record<string, unknown> = {}) => new Response(JSON.stringify({ id: "msg_drill", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "thinking", thinking: "" }, { type: "text", text: JSON.stringify(json) }], stop_reason: "end_turn", usage, ...extra }), { status: 200, headers: { "content-type": "application/json" } });
-const topicOf = (prompt: string) => (prompt.includes(TOPIC_A) ? "A" : prompt.includes(TOPIC_B) ? "B" : prompt.includes(TOPIC_C) ? "C" : prompt.includes(TOPIC_E) ? "E" : prompt.includes(TOPIC_F) ? "F" : prompt.includes(TOPIC_H) ? "H" : prompt.includes(TOPIC_I) ? "I" : prompt.includes(TOPIC_G) ? "G" : prompt.includes(TOPIC_J) ? "J" : "?");
+// v2.3 (the model map): the fake answers as the model the request named, as the API does.
+let answeringModel = "claude-opus-5-5";
+const ok = (json: unknown, extra: Record<string, unknown> = {}) => new Response(JSON.stringify({ id: "msg_drill", type: "message", role: "assistant", model: answeringModel, content: [{ type: "thinking", thinking: "" }, { type: "text", text: JSON.stringify(json) }], stop_reason: "end_turn", usage, ...extra }), { status: 200, headers: { "content-type": "application/json" } });
+const TOPICS: [string, string][] = [["A", TOPIC_A], ["B", TOPIC_B], ["C", TOPIC_C], ["E", TOPIC_E], ["F", TOPIC_F], ["H", TOPIC_H], ["I", TOPIC_I], ["G", TOPIC_G], ["J", TOPIC_J], ["K", TOPIC_K], ["L", TOPIC_L], ["M", TOPIC_M], ["N", TOPIC_N]];
+const topicOf = (prompt: string) => TOPICS.find(([, title]) => prompt.includes(title))?.[0] ?? "?";
+/** v2.3: a user message sent as blocks (the cache breakpoints) reads as the blocks' texts joined, like StepPrompt.prompt. */
+const promptOf = (content: unknown) => (Array.isArray(content) ? (content as { text?: string }[]).map((b) => b.text ?? "").join("\n\n") : String(content ?? ""));
+/** The hook's longest word: the fake writer's close calls it back (v2.3: a close with nothing from the hook is generic_close). */
+const callbackWord = (hook: string) => hook.replace(/[^A-Za-z ]+/g, " ").split(/\s+/).reduce((a, w) => (w.length > a.length ? w : a), "").toLowerCase();
 const stepOf = (system: string, prompt: string) =>
   /^You read call transcripts for ONE video topic/.test(system) ? "retrieval"
   : /^You write the TOPIC BRIEF/.test(system) ? "brief"
@@ -146,9 +171,12 @@ function writerAnswer(t: string, step: string, prompt: string) {
   // A redraft from the runner-up hook (Oct 22 2026) is answered with that hook, as the model is told to.
   const told = /THE CHOSEN HOOK \(use it word for word\): (.*)/.exec(prompt)?.[1];
   const hook = step !== "draft" && told ? told : t === "B" ? HOOK_WIN_B : HOOK_WIN;
+  // v2.3: the close calls back the hook the version opens with (the draft's is the chosen one the code puts back).
+  const cb = callbackWord(told ?? hook);
+  const tail = (n: number, offset: number) => `${words(Math.max(1, n - 1), offset).replace(/\.$/, "")} ${cb}.`;
   return {
     title: step === "draft" ? `Draft for ${t}` : `Revised ${t}`, hook: step === "draft" ? "A hook the code must replace with the winner." : hook,
-    rehook: words(sz[0], 1), buildup: words(sz[1], 3), payoff: words(sz[2], 5), close: t === "A" ? `Before you change everything, ${words(Math.max(1, sz[3] - 4), 7)}` : words(sz[3], 9),
+    rehook: words(sz[0], 1), buildup: words(sz[1], 3), payoff: words(sz[2], 5), close: t === "A" ? `Before you change everything, ${tail(Math.max(2, sz[3] - 4), 7)}` : tail(sz[3], 9),
     closeType: "cta", captionCta: "Send me a message to plan your prep.", filmingNotes: "",
     rationale: { hook: "It names the belief a homeowner already has.", takeaway: "Spend where buyers look.", strategy: "Her seller pillar and her inspection process." },
     sourcesUsed: ["P1"], gaps: [], _promptHasHook: prompt.includes(hook),
@@ -160,9 +188,10 @@ const fence = fenceFetch(async (url, init) => {
   const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
   const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v]));
   const system = Array.isArray(body.system) ? String((body.system as { text?: string }[])[0]?.text ?? "") : String(body.system ?? "");
-  const prompt = String(((body.messages as { content?: string }[]) ?? [])[0]?.content ?? "");
+  const prompt = promptOf(((body.messages as { content?: unknown }[]) ?? [])[0]?.content);
   const step = stepOf(system, prompt);
   reqs.push({ step, body, headers, system, prompt });
+  answeringModel = typeof body.model === "string" ? body.model : "claude-opus-5-5";
   if (ctl.rejectBeta && headers["anthropic-beta"]) return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fallbacks: not available for this organization" } }), { status: 400, headers: { "content-type": "application/json" } });
   if (ctl.refuse && ctl.refuse === step) { ctl.refuse = null; return new Response(JSON.stringify({ id: "msg_r", type: "message", role: "assistant", model: "claude-opus-5-5", content: [], stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: null }, usage }), { status: 200, headers: { "content-type": "application/json" } }); }
   if (ctl.truncate > 0) { ctl.truncate--; return new Response(JSON.stringify({ id: "msg_t", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "thinking", thinking: "" }], stop_reason: "max_tokens", usage }), { status: 200, headers: { "content-type": "application/json" } }); }
@@ -192,11 +221,12 @@ const fence = fenceFetch(async (url, init) => {
       });
     case "hooks":
       return ok({ hooks: [
-        { text: "Sellers, your repairs list is probably wrong.", rehook: "Here is why.", lever: "belief", scores: { relevance: 5, curiosity: 5, specificity: 5, naturalDelivery: 5, accuracy: 5, herVoice: 4, payoffConnection: 4 }, note: "names the audience" },
-        { text: "Your buyer will never see the kitchen you are about to redo.", rehook: "They look elsewhere.", lever: "contrast", scores: { relevance: 5, curiosity: 5, specificity: 5, naturalDelivery: 5, accuracy: 3, herVoice: 5, payoffConnection: 5 }, note: "not quite what she said" },
-        { text: t === "B" ? HOOK_WIN_B : HOOK_WIN, rehook: "Sometimes paint does more than a renovation.", lever: "belief", scores: { relevance: 5, curiosity: 4, specificity: 4, naturalDelivery: 5, accuracy: 5, herVoice: 4, payoffConnection: 4 }, note: "her own contrast" },
-        { text: "Fresh paint can do more than a new kitchen.", rehook: "But not always.", lever: "contrast", scores: { relevance: 4, curiosity: 4, specificity: 4, naturalDelivery: 4, accuracy: 5, herVoice: 4, payoffConnection: 3 }, note: "" },
-        { text: "Before you renovate, look at your house the way a buyer will.", rehook: "They start with the roof.", lever: "advice", scores: { relevance: 4, curiosity: 3, specificity: 4, naturalDelivery: 4, accuracy: 5, herVoice: 4, payoffConnection: 4 }, note: "" },
+        // v2.3: tension scored too. The winner and the runner-up tie on curiosity + tension + specificity (12); the total breaks it.
+        { text: "Sellers, your repairs list is probably wrong.", rehook: "Here is why.", lever: "belief", scores: { relevance: 5, curiosity: 5, tension: 5, specificity: 5, naturalDelivery: 5, accuracy: 5, herVoice: 4, payoffConnection: 4 }, note: "names the audience" },
+        { text: "Your buyer will never see the kitchen you are about to redo.", rehook: "They look elsewhere.", lever: "contrast", scores: { relevance: 5, curiosity: 5, tension: 5, specificity: 5, naturalDelivery: 5, accuracy: 3, herVoice: 5, payoffConnection: 5 }, note: "not quite what she said" },
+        { text: t === "B" ? HOOK_WIN_B : HOOK_WIN, rehook: "Sometimes paint does more than a renovation.", lever: "belief", scores: { relevance: 5, curiosity: 4, tension: 4, specificity: 4, naturalDelivery: 5, accuracy: 5, herVoice: 4, payoffConnection: 4 }, note: "her own contrast" },
+        { text: "Fresh paint can do more than a new kitchen.", rehook: "But not always.", lever: "contrast", scores: { relevance: 4, curiosity: 4, tension: 4, specificity: 4, naturalDelivery: 4, accuracy: 5, herVoice: 4, payoffConnection: 3 }, note: "" },
+        { text: "Before you renovate, look at your house the way a buyer will.", rehook: "They start with the roof.", lever: "advice", scores: { relevance: 4, curiosity: 3, tension: 3, specificity: 4, naturalDelivery: 4, accuracy: 5, herVoice: 4, payoffConnection: 4 }, note: "" },
       ] });
     case "draft": case "trim": case "fix": case "revise":
       return ok(writerAnswer(t, step, prompt));
@@ -205,7 +235,11 @@ const fence = fenceFetch(async (url, init) => {
       const failing = queue.shift() ?? [];
       ctl.reviews.set(t, queue);
       const keys = ["on_topic", "her_meaning", "hook", "rehook", "story", "substance", "payoff", "close", "her_voice", "claims", "length", "nothing_extra"];
-      return ok({ checks: keys.map((key) => ({ key, pass: !failing.includes(key), reason: failing.includes(key) ? `REVIEW NOTE ${key}: the chronology is bent (she worked in senior living before real estate).` : "ok" })), fixInstruction: failing.length ? "Put her senior-living career before her license, as she said it." : "", summary: failing.length ? "Not yet." : "Strong." });
+      const cq = ctl.craft.get(t) ?? [];
+      const low = cq.shift() ?? {};
+      ctl.craft.set(t, cq);
+      const craft = Object.fromEntries(["hook", "rehook", "buildup", "payoff", "close"].map((k) => [k, { score: low[k] ?? 4, note: `CRAFT NOTE ${k}: ${(low[k] ?? 4) < 4 ? "it only explains the hook" : "it does its job"}` }]));
+      return ok({ checks: keys.map((key) => ({ key, pass: !failing.includes(key), reason: failing.includes(key) ? `REVIEW NOTE ${key}: the chronology is bent (she worked in senior living before real estate).` : "ok" })), craft, fixInstruction: failing.length || Object.keys(low).length ? "Put her senior-living career before her license, as she said it." : "", summary: failing.length ? "Not yet." : "Strong." });
     }
     case "cleanup": {
       const ids = [...prompt.matchAll(/^\[([^\]]+)\] \(([^)]*)\) (.*)$/gm)].map((m) => ({ id: m[1], body: m[3] }));
@@ -239,9 +273,9 @@ async function main() {
     await saveSecret("ai", ["sk", "ant", "drill", "0000000000"].join("-"));
     const f = await buildContentMonth(prisma, {
       name: CLIENT, package: "Pro", monthKey: "2026-10",
-      topics: [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E, TOPIC_F, TOPIC_H, TOPIC_I, TOPIC_G, TOPIC_J].map((title) => ({ title, selection: "SELECTED" as const, source: "ai" })),
+      topics: [TOPIC_A, TOPIC_B, TOPIC_C, TOPIC_D, TOPIC_E, TOPIC_F, TOPIC_H, TOPIC_I, TOPIC_G, TOPIC_J, TOPIC_K, TOPIC_L, TOPIC_M, TOPIC_N].map((title) => ({ title, selection: "SELECTED" as const, source: "ai" })),
     });
-    const [tA, tB, tC, tD, tE, tF, tH, tI, tG, tJ] = f.topicIds;
+    const [tA, tB, tC, tD, tE, tF, tH, tI, tG, tJ, tK, tL, tM, tN] = f.topicIds;
     // The listening fix (Oct 22 2026): production holds "Jordan Spackman TEST" enrolled beside real clients.
     // With the old filter that one row deleted every line Jordan said; a real other client still goes.
     const enroll = async (name: string) => { const cl = await prisma.client.create({ data: { name } }); await prisma.contentEnrollment.create({ data: { clientId: cl.id, package: "Pro", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 2 } }); return cl; };
@@ -319,7 +353,7 @@ async function main() {
 
     // =======================================================================
     c.head("2-7 · topic A: retrieval, facts, voice, assumptions, the brief, five hooks");
-    ctl.sizes.set("A", [[40, 36, 26, 18], [22, 20, 16, 12]]); // the draft: 15 + 120 = 135 words; the trim: 15 + 70 = 85
+    ctl.sizes.set("A", [[40, 36, 26, 18], [20, 18, 14, 10]]); // the draft: 15 + 120 = 135 words; the trim: 15 + 62 = 77 (v2.3: at or under 78, no aim trim after it)
     ctl.reviews.set("A", [[], []]);
     const before = reqs.length;
     const rA = await gen.generateScriptForTopic({ topicId: tA, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
@@ -332,8 +366,14 @@ async function main() {
       // read in a second retrieval that is told what she already said (this assertion used to read the first request).
       const ret2 = step("retrieval")[1];
       c.ok("…and an older call's window found by HER words, read in a second retrieval told what she already said", !!ret2 && ret2.prompt.includes(Q_PAINT) && /older call for 2026-02/.test(ret2.prompt) && !ret.prompt.includes(Q_PAINT) && /WHAT SHE ALREADY SAID ON THIS TOPIC'S CALL[\s\S]*I always recommend a pre-listing inspection/.test(ret2.prompt) && ret2.system === ret.system, `${step("retrieval").length} retrievals`);
-      c.ok("retrieval and brief at medium effort; hooks, draft and review at high", ret?.body && (ret.body.output_config as { effort: string }).effort === "medium" && (step("brief")[0]?.body.output_config as { effort: string }).effort === "medium" && (step("hooks")[0]?.body.output_config as { effort: string }).effort === "high" && (step("draft")[0]?.body.output_config as { effort: string }).effort === "high" && (step("review")[0]?.body.output_config as { effort: string }).effort === "high");
-      c.ok("every writer request: opus 5.5, json_schema, no tool_choice, no temperature, version unchanged", mine.filter((r) => r.step !== "other").every((r) => r.body.model === "claude-opus-5-5" && (r.body.output_config as { format: { type: string } }).format.type === "json_schema" && !("tool_choice" in r.body) && !("temperature" in r.body) && r.headers["anthropic-version"] === "2023-06-01"), mine.map((r) => r.step).join(","));
+      // v2.3, the model map (pipeline STEP_MODEL / STEP_EFFORT).
+      const me = (r: Req | undefined) => `${r?.body.model}/${(r?.body.output_config as { effort?: string } | undefined)?.effort}`;
+      c.ok("the model map: retrieval Haiku 5.5 medium, brief Sonnet 5.5 medium, hooks Opus 5.5 high, draft Sonnet 5.5 high, review Sonnet 5.5 medium, the trim Sonnet 5.5 high",
+        me(ret) === "claude-haiku-5-5/medium" && me(step("retrieval")[1]) === "claude-haiku-5-5/medium" && me(step("brief")[0]) === "claude-sonnet-5-5/medium" && me(step("hooks")[0]) === "claude-opus-5-5/high" && me(step("draft")[0]) === "claude-sonnet-5-5/high" && step("review").every((r) => me(r) === "claude-sonnet-5-5/medium") && me(step("trim")[0]) === "claude-sonnet-5-5/high",
+        ["retrieval", "brief", "hooks", "draft", "review", "trim"].map((s) => `${s}=${me(step(s)[0])}`).join(" "));
+      const STEP_OF: Record<string, keyof typeof pipe.STEP_MODEL> = { retrieval: "retrieval", brief: "brief", hooks: "hooks", draft: "draft", review: "review", trim: "revise", fix: "revise", revise: "revise" };
+      c.ok("every writer request: its step's model and effort exact (no date suffix), json_schema, no tool_choice, no temperature, top_p, top_k or thinking budget, version unchanged",
+        mine.filter((r) => r.step !== "other").every((r) => r.body.model === pipe.STEP_MODEL[STEP_OF[r.step]] && (r.body.output_config as { effort: string }).effort === pipe.STEP_EFFORT[STEP_OF[r.step]] && !/\d{8}$/.test(String(r.body.model)) && (r.body.output_config as { format: { type: string } }).format.type === "json_schema" && !("tool_choice" in r.body) && !("temperature" in r.body) && !("top_p" in r.body) && !("top_k" in r.body) && !("thinking" in r.body) && !JSON.stringify(r.body).includes("budget_tokens") && r.headers["anthropic-version"] === "2023-06-01"), mine.map((r) => r.step).join(","));
 
       const v1 = await prisma.contentScriptVersion.findFirst({ where: { scriptId: rA.scriptId, versionNo: 1 } });
       const w = record.readWriter(v1?.validationJson);
@@ -372,15 +412,15 @@ async function main() {
       const j1 = (await import("@/lib/scriptJudgeRecord")).readJudge(vs[0].validationJson);
       c.ok("v1: 135 spoken words, the length check failed by CODE (must-fix: A bit long: needs a fix)", vs[0].spokenWordCount === 135 && j1?.checks?.find((x) => x.key === "length")?.pass === false && /A bit long: needs a fix/.test(j1?.checks?.find((x) => x.key === "length")?.reason ?? ""), `${vs[0].spokenWordCount} words`);
       const trimP = step("trim")[0]?.prompt ?? "";
-      c.ok("…straight to the trim pass (no fix round for length alone)", step("trim").length === 1 && step("fix").length === 0 && /LENGTH TRIM: this version is 135 spoken words[\s\S]*over the 110-word cap[\s\S]*Trim it toward 75 to 80 spoken words[\s\S]*it must end at 110 words or fewer/.test(trimP), trimP.slice(trimP.indexOf("LENGTH TRIM"), trimP.indexOf("LENGTH TRIM") + 200));
+      c.ok("…straight to the trim pass (no fix round for length alone)", step("trim").length === 1 && step("fix").length === 0 && /LENGTH TRIM: this version is 135 spoken words[\s\S]*over the 110-word cap[\s\S]*Trim it toward 65 to 75 spoken words[\s\S]*it must end at 110 words or fewer/.test(trimP), trimP.slice(trimP.indexOf("LENGTH TRIM"), trimP.indexOf("LENGTH TRIM") + 200));
       c.ok("…naming the brief's must-keep points, none of which may be dropped", /These must-keep points from the brief survive, in substance: "She recommends a pre-listing inspection"/.test(trimP) && /Never drop a must-keep point/.test(trimP));
       const last = vs[vs.length - 1];
       const jl = (await import("@/lib/scriptJudgeRecord")).readJudge(last.validationJson);
-      c.ok("v2: trimmed to 85 words, reviewed again: passed, 12 of 12", vs.length === 2 && last.spokenWordCount === 85 && jl?.state === "passed" && jl.trimmed === true && rules.reviewHeadline(jl.checks ?? []) === "Creative review: 12 of 12 pass", `${last.spokenWordCount} · ${jl?.state}`);
+      c.ok("v2: trimmed to 77 words, reviewed again: passed, 13 of 13 (v2.3: the craft block is check 13)", vs.length === 2 && last.spokenWordCount === 77 && jl?.state === "passed" && jl.trimmed === true && rules.reviewHeadline(jl.checks ?? []) === "Creative review: 13 of 13 pass", `${last.spokenWordCount} · ${jl?.state}`);
       c.ok("…its brief carried forward, the change summary says it was trimmed", !!record.readWriter(last.validationJson)?.brief && /Trimmed by the creative review/.test(last.changeSummary ?? ""));
       const card = record.writerCardOf(last.validationJson);
-      c.ok("the card: the review headline, the rationale, the brief", card?.review?.headline === "Creative review: 12 of 12 pass" && card.review.trimmed && !!card.rationale?.hook && card.brief.whatSheSaid.length === 2);
-      c.ok("…review steps ran on the writer path, their own kind (script_review), counted apart from the client cap", (await prisma.programAiRun.count({ where: { kind: "script_review", enrollmentId: f.enrollmentId, model: "claude-opus-5-5" } })) === 2);
+      c.ok("the card: the review headline, the rationale, the brief", card?.review?.headline === "Creative review: 13 of 13 pass" && card.review.trimmed && !!card.rationale?.hook && card.brief.whatSheSaid.length === 2);
+      c.ok("…review steps ran on the writer path, their own kind (script_review), on Sonnet 5.5 (v2.3), counted apart from the client cap", (await prisma.programAiRun.count({ where: { kind: "script_review", enrollmentId: f.enrollmentId, model: "claude-sonnet-5-5" } })) === 2);
     }
 
     // =======================================================================
@@ -392,14 +432,14 @@ async function main() {
     {
       const mineB = reqs.slice(b0);
       const fixes = mineB.filter((r) => r.step === "fix");
-      c.ok("two fix rounds ran, each with the review's notes and the reviewer's instruction", fixes.length === 2 && /MUST FIX:\n- 2\. Her meaning: REVIEW NOTE her_meaning/.test(fixes[0].prompt) && /Put her senior-living career before her license/.test(fixes[0].prompt) && /ALSO IMPROVE IF YOU CAN[\s\S]*8\. Close/.test(fixes[0].prompt), String(fixes.length));
+      c.ok("two fix rounds ran, each with the review's notes and the reviewer's instruction; a failed close is MUST FIX now (v2.3)", fixes.length === 2 && /MUST FIX:\n- 2\. Her meaning: REVIEW NOTE her_meaning[^\n]*\n- 8\. Close: REVIEW NOTE close/.test(fixes[0].prompt) && /Put her senior-living career before her license/.test(fixes[0].prompt) && !/ALSO IMPROVE IF YOU CAN[\s\S]*8\. Close/.test(fixes[0].prompt), String(fixes.length));
       c.ok("…three reviews, no trim (it was never over the cap)", mineB.filter((r) => r.step === "review").length === 3 && mineB.filter((r) => r.step === "trim").length === 0, mineB.map((r) => r.step).join(","));
       const s = await prisma.contentScript.findUniqueOrThrow({ where: { id: rB.scriptId } });
       const cur = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: s.currentVersionId! } });
       const j = (await import("@/lib/scriptJudgeRecord")).readJudge(cur.validationJson);
       c.ok("it arrives FLAGGED, with the failing check named", j?.state === "flagged" && (j.checks ?? []).some((x) => x.key === "her_meaning" && !x.pass && x.level === "must-fix"), j?.state);
       const card = record.writerCardOf(cur.validationJson);
-      c.ok("the card says so: 11 of 12 pass, the must-fix check and its reason", card?.review?.headline === "Creative review: 11 of 12 pass" && /Still failing a must-fix check/.test(card.review.note ?? "") && card.review.failing.some((x) => x.n === 2 && x.level === "must-fix"), `${card?.review?.headline} · ${JSON.stringify(card?.review?.failing)} · ${cur.spokenWordCount}w`);
+      c.ok("the card says so: 12 of 13 pass, the must-fix check and its reason", card?.review?.headline === "Creative review: 12 of 13 pass" && /Still failing a must-fix check/.test(card.review.note ?? "") && card.review.failing.some((x) => x.n === 2 && x.level === "must-fix"), `${card?.review?.headline} · ${JSON.stringify(card?.review?.failing)} · ${cur.spokenWordCount}w`);
       c.ok("…sorted first in the review queue (flagged), and still waiting for Jordan", (await import("@/lib/scriptJudgeRecord")).judgeFlagged(j) && cur.status === "INTERNAL_REVIEW" && !s.approvedVersionId && !s.sharedVersionId);
     }
 
@@ -423,7 +463,7 @@ async function main() {
     }
 
     // =======================================================================
-    c.head("8d · the aim made real: a passing 98-word draft gets ONE trim toward 75 to 80, reviewed again → 78 words, passed");
+    c.head("8d · the aim made real: a passing 98-word draft gets ONE trim toward 65 to 75 (v2.3), reviewed again → 78 words, passed");
     ctl.sizes.set("E", [[26, 24, 20, 13], [18, 18, 16, 11]]);
     ctl.reviews.set("E", [[], []]);
     const e0 = reqs.length;
@@ -431,13 +471,13 @@ async function main() {
     {
       const mineE = reqs.slice(e0);
       const draftP = mineE.find((r) => r.step === "draft")?.prompt ?? "";
-      c.ok("the draft prompt asks for about 75 spoken words, plainly, with the must-keep points as the only things that must survive", draftP.includes("Write the script in about 75 spoken words (55 to 85; 110 is the hard cap). The brief's must-keep points are the only things that must survive"));
+      c.ok("the draft prompt asks for about 68 spoken words (v2.3), plainly, with the must-keep points as the only things that must survive", draftP.includes("Write the script in about 68 spoken words (55 to 85; 110 is the hard cap). The brief's must-keep points are the only things that must survive"));
       const trims = mineE.filter((r) => r.step === "trim");
-      c.ok("one trim pass toward 75 to 80 (not a cap trim), its must-keep points named", trims.length === 1 && /Trim it toward 75 to 80 spoken words \(the aim is 55 to 85\)/.test(trims[0].prompt) && !/over the 110-word cap/.test(trims[0].prompt) && /"She recommends a pre-listing inspection"/.test(trims[0].prompt));
+      c.ok("one trim pass toward 65 to 75 (not a cap trim), its must-keep points named", trims.length === 1 && /Trim it toward 65 to 75 spoken words \(the aim is 55 to 85\)/.test(trims[0].prompt) && !/over the 110-word cap/.test(trims[0].prompt) && /"She recommends a pre-listing inspection"/.test(trims[0].prompt));
       c.ok("…then reviewed again (two reviews), no fix round", mineE.filter((r) => r.step === "review").length === 2 && !mineE.some((r) => r.step === "fix"), mineE.map((r) => r.step).join(","));
       const vs = await prisma.contentScriptVersion.findMany({ where: { scriptId: rE.scriptId }, orderBy: { versionNo: "asc" } });
       const jl = (await import("@/lib/scriptJudgeRecord")).readJudge(vs[vs.length - 1].validationJson);
-      c.ok("98 → 78 words: the trimmed version is current and passed", vs.length === 2 && vs[0].spokenWordCount === 98 && vs[1].spokenWordCount === 78 && jl?.state === "passed" && jl.aimTrimmed === true && /Trimmed toward 75 to 80 words by the creative review/.test(vs[1].changeSummary ?? ""), vs.map((v) => v.spokenWordCount).join(" → "));
+      c.ok("98 → 78 words: the trimmed version is current and passed", vs.length === 2 && vs[0].spokenWordCount === 98 && vs[1].spokenWordCount === 78 && jl?.state === "passed" && jl.aimTrimmed === true && /Trimmed toward 65 to 75 words by the creative review/.test(vs[1].changeSummary ?? ""), vs.map((v) => v.spokenWordCount).join(" → "));
       c.ok("…the 98-word draft's review said \"Longer than the 55 to 85 aim\" as a flag, not a must-fix", (() => { const j0 = (JSON.parse(vs[0].validationJson ?? "{}") as { judge?: { checks?: { key: string; level: string; pass: boolean; reason: string }[] } }).judge; const l = j0?.checks?.find((x) => x.key === "length"); return !!l && !l.pass && l.level === "flag" && /Longer than the 55 to 85 aim/.test(l.reason); })());
     }
 
@@ -454,7 +494,7 @@ async function main() {
       c.ok("v1 96 words passed → v2 trimmed to 70 failed Enough substance → v3 = v1 again, current", vs.length === 3 && vs[0].spokenWordCount === 96 && vs[1].spokenWordCount === 70 && cur.id === vs[2].id && cur.body === vs[0].body, vs.map((v) => `v${v.versionNo}:${v.spokenWordCount}`).join(" "));
       c.ok("…v3 carries v1's passing review, marked trimmed; v2 is flagged with the reason", jr(cur.validationJson)?.state === "passed" && jr(cur.validationJson)?.aimTrimmed === true && jr(vs[1].validationJson)?.state === "flagged" && /dropped a must-keep point; v1 is kept/.test(jr(vs[1].validationJson)?.error ?? ""));
       const card = record.writerCardOf(cur.validationJson);
-      c.ok("the card says why the longer version stands, and the length line keeps its advice", /Kept v1 \(96 words, about 44 seconds\): the trim toward 75 to 80 words dropped a must-keep point/.test(card?.lengthNote ?? "") && rules.lengthLabel(96)?.band === "long" && /Longer than the 55 to 85 aim/.test(rules.lengthLabel(96)?.text ?? ""), card?.lengthNote ?? "none");
+      c.ok("the card says why the longer version stands, and the length line keeps its advice", /Kept v1 \(96 words, about 44 seconds\): the trim toward 65 to 75 words dropped a must-keep point, so the longer passing version stands\. "Longer than the 55 to 85 aim" stays as advice\.$/.test(card?.lengthNote ?? "") && rules.lengthLabel(96)?.band === "long" && /Longer than the 55 to 85 aim/.test(rules.lengthLabel(96)?.text ?? ""), card?.lengthNote ?? "none");
     }
 
     // =======================================================================
@@ -484,7 +524,7 @@ async function main() {
       ctl.sizes.set("H", [[26, 24, 20, 13], [18, 18, 16, 10]]);
       ctl.reviews.set("H", [[], []]);
       const off = await pipe.draftOffline({ topicId: tH, monthId: f.monthId, requestedBy: STAFF });
-      c.ok("offline: 98 → one trim toward 75 to 80 → 77 words, passed", off.state === "passed" && off.attempts.map((a) => `${a.label}:${a.words}`).join(",") === "draft:98,trim to aim:77" && off.final.words === 77 && !off.keptLonger, off.attempts.map((a) => `${a.label}:${a.words}`).join(","));
+      c.ok("offline: 98 → one trim toward 65 to 75 → 77 words, passed", off.state === "passed" && off.attempts.map((a) => `${a.label}:${a.words}`).join(",") === "draft:98,trim to aim:77" && off.final.words === 77 && !off.keptLonger, off.attempts.map((a) => `${a.label}:${a.words}`).join(","));
       ctl.sizes.set("I", [[24, 24, 20, 13], [14, 14, 14, 13]]);
       ctl.reviews.set("I", [[], ["substance"]]);
       const offI = await pipe.draftOffline({ topicId: tI, monthId: f.monthId, requestedBy: STAFF });
@@ -510,7 +550,7 @@ async function main() {
       for (const [name, sys] of [["writer", prompts.WRITER_SYSTEM], ["brief", prompts.BRIEF_SYSTEM], ["hooks", prompts.HOOKS_SYSTEM], ["review", prompts.REVIEW_SYSTEM]] as const) {
         c.ok(`${name}: her material, our wording, and Jordan's craft rules (story progression, her ACTUAL reason, the insight, educational contrast)`, sys.includes("HER MATERIAL, OUR WORDING") && sys.includes("Never paste her spoken sentences") && sys.includes("her ACTUAL reason for the change") && sys.includes("the insight that connects her past to the viewer's need") && sys.includes("meaningful contrast"));
       }
-      c.ok("close: a warm invitation by default, a callback alone only for a story with no service angle", rules.CLOSE_RULE.includes("by default, ends on a natural, warm invitation") && rules.CLOSE_RULE.includes("only when the video is purely a story with no service angle") && prompts.REVIEW_SYSTEM.includes("by default a warm, natural invitation tied to the message"));
+      c.ok("close: a callback to the hook, then a warm invitation (the default), a callback alone only for a story with no service angle", rules.CLOSE_RULE.includes("a warm invitation that names THIS video's specific next step") && rules.CLOSE_RULE.includes("\"cta\" (the default)") && rules.CLOSE_RULE.includes("only when the video is purely a story with no service angle") && prompts.REVIEW_SYSTEM.includes("a warm invitation that names this video's specific next step in her voice"));
       c.ok("review: transcript sentences pasted in fail her voice; a faithful paraphrase is supported; a fun fact is not a payoff", prompts.REVIEW_SYSTEM.includes("Her transcript sentences pasted in (rambling, filler, restarts) fail") && prompts.REVIEW_SYSTEM.includes("a faithful paraphrase is supported") && prompts.REVIEW_SYSTEM.includes("a fun fact about her (who her favorite clients are, a hobby, an award) is not a payoff"));
       const pasted = rules.hardNumbers({ hook: "I loved working in senior living.", points: [{ role: "re-hook", text: "I used to run sales and marketing for a retirement community before I got my license." }], close: "Let's talk." }, TRANSCRIPT);
       const phrase = rules.hardNumbers({ hook: "I loved working in senior living.", points: [{ role: "payoff", text: "Both needed someone to explain their options and fiercely protect their interests." }], close: "Let's talk." }, TRANSCRIPT);
@@ -523,8 +563,8 @@ async function main() {
     c.head("9 · the close rule and the length aim, in the writer, the review and the brief");
     {
       const sys = prompts.WRITER_SYSTEM;
-      c.ok("writer: a warm invitation by default, a callback where the story has no service angle; the old caption-only rule gone", sys.includes("by default, ends on a natural, warm invitation") && sys.includes("\"callback\": only when the video is purely a story") && !/contact ask goes in the caption|memorable final line/i.test(sys));
-      c.ok("writer: about 75 words inside 55 to 85, cap 110, never dry or incomplete", sys.includes("write about 75 spoken words") && sys.includes("inside the 55 to 85 range") && sys.includes("110 spoken words is the hard cap") && sys.includes("Never make it dry or incomplete"));
+      c.ok("writer: the close rule (a callback, then a warm invitation by default; a callback alone where the story has no service angle); the old caption-only rule gone", sys.includes(rules.CLOSE_RULE) && sys.includes("\"cta\" (the default)") && sys.includes("\"callback\": only when the video is purely a story") && !/contact ask goes in the caption|memorable final line/i.test(sys));
+      c.ok("writer: about 68 words (v2.3) inside 55 to 85, cap 110, never dry or incomplete", sys.includes("write about 68 spoken words") && sys.includes("inside the 55 to 85 range") && sys.includes("110 spoken words is the hard cap") && sys.includes("Never make it dry or incomplete"));
       c.ok("review: 86 to 110 is advice only; over 110 is must-fix", prompts.REVIEW_SYSTEM.includes("86 to 110 is advice only") && prompts.REVIEW_SYSTEM.includes("Over 110 words is must-fix"));
       c.ok("brief: closeType cta or callback, decided per message", prompts.BRIEF_SYSTEM.includes("closeType") && (prompts.BRIEF_SCHEMA as { properties: { closeType: { enum: string[] } } }).properties.closeType.enum.join() === "cta,callback");
       const l = rules.lengthCheck(96), a = rules.lengthCheck(80), s = rules.lengthCheck(40);
@@ -532,7 +572,7 @@ async function main() {
       c.ok("80 words passes; 40 words passes the length check (substance guards dry or incomplete)", a.pass && s.pass);
       const h = rules.hardNumbers({ hook: "Sellers, mortgage rates are up 7% and that changes everything", points: [{ role: "re-hook", text: "Know your buyer avatar — it matters (10 seconds)." }], close: "Let's talk." }, "she talked about her inspection process");
       const keys = h.findings.map((x) => x.key).sort().join(",");
-      c.ok("hard numbers by code: audience opener, dash, duration note, a figure and a market claim she never made, jargon", keys === "audience_vocative,dash,duration,jargon,market_claim,market_claim", keys);
+      c.ok("hard numbers by code: audience opener, dash, duration note, a figure and a market claim she never made, jargon, and (v2.3) a close with nothing from the hook", keys === "audience_vocative,dash,duration,generic_close,jargon,market_claim,market_claim", keys);
     }
 
     // =======================================================================
@@ -550,7 +590,7 @@ async function main() {
       ctl.sizes.set("A", [[14, 14, 14, 12]]);
       await gen.generateScriptForTopic({ topicId: tA, monthId: f.monthId, requestedBy: STAFF, unattended: false });
       const after = reqs.slice(s0).map((r) => r.step);
-      c.ok("a person's explicit new draft: only the draft call ran (the earlier steps reused); no review, fix or trim on a shared script", after.join(",") === "draft", after.join(","));
+      c.ok("a person's explicit new draft: the retrieval and the brief reused, the hooks asked again (v2.3: this month's other openings changed), the draft; no review, fix or trim on a shared script", after.join(",") === "hooks,draft", after.join(","));
       const sharedAfter = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: sharedId } });
       const headAfter = await prisma.contentScript.findUniqueOrThrow({ where: { id: rA.scriptId } });
       c.ok("the shared version is byte for byte what the client saw, and still the shared one", sharedAfter.body === shared.body && sharedAfter.status === "SHARED" && sharedAfter.validationJson === shared.validationJson && headAfter.sharedVersionId === sharedId);
@@ -582,7 +622,7 @@ async function main() {
       const r0 = reqs.length;
       const v = await gen.reviseScript(rB.scriptId, long, STAFF, "REVISION");
       const rv = reqs.slice(r0);
-      c.ok("revised by the writer (opus 5.5, high), the instruction whole in the prompt", rv.length === 1 && rv[0].step === "revise" && rv[0].prompt.includes("END-OF-INSTRUCTION") && rv[0].body.model === "claude-opus-5-5");
+      c.ok("revised by the writer (v2.3: Sonnet 5.5, high), the instruction whole in the prompt", rv.length === 1 && rv[0].step === "revise" && rv[0].prompt.includes("END-OF-INSTRUCTION") && rv[0].body.model === "claude-sonnet-5-5" && (rv[0].body.output_config as { effort: string }).effort === "high");
       const row = await prisma.contentScriptVersion.findUniqueOrThrow({ where: { id: v.versionId } });
       const run = await prisma.programAiRun.findUniqueOrThrow({ where: { id: row.aiRunId! } });
       c.ok("the full instruction is on the run and on the version (not cut to 160 characters)", (JSON.parse(run.inputRefsJson ?? "{}") as { instructionText?: string }).instructionText === long && (JSON.parse(row.validationJson ?? "{}") as { instruction?: string }).instruction === long && long.length > 600, String(long.length));
@@ -711,20 +751,21 @@ async function main() {
       // --- 4. the brief chooses (pure)
       const six = ["the belief", "reason one", "reason two", "her process", "the contrast", "the invitation"].map((text, i) => ({ text, source: `P${i + 1}` }));
       const edu = pipe.briefFrom({ videoType: "educational", angle: "Your neighbor's sale is not your price.", whatWeAsked: "What do sellers need to know? (01:21:57)", proof: { text: "buyers have options", source: "P2" }, mustKeep: [...six, { text: "her buyer's offer on the overpriced listing, $20,000 over", source: "P7", inProgress: true }] }, []);
-      c.ok("an educational brief keeps at most four must-keep points; the rest move to optional, marked", edu.mustKeep.length === 4 && edu.mustKeep.map((m) => m.text).join() === "the belief,reason one,reason two,her process" && edu.optional.slice(0, 2).every((o) => /moved from must-keep/.test(o.text)), JSON.stringify(edu.mustKeep.map((m) => m.text)));
+      c.ok("an educational brief keeps at most three must-keep points (v2.3); the rest move to optional, marked; the invitation is never must-keep", edu.mustKeep.length === 3 && edu.mustKeep.map((m) => m.text).join() === "the belief,reason one,reason two" && edu.optional.slice(0, 2).every((o) => /moved from must-keep: the belief, the proof, how she helps/.test(o.text)) && edu.optional.some((o) => /^the invitation \(moved from must-keep: the invitation belongs to the close\)$/.test(o.text)), JSON.stringify([edu.mustKeep.map((m) => m.text), edu.optional.map((o) => o.text)]));
       c.ok("…a deal still in progress is never must-keep: it is excluded, with the reason", !edu.mustKeep.some((m) => /20,000/.test(m.text)) && edu.excluded.some((x) => /20,000/.test(x.text) && /still in progress/.test(x.reason)));
       c.ok("…the angle, the one proof and what we asked are kept, and the brief text shows them", edu.angle === "Your neighbor's sale is not your price." && edu.proof?.text === "buyers have options" && /What we asked her[^\n]*What do sellers need to know/.test(prompts.briefText(edu)) && /Angle \(the one thing\)/.test(prompts.briefText(edu)));
       const story = pipe.briefFrom({ videoType: "story", mustKeep: [...six, { text: "seventh beat", source: "P9" }] }, []);
       const old = pipe.briefFrom({ mustKeep: six }, []);
-      c.ok("a story keeps its beats up to six; a brief with no video type is read as educational (four)", story.mustKeep.length === 6 && story.videoType === "story" && old.mustKeep.length === 4 && old.videoType === "educational");
-      c.ok("the brief prompt asks for one angle, one proof, the interviewer's question, the cap and no live deal", ["angle: ONE sentence", "proof: the ONE proof", "whatWeAsked:", "at most 4", "NEVER A LIVE DEAL", "when her story serves two groups, the viewer is both"].every((x) => prompts.BRIEF_SYSTEM.includes(x)));
+      c.ok("a story keeps its beats up to six (never the invitation); a brief with no video type is read as educational (three)", story.mustKeep.length === 6 && !story.mustKeep.some((m) => /invitation/.test(m.text)) && story.videoType === "story" && old.mustKeep.length === 3 && old.videoType === "educational");
+      c.ok("the brief prompt asks for one angle, one proof, the interviewer's question, the cap and no live deal", ["angle: ONE sentence", "proof: the ONE proof", "whatWeAsked:", "at most 3", "NEVER A LIVE DEAL", "when her story serves two groups, the viewer is both"].every((x) => prompts.BRIEF_SYSTEM.includes(x)));
 
       // --- 5. the hook for the story's job, and the runner-up on a failed re-hook (pure)
-      const sc = (n: number) => ({ relevance: n, curiosity: n, specificity: n, naturalDelivery: n, accuracy: 5, herVoice: n, payoffConnection: n });
+      const sc = (n: number) => ({ relevance: n, curiosity: n, tension: n, specificity: n, naturalDelivery: n, accuracy: 5, herVoice: n, payoffConnection: n });
       const raw = [
         { text: "Buying my first home shouldn't feel this scary, right?", rehook: "It should.", lever: "viewer question", fit: "viewer_line", scores: sc(5) },
         { text: "Every senior I helped move felt like my responsibility. Then I walked away.", rehook: "Here is why.", lever: "her moment", fit: "her_moment", scores: sc(4) },
-        { text: "I came into real estate sure I'd only work with seniors. I was wrong.", rehook: "First-time buyers called.", lever: "her moment", fit: "her_moment", scores: sc(3) },
+        // v2.3: eligible (curiosity and tension 4), the same rank as the one above, a lower total.
+        { text: "I came into real estate sure I'd only work with seniors. I was wrong.", rehook: "First-time buyers called.", lever: "her moment", fit: "her_moment", scores: { ...sc(3), curiosity: 4, tension: 4, specificity: 4 } },
       ];
       const asStory = rules.pickHook(raw, { videoType: "story" });
       const asEdu = rules.pickHook(raw, { videoType: "educational" });
@@ -758,6 +799,221 @@ async function main() {
       const leaked = rules.pastedRuns(FINALS, allRules, 5);
       c.ok("no run of five or more words from Jordan's three finals appears in any rule, system prompt or schema", leaked.length === 0, leaked.join(" | "));
       c.ok("…nor their signature phrases", !/fiercely protect|every bit as scary|my house is different|bidding war|first home or your next chapter|through their eyes|senior living/i.test(allRules));
+    }
+
+    // =======================================================================
+    // v2.3, THE CRAFT FIX (Oct 22 2026). The fixtures are the independent
+    // review's real examples from the offline drafts (Erica Walker, John
+    // Collins); the rules themselves quote no client.
+    // =======================================================================
+    const S = (o: Partial<Record<string, number>>) => ({ relevance: 4, curiosity: 4, tension: 4, specificity: 4, naturalDelivery: 4, accuracy: 5, herVoice: 4, payoffConnection: 4, ...o });
+    c.head("15.1 · hooks: tension scored; curiosity 4 and tension 4 to be eligible; ranked by curiosity + tension + specificity");
+    {
+      c.ok("HOOK_CRITERIA, the hooks prompt and its schema score tension", (rules.HOOK_CRITERIA as readonly string[]).includes("tension") && /tension \(5 = a real cost, reversal or unanswered question/.test(prompts.HOOKS_SYSTEM) && JSON.stringify(prompts.HOOKS_SCHEMA).includes("\"tension\""));
+      c.ok("house craft: a belief line carries its own tension", rules.HOUSE_CRAFT_RULES.includes("A belief line must carry its own tension: a cost, a reversal or an unanswered question. A bare wish or belief with nothing at stake is not a hook."));
+      // The backyard video: the viewer's wish had the highest total and won; it has nothing at stake.
+      const KITCHEN = "We just want to walk out of the kitchen straight to the pool.";
+      const HER_LOT = "My buyers wanted a kitchen-level walkout to the pool. Their lot had other plans.";
+      const backyard = [
+        { text: KITCHEN, rehook: "It's what buyers picture from homes they loved.", lever: "viewer belief", fit: "viewer_line", scores: S({ relevance: 5, curiosity: 4, tension: 2, specificity: 5, naturalDelivery: 5, herVoice: 5, payoffConnection: 5 }) },
+        { text: "The backyard you're picturing probably came from someone else's lot.", rehook: "Your lot gets a say.", lever: "contrast", fit: "other", scores: S({ curiosity: 5, tension: 4, specificity: 3 }) },
+        { text: HER_LOT, rehook: "So we pictured the views from the deck instead.", lever: "her moment", fit: "her_moment", scores: S({ curiosity: 5, tension: 5, specificity: 5, naturalDelivery: 3 }) },
+      ];
+      const by = rules.pickHook(backyard, { videoType: "educational" });
+      c.ok("the viewer's wish (\"We just want to walk out of the kitchen straight to the pool.\") is ineligible on tension, though its total is the highest", by.hooks[0].weak === "tension under 4" && by.hooks[0].total > by.hooks[2].total && by.chosen === 2 && by.fallback === null, `${by.hooks.map((h) => `${h.total}:${h.weak}`).join(" | ")} chosen ${by.chosen}`);
+      const rank = rules.pickHook([
+        { text: "A hook with the bigger total.", rehook: "r", scores: S({ relevance: 5, curiosity: 4, tension: 4, specificity: 4, naturalDelivery: 5, herVoice: 5, payoffConnection: 5 }) },
+        { text: "A hook with more curiosity and tension.", rehook: "r", scores: S({ relevance: 3, curiosity: 5, tension: 5, specificity: 4, naturalDelivery: 3, herVoice: 3, payoffConnection: 3 }) },
+      ]);
+      c.ok("ranked by curiosity + tension + specificity (14 beats 12), the total only a tiebreak (the bigger total lost)", rank.chosen === 1 && rank.hooks[0].total > rank.hooks[1].total && rules.hookRank(rank.hooks[1]) === 14 && rules.hookRank(rank.hooks[0]) === 12, `${rank.hooks.map((h) => `${rules.hookRank(h)}/${h.total}`).join(" vs ")}`);
+      const tie = [
+        { text: "The agent who agreed with my price must really believe in my house.", rehook: "r", lever: "viewer belief", fit: "viewer_line", scores: S({ curiosity: 4, tension: 4, specificity: 4, relevance: 5, naturalDelivery: 5 }) },
+        { text: "I showed a seller every proof source, and another agent still won the listing.", rehook: "r", lever: "her moment", fit: "her_moment", scores: S({ curiosity: 4, tension: 4, specificity: 4 }) },
+      ];
+      c.ok("a tie on the rank: her moment wins when the brief's proof is a story she told; otherwise the total decides", rules.pickHook(tie, { proofIsStory: true }).chosen === 1 && rules.pickHook(tie, { proofIsStory: false }).chosen === 0);
+      const proof = (isHerStory: boolean | undefined, source: string) => pipe.proofIsHerStory({ proof: { text: "the deal over the doorknob", source, ...(isHerStory === undefined ? {} : { isHerStory }) } }, [{ id: "P3", kind: "story" }, { id: "P4", kind: "opinion" }]);
+      c.ok("…\"a story she told\": the brief says so (isHerStory), or the proof cites a passage read as her story", proof(true, "call at 00:31:10") && proof(undefined, "P3") && !proof(undefined, "P4") && !proof(false, "written answers"));
+      const none = rules.pickHook([
+        { text: "We've outgrown this place. We just need a bigger house.", rehook: "r", scores: S({ curiosity: 4, tension: 3, specificity: 4 }) },
+        { text: "Do you actually need more space, or space that works better?", rehook: "r", scores: S({ curiosity: 3, tension: 3, specificity: 3 }) },
+      ]);
+      c.ok("no hook reaches the bar: the strongest of the rest is used, and the fallback is recorded", none.chosen === 0 && /^No hook reached curiosity 4 and tension 4; the strongest of the rest was used \(tension under 4\)\.$/.test(none.fallback ?? ""), none.fallback ?? "none");
+      const mixed = [{ ...backyard[0] }, { ...backyard[2] }, { ...backyard[1] }];
+      const picked = rules.pickHook(mixed);
+      c.ok("the runner-up after a failed hook is the next ELIGIBLE one before any weak one", rules.runnerUpHook(picked.hooks, [HER_LOT])?.text === backyard[1].text && rules.runnerUpHook(picked.hooks, [HER_LOT, backyard[1].text])?.text === KITCHEN);
+      const bHooks = reqs.find((r) => r.step === "hooks" && r.prompt.includes(TOPIC_B))?.prompt ?? "";
+      const aHooks = reqs.find((r) => r.step === "hooks" && r.prompt.includes(TOPIC_A))?.prompt ?? "";
+      c.ok("variety: the hooks step sees this month's other openings (topic B's lists topic A's hook; topic A, drafted first, had none)", new RegExp(`THIS MONTH'S OTHER VIDEOS FOR HER OPEN WITH[^\\n]*\\n- ${HOOK_WIN.replace(/[.?]/g, "\\$&")}`).test(bHooks) && !aHooks.includes("THIS MONTH'S OTHER VIDEOS") && prompts.HOOKS_SYSTEM.includes("At most two of the five are a viewer's sentence spoken in the first person"));
+      const card = record.writerCardOf(JSON.stringify({ writer: { v: 2, version: rules.WRITER_VERSION, brief: { centralMessage: "m", viewer: "v", whyChosen: "w", pillar: "p", whatSheSaid: [], mustKeep: [], optional: [], excluded: [], contradictions: [], verifiedFacts: [], opinions: [], creativeIdeas: [], ourAssumptions: [], closeType: "cta", closeWhy: "", target: { aim: [55, 85], cap: 110, seconds: [25, 39] } }, hooks: none.hooks, chosen: none.chosen, hookFallback: none.fallback } }));
+      c.ok("the card shows each hook out of 40, why one was below the bar, and the fallback", card?.hooks[0].max === 40 && card.hooks[0].weak === "tension under 4" && card.hookFallback === none.fallback);
+    }
+
+    c.head("15.2 · re-hooks: a hedge or the hook's words again is hook_echo (code); the re-hook check names both");
+    {
+      const PRICE = "The agent who agreed with my price must really believe in my house.";
+      const hedge = rules.hardNumbers({ hook: PRICE, points: [{ role: "re-hook", text: "Maybe. But without proof, they may care more about your open house buyers than selling your home." }, { role: "build-up", text: "Anybody could throw in a price. Ask how they got it." }, { role: "payoff", text: "x" }], close: "Ask any agent for the proof behind that price." }, "");
+      const h = hedge.findings.find((x) => x.key === "hook_echo");
+      c.ok("\"Maybe. But without proof...\" is flagged as a hedge: must-fix, against the re-hook", !!h && h.level === "must-fix" && h.check === "rehook" && /opens on a hedge \("Maybe"\)/.test(h.detail), JSON.stringify(hedge.findings));
+      c.ok("…\"Not exactly.\" too; a re-hook that turns (\"The irony? ...\") is not", rules.craftFindings({ hook: "x y z", points: [{ role: "re-hook", text: "Not exactly. It depends on the lot." }], close: "" }).some((x) => x.key === "hook_echo") && !rules.craftFindings({ hook: "I once watched a deal fall apart over a doorknob.", points: [{ role: "re-hook", text: "The irony? One wanted to sell, one wanted to buy. Same goal." }], close: "" }).some((x) => x.key === "hook_echo"));
+      const echo = rules.craftFindings({ hook: "Pre-listing inspections save sellers money on repairs.", points: [{ role: "re-hook", text: "A pre-listing inspection saves sellers real money on repairs." }, { role: "build-up", text: "Inspections catch repairs early, and sellers keep their money." }], close: "" });
+      c.ok("a re-hook sharing 3 or more of the hook's content words is must-fix; a build-up that does is a flag (Nothing extra)", echo.some((x) => x.key === "hook_echo" && x.part === "rehook" && x.level === "must-fix" && /repeats the hook's words/.test(x.detail)) && echo.some((x) => x.key === "hook_echo" && x.part === "buildup" && x.level === "flag" && x.check === "nothing_extra"), JSON.stringify(echo.map((x) => [x.part, x.level, x.detail])));
+      const merged = rules.mergeReview([{ key: "rehook", pass: true, reason: "fine" }, { key: "nothing_extra", pass: true, reason: "fine" }], hedge.findings, 70, null);
+      c.ok("…merged: the re-hook check fails at must-fix, so the next round starts from the runner-up hook", merged.some((x) => x.key === "rehook" && !x.pass && x.level === "must-fix") && rules.hookFailed({ checks: merged }));
+      const spec = rules.REVIEW_CHECKS.find((x) => x.key === "rehook")!;
+      c.ok("REVIEW_CHECKS.rehook, word for word", spec.passes === "Adds a fact, turn or stake that is not in the hook. Fails if it opens with a hedge (Maybe, Not exactly), restates the hook's subject in other words, or only explains why the hook is true." && prompts.REVIEW_SYSTEM.includes(spec.passes));
+    }
+
+    c.head("15.3 · the proof is a real moment she told; her answer to an ask for an example is kept");
+    {
+      c.ok("house craft: prove it with one real moment she told", rules.HOUSE_CRAFT_RULES.includes("Prove it with one real moment she told: what happened, one number or detail, how it ended. When the interviewer asked for an example (have you ever, a real example, what was the outcome), her answer is the proof and a must-keep. A restated opinion is never the proof. A story that seems to contradict the message is framed, not dropped."));
+      c.ok("the brief's proof line no longer allows \"the one reason the belief is not the whole story\"; it asks for her moment and keeps the example question", !prompts.BRIEF_SYSTEM.includes("the one reason the belief is not the whole story") && prompts.BRIEF_SYSTEM.includes("Prove it with one real moment she told") && prompts.BRIEF_SYSTEM.includes("keep that question in whatWeAsked, word for word") && JSON.stringify(prompts.BRIEF_SCHEMA).includes("isHerStory"));
+      c.ok("Enough substance fails a script that leaves out the story she told", (rules.REVIEW_CHECKS.find((x) => x.key === "substance")!.passes as string).includes("Fails when it leaves out the story she told about this topic") && prompts.REVIEW_SYSTEM.includes("a script that leaves it out fails"));
+      const asked = [{ quote: "Have you ever had a deal almost fall apart over something small? What was the outcome?", time: "00:31:02" }];
+      const kept = pipe.briefFrom({ whatWeAsked: "What do buyers and sellers fight about?", proof: { text: "the deal over the doorknob", source: "P3", isHerStory: true } }, [], asked);
+      const already = pipe.briefFrom({ whatWeAsked: "Have you ever had a deal almost fall apart over something small? What was the outcome? (00:31:02)" }, [], asked);
+      c.ok("when the brief lost the interviewer's example question, code puts it back in whatWeAsked; when it kept it, nothing is added", /The interviewer asked for an example \(her answer is the proof\): "Have you ever had a deal almost fall apart/.test(kept.whatWeAsked ?? "") && kept.proof?.isHerStory === true && !/The interviewer asked for an example/.test(already.whatWeAsked ?? ""), kept.whatWeAsked);
+      c.ok("…and the brief text tells the writer to keep what happened, the detail and how it ended", prompts.briefText(kept).includes("The one proof (a moment she told: keep what happened, the detail and how it ended): the deal over the doorknob [P3]"));
+      c.ok("retrieval: return the example question and her whole answer", prompts.RETRIEVAL_SYSTEM.includes("When he asked for an example (have you ever, a real example, what was the outcome), return that question, and return her answer to it in full"));
+    }
+
+    c.head("15.4 · self-pitch: how she helps once; the payoff answers the hook; must-keep 3, never the invitation");
+    {
+      const ONCE = "how she helps appears once, in the payoff or the close, never both";
+      const payoff = rules.REVIEW_CHECKS.find((x) => x.key === "payoff")!.passes as string;
+      const substance = rules.REVIEW_CHECKS.find((x) => x.key === "substance")!.passes as string;
+      c.ok("\"how she helps appears once, in the payoff or the close, never both\": house craft, the payoff and substance checks, the brief's must-keep", rules.HOUSE_CRAFT_RULES.includes(ONCE) && payoff.includes("How she helps appears once, in the payoff or the close, never both") && substance.includes(ONCE) && prompts.BRIEF_SYSTEM.includes(`how she helps (${ONCE})`));
+      c.ok("the payoff check: answers the hook in one line the viewer could repeat; a \"My job\" line that does not answer the hook fails", payoff.startsWith("Answers the hook's question in one line the viewer could repeat. A \"My job\" or credential line that does not answer the hook fails."));
+      c.ok("BRIEF_MUST_KEEP_MAX: educational 3, story 6; the invitation is never must-keep (the prompt and the code)", rules.BRIEF_MUST_KEEP_MAX.educational === 3 && rules.BRIEF_MUST_KEEP_MAX.story === 6 && prompts.BRIEF_SYSTEM.includes("The invitation and what the viewer should do next are never must-keep") && pipe.INVITATION_RE.test("Invite viewers to reach out for a consult") && !pipe.INVITATION_RE.test("She protects first-time buyers"));
+    }
+
+    c.head("15.5 · closes: a callback to the hook, then this video's own next step; must-fix; generic_close by code");
+    {
+      c.ok("CLOSE_RULE: at most two beats, the callback first, the specific next step second; \"Let's talk\" alone and \"Thinking about X?\" fail; no hard sell, no slogan", ["the close is at most two beats", "calls back a concrete word or image from the hook", "names THIS video's specific next step", "\"Let's talk\" as the whole invitation fails, and so does an invitation that opens \"Thinking about X?\"", "Never a hard sell", "A slogan or a rhyming aphorism is not a close"].every((x) => rules.CLOSE_RULE.includes(x)));
+      c.ok("the close check is must-fix now", rules.REVIEW_CHECKS.find((x) => x.key === "close")!.level === "must-fix" && rules.mustFixFailures(rules.mergeReview([{ key: "close", pass: false, reason: "a slogan" }], [], 70, null)).some((x) => x.key === "close"));
+      const gc = (hook: string, close: string) => rules.craftFindings({ hook, points: [], close }).find((x) => x.key === "generic_close");
+      const nest = gc("Want more room now that the kids moved out? Don't feel like you're weird.", "Want the home everyone comes back to? Let's talk.");
+      const yard = gc("We just want to walk out of the kitchen straight to the pool.", "You may have one vision. Tell me what your backyard should do before the plans are set.");
+      const knob = gc("I once watched a deal fall apart over a doorknob.", "Don't lose the house over a doorknob. Buying or selling? Let's talk.");
+      const paoli = gc("In Paoli, you can buy a newer townhome or a house over 200 years old.", "Something for everyone in Paoli. Thinking about Paoli? Give me a call.");
+      const good = gc("I once watched a deal fall apart over a doorknob.", "Don't lose the house over a doorknob. Bring me the repair list, and we'll sort out what is worth the fight.");
+      c.ok("\"[question]? Let's talk.\" as the whole close is generic_close (the regex)", !!nest && /ends on a question and "Let's talk\."/.test(nest.detail) && rules.GENERIC_CLOSE_RE.test("Want the home everyone comes back to? Let's talk."), nest?.detail);
+      c.ok("…and as the close's last beat, after a good callback", !!knob && /ends on a question and "Let's talk\."/.test(knob.detail) && !/nothing from the hook/.test(knob.detail), knob?.detail);
+      c.ok("a close that shares no content word with the hook is generic_close", !!yard && /nothing from the hook comes back in it/.test(yard.detail), yard?.detail);
+      c.ok("a \"Thinking about X?\" invitation is generic_close; a callback with this video's own next step is not", !!paoli && /opens "Thinking about \.\.\.\?"/.test(paoli.detail) && !good, `${paoli?.detail} | ${good?.detail}`);
+      const m = rules.mergeReview([{ key: "close", pass: true, reason: "fine" }], [nest!], 70, null).find((x) => x.key === "close")!;
+      c.ok("…merged, it fails the close check at must-fix whatever the reviewer said", !m.pass && m.level === "must-fix" && (m.parts ?? []).includes("close"));
+    }
+
+    c.head("15.6 · length: target 68, the aim trim above 78 toward 65 to 75; the kept longer version may not say the failed line");
+    {
+      c.ok("WRITER_LENGTH: aim 55 to 85, cap 110, target 68, trim to 65 to 75, trim above 78", rules.WRITER_LENGTH.aim.join() === "55,85" && rules.WRITER_LENGTH.cap === 110 && rules.WRITER_LENGTH.target === 68 && rules.WRITER_LENGTH.trimTo.join() === "65,75" && rules.WRITER_LENGTH.trimAbove === 78);
+      c.ok("a passing 80-word draft gets the aim trim; 78 does not; neither is \"long\" (the aim is unchanged)", pipe.nextWriterStep({ mustFails: [], words: 80, fixRounds: 0, trimmed: false }) === "aim-trim" && pipe.nextWriterStep({ mustFails: [], words: 78, fixRounds: 0, trimmed: false }) === "pass" && rules.lengthBand(80) === "aim" && rules.lengthCheck(80).pass);
+      ctl.sizes.set("K", [[18, 17, 16, 14], [14, 14, 13, 14]]);
+      ctl.reviews.set("K", [[], []]);
+      const offK = await pipe.draftOffline({ topicId: tK, monthId: f.monthId, requestedBy: STAFF });
+      c.ok("offline: an 80-word passing draft → one trim toward 65 to 75 → 70 words, passed", offK.state === "passed" && offK.attempts.map((a) => `${a.label}:${a.words}`).join(",") === "draft:80,trim to aim:70", offK.attempts.map((a) => `${a.label}:${a.words}`).join(","));
+      // The kept-longer guard, pure.
+      const trimParts = { hook: "H one two.", points: [{ role: "re-hook", text: "R short." }, { role: "build-up", text: "B short." }, { role: "payoff", text: "P short." }], close: "Same close for both versions." };
+      const keptParts = { hook: "H one two.", points: [{ role: "re-hook", text: "R longer one." }, { role: "build-up", text: "B longer one." }, { role: "payoff", text: "P longer one." }], close: "Same close for both versions." };
+      const fours = rules.readCraft(Object.fromEntries(rules.SCRIPT_PART_KEYS.map((k) => [k, { score: 4, note: "ok" }])));
+      const only = (key: string, reason: string) => rules.mergeReview(rules.MODEL_CHECK_KEYS.map((k) => ({ key: k, pass: k !== key, reason: k === key ? reason : "ok" })), [], 60, fours);
+      const failClose = only("close", "a slogan, not a callback");
+      const failSubst = only("substance", "dropped the inspection");
+      const failClaim = only("claims", "\"R longer one\" is not something she said");
+      c.ok("guard: the trim failed the close, and the longer version has the same close → a conflict", rules.keptLongerConflicts({ parts: trimParts, checks: failClose }, keptParts).some((x) => x.key === "close" && x.line === "Same close for both versions."));
+      c.ok("…a different close in the longer version → no conflict; a trim that only lost substance → none", rules.keptLongerConflicts({ parts: trimParts, checks: failClose }, { ...keptParts, close: "A different close." }).every((x) => x.key !== "close") && rules.keptLongerConflicts({ parts: trimParts, checks: failSubst }, keptParts).length === 0);
+      c.ok("…a line the reviewer quoted, said in both versions → a conflict", rules.keptLongerConflicts({ parts: { ...trimParts, points: keptParts.points }, checks: failClaim }, keptParts).some((x) => x.key === "claims" && x.line === "R longer one"));
+      // ... offline
+      ctl.sizes.set("L", [[22, 20, 18, 15], [16, 14, 14, 15]]);
+      ctl.reviews.set("L", [[], ["close"]]);
+      const offL = await pipe.draftOffline({ topicId: tL, monthId: f.monthId, requestedBy: STAFF });
+      const lClose = offL.final.review?.checks.find((x) => x.key === "close");
+      c.ok("offline: the trim (74) failed its close, the 90-word draft says the same close → kept, but FLAGGED, with the line named and the failed check said (not \"dropped a must-keep point\")", offL.state === "flagged" && offL.keptLonger && offL.final.label === "draft" && offL.final.words === 90 && /the trim toward 65 to 75 words failed a must-fix check \(8\. Close\), so the longer version stands/.test(offL.final.note ?? "") && /Flagged: the trim's review failed a line this version says too \(8\. Close: "/.test(offL.final.note ?? "") && !!lClose && !lClose.pass && lClose.level === "must-fix", `${offL.state} · ${offL.final.note}`);
+      // ... and in the automatic check
+      ctl.sizes.set("M", [[22, 20, 18, 15], [16, 14, 14, 15]]);
+      ctl.reviews.set("M", [[], ["close"]]);
+      const rM = await gen.generateScriptForTopic({ topicId: tM, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
+      const vsM = await prisma.contentScriptVersion.findMany({ where: { scriptId: rM.scriptId }, orderBy: { versionNo: "asc" } });
+      const headM = await prisma.contentScript.findUniqueOrThrow({ where: { id: rM.scriptId } });
+      const curM = vsM.find((v) => v.id === headM.currentVersionId)!;
+      const jM = (await import("@/lib/scriptJudgeRecord")).readJudge(curM.validationJson);
+      const cardM = record.writerCardOf(curM.validationJson);
+      c.ok("automatic check: v1 90 passed → v2 74 failed its close → v3 = v1, FLAGGED, the close check failing on it with the trim's reason", vsM.map((v) => v.spokenWordCount).join(",") === "90,74,90" && curM.id === vsM[2].id && curM.body === vsM[0].body && jM?.state === "flagged" && (jM.checks ?? []).some((x) => x.key === "close" && !x.pass && x.level === "must-fix" && /The trim's review failed this line, and this version says it too/.test(x.reason)), `${vsM.map((v) => `v${v.versionNo}:${v.spokenWordCount}`).join(" ")} · ${jM?.state}`);
+      c.ok("…the card says so, and it waits for a person (never shared)", /Flagged: the trim's review failed a line this version says too/.test(cardM?.lengthNote ?? "") && /Flagged: the trim's review failed a line v1 says too/.test(curM.changeSummary ?? "") && curM.status === "INTERNAL_REVIEW" && !headM.sharedVersionId && !headM.approvedVersionId, cardM?.lengthNote ?? "none");
+      c.ok("…a kept 80-word version carries no \"Longer than the aim\" advice (it is inside the aim)", !/Longer than the/.test(pipe.keptLongerNote("v1", 80)) && /Longer than the 55 to 85 aim/.test(pipe.keptLongerNote("v1", 96)));
+    }
+
+    c.head("15.7 · jargon: her phrases never override plain words; four more terms by code");
+    {
+      c.ok("HOMEOWNER_LANGUAGE_RULE: a phrase of hers is still jargon", rules.HOMEOWNER_LANGUAGE_RULE.includes("A phrase of hers is still jargon if a homeowner would not say it; her phrases never override this rule.") && prompts.BRIEF_SYSTEM.includes(rules.HOMEOWNER_LANGUAGE_RULE) && prompts.BRIEF_SYSTEM.includes("her phrases never override plain words"));
+      const j = rules.hardNumbers({ hook: "Your lot decides the backyard.", points: [{ role: "payoff", text: "I look at grading, impervious coverage, setbacks, and what the actives and pendings say." }], close: "Bring me your backyard wish list." }, "").findings.find((x) => x.key === "jargon");
+      c.ok("\"impervious coverage\", \"setbacks\", \"actives\", \"pendings\" are caught as industry terms, and must be fixed (Oct 22: not a flag)", !!j && j.level === "must-fix" && ["impervious coverage", "setback", "actives", "pendings"].every((t) => j.detail.includes(t)), j?.detail);
+      c.ok("…\"impervious surface\" too; \"active\" and \"pending\" as plain words are not", rules.hardNumbers({ hook: "x", points: [{ role: "payoff", text: "An impervious surface limit." }], close: "x" }, "").findings.some((x) => x.key === "jargon") && !rules.hardNumbers({ hook: "x", points: [{ role: "payoff", text: "Homes are pending and buyers are active." }], close: "x" }, "").findings.some((x) => x.key === "jargon"));
+    }
+
+    c.head("15.8 · the review gate judges craft: five parts scored, under 4 is must-fix, a hook or re-hook under 4 goes to the runner-up hook");
+    {
+      c.ok("check 13 (Craft, must-fix) in REVIEW_CHECKS; the review schema's craft block has the five parts, score and note; the model answers twelve checks", rules.REVIEW_CHECKS.length === 13 && rules.REVIEW_CHECKS[12].key === "craft" && rules.REVIEW_CHECKS[12].level === "must-fix" && ["hook", "rehook", "buildup", "payoff", "close"].every((k) => JSON.stringify((prompts.REVIEW_SCHEMA as { properties: { craft: { properties: Record<string, unknown> } } }).properties.craft.properties[k]).includes("\"score\"")) && !(prompts.REVIEW_SCHEMA as { properties: { checks: { items: { properties: { key: { enum: string[] } } } } } }).properties.checks.items.properties.key.enum.includes("craft"));
+      c.ok("the review prompt: the CRAFT block with the psychology each part is judged on", /CRAFT \(check 13, the craft block\)/.test(prompts.REVIEW_SYSTEM) && ["what lever it pulls", "how it escalates", "what it sets up for the payoff", "delivers the hook's promise", "memorable and tied to the hook"].every((x) => prompts.REVIEW_SYSTEM.includes(x)) && prompts.REVIEW_SYSTEM.includes("Any part under 4 is must-fix"));
+      const cs = (o: Partial<Record<string, number>>) => rules.readCraft(Object.fromEntries(["hook", "rehook", "buildup", "payoff", "close"].map((k) => [k, { score: o[k] ?? 4, note: `${k} note` }])));
+      const rh = rules.mergeReview(rules.MODEL_CHECK_KEYS.map((key) => ({ key, pass: true, reason: "ok" })), [], 70, cs({ rehook: 3 }));
+      c.ok("a re-hook scored 3: the craft check AND the re-hook check fail at must-fix; the fix goes to the runner-up hook (from the checks and from the instruction)", rh.some((x) => x.key === "craft" && !x.pass && x.level === "must-fix" && /Re-hook 3 of 5: rehook note/.test(x.reason)) && rh.some((x) => x.key === "rehook" && !x.pass && x.level === "must-fix" && /^Craft: Re-hook 3 of 5/.test(x.reason)) && rules.hookFailed({ checks: rh }) && rules.hookFailed({ instruction: pipe.writerFixInstruction({ checks: rh }) }));
+      const po = rules.mergeReview(rules.MODEL_CHECK_KEYS.map((key) => ({ key, pass: true, reason: "ok" })), [], 70, cs({ payoff: 2 }));
+      c.ok("a payoff scored 2: craft fails at must-fix (a fix round), the hook stays", rules.mustFixFailures(po).map((x) => x.key).join() === "craft" && !rules.hookFailed({ checks: po }) && (po.find((x) => x.key === "craft")!.parts ?? []).join() === "payoff");
+      const allOk = rules.mergeReview(rules.MODEL_CHECK_KEYS.map((key) => ({ key, pass: true, reason: "ok" })), [], 70, cs({}));
+      const missing = rules.mergeReview(rules.MODEL_CHECK_KEYS.map((key) => ({ key, pass: true, reason: "ok" })), [], 70, null);
+      const partial = rules.mergeReview(rules.MODEL_CHECK_KEYS.map((key) => ({ key, pass: true, reason: "ok" })), [], 70, rules.readCraft({ hook: { score: 5, note: "n" } }));
+      c.ok("every part 4 or more passes (13 of 13); no craft block, or a part not scored, fails, never passes", allOk.every((x) => x.pass) && rules.reviewHeadline(allOk) === "Creative review: 13 of 13 pass" && !missing.find((x) => x.key === "craft")!.pass && !partial.find((x) => x.key === "craft")!.pass && /Re-hook not scored/.test(partial.find((x) => x.key === "craft")!.reason));
+      // End to end: the craft block scores the re-hook 3 → fix round 1 is a redraft from the runner-up hook.
+      ctl.reviews.set("N", [[], []]);
+      ctl.craft.set("N", [{ rehook: 3 }, {}]);
+      const n0 = reqs.length;
+      const rN = await gen.generateScriptForTopic({ topicId: tN, monthId: f.monthId, requestedBy: STAFF, unattended: false, callRecordId: call.id });
+      const fixN = reqs.slice(n0).filter((r) => r.step === "fix");
+      const vsN = await prisma.contentScriptVersion.findMany({ where: { scriptId: rN.scriptId }, orderBy: { versionNo: "asc" } });
+      const jN1 = (await import("@/lib/scriptJudgeRecord")).readJudge(vsN[0].validationJson);
+      const jN2 = (await import("@/lib/scriptJudgeRecord")).readJudge(vsN[vsN.length - 1].validationJson);
+      c.ok("automatic check: the re-hook scored 3 on craft → fix 1 starts again from the runner-up hook (a redraft), then passes", fixN.length === 1 && fixN[0].prompt.includes(`THE CHOSEN HOOK (use it word for word): ${HOOK_RUNNER_UP}`) && /REDRAFT RULES/.test(fixN[0].prompt) && /MUST FIX:[\s\S]*- 4\. Re-hook: Craft: Re-hook 3 of 5/.test(fixN[0].prompt) && vsN.length === 2 && vsN[1].hook === HOOK_RUNNER_UP && jN2?.state === "passed", `${fixN.length} fixes · ${vsN.map((v) => v.hook).join(" | ")} · ${jN2?.state}`);
+      const cardN = record.writerCardOf(vsN[0].validationJson);
+      c.ok("…the craft block is kept on the judge record, and the card shows it part by part", jN1?.craft?.rehook.score === 3 && cardN?.review?.craft.length === 5 && cardN.review.craft.some((x) => x.label === "Re-hook" && x.score === 3 && x.under && /it only explains the hook/.test(x.note)) && record.writerCardOf(vsN[1].validationJson)?.review?.craft.every((x) => !x.under) === true);
+      c.ok("a format agreed on the call is a creative decision: house craft, the retrieval, the brief (never internal talk), the review", rules.HOUSE_CRAFT_RULES.includes("A format agreed on the call (word association, two voices, a trend alert) is a creative decision the script follows, not production talk.") && prompts.RETRIEVAL_SYSTEM.includes("A FORMAT AGREED ON THE CALL for this video (word association, two voices, a trend alert) is a creative decision the script follows, never internal talk") && prompts.BRIEF_SYSTEM.includes("A format agreed on the call for this video is never internal talk and never excluded") && prompts.BRIEF_SYSTEM.includes("a format agreed on the call for this video (word association, two voices, a trend alert, whoever proposed it)") && prompts.REVIEW_SYSTEM.includes("following it is never a fault"));
+      c.ok("WRITER_VERSION is writer.v2.3-2026-10-22, on every writer run", rules.WRITER_VERSION === "writer.v2.3-2026-10-22" && (await prisma.programAiRun.count({ where: { kind: "script_review", promptVersion: "writer.v2.3-2026-10-22" } })) > 0);
+      c.ok("no dash in any rule or prompt the model reads (it copies punctuation; the no-dash rule's own text aside)", ![prompts.RETRIEVAL_SYSTEM, prompts.BRIEF_SYSTEM, prompts.HOOKS_SYSTEM, prompts.WRITER_SYSTEM, prompts.REVIEW_SYSTEM, rules.CLOSE_RULE, rules.HOUSE_CRAFT_RULES, rules.HOMEOWNER_LANGUAGE_RULE, ...rules.REVIEW_CHECKS.map((x) => x.passes), ...rules.CRAFT_PARTS.map((x) => x.asks)].some((t) => /[‒–—―]/.test(t.split(rules.NO_DASH_RULE).join(""))));
+    }
+
+    // =======================================================================
+    c.head("16 · the model map: each step's model and effort; the cached prefix of a second review round; the cost of each model");
+    {
+      // The new writer's runs (promptKey writer-<step>); the old writer's draft in section 11 stays on Sonnet 4.6.
+      const ledger = async (kind: string) => (await prisma.programAiRun.findMany({ where: { kind: kind as never, enrollmentId: f.enrollmentId, status: "SUCCEEDED", promptKey: { startsWith: "writer-" } }, select: { model: true } })).map((r) => r.model);
+      const kinds = { script_retrieval: "claude-haiku-5-5", script_brief: "claude-sonnet-5-5", script_hooks: "claude-opus-5-5", script_draft: "claude-sonnet-5-5", script_review: "claude-sonnet-5-5", script_revise: "claude-sonnet-5-5" } as const;
+      const stamped = await Promise.all(Object.entries(kinds).map(async ([k, m]) => ({ k, m, got: await ledger(k) })));
+      c.ok("every ProgramAiRun is stamped with its step's model (retrieval Haiku 5.5; brief, draft, review, revise Sonnet 5.5; hooks Opus 5.5)", stamped.every((x) => x.got.length > 0 && x.got.every((g) => g === x.m)), stamped.map((x) => `${x.k}:${[...new Set(x.got)].join("/")}`).join(" "));
+      c.ok("no writer request sent temperature, top_p, top_k or a thinking budget; none forced a tool", reqs.filter((r) => ["retrieval", "brief", "hooks", "draft", "review", "trim", "fix", "revise"].includes(r.step)).every((r) => !("temperature" in r.body) && !("top_p" in r.body) && !("top_k" in r.body) && !("thinking" in r.body) && !JSON.stringify(r.body).includes("budget_tokens") && !("tool_choice" in r.body) && !("tools" in r.body)));
+      // Topic A's two reviews (the draft, then the trim): the same prefix, byte for byte, in front of the breakpoints.
+      const revA = reqs.filter((r) => r.step === "review" && r.prompt.includes(TOPIC_A)).slice(0, 2);
+      type Block = { type: string; text: string; cache_control?: { type: string } };
+      const blocks = revA.map((r) => ((r.body.messages as { content: Block[] }[])[0].content));
+      const okShape = blocks.length === 2 && blocks.every((b) => Array.isArray(b) && b.length === 3 && b[0].cache_control?.type === "ephemeral" && b[1].cache_control?.type === "ephemeral" && !b[2].cache_control);
+      c.ok("the review's user message: two cached blocks, then the version under review (no breakpoint after it)", okShape, blocks.map((b) => (Array.isArray(b) ? b.map((x) => (x.cache_control ? "C" : "-")).join("") : typeof b)).join(" / "));
+      c.ok("…the second round's cached prefix is byte for byte the first round's, and the full call (the transcript) sits before the first breakpoint", okShape && blocks[0][0].text === blocks[1][0].text && blocks[0][1].text === blocks[1][1].text && blocks[0][2].text !== blocks[1][2].text && blocks[0][0].text.includes("THE FULL CALL") && blocks[0][0].text.includes(Q_SENIOR) && revA[0].system === revA[1].system && (revA[0].body.system as Block[])[0].cache_control?.type === "ephemeral");
+      c.ok("…nothing per round before the breakpoints (the version, the counts, the hard checks come after)", okShape && blocks.every((b) => !/SCRIPT TO REVIEW|COUNTED BY CODE|THE WRITER SAYS THE CLOSE/.test(b[0].text + b[1].text) && /^SCRIPT TO REVIEW:/.test(b[2].text)));
+      const draftA = reqs.find((r) => r.step === "draft" && r.prompt.includes(TOPIC_A));
+      const dBlocks = (draftA?.body.messages as { content: Block[] }[] | undefined)?.[0].content ?? [];
+      const retA = reqs.find((r) => r.step === "retrieval" && r.prompt.includes(TOPIC_A));
+      const rBlocks = (retA?.body.messages as { content: Block[] }[] | undefined)?.[0].content ?? [];
+      c.ok("the draft caches her material and puts the chosen hook after the breakpoint; the retrieval caches the call and asks for the topic after it", Array.isArray(dBlocks) && dBlocks.length === 2 && !!dBlocks[0].cache_control && !dBlocks[0].text.includes("THE CHOSEN HOOK") && dBlocks[1].text.startsWith("THE CHOSEN HOOK") && Array.isArray(rBlocks) && !!rBlocks[0].cache_control && rBlocks[0].text.includes(Q_SENIOR) && !rBlocks[0].text.includes(TOPIC_A) && rBlocks[1].text.includes(TOPIC_A));
+      const shape = ai.buildStructuredRequest({ system: "S", prompt: "a\n\nb\n\nc", schema: { type: "object" }, effort: "medium", maxTokens: 9000, model: "claude-sonnet-5-5", promptBlocks: [{ text: "a", cache: true }, { text: "  ", cache: true }, { text: "b", cache: true }, { text: "c", cache: true }] });
+      const sb = (shape.body.messages as { content: Block[] }[])[0].content;
+      c.ok("the request builder: the model and effort per call; empty blocks dropped; two user breakpoints at most (the system's is the third)", shape.body.model === "claude-sonnet-5-5" && (shape.body.output_config as { effort: string }).effort === "medium" && sb.length === 3 && sb.filter((x) => x.cache_control).length === 2 && !sb[2].cache_control && typeof (ai.buildStructuredRequest({ system: "S", prompt: "plain", schema: {}, effort: "high", maxTokens: 10 }).body.messages as { content: unknown }[])[0].content === "string");
+      const { estimateCostCents } = await import("@/lib/aiRuns");
+      const { aiCostUsd } = await import("@/lib/aiUsage");
+      const M = 1_000_000;
+      const each = { inputTokens: M, outputTokens: M, cacheReadTokens: M, cacheWriteTokens: M };
+      c.ok("cost per million: Opus 5.5 $4 in, $20 out, $0.20 cache read, $5 cache write = $29.20", estimateCostCents("claude-opus-5-5", each) === 2920, String(estimateCostCents("claude-opus-5-5", each)));
+      c.ok("…Sonnet 5.5 $2, $10, $0.20, $2.50 = $14.70 (it used to be priced as Sonnet 4.6 in the run ledger)", estimateCostCents("claude-sonnet-5-5", each) === 1470, String(estimateCostCents("claude-sonnet-5-5", each)));
+      c.ok("…Haiku 5.5 $0.10, $0.50, $0.01, $0.125 (ten million each: $7.35)", estimateCostCents("claude-haiku-5-5", { inputTokens: 10 * M, outputTokens: 10 * M, cacheReadTokens: 10 * M, cacheWriteTokens: 10 * M }) === 735, String(estimateCostCents("claude-haiku-5-5", { inputTokens: 10 * M, outputTokens: 10 * M, cacheReadTokens: 10 * M, cacheWriteTokens: 10 * M })));
+      c.ok("…a cache read costs a tenth of fresh input; the run ledger and the usage ledger price a call the same way", estimateCostCents("claude-sonnet-5-5", { inputTokens: 0, outputTokens: 0, cacheReadTokens: 10 * M, cacheWriteTokens: 0 }) * 10 === estimateCostCents("claude-sonnet-5-5", { inputTokens: 10 * M, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }) && ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-sonnet-4-6"].every((m) => estimateCostCents(m, { inputTokens: 31_000, outputTokens: 4_200, cacheReadTokens: 27_000, cacheWriteTokens: 3_000 }) === Math.round(aiCostUsd(m, { inputTokens: 31_000, outputTokens: 4_200, cacheReadTokens: 27_000, cacheWriteTokens: 3_000 }) * 100)));
     }
 
     c.ok("nothing left the drill but the faked model", fence.blocked.length === 0 && fence.faked.every((u) => u === "https://api.anthropic.com/v1/messages"), fence.blocked.join(", "));

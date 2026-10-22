@@ -282,19 +282,24 @@ export async function aiJsonWithUsage<T>(opts: {
 // every other AI feature in the hub keeps aiJson / aiJsonWithUsage, its model
 // and its code exactly as they were.
 //
-// The writer runs on claude-opus-5-5, which REJECTS what the path above relies
-// on: a forced tool_choice ("tool" / "any") is a 400, so is an assistant
-// prefill, and thinking cannot be switched off. So this path:
+// The writer runs on the 5.5 models (claude-opus-5-5 by default; since writer
+// v2.3 each step names its own: scriptWriter/pipeline STEP_MODEL), which
+// REJECT what the path above relies on: a forced tool_choice ("tool" / "any")
+// is a 400, so is an assistant prefill, and thinking cannot be switched off.
+// So this path:
 //   · asks for the answer as STRUCTURED OUTPUT (output_config.format, a JSON
 //     schema) instead of a forced tool call, and reads the text block by its
 //     type (thinking blocks come first, empty);
-//   · names the effort explicitly (the model's default is medium): the caller
-//     passes it per step (high for the draft and the review, medium for the
-//     source reading and the brief);
-//   · sends no temperature, no thinking field (adaptive is the default) and
-//     the same anthropic-version as every other call (postMessages);
+//   · names the model and the effort explicitly on every call (defaults differ
+//     by model): the caller passes both per step;
+//   · sends no temperature, no top_p or top_k, no thinking field (adaptive is
+//     the default; never budget_tokens) and the same anthropic-version as
+//     every other call (postMessages);
 //   · caches the long, stable system prompt (cache_control on the system
 //     block), so a sweep drafting several scripts reads the house rules once;
+//     and (v2.3) the long stable part of the user message, sent as blocks
+//     with their own breakpoints (PromptBlock), so a second review round reads
+//     her call and the brief from the cache;
 //   · sizes max_tokens for the thinking as well as the answer, and on
 //     stop_reason "max_tokens" tries once more with twice the room before it
 //     gives up (AiTruncatedError: never a half answer parsed as a whole one);
@@ -331,7 +336,28 @@ export class AiTruncatedError extends Error {
 
 type StructuredResponse = AnthropicResponse & { stop_details?: { category?: string | null } | null };
 
-export type StructuredRequestOpts = { system: string; prompt: string; schema: Record<string, unknown>; effort: AiEffort; maxTokens: number; model?: string; fallback?: boolean };
+/**
+ * A user message in segments (Oct 22 2026, writer v2.3): `cache` puts a cache
+ * breakpoint (cache_control ephemeral) at the end of that block, so the long
+ * stable material in front of it (her call, her sources, the brief) is read
+ * from the cache on the next round instead of billed again. Nothing volatile
+ * may sit in a cached block. At most two are cached (the system block is the
+ * third of the API's four breakpoints).
+ */
+export type PromptBlock = { text: string; cache?: boolean };
+export type StructuredRequestOpts = { system: string; prompt: string; schema: Record<string, unknown>; effort: AiEffort; maxTokens: number; model?: string; fallback?: boolean; promptBlocks?: readonly PromptBlock[] | null };
+
+/** The user message's content: the plain prompt, or its blocks with their cache breakpoints (empty blocks dropped; two breakpoints at most). Pure. */
+export function userContentOf(prompt: string, blocks: readonly PromptBlock[] | null | undefined): string | Record<string, unknown>[] {
+  const kept = (blocks ?? []).filter((b) => b && typeof b.text === "string" && b.text.trim());
+  if (!kept.length) return prompt;
+  let breaks = 0;
+  return kept.map((b) => {
+    const cache = !!b.cache && breaks < 2;
+    if (cache) breaks++;
+    return { type: "text", text: b.text, ...(cache ? { cache_control: { type: "ephemeral" } } : {}) };
+  });
+}
 
 /** The request body and extra headers the writer path sends. Pure: the drill reads it to prove the shape. */
 export function buildStructuredRequest(opts: StructuredRequestOpts): { body: Record<string, unknown>; headers: Record<string, string> } {
@@ -340,7 +366,7 @@ export function buildStructuredRequest(opts: StructuredRequestOpts): { body: Rec
     model: opts.model ?? WRITER_MODEL,
     max_tokens: opts.maxTokens,
     system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: opts.prompt }],
+    messages: [{ role: "user", content: userContentOf(opts.prompt, opts.promptBlocks) }],
     output_config: { effort: opts.effort, format: { type: "json_schema", schema: opts.schema } },
   };
   if (fallback) body.fallbacks = [{ model: WRITER_FALLBACK_MODEL }];
@@ -364,6 +390,8 @@ export async function aiStructuredWithUsage<T>(opts: {
   timeoutMs?: number;
   /** false = no server-side refusal fallback. Default on. */
   fallback?: boolean;
+  /** The prompt in blocks with cache breakpoints (v2.3); their texts joined are `prompt`. */
+  promptBlocks?: readonly PromptBlock[] | null;
 }): Promise<{ result: T; usage: AiUsage; model: string; stopReason: string | null }> {
   const key = opts.key ?? (await getSecret("ai"));
   if (!key) throw new Error("AI is not connected.");
@@ -374,7 +402,7 @@ export async function aiStructuredWithUsage<T>(opts: {
   const limitMs = opts.timeoutMs ?? aiTimeoutFor(maxTokens);
   const total: AiUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   for (let attempt = 0; attempt < 4; attempt++) {
-    const req = buildStructuredRequest({ system: opts.system, prompt: opts.prompt, schema: opts.schema, effort: opts.effort, maxTokens, model, fallback });
+    const req = buildStructuredRequest({ system: opts.system, prompt: opts.prompt, schema: opts.schema, effort: opts.effort, maxTokens, model, fallback, promptBlocks: opts.promptBlocks });
     let json: StructuredResponse;
     try {
       json = (await callMessages(req.body, key, { timeoutMs: Math.max(1_000, limitMs - (Date.now() - started)), headers: req.headers })) as StructuredResponse;

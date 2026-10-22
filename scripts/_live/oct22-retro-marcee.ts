@@ -11,11 +11,11 @@
 //   NODE_OPTIONS=--conditions=react-server npx tsx \
 //     --require ./scripts/_drill/_drill-preload.cjs scripts/_live/oct22-retro-marcee.ts
 //
-// Writes scratchpad/scripting/retro-marcee.json for the comparison page.
+// Writes scratchpad/scripting/${process.env.RETEST_TAG ?? "retro"}-marcee.json for the comparison page.
 // ---------------------------------------------------------------------------
 import fs from "node:fs";
 
-const OUT = "/private/tmp/claude-501/-Users-jordanspackman-Realtour-Pilot-POT-Dashboard/8965ab24-8365-44d5-af17-c1b185a8a42d/scratchpad/scripting/retro-marcee.json";
+const OUT = `/private/tmp/claude-501/-Users-jordanspackman-Realtour-Pilot-POT-Dashboard/8965ab24-8365-44d5-af17-c1b185a8a42d/scratchpad/scripting/${process.env.RETEST_TAG ?? "retro"}-marcee.json`;
 const CALL = "cmv8f2o7y0096jn068o14hja9"; // the Oct 15 strategy call
 const SCRIPTS = [
   { key: "seniors", scriptId: "cmv9qzk720003kw06dj1it0k3" },
