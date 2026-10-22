@@ -498,6 +498,7 @@ export async function productAvailability(opts: {
   }
   const wanted = dates.filter((d) => !(excludeWeekends && isWeekend(d.date))).slice(0, opts.limit ?? 21);
 
+  const userOfTeamMember = new Map([...(await teamMemberIdByUserId().catch(() => new Map<string, string>()))].map(([u, tm]) => [tm, u]));
   const days: AryeoSlotDay[] = [];
   for (let i = 0; i < wanted.length; i += 4) {
     await Promise.all(
@@ -516,8 +517,10 @@ export async function productAvailability(opts: {
             });
             return { id, starts: (r?.data ?? []).map((x) => x.start_at).filter((x): x is string => !!x) };
           }));
+          // slotUsers holds Aryeo USER ids, as the group answer did (the portal
+          // maps them back to team members with teamMemberIdByUserId).
           const slotUsers: Record<string, string[]> = {};
-          for (const p of per) for (const st of p.starts) (slotUsers[st] ??= []).push(p.id);
+          for (const p of per) for (const st of p.starts) (slotUsers[st] ??= []).push(userOfTeamMember.get(p.id) ?? p.id);
           const slots = Object.keys(slotUsers).sort((a, b) => Date.parse(a) - Date.parse(b));
           if (slots.length) days.push({ date: d.date, slots, slotUsers });
         } catch { /* a missing day is fine */ }
