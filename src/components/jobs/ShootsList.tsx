@@ -30,6 +30,10 @@ function Row({ r }: { r: ShootRow }) {
           {r.holding && <div className="truncate text-xs text-warning" title={r.holding}>{r.holding}</div>}
           {/* Oct 22 2026: the order sells more videos than the job has set up. */}
           {r.videoSetup && <div className="truncate text-xs font-semibold text-danger" data-video-setup title={`${r.videoSetup}. Open the job to set up the missing video.`}>{r.videoSetup}</div>}
+          {/* Oct 22 2026: a video held for a second shoot, with the office's note. */}
+          {(r.waitingOnShoot ?? []).map((w) => (
+            <div key={w} className="truncate text-xs text-warning" data-waiting-on-shoot title={`${w}. Open the job to release it to the editor.`}>{w}</div>
+          ))}
         </div>
         <div className={`hidden text-sm tabular-nums sm:block ${r.late ? "font-semibold text-danger" : "text-foreground/80"}`}>{r.dueWords}</div>
         <div className="flex min-w-0 items-center gap-2">

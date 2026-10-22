@@ -3967,7 +3967,19 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   const dropboxFresh = !!dropbox && !dropbox.stale;
   const anyRaw = !!dropbox && (dropbox.rawPhotos ?? 0) + (dropbox.rawVideo ?? 0) > 0;
 
-  const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  let v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  // WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShootCore). When EVERY
+  // video the job owes is held for another appointment there is no edit to
+  // hand over yet: no routing, no edit card, no "Ready for editing". Read as a
+  // photos-only job until one is released. One waiting video among others
+  // changes nothing here: the card is for the others.
+  if (v) {
+    try {
+      const { cutSlots, waitingHoldsByProject } = await import("@/lib/reviewCuts");
+      const held = (await waitingHoldsByProject([projectId])).get(projectId)?.size ?? 0;
+      if (held > 0 && (await cutSlots(projectId)).length === 0) v = undefined;
+    } catch { /* unknown → the handoff as before */ }
+  }
 
   // A human hand-picked this job's editor (owner reassign / manual queue-add):
   // don't overwrite their routing, and don't chase raw video — the owner just
