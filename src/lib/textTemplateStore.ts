@@ -13,12 +13,14 @@ import {
 // {"body": …, "by": "<name>"}; the row's own updatedAt / updatedBy say when
 // and who. No row = the default. No schema change.
 //
-// FOUR CLIENT TEXTS HAD BOXES BEFORE THIS (the old "Text wording" card and the
+// FIVE CLIENT TEXTS HAD BOXES BEFORE THIS (the old "Text wording" card and the
 // welcome box under Automated texts). Whatever was saved there is still sent
 // exactly as it was, until Jordan saves or resets that template here, which
 // replaces it and empties the old box:
 //   client_confirmation       ← text_templates.confirmation
 //   client_delivery_feedback  ← text_templates.deliveryAll
+//   client_delivery_partial   ← text_templates.deliveryPartial (Oct 22 2026:
+//                               the part-delivered text a Send button sends)
 //   client_welcome            ← auto_texts.welcome.message
 //   client_after_hours        ← auto_texts.afterHours.message
 //
@@ -27,10 +29,11 @@ import {
 // that fails never stops a text: the defaults go.
 // ---------------------------------------------------------------------------
 
-type Legacy = { setting: "text_templates"; field: "confirmation" | "deliveryAll" } | { setting: "auto_texts"; field: "welcome" | "afterHours" };
+type Legacy = { setting: "text_templates"; field: "confirmation" | "deliveryAll" | "deliveryPartial" } | { setting: "auto_texts"; field: "welcome" | "afterHours" };
 const LEGACY: Partial<Record<TextTemplateKey, Legacy>> = {
   client_confirmation: { setting: "text_templates", field: "confirmation" },
   client_delivery_feedback: { setting: "text_templates", field: "deliveryAll" },
+  client_delivery_partial: { setting: "text_templates", field: "deliveryPartial" },
   client_welcome: { setting: "auto_texts", field: "welcome" },
   client_after_hours: { setting: "auto_texts", field: "afterHours" },
 };
@@ -72,6 +75,7 @@ async function readLegacy(): Promise<Partial<Record<TextTemplateKey, { body: str
   };
   put("client_confirmation", tt.confirmation);
   put("client_delivery_feedback", tt.deliveryAll);
+  put("client_delivery_partial", tt.deliveryPartial);
   put("client_welcome", at.welcome.message);
   put("client_after_hours", at.afterHours.message);
   return out;

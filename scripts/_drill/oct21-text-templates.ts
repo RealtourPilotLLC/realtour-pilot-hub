@@ -140,10 +140,12 @@ async function main() {
       c.ok("every default fills every placeholder it has with the sample values", unfilled.length === 0, unfilled.join(","));
       const badDefaults = keys.filter((k) => !TT.checkTemplateBody(k, TT.TEXT_TEMPLATES[k].body).ok);
       c.ok("every default passes its own checks (required kept, nothing unknown, no long dash or Dropbox to a client)", badDefaults.length === 0, badDefaults.join(","));
-      const declared = keys.filter((k) => TT.TEXT_TEMPLATES[k].placeholders.some((p) => !TT.TEXT_TEMPLATES[k].body.includes(`{${p.name}}`)) && !k.startsWith("client_confirmation"));
-      c.ok("every declared placeholder is used by its default (the confirmation's legacy {street}/{items} excepted)", declared.length === 0, declared.join(","));
+      // Oct 22 2026: the part-delivered text keeps the old box's {delivered}/{remaining}/{street} too.
+      const declared = keys.filter((k) => TT.TEXT_TEMPLATES[k].placeholders.some((p) => !TT.TEXT_TEMPLATES[k].body.includes(`{${p.name}}`)) && !["client_confirmation", "client_delivery_partial"].includes(k));
+      c.ok("every declared placeholder is used by its default (the confirmation's and the part-delivered text's old-box placeholders excepted)", declared.length === 0, declared.join(","));
       c.ok("lib/settings' default names are the registry's words", S.DEFAULT_WELCOME_TEXT === TT.TEXT_TEMPLATES.client_welcome.body && S.DEFAULT_AFTER_HOURS_REPLY === TT.TEXT_TEMPLATES.client_after_hours.body && S.DEFAULT_DELIVERY_FEEDBACK_TEXT === TT.TEXT_TEMPLATES.client_delivery_feedback.body && S.DEFAULT_WELCOME.message === S.DEFAULT_WELCOME_TEXT && S.DEFAULT_AUTO_TEXTS.afterHours.message === S.DEFAULT_AFTER_HOURS_REPLY);
-      c.ok("the four client texts are the only client audience; all others are team", keys.filter((k) => TT.TEXT_TEMPLATES[k].audience === "client").join() === "client_welcome,client_confirmation,client_delivery_feedback,client_after_hours");
+      // Oct 22 2026: + the two part-delivered shapes a Send button sends.
+      c.ok("the six client texts are the only client audience; all others are team", keys.filter((k) => TT.TEXT_TEMPLATES[k].audience === "client").join() === "client_welcome,client_confirmation,client_delivery_feedback,client_delivery_partial,client_delivery_update,client_after_hours");
 
       // ---- uploads ------------------------------------------------------------
       for (const streets of [["123 Main St"], ["123 Main St", "45 Oak Ave", "9 Elm Rd"]]) {
@@ -211,17 +213,51 @@ async function main() {
         same("client_delivery_feedback", `${j.label}: default (the sweep)`, OLD.delivery.deliveryMessage(j.p, { deliveryAll: DEF_FEEDBACK, deliveryPartial: "" }), delivery.deliveryMessage(j.p, { deliveryPartial: "" }, D));
         const box = "Thanks {first}! {street} is done. Tell us: {feedbackUrl}";
         same("client_delivery_feedback", `${j.label}: the old Text wording box's words`, OLD.delivery.deliveryMessage(j.p, { deliveryAll: box, deliveryPartial: "" }), delivery.deliveryMessage(j.p, { deliveryPartial: "" }, TT.templateSet({ client_delivery_feedback: { body: box, legacy: true } })));
-        same("client_delivery_feedback", `${j.label}: the per-card Send keeps its own announcement`, OLD.delivery.deliveryMessage(j.p), delivery.deliveryMessage(j.p));
+        // Oct 22 2026 (on purpose): with no set (the per-card Send's old call) the
+        // everything-delivered text is the feedback ask, not the older
+        // "Everything … has been delivered" announcement.
+        same("client_delivery_feedback", `${j.label}: no set at all is the feedback ask (the old announcement retired)`, OLD.delivery.deliveryMessage(j.p, { deliveryAll: DEF_FEEDBACK, deliveryPartial: "" }), delivery.deliveryMessage(j.p));
+        c.ok(`${j.label}: …and never the announcement`, !/has been delivered\. How did we do\?/.test(delivery.deliveryMessage(j.p)));
       }
-      const partial = { id: "p4", title: "5 Oak Ave, X", city: null, statusEvidence: ev(["Photos"], ["Video"]), client: { name: "Gary" } };
-      const partBox = "Hi {first}, {delivered} out, {remaining} coming: {feedbackUrl}";
-      c.ok("the part-delivered text (not a template) is unchanged, with and without the old box", OLD.delivery.deliveryMessage(partial, { deliveryAll: DEF_FEEDBACK, deliveryPartial: partBox }) === delivery.deliveryMessage(partial, { deliveryPartial: partBox }, D) && OLD.delivery.deliveryMessage(partial) === delivery.deliveryMessage(partial));
+      // The part-delivered shapes (Oct 22 2026: templates, defaults = the old words).
+      const evOwed = (present: string[], owedCats: string[], awaitingSend: string[] = []) =>
+        JSON.stringify({ expected: [...present, ...owedCats], present: [...present, ...awaitingSend], missing: owedCats.filter((x) => !awaitingSend.includes(x)), awaitingSend });
+      const partials = [
+        { label: "photos out, video never made, a street", p: { id: "p4", title: "5 Oak Ave, X", city: null, statusEvidence: evOwed(["Photos"], ["Video"]), client: { name: "Gary" } } },
+        { label: "photos + drone out, video finished not sent, a town", p: { id: "p5", title: "[No address provided]", city: "West Chester", statusEvidence: evOwed(["Photos", "Drone"], ["Video"], ["Video"]), client: { name: "Gary Smith" } } },
+        { label: "photos out, floor plan owed, nothing at all", p: { id: "p6", title: "", city: null, statusEvidence: evOwed(["Photos"], ["Floor Plan"]), client: { name: "" } } },
+        { label: "photos out, 3 of 4 videos finished not sent (counted)", p: { id: "p10", title: "626 Greycliffe Ln, X", city: null, statusEvidence: JSON.stringify({ ...JSON.parse(evOwed(["Photos"], ["Video"], ["Video"])), aryeo: { videos: 1 }, units: [{ category: "Video", owed: 4, outstanding: 3, onListing: 1 }] }), client: { name: "Gary" } } },
+      ];
+      const updates = [
+        { label: "nothing out, video never made", p: { id: "p7", title: "9 Elm Rd, X", city: null, statusEvidence: evOwed([], ["Video"]), client: { name: "Sam" } } },
+        { label: "nothing out, video finished not sent, a town", p: { id: "p8", title: "", city: "Emmaus", statusEvidence: evOwed([], ["Video"], ["Video"]), client: { name: "Sam B" } } },
+        { label: "nothing out, nothing at all", p: { id: "p9", title: "", city: null, statusEvidence: evOwed([], ["Photos", "Video"]), client: { name: "" } } },
+      ];
+      const partBox = "Hi {first}, {delivered} out, {remaining} coming for {street}: {feedbackUrl}";
+      for (const j of partials) {
+        same("client_delivery_partial", `${j.label}: default`, OLD.delivery.deliveryMessage(j.p), delivery.deliveryMessage(j.p, undefined, D));
+        same("client_delivery_partial", `${j.label}: no set at all`, OLD.delivery.deliveryMessage(j.p), delivery.deliveryMessage(j.p));
+        same("client_delivery_partial", `${j.label}: the old box's words through the store (legacy)`, OLD.delivery.deliveryMessage(j.p, { deliveryPartial: partBox }), delivery.deliveryMessage(j.p, undefined, TT.templateSet({ client_delivery_partial: { body: partBox, legacy: true } })));
+        same("client_delivery_partial", `${j.label}: the old box handed in without a set`, OLD.delivery.deliveryMessage(j.p, { deliveryPartial: partBox }), delivery.deliveryMessage(j.p, { deliveryPartial: partBox }));
+        c.ok(`${j.label}: the sweep's own call (box + set) is the set's words, not applied twice`, delivery.deliveryMessage(j.p, { deliveryPartial: partBox }, TT.templateSet({ client_delivery_partial: { body: partBox, legacy: true } })) === OLD.delivery.deliveryMessage(j.p, { deliveryPartial: partBox }));
+      }
+      for (const j of updates) {
+        same("client_delivery_update", `${j.label}: default`, OLD.delivery.deliveryMessage(j.p), delivery.deliveryMessage(j.p, undefined, D));
+        same("client_delivery_update", `${j.label}: the old partial box never reaches it`, OLD.delivery.deliveryMessage(j.p, { deliveryPartial: partBox }), delivery.deliveryMessage(j.p, undefined, TT.templateSet({ client_delivery_partial: { body: partBox, legacy: true } })));
+      }
       const welcomeVars = { first: "Morgan", strategyCallLink: S.GENERAL_STRATEGY_CALL_BOOKING_URL, website: S.PUBLIC_WEBSITE, portal: "media.realtourpilot.com" };
       same("client_welcome", "default", OLD.delivery.applyTemplate(S.DEFAULT_WELCOME_TEXT, welcomeVars), D.render("client_welcome", welcomeVars));
       const welcomeBox = "Hello {first}!\nCall: {strategyCallLink}\nPortal: {portal} {unknown}";
       same("client_welcome", "the old Automated texts box's words", OLD.delivery.applyTemplate(welcomeBox, welcomeVars), TT.templateSet({ client_welcome: { body: welcomeBox, legacy: true } }).render("client_welcome", welcomeVars));
       const ahVars = { first: "there", hours: "Monday to Friday, 9am to 6pm", nextDay: "Monday morning", portal: "media.realtourpilot.com" };
       same("client_after_hours", "default", OLD.delivery.applyTemplate(S.DEFAULT_AFTER_HOURS_REPLY, ahVars), D.render("client_after_hours", ahVars));
+      // The capture feedback text (src/app/projects/reviewActions.ts shareShootFeedback, Oct 22 2026): the old literal, verbatim.
+      for (const [name, author, title] of [["Harrison Wells", "Jordan", "238 Hudson Dr, Malvern, PA"], ["", "James", ""], [null, "Jordan", "9 Elm Rd"]] as const) {
+        const member = { name }, projectId = "p1", base = APP;
+        const street = title.split(",")[0].trim();
+        const before = `Hey ${member.name?.split(/\s+/)[0] ?? "there"} — ${author} left some feedback on your shoot for ${street}. Check it out here: ${base}/shoot/${projectId}`;
+        same("shoot_feedback_shared", `name=${JSON.stringify(name)}, street=${JSON.stringify(street)}`, before, D.render("shoot_feedback_shared", { firstName: member.name?.split(/\s+/)[0] ?? "there", author, street, link: `${base}/shoot/${projectId}` }));
+      }
 
       // ---- the inline senders, their old literals copied verbatim ---------------
       for (const [total, jobs] of [[1234.5, 12], [95, 1]] as const) {

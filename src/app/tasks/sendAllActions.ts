@@ -18,6 +18,12 @@ import { syntheticClientIds } from "@/lib/syntheticClients";
 // from the hourly cron — see lib/clientTextSweeps. Both rails now go through
 // the same durable outbox and race on the same message identity, so a text the
 // sweep has sent can never be sent again from here, and vice versa.)
+//
+// THE SAME WORDS AS THE SWEEP (Oct 22 2026). Each draft is rendered from the
+// template the sweep sends (Settings → Text messages: client_confirmation,
+// client_delivery_feedback, and the two part-delivered shapes), with the same
+// job fields, through lib/delivery clientTextFor. The per-card Send
+// (app/actions.ts) renders the same way and sends through sendDraftText below.
 // ---------------------------------------------------------------------------
 
 export type DraftedText = {
@@ -26,7 +32,8 @@ export type DraftedText = {
   projectId: string;
   clientName: string;
   street: string;
-  /** Freshly rendered message (shoot time / photographer current as of now). */
+  /** Freshly rendered message (shoot time / photographer current as of now),
+   *  in the wording the sweep would send for this job. */
   body: string;
   /** Why this row can't send (no phone / invalid) — shown, excluded from batch. */
   blocked: string | null;
@@ -54,18 +61,15 @@ export async function listDraftedTexts(opts: { includeTest?: boolean } = {}): Pr
   });
   if (tasks.length === 0) return { ok: true, rows: [] };
 
-  const projects = await prisma.project.findMany({
-    where: { id: { in: tasks.map((t) => t.projectId!) } },
-    select: {
-      id: true, title: true, shootDate: true, statusEvidence: true,
-      client: { select: { name: true, phone: true } },
-      photographer: { select: { name: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, waivedAt: true } }, // waived items are not read out to the client (Sep 16)
-    },
-  });
+  const { clientTextFor, CLIENT_TEXT_JOB_SELECT } = await import("@/lib/delivery");
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const [projects, words] = await Promise.all([
+    // The sweep's own job fields (waived items are not read out to the client, Sep 16).
+    prisma.project.findMany({ where: { id: { in: tasks.map((t) => t.projectId!) } }, select: CLIENT_TEXT_JOB_SELECT }),
+    loadTextTemplates(),
+  ]);
   const byId = new Map(projects.map((p) => [p.id, p]));
   const { phoneKey } = await import("@/lib/integrations/openphone");
-  const { deliveryMessage, confirmationMessage } = await import("@/lib/delivery");
   // WHERE A ROW READS ITS TRUTH (RTP-08, Sep 16): the task says a text is owed;
   // the OUTBOX says whether one has already gone out under this message's
   // identity. A row the outbox is holding — a send it could not confirm — must
@@ -82,16 +86,7 @@ export async function listDraftedTexts(opts: { includeTest?: boolean } = {}): Pr
     const p = byId.get(t.projectId!);
     if (!p) continue;
     const held = outboxState.get(keyFor(t, p.shootDate));
-    const body =
-      t.taskType === "delivery_text"
-        ? deliveryMessage(p)
-        : confirmationMessage({
-            title: p.title,
-            shootDate: p.shootDate,
-            client: { name: p.client.name },
-            photographer: p.photographer,
-            deliverables: p.deliverables,
-          });
+    const body = clientTextFor(t.taskType === "delivery_text" ? "delivery_text" : "confirmation_text", p, words);
     const blocked = !p.client.phone
       ? "No phone on file"
       : phoneKey(p.client.phone).length !== 10
@@ -130,8 +125,9 @@ export async function listDraftedTexts(opts: { includeTest?: boolean } = {}): Pr
 
 /**
  * Send ONE drafted text — with the (possibly human-edited) body the panel
- * showed. Logs to the project and completes the task, exactly like the
- * per-card send.
+ * showed: what is in the box is what goes. Logs to the project and completes
+ * the task. The per-card Send (app/actions.ts sendConfirmationText /
+ * sendDeliveryText) renders the template and sends through here too.
  *
  * RTP-08 (Sep 16): this used to CLAIM the task (status → COMPLETED) before
  * OpenPhone answered and roll it back inside a catch block. Two things fell out
