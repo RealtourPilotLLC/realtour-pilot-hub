@@ -162,10 +162,12 @@ const SELECT = {
     select: {
       type: true, label: true, productTitle: true, videoStyle: true, uploadedAt: true,
       notCompletedReason: true, waivedAt: true, removedFromOrderAt: true,
+      quantity: true, // Oct 22 2026: how many videos, against the ones waiting on a second shoot
     },
   },
   orderItems: { where: { isCanceled: false }, select: { title: true } },
   packageName: true,
+  videosOwedOverride: true,
   debriefSubmittedAt: true, photosHandoffAt: true, videoHandoffAt: true, photosHandoffBy: true, videoHandoffBy: true,
   uploadedAt: true, statusEvidence: true,
   videoInstructions: true, editorBrief: true, instructionsDropboxPath: true,
@@ -227,6 +229,12 @@ export async function loadEvidence(
   const streetById = new Map<string, string>();
   const lateVideo: { entry: KpiEntryBase; row: Row; due: Date }[] = [];
   const { handoffReadinessOf } = await import("@/lib/tasks");
+  // WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShootCore): a video the
+  // office is holding for another appointment is not judged until it is
+  // released. One read for every job here; a failed read is "none waiting".
+  const waitingByJob = await import("@/lib/reviewCuts")
+    .then((m) => m.waitingHoldsByProject(rows.map((r) => r.id)))
+    .catch(() => new Map<string, Map<string, unknown>>());
 
   for (const r of rows) {
     const shotAt = finishedAt(r, now);
@@ -239,7 +247,15 @@ export async function loadEvidence(
     // The upload page is the job photographer's (the person the handoff engine
     // names); a second shooter is never charged for it.
     const owner = r.photographerId === memberId || (r.photographerId == null && r.appointments.some((a) => liveAppointment(a) && a.assignedToId === memberId));
-    const halves = liveHandoffCategories(r.deliverables);
+    // Every video the job owes is waiting on a second shoot: its video half
+    // (the late-upload check and the instructions check) waits with it. One
+    // of several waiting leaves the half to the others.
+    const held = waitingByJob.get(r.id)?.size ?? 0;
+    const owedVideos = r.videosOwedOverride && r.videosOwedOverride > 0
+      ? r.videosOwedOverride
+      : r.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL")).reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+    const allVideoWaiting = held > 0 && held >= owedVideos;
+    const halves = liveHandoffCategories(r.deliverables).filter((h) => !(h === "video" && allVideoWaiting));
     const terms = uploadDeadlines(day);
     const ov: KpiDeadlineOverride | undefined = overrides.get(r.id);
     const dbx = dropboxCounts(r.statusEvidence);
@@ -317,7 +333,8 @@ export async function loadEvidence(
         const gaps = readiness.gaps.filter((g) => g.owedBy === "photographer" && g.key !== "debrief" && !excused.has(g.label));
         const words = ownWords(r.videoInstructions ?? r.editorBrief);
         const thinLater = r.instructionsDropboxPath ? [] : later
-          .filter((v) => v.shape === "full" && v.own && !(v.createdAt && v.createdAt.getTime() > handedIn.getTime()) && ownWords(v.own) < THIN_WORDS)
+          // A video waiting on a second shoot is not judged until it is released (Oct 22 2026).
+          .filter((v) => !v.waiting && v.shape === "full" && v.own && !(v.createdAt && v.createdAt.getTime() > handedIn.getTime()) && ownWords(v.own) < THIN_WORDS)
           .map((v) => `${ownWords(v.own)} word${ownWords(v.own) === 1 ? "" : "s"} of your own for video ${v.number} (${v.label}); the rule is at least ${THIN_WORDS}.`);
         const thin = !r.instructionsDropboxPath && words < THIN_WORDS;
         if (gaps.length || thin || thinLater.length) {

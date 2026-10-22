@@ -199,6 +199,16 @@ export async function GET(req: NextRequest) {
     const { sweepOutputUnits } = await import("@/lib/deliverableOutputs");
     return sweepOutputUnits({ max: 40, budgetMs: 20_000 });
   }, { maxMs: 25_000 });
+  // WAITING ON A SECOND SHOOT (Oct 22 2026, lib/secondShoot): a video the
+  // office held for another appointment is released, with its own clock from
+  // that shoot, once the later visit's video footage is in (the upload page
+  // releases it at once; this also reads the job's Dropbox raw-video folder).
+  // Only jobs with a held video, and no Dropbox call until a later visit has
+  // actually happened.
+  await step("secondShoots", async () => {
+    const { sweepSecondShoots } = await import("@/lib/secondShoot");
+    return sweepSecondShoots({ max: 40 });
+  }, { maxMs: 20_000 });
   // (FINISHED VIDEOS THAT MAY ALREADY BE UP THERE — the Ready-to-send card's
   // Aryeo read and the delivery proof — moved to /api/cron/aryeo, every 15
   // minutes, Oct 13 2026.)

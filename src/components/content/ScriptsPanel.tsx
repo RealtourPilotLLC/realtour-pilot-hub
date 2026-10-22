@@ -59,7 +59,9 @@ export type ScriptUi = { id: string; title: string; status: string; historical: 
   /** Oct 22 2026: its video is filmed (lib/scriptFilmed) — not the client's verdict, and the client is no longer asked. */
   filmed?: { atISO: string | null; signal: string } | null;
   /** Oct 22 2026: the topic's format (its own, else the account's default); null for a script with no topic. */
-  topicFormat?: VideoFormat | null };
+  topicFormat?: VideoFormat | null;
+  /** Oct 22 2026 (audit M5): a bulk plan's script, the client's own bank: the client is never asked to approve it. */
+  bulkBank?: boolean };
 
 /** A version's status in words (audit D22: staff saw "internal_review"). */
 const VERSION_WORD: Record<string, string> = { DRAFT: "waiting for an OK", INTERNAL_REVIEW: "waiting for an OK", APPROVED: "approved", SHARED: "sent to the client", SUPERSEDED: "replaced", REJECTED: "rejected" };
@@ -258,7 +260,8 @@ function ScriptItem({ s, busy, run, open, rev }: { s: ScriptUi; busy: boolean; r
     : s.clientVerdict === "CHANGES_REQUESTED" ? { label: "client asked for changes", cls: "bg-warning-soft text-warning" }
     : s.clientVerdict === "STALE" && !s.filmed ? { label: "rewritten since they approved", cls: "bg-warning-soft text-warning" }
     // Oct 22 2026: filmed before they answered. The client is not asked any more.
-    : releasedLive && !s.filmed ? { label: "client hasn't answered yet", cls: "bg-surface-2 text-muted" }
+    // Oct 22 2026 (audit M5): never on a bulk plan's bank, which the client is not asked to approve.
+    : releasedLive && !s.filmed && !s.bulkBank ? { label: "client hasn't answered yet", cls: "bg-surface-2 text-muted" }
     : null;
   // Filmed and never signed off by the client: its own chip, so nobody chases it.
   const filmedChip = s.filmed && s.clientVerdict !== "APPROVED" && !s.historical

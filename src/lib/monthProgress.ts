@@ -163,6 +163,14 @@ export type MonthProgress = {
     releasedAwaitingClient: number; clientApproved: number; changesRequested: number; openSuggestions: number;
     /** Oct 22 2026: released, never approved by the client, and filmed (lib/scriptFilmed): done, not waiting on them. */
     releasedFilmed: number;
+    /**
+     * Oct 22 2026 (audit M5): released on a bulk plan's month (bulkPlan.ts),
+     * not filmed, no client decision. The office approves a bulk plan's
+     * scripts as the client's own bank and the portal never asks the client
+     * to approve them (portalHome has no approval step for a bulk plan), so
+     * they are not "awaiting the client": Rick Schultz's month read 40.
+     */
+    releasedBank: number;
   };
   sessions: {
     required: number;
@@ -379,7 +387,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
   const monthOf = new Map(monthRows.filter((m) => enrollmentOf.get(m.enrollmentId)?.clientId === m.clientId).map((m) => [m.id, m]));
   const liveMonths = [...monthOf.values()];
 
-  const [sessionRows, videos, selections, monthTopics, scripts, ownerMaps] = await Promise.all([
+  const [sessionRows, videos, selections, monthTopics, scripts, ownerMaps, bulkPlanMonths] = await Promise.all([
     // Oct 13 2026: each month's session sources, from the bags already read (no extra statement).
     loadSessionRows(prisma, liveMonths.map((m) => ({ id: m.id, clientId: m.clientId, sources: sessionSourcesFrom(m.id, m.monthKey, enrollmentOf.get(m.enrollmentId)?.overridesJson) }))),
     // The LIBRARY, keyed exactly as programCountsByMonth and the overview key
@@ -400,7 +408,10 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
       ? prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true, enrollmentId: true, topicId: true, videoId: true, status: true, historical: true, currentVersionId: true, approvedVersionId: true, sharedVersionId: true, releaseState: true } })
       : Promise.resolve([]),
     opts.owners === false ? Promise.resolve(new Map<string, OwnerMap>()) : ownersForMany(pairs.map((p) => ({ enrollmentId: p.enrollmentId, monthId: p.monthId }))),
+    // Oct 22 2026 (audit M5): the bulk plans' anchor months (bulkPlan.bulkMonthIds' rule, these months only).
+    monthIds.length ? prisma.contentBulkPlan.findMany({ where: { monthId: { in: monthIds }, status: { not: "CANCELLED" } }, select: { monthId: true } }) : Promise.resolve([]),
   ]);
+  const bulkMonths = new Set(bulkPlanMonths.map((b) => b.monthId));
   // Oct 8 2026: which of these months are FORFEITED (forfeit.ts) — a fixed
   // set of grouped reads whatever the roster's size. Unreadable → none.
   const forfeitedSet = await import("@/lib/monthForfeit")
@@ -485,7 +496,7 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
     }
 
     // ---- scripts -----------------------------------------------------------
-    const sc = { total: 0, drafting: 0, needsJordan: 0, ready: 0, releasedAwaitingClient: 0, releasedFilmed: 0, clientApproved: 0, changesRequested: 0, openSuggestions: 0 };
+    const sc = { total: 0, drafting: 0, needsJordan: 0, ready: 0, releasedAwaitingClient: 0, releasedFilmed: 0, releasedBank: 0, clientApproved: 0, changesRequested: 0, openSuggestions: 0 };
     for (const s of scripts) {
       if (s.monthId !== mid || !mid) continue;
       sc.openSuggestions += suggestionsOf.get(s.id) ?? 0;
@@ -508,6 +519,8 @@ export async function monthProgressMany(pairsIn: MonthPair[], opts: { now?: Date
         else if (d.decision === "CHANGES_REQUESTED") sc.changesRequested++;
         // Filmed before they answered: done, never "waiting on the client".
         else if (filmedScripts.has(s.id)) sc.releasedFilmed++;
+        // A bulk plan's bank: the portal never asks the client to approve it.
+        else if (bulkMonths.has(mid)) sc.releasedBank++;
         else sc.releasedAwaitingClient++;
       }
     }
@@ -726,6 +739,23 @@ export async function monthProgress(enrollmentId: string, monthId: string, opts:
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+/**
+ * THE SCRIPTS WAITING ON THE APPROVER, IN ONE SET OF WORDS (Oct 22 2026,
+ * audit M5). A DRAFT waits for the same OK as INTERNAL_REVIEW (audit D9), so
+ * the number is the two together; when both kinds are waiting, the split the
+ * month page keeps (needsJordan / drafting) is said too. The Dashboard's
+ * Monthly content card read "4 to approve" where the month page read 3 in
+ * review and 1 draft; both now print this. Null when nothing is waiting.
+ *   scriptsAwaitingWords({ needsJordan: 3, drafting: 1 }, "to approve")
+ *     → "4 scripts to approve, 1 of them a draft"
+ */
+export function scriptsAwaitingWords(s: { needsJordan: number; drafting: number }, tail: string): string | null {
+  const total = Math.max(0, s.needsJordan) + Math.max(0, s.drafting);
+  if (total === 0) return null;
+  const split = s.needsJordan > 0 && s.drafting > 0 ? `, ${s.drafting} of them ${s.drafting === 1 ? "a draft" : "drafts"}` : "";
+  return `${plural(total, "script")} ${tail}${split}`;
+}
+
 function nextActionFor(p: MonthProgress): MonthNextAction | null {
   const o = p.owners;
   const owedRaw = p.videosOwed;
@@ -785,8 +815,8 @@ function nextActionFor(p: MonthProgress): MonthNextAction | null {
     // Written-answer drafts and hand edits are saved DRAFT, and the Scripts
     // tab lists both under "needs your OK" with an Approve button, so calling
     // a finished draft "work" sent Jordan to approve it under another name.
-    const awaitingOk = p.scripts.needsJordan + p.scripts.drafting;
-    if (awaitingOk > 0) return { text: `${plural(awaitingOk, "script")} waiting on your OK`, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" };
+    const awaitingOk = scriptsAwaitingWords(p.scripts, "waiting on your OK");
+    if (awaitingOk) return { text: awaitingOk, cta: "Review the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "script approval", blocked: "us" };
     return { text: `${p.scripts.ready} of ${owed} scripts ready — the rest are being drafted`, cta: "See the scripts", href: "#scripts", owner: o.SCRIPTS.label, ownerDuty: "scripts", blocked: "us" };
   }
   if (!filmedDone) {

@@ -87,9 +87,13 @@ export async function atRiskOutputs(now: Date = new Date(), opts: { excludeClien
         deliveredAt: null, waivedAt: null, removedFromOrderAt: null,
         ...(excludedProjectIds.length ? { projectId: { notIn: excludedProjectIds } } : {}),
       },
-      select: { id: true, projectId: true, slot: true, category: true, title: true, promisedAt: true, promiseSource: true },
+      // briefJson: a video waiting on a second shoot (Oct 22 2026) is never at risk.
+      select: { id: true, projectId: true, slot: true, category: true, title: true, promisedAt: true, promiseSource: true, briefJson: true },
       orderBy: { promisedAt: "asc" },
       take: 200,
+    }).then(async (rows) => {
+      const { isWaitingJson } = await import("@/lib/secondShootCore");
+      return rows.filter((o) => !isWaitingJson(o.briefJson));
     }),
     // Per job, for the work that has no per-output row (photo-only jobs): the
     // frozen promise, read the way every reader must (pinnedPromise — a
