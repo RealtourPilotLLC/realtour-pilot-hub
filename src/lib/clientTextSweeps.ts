@@ -495,9 +495,10 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   if (projects.length === 0) return { sent: 0, skipped: 0, notes };
   const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: projects.length, notes: ["OpenPhone not connected"] };
-  const { confirmationMessage } = await import("@/lib/delivery");
+  const { clientTextFor } = await import("@/lib/delivery");
   // The wording (Settings → Text messages, Oct 21 2026): a saved change, the
-  // old Text wording box's, or the default.
+  // old Text wording box's, or the default. The Send buttons render through
+  // the same clientTextFor with the same set (Oct 22 2026).
   const { loadTextTemplates } = await import("@/lib/textTemplateStore");
   const words = await loadTextTemplates();
 
@@ -589,19 +590,13 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
     // after an unconfirmed send) — including by the pre-outbox code, whose
     // markers are all we have for the back catalogue.
     if (await alreadyMarked(marker)) { skipped++; continue; }
-    const body = confirmationMessage({
-      title: p.title, city: p.city, shootDate: p.shootDate,
-      client: { name: p.client.name }, photographer: p.photographer, deliverables: p.deliverables,
-    }, words);
+    const body = clientTextFor("confirmation_text", p, words);
     // LAST LOOK BEFORE THE SEND (review, Sep 16). The atomic task claim that used
     // to sit on this line is gone — the outbox holds the claim now, and it holds
-    // it against the /tasks panel and every other cron. What it does NOT yet
-    // cover is the per-card Send button (app/actions.ts sendConfirmationText),
-    // which still calls OpenPhone directly with no claim at all; HANDOVER says
-    // to route it through the same identity. Until it does, a person pressing
-    // Send in the seconds after the query above would be a SECOND text to the
-    // client, so the task's status is re-read as late as possible. One indexed
-    // query; it narrows the window to milliseconds.
+    // it against Send all, the per-card Send (routed through the same identity
+    // since Oct 22 2026) and every other cron. A text typed by hand on a phone
+    // is not in the outbox, and the webhook completes the task for it, so the
+    // task's status is still re-read as late as possible. One indexed query.
     const handledSince = await prisma.smartTask.findFirst({
       where: { projectId: p.id, taskType: "confirmation_text", status: { in: ["COMPLETED", "CANCELLED"] } },
       select: { id: true },
@@ -1010,10 +1005,9 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
   if (tasks.length === 0) return { sent: 0, skipped: 0, notes };
   const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: tasks.length, notes: ["OpenPhone not connected"] };
-  const { deliveryMessage } = await import("@/lib/delivery");
-  const { textTemplates } = await import("@/lib/settings");
+  const { clientTextFor } = await import("@/lib/delivery");
   const { loadTextTemplates } = await import("@/lib/textTemplateStore");
-  const [tpl, words] = await Promise.all([textTemplates(), loadTextTemplates()]);
+  const words = await loadTextTemplates();
 
   // The hold reason, onto the task. Diff-before-write so an unchanged hold does
   // not churn updatedAt every hour (the CANCELLED path reads updatedAt as "when
@@ -1210,15 +1204,13 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     }
     // The wording: the feedback ask, client_delivery_feedback (Settings → Text
     // messages, Oct 21 2026: a saved change, the old Text wording box's, or the
-    // default) rather than the older "everything has been delivered"
-    // announcement. The partial variant is never reached from here — the gate
+    // default), through the same clientTextFor the Send buttons use (Oct 22
+    // 2026). The part-delivered texts are never reached from here — the gate
     // above guarantees nothing is missing.
-    const body = deliveryMessage(project, { deliveryPartial: tpl.deliveryPartial }, words);
+    const body = clientTextFor("delivery_text", project, words);
     // LAST LOOK BEFORE THE SEND (review, Sep 16) — same reason as the
-    // confirmation sweep: the per-card Send button (app/actions.ts
-    // sendDeliveryText) still texts OpenPhone directly and then completes this
-    // task, so until that is routed through the outbox (HANDOVER) the only thing
-    // standing between a hand-send and this sweep is how fresh the status is.
+    // confirmation sweep: the Send buttons contend on the outbox row below, a
+    // text typed on a phone only reaches the task, so its status is re-read.
     const status = (await prisma.smartTask.findUnique({ where: { id: t.id }, select: { status: true } }))?.status;
     if (status === "COMPLETED" || status === "CANCELLED") { skipped++; continue; }
     const res = await trySend(project.title, {

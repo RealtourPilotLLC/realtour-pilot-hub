@@ -316,11 +316,13 @@ async function main() {
   ok("a second sweep an hour later still refuses", sweepO2.sent === 0 && (await sendsFor(j1o.id)) === 0, JSON.stringify(sweepO2));
 
   console.log("\n  1c''. THE OTHER SEND PATH — the human 'Send' button on the same task");
-  // app/actions.sendDeliveryText does NOT go through the outbox and carries no
-  // owed gate of its own (its own file says so). It is a person's deliberate
-  // send, so it is allowed to go — but the WORDING it renders is the thing the
-  // audit's contract is actually about, and it must not read as a batch
-  // completion to a client holding one of four reels.
+  // app/actions.sendDeliveryText carries no owed gate of its own (its own file
+  // says so). It is a person's deliberate send, so it is allowed to go — but
+  // the WORDING it renders is the thing the audit's contract is actually about,
+  // and it must not read as a batch completion to a client holding one of four
+  // reels. (Since Oct 22 2026 it sends through the outbox, on the job's
+  // delivery identity, like the sweep and Send all; the words are the
+  // client_delivery_partial template.)
   const sentBodies: string[] = [];
   const realSend = (opMod.OpenPhone as unknown as { sendMessage: unknown }).sendMessage;
   (opMod.OpenPhone as unknown as { sendMessage: (f: string, t: string, b: string) => Promise<unknown> }).sendMessage =
@@ -765,9 +767,14 @@ async function main() {
   // in the two places it deliberately captured the WORDS a client would read.
   say("accepted rows (all captured by the drill's recording stub)", await accepted());
   // Three, since Sep 20: the boundary fixture at 5b'' is a send that MUST
-  // happen, and its stub takes the third row.
-  ok("nothing reached a real provider", (await accepted()) <= 3, `${await accepted()} accepted, stub captured ${sentBodies.length + bodies5u.length + bodies5s.length}`);
-  ok("no row was ever queued for a job the gate was holding", (await sendsFor(j1o.id)) === 0 && (await sendsFor(j5.id)) === 0);
+  // happen, and its stub takes the third row. Four since Oct 22 2026: the
+  // per-card Send at 1c'' goes through the outbox now, and the stub took it too.
+  const captured = sentBodies.length + bodies5u.length + bodies5s.length;
+  ok("nothing reached a real provider", (await accepted()) <= captured, `${await accepted()} accepted, stub captured ${captured}`);
+  // The gate holds the SWEEP. The one row on j1o is the person's deliberate
+  // Send at 1c'' (Oct 22 2026), never a sweep's.
+  const sweepRowsFor = (projectId: string) => prisma.outboxMessage.count({ where: { projectId, requestedBy: { startsWith: "sweep:" } } });
+  ok("no row was ever queued for a job the gate was holding", (await sweepRowsFor(j1o.id)) === 0 && (await sendsFor(j1o.id)) === 1 && (await sendsFor(j5.id)) === 0);
 
   console.log(`\n${fail === 0 ? `ALL CHECKS PASSED (${pass} passed)` : `${fail} FAILED, ${pass} passed`}`);
   await server.stop();

@@ -2,7 +2,9 @@
 // EVERY AUTOMATIC TEXT, AS A TEMPLATE (Jordan, Oct 21 2026: "add settings to
 // customize all text templates").
 //
-// One entry per automatic text the hub sends, to clients and to the team: what
+// One entry per automatic text the hub sends, to clients and to the team, and
+// (Oct 22 2026) per fixed wording a person sends with one button press (the
+// confirmation and delivery Send buttons, the capture feedback text): what
 // it is, when it goes, its words, and the {placeholders} the sender fills. The
 // DEFAULT of every entry is byte-for-byte what the code sent before this file
 // existed (scripts/_drill/oct21-text-templates.ts holds the old builders and
@@ -88,7 +90,7 @@ export const TEXT_TEMPLATES = {
   client_confirmation: {
     label: "Shoot confirmation",
     audience: "client",
-    when: "Before each shoot, the set number of hours ahead (48 by default), inside the client send window.",
+    when: "Before each shoot, the set number of hours ahead (48 by default), inside the client send window. Send on the confirmation's card and Send all send these same words.",
     body: "Hi {first}! Confirming your shoot {atPlace} on {when} {forItems}. Anything we should know or want us to avoid? Looking forward to it!",
     placeholders: [
       P("first", "The client's first name", "Sarah"),
@@ -99,12 +101,12 @@ export const TEXT_TEMPLATES = {
       P("items", "What was ordered, or \"your shoot\"", "photos, drone, and floor plan"),
     ],
     required: ["when"],
-    sender: "src/lib/clientTextSweeps.ts (sweepConfirmationTexts) via src/lib/delivery.ts confirmationMessage",
+    sender: "src/lib/clientTextSweeps.ts (sweepConfirmationTexts), src/app/actions.ts (sendConfirmationText), src/app/tasks/sendAllActions.ts (listDraftedTexts) via src/lib/delivery.ts clientTextFor",
   },
   client_delivery_feedback: {
     label: "Delivery feedback ask",
     audience: "client",
-    when: "Once everything ordered for a job has been delivered, inside the client send window.",
+    when: "Once everything ordered for a job has been delivered, inside the client send window. Send on the delivery text's card and Send all send these same words.",
     body: "Hi {first}! Now that {street} is wrapped up, how did everything go? The shoot, the turnaround, the content. Quick feedback here helps us make sure you are getting a great experience and keep making it better: {feedbackUrl} If anything is not right, just reply and we will jump on it.",
     placeholders: [
       P("first", "The client's first name", "Sarah"),
@@ -112,7 +114,40 @@ export const TEXT_TEMPLATES = {
       P("feedbackUrl", "The link to the job's feedback form", "https://hub.realtourpilot.com/feedback/abc123"),
     ],
     required: ["feedbackUrl"],
-    sender: "src/lib/clientTextSweeps.ts (sweepDeliveryTexts) via src/lib/delivery.ts deliveryMessage",
+    sender: "src/lib/clientTextSweeps.ts (sweepDeliveryTexts), src/app/actions.ts (sendDeliveryText), src/app/tasks/sendAllActions.ts (listDraftedTexts) via src/lib/delivery.ts clientTextFor",
+  },
+  // Oct 22 2026: the two other shapes of the delivery text. The sweep never
+  // sends them (it waits for the whole job); a person pressing Send on a
+  // delivery text while part of the job is still owed does.
+  client_delivery_partial: {
+    label: "Delivery text: part delivered",
+    audience: "client",
+    when: "When a person presses Send on a delivery text while part of the job is still owed (the automatic one waits for the whole job): what is out, what is still coming, and the feedback ask.",
+    body: "Hi {first}! The {deliveredLine}, and {remainingLine}. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: {feedbackUrl}",
+    placeholders: [
+      P("first", "The client's first name", "Sarah"),
+      P("deliveredLine", "What is out, for where, and \"is\" or \"are delivered\"", "photos for 123 Main St are delivered"),
+      P("remainingLine", "What is still owed and where it stands", "the video is still in production and coming shortly"),
+      P("feedbackUrl", "The link to the job's feedback form", "https://hub.realtourpilot.com/feedback/abc123"),
+      P("delivered", "Just what is out", "photos"),
+      P("remaining", "Just what is still owed", "the video"),
+      P("street", "The street, or \"the <town> location\", or \"your listing\"", "123 Main St"),
+    ],
+    required: ["feedbackUrl"],
+    sender: "src/app/actions.ts (sendDeliveryText), src/app/tasks/sendAllActions.ts (listDraftedTexts) via src/lib/delivery.ts deliveryMessage",
+  },
+  client_delivery_update: {
+    label: "Delivery text: nothing out yet",
+    audience: "client",
+    when: "When a person presses Send on a delivery text before anything ordered is on the client's listing: what is still coming, with no feedback ask.",
+    body: "Hi {first}! Quick update {forPlace}: {remainingLine}. We will let you know the moment everything is up. If you need anything before then, just reply here.",
+    placeholders: [
+      P("first", "The client's first name", "Sarah"),
+      P("forPlace", "\"for\" the street, or \"from your <town> shoot\", or \"from your shoot\"", "for 123 Main St"),
+      P("remainingLine", "What is still owed and where it stands", "3 of 4 videos are finished and going up on your listing"),
+    ],
+    required: ["remainingLine"],
+    sender: "src/app/actions.ts (sendDeliveryText), src/app/tasks/sendAllActions.ts (listDraftedTexts) via src/lib/delivery.ts deliveryMessage",
   },
   client_after_hours: {
     label: "After-hours reply",
@@ -272,6 +307,20 @@ export const TEXT_TEMPLATES = {
     ],
     required: ["note"],
     sender: "src/lib/shootNotes.ts",
+  },
+  shoot_feedback_shared: {
+    label: "Capture feedback shared",
+    audience: "team",
+    when: "When someone in the office presses \"Text <photographer> the feedback\" under a shoot's capture feedback, to whoever shot it.",
+    body: "Hey {firstName} — {author} left some feedback on your shoot for {street}. Check it out here: {link}",
+    placeholders: [
+      P("firstName", "The photographer's first name", "Harrison"),
+      P("author", "The first name of whoever pressed the button", "Jordan"),
+      P("street", "The job's street", "123 Main St"),
+      P("link", "The job's shoot screen, where the feedback is", "https://hub.realtourpilot.com/shoot/abc123"),
+    ],
+    required: ["link"],
+    sender: "src/app/projects/reviewActions.ts (shareShootFeedback)",
   },
 
   // ---- TO THE TEAM: pay ----------------------------------------------------------
@@ -481,7 +530,7 @@ export function placeholdersIn(body: string): string[] {
  * Fill a wording. A placeholder with no value given is left exactly as typed
  * (only a wording saved before the checks existed can carry one: see
  * templateSet). An OPTIONAL placeholder whose value is empty disappears along
- * with the one space before it. Trimmed, like the old applyTemplate.
+ * with the one space before it. Trimmed, like the old applyTemplate (lib/delivery, retired Oct 22 2026).
  */
 export function fillTemplate(body: string, vars: Record<string, string>, optional: readonly string[] = []): string {
   return body

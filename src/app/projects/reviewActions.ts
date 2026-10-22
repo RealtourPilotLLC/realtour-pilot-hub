@@ -550,7 +550,9 @@ export async function acknowledgeMediaNote(noteId: string): Promise<{ ok: boolea
 // Text the photographer their feedback link — "Jordan left feedback on your
 // shoot for 238 Hudson Dr — check it out here: …/shoot/<id>". Owner presses
 // the button; the hub sends exactly that. Stamps sharedAt on the lane's root
-// notes so the review side shows Shared/Seen receipts.
+// notes so the review side shows Shared/Seen receipts. The words are the
+// shoot_feedback_shared template (Oct 22 2026, Settings → Text messages): one
+// fixed sentence per press, so Jordan edits it there like every hub text.
 export async function shareShootFeedback(projectId: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireCreativeLead();
@@ -577,7 +579,10 @@ export async function shareShootFeedback(projectId: string): Promise<{ ok: boole
   const base =
     process.env.NEXT_PUBLIC_APP_URL ||
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-  const body = `Hey ${member.name?.split(/\s+/)[0] ?? "there"} — ${author} left some feedback on your shoot for ${street}. Check it out here: ${base}/shoot/${projectId}`;
+  const { renderText } = await import("@/lib/textTemplateStore");
+  const body = await renderText("shoot_feedback_shared", {
+    firstName: member.name?.split(/\s+/)[0] ?? "there", author, street, link: `${base}/shoot/${projectId}`,
+  });
 
   const { phoneKey, OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
   const k = phoneKey(member.phone);

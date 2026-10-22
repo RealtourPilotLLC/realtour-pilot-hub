@@ -1,7 +1,7 @@
 "use server";
 
 import { requireAdmin, requireCreativeLead, requireTaskAccess } from "@/lib/auth/guards";
-import { deliveryStamp, outstandingForDelivery } from "@/lib/delivery";
+import { CLIENT_TEXT_JOB_SELECT, clientTextFor, deliveryStamp, outstandingForDelivery, type ClientTextKind } from "@/lib/delivery";
 import { owedPhrase } from "@/lib/statusEvidence";
 import { appBase } from "@/lib/appUrl";
 
@@ -1643,89 +1643,43 @@ export async function draftTaskReply(
   }
 }
 
-// Send the smart delivery text (what was delivered + what's still in production)
-// to the client via OpenPhone. Human-initiated from a delivery_text to-do.
+// The Send button on a confirmation_text / delivery_text card. Human-initiated:
+// renders the text fresh at send time (so the shoot time / what is out are
+// current), sends it, logs it, and completes the task.
+//
+// ONE WORDING, ONE IDENTITY (Oct 22 2026). These two used to render the
+// built-in words (the delivery one even the older "Everything … has been
+// delivered" announcement instead of the feedback ask) and text OpenPhone
+// directly, outside the outbox. Now the words are the template the sweep
+// sends for this job (lib/delivery clientTextFor, Settings → Text messages),
+// and the send goes through sendDraftText, the same outbox identity the sweep
+// and Send all contend on: a text the sweep sent is never sent again from
+// here, and one sent from here is never sent again by the sweep.
 export async function sendDeliveryText(taskId: string): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
-  const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
-  if (!task?.projectId) return { ok: false, message: "No project linked to this task." };
-  const project = await prisma.project.findUnique({
-    where: { id: task.projectId },
-    select: { id: true, title: true, statusEvidence: true, client: { select: { name: true, phone: true } } },
-  });
-  if (!project) return { ok: false, message: "Project not found." };
-  if (!project.client.phone) return { ok: false, message: "No phone number on file for this client." };
-
-  const { phoneKey, OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
-  const k = phoneKey(project.client.phone);
-  if (k.length !== 10) return { ok: false, message: "Client phone number looks invalid." };
-  const from = await defaultOpenPhoneNumber();
-  if (!from) return { ok: false, message: "OpenPhone isn't connected." };
-
-  const { deliveryMessage } = await import("@/lib/delivery");
-  const body = deliveryMessage(project);
-  try {
-    await OpenPhone.sendMessage(from, `+1${k}`, body);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
-  }
-  await prisma.activity.create({
-    data: { projectId: project.id, type: "SYSTEM", body: `Delivery text sent to ${project.client.name}: ${body.slice(0, 160)}` },
-  });
-  await prisma.smartTask.update({ where: { id: taskId }, data: { status: "COMPLETED", completedAt: new Date() } });
-  revalidatePath("/");
-  revalidatePath("/queue");
-  revalidatePath(`/projects/${task.projectId}`);
-  return { ok: true, message: "Delivery text sent." };
+  return sendTaskTemplateText(taskId, "delivery_text");
 }
 
-// Send the day-before confirmation text to the client via OpenPhone.
-// Human-initiated from a confirmation_text to-do. Sends the freshly-rendered
-// message (so the shoot time/photographer are current), logs it, and completes
-// the task.
 export async function sendConfirmationText(taskId: string): Promise<{ ok: boolean; message: string }> {
+  return sendTaskTemplateText(taskId, "confirmation_text");
+}
+
+async function sendTaskTemplateText(taskId: string, kind: ClientTextKind): Promise<{ ok: boolean; message: string }> {
   await requireAdmin();
-  const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
+  const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true, taskType: true } });
   if (!task?.projectId) return { ok: false, message: "No project linked to this task." };
-  const project = await prisma.project.findUnique({
-    where: { id: task.projectId },
-    select: {
-      id: true, title: true, shootDate: true,
-      client: { select: { name: true, phone: true } },
-      photographer: { select: { name: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
-    },
-  });
+  if (task.taskType !== kind) return { ok: false, message: `This is not a ${kind === "delivery_text" ? "delivery" : "confirmation"} text task.` };
+  const project = await prisma.project.findUnique({ where: { id: task.projectId }, select: CLIENT_TEXT_JOB_SELECT });
   if (!project) return { ok: false, message: "Project not found." };
   if (!project.client.phone) return { ok: false, message: "No phone number on file for this client." };
+  const { phoneKey } = await import("@/lib/integrations/openphone");
+  if (phoneKey(project.client.phone).length !== 10) return { ok: false, message: "Client phone number looks invalid." };
 
-  const { phoneKey, OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
-  const k = phoneKey(project.client.phone);
-  if (k.length !== 10) return { ok: false, message: "Client phone number looks invalid." };
-  const from = await defaultOpenPhoneNumber();
-  if (!from) return { ok: false, message: "OpenPhone isn't connected." };
-
-  const { confirmationMessage } = await import("@/lib/delivery");
-  const body = confirmationMessage({
-    title: project.title,
-    shootDate: project.shootDate,
-    client: { name: project.client.name },
-    photographer: project.photographer,
-    deliverables: project.deliverables,
-  });
-  try {
-    await OpenPhone.sendMessage(from, `+1${k}`, body);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
-  }
-  await prisma.activity.create({
-    data: { projectId: project.id, type: "SYSTEM", body: `Confirmation text sent to ${project.client.name}: ${body.slice(0, 160)}` },
-  });
-  await prisma.smartTask.update({ where: { id: taskId }, data: { status: "COMPLETED", completedAt: new Date() } });
-  revalidatePath("/");
-  revalidatePath("/queue");
-  revalidatePath(`/projects/${task.projectId}`);
-  return { ok: true, message: "Confirmation text sent." };
+  const { loadTextTemplates } = await import("@/lib/textTemplateStore");
+  const body = clientTextFor(kind, project, await loadTextTemplates());
+  const { sendDraftText } = await import("@/app/tasks/sendAllActions");
+  const r = await sendDraftText(taskId, body);
+  if (r.ok) revalidatePath("/queue");
+  return r;
 }
 
 // Mark a revision request resolved (handled or dismissed as a false alarm).

@@ -1,6 +1,6 @@
 import "server-only";
 import { parseEvidence, owedNow, owedPhrase, owedVerb, sameCategory, type OwedShortfall } from "@/lib/statusEvidence";
-import { DEFAULT_TEXTS, type TextTemplateSet } from "@/lib/textTemplates";
+import { DEFAULT_TEXTS, templateSet, type TemplateOverride, type TextTemplateKey, type TextTemplateSet } from "@/lib/textTemplates";
 
 // ---------------------------------------------------------------------------
 // RULE 1 — THE DELIVERY DATE IS STAMPED ONCE.
@@ -207,23 +207,28 @@ function streetForTemplate(street: string, city: string): string {
 
 // The post-delivery client text, written in Jordan's voice (no em dashes, no
 // emojis, warm + low-pressure). Adapts to whether everything is delivered or
-// part of it (e.g. the video) is still in production.
-// Apply an owner-authored template (the old Text wording box; the automatic
-// texts render through lib/textTemplates since Oct 21 2026). An empty
-// template means "use the built-in wording" — a blank box can never send a
-// blank text.
-export function applyTemplate(tpl: string, vars: Record<string, string>): string {
-  const out = tpl.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)).trim();
-  return out;
-}
-
-// `t` (Oct 21 2026): the automatic sender's wording (lib/textTemplateStore).
-// With it, the everything-delivered text is the client_delivery_feedback
-// template (the feedback ask, Settings → Text messages); without it, the
-// per-card Send keeps the announcement it has always sent. The part-delivered
-// branches are not templates: the automatic sweep never reaches them (its gate
-// waits for the whole job), and `templates.deliveryPartial` is the old box.
+// part of it (e.g. the video) is still in production. (applyTemplate, the old
+// box's filler, retired Oct 22 2026: an old box's words are filled by
+// lib/textTemplates fillTemplate as a "legacy" wording, which leaves an
+// unknown {name} as typed exactly like it did.)
+//
+// EVERY BRANCH IS A TEMPLATE (Oct 22 2026). `t` is the wording in use
+// (lib/textTemplateStore loadTextTemplates: a saved change, an old box's, or
+// the default), and it decides all three texts:
+//   · everything delivered → client_delivery_feedback, the feedback ask. The
+//     per-card Send used to send its own older announcement here ("Everything
+//     for … has been delivered. How did we do?"), an earlier copy of the same
+//     moment that Jordan replaced on Sep 1; it now sends the ask, like the
+//     sweep and Send all;
+//   · part of it still owed → client_delivery_partial (only a person pressing
+//     Send reaches it: the sweep waits for the whole job);
+//   · nothing on the listing yet → client_delivery_update.
+// Without `t`, the defaults. `templates` is the old Text wording box, kept
+// for callers that pass it: with `t` the store already carries that box's
+// wording (as "legacy"), so it is not applied twice; without `t` it is folded
+// into the defaults the way the store would.
 export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: string; deliveryPartial?: string }, t?: TextTemplateSet): string {
+  const set = t ?? oldBoxSet(templates);
   const first = (p.client.name || "there").trim().split(/\s+/)[0] || "there";
   const street = streetOf(p.title);
   const city = p.city?.trim() ?? "";
@@ -260,28 +265,42 @@ export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: 
     const leftState = owed.neverMade.length === 0 && owed.awaitingSend.length > 0
       ? "finished and going up on your listing"
       : "still in production and coming shortly";
+    const remainingLine = `${left} ${leftVerb} ${leftState}`;
     // NOTHING TO ANNOUNCE IS NOT "THE FIRST ROUND IS DELIVERED" (5642 Limeport
     // Rd, Sep 20). The delivered half used to fall back to that phrase when
     // every present category was also still owed, so a video-only job with
     // four cuts in Dropbox and none on the listing told Gary the first round
     // of content was delivered when nothing had reached him at all. When
     // there is nothing out, the text says only what is still coming and asks
-    // for no feedback there is nothing to give. The owner's partial template
-    // is skipped here on purpose: its whole shape is "{delivered} is out and
-    // {remaining} is coming", and there is no honest word for {delivered}.
+    // for no feedback there is nothing to give. It is its own template
+    // (client_delivery_update) on purpose: the part-delivered one's whole
+    // shape is "{delivered} is out and {remaining} is coming", and there is no
+    // honest word for {delivered}.
     if (!presentItems.length) {
-      return `Hi ${first}! Quick update${forPlace}: ${left} ${leftVerb} ${leftState}. We will let you know the moment everything is up. If you need anything before then, just reply here.`;
+      return set.render("client_delivery_update", { first, forPlace: forPlace.trim(), remainingLine });
     }
-    const tplPartial = templates?.deliveryPartial?.trim();
-    if (tplPartial) {
-      return applyTemplate(tplPartial, { first, street: streetForTemplate(street, city), delivered: present, remaining: left, feedbackUrl: url });
-    }
-    return `Hi ${first}! The ${present}${forPlace} ${presentVerb} delivered, and ${left} ${leftVerb} ${leftState}. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
+    return set.render("client_delivery_partial", {
+      first,
+      deliveredLine: `${present}${forPlace} ${presentVerb} delivered`,
+      remainingLine,
+      feedbackUrl: url,
+      // The old box's names, for a wording written with them.
+      delivered: present,
+      remaining: left,
+      street: streetForTemplate(street, city),
+    });
   }
-  if (t) return t.render("client_delivery_feedback", { first, street: streetForTemplate(street, city), feedbackUrl: url });
-  const tplAll = templates?.deliveryAll?.trim();
-  if (tplAll) return applyTemplate(tplAll, { first, street: streetForTemplate(street, city), feedbackUrl: url });
-  return `Hi ${first}! Everything${forPlace} has been delivered. How did we do? If anything is not exactly right, just reply here and we will jump on it. And if you have a quick minute, we would love your feedback here: ${url}`;
+  return set.render("client_delivery_feedback", { first, street: streetForTemplate(street, city), feedbackUrl: url });
+}
+
+/** The old Text wording box's delivery words, handed in without a set: sent
+ *  as they always were (unchecked, like the store's "legacy"), else the
+ *  defaults. */
+function oldBoxSet(templates?: { deliveryAll?: string; deliveryPartial?: string }): TextTemplateSet {
+  const o: Partial<Record<TextTemplateKey, TemplateOverride>> = {};
+  if (templates?.deliveryAll?.trim()) o.client_delivery_feedback = { body: templates.deliveryAll, legacy: true };
+  if (templates?.deliveryPartial?.trim()) o.client_delivery_partial = { body: templates.deliveryPartial, legacy: true };
+  return Object.keys(o).length ? templateSet(o) : DEFAULT_TEXTS;
 }
 
 type ConfirmProject = {
@@ -311,12 +330,10 @@ function orderedList(deliverables?: { type: string; waivedAt?: Date | null }[]):
         // "Confirming your shoot for photos, drone and floor plan" must not
         // name a floor plan the office has said isn't required (Sep 16).
         //
-        // NOTE for whoever owns the send paths: this filter only bites when
-        // the caller SELECTS waivedAt. Three selects still don't, and each
-        // needs `where: { removedFromOrderAt: null, waivedAt: null }` (the
-        // shared tasks.OWED_DELIVERABLE_WHERE) — lib/clientTextSweeps.ts (the
-        // auto-send), app/actions.ts and app/tasks/sendAllActions.ts. Left to
-        // them on purpose: those files are outside this batch's file set.
+        // This filter only bites when the caller SELECTS waivedAt. The sweep,
+        // the per-card Send and Send all all read the job through
+        // CLIENT_TEXT_JOB_SELECT below (Oct 22 2026), which does; the task's
+        // draft (lib/tasks.ts) selects only owed rows in the first place.
         .filter((d) => !d.waivedAt)
         .map((d) => ORDER_LABEL[d.type])
         .filter(Boolean),
@@ -334,9 +351,9 @@ function orderedList(deliverables?: { type: string; waivedAt?: Date | null }[]):
 // (no em dashes, no emojis), copy-paste ready.
 //
 // The words are the client_confirmation template (lib/textTemplates, Oct 21
-// 2026). `t` is the automatic sender's wording, saved changes included
-// (lib/textTemplateStore); without it, the default wording, which is exactly
-// what the per-card Send and the task's draft have always shown.
+// 2026). `t` is the wording in use, saved changes included
+// (lib/textTemplateStore), which the sweep and both Send buttons pass (Oct 22
+// 2026); without it, the default wording.
 export function confirmationMessage(p: ConfirmProject, t?: TextTemplateSet): string {
   const first = (p.client.name || "there").trim().split(/\s+/)[0] || "there";
   const street = streetOf(p.title);
@@ -361,4 +378,51 @@ export function confirmationMessage(p: ConfirmProject, t?: TextTemplateSet): str
   const where = atPlace ? ` ${atPlace}` : "";
   const forPart = forItems ? ` ${forItems}` : "";
   return `Hi ${first}! Confirming your upcoming shoot${where}${forPart}. Anything we should know or want us to avoid? Looking forward to it!`;
+}
+
+// ---------------------------------------------------------------------------
+// ONE WORDING, WHOEVER SENDS IT (Oct 22 2026). The confirmation and the
+// delivery text go out three ways: the hourly sweep (lib/clientTextSweeps),
+// the Send button on the task's card (app/actions.ts) and Send all
+// (app/tasks/sendAllActions.ts). The two buttons used to render the built-in
+// words with no saved wording, no town and (the card) waived items read out,
+// while the sweep sent Jordan's edited template. All three now read the job
+// through this select and render through clientTextFor, with the wording the
+// sweep loads (lib/textTemplateStore loadTextTemplates), so an edit in
+// Settings → Text messages changes every one of them.
+// ---------------------------------------------------------------------------
+export type ClientTextKind = "confirmation_text" | "delivery_text";
+
+export type ClientTextJob = {
+  id: string;
+  title: string;
+  city?: string | null;
+  shootDate?: Date | null;
+  statusEvidence?: string | null;
+  client: { name: string };
+  photographer?: { name: string } | null;
+  deliverables?: { type: string; waivedAt?: Date | null }[];
+};
+
+/** What a hand send selects off the job (Prisma `select`): the fields the
+ *  sweep renders with, and the client's phone. */
+export const CLIENT_TEXT_JOB_SELECT = {
+  id: true, title: true, city: true, shootDate: true, statusEvidence: true,
+  client: { select: { name: true, phone: true } },
+  photographer: { select: { name: true } },
+  deliverables: { where: { removedFromOrderAt: null }, select: { type: true, waivedAt: true } },
+} as const;
+
+/** The text a confirmation_text / delivery_text task sends for its job, in
+ *  wording `t`. The delivery text has never read the town (the delivery
+ *  sweep's job read and the task's draft select none), so `city` goes to the
+ *  confirmation only and {street} is the same from every sender. */
+export function clientTextFor(kind: ClientTextKind, job: ClientTextJob, t: TextTemplateSet): string {
+  if (kind === "delivery_text") {
+    return deliveryMessage({ id: job.id, title: job.title, statusEvidence: job.statusEvidence ?? null, client: { name: job.client.name } }, undefined, t);
+  }
+  return confirmationMessage({
+    title: job.title, city: job.city, shootDate: job.shootDate ?? null,
+    client: { name: job.client.name }, photographer: job.photographer, deliverables: job.deliverables,
+  }, t);
 }
