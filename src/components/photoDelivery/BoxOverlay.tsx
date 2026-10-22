@@ -35,9 +35,10 @@ export function BoxOverlay({ photo, findings, selectedId, numbers }: { photo: Ph
           <div
             key={f.id}
             className={cn("absolute rounded-sm border-2 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]", BORDER[f.severity] ?? BORDER.MINOR, on && "border-[3px] ring-2 ring-white/70", f.status !== "OPEN" && "border-dashed opacity-60")}
-            style={{ left: `${left}%`, top: `${top}%`, width: `${Math.min(width, 100 - left)}%`, height: `${Math.min(height, 100 - top)}%` }}
+            // Zoomed (ZoomStage sets --zoom): the line and the number stay their screen size instead of growing over the spot being inspected.
+            style={{ left: `${left}%`, top: `${top}%`, width: `${Math.min(width, 100 - left)}%`, height: `${Math.min(height, 100 - top)}%`, borderWidth: `calc(${on ? 3 : 2}px / var(--zoom, 1))` }}
           >
-            <span className={cn("absolute -top-px left-0 -translate-y-full rounded-t px-1 text-[11px] font-bold leading-4", TAG[f.severity] ?? TAG.MINOR)}>{numbers.get(f.id) ?? ""}</span>
+            <span className={cn("absolute -top-px left-0 -translate-y-full rounded-t px-1 text-[11px] font-bold leading-4", TAG[f.severity] ?? TAG.MINOR)} style={{ scale: "calc(1 / var(--zoom, 1))", transformOrigin: "left bottom" }}>{numbers.get(f.id) ?? ""}</span>
           </div>
         );
       })}

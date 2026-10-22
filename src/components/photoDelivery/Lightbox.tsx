@@ -8,6 +8,7 @@ import { etMonthDayTime } from "@/lib/datetime";
 import { ModalDialog } from "@/components/ui/ModalDialog";
 import { PhotoImg } from "./PhotoImg";
 import { BoxOverlay } from "./BoxOverlay";
+import { ZoomStage, fullSizeSrc } from "./ZoomStage";
 import { FindingActions } from "./FindingActions";
 import { HubEditPanel, ReeditBox, StraightenButtons } from "./EditTools";
 import { DownloadLinks, ReplaceWithUpload } from "./PhotoFiles";
@@ -21,7 +22,8 @@ import type { FindingView, PhotoView, VersionView } from "./types";
 // phone), the finding boxes on or off (O), the findings on this photo with
 // their decision buttons, the AI description (the CV numbers and hero score
 // for the owner only), every version the hub has seen (the original vs the
-// current one), and previous / next with the arrow keys.
+// current one), and previous / next with the arrow keys. Oct 22 2026: zoom
+// (scroll, pinch, double-click, Z / + / - / 0; ZoomStage) with the boxes on.
 // ---------------------------------------------------------------------------
 
 // Oct 22 2026: loaded when first opened (its drawing code is only needed then).
@@ -123,8 +125,8 @@ export function Lightbox() {
     <>
     <ModalDialog label={`${title}: ${photo.roomLabel}`} onCancel={() => openLightbox(null)} className="w-[min(98vw,100rem)] max-h-[96dvh] p-0 sm:p-0">
       <div className="flex max-h-[96dvh] flex-col lg:flex-row">
-        <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center bg-black p-2 sm:p-4">
-          <div className="relative inline-block max-w-full">
+        <div className="relative flex min-h-[40dvh] min-w-0 flex-1 items-center justify-center overflow-hidden bg-black p-2 sm:p-4">
+          <ZoomStage key={`${photo.id}:${showing && !showing.current ? showing.id : "current"}`} keys={!promptOpen && !lotFor} hiRes={!showing || showing.current ? fullSizeSrc(photo.id, photo.contentHash) : null}>
             {showing && !showing.current ? (
               // An earlier version beside the current one, same size (huddle finding 1).
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -160,7 +162,7 @@ export function Lightbox() {
               />
             )}
             {overlays && (!showing || showing.current) && <BoxOverlay photo={photo} findings={findings.filter(shown)} numbers={numbers} />}
-          </div>
+          </ZoomStage>
           <div className="absolute inset-y-0 left-1 flex items-center sm:left-3">
             <button type="button" className={navBtn} disabled={idx <= 0} onClick={() => go(-1)} aria-label="Previous photo">
               <ChevronLeft aria-hidden className="size-6" />

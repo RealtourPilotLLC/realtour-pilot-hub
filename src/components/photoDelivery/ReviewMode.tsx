@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Eye, EyeOff, History, Keyboard, Layers, ShoppingCart, Star, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PhotoImg } from "./PhotoImg";
 import { BoxOverlay } from "./BoxOverlay";
+import { ZoomStage, fullSizeSrc } from "./ZoomStage";
 import { FindingActions } from "./FindingActions";
 import { FixCartPanel } from "./FixCartPanel";
 import { JobProvider, photoTitle, useJob } from "./JobContext";
@@ -24,7 +25,10 @@ import type { JobDetail, Viewer } from "./types";
 //   X       leave the photo out (asks why) or put it back
 //   H       make the photo the hero       B  original vs current version
 //   O       finding boxes on or off       ?  these shortcuts
-// On a phone: swipe left or right, or the buttons along the bottom.
+//   Z       zoom in or out (Oct 22 2026; also + and -, 0 fits, scroll, pinch,
+//           double-click or double-tap the spot; drag to move around)
+// On a phone: swipe left or right, or the buttons along the bottom (not while
+// zoomed in: then one finger moves the photo).
 // VIEW ONLY (Oct 22 2026, the creative manager): the same walk through the
 // photos and their findings, with J, K, B, O and ?; F, I, X and H, the Hero,
 // Leave out and Cart buttons and the decision buttons are not there.
@@ -40,6 +44,7 @@ const KEYS: [string, string][] = [
   ["H", "Make the photo the hero"],
   ["B", "Original vs current (when there is more than one version)"],
   ["O", "Finding boxes on or off"],
+  ["Z", "Zoom in or out (+ and - step, 0 fits; or scroll, pinch, double-click the spot, and drag to move)"],
   ["?", "Show or hide these shortcuts"],
   ["Esc", "Close the cart or this list"],
 ];
@@ -69,6 +74,11 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
   const [original, setOriginal] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
   const touch = useRef<{ x: number; y: number } | null>(null);
+  // Zoomed in: a swipe moves the photo, it doesn't change it (Oct 22 2026).
+  const zoomedRef = useRef(false);
+  const onZoomedChange = useCallback((z: boolean) => {
+    zoomedRef.current = z;
+  }, []);
   const withIssues = photos.filter((p) => (findingsByPhoto.get(p.id) ?? []).some((f) => f.status === "OPEN" && shown(f))).length;
   const cartCount = (data.cart?.lines ?? []).filter((l) => !l.humanCall && l.findingIds.some((id) => selected.has(id))).length;
 
@@ -197,21 +207,22 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div
-          className="relative flex min-h-[38dvh] min-w-0 flex-1 items-center justify-center bg-black p-2"
+          className="relative flex min-h-[38dvh] min-w-0 flex-1 items-center justify-center overflow-hidden bg-black p-2"
           onTouchStart={(e) => {
             const t = e.touches[0];
-            touch.current = { x: t.clientX, y: t.clientY };
+            // A second finger is a pinch, never a swipe.
+            touch.current = e.touches.length > 1 || zoomedRef.current ? null : { x: t.clientX, y: t.clientY };
           }}
           onTouchEnd={(e) => {
             const s = touch.current;
             touch.current = null;
-            if (!s) return;
+            if (!s || zoomedRef.current || e.touches.length > 0) return;
             const t = e.changedTouches[0];
             const dx = t.clientX - s.x;
             if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(t.clientY - s.y)) step(dx < 0 ? 1 : -1);
           }}
         >
-          <div className="relative inline-block max-w-full">
+          <ZoomStage key={`${photo.id}-${showOriginal ? "o" : "c"}`} keys={!promptOpen && !cartOpen && !help} hiRes={showOriginal ? null : fullSizeSrc(photo.id, photo.contentHash)} onZoomedChange={onZoomedChange}>
             <PhotoImg
               key={`${photo.id}-${showOriginal ? "o" : "c"}`}
               photoId={photo.id}
@@ -227,7 +238,7 @@ function ReviewInner({ initialPhoto }: { initialPhoto: string | null }) {
             {overlays && !showOriginal && <BoxOverlay photo={photo} findings={findings.filter(shown)} selectedId={picked?.id} numbers={numbers} />}
             {showOriginal && <span className="absolute left-2 top-2 rounded bg-black/75 px-2 py-0.5 text-[12px] font-semibold text-white">Original</span>}
             {excluded && <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded bg-black/80 px-3 py-1 text-sm font-semibold uppercase tracking-wide text-white">Left out</span>}
-          </div>
+          </ZoomStage>
           {next && (
             <div hidden>
               <PhotoImg photoId={next.id} hash={next.contentHash} fallbackUrl={next.sourceUrl} size="qc2048" large eager alt="" />
