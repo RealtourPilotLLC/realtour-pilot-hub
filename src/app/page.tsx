@@ -276,7 +276,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const nowMin = etMinutes(now);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
   // A per-user override can close a screen to this reader: its tile and actions show without the link.
-  const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), communications: !me || canAccess(me, "communications"), pipeline: !me || canAccess(me, "pipeline") };
+  const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), communications: !me || canAccess(me, "communications"), pipeline: !me || canAccess(me, "pipeline"), tasks: !me || canAccess(me, "tasks") };
   const testToggle = <Link href={includeTest ? "/" : "/?test=1"} className="inline-flex min-h-11 items-center rounded-lg border border-border px-3 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">{includeTest ? "Hide test records" : "Show test records"}</Link>;
 
   return (
@@ -287,7 +287,9 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
         eyebrow="Dashboard"
         title={`${nowMin < 12 * 60 ? "Good morning" : nowMin < 18 * 60 ? "Good afternoon" : "Good evening"}, ${firstName}`}
         subtitle={`${etFullDate(now)} · updated ${etTime(now)} ET`}
-        actions={testToggle}
+        // The "Show test records" button is the owner's (Oct 21 2026); a ?test=1
+        // link still keeps its scope for anyone it is handed to.
+        actions={isOwner ? testToggle : undefined}
       />
       <div className="mx-auto max-w-6xl space-y-4 p-4 pb-16 sm:p-6">
         {includeTest && (

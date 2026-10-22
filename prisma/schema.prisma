@@ -6168,3 +6168,21 @@ model ClientAsk {
   @@index([clientId, state])
   @@index([kind, state])
 }
+
+// Oct 21 2026 (Jordan: "Harrison was on the shoot with James so he needs
+// access to the upload portal too"). Extra crew on a shoot — a second shooter.
+// UPLOAD-PAGE ACCESS ONLY: a crew row never makes the shoot theirs for pay,
+// KPIs, scorecards or notification routing (lib/shoot ownsShootWhere is
+// untouched); it only lets them open /upload/<id> and send what they shot.
+// Plain refs, like ProgramSignup's: projectId → Project, memberId → TeamMember.
+model ProjectCrew {
+  id        String   @id @default(cuid())
+  projectId String
+  memberId  String
+  role      String   @default("SECOND_SHOOTER")
+  addedBy   String?
+  addedAt   DateTime @default(now())
+
+  @@unique([projectId, memberId])
+  @@index([memberId])
+}

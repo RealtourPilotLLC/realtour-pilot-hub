@@ -11,6 +11,8 @@ import { Card, CardTitle, CountBadge, StatusChip } from "@/components/portal/ui"
 import { ExpectedLine } from "@/components/portal/ExpectedLine";
 import { ComingUpList, comingUpItems } from "@/components/portal/ComingUp";
 import type { SetupCardData } from "@/components/portal/PortalProfile";
+import { DiscoveryCard } from "@/components/portal/DiscoveryCard";
+import type { PortalStrategyGate } from "@/lib/yourMonth";
 
 // ---------------------------------------------------------------------------
 // HOME answers three questions (spec §1, simplified Oct 13 2026): what to do
@@ -55,6 +57,8 @@ export type HomeData = {
   messages?: { unread: number; href: string } | null;
   /** Oct 8 2026: a client who plans their own content — what their brief for this month holds. */
   brief?: { files: number; notes: boolean; href: string } | null;
+  /** Oct 21 2026: closed strategy gate (lib/strategyGate) = the discovery card on top; null = open. */
+  strategyGate?: PortalStrategyGate | null;
 };
 
 // ===========================================================================
@@ -86,6 +90,9 @@ export function HomeV2({ d, actions, href }: {
   return (
     <div className="mt-6 space-y-4">
       <h1 className="text-2xl font-semibold tracking-tight">Hi {d.first}</h1>
+
+      {/* Oct 21 2026: a new client sees where they stand first: the discovery call, then what comes next. */}
+      {d.strategyGate && !d.readOnly && <DiscoveryCard gate={d.strategyGate} timezone={d.planning?.timezone} />}
 
       {/* 1. The one next step. */}
       <section data-primary-action aria-labelledby="home-next-step" className="panel-shadow rounded-2xl border border-brand/30 bg-brand-soft/30 p-4 backdrop-blur">
@@ -212,7 +219,10 @@ function MonthCardV2({ d, href }: { d: HomeData; href: (tab: string, extra?: str
           )}
         </>
       )}
-      {d.planning?.clientPlanned ? (
+      {d.strategyGate ? (
+        // Oct 21 2026: no topics or call to plan before the strategy (the card above says what comes next).
+        <p className="mt-3 text-sm text-muted">Your topics come from your content strategy, which we build after your brand discovery call.</p>
+      ) : d.planning?.clientPlanned ? (
         // Oct 8 2026: they plan their own videos. Adding the brief is a next-step action, not repeated here.
         <p className="mt-3 text-sm text-muted">
           You plan this month&rsquo;s videos, and we film and edit them.

@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { strategyGateFor } from "@/lib/strategyGate";
 
 import { etMonthKey } from "@/lib/contentProgram";
 import { catchUpInto, sessionsForMonth } from "@/lib/catchUp";
@@ -261,7 +262,8 @@ export type GateAnchor = {
 };
 
 /** Why a session's filming calendar is shut. */
-export type GateLock = "BOOK_CALL" | "CHOOSE_ROUTE" | "ANSWERS" | "UNDER_PLANNED" | "PREPARING";
+/** STRATEGY_PENDING (Oct 21 2026, strategyGate.ts): no approved content strategy is in the client's portal yet. */
+export type GateLock = "BOOK_CALL" | "CHOOSE_ROUTE" | "ANSWERS" | "UNDER_PLANNED" | "PREPARING" | "STRATEGY_PENDING";
 
 // ---------------------------------------------------------------------------
 // SESSIONS AND THEIR MATERIAL (spec §3 / §8 / A15 / A23, Sep 21 2026).
@@ -668,6 +670,13 @@ export type DeriveInput = {
      * the slot rules still do) and the month is ready to film from the start.
      */
     clientPlanned?: boolean;
+    /**
+     * Oct 21 2026 (strategyGate.ts): the strategy gate is closed — no approved
+     * content strategy is in the client's portal yet (a new signup before or
+     * just after the brand discovery call). Every session is locked
+     * STRATEGY_PENDING. Omitted = not known (read-only callers), never a lock.
+     */
+    strategyPending?: boolean;
   };
   records: MonthCallRecordInput[];
   /**
@@ -766,6 +775,8 @@ export type DerivedMonthState = {
   followUps: PreparationFollowUp[];
   /** Oct 8 2026: the client plans their own content (no planning gate, nothing of ours to prepare). */
   clientPlanned: boolean;
+  /** Oct 21 2026: no approved strategy in the client's portal yet — every session locked STRATEGY_PENDING, no booking asks, no chasing. */
+  strategyPending: boolean;
 };
 
 /** The fixed anchor a client-planned month's sessions open from — long past, so no window ever counts from it. */
@@ -1108,6 +1119,17 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     reasons.push("the client plans their own content — no planning step gates filming");
   }
 
+  // ---- no content strategy yet (Oct 21 2026) --------------------------------
+  // Jordan: strategy calls and filming wait until "we have a content strategy
+  // built and added to the platform for the client". Discovery call → strategy
+  // → strategy call → scripts → filming; before the strategy is in the portal
+  // there is nothing to film, whatever a stray call record says.
+  const strategyPending = !!enrollment.strategyPending && !clientPlanned;
+  if (strategyPending) {
+    for (const s of sessions) { s.anchor = null; s.lock = "STRATEGY_PENDING"; s.earliestSessionAt = null; }
+    reasons.push("no content strategy is in the client's portal yet — no strategy call or filming until it is");
+  }
+
   // ---- the written route's call buffer (§6.4, Sep 25 2026) ------------------
   // "The written route can still offer a strategy call to discuss scripts.
   // Preserve the agreed call buffer when it is used and surface any conflict
@@ -1235,7 +1257,8 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   // Topics, answers and scripts are the client's own: nothing about them is ours to chase.
   // Oct 13 2026: the two call-timing follow-ups are no longer raised for them
   // either (see CALL_INSIDE_BUFFER and CONFIRM_CALL_END above).
-  const followUpsOut = clientPlanned ? [] : followUps;
+  // Oct 21 2026: nor before the client has a strategy — there is nothing to plan or chase yet.
+  const followUpsOut = clientPlanned || strategyPending ? [] : followUps;
   return {
     callMode, strategyCallStatus, strategyCallAt, strategyCallEndsAt, callBookedAt: anchorCall?.createdAt ?? null, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt,
     earliestSessionAt, sessions, sessionsKnown, preparationSufficient,
@@ -1255,7 +1278,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
     // quietly opened filming a full business day early. Deleting it rather
     // than correcting it is the point: a day-shaped reading of an hour-shaped
     // rule has to fail to compile, not round.
-    windowHours, windowWaived, reasons, exceptions, followUps: followUpsOut, clientPlanned,
+    windowHours, windowWaived, reasons, exceptions, followUps: followUpsOut, clientPlanned, strategyPending,
   };
 }
 
@@ -1282,6 +1305,7 @@ const LOCK_WORDS: Record<GateLock, string> = {
   ANSWERS: "the session's answers are not all submitted",
   UNDER_PLANNED: "the session's topics are not all chosen",
   PREPARING: "preparation is not complete",
+  STRATEGY_PENDING: "the client's content strategy is not in their portal yet",
 };
 
 /**
@@ -1563,6 +1587,8 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   // as its "prior call held" fact.
   const strategyApproved = (await prisma.contentStrategy.count({ where: { enrollmentId: month.enrollmentId, approvedVersionId: { not: null } } }).catch(() => 0)) > 0;
   const priorCallHeld = priorCallHeldFrom(month.id, priorRecords, completedMonths.map((m) => m.id), now) || strategyApproved;
+  // Oct 21 2026: the strategy gate (a released, approved strategy, or a self-planned client).
+  const strategyPending = (await strategyGateFor(month.enrollmentId).catch(() => null))?.open === false;
   // Per-topic material (spec §8): an approved script counts — including one
   // carried over from last month, which is why this reads the script's own
   // approval state rather than asking whether it was written this month.
@@ -1589,7 +1615,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
   });
   const after = deriveMonthState({
     now, month,
-    enrollment: { ...enrollment, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(enrollment.overridesJson), clientPlanned: enrollment.clientSuppliesTopics },
+    enrollment: { ...enrollment, priorCallHeld, preparationWindowHours: enrollmentWindowOverrideHours(enrollment.overridesJson), clientPlanned: enrollment.clientSuppliesTopics, strategyPending },
     records, scripts, interviews, topics,
     // The MONTH's allowance, not the package's (A18): the planning reader's IN
     // topics are counted against videosOwed, so a staff allowance change must

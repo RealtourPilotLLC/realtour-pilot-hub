@@ -159,7 +159,7 @@ async function main() {
     const as = (u: { id: string; email: string; role: string }) => setSession({ uid: u.id, email: u.email, role: u.role });
 
     const TITLES = ["Why spring listings sell faster", "Three questions before you price", "The first weekend decides it", "What buyers read into days on market", "Staging that pays for itself", "When to cut the price", "Open houses still matter", "Inspection surprises to avoid", "The appraisal gap, explained", "Moving up without selling first", "Pricing a home with no comps"];
-    const F = await buildContentMonth(prisma, { name: "Queue Client TEST", package: "Pro", project: false, owner: false, topics: TITLES.map((title) => ({ title, selection: "SELECTED" as const })) });
+    const F = await buildContentMonth(prisma, { strategy: false, name: "Queue Client TEST", package: "Pro", project: false, owner: false, topics: TITLES.map((title) => ({ title, selection: "SELECTED" as const })) });
     const T = (i: number) => ({ id: F.topicIds[i], title: TITLES[i] });
     const monthUi = { id: F.monthId, label: "October 2026", short: "October", key: F.monthKey };
     const runsFor = (topicId: string) => prisma.programAiRun.findMany({ where: { scopeJson: { contains: `"topicId":"${topicId}"` } }, orderBy: { createdAt: "asc" } });
@@ -401,7 +401,7 @@ async function main() {
     c.head("10 · the other AI buttons on the workspace");
     {
       // "Draft what's ready" — a call-excerpt topic and a thin one.
-      const O = await buildContentMonth(prisma, { name: "Owed Client TEST", package: "Accelerator", project: false, owner: false, topics: [
+      const O = await buildContentMonth(prisma, { strategy: false, name: "Owed Client TEST", package: "Accelerator", project: false, owner: false, topics: [
         { title: "Why sellers overprice", selection: "SELECTED", excerpts: ["I want to talk about why sellers overprice their homes every spring."] },
         { title: "My favourite coffee shop", selection: "SELECTED" },
       ] });
@@ -474,7 +474,7 @@ async function main() {
       c.ok("…and its Try again applies the same request (APPLIED by AI)", !!retryAsk?.ok && (await prisma.scriptSuggestion.findUniqueOrThrow({ where: { id: ask2.id } })).appliedHow === "AI", retryAsk?.message);
 
       // "Draft from the discovery call".
-      const S = await buildContentMonth(prisma, { name: "Sam Strategy TEST", package: "Accelerator", project: false, owner: false });
+      const S = await buildContentMonth(prisma, { strategy: false, name: "Sam Strategy TEST", package: "Accelerator", project: false, owner: false });
       const none = await A.queueStrategyDraftAction(S.enrollmentId);
       c.ok("no discovery call → refused at once with the reason", !none.ok && /No brand-discovery call/.test(none.message), none.message);
       const call = await prisma.programCallRecord.create({ data: { enrollmentId: S.enrollmentId, clientId: S.clientId, callType: "BRAND_DISCOVERY", status: "COMPLETED", scheduledStart: new RealDate("2026-10-08T14:00:00Z"), scheduledEnd: new RealDate("2026-10-08T14:45:00Z"), matchState: "MATCHED", transcriptState: "CONFIRMED" } });

@@ -1410,7 +1410,8 @@ export async function fileCapacityReview(projectId: string, extras: { title: str
         title: `Filmed beyond the plan — ${street}`,
         body: fresh.map((l) => l.slice(2)).join(" · "),
         href: `/projects/${projectId}`,
-        targets: [{ roles: ["OWNER", "ADMIN"] }],
+        // Oct 21 2026: the creative manager decides what filmed extras count for too.
+        targets: [{ roles: ["OWNER", "ADMIN", "CREATIVE_MANAGER"] }],
         dedupeKey: `capacity-review-${key}-${crypto.createHash("sha1").update(fresh.join("\n")).digest("hex").slice(0, 12)}`,
       });
     } catch { /* the card is the record; the bell is a courtesy */ }

@@ -467,7 +467,8 @@ async function main() {
   c.ok("the photographer's page is handed both gaps with no figure in any word", !/\$|175|200/.test(hWords) && hWords.includes("No aerials.") && hWords.includes("The sky clouded over.") && hWords.includes("Front only.") && hWords.includes("Front at dusk"), hWords);
   const gapHtml = text(render([{ name: "g", file: PORTAL, exp: "UploadPortal", props: portalProps(hGap.props), fns: ["onBriefNote"] }]).g ?? "");
   // The missing-work list alone (the page's own copy elsewhere mentions a $1 production charge).
-  const mwAt = gapHtml.indexOf("Missing work No aerials.");
+  // Oct 21 2026: the list folds under a one-line summary ("2 items: 2 open · …"), still in the HTML.
+  const mwAt = gapHtml.search(/Missing work 2 items: [^$]*?No aerials\./);
   const mwList = mwAt >= 0 ? gapHtml.slice(mwAt, gapHtml.indexOf("Scope: Front only.", mwAt) + 40) : "";
   c.ok("…and the rendered list shows the missing work, no price", mwList.includes("No aerials.") && mwList.includes("Twilight exteriors") && mwList.includes("The sky clouded over.") && !/\$|175|200/.test(mwList), mwList || gapHtml.slice(0, 300));
   c.ok("…nowhere on the page either", !gapHtml.includes("$175") && !gapHtml.includes("$200") && !gapHtml.includes("Invoice the client"));
@@ -548,6 +549,40 @@ async function main() {
     text(sh.oldPortalSession ?? "").includes("No script found in Script Studio") && !text(sh.newPortalSession ?? "").includes("No script found in Script Studio"));
   c.ok("…and the session's portal shows the video the office briefed", text(sh.newPortalSession ?? "").includes("Open on the skyline"));
   c.ok("a listing job's portal keeps the Studio line", newHtml.includes("No script found in Script Studio"));
+
+  // =========================================================================
+  c.head("7b · a second shooter (Oct 21 2026)");
+  // =========================================================================
+  // Jordan: "Harrison was on the shoot with James so he needs access to the
+  // upload portal too." Crew opens the upload page; it never owns the shoot.
+  {
+    const jamesTm = (await prisma.teamMember.findFirstOrThrow({ where: { email: james.email }, select: { id: true } })).id;
+    const jamesJob = await prisma.project.create({ data: { clientId: client.id, title: "3 Crew Lane, Testville", status: "SHOT", shootDate: et(23, 10), photographerId: jamesTm, deliverables: { create: [{ type: "PHOTOS", label: "Photos", quantity: 1 }] } }, select: { id: true } });
+    const { addShootCrew, removeShootCrew } = await import("@/app/upload/crewActions");
+    const guards = await import("@/lib/auth/guards");
+    const { ownsShootWhere } = await import("@/lib/shoot");
+    const opens = async () => portalOf(UploadPage, jamesJob.id).then(() => true, () => false);
+
+    await asHarrison();
+    c.ok("before: Harrison can't open James's upload page", !(await opens()));
+    const selfAdd = await addShootCrew(jamesJob.id, harrisonTm);
+    c.ok("a photographer can't add himself as crew", !selfAdd.ok, selfAdd.message);
+
+    await establishSession(kyle.id);
+    const added = await addShootCrew(jamesJob.id, harrisonTm);
+    c.ok("the office adds Harrison as second shooter", added.ok, added.message);
+
+    await asHarrison();
+    c.ok("after: Harrison opens the upload page", await opens());
+    c.ok("…and the upload actions let him in", await guards.requireUploadAccess(jamesJob.id).then(() => true, () => false));
+    c.ok("…but the shoot screen's guard still refuses him (upload access only)", !(await guards.requireShootAccess(jamesJob.id).then(() => true, () => false)));
+    c.ok("…and the shoot is not his for pay, KPIs or scorecards", (await prisma.project.count({ where: { id: jamesJob.id, ...ownsShootWhere(harrisonTm) } })) === 0);
+
+    await establishSession(kyle.id);
+    const removed = await removeShootCrew(jamesJob.id, harrisonTm);
+    await asHarrison();
+    c.ok("removing him closes the page again", removed.ok && !(await opens()), removed.message);
+  }
 
   // =========================================================================
   c.head("8 · isolation");

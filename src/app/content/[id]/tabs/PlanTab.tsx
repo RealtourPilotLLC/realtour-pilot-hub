@@ -144,9 +144,11 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
   if (v === "calls") {
     // Oct 12 2026: each call on the month with its transcript and analysis
     // (callAnalysis.ts) — the card's "Analyze the call" lives on these.
-    const [calls, monthCalls] = await Promise.all([
+    const [calls, monthCalls, gate] = await Promise.all([
       loadCallsTab(id),
       month ? import("@/lib/callAnalysis").then((m) => m.loadCallTranscripts({ monthId: month.id })).catch(() => []) : Promise.resolve([]),
+      // Oct 21 2026: no booking link to hand out before the strategy is in the portal.
+      import("@/lib/strategyGate").then((m) => m.strategyGateFor(id)).catch(() => null),
     ]);
     return (
       <div className="space-y-5">
@@ -163,6 +165,7 @@ export async function PlanTab({ ctx, badges }: { ctx: TabCtx; badges: Record<str
               transcriptProcessed={!!month.transcriptProcessedAt}
               required={ctx.enrollment.strategyCallRequired}
               bookingUrl={STRATEGY_CALL_BOOKING_URL}
+              bookingClosed={gate && !gate.open ? "No strategy in the portal yet. Strategy calls open once it's released." : null}
               calls={monthCalls}
             />
           </div>

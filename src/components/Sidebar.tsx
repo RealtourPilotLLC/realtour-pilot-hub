@@ -129,7 +129,7 @@ const SECTIONS: NavSection[] = [
       // `resources`: identical audience (owner + admin; creatives read their
       // own results on /shoot/feedback), so no new permission to grant and a
       // per-user `review` override carries here too.
-      { label: "Client & Team Feedback", href: "/quality", icon: MessageSquareHeart, key: "review" },
+      { label: "Team feedback", href: "/quality", icon: MessageSquareHeart, key: "review" },
       // Feedback about how we TALK to clients: the end-of-day audit of the
       // messages the office sent from the company line, and the one-thing-to-try
       // note it writes (Jordan, Sep 21 2026). It sits next to Client & Team
@@ -152,7 +152,7 @@ const SECTIONS: NavSection[] = [
       // Client Assets is a TAB on the Clients page (header action), not a nav
       // item — Jordan: "client assets should be in the clients tab".
       { label: "Clients", href: "/clients", icon: Users, key: "clients" },
-      { label: "Content Program", href: "/content", icon: Clapperboard, key: "content" },
+      { label: "Monthly Content", href: "/content", icon: Clapperboard, key: "content" },
       // Oct 14 2026 (Jordan): every program client's portal activity. Owner and admin only (filtered below).
       { label: "Client activity", href: "/content/activity", icon: Activity, key: "content" },
       // People = the merged Team (workload cards, admin-visible) + Logins &
@@ -211,7 +211,7 @@ const SECTIONS: NavSection[] = [
     items: [
       // The HUB's own board — features to build, bugs to fix. Every role files
       // here. Feedback about the WORK is "Client & Team Feedback" in Operations.
-      { label: "Report a hub issue", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
+      { label: "Report a hub problem", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
       { label: "Settings", href: "/settings", icon: SlidersHorizontal, key: "settings" },
       { label: "Connections", href: "/connections", icon: Plug, key: "connections" },
     ],

@@ -806,6 +806,11 @@ async function gateContext(enrollmentId: string, monthId: string, now: Date): Pr
   const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { enrollmentId: true, clientId: true, historical: true, monthKey: true, status: true } });
   if (!month || month.enrollmentId !== enrollmentId) return closedGate(now, "Pick one of your program months.");
   if (month.historical) return closedGate(now, "That month is closed.");
+  // Oct 21 2026 (lib/strategyGate): no filming before the client's content
+  // strategy is in the portal; the client reads the gate's own reason (the
+  // discovery call comes first, or the strategy is being built).
+  const strategy = await import("@/lib/strategyGate").then((m) => m.strategyGateFor(enrollmentId));
+  if (strategy && !strategy.open) return closedGate(now, strategy.reason ?? "Filming opens once your content strategy is in your portal.");
   // Oct 12 2026: an over month whose session is booked late (lateSession.ts)
   // opens only once its scripts are ready, and only while its host month runs.
   // Every other month reads exactly as before (the check is for over months).

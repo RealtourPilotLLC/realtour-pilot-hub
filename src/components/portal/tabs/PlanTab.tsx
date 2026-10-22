@@ -13,6 +13,7 @@ import { MonthScriptsPdfButton } from "@/components/portal/MonthScriptsPdfButton
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { StrategyTab } from "@/components/portal/tabs/StrategyTab";
 import { YourMonth, type YourMonthData } from "@/components/portal/YourMonth";
+import type { PortalStrategyGate } from "@/lib/yourMonth";
 import { portalMonthHref } from "@/lib/portalScheduling";
 import type { PortalBulkView } from "@/lib/portalBulk";
 import { BulkSessions } from "@/components/portal/BulkSessions";
@@ -65,6 +66,8 @@ export type PlanTabData = {
   canApprove?: boolean;
   /** The month view's guided plan: planning, this month's scheduling card and the slots. Absent → the plain month list. */
   yourMonth?: Omit<YourMonthData, "topics" | "readOnly" | "filter" | "hrefs"> | null;
+  /** Oct 21 2026 (lib/strategyGate): closed = the Strategy page's empty state shows the discovery call; null = open. */
+  strategyGate?: PortalStrategyGate | null;
 };
 
 export function PlanTab({ d }: { d: PlanTabData }) {
@@ -110,7 +113,7 @@ export function PlanTab({ d }: { d: PlanTabData }) {
       <SubNav label="Your Month" items={tabs.map((t) => ({ href: d.hrefs[t.key], label: t.label, short: t.short, active: d.view === t.key, count: t.count, countLabel: t.countLabel }))} />
 
       {d.view === "strategy" ? (
-        <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} />
+        <StrategyTab strategy={d.strategy} failed={d.strategyFailed} priorities={d.priorities} monthKey={d.monthKey} gate={d.strategyGate ?? null} />
       ) : d.topicsFailed ? (
         <LoadFailed what="your plan" />
       ) : !d.topics || !plan ? null : d.view === "scripts" ? (

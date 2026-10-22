@@ -25,8 +25,8 @@ import type { DeliverableStage, JobRow } from "@/lib/jobsBoard";
 /** The screens this reader may open (a per-user override can take one away:
  *  canAccess). A tile or action whose screen is closed to them is shown
  *  without the link, never as a door that bounces. Default: all open. */
-export type Doors = { review: boolean; ops: boolean; communications: boolean; pipeline: boolean };
-const ALL_DOORS: Doors = { review: true, ops: true, communications: true, pipeline: true };
+export type Doors = { review: boolean; ops: boolean; communications: boolean; pipeline: boolean; tasks?: boolean };
+const ALL_DOORS: Doors = { review: true, ops: true, communications: true, pipeline: true, tasks: true };
 export function opens(href: string, doors: Doors = ALL_DOORS): boolean {
   if (href.startsWith("/review")) return doors.review;
   // Shoots (/jobs) is the `pipeline` page (its middleware key and the page's
@@ -34,6 +34,9 @@ export function opens(href: string, doors: Doors = ALL_DOORS): boolean {
   if (href.startsWith("/jobs")) return doors.pipeline;
   if (href.startsWith("/ops")) return doors.ops;
   if (href.startsWith("/communications")) return doors.communications;
+  // Oct 21 2026: James's "items over a week old" pointed at /tasks, which his
+  // tasks:false override bounces home. Shown without the link instead.
+  if (href.startsWith("/tasks")) return doors.tasks !== false;
   return true;
 }
 

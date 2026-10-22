@@ -25,7 +25,7 @@ import { CTA_WORDS, answerCta } from "@/lib/portalWords";
 // no new query and no new rule.
 // ---------------------------------------------------------------------------
 
-export type YourMonthStepKey = "route" | "topics" | "answers" | "call" | "filming" | "scripts" | "brief";
+export type YourMonthStepKey = "route" | "topics" | "answers" | "call" | "filming" | "scripts" | "brief" | "discovery" | "strategy";
 export type YourMonthStepState = "done" | "current" | "todo" | "waiting";
 export type YourMonthStep = {
   key: YourMonthStepKey;
@@ -73,7 +73,76 @@ export type YourMonthInput = {
   timezone?: string;
   /** The clock "today"/"tomorrow" is read against (default: now). */
   now?: Date;
+  /** Oct 21 2026: the strategy gate (lib/strategyGate). Closed = the strategy-pending steps instead of the month's. */
+  strategyGate?: PortalStrategyGate | null;
 };
+
+/**
+ * THE STRATEGY GATE, as the portal shows it (Oct 21 2026; lib/strategyGate.ts
+ * decides it). Jordan: strategy calls aren't bookable "until we have a content
+ * strategy built and added to the platform for the client", and a new client
+ * "needs to have a discovery call first". Client-safe and serialisable.
+ */
+export type PortalStrategyGate = {
+  open: boolean;
+  reason: string | null;
+  discovery: "needed" | "booked" | "held" | "waived";
+  discoveryAtISO: string | null;
+  meetLink: string | null;
+  /** The brand discovery booking page, offered only while discovery is still needed. */
+  discoveryUrl: string | null;
+};
+
+/** The discovery call in one line: "Your brand discovery call is Thursday, October 29 at 10:00 AM ET". */
+export function discoveryLine(g: PortalStrategyGate, tz: string = "America/New_York", now: Date = new Date()): string {
+  if (g.discovery === "booked" && g.discoveryAtISO) return `Your brand discovery call is ${callWhenWords(g.discoveryAtISO, tz, now)}`;
+  if (g.discovery === "booked") return "Your brand discovery call is booked";
+  if (g.discovery === "needed") return "Book your brand discovery call";
+  return "We're building your content strategy";
+}
+
+/** What happens after it, in order. No em dashes (client copy). */
+export const STRATEGY_PENDING_NEXT = [
+  "Your brand discovery call: we get to know you, your brand and your goals.",
+  "We build your content strategy from it.",
+  "Your strategy appears here in your portal for you to read.",
+  "Then you book your strategy call and your filming.",
+] as const;
+
+/**
+ * The month while the gate is closed: the discovery call, the strategy, then
+ * the strategy call and filming shown as still to come, with nothing to book.
+ * The steps keep their #step-call / #step-filming ids so old links still land.
+ */
+export function strategyPendingSteps(g: PortalStrategyGate, o: { tz?: string; now?: Date; readOnly?: boolean } = {}): YourMonthStep[] {
+  const tz = o.tz ?? "America/New_York";
+  const now = o.now ?? new Date();
+  const discoveryDone = g.discovery === "held" || g.discovery === "waived";
+  const steps: Raw[] = [];
+  if (discoveryDone) {
+    steps.push({ key: "discovery", status: "done", title: g.discovery === "held" ? "Brand discovery call held" : "Brand discovery done", detail: null, cta: null });
+  } else if (g.discovery === "booked") {
+    steps.push({
+      key: "discovery", status: "waiting", title: discoveryLine(g, tz, now),
+      detail: "We'll get to know you, your brand and your goals. Nothing else to book before then.",
+      cta: g.meetLink ? { label: "Join on Google Meet", href: g.meetLink, external: true } : null,
+    });
+  } else {
+    steps.push({
+      key: "discovery", status: g.discoveryUrl && !o.readOnly ? "action" : "waiting", title: discoveryLine(g, tz, now),
+      detail: g.discoveryUrl ? "It's the first step. We get to know you and your brand, then build your content strategy." : "It's the first step. We'll reach out to find a time.",
+      cta: g.discoveryUrl && !o.readOnly ? { label: "Book the call", href: g.discoveryUrl, external: true } : null,
+    });
+  }
+  steps.push({
+    key: "strategy", status: discoveryDone ? "waiting" : "todo",
+    title: discoveryDone ? "We're building your content strategy" : "We build your content strategy",
+    detail: "It appears here in your portal as soon as it's ready.", cta: null,
+  });
+  steps.push({ key: "call", status: "todo", title: "Book your strategy call", detail: "Opens once your content strategy is in your portal.", cta: null });
+  steps.push({ key: "filming", status: "todo", title: CTA_WORDS.BOOK, detail: "Opens once your content strategy is in your portal.", cta: null });
+  return oneCurrent(steps);
+}
 
 /** A zone's short label — "ET" for New York (the office's own words), else what Intl calls it. */
 function zoneLabel(tz: string, at: Date): string {
@@ -144,6 +213,7 @@ export function yourMonthSteps(i: YourMonthInput): YourMonthStep[] {
   const inTopics = m.topics.filter((t) => t.inAllowance);
   const steps: Raw[] = [];
   if (i.clientPlanned) return clientPlannedSteps(i, i.clientPlanned, { actSession, tz, now });
+  if (i.strategyGate && !i.strategyGate.open) return strategyPendingSteps(i.strategyGate, { tz, now, readOnly: i.readOnly });
 
   // ---- 1 · the route -------------------------------------------------------
   if (route === "UNDECIDED") {

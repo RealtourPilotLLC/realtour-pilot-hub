@@ -3,6 +3,8 @@ import { monthLabel } from "@/lib/contentProgram";
 import type { PortalStrategyView } from "@/lib/portal";
 import { Card, CardTitle, Empty, LoadFailed, fmtShort } from "@/components/portal/ui";
 import { StrategyDocView } from "@/components/content/StrategyDocView";
+import { DiscoveryCard } from "@/components/portal/DiscoveryCard";
+import type { PortalStrategyGate } from "@/lib/yourMonth";
 
 // MY STRATEGY (spec §3): the released version — version number + approval
 // date, the accessible summary (brand foundation), this month's priorities
@@ -15,13 +17,16 @@ import { StrategyDocView } from "@/components/content/StrategyDocView";
 // view as the staff Strategy tab — labelled rows, real lists, one card per
 // pillar — over the released sections portalStrategy already filtered (the
 // framework, caption lists and the team's working notes never reach here).
-export function StrategyTab({ strategy, failed, priorities, monthKey }: {
+export function StrategyTab({ strategy, failed, priorities, monthKey, gate = null }: {
   strategy: PortalStrategyView | null;
   failed: boolean;
   priorities: string[];
   monthKey: string;
+  /** Oct 21 2026: the closed strategy gate: the empty state names the discovery call and what comes next. */
+  gate?: PortalStrategyGate | null;
 }) {
   if (failed) return <div className="mt-6"><LoadFailed what="your strategy" /></div>;
+  if (!strategy && gate) return <div className="mt-6"><DiscoveryCard gate={gate} /></div>;
   if (!strategy) {
     return (
       <div className="mt-6">

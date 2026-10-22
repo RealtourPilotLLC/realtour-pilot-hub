@@ -9,6 +9,7 @@ import { approveCut, noticeApprovalNotes, requestChangesOnCut, replyToComment, s
 import { saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
 import { contentHref } from "@/lib/contentNav"; // UI-02: the one builder of staff client-file links
+import { STRATEGY_GATE_REFUSAL, strategyGateFor } from "@/lib/strategyGate";
 
 // ---------------------------------------------------------------------------
 // PORTAL ACTIONS — the client's interactive layer (Aug 28; identity layer
@@ -37,6 +38,12 @@ const LINK_DEAD = "This link is no longer active. Sign in with your email to con
 const OPEN_COMMENT_CAP = 30; // per enrollment — a review session, not a firehose
 
 /** Resolve + permission gate in one call; a string is the refusal to return. */
+/** Oct 21 2026 (lib/strategyGate): true while the client has no content strategy in the portal yet. A crafted request books nothing then. */
+async function strategyGateClosed(enrollmentId: string): Promise<boolean> {
+  const g = await strategyGateFor(enrollmentId).catch(() => null);
+  return !!g && !g.open;
+}
+
 async function viewerFor(auth: PortalAuth, permission: PortalPermission): Promise<PortalViewer | string> {
   const r = await resolvePortalViewer({ token: auth?.token ?? null, enrollmentId: auth?.enrollmentId ?? null });
   if (!r.ok) return r.reason === "no_session" || r.reason === "no_membership" ? "Please sign in to do that." : LINK_DEAD;
@@ -1051,6 +1058,8 @@ export async function portalSetTopicAnswerRoute(auth: PortalAuth, topicId: strin
 export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): Promise<RUndo> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
+  // Oct 21 2026: no route to choose before the strategy is in the portal (its topics come from it).
+  if (await strategyGateClosed(v.enrollment.id)) return fail(STRATEGY_GATE_REFUSAL);
   const month = await openMonthForEnrollment(v.enrollment.id, monthId);
   if (!month) return fail("Pick one of your open program months.");
   const { portalPlanning } = await import("@/lib/portal");
@@ -1079,6 +1088,7 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
 export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Promise<RUndo> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return fail(v);
+  if (await strategyGateClosed(v.enrollment.id)) return fail(STRATEGY_GATE_REFUSAL);
   const month = await openMonthForEnrollment(v.enrollment.id, monthId);
   if (!month) return fail("Pick one of your open program months.");
   const { portalPlanning } = await import("@/lib/portal");
@@ -1261,6 +1271,7 @@ export async function portalCallSlots(auth: PortalAuth, monthId: string, fromISO
 export async function portalBookCall(auth: PortalAuth, monthId: string, startISO: string): Promise<import("@/lib/callBooking").BookCallResult> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return { ok: false, state: "REFUSED", message: v };
+  if (await strategyGateClosed(v.enrollment.id)) return { ok: false, state: "REFUSED", message: STRATEGY_GATE_REFUSAL };
   const { bookStrategyCall } = await import("@/lib/callBooking");
   const r = await bookStrategyCall(v, String(monthId ?? ""), String(startISO ?? ""));
   if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }
@@ -1271,6 +1282,9 @@ export async function portalBookCall(auth: PortalAuth, monthId: string, startISO
 export async function portalCallScheduled(auth: PortalAuth, input: { eventUri: string }): Promise<import("@/lib/callBooking").BookCallResult> {
   const v = await viewerFor(auth, "requestSession");
   if (typeof v === "string") return { ok: false, state: "REFUSED", message: v };
+  // Oct 21 2026: the widget is never shown while the gate is closed; a booking
+  // made anyway is not filed from here (the Calendly sync reads it, and the office sees it).
+  if (await strategyGateClosed(v.enrollment.id)) return { ok: false, state: "REFUSED", message: STRATEGY_GATE_REFUSAL };
   const { confirmEmbeddedBooking } = await import("@/lib/callBooking");
   const r = await confirmEmbeddedBooking(v, { eventUri: String(input?.eventUri ?? "") });
   if (r.ok) { try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ } }

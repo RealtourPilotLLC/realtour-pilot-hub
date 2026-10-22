@@ -159,6 +159,14 @@ export type HomeActionsInput = {
    * THIS month's steps are done: Home's next step stays about this month.
    */
   ahead?: { label: string; href: string; clientPlanned?: boolean } | null;
+  /**
+   * Oct 21 2026 (lib/strategyGate): no content strategy in the portal yet, so
+   * nothing asks the client to choose a route, book a strategy call, choose
+   * topics, answer questions or book filming. Home shows the discovery call
+   * and what comes next instead (Jordan: "Strategy calls shouldn't be bookable
+   * until we have a content strategy built and added to the platform").
+   */
+  strategyPending?: boolean;
 };
 
 /** This month's own steps: while any is on the list, Home does not point at next month. */
@@ -203,6 +211,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     }
     const cp = i.clientPlanned ?? null;
     const bulk = i.bulk ?? null;
+    const pending = !!i.strategyPending && !cp && !bulk;
     if (bulk && bulk.focusSessionNo && bulk.scripts > 0) {
       add({
         kind: "READ_SESSION", count: bulk.scripts,
@@ -222,7 +231,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     // R01: keyed on what is OWED, on either route — a call-route gap after the
     // call is asked too, and a topic the call covered, a script in review or an
     // extra never is. (It used to need planningMode WRITTEN and counted all three.)
-    if (i.toAnswer.length > 0 && i.perms.suggest && !cp && !bulk) {
+    if (i.toAnswer.length > 0 && i.perms.suggest && !cp && !bulk && !pending) {
       const one = i.toAnswer.length === 1 ? i.toAnswer[0] : null;
       add({
         kind: "ANSWER_QUESTIONS", count: i.toAnswer.length,
@@ -232,7 +241,9 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       });
     }
     const undecided = !!i.planning && i.planning.planningMode === "UNDECIDED" && i.planning.noCallEligible === true;
-    if (undecided && !cp && !bulk && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
+    if (pending) {
+      // Oct 21 2026: no route, call or filming to book before the strategy exists.
+    } else if (undecided && !cp && !bulk && i.planning!.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       add({ kind: "CHOOSE_ROUTE", count: 1, title: `How would you like to plan ${i.month?.label ?? "this month"}?`, detail: "Choose your topics here, or talk them through on a call.", cta: "Choose", dest: "plan", step: "route" });
     } else if (i.planning && i.planning.planningMode !== "WRITTEN" && !cp && !bulk && i.planning.callStatus === "NOT_SCHEDULED" && i.perms.session && !i.filmingStarted) {
       // A3 (Oct 13 2026): a client who plans their own content is never asked to book a strategy call.
@@ -240,15 +251,15 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
     }
     // On the call route the topics are chosen together on the call — browsing
     // first is optional (§6.4), so it is not a to-do for the client.
-    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview && !cp && !bulk) {
+    if (i.month && i.month.selected < i.month.owed && i.perms.suggest && i.planning?.planningMode !== "CALL" && !i.topicHistoryNeedsReview && !cp && !bulk && !pending) {
       const n = i.month.owed - i.month.selected;
       add({ kind: "PICK_TOPICS", count: n, title: `Choose ${plural(n, "more topic")} for ${i.month.label}`, detail: `${i.month.selected} of ${i.month.owed} chosen.`, cta: "Choose topics", dest: "plan", extra: "pv=bank" });
     }
     // Oct 13 2026: an over month's late session and this month's own are
     // booked from ONE card in Your Month, so they are ONE action here — two
     // used to sit side by side (and shared a React key).
-    const lateOpen = !!i.lateSession?.open && i.perms.session && !i.lateSession.combined;
-    if (i.session.offerBooking && i.perms.session && !bulk) {
+    const lateOpen = !!i.lateSession?.open && i.perms.session && !i.lateSession.combined && !pending;
+    if (i.session.offerBooking && i.perms.session && !bulk && !pending) {
       const booked = i.session.required - i.session.missing;
       // "Schedule later" keeps the booking visibly outstanding (§6.7) — the
       // same action, saying the client chose it, never a second one.
@@ -270,7 +281,7 @@ export function homeActions(i: HomeActionsInput, base = ""): { primary: HomeActi
       add({ kind: "ADD_BRIEF", count: 1, title: `Add your creative brief for ${cp.monthLabel}`, detail: "Optional: upload your plan as a PDF or Word document, or paste notes for your crew.", cta: "Add your brief", dest: "plan", step: "brief" });
     }
     // Oct 21 2026: optional and last, and only once this month's steps are done.
-    if (i.ahead && !bulk && (i.perms.suggest || i.perms.session) && !out.some((a) => THIS_MONTH_STEPS.has(a.kind))) {
+    if (i.ahead && !bulk && !pending && (i.perms.suggest || i.perms.session) && !out.some((a) => THIS_MONTH_STEPS.has(a.kind))) {
       add({
         kind: "GET_AHEAD", count: 1, title: `Get ahead on ${i.ahead.label}`,
         detail: `${i.ahead.clientPlanned ? "Add your plan" : "Choose topics"} and book filming for ${i.ahead.label} now, if you like. Nothing is due before it starts.`,

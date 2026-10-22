@@ -63,7 +63,7 @@ export const CREATIVE_MENU = [
   { href: "/jobs", label: "Shoots" },
   { href: "/review", label: "Videos" },
   { href: "/editing", label: "Editing Room" },
-  { href: "/content", label: "Content" },
+  { href: "/content", label: "Monthly Content" },
   { href: "/schedule", label: "Schedule" },
 ] as const;
 

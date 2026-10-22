@@ -16,6 +16,7 @@ import { ownersFor, type OwnerDuty } from "@/lib/programOwners";
 import { catchUpInto, catchUpMonthName } from "@/lib/catchUp";
 import { lateMonthName, lateSessionOf } from "@/lib/lateSession";
 import { monthStarted } from "@/lib/forfeit";
+import { strategyGatesFor, type StrategyGate } from "@/lib/strategyGate";
 import {
   templateForAction, renderReminder, monthName, firstNameOf, reminderTemplate, DEFAULT_TEMPLATE_IDS, SIGN_OFF_FIRST_LINE,
   type ReminderAction, type TemplateVars,
@@ -265,7 +266,7 @@ export const REMINDER_DEFAULTS: ReminderPolicy = {
   // stop working, and a client has no way to add anything to it (§12 — clients
   // cannot disable program reminders).
   suppressWhen: [
-    "booked", "no_call_chosen", "preparation_submitted", "paused", "ended", "snoozed",
+    "booked", "no_call_chosen", "preparation_submitted", "paused", "ended", "snoozed", "strategy_pending",
     "pending_session_request", "stale_scheduler_sync", "access_revoked", "launch_not_authorised",
     "no_recipient", "test_client_real_address", "quiet_hours", "first_cycle_exempt",
     "catch_up_owed", "another_reminder_today", "no_template_yet", "scripts_approved", "session_not_open",
@@ -489,6 +490,10 @@ export function previousWeekdayKeyET(key: string): string {
   for (let i = 0; i < 7 && isWeekendKey(k); i++) k = shiftKey(k, -1);
   return k;
 }
+
+/** Oct 21 2026 (strategyGate.ts): the PRIMARY-lane asks that wait for the client's content strategy. */
+const STRATEGY_GATED_ACTIONS: ReadonlySet<ReminderAction> = new Set<ReminderAction>(["CHOOSE_PATH", "BOOK_CALL", "COMPLETE_ANSWERS", "BOOK_SESSION"]);
+const STRATEGY_PENDING_WHY = "no content strategy is in the client's portal yet — no strategy call, planning or filming ask until it is";
 
 /**
  * A23 — THE SESSION GAP, AS A COUNT. Pure, so the acceptance drill can put a
@@ -1294,6 +1299,11 @@ async function evaluateMonth(
   // this; the evaluator must agree with it.
   if (e.accessRevokedAt) return sup("access_revoked", "portal access for this enrollment has been revoked");
   if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return sup("snoozed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`);
+  // Oct 21 2026 (strategyGate.ts, Kristen Pavillard): no strategy call, answers
+  // or filming ask before the client's content strategy is in their portal —
+  // and no Kyle "help with the booking" task or escalation either (sup carries
+  // neither). The review lane is untouched.
+  if (lane === "PRIMARY" && d.strategyPending && action && STRATEGY_GATED_ACTIONS.has(action)) return sup("strategy_pending", STRATEGY_PENDING_WHY);
   if (planningSuppression === "booked" && !action) return sup("booked", "a strategy call is booked — nothing to remind", null);
   if (planningSuppression === "no_call_chosen") return sup("no_call_chosen", "this month's strategy call was skipped on purpose — we do not chase it", null);
   if (sessionSuppression) return sup(sessionSuppression, "a session request is waiting on the office, not the client", null);
@@ -2854,6 +2864,9 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
   // own lock. A scope that cannot be read cancels NOTHING here — cancelling is
   // a write on a guess — and the outbox gate still refuses to send on it.
   const scopeOf = await rolloutForReconcile(open.map((r) => r.clientId), now);
+  // Oct 21 2026: a booking or planning ask queued before the strategy gate
+  // closed (or before this rule existed) is pulled back like a snoozed one.
+  const gates = await strategyGatesFor(open.filter((r) => STRATEGY_GATED_ACTIONS.has(r.action as ReminderAction)).map((r) => r.enrollmentId)).catch(() => new Map<string, StrategyGate>());
   for (const r of open) {
     // A QUEUED row with NO outbox id and a dead lease died between the claim
     // and the outbox call — the sender crashed in the one-statement window
@@ -2893,9 +2906,10 @@ export async function reconcileReminderOutcomes(opts: { now?: Date } = {}): Prom
         // now ask for something the client has already given us.
         const addressIn = (r.action === "CONFIRM_ADDRESS" && (await addressReceived(r.dedupeKey))) || (r.action === "APPROVE_SCRIPTS" && !!r.monthId && (await monthScriptApprovals(r.monthId)).awaitingClient.length === 0) || (r.action === "BRAND_KIT" && (await brandKitReceived(r.enrollmentId, r.clientId)));
         const outOfScope = scopeOf(r.clientId, r.action);
-        const stop = switchOff || !!outOfScope || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn;
+        const strategyPending = STRATEGY_GATED_ACTIONS.has(r.action as ReminderAction) && gates.get(r.enrollmentId)?.open === false;
+        const stop = switchOff || !!outOfScope || en?.status !== "ACTIVE" || (month?.remindersSnoozedUntil && month.remindersSnoozedUntil > now) || ((r.action === "BOOK_CALL" || r.action === "CHOOSE_PATH") && booked) || addressIn || strategyPending;
         if (stop) {
-          const why = switchOff ? "the automation was switched off" : outOfScope ? outOfScope : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : r.action === "BRAND_KIT" ? "brand_kit_received" : "address_received") : booked ? "booked" : "snoozed";
+          const why = switchOff ? "the automation was switched off" : outOfScope ? outOfScope : en?.status !== "ACTIVE" ? (en?.status === "PAUSED" ? "paused" : "ended") : addressIn ? (r.action === "APPROVE_SCRIPTS" ? "scripts_approved" : r.action === "BRAND_KIT" ? "brand_kit_received" : "address_received") : strategyPending ? "strategy_pending" : booked ? "booked" : "snoozed";
           const released = await markFailed(r.outboxMessageId, `cancelled before send: ${why}`);
           if (released) {
             await prisma.programReminder.update({ where: { id: r.id }, data: { state: "CANCELLED", suppressionReason: switchOff ? "switched_off" : outOfScope ? "not_in_rollout_scope" : why, lastError: `cancelled before send: ${why}`, lastErrorAt: now } });

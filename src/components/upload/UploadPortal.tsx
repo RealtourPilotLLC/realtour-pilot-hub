@@ -45,6 +45,7 @@ import { Markdown } from "@/components/ui/Markdown";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
 import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYouSubmitted";
+import { NoticeGroup, type Notice } from "@/components/upload/NoticeGroup";
 import { parseUploadAttempt, uploadAttemptFingerprint, type UploadAttempt } from "@/lib/uploadReceipt";
 
 // ---------------------------------------------------------------------------
@@ -586,6 +587,7 @@ export function UploadPortal({
   const d0 = draft?.payload ?? null;
   const [editorBrief, setEditorBrief] = useState(d0 ? d0.editorBrief : project.editorBrief ?? "");
   const [flags, setFlags] = useState(initialFlags);
+  const [flagsOpen, setFlagsOpen] = useState(false);
   const [flagInput, setFlagInput] = useState("");
   const [isPending, startTransition] = useTransition();
   const submitBusyRef = useRef(false);
@@ -1168,6 +1170,7 @@ export function UploadPortal({
     const body = flagInput.trim();
     if (!body) return;
     setFlags((prev) => [body, ...prev]);
+    setFlagsOpen(true);
     setFlagInput("");
     setFlagFailed(null);
     startTransition(async () => {
@@ -1808,6 +1811,76 @@ export function UploadPortal({
     </>
   );
 
+  // THE HEADS-UPS (Oct 21 2026): one folded card instead of a stack of banners.
+  // Order inside it: what is late or owed, then what the client asked for.
+  const topNotices: Notice[] = [];
+  if (!done && halfAt.photos && !halfAt.video && videoLive) {
+    const due = videoHalfDueAt(new Date(halfAt.photos));
+    const past = due.getTime() < nowMs;
+    topNotices.push({
+      key: "video-owed",
+      tone: past ? "danger" : "warning",
+      summary: past ? `Video overdue (was due 8:00 AM ${etDate(due)})` : `Video still owed by 8:00 AM ${etDate(due)}`,
+      body: (
+        <div className="text-sm">
+          <p className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-4 text-success" /> Photos submitted {etDateTime(halfAt.photos)}. The video is still owed.</p>
+          <p className="mt-1 text-foreground/85">
+            {past
+              ? `It was due by 8:00 AM ${etDate(due)}. Upload the video and submit the video half now. A late video counts as a late upload on your score.`
+              : `Upload the video to Dropbox and submit the video half before 8:00 AM ${etDate(due)}. A video that comes in after that counts as a late upload on your score.`}
+          </p>
+        </div>
+      ),
+    });
+  }
+  if (!done && halfAt.video && !halfAt.photos && photosLive) {
+    topNotices.push({
+      key: "photos-owed",
+      tone: "warning",
+      summary: "Photos still owed",
+      body: (
+        <div className="text-sm">
+          <p className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-4 text-success" /> Video submitted {etDateTime(halfAt.video)}. The photos are still owed.</p>
+          <p className="mt-1 text-foreground/85">Upload the photos and submit the photo half to finish this shoot.</p>
+        </div>
+      ),
+    });
+  }
+  if (specialRequests.length > 0) {
+    topNotices.push({
+      key: "special-requests",
+      tone: "warning",
+      summary: specialRequests.length === 1 ? "1 special request" : `${specialRequests.length} special requests`,
+      body: (
+        <div className="text-sm">
+          <p className="mb-1 flex items-center gap-2 font-semibold text-warning"><Star className="size-4" /> Special requests for this shoot</p>
+          <ul className="ml-6 list-disc space-y-0.5 text-foreground/85">
+            {specialRequests.map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
+        </div>
+      ),
+    });
+  }
+  // Standing customer notes: their own entry (they used to ride inside the
+  // special-requests box, so most shoots never showed them).
+  if (project.customerNote) {
+    topNotices.push({
+      key: "customer-notes",
+      tone: "info",
+      summary: "Customer notes",
+      body: (
+        <div className="text-sm">
+          <p className="mb-1 flex items-center gap-2 font-semibold">
+            <NotebookPen className="size-4 text-brand" /> Customer notes ·
+            <Avatar name={project.clientName} src={project.clientAvatarUrl} size={16} />
+            {project.clientName}
+          </p>
+          <p className="whitespace-pre-line text-foreground/85">{project.customerNote}</p>
+        </div>
+      ),
+    });
+  }
+
   return (
     <div className="space-y-4">
       {/* ---- The job, big and first. ---- */}
@@ -1892,32 +1965,10 @@ export function UploadPortal({
         </div>
       )}
 
-      {/* O05: one half is in and the other is still owed. The video half has
-          its own deadline (Jordan, Sep 25): 8:00 AM ET the next day. */}
-      {!done && halfAt.photos && !halfAt.video && videoLive && (() => {
-        const due = videoHalfDueAt(new Date(halfAt.photos));
-        const past = due.getTime() < nowMs;
-        return (
-          <div className={cn("rounded-2xl border p-4", past ? "border-danger/40 bg-danger/10" : "border-warning/40 bg-warning/10")}>
-            <div className="flex items-center gap-2 font-semibold">
-              <CheckCircle2 className="size-5 text-success" /> Photos submitted {etDateTime(halfAt.photos)}. The video is still owed.
-            </div>
-            <p className="mt-1 text-sm text-foreground/85">
-              {past
-                ? `It was due by 8:00 AM ${etDate(due)}. Upload the video and submit the video half now. A late video counts as a late upload on your score.`
-                : `Upload the video to Dropbox and submit the video half before 8:00 AM ${etDate(due)}. A video that comes in after that counts as a late upload on your score.`}
-            </p>
-          </div>
-        );
-      })()}
-      {!done && halfAt.video && !halfAt.photos && photosLive && (
-        <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
-          <div className="flex items-center gap-2 font-semibold">
-            <CheckCircle2 className="size-5 text-success" /> Video submitted {etDateTime(halfAt.video)}. The photos are still owed.
-          </div>
-          <p className="mt-1 text-sm text-foreground/85">Upload the photos and submit the photo half to finish this shoot.</p>
-        </div>
-      )}
+      {/* Oct 21 2026: the heads-ups fold into one card with a one-line
+          summary (NoticeGroup): a half still owed, special requests and the
+          customer's standing notes. */}
+      <NoticeGroup storageKey={`upload-notices:${project.id}`} notices={topNotices} />
 
       {/* Success banner + process feedback */}
       {done && (
@@ -1985,33 +2036,6 @@ export function UploadPortal({
               </>
             )}
           </div>
-        </div>
-      )}
-
-      {/* Special requests reminder */}
-      {specialRequests.length > 0 && (
-        <div className="rounded-2xl border border-warning/30 bg-warning-soft/40 p-4">
-          <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-warning">
-            <Star className="size-4" /> Special requests for this shoot
-          </div>
-          <ul className="ml-6 list-disc space-y-0.5 text-sm text-foreground/85">
-            {specialRequests.map((r, i) => <li key={i}>{r}</li>)}
-          </ul>
-        </div>
-      )}
-
-      {/* Standing customer notes — its OWN card. It used to render inside the
-          special-requests box, so a client note only showed on the rare job
-          that also had a special request; on every other shoot the note the
-          office wrote reached nobody here. */}
-      {project.customerNote && (
-        <div className="rounded-2xl border border-border bg-surface p-4">
-          <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
-            <NotebookPen className="size-4 text-brand" /> Customer notes ·
-            <Avatar name={project.clientName} src={project.clientAvatarUrl} size={16} />
-            {project.clientName}
-          </div>
-          <p className="whitespace-pre-line text-sm text-foreground/85">{project.customerNote}</p>
         </div>
       )}
 
@@ -2218,16 +2242,25 @@ export function UploadPortal({
                     : null}
           </div>
 
-          <MiniHeading>The standard</MiniHeading>
-          <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
-            <li><strong>Every space gets one HERO SHOT</strong> — the photo you&rsquo;d pick if you could only show one. Supporting shots exist only to show what the hero can&rsquo;t.</li>
-            <li><strong>One composition, once.</strong> No distance or zoom variations of the same angle.</li>
-            <li><strong>Every photo must add new information.</strong> &ldquo;I like both&rdquo; is not a reason.</li>
-            <li><strong>Open-concept areas are one space</strong> — not four rooms&rsquo; worth of angles.</li>
-            <li><strong>5-bracket JPG.</strong> A bracket set counts as ONE composition. Not RAW, not 3-bracket.</li>
-            <li><strong>Trash cans and pet items are a no-go.</strong> Fix it on site — don&rsquo;t lean on the editor.</li>
-            <li><strong>Alternates go to Backup Photos</strong> — and cull that folder too.</li>
-          </ul>
+          {/* Oct 21 2026 (upload page tidy): the seven rules fold to one line,
+              like the room-by-room guide below. Photographers know them; the
+              line keeps the three that matter most in sight. */}
+          <details className="mt-3 rounded-xl border border-border">
+            <summary className="flex min-h-11 cursor-pointer items-center px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
+              The standard: one hero shot per space, one composition once, 5-bracket JPG (7 rules)
+            </summary>
+            <div className="border-t border-border px-3.5 py-3">
+            <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
+              <li><strong>Every space gets one HERO SHOT</strong> — the photo you&rsquo;d pick if you could only show one. Supporting shots exist only to show what the hero can&rsquo;t.</li>
+              <li><strong>One composition, once.</strong> No distance or zoom variations of the same angle.</li>
+              <li><strong>Every photo must add new information.</strong> &ldquo;I like both&rdquo; is not a reason.</li>
+              <li><strong>Open-concept areas are one space</strong> — not four rooms&rsquo; worth of angles.</li>
+              <li><strong>5-bracket JPG.</strong> A bracket set counts as ONE composition. Not RAW, not 3-bracket.</li>
+              <li><strong>Trash cans and pet items are a no-go.</strong> Fix it on site — don&rsquo;t lean on the editor.</li>
+              <li><strong>Alternates go to Backup Photos</strong> — and cull that folder too.</li>
+            </ul>
+            </div>
+          </details>
 
           <details className="mt-3 rounded-xl border border-border">
             <summary className="cursor-pointer px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
@@ -2733,14 +2766,22 @@ export function UploadPortal({
             </button>
           </div>
           {flagFailed && <p role="alert" className="mt-1.5 text-xs text-danger">{flagFailed}</p>}
+          {/* Oct 21 2026: the raised flags fold to one line (open after a new one). */}
           {flags.length > 0 && (
-            <ul className="mt-2 space-y-1">
-              {flags.map((f, i) => (
-                <li key={i} className="flex items-center gap-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">
-                  <AlertTriangle className="size-3.5" /> {f}
-                </li>
-              ))}
-            </ul>
+            <details className="mt-2 rounded-lg border border-danger/30 bg-danger/5" open={flagsOpen} onToggle={(e) => setFlagsOpen((e.target as HTMLDetailsElement).open)}>
+              <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-3 text-[13px] font-medium text-danger focus-visible:outline-2 focus-visible:outline-brand">
+                <AlertTriangle className="size-3.5 shrink-0" />
+                {flags.length === 1 ? "1 problem flagged" : `${flags.length} problems flagged`}
+                <span className="truncate font-normal text-foreground/70">: {flags[0]}</span>
+              </summary>
+              <ul className="space-y-1 px-3 pb-3">
+                {flags.map((f, i) => (
+                  <li key={i} className="flex items-center gap-2 rounded-lg bg-danger-soft/60 px-2.5 py-1.5 text-xs text-danger">
+                    <AlertTriangle className="size-3.5 shrink-0" /> {f}
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
         </div>
 
@@ -2912,8 +2953,22 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
       <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
         <XCircle className="size-4 text-warning" /> Missing work
       </div>
-      {gaps.length > 0 && (
-        <ul className="mb-2 space-y-1.5">
+      {/* Oct 21 2026: the list folds to one summary line. */}
+      {gaps.length > 0 && (() => {
+        const live = gaps.filter((g) => g.state !== "RESOLVED" && g.state !== "CANCELLED");
+        const needPlan = live.filter((g) => g.state === "OPEN").length;
+        const overdue = live.filter((g) => g.overdue).length;
+        const line = [
+          live.length ? `${live.length} open` : "all closed",
+          needPlan ? `${needPlan} need${needPlan === 1 ? "s" : ""} a recovery plan` : null,
+          overdue ? `${overdue} overdue` : null,
+        ].filter(Boolean).join(" · ");
+        return (
+        <details className="mb-2 rounded-lg border border-border" open={planFor !== null || closeFor !== null || undefined}>
+          <summary className={cn("flex min-h-11 cursor-pointer items-center px-3 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-brand", overdue ? "text-danger" : live.length ? "text-warning" : "text-muted")}>
+            {gaps.length === 1 ? "1 item" : `${gaps.length} items`}: {line}
+          </summary>
+        <ul className="space-y-1.5 px-2 pb-2">
           {gaps.map((g) => {
             const closed = g.state === "RESOLVED" || g.state === "CANCELLED";
             return (
@@ -2976,7 +3031,9 @@ function MissingWork({ projectId, gaps, office }: { projectId: string; gaps: Gap
             );
           })}
         </ul>
-      )}
+        </details>
+        );
+      })()}
       {open ? (
         <div className="space-y-1.5">
           <input value={what} onChange={(e) => setWhat(e.target.value)} maxLength={200} placeholder="Which shot? e.g. Pool at dusk" className={input} />

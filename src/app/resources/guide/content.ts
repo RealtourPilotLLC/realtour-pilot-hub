@@ -71,7 +71,7 @@ const PHOTOGRAPHER: Guide = {
     { when: "Shooting", what: "Work the What to capture list and tick each item. Read Don't leave without first — that is the amber box of things that come back as revisions when missed." },
     { when: "Before you drive off", what: "Everything ticked? Tap Shoot complete to text the client, then Done. Notes for the editor while it is fresh — they carry into your upload page." },
     { when: "Same night", what: "Files into Dropbox, then finish the shoot's upload page end to end and press Everything's uploaded — submit. That submit is what puts the shoot on your payroll." },
-    { when: "Next morning", what: "Check My Pay for the shoot, and Quality feedback for anything to fix or carry into the next shoot." },
+    { when: "Next morning", what: "Check My Pay for the shoot, and Quality notes for anything to fix or carry into the next shoot." },
   ],
   sections: [
     {
@@ -82,7 +82,7 @@ const PHOTOGRAPHER: Guide = {
 
 Your menu is short on purpose. You get:
 
-- **My Shoots** — your shoots, and the Quality feedback tab
+- **My Shoots** — your shoots, and the Quality notes tab
 - **My Pay** — your shoot pay and mileage
 - **Upload Portal** — the wrap-up page for every shoot
 - **SOP Center** — the standards, including the full Photography SOP
@@ -296,7 +296,7 @@ Remember: a shoot appears in My Pay once its upload page is submitted.`,
       id: "feedback",
       icon: MessageSquareHeart,
       title: "Your quality feedback and your numbers",
-      body: `The **Quality feedback** tab on My Shoots is the receiving end of every review of your work.
+      body: `The **Quality notes** tab on My Shoots is the receiving end of every review of your work.
 
 Six tiles across the top:
 
@@ -310,7 +310,7 @@ Six tiles across the top:
 Under the tiles, **What clients are saying** shows recent praise. Then your open notes, grouped by shoot. Open one, reply in the thread, and press **Mark fixed** when it is handled — that moves it to awaiting re-review, and Jordan sees it.
 
 Notes on a specific shoot also appear on that shoot's own screen, so you get them wherever you are looking.`,
-      links: [{ href: "/shoot/feedback", label: "Quality feedback" }],
+      links: [{ href: "/shoot/feedback", label: "Quality notes" }],
     },
     {
       id: "texts",
@@ -979,10 +979,10 @@ Failure is designed to be loud, not silent:
 - Every integration fails closed. If a secret goes missing in production the door shuts rather than opening.
 - Orders that disappear from Aryeo are flagged for a human instead of being deleted.
 
-If a page itself misbehaves, the feature board at **Feedback & requests** is where anyone on the team — including the field — files it, and where you approve what gets built next.`,
+If a page itself misbehaves, the feature board at **Report a hub problem** is where anyone on the team — including the field — files it, and where you approve what gets built next.`,
       links: [
         { href: "/connections", label: "Connections" },
-        { href: "/feedback", label: "Feedback & requests" },
+        { href: "/feedback", label: "Report a hub problem" },
       ],
     },
   ],

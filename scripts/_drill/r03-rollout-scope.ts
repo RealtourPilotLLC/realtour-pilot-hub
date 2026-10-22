@@ -170,6 +170,9 @@ async function seedCast(prisma: PrismaClient, build: typeof import("./_fixtures/
   await prisma.client.create({ data: { id: N_ID, name: "Jordan Spackman TEST", email: "n-client@example.test", socialClient: true, socialPlan: "Starter" } });
   const nE = await prisma.contentEnrollment.create({ data: { clientId: N_ID, status: "ACTIVE", package: "Starter", videosPerMonth: 3, sessionsPerMonth: 1, sessionHours: 1, startedAt: new Date("2026-08-01T04:00:00Z"), portalToken: `ntok${"n".repeat(28)}` } });
   const nM = await prisma.contentMonth.create({ data: { enrollmentId: nE.id, clientId: N_ID, monthKey: "2026-10", videosOwed: 3, status: "OPEN", planningMode: "WRITTEN" } });
+  // Oct 21 2026: a live client's strategy is in the portal (strategyGate.ts), as the fixture's are.
+  const nStrategy = await prisma.contentStrategy.create({ data: { enrollmentId: nE.id, clientId: N_ID, sectionsJson: "[]", status: "ACTIVE", source: "manual" }, select: { id: true } });
+  await prisma.contentStrategyVersion.create({ data: { strategyId: nStrategy.id, enrollmentId: nE.id, clientId: N_ID, versionNo: 1, sectionsJson: "[]", sourceKind: "manual", status: "APPROVED", approvedAt: new Date("2026-08-01T04:00:00Z"), releasedAt: new Date("2026-08-01T04:00:00Z") } });
   const nU = await prisma.clientUser.create({ data: { email: "n@example.test", name: "N Person", status: "ACTIVE" } });
   const nS = await prisma.clientMembership.create({ data: { clientUserId: nU.id, enrollmentId: nE.id, clientId: N_ID, role: "OWNER", acceptedAt: new Date() } });
   const N: Fx = { clientId: N_ID, enrollmentId: nE.id, monthId: nM.id, projectId: null, clientUserId: nU.id, membershipId: nS.id, portalToken: nE.portalToken, name: "Jordan Spackman TEST" };

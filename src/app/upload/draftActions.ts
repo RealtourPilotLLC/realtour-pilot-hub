@@ -1,6 +1,6 @@
 "use server";
 
-import { requireShootAccess } from "@/lib/auth/guards";
+import { requireUploadAccess } from "@/lib/auth/guards";
 import { prisma } from "@/lib/prisma";
 import {
   DRAFT_TOPIC_CHECK_FAILED,
@@ -97,7 +97,7 @@ export async function saveUploadDraft(
   input: { revision: number | null; baseHash?: string | null; payload: unknown },
 ): Promise<SaveDraftResult> {
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }
@@ -190,7 +190,7 @@ export async function saveUploadDraft(
 /** Throw the unsent answers away. Retired, not deleted: the row is marked consumed. */
 export async function discardUploadDraft(projectId: string): Promise<{ ok: boolean; message?: string }> {
   try {
-    await requireShootAccess(projectId);
+    await requireUploadAccess(projectId);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
   }

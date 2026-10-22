@@ -51,7 +51,7 @@ export default async function QualityFeedbackPage({
   if (scoped === "__none__") {
     return (
       <div>
-        <PageHeader eyebrow="Field" title="Quality feedback" />
+        <PageHeader eyebrow="Field" title="My quality notes" />
         <div className="mx-auto max-w-2xl px-4 py-5 sm:px-6">
           <FieldTabs active="feedback" />
           <p className="rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted">
@@ -77,7 +77,7 @@ export default async function QualityFeedbackPage({
       <div>
         <PageHeader
           eyebrow="Field"
-          title={viewAs ? `${viewAs.name.split(" ")[0]}’s quality feedback` : "Quality feedback"}
+          title={viewAs ? `${viewAs.name.split(" ")[0]}’s quality notes` : "My quality notes"}
           subtitle={
             viewAs
               ? `Read-only — exactly what ${viewAs.name.split(" ")[0]} sees`

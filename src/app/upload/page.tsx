@@ -8,7 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { CullingReminder } from "@/components/upload/CullingReminder";
 import { getCurrentUser } from "@/lib/auth/user";
-import { photographerMemberId } from "@/lib/shoot";
+import { crewProjectIds, photographerMemberId } from "@/lib/shoot";
 import { rawPhotoCounts } from "@/lib/dropboxFolders";
 import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
 import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
@@ -76,7 +76,10 @@ export default async function UploadListPage() {
   // James) never reads "payroll" here; the chip still asks for the submit.
   const payHidden = await payHiddenFor(user);
   const windowStart = uploadWindowStart(now);
-  const scopeWhere = mine ? ownedBy(mine) : {};
+  // Oct 21 2026: a shoot this photographer was second shooter on is listed too
+  // (upload access only; it never becomes theirs for pay or KPIs).
+  const crewIds = mine && mine !== "__none__" ? await crewProjectIds(mine) : [];
+  const scopeWhere = mine ? (crewIds.length ? { OR: [ownedBy(mine), { id: { in: crewIds } }] } : ownedBy(mine)) : {};
   const shoots = await prisma.project.findMany({
     where: {
       AND: [

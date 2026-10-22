@@ -116,12 +116,23 @@ async function main() {
     const owner = await prisma.appUser.create({ data: { name: "Jordan", email: "jordan@onboarding.test", role: "OWNER", status: "ACTIVE" } });
     const admin = await prisma.appUser.create({ data: { name: "Kyle", email: "kyle@onboarding.test", role: "ADMIN", status: "ACTIVE" } });
     const signIn = (u: { id: string; email: string; role: string }, actingAs?: string) => setSession({ uid: u.id, email: u.email, role: u.role, ...(actingAs ? { actingAs } : {}) });
-    const mkClient = async (name: string, email: string | null, phone: string | null, status = "ACTIVE", billingType: string | null = null) => {
+    // Oct 21 2026 (the strategy gate): a running client has a strategy released
+    // to its portal (lib/strategyGate), or the strategy-call message is held.
+    // Only the version row the gate reads; `gated` leaves a new signup without one.
+    // SUPERSEDED (released, no longer in force) for a client whose next version
+    // is waiting for approval, so it stays the version that waits.
+    const releaseStrategyFor = async (e: { enrollmentId: string; clientId: string }, status = "APPROVED") => {
+      const at = new Date("2026-08-01T12:00:00Z");
+      const st = await prisma.contentStrategy.create({ data: { enrollmentId: e.enrollmentId, clientId: e.clientId, sectionsJson: "{}", status: "DRAFT", source: "import" } });
+      await prisma.contentStrategyVersion.create({ data: { strategyId: st.id, enrollmentId: e.enrollmentId, clientId: e.clientId, versionNo: 1, sectionsJson: "{}", sourceKind: "import", status, approvedAt: at, approvedBy: "drill", releasedAt: at, releasedBy: "drill" } });
+    };
+    const mkClient = async (name: string, email: string | null, phone: string | null, status = "ACTIVE", billingType: string | null = null, strategy: "APPROVED" | "SUPERSEDED" | "none" = "APPROVED") => {
       const client = await prisma.client.create({ data: { name, email, phone, firstSeenAt: now } });
       const enrollment = await prisma.contentEnrollment.create({ data: { clientId: client.id, package: "Accelerator", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 4, status, billingType } });
+      if (strategy !== "none") await releaseStrategyFor({ enrollmentId: enrollment.id, clientId: client.id }, strategy);
       return { ...client, enrollmentId: enrollment.id };
     };
-    const A = await mkClient("Erica Example", "erica@example.test", "(610) 555-0101");
+    const A = await mkClient("Erica Example", "erica@example.test", "(610) 555-0101", "ACTIVE", null, "SUPERSEDED");
     const B = await mkClient("Kristin Example", "kristin@example.test", null);
     const Pz = await mkClient("Paula Paused", "paula@example.test", null, "PAUSED");
     const Tr = await mkClient("Ashley Trial", "ashley@example.test", null, "ACTIVE", "TRIAL");
@@ -297,6 +308,19 @@ async function main() {
       const off = await A_.sendOnboardingMessageAction({ clientId: A.id, message: "note", channel: "email", toRef: "erica@example.test", body: "Hi", intentId: "press-0009-off" });
       c.ok("…and the send action refuses it too, nothing sent", !off.ok && sent.length === 4);
       await A_.setOnboardingToggleAction({ clientId: A.id, toggle: "messages", on: true });
+
+      // Oct 21 2026 (the strategy gate): a new signup with no strategy in the
+      // portal is never sent the strategy-call message, toggle on or not.
+      const G = await mkClient("Gina Newsignup", "gina@example.test", null, "ACTIVE", null, "none");
+      await A_.setOnboardingToggleAction({ clientId: G.id, toggle: "messages", on: true });
+      const gd = (await ob.loadOnboardingDetail(G.id))!;
+      const gm = gd.messages.find((m) => m.key === "strategy_call")!;
+      c.ok("gated: the strategy-call message is held with the reason (no strategy in the portal yet), the others follow their toggles",
+        !gm.allowed && /No strategy in the portal yet/.test(gm.blockedWhy ?? "") && gd.messages.find((m) => m.key === "note")!.allowed, JSON.stringify({ gm: [gm.allowed, gm.blockedWhy] }));
+      const gs = await A_.sendOnboardingMessageAction({ clientId: G.id, message: "strategy_call", channel: "email", toRef: "gina@example.test", body: "Grab a time for your strategy call", intentId: "press-0010-gated" });
+      c.ok("…and pressing Send anyway is refused on the server, nothing sent", !gs.ok && /No strategy in the portal yet/.test(gs.message) && sent.length === 4, gs.message);
+      c.ok("…its welcome text does not tell them to book calls and filming", !/book your calls and filming/.test(gd.messages.find((m) => m.key === "welcome")!.body.sms));
+      await A_.setOnboardingToggleAction({ clientId: G.id, toggle: "messages", on: false });
     }
 
     // =========================================================================

@@ -58,7 +58,7 @@ async function main() {
     // =======================================================================
     c.head("1 · D4 strategy: one waiting rule, older drafts superseded");
     {
-      const F = await buildContentMonth(db, { name: "Strategy Rule TEST", package: "Starter" });
+      const F = await buildContentMonth(db, { strategy: false, name: "Strategy Rule TEST", package: "Starter" });
       const doc = (t: string) => ({ structureVersion: "LEGACY" as const, sections: [{ id: "brand", number: null, heading: "Brand Overview", order: 1, text: t }], document: null });
       const v1 = await strategy.createStrategyVersion({ enrollmentId: F.enrollmentId, stored: doc("Discovery draft words."), sourceKind: "discovery_call", createdBy: "ai", status: "DRAFT" });
       const v2 = await strategy.createStrategyVersion({ enrollmentId: F.enrollmentId, stored: doc("Imported document words."), sourceKind: "import", createdBy: owner.email, status: "INTERNAL_REVIEW" });
@@ -89,7 +89,7 @@ async function main() {
 
     // =======================================================================
     c.head("2 · D5 a released script stays on the portal when a new version is approved; Approve & send");
-    const S = await buildContentMonth(db, { name: "Script Keep TEST", package: "Starter", topics: [{ title: "First weekend", selection: "SELECTED" }, { title: "Second look", selection: "SELECTED" }] });
+    const S = await buildContentMonth(db, { strategy: false, name: "Script Keep TEST", package: "Starter", topics: [{ title: "First weekend", selection: "SELECTED" }, { title: "Second look", selection: "SELECTED" }] });
     const pts = [{ role: "re-hook" as const, text: "Buyers decide in two days." }, { role: "build-up" as const, text: "Price it right and they compete." }, { role: "payoff" as const, text: "That is how you win the weekend." }];
     const parts = (hook: string) => ({ title: "First weekend", hook, points: pts, close: "Call me before you list.", captionCta: null });
     {
@@ -133,7 +133,7 @@ async function main() {
     // =======================================================================
     c.head("4 · D7 a session move takes its video rows, and the month it lands on is live");
     {
-      const M = await buildContentMonth(db, { name: "Session Move TEST", package: "Starter" });
+      const M = await buildContentMonth(db, { strategy: false, name: "Session Move TEST", package: "Starter" });
       const video = await prisma.contentVideo.create({ data: { enrollmentId: M.enrollmentId, clientId: M.clientId, monthId: M.monthId, monthKey: M.monthKey, projectId: M.projectId, kind: "PROGRAM", countsTowardAllowance: true, title: "Moved video TEST", status: "FILMED", source: "manual" } });
       const target = monthBefore(M.monthKey);
       const r = await A.moveSessionToMonth(M.projectId!, target);
@@ -149,9 +149,9 @@ async function main() {
     {
       const { monthlyContentActions } = await import("@/lib/contentActions");
       const thisMonth = etMonthKey();
-      const E = await buildContentMonth(db, { name: "Earlier Month TEST", package: "Starter", monthKey: monthBefore(thisMonth), topics: [{ title: "Last month's topic", selection: "SELECTED" }] });
+      const E = await buildContentMonth(db, { strategy: false, name: "Earlier Month TEST", package: "Starter", monthKey: monthBefore(thisMonth), topics: [{ title: "Last month's topic", selection: "SELECTED" }] });
       await scripts.createScriptVersion({ enrollmentId: E.enrollmentId, monthId: E.monthId, topicId: E.topicIds[0], source: "AI", status: "DRAFT", createdBy: "ai", parts: { ...parts("Last month's hook, written from their answers."), title: "Last month's topic" } });
-      const P = await buildContentMonth(db, { name: "Paused Client TEST", package: "Starter", enrollmentStatus: "PAUSED", topics: [{ title: "Paused topic", selection: "SELECTED" }] });
+      const P = await buildContentMonth(db, { strategy: false, name: "Paused Client TEST", package: "Starter", enrollmentStatus: "PAUSED", topics: [{ title: "Paused topic", selection: "SELECTED" }] });
       await scripts.createScriptVersion({ enrollmentId: P.enrollmentId, monthId: P.monthId, topicId: P.topicIds[0], source: "AI", status: "INTERNAL_REVIEW", createdBy: "ai", parts: { ...parts("A paused client's hook."), title: "Paused topic" } });
       const card = await monthlyContentActions();
       const earlier = card.rows.find((r) => r.clientName === "Earlier Month TEST");
@@ -163,7 +163,7 @@ async function main() {
     // =======================================================================
     c.head("6 · D11 a first draft from written answers goes on the queue");
     {
-      const W = await buildContentMonth(db, { name: "Written Answers TEST", package: "Starter", topics: [{ title: "Written topic", selection: "SELECTED" }] });
+      const W = await buildContentMonth(db, { strategy: false, name: "Written Answers TEST", package: "Starter", topics: [{ title: "Written topic", selection: "SELECTED" }] });
       const { getOrCreateInterview } = await import("@/lib/contentInterview");
       const ivId = await getOrCreateInterview(W.topicIds[0], W.monthId, { staffUserId: owner.email });
       const r = await A.draftScriptFromInterview(ivId);

@@ -34,10 +34,12 @@ function fmtCallTime(iso: string): string {
 // its transcript, its analysis and an "Analyze the call" button; the paste
 // path stays as the quiet fallback.
 export function StrategyCallCard({
-  monthId, status, at, hasTranscript, transcriptProcessed, required, bookingUrl, calls = [],
+  monthId, status, at, hasTranscript, transcriptProcessed, required, bookingUrl, bookingClosed = null, calls = [],
 }: {
   monthId: string; status: string; at: string | null; hasTranscript: boolean;
   transcriptProcessed: boolean; required: boolean; bookingUrl: string;
+  /** Oct 21 2026 (strategyGate): why the booking link is not handed out yet; null = it may be. */
+  bookingClosed?: string | null;
   calls?: CallTranscriptUi[];
 }) {
   const [cur, setCur] = useState(status);
@@ -98,15 +100,22 @@ export function StrategyCallCard({
         </div>
       ) : cur === "NOT_SCHEDULED" && required ? (
         <div className="mt-2.5">
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied — text it to them."); }}
-              className={primaryBtn}
-            >
-              Copy the booking link
-            </button>
-            <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className={quietLink}>Open Calendly ↗</a>
-          </div>
+          {bookingClosed ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <button disabled className={primaryBtn} title={bookingClosed}>Copy the booking link</button>
+              <p className="text-[13px] text-muted">{bookingClosed}</p>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied — text it to them."); }}
+                className={primaryBtn}
+              >
+                Copy the booking link
+              </button>
+              <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className={quietLink}>Open Calendly ↗</a>
+            </div>
+          )}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <button onClick={() => setShowPaste(true)} className={quietLink}>Already held it — paste the transcript</button>
             <span className="text-muted-2">·</span>
@@ -121,8 +130,12 @@ export function StrategyCallCard({
             {linkedOnFile ? "Or paste a transcript instead" : "Call happened — paste the transcript"}
           </button>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <button onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }} className={quietLink}>Copy booking link</button>
-            <span className="text-muted-2">·</span>
+            {!bookingClosed && (
+              <>
+                <button onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }} className={quietLink}>Copy booking link</button>
+                <span className="text-muted-2">·</span>
+              </>
+            )}
             <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month&rsquo;s call</button>
           </div>
         </div>

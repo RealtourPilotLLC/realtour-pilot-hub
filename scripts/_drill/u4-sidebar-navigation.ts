@@ -90,7 +90,7 @@ async function main() {
     const both = renderToStaticMarkup(React.createElement(React.Fragment, null, React.createElement(Sidebar, { user: user("OWNER") }), React.createElement(Sidebar, { user: user("OWNER") })));
     const ids = [...both.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
     check("desktop and drawer instances have unique labelled group IDs", ids.length > 0 && ids.length === new Set(ids).size);
-    check("issue report remains outside the collapsed More detail", group(owner, "more").indexOf('href="/feedback"') > group(owner, "more").indexOf("</details>") && owner.includes("Report a hub issue"));
+    check("issue report remains outside the collapsed More detail", group(owner, "more").indexOf('href="/feedback"') > group(owner, "more").indexOf("</details>") && owner.includes("Report a hub problem"));
     check("admin keeps operational destinations without default financial access", !hrefs(admin).includes("/sales") && !hrefs(admin).includes("/trends") && !hrefs(admin).includes("/my-pay") && !hrefs(admin).includes("/connections"));
     check("photographer-specific exclusions and SOP label remain", !hrefs(photographer).includes("/resources/video-styles") && !hrefs(photographer).includes("/quality") && !hrefs(photographer).includes("/coaching") && photographer.includes("SOP Center") && hrefs(photographer).includes("/my-pay"));
     check("editor keeps appropriate reference and production doors", editor.includes("SOP Center") && hrefs(editor).includes("/resources/video-styles") && hrefs(editor).includes("/editing") && !hrefs(editor).includes("/upload"));

@@ -58,8 +58,26 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import type { PortalViewer } from "@/lib/portal";
 import { bootDrillDb, installNextStubs, fenceFetch, makeChecker, quietPrismaErrors } from "./_harness";
-import { buildContentMonth, type ContentMonthFixture } from "./_fixtures/contentMonth";
+import { buildContentMonth as buildMonthFixture, type ContentMonthFixture } from "./_fixtures/contentMonth";
 import { makeFakeCalendly, CAL } from "./_fake-calendly";
+
+// Oct 21 2026 (the strategy gate): these clients are already running the
+// program, so each has an approved strategy released to its portal
+// (lib/strategyGate). Only the version row the gate reads is written (the
+// identity carries no approvedVersionId, so call modes stay as they were),
+// and only when the client has none yet (the shared fixture may seed one).
+async function releaseStrategyFor(db: Parameters<typeof buildMonthFixture>[0], e: { enrollmentId: string; clientId: string }): Promise<void> {
+  if (await db.contentStrategyVersion.count({ where: { enrollmentId: e.enrollmentId, status: "APPROVED", releasedAt: { not: null } } })) return;
+  const at = new Date("2026-08-01T12:00:00Z");
+  const s = await db.contentStrategy.create({ data: { enrollmentId: e.enrollmentId, clientId: e.clientId, sectionsJson: "{}", status: "DRAFT", source: "import" }, select: { id: true } });
+  await db.contentStrategyVersion.create({ data: { strategyId: s.id, enrollmentId: e.enrollmentId, clientId: e.clientId, versionNo: 1, sectionsJson: "{}", sourceKind: "import", status: "APPROVED", approvedAt: at, approvedBy: "drill", releasedAt: at, releasedBy: "drill" } });
+}
+const buildContentMonth = async (...a: Parameters<typeof buildMonthFixture>) => {
+  const f = await buildMonthFixture(...a);
+  await releaseStrategyFor(a[0], f);
+  return f;
+};
+
 
 const PORT = Number(process.env.DRILL_PORT ?? 5665);
 const BASE = "810b29f"; // pinned: the tree batch 3 starts from, never HEAD
@@ -190,6 +208,7 @@ async function main() {
   const R = await (async () => {
     const client = await prisma.client.create({ data: { name: "Real Person Realty", email: "agent@realperson.example" }, select: { id: true } });
     const e = await prisma.contentEnrollment.create({ data: { clientId: client.id, status: "ACTIVE", package: "Accelerator", videosPerMonth: 4, sessionsPerMonth: 1, sessionHours: 4 }, select: { id: true } });
+    await releaseStrategyFor(prisma, { clientId: client.id, enrollmentId: e.id });
     return { clientId: client.id, enrollmentId: e.id };
   })();
   {
@@ -646,7 +665,7 @@ async function main() {
     const page = code(read("src/components/portal/PortalPage.tsx"));
     c.ok("PortalPage no longer names the hard-coded URL (it asks portalBookingLinks)", !/STRATEGY_CALL_BOOKING_URL/.test(page) && /portalBookingLinks/.test(page));
     const ym = code(read("src/components/portal/YourMonth.tsx"));
-    c.ok("Your Month renders the picker in the call step, never after the call is held", /step\.key === "call" && d\.callBooking && planning\.call !== "HELD"/.test(ym) && /<PortalCallPicker/.test(ym));
+    c.ok("Your Month renders the picker in the call step, never after the call is held", /step\.key === "call" && (!pending && )?d\.callBooking && planning\.call !== "HELD"/.test(ym) && /<PortalCallPicker/.test(ym));
     const inline = code(read("src/components/portal/CalendlyInline.tsx"));
     c.ok("the embed believes only https://calendly.com AND its own iframe", /e\.origin !== CALENDLY_ORIGIN/.test(inline) && /e\.source !== frame\.current\.contentWindow/.test(inline) && /CALENDLY_ORIGIN = "https:\/\/calendly\.com"/.test(inline));
     for (const f of ["src/components/portal/ComingUp.tsx", "src/components/portal/tabs/HomeTab.tsx", "src/components/portal/PortalScheduler.tsx"]) {

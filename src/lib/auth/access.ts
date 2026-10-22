@@ -61,20 +61,20 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // sets in QC, and open feedback follow-through. Owner/admin see all of that;
   // a PHOTOGRAPHER opening /review gets the same room narrowed to the jobs they
   // shot (Sep 18), and editors still receive their feedback on /edit.
-  { key: "review", label: "Review Room", href: "/review" },
+  { key: "review", label: "Videos", href: "/review" },
   { key: "pipeline", label: "Shoots", href: "/jobs" },
   // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
   // a redirect stub → /schedule?view=map, so "map" no longer needs its own key.
   { key: "schedule", label: "Schedule", href: "/schedule" },
   { key: "shoot", label: "My Shoots", href: "/shoot" },
-  { key: "mypay", label: "My Pay", href: "/my-pay" },
+  { key: "mypay", label: "My Performance", href: "/my-pay" },
   { key: "communications", label: "Messages", href: "/communications" },
   { key: "clients", label: "Clients", href: "/clients" },
   // Content Creator Program — monthly personal-branding clients: enrollment,
   // month workspaces, topics, scripts, agent profiles. Owner/admin.
-  { key: "content", label: "Content Program", href: "/content" },
+  { key: "content", label: "Monthly Content", href: "/content" },
   { key: "upload", label: "Upload Portal", href: "/upload" },
-  { key: "editing", label: "Editor Queue", href: "/editing" },
+  { key: "editing", label: "Editing Room", href: "/editing" },
   // "sales" is the merged Finance hub — Revenue (old /sales) + Unpaid (old
   // /billing) + Payroll (old /payouts) are its tabs now. /billing and /payouts
   // are redirect stubs, so "billing"/"payouts" no longer need their own keys.
@@ -90,7 +90,7 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "resources", label: "Resources & SOPs", href: "/resources" },
   { key: "training", label: "Training", href: "/training" },
   { key: "assistant", label: "Ask the Hub", href: "/assistant" },
-  { key: "feedback", label: "Feedback & requests", href: "/feedback" },
+  { key: "feedback", label: "Report a hub problem", href: "/feedback" },
   // Platform rules the business runs on (editor routing today, more to come).
   // Owner + Kyle: "a full settings page … for me Owner and the Admin (kyle)".
   { key: "settings", label: "Settings", href: "/settings" },
