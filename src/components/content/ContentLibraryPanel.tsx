@@ -37,10 +37,12 @@ export type LibraryWindowUi = {
   expiryOutcome: string | null; closedReason: string | null; evidence: string | null; decidedBy: string | null;
 };
 /** One revision round on the per-video ledger. `feeCents` is null unless the
- *  viewer is OWNER/ADMIN — the fee never reaches anyone else's screen. */
+ *  viewer is the owner (canSeeMoney, Oct 22 2026): the dollars never reach
+ *  anyone else's screen. `feeApplies` says a fee is on the round without the
+ *  amount, for the office's charge or waive decision. */
 export type LibraryRoundUi = {
   id: string; ordinal: number; included: boolean; includedRounds: number; state: string; requestedBy: string | null; createdAtISO: string;
-  feeAckBy: string | null; feeAckAtISO: string | null; feeDecision: string | null; feeDecidedBy: string | null; feeCents: number | null;
+  feeAckBy: string | null; feeAckAtISO: string | null; feeDecision: string | null; feeDecidedBy: string | null; feeCents: number | null; feeApplies?: boolean;
   lateOverrideBy: string | null; answeredAtISO: string | null;
 };
 /** One delivered file of a video, as the identity tool shows it. */
@@ -287,7 +289,7 @@ function ClientReview({ v }: { v: LibraryVideoUi }) {
                     <div className="space-y-1">
                       <span className="block text-muted">
                         {r.feeAckBy ? `acknowledged by ${r.feeAckBy} ${day(r.feeAckAtISO)}` : "no acknowledgement (policy was off)"}
-                        {v.moneyEyes && r.feeCents != null ? ` · $${(r.feeCents / 100).toFixed(0)} may apply` : ""}
+                        {v.moneyEyes && r.feeCents != null ? ` · $${(r.feeCents / 100).toFixed(0)} may apply` : v.moneyEyes && r.feeApplies ? " · a fee may apply" : ""}
                       </span>
                       {r.feeDecision && r.feeDecision !== "PENDING" && <span className="block font-semibold">{r.feeDecision.toLowerCase()}{r.feeDecidedBy ? ` (${r.feeDecidedBy})` : ""}</span>}
                       {r.feeDecision === "PENDING" && v.moneyEyes && (

@@ -1548,7 +1548,8 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       scriptText: topicScripts.get(t.id) ?? null,
       strategyLabel: stratOfTopic.get(t.id) ? strategyLabelOf.get(stratOfTopic.get(t.id)!) ?? null : null,
       lastEventAtISO: t.lastEventAt,
-      history: events.filter((e) => e.topicId === t.id).slice(0, 8).map((e) => ({ kind: e.kind, atISO: e.createdAt.toISOString(), note: e.actorKind === "CLIENT" || e.actorKind === "STAFF" ? e.note : null, monthKey: e.monthId ? monthKeyOf.get(e.monthId) ?? null : null })),
+      // Oct 22 2026 (audit M6): staff notes never leave the server (portalHistoryLine).
+      history: events.filter((e) => e.topicId === t.id).slice(0, 8).map((e) => portalHistoryLine(e, (id) => monthKeyOf.get(id) ?? null)),
       declined: t.clientDeclinedAt ? { atISO: t.clientDeclinedAt, reason: t.clientDeclineReason } : null,
       carried: carriedSel ? { selectionId: carriedSel.id, fromMonthKey: carriedSel.carriedFromMonthId ? monthKeyOf.get(carriedSel.carriedFromMonthId) ?? null : null } : null,
       // Carried, parked by a swap, or left on a month that has closed.
@@ -1645,6 +1646,17 @@ export async function portalRecommendations(enrollment: { id: string; clientId: 
 // topicForEnrollment below, which also reads approvalState — is what decides
 // whether a CARD exists for the client to be pointed at.
 const OFF_BANK_TOPIC_STATUS = ["REJECTED", "ARCHIVED"];
+
+/**
+ * A topic's history line as the client's browser receives it (Oct 22 2026,
+ * audit M6). The note went out for STAFF events too ("The hub's draft stepped
+ * aside for the scripts Jordan uploaded", a reason for a rejection), hidden by
+ * the page but present in what the browser holds. Only the client's own words
+ * (a CLIENT event's note) leave the server now; every other note is null.
+ */
+export function portalHistoryLine(e: { kind: string; createdAt: Date; note: string | null; actorKind: string; monthId: string | null }, monthKeyOf: (id: string) => string | null): { kind: string; atISO: string; note: string | null; monthKey: string | null } {
+  return { kind: e.kind, atISO: e.createdAt.toISOString(), note: e.actorKind === "CLIENT" ? e.note : null, monthKey: e.monthId ? monthKeyOf(e.monthId) : null };
+}
 
 /** Is this topic still on the client's bank, i.e. does a card for it render? */
 export function topicOnBank(topic: { status: string } | null | undefined): boolean {

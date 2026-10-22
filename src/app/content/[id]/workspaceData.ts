@@ -18,6 +18,18 @@ import type { LibraryVideoUi, LibraryWindowUi, LibraryRoundUi, LibraryIdentityUi
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
+/** The enrollment fields that are money: the owner-entered billing terms. */
+export const MONEY_HISTORY_FIELDS: ReadonlySet<string> = new Set(["billingType", "billingRate", "billingMonths"]);
+
+/**
+ * The enrollment history a viewer may read: everything for a viewer who may
+ * see money (the owner, canSeeMoney), and without the billing terms (type,
+ * rate, months) for anyone else. A package change stays: it is not money.
+ */
+export function moneyFreeHistory<T extends { field: string }>(rows: T[], seesMoney: boolean): T[] {
+  return seesMoney ? rows : rows.filter((r) => !MONEY_HISTORY_FIELDS.has(r.field) && !/^billing/i.test(r.field));
+}
+
 // ---------------------------------------------------------------------------
 // SETTINGS
 // ---------------------------------------------------------------------------
@@ -49,7 +61,10 @@ export async function loadSettingsTab(enrollmentId: string, ownerEyes: boolean) 
     packages: Object.entries(PACKAGE_RULES).map(([name, r]) => ({ name, ...r })),
   };
   const ownersUi: OwnersUi = OWNER_DUTIES.map((d) => ({ duty: d, word: DUTY_WORDS[d], label: owners[d].label, appUserId: owners[d].appUserId, scope: owners[d].scope }));
-  const historyUi: HistoryUi = history.map((h) => ({
+  // Oct 22 2026 (audit H3): the billing terms are the owner's alone
+  // (canSeeMoney). The history used to carry every change to any viewer of
+  // this tab, so Kyle and James read Rick Schultz's billingType change.
+  const historyUi: HistoryUi = moneyFreeHistory(history, ownerEyes).map((h) => ({
     id: h.id, field: h.field, from: h.from, to: h.to, effectiveAtISO: h.effectiveAt.toISOString(), effectiveMonthKey: h.effectiveMonthKey,
     currentMonthChoice: h.currentMonthChoice, reason: h.reason, source: h.source, billingTruth: h.billingTruth, changedBy: h.changedBy,
     appliedAtISO: iso(h.appliedAt), createdAtISO: h.createdAt.toISOString(), superseded: h.superseded,
@@ -207,6 +222,11 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
   const { authEnforced } = await import("@/lib/auth/guards");
   const me = await getCurrentUser().catch(() => null);
   const moneyEyes = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // Oct 22 2026 (audit H3): the controls stay the office's (OWNER/ADMIN), but
+  // the DOLLARS are the owner's alone (canSeeMoney). Kyle reads "a fee may
+  // apply" and decides charge or waive; he never reads the amount.
+  const { canSeeMoney } = await import("@/lib/auth/access");
+  const dollarEyes = me ? canSeeMoney(me.role) : !authEnforced();
   const [cuts, decisions, pillars, sources, windows, rounds] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: { OR: [{ videoId: { in: ids } }, { projectId: { in: videos.map((v) => v.projectId).filter((x): x is string => !!x) } }] },
@@ -252,7 +272,8 @@ export async function loadContentTab(enrollmentId: string, clientId: string, mon
         id: r.id, ordinal: r.ordinal, included: r.included, includedRounds: r.includedRounds, state: r.state,
         requestedBy: decisionById.get(r.decisionId)?.actorLabel ?? null, createdAtISO: r.createdAt.toISOString(),
         feeAckBy: r.feeAckBy, feeAckAtISO: iso(r.feeAckAt), feeDecision: r.feeDecision, feeDecidedBy: r.feeDecidedBy,
-        feeCents: moneyEyes ? r.feeCents : null, lateOverrideBy: r.lateOverrideBy, answeredAtISO: iso(r.answeredAt),
+        feeCents: dollarEyes ? r.feeCents : null, feeApplies: !r.included && (r.feeCents ?? 0) > 0,
+        lateOverrideBy: r.lateOverrideBy, answeredAtISO: iso(r.answeredAt),
       }));
     return {
       id: v.id, title: v.title ?? "Video", monthKey: v.monthKey, kind: v.kind, countsTowardAllowance: v.countsTowardAllowance,

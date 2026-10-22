@@ -7,7 +7,7 @@ import { topicSourceIsCall, topicSourceNeedsApproval } from "@/lib/contentPolicy
 import { approvedStrategy } from "@/lib/contentStrategy";
 import { isAutomationEnabled, recordAutomationRun } from "@/lib/programAutomation";
 import { confidentialFilter } from "@/lib/clientFacts";
-import { topicFormatOf, withTopicFormat, asVideoFormat, shownVersionFormat, VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
+import { topicFormatOf, withTopicFormat, asVideoFormat, shownVersionFormat, skitsPerMonthFromOverrides, VIDEO_FORMAT_LABEL, type VideoFormat } from "@/lib/contentPolicy/videoFormat";
 import { normalizeTitle, titleSimilarity, NEAR_DUPLICATE_THRESHOLD, rankRecommendations, clientReasonFor, GENERATION_POLICY, PILLAR_EMPHASIS_WEIGHT, topicsForEmphasis, type Topic, type FilmedRecord, type PriorScript, type StrategyGoal, type SourceExcerpt } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -355,6 +355,67 @@ export async function deselectTopic(topicId: string, monthId: string, actor: Act
     await prisma.contentTopic.update({ where: { id: topicId }, data: anyScript ? { monthId: null } : { monthId: null, status: "SAVED" } });
   }
   await recordTopicEvent(topicId, t.enrollmentId, "DESELECTED", actor, { monthId, fromStatus: t.status, toStatus: t.monthId === monthId && !PRODUCTION_STATUSES.includes(t.status) ? "SAVED" : t.status });
+  await reconcileMonthExtras(monthId, { by: actor.staffUserId ?? actor.clientUserId ?? actor.kind }).catch(() => null);
+}
+
+export type ExtrasReconciled = { cleared: string[]; marked: string[]; videos: string[] };
+
+/**
+ * WHICH PICKS ARE EXTRAS, AGAIN (Oct 22 2026, audit H4). A selection's
+ * overflow flag was set once, when the row was inserted, and nothing touched
+ * it again. Joe Sutow's October: the four scripts Jordan uploaded were picked
+ * while the call's four were still on the month, so they were stored as
+ * extras; the call's four were removed five minutes later and the flags stayed.
+ * When the four were filmed, the upload portal made each video an EXTRA that
+ * does not count, and the month read "0 of 4 delivered".
+ *
+ * After a selection leaves a month, this re-derives every live pick's flag
+ * from the one allowance rule (planningFacts.monthAllowances, the order the
+ * month page shows) and writes only the rows that changed. A pick that now has
+ * a slot also takes its video with it: a video the upload portal made an EXTRA
+ * only because of the old flag (no person mapped it) becomes a program video
+ * that counts, with the change on the video's history. A video a person
+ * mapped is never touched, and no video is ever moved out of the count here.
+ * Bulk plans are not monthly allowances and are left alone.
+ */
+export async function reconcileMonthExtras(monthId: string, opts: { by?: string | null; db?: Db } = {}): Promise<ExtrasReconciled> {
+  const db = opts.db ?? prisma;
+  const none: ExtrasReconciled = { cleared: [], marked: [], videos: [] };
+  const m = await db.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true } });
+  if (!m) return none;
+  const e = await db.contentEnrollment.findUnique({ where: { id: m.enrollmentId }, select: { programKind: true } });
+  if (e?.programKind === "BULK") return none;
+  const { monthAllowances } = await import("@/lib/planningFacts");
+  const allowance = (await monthAllowances([monthId], db)).get(monthId);
+  if (!allowance) return none;
+  const rows = await db.contentTopicSelection.findMany({ where: { monthId, status: { in: ALLOWANCE_SELECTION_STATUSES } }, select: { id: true, topicId: true, overflow: true } });
+  const out: ExtrasReconciled = { cleared: [], marked: [], videos: [] };
+  for (const r of rows) {
+    const extra = allowance.slots.get(r.topicId) === "EXTRA";
+    if (extra === r.overflow) continue;
+    await db.contentTopicSelection.update({ where: { id: r.id }, data: { overflow: extra } });
+    (extra ? out.marked : out.cleared).push(r.id);
+  }
+  if (out.cleared.length) {
+    const cleared = rows.filter((r) => out.cleared.includes(r.id));
+    const videos = await db.contentVideo.findMany({
+      where: { monthId, kind: "EXTRA", countsTowardAllowance: false, mappedBy: null, status: { not: "ARCHIVED" }, OR: [{ selectionId: { in: cleared.map((r) => r.id) } }, { topicId: { in: cleared.map((r) => r.topicId) } }] },
+      select: { id: true, enrollmentId: true },
+    });
+    const by = (opts.by ?? "system").slice(0, 200);
+    const reason = "This pick has a slot in the month's allowance now (another pick left the month), so its video counts.";
+    for (const v of videos) {
+      await db.contentVideoCorrection.createMany({
+        data: [
+          { videoId: v.id, enrollmentId: v.enrollmentId, field: "kind", fromValue: "EXTRA", toValue: "PROGRAM", by, reason },
+          { videoId: v.id, enrollmentId: v.enrollmentId, field: "countsTowardAllowance", fromValue: "false", toValue: "true", by, reason },
+        ],
+      });
+      await db.contentVideo.update({ where: { id: v.id }, data: { kind: "PROGRAM", countsTowardAllowance: true } });
+      out.videos.push(v.id);
+    }
+  }
+  return out;
 }
 
 /** Staff reconcile a call's PROPOSED selections into real ones (or drop them). */
@@ -381,8 +442,10 @@ export async function rejectTopic(topicId: string, by: string, reason: string | 
   if (!t) throw new Error("Topic not found.");
   await prisma.contentTopic.update({ where: { id: topicId }, data: { approvalState: "REJECTED", rejectionReason: reason?.slice(0, 1000) ?? null, status: "REJECTED", monthId: null } });
   // RECONCILED too (Oct 13 2026): a call's topics are confirmed on arrival now, so a rejected one must leave its month.
+  const leaving = await prisma.contentTopicSelection.findMany({ where: { topicId, status: { in: ["SELECTED", "PROPOSED", "RECONCILED"] } }, select: { monthId: true } });
   await prisma.contentTopicSelection.updateMany({ where: { topicId, status: { in: ["SELECTED", "PROPOSED", "RECONCILED"] } }, data: { status: "REMOVED", removedAt: new Date(), removedBy: by } });
   await recordTopicEvent(topicId, t.enrollmentId, "REJECTED", { kind: "STAFF", staffUserId: by }, { fromStatus: t.status, toStatus: "REJECTED", note: reason });
+  for (const monthId of new Set(leaving.map((s) => s.monthId))) await reconcileMonthExtras(monthId, { by }).catch(() => null);
 }
 
 export async function archiveTopic(topicId: string, by: string, reason: string | null): Promise<void> {
@@ -483,6 +546,7 @@ export async function declineTopicForClient(topicId: string, actor: Actor, reaso
     data: { clientDeclinedAt: new Date(), clientDeclinedBy: by, clientDeclineReason: clean, ...(t.monthId ? { monthId: null } : {}), ...(t.status === "SELECTED" && !anyScript ? { status: "SAVED" } : {}) },
   });
   await recordTopicEvent(topicId, t.enrollmentId, "DECLINED", actor, { fromStatus: t.status, note: clean ? `Not interested: ${clean}` : "Not interested (no reason given)" });
+  for (const monthId of new Set(live.map((s) => s.monthId))) await reconcileMonthExtras(monthId, { by }).catch(() => null);
 }
 
 /** Undo "not interested" — back in their bank, on the record. */
@@ -638,7 +702,7 @@ export async function pendingSuggestionHashes(enrollmentId: string): Promise<Set
   return new Set(rows.map((r) => r.dedupeHash ?? topicDedupeHash(r.title)));
 }
 
-type RefreshRequest = { enrollmentId: string; kind: RefreshKind; monthId?: string | null; topicsPerPillar?: number | null; pillarId?: string | null; keep?: number | null };
+type RefreshRequest = { enrollmentId: string; kind: RefreshKind; monthId?: string | null; topicsPerPillar?: number | null; pillarId?: string | null; keep?: number | null; /** Oct 22 2026 (audit M3): a Mix account short of skit ideas gets a refresh of skit concepts only. */ skitsOnly?: boolean | null };
 
 /**
  * The run's inputs and its dedupe key — ONE computation, so a person's click
@@ -655,11 +719,12 @@ async function refreshPlan(opts: RefreshRequest) {
   // refuses anything else); how many of the results are KEPT is `keep`.
   const perPillar = Math.min(Math.max(opts.topicsPerPillar ?? policy.topicsPerPillar, GENERATION_POLICY.topicsPerPillar.min), policy.topicsPerPillarMax);
   const keep = opts.keep && opts.keep > 0 ? Math.floor(opts.keep) : null;
-  const inputsHash = sha256(JSON.stringify({ s: strategy?.versionId ?? null, p: policy.id, n: perPillar, m: opts.monthId ?? null, pillar: opts.pillarId ?? null, keep }));
+  const skitsOnly = opts.skitsOnly === true;
+  const inputsHash = sha256(JSON.stringify({ s: strategy?.versionId ?? null, p: policy.id, n: perPillar, m: opts.monthId ?? null, pillar: opts.pillarId ?? null, keep, ...(skitsOnly ? { skitsOnly } : {}) }));
   return {
-    clientId: e.clientId, policyId: policy.id, strategyVersionId: strategy?.versionId ?? null, perPillar, keep,
+    clientId: e.clientId, policyId: policy.id, strategyVersionId: strategy?.versionId ?? null, perPillar, keep, skitsOnly,
     dedupeKey: `${opts.enrollmentId}:${opts.kind}:${inputsHash}`,
-    inputs: { strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, topicsPerPillar: perPillar, pillarId: opts.pillarId ?? null, keep },
+    inputs: { strategyVersionId: strategy?.versionId ?? null, policyVersionId: policy.id, topicsPerPillar: perPillar, pillarId: opts.pillarId ?? null, keep, ...(skitsOnly ? { skitsOnly } : {}) },
   };
 }
 
@@ -718,9 +783,9 @@ export async function startTopicRefresh(opts: RefreshRequest & {
     // The queued row's own inputs, not this click's: it may be a pillar refill
     // with the same key, and its `keep` is part of what was asked for.
     const row = await prisma.contentTopicRefreshRun.findUnique({ where: { id: queuedWhole.id }, select: { inputsJson: true } });
-    let inputs: { pillarId?: string | null; keep?: number | null } = {};
+    let inputs: { pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null } = {};
     try { inputs = JSON.parse(row?.inputsJson ?? "{}"); } catch { inputs = {}; }
-    const work = () => executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null });
+    const work = () => executeClaimedRefresh(queuedWhole.id, { unattended: false, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null, skitsOnly: inputs.skitsOnly === true });
     if (opts.background) opts.background(() => work().catch(() => {})); // the outcome is on the run row
     else await work();
     return { runId: queuedWhole.id, joined: false };
@@ -746,9 +811,9 @@ export async function startTopicRefresh(opts: RefreshRequest & {
   if (opts.kind === "RECOMMENDATION") {
     try { await executeRecommendationRun(runId); } catch (e) { await failRefreshRun(runId, e); throw e; }
   } else if (opts.background) {
-    opts.background(() => executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep }).catch(() => {}));
+    opts.background(() => executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep, skitsOnly: plan.skitsOnly }).catch(() => {}));
   } else {
-    await executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep });
+    await executeClaimedRefresh(runId, { unattended: opts.unattended ?? false, pillarId: opts.pillarId ?? null, keep, skitsOnly: plan.skitsOnly });
   }
   return { runId, joined: false };
 }
@@ -758,7 +823,7 @@ async function failRefreshRun(runId: string, e: unknown): Promise<void> {
 }
 
 /** Run a BANK/REFRESH row we hold the lease on. A failure is recorded and rethrown; the caller decides whether a closed switch is a pause. */
-async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null; deadline?: number | null }): Promise<void> {
+async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pillarId: string | null; keep: number | null; deadline?: number | null; skitsOnly?: boolean }): Promise<void> {
   const { executeTopicRefreshRun } = await import("@/lib/contentGeneration");
   try {
     await executeTopicRefreshRun(runId, o);
@@ -793,7 +858,7 @@ async function executeClaimedRefresh(runId: string, o: { unattended: boolean; pi
 // AI topic before a client can see it.
 
 /** Queue a BANK/REFRESH run for the unattended drain. Spends nothing. Joins an active run with the same inputs. */
-export async function queueTopicRefresh(opts: { enrollmentId: string; kind: "BANK" | "REFRESH"; requestedBy: string; pillarId?: string | null; keep?: number | null; reason: string }): Promise<{ runId: string; joined: boolean }> {
+export async function queueTopicRefresh(opts: { enrollmentId: string; kind: "BANK" | "REFRESH"; requestedBy: string; pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null; reason: string }): Promise<{ runId: string; joined: boolean }> {
   const plan = await refreshPlan(opts);
   await expireStaleRefreshLeases();
   const active = await prisma.contentTopicRefreshRun.findFirst({ where: { dedupeKey: plan.dedupeKey, status: { in: ["QUEUED", "RUNNING"] } }, select: { id: true } });
@@ -846,11 +911,11 @@ export async function drainTopicRefreshQueue(opts: { max?: number; budgetMs?: nu
     if (ran >= max || Date.now() - started > budgetMs || budgetMs - (Date.now() - started) < minStartMs) break;
     if (!(await claimQueuedRun(run.id, "topic-bank-cron"))) continue;
     ran++;
-    let inputs: { pillarId?: string | null; keep?: number | null } = {};
+    let inputs: { pillarId?: string | null; keep?: number | null; skitsOnly?: boolean | null } = {};
     try { inputs = JSON.parse(run.inputsJson ?? "{}"); } catch { inputs = {}; }
     try {
       // Oct 21 2026 (audit H1): the call ends by the sweep's clock.
-      await executeClaimedRefresh(run.id, { unattended: true, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null, deadline: started + budgetMs });
+      await executeClaimedRefresh(run.id, { unattended: true, pillarId: inputs.pillarId ?? null, keep: inputs.keep ?? null, deadline: started + budgetMs, skitsOnly: inputs.skitsOnly === true });
       const done = await prisma.contentTopicRefreshRun.findUnique({ where: { id: run.id }, select: { status: true, generatedCount: true } });
       if (done?.status === "SUCCEEDED") {
         succeeded++;
@@ -908,6 +973,54 @@ export async function bankStock(enrollmentId: string): Promise<PillarStock[]> {
 
 const REFILL_COOLDOWN_MS = 7 * 86_400_000;
 const FAILED_INITIAL_BACKOFF_MS = 86_400_000;
+/** A skit-only refresh (M3) is tried at most once a day per client. */
+export const SKIT_REFILL_COOLDOWN_MS = 86_400_000;
+/** Topic statuses that are not scripted yet: the bank, and a pick still waiting for its script. */
+const UNSCRIPTED_TOPIC = ["IDEA", "SAVED", "RECOMMENDED", "SELECTED"];
+
+export type SkitShortfall = { skitsPerMonth: number; target: number; unscripted: number; need: number };
+
+/**
+ * A MIX ACCOUNT'S SKIT STOCK (Oct 22 2026, audit M3). Bernadette Rabel films
+ * two skits a month, and has no unscripted skit ideas: the day's refreshes ran
+ * before her account was set to Mix, and every pillar was then at its 15, so
+ * the per-pillar refill had nothing to trigger it for about a week. A Mix
+ * account needs at least skitsPerMonth × 2 unscripted skit topics (in the bank
+ * or picked and waiting for a script, not declined, rejected or archived);
+ * below that, `need` is the shortfall. Null for any account that is not Mix.
+ */
+export async function skitShortfall(enrollmentId: string): Promise<SkitShortfall | null> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { overridesJson: true } });
+  const perMonth = skitsPerMonthFromOverrides(e?.overridesJson ?? null);
+  if (!perMonth) return null;
+  const topics = await prisma.contentTopic.findMany({
+    where: { enrollmentId, status: { in: UNSCRIPTED_TOPIC }, clientDeclinedAt: null, OR: [{ approvalState: null }, { approvalState: { notIn: ["REJECTED", "ARCHIVED"] } }] },
+    select: { scoresJson: true },
+  });
+  const unscripted = topics.filter((t) => topicFormatOf(t.scoresJson) === "SKIT").length;
+  const target = perMonth * 2;
+  return { skitsPerMonth: perMonth, target, unscripted, need: Math.max(0, target - unscripted) };
+}
+
+/** Is a skit-only refresh queued, running, or tried in the last day for this client? */
+async function skitRefreshBusy(enrollmentId: string, now: Date): Promise<boolean> {
+  const runs = await prisma.contentTopicRefreshRun.findMany({
+    where: { enrollmentId, kind: "REFRESH", inputsJson: { contains: '"skitsOnly":true' }, OR: [{ status: { in: ["QUEUED", "RUNNING"] } }, { createdAt: { gte: new Date(now.getTime() - SKIT_REFILL_COOLDOWN_MS) } }] },
+    select: { id: true },
+  });
+  return runs.length > 0;
+}
+
+/** Queue the skit-only refresh a Mix account's shortfall calls for. Spends nothing (the drain runs it, behind `topic_refresh` and `ai_runs`). */
+export async function queueSkitRefreshIfShort(enrollmentId: string, opts: { requestedBy: string; now?: Date }): Promise<{ queued: boolean; shortfall: SkitShortfall | null; why: string; runId?: string }> {
+  const now = opts.now ?? new Date();
+  const shortfall = await skitShortfall(enrollmentId);
+  if (!shortfall) return { queued: false, shortfall, why: "not a Mix account" };
+  if (shortfall.need <= 0) return { queued: false, shortfall, why: `${shortfall.unscripted} unscripted skit ideas, at or above ${shortfall.target}` };
+  if (await skitRefreshBusy(enrollmentId, now)) return { queued: false, shortfall, why: "a skit refresh is queued, running, or was tried in the last day" };
+  const r = await queueTopicRefresh({ enrollmentId, kind: "REFRESH", requestedBy: opts.requestedBy, skitsOnly: true, keep: shortfall.need, reason: `Skits: ${shortfall.unscripted} unscripted of ${shortfall.target} (${shortfall.skitsPerMonth} a month × 2)` });
+  return { queued: !r.joined, shortfall, why: r.joined ? "joined the skit refresh already queued" : `queued: ${shortfall.need} skit idea(s) short`, runId: r.runId };
+}
 
 /**
  * EVERY 15 MINUTES (the AI work job, cron/topics — Oct 13 2026), behind
@@ -955,6 +1068,10 @@ export async function sweepTopicBanks(opts: { max?: number; budgetMs?: number; m
         const r = await queueTopicRefresh({ enrollmentId: e.id, kind: "REFRESH", requestedBy: "cron", pillarId: p.pillarId, keep: p.need, reason: `${p.pillarName}: ${p.usable} usable + ${p.pending} pending of ${p.target}` });
         if (!r.joined) { queued++; refills++; }
       }
+      // Oct 22 2026 (audit M3): a Mix account short of unscripted skit ideas
+      // gets a skit-only refresh, whatever its pillars' counts say.
+      const skits = await queueSkitRefreshIfShort(e.id, { requestedBy: "cron", now });
+      if (skits.queued) { queued++; refills++; }
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
     }
@@ -1341,6 +1458,8 @@ export async function releaseCarryAfterLateFilming(topicId: string, filmedMonthI
     await tx.contentTopic.updateMany({ where: { id: topicId, monthId: carried.monthId }, data: { monthId: filmedMonthId } });
     await recordTopicEvent(topicId, carried.enrollmentId, "DESELECTED", { kind: "SYSTEM" }, { monthId: carried.monthId, db: tx, note: "Confirmed filmed in the month it was carried from — the carry is undone and that slot is free again." });
   }, { maxWait: 15_000, timeout: 30_000 });
+  // The freed slot goes to the next pick in line (Oct 22 2026).
+  await reconcileMonthExtras(carried.monthId, { by: "system" }).catch(() => null);
   return true;
 }
 

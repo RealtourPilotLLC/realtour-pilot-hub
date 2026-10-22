@@ -139,6 +139,8 @@ export async function sweepCreativeIdentities(opts: { max?: number; budgetMs?: n
       if (r.ok) derived++; else failed++;
     } catch (e) {
       const name = e instanceof Error ? e.name : "";
+      // Oct 22 2026: one client's own daily cap skips that client only; the program-wide cap stops the sweep.
+      if (name === "QuotaExceededError" && (e as { scope?: string }).scope === "client") continue;
       if (name === "AutomationDisabledError" || name === "QuotaExceededError") break;
       failed++;
     }

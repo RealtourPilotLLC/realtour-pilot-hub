@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCheck, Clapperboard, Download, Loader2, MessageSquare, PencilLine } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,7 @@ import type { PortalTopic } from "@/lib/portal";
 import type { PortalScriptUpdate } from "@/lib/scriptRequests";
 import { CTA_WORDS } from "@/lib/portalWords";
 import { ScriptThread } from "@/components/portal/ScriptThread";
+import { DRAFT_COPY, scriptChangeDraftKey, useDraft } from "@/components/portal/portalDraft";
 
 // ---------------------------------------------------------------------------
 // THE CLIENT'S OWN VERDICT ON A SCRIPT (F09) — one component, lifted verbatim
@@ -95,7 +96,12 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
 }) {
   const router = useRouter();
   const [changing, setChanging] = useState(false);
-  const [changeNote, setChangeNote] = useState("");
+  // Oct 22 2026: the change note is kept on this device until it is sent (portalDraft), and a kept one reopens the box.
+  const { text: changeNote, setText: setChangeNote, restored: changeRestored } = useDraft(scriptChangeDraftKey(script.id));
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the kept draft is read after hydration
+    if (changeRestored) setChanging(true);
+  }, [changeRestored]);
   const [about, setAbout] = useState<About[]>([]);
   const [own, setOwn] = useState<{ ok: boolean; text: string } | null>(null);
   /** The send that never got an answer, and the version it carries — "Try again" repeats it only while that version is still on screen. */
@@ -319,6 +325,7 @@ export function ScriptApprovalCard({ script, parts = null, onResult, run, busy: 
             <div className="mt-2 rounded-xl border border-border bg-surface-2/40 p-3">
               <p className="text-sm font-semibold">Ask for a change</p>
               <label htmlFor={`script-changes-${script.id}`} className="mt-1.5 block text-xs font-semibold">What would you like changed?</label>
+              {changeRestored && <p className="mt-1 text-xs font-medium text-warning">{DRAFT_COPY.restored}</p>}
               <textarea id={`script-changes-${script.id}`} value={changeNote} onChange={(e) => { setChangeNote(e.target.value); setRetry(null); setOwn(null); }} rows={large ? 5 : 4} placeholder="For example: make the hook about first-time buyers" className={box} />
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <span className="text-[11px] font-semibold text-muted">About:</span>

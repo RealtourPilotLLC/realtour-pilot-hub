@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { sha256 } from "@/lib/aiRuns";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import { canonicalFromParts, createScriptVersion, partsFromBody, STRUCTURAL_CODES, type VersionParts } from "@/lib/contentScripts";
-import { ALLOWANCE_SELECTION_STATUSES, createTopic, recordTopicEvent, selectTopicForMonth, type Actor } from "@/lib/contentTopics";
+import { ALLOWANCE_SELECTION_STATUSES, createTopic, reconcileMonthExtras, recordTopicEvent, selectTopicForMonth, type Actor } from "@/lib/contentTopics";
 import { GENERATION_POLICY, normalizeTitle, renderScript, titleSimilarity, validateNewScript } from "@/lib/contentPolicy";
 import { checkAsWritten, hasScriptParts, locateScriptBlocks, pickPillarByWords, readUploadedScript, shapeProblems, splitUploadedScripts, type AsWrittenCheck, type ScriptFormat, type UploadPoint, type UploadSource } from "@/lib/scriptUploadParse";
 import { AS_WRITTEN_PROMPT_KEY, AS_WRITTEN_SCHEMA, AS_WRITTEN_SYSTEM, asWrittenPrompt, dimensionsRecord, itemsFromAsWritten, type AsWrittenOut, type PillarChoice, type PillarSource } from "@/lib/scriptUploadAi";
@@ -716,6 +716,10 @@ export async function applyScriptUpload(input: {
   }
 
   await prisma.contentImportBatch.update({ where: { id: batchId }, data: { mode: "APPLIED", appliedAt: new Date(), appliedBy: actor.email, itemsCreated: ledger.scriptIds.length, itemsLinked: ledger.matched.length, previewJson: JSON.stringify(ledger) } });
+  // Oct 22 2026 (audit H4): the upload's picks were made while the picks they
+  // replace were still on the month, so they were stored as extras. Now that
+  // those left, which picks are extras is worked out again.
+  await reconcileMonthExtras(month.id, { by: actor.email }).catch(() => null);
 
   const sels = await prisma.contentTopicSelection.findMany({ where: { monthId: month.id, status: { in: ALLOWANCE_SELECTION_STATUSES } }, select: { topicId: true, status: true, rank: true, createdAt: true } });
   const { allowanceOrder } = await import("@/lib/planningState");
@@ -863,6 +867,7 @@ async function stepAsideSystemDrafts(o: { monthId: string; keepTopicIds: Set<str
     if (!script) continue;
     const versions = await prisma.contentScriptVersion.findMany({ where: { scriptId: d.id }, orderBy: { versionNo: "asc" } });
     // Its topic leaves the month too, unless an uploaded script took that topic.
+    let leftMonth = false;
     if (d.topicId && !o.keepTopicIds.has(d.topicId)) {
       const sel = await prisma.contentTopicSelection.findUnique({ where: { topicId_monthId: { topicId: d.topicId, monthId: o.monthId } } });
       const t = await prisma.contentTopic.findUnique({ where: { id: d.topicId }, select: { monthId: true, status: true, pillarId: true, enrollmentId: true } });
@@ -871,13 +876,28 @@ async function stepAsideSystemDrafts(o: { monthId: string; keepTopicIds: Set<str
         await prisma.contentTopicSelection.update({ where: { id: sel.id }, data: { status: "REMOVED", rank: null, removedAt: new Date(), removedBy: o.actor.email, removedReason: `UPLOAD_REPLACED:${o.batchId}` } });
         if (t.monthId === o.monthId && t.status === "SELECTED") await prisma.contentTopic.update({ where: { id: d.topicId }, data: { monthId: null, status: "SAVED" } });
         await recordTopicEvent(d.topicId, t.enrollmentId, "DESELECTED", staff, { monthId: o.monthId, fromStatus: t.status, toStatus: t.monthId === o.monthId && t.status === "SELECTED" ? "SAVED" : t.status, note: `The hub's draft stepped aside for the scripts ${firstName(o.actor)} uploaded` });
+        leftMonth = true;
       }
     }
     o.ledger.withdrawn.push({ script: script as unknown as Record<string, unknown>, versions: versions as unknown as Record<string, unknown>[] });
     await o.save();
     await prisma.contentScriptVersion.deleteMany({ where: { scriptId: d.id } });
     await prisma.contentScript.deleteMany({ where: { id: d.id } });
+    // Oct 22 2026 (audit H4): the topic was SCRIPTED only because of the draft
+    // just withdrawn. Left as it was, it stayed on the month as "scripted" with
+    // no script (Joe Sutow's October: the call's four), so the month counted
+    // it. With no other script anywhere it goes back to the bank, and Undo
+    // still restores it from the ledger (priorOf kept its status and month).
+    if (leftMonth && d.topicId) {
+      const t = await prisma.contentTopic.findUnique({ where: { id: d.topicId }, select: { monthId: true, status: true, enrollmentId: true } });
+      const other = await prisma.contentScript.findFirst({ where: { topicId: d.topicId, historical: false }, select: { id: true } });
+      if (t && !other && t.monthId === o.monthId && t.status === "SCRIPTED") {
+        await prisma.contentTopic.update({ where: { id: d.topicId }, data: { monthId: null, status: "SAVED" } });
+        await recordTopicEvent(d.topicId, t.enrollmentId, "EDITED", staff, { monthId: o.monthId, fromStatus: "SCRIPTED", toStatus: "SAVED", note: "Back in the bank: the hub's draft for it was withdrawn and no other script exists" });
+      }
+    }
   }
+  await reconcileMonthExtras(o.monthId, { by: o.actor.email }).catch(() => null);
   await o.save();
   return drafts.length;
 }
@@ -963,6 +983,8 @@ export async function undoScriptUpload(batchId: string, actor: UploadActor): Pro
     await prisma.contentScript.create({ data: w.script as never });
     if (w.versions.length) await prisma.contentScriptVersion.createMany({ data: w.versions as never });
   }
+  // Oct 22 2026 (audit H4): which picks are extras, again, now the month's picks are back as they were.
+  await reconcileMonthExtras(led.monthId, { by: actor.email }).catch(() => null);
   // 4 · the route it chose, compare-and-set on the stamp it wrote.
   let routeRestored = false;
   if (led.route.chosen && led.route.before && led.route.at) {

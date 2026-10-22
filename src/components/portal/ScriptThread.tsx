@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { portalReplyUnderScript } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { ScriptThreadItem } from "@/lib/scriptThread";
+import { DRAFT_COPY, scriptReplyDraftKey, useDraft } from "@/components/portal/portalDraft";
 
 // ---------------------------------------------------------------------------
 // UNDER THE SCRIPT (Oct 22 2026). Jordan: "Can the replies to the script
@@ -37,7 +38,8 @@ export function ScriptThread({ scriptId, items, canReply, large = false, noteAbo
   const router = useRouter();
   const [all, setAll] = useState(false);
   const [unfolded, setUnfolded] = useState<string[]>([]);
-  const [text, setText] = useState("");
+  // Oct 22 2026: the reply is kept on this device until it is sent (portalDraft).
+  const { text, setText, restored } = useDraft(scriptReplyDraftKey(scriptId));
   const [res, setRes] = useState<{ ok: boolean; text: string } | null>(null);
   const [lit, setLit] = useState<string | null>(null);
   const [busy, start] = useTransition();
@@ -106,6 +108,7 @@ export function ScriptThread({ scriptId, items, canReply, large = false, noteAbo
       {canReply && (
         <div className="mt-2.5 border-t border-border pt-2.5">
           <label htmlFor={`script-reply-${scriptId}`} className="text-xs font-semibold">Reply about this script</label>
+          {restored && <p className="mt-1 text-xs font-medium text-warning">{DRAFT_COPY.restored}</p>}
           <textarea id={`script-reply-${scriptId}`} value={text} onChange={(e) => { setText(e.target.value); setRes(null); }} rows={2} maxLength={4000} placeholder="Write a reply"
             className="mt-1 block w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-base leading-relaxed outline-none focus:border-brand sm:text-sm" />
           <div className="mt-1.5 flex flex-wrap items-center gap-2">

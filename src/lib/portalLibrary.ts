@@ -514,7 +514,19 @@ export async function checkLibraryCompleteness(opts: { now?: Date; monthsBack?: 
   );
   const quoteT = (t: string | null | undefined, fallback: string) => `"${(t?.trim() || fallback).replace(/"/g, "'")}"`;
 
+  // Oct 22 2026 (audit, LOW): an ENDED program is not checked. Sarina
+  // Spinelli's ended and the nightly check kept writing "library-short" for
+  // her; an open record an ended program still holds is closed as resolved.
+  const ended = new Set((await prisma.contentEnrollment.findMany({ where: { id: { in: [...new Set(months.map((m) => m.enrollmentId))] }, status: "ENDED" }, select: { id: true } })).map((e) => e.id));
   for (const m of months) {
+    if (ended.has(m.enrollmentId)) {
+      const was = prior.get(m.id) ?? null;
+      if (was && !was.resolvedAt) {
+        await prisma.appSetting.update({ where: { key: `${LIBRARY_SHORT_PREFIX}${m.id}` }, data: { value: JSON.stringify({ ...was, resolvedAt: now.toISOString(), checkedAt: now.toISOString() }) } }).catch(() => {});
+        out.resolved++;
+      }
+      continue;
+    }
     const mine = projects.filter((p) => p.contentMonthId === m.id);
     const pById = new Map(mine.map((p) => [p.id, p]));
     const owed = outputs.filter((o) => pById.has(o.projectId));

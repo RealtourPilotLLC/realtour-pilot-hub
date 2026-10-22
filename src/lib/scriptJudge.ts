@@ -175,7 +175,16 @@ async function finishFlagged(current: VersionRow, record: JudgeRecord, requested
   return r.versionId;
 }
 
-export type AutoCheckResult = { state: JudgeRecord["state"] | "skipped"; fixRounds: number; versionId: string | null; reason?: string };
+export type AutoCheckResult = {
+  state: JudgeRecord["state"] | "skipped"; fixRounds: number; versionId: string | null; reason?: string;
+  /** Oct 22 2026: a QuotaExceededError's cap. "client" = only this client's daily cap is spent; the sweep moves on to the next client. */
+  quota?: "client" | "program";
+};
+
+/** The cap a QuotaExceededError names ("program" when unreadable, so a sweep stops as it always did). */
+function quotaOf(e: unknown): "client" | "program" {
+  return (e as { scope?: string } | null)?.scope === "client" ? "client" : "program";
+}
 
 /**
  * THE TRIM THAT LOST SUBSTANCE IS UNDONE (Oct 22 2026, v2.1). Jordan: "aim for
@@ -263,7 +272,8 @@ async function writerReviewStep(
     const msg = e instanceof Error ? e.message : String(e);
     const name = e instanceof Error ? e.name : "";
     if (/already running/i.test(msg)) return stay(j.state === "pending" || j.state === "not_checked" ? "judged elsewhere" : "a revision is running");
-    if (name === "AutomationDisabledError" || name === "QuotaExceededError") return stay(name);
+    if (name === "AutomationDisabledError") return stay(name);
+    if (name === "QuotaExceededError") return { ...stay(name), quota: quotaOf(e) };
     if (name === "WriterPausedError") return stay("out of time");
     return null;
   };
@@ -392,7 +402,7 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
         // The ai_runs switch off, or a daily quota reached: nothing went wrong
         // with this draft; it stays owed and the cron tries again later.
         const name = e instanceof Error ? e.name : "";
-        if (name === "AutomationDisabledError" || name === "QuotaExceededError") return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: name };
+        if (name === "AutomationDisabledError" || name === "QuotaExceededError") return { state: j.state, fixRounds: j.fixRounds, versionId: v.id, reason: name, ...(name === "QuotaExceededError" ? { quota: quotaOf(e) } : {}) };
         await writeJudge(v.id, { ...j, state: "not_checked", attempts: j.attempts + 1, error: msg.slice(0, 300), checkedAt: new Date().toISOString() });
         return { state: "not_checked", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
       }
@@ -418,7 +428,7 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
         const msg = e instanceof Error ? e.message : String(e);
         if (/already running/i.test(msg)) return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: "a revision is running" };
         const name = e instanceof Error ? e.name : "";
-        if (name === "AutomationDisabledError" || name === "QuotaExceededError") return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: name };
+        if (name === "AutomationDisabledError" || name === "QuotaExceededError") return { state: "fixing", fixRounds: j.fixRounds, versionId: v.id, reason: name, ...(name === "QuotaExceededError" ? { quota: quotaOf(e) } : {}) };
         await writeJudge(v.id, { ...j, state: "flagged", error: `The automatic fix could not run: ${msg.slice(0, 200)}` });
         return { state: "flagged", fixRounds: j.fixRounds, versionId: v.id, reason: msg };
       }
@@ -434,7 +444,7 @@ export async function autoCheckScript(scriptId: string, opts: { requestedBy?: st
  * no time for. Current versions of live scripts, written in the last week,
  * whose judge record is still owed. Each start is checked against the clock.
  */
-export async function sweepScriptChecks(opts: { max?: number; budgetMs?: number; minStartMs?: number } = {}): Promise<{ checked: number; passed: number; flagged: number; notChecked: number; outOfTime: boolean }> {
+export async function sweepScriptChecks(opts: { max?: number; budgetMs?: number; minStartMs?: number } = {}): Promise<{ checked: number; passed: number; flagged: number; notChecked: number; outOfTime: boolean; clientsAtCap: string[] }> {
   const started = Date.now();
   const deadline = started + (opts.budgetMs ?? 90_000);
   const since = new Date(started - 7 * 24 * 3600_000);
@@ -443,26 +453,32 @@ export async function sweepScriptChecks(opts: { max?: number; budgetMs?: number;
       status: { in: ["DRAFT", "INTERNAL_REVIEW"] }, createdAt: { gte: since },
       OR: [{ validationJson: { contains: '"state":"pending"' } }, { validationJson: { contains: '"state":"fixing"' } }, { validationJson: { contains: '"state":"not_checked"' } }, { validationJson: { contains: '"state":"trimming"' } }],
     },
-    orderBy: { createdAt: "asc" }, take: 50, select: { id: true, scriptId: true, createdBy: true, validationJson: true },
+    orderBy: { createdAt: "asc" }, take: 50, select: { id: true, scriptId: true, createdBy: true, validationJson: true, enrollmentId: true },
   });
   const current = new Set((await prisma.contentScript.findMany({ where: { id: { in: rows.map((r) => r.scriptId) }, historical: false }, select: { currentVersionId: true } })).map((s) => s.currentVersionId));
   let checked = 0, passed = 0, flagged = 0, notChecked = 0, outOfTime = false;
   const seen = new Set<string>();
+  // Oct 22 2026: a client whose own daily cap is spent is skipped, and the
+  // sweep carries on with everyone else (it used to stop at the first refusal,
+  // so one busy client stalled every client's checks). The program-wide cap
+  // and the ai_runs switch still stop it: those refuse every row alike.
+  const atCap = new Set<string>();
   for (const r of rows) {
     if (checked >= (opts.max ?? 4)) break;
-    if (!current.has(r.id) || seen.has(r.scriptId)) continue;
+    if (!current.has(r.id) || seen.has(r.scriptId) || atCap.has(r.enrollmentId)) continue;
     const j = readJudge(r.validationJson);
     if (!j || (j.state === "not_checked" && j.attempts >= MAX_JUDGE_ATTEMPTS)) continue;
     if (deadline - Date.now() < (opts.minStartMs ?? JUDGE_MIN_START_MS)) { outOfTime = true; break; }
     seen.add(r.scriptId);
     const res = await autoCheckScript(r.scriptId, { requestedBy: r.createdBy ?? "cron", unattended: true, deadline });
+    if (res.reason === "QuotaExceededError" && res.quota === "client") { atCap.add(r.enrollmentId); continue; }
     checked++;
     if (res.state === "passed") passed++;
     else if (res.state === "flagged") flagged++;
     else if (res.state === "not_checked") notChecked++;
     if (res.reason === "out of time") { outOfTime = true; break; }
-    // ai_runs off is the stop button, and a quota is a quota: one refusal says it for every row.
+    // ai_runs off is the stop button, and the program-wide cap refuses every row alike.
     if (res.reason === "AutomationDisabledError" || res.reason === "QuotaExceededError") break;
   }
-  return { checked, passed, flagged, notChecked, outOfTime };
+  return { checked, passed, flagged, notChecked, outOfTime, clientsAtCap: [...atCap] };
 }

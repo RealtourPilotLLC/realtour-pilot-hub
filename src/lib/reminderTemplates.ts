@@ -29,7 +29,11 @@
 export type ReminderAction =
   | "CHOOSE_PATH" | "BOOK_CALL" | "COMPLETE_ANSWERS" | "BOOK_SESSION" | "REVIEW_WORK"
   | "SCRIPTS_READY" | "STRATEGY_READY" | "SESSION_REQUEST_FOLLOWUP" | "DIGEST" | "ESCALATION"
-  | "CONFIRM_ADDRESS" | "APPROVE_SCRIPTS" | "BRAND_KIT";
+  | "CONFIRM_ADDRESS" | "APPROVE_SCRIPTS" | "BRAND_KIT"
+  // Oct 22 2026 (audit M1): the written route with no topics picked yet. The
+  // answers ask (COMPLETE_ANSWERS) waits until there are picked topics with
+  // questions to answer; before that the client's step is picking topics.
+  | "PICK_TOPICS";
 
 export type TemplateVars = {
   firstName: string;
@@ -285,6 +289,25 @@ export const REMINDER_TEMPLATES: Record<string, ReminderTemplate> = {
   },
 };
 
+// PICK_TOPICS (Oct 22 2026, audit M1). Arielle Roemer's October was on the
+// written route with no topics picked, and she was sent "your questions" four
+// times and escalated to Jordan: there were no questions to answer. Picking the
+// topics comes first; the answers ask follows once there are topics to answer.
+REMINDER_TEMPLATES["reminder.pick_topics.v1"] = {
+  id: "reminder.pick_topics.v1",
+  action: "PICK_TOPICS",
+  version: "1",
+  purpose: "The client is planning the month in their portal (the written route) and has not picked this month's topics yet.",
+  render: (v) =>
+    [
+      `Hi ${v.firstName},`,
+      "",
+      `The next step for ${v.month} is choosing your video topics. There are ideas waiting for you in your portal: pick ${v.itemCount > 0 ? `${v.itemCount === 1 ? "one" : v.itemCount} that ${v.itemCount === 1 ? "suits" : "suit"} you` : "the ones that suit you"}, and we'll ask a few short questions about each so we can write your scripts: ${v.portalLink}${deadlineLine(v)}${sessionParagraph(v)}`,
+      "",
+      SIGN_OFF,
+    ].join("\n"),
+};
+
 // BRAND_KIT (Oct 20 2026, Jordan: "If agents have not filled it out yet, then
 // send them a message once a week until they do"). Once a week while the logo
 // or the brand colors are missing; the editor puts both in every video.
@@ -424,6 +447,7 @@ export const DEFAULT_TEMPLATE_IDS: Record<Exclude<ReminderAction, "DIGEST" | "ES
   CONFIRM_ADDRESS: "reminder.confirm_address.v1",
   APPROVE_SCRIPTS: "reminder.approve_scripts.v1",
   BRAND_KIT: "reminder.brand_kit.v1",
+  PICK_TOPICS: "reminder.pick_topics.v1",
 };
 
 /** Resolve a template by id, refusing an id nobody has (a typo in the policy

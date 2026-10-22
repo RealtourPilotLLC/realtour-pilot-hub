@@ -28,11 +28,48 @@ export class AutomationDisabledError extends Error {
   }
 }
 export class QuotaExceededError extends Error {
-  constructor(msg: string) {
+  /**
+   * Which cap refused (Oct 22 2026): "client" = this one client's daily cap,
+   * so a sweep moves on to the next client; "program" = the program-wide or
+   * per-kind cap, which refuses everyone alike.
+   */
+  readonly scope: "client" | "program";
+  constructor(msg: string, scope: "client" | "program" = "program") {
     super(msg);
     this.name = "QuotaExceededError";
+    this.scope = scope;
   }
 }
+
+/**
+ * OFFLINE AND TEST RUNS ARE NOT THE CLIENT'S (Oct 22 2026). A run requested by
+ * "claude:<job>" (a test or a one-off a developer ran from a script) or one
+ * scoped `offline: true` (the writer's retro tests, which write nothing but the
+ * run row) is real spend, so it still counts toward the program-wide and
+ * per-kind caps, but never toward the client's own daily cap. On Oct 22 Erica
+ * reached 40 of 40 (23 of them tests), John 38 (all tests) and Marcee 33 (all
+ * tests): her restored drafts were refused, the 15-minute check sweep stopped
+ * at the refusal and portal AI was refused for those clients.
+ */
+export const OFFLINE_REQUESTER_PREFIX = "claude:";
+export const OFFLINE_SCOPE_MARK = '"offline":true';
+export function isOfflineRun(requestedBy: string | null | undefined, scope?: Record<string, unknown> | string | null): boolean {
+  if ((requestedBy ?? "").startsWith(OFFLINE_REQUESTER_PREFIX)) return true;
+  if (!scope) return false;
+  if (typeof scope === "string") return scope.includes(OFFLINE_SCOPE_MARK);
+  return scope.offline === true;
+}
+/**
+ * The run rows a client's cap counts: everything but offline and test runs.
+ * Both columns are nullable, and a bare NOT drops NULL rows in SQL, so each
+ * test is "null, or not that".
+ */
+export const COUNTS_FOR_CLIENT_CAP = {
+  AND: [
+    { OR: [{ requestedBy: null }, { NOT: { requestedBy: { startsWith: OFFLINE_REQUESTER_PREFIX } } }] },
+    { OR: [{ scopeJson: null }, { NOT: { scopeJson: { contains: OFFLINE_SCOPE_MARK } } }] },
+  ],
+};
 /**
  * The model answered after this run's lease had run out and another caller had
  * already marked it FAILED and started its own (R04, Sep 28 2026). The answer
@@ -116,7 +153,7 @@ function dayStart(): Date {
  * Refuses with QuotaExceededError when a limit is reached. `excludeRunId` is a
  * queued run being adopted: it is already RUNNING, so it must not count itself.
  */
-export async function assertQuota(kind: AiRunKind, enrollmentId: string | null, excludeRunId: string | null = null): Promise<void> {
+export async function assertQuota(kind: AiRunKind, enrollmentId: string | null, excludeRunId: string | null = null, opts: { offline?: boolean } = {}): Promise<void> {
   const since = dayStart();
   const rows = await prisma.programAiQuota.findMany({ where: { period: "DAY", enabled: true } });
   const limitFor = (scope: string, ref: string, fallback: number) => {
@@ -127,14 +164,16 @@ export async function assertQuota(kind: AiRunKind, enrollmentId: string | null, 
   // per-kind cap only, and never count toward the client or program-wide caps.
   const step = WRITER_STEP_KINDS.includes(kind);
   const notSteps = { kind: { notIn: [...WRITER_STEP_KINDS] } };
-  const checks: { where: Record<string, unknown>; max: number; what: string }[] = [
-    ...(step ? [] : [{ where: notSteps, max: limitFor("GLOBAL", "", DEFAULT_QUOTA.globalPerDay), what: "the program-wide daily AI limit" }]),
-    { where: { kind }, max: limitFor("KIND", kind, DEFAULT_QUOTA.kindPerDay), what: `the daily limit for ${kind} runs` },
+  const checks: { where: Record<string, unknown>; max: number; what: string; scope: "client" | "program" }[] = [
+    ...(step ? [] : [{ where: notSteps, max: limitFor("GLOBAL", "", DEFAULT_QUOTA.globalPerDay), what: "the program-wide daily AI limit", scope: "program" as const }]),
+    { where: { kind }, max: limitFor("KIND", kind, DEFAULT_QUOTA.kindPerDay), what: `the daily limit for ${kind} runs`, scope: "program" },
   ];
-  if (enrollmentId && !step) checks.push({ where: { enrollmentId, ...notSteps }, max: limitFor("ENROLLMENT", enrollmentId, DEFAULT_QUOTA.enrollmentPerDay), what: "this client's daily AI limit" });
+  // Oct 22 2026: an offline or test run is held to the program-wide caps only,
+  // and the client's cap counts none of them (isOfflineRun).
+  if (enrollmentId && !step && !opts.offline) checks.push({ where: { enrollmentId, ...notSteps, ...COUNTS_FOR_CLIENT_CAP }, max: limitFor("ENROLLMENT", enrollmentId, DEFAULT_QUOTA.enrollmentPerDay), what: "this client's daily AI limit", scope: "client" });
   for (const c of checks) {
     const n = await prisma.programAiRun.count({ where: { ...c.where, startedAt: { gte: since }, status: { in: ["RUNNING", "SUCCEEDED", "FAILED"] }, ...(excludeRunId ? { id: { not: excludeRunId } } : {}) } });
-    if (n >= c.max) throw new QuotaExceededError(`${c.what} (${c.max}/day) is reached — try again tomorrow or raise the quota.`);
+    if (n >= c.max) throw new QuotaExceededError(`${c.what} (${c.max}/day) is reached — try again tomorrow or raise the quota.`, c.scope);
   }
 }
 
@@ -223,7 +262,7 @@ export async function expireStaleRuns(now: Date = new Date()): Promise<void> {
 export async function runAiJson<T>(opts: RunAiOpts<T>): Promise<RunAiResult<T>> {
   if (opts.unattended && !(await isAutomationEnabled("ai_runs"))) throw new AutomationDisabledError();
   const claimed = opts.claimedRun ?? null;
-  await assertQuota(opts.kind, opts.enrollmentId ?? null, claimed?.id ?? null);
+  await assertQuota(opts.kind, opts.enrollmentId ?? null, claimed?.id ?? null, { offline: isOfflineRun(opts.requestedBy, opts.scope ?? null) });
   // Duplicate clicks: an active run with the same dedupeKey means "wait for
   // that one", not "start a second". Postgres enforces it (unique dedupeKey).
   let runId: string;
