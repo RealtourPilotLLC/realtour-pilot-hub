@@ -7,6 +7,7 @@ import { appBase } from "@/lib/appUrl";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
 import { etHour } from "@/lib/datetime";
+import { allSlackOwnerIds, wantsAllSlack } from "@/lib/notifyAllSlack";
 
 // ---------------------------------------------------------------------------
 // Internal operational pings → Slack (never clients). The task engine files
@@ -1746,7 +1747,6 @@ export async function notifyInApp(n: {
           // Slack when he asked for every notification there (DM only).
           if (!tmId && !editorKey && rowRoles.includes("OWNER")) {
             try {
-              const { allSlackOwnerIds } = await import("@/lib/notifyPrefs");
               for (const ownerId of await allSlackOwnerIds()) {
                 await bridgePerson(n.kind, t, { tmId: ownerId, editorKey: null, title, href, notificationId: row.id, slackOnly: true }, delivered);
               }
@@ -2007,7 +2007,6 @@ async function bridgePerson(
     // notifications via slack"). A person with the switch on gets a DM for
     // every bell row addressed to them, classified or not; their text
     // switches are untouched.
-    const { wantsAllSlack } = await import("@/lib/notifyPrefs");
     const allSlack = await wantsAllSlack(personId);
     if (!event && !allSlack) return state; // an unclassified kind is bell-only
     if (event && SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag

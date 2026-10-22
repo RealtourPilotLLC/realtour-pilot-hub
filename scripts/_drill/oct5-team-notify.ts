@@ -119,6 +119,7 @@ async function main() {
   const { putSetting } = await import("@/lib/settings");
   const notify = await import("@/lib/notify");
   const prefs = await import("@/lib/notifyPrefs");
+  const allSlack = await import("@/lib/notifyAllSlack");
   const defaults = await import("@/lib/notifyPrefDefaults");
   const sched = await import("@/lib/notifySchedule");
   const ra = await import("@/lib/reviewerAssignment");
@@ -523,8 +524,8 @@ async function main() {
     await notify.notifyInApp({ kind: "drill_unclassified", title: "Drill: off", body: "x", href: "/", targets: [{ roles: ["OWNER"], userKey: `tm:${jordan.id}` }], dedupeKey: "drill-allslack-off-1" });
     await notify.notifyInApp({ kind: "error_report", title: "Drill: broadcast off", body: "x", href: "/settings/errors", targets: [{ roles: ["OWNER"] }], dedupeKey: "drill-allslack-off-2" });
     c.ok("switch off: neither reaches his Slack", dms(S.jordan, before).length === 0, JSON.stringify(dms(S.jordan, before)));
-    await putSetting(prefs.allSlackKey(jordan.id), { on: true });
-    c.ok("the switch reads on", await prefs.wantsAllSlack(jordan.id));
+    await putSetting(allSlack.allSlackKey(jordan.id), { on: true });
+    c.ok("the switch reads on", await allSlack.wantsAllSlack(jordan.id));
     await notify.notifyInApp({ kind: "drill_unclassified", title: "Drill: on", body: "x", href: "/", targets: [{ roles: ["OWNER"], userKey: `tm:${jordan.id}` }], dedupeKey: "drill-allslack-on-1" });
     c.ok("on: an unclassified kind addressed to him is a Slack DM", dms(S.jordan, before).some((m) => /Drill: on/.test(m.text)));
     await notify.notifyInApp({ kind: "error_report", title: "Drill: broadcast on", body: "x", href: "/settings/errors", targets: [{ roles: ["OWNER"] }], dedupeKey: "drill-allslack-on-2" });

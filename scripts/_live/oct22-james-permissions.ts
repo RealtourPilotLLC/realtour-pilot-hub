@@ -16,7 +16,7 @@
 //   … --apply                                            # writes
 // ---------------------------------------------------------------------------
 import { prisma } from "@/lib/prisma";
-import { allSlackKey, wantsAllSlack } from "@/lib/notifyPrefs";
+import { allSlackKey, wantsAllSlack } from "@/lib/notifyAllSlack";
 import { putSetting } from "@/lib/settings";
 
 const JAMES_LOGIN = "cmqv7es4y0000i10a3c1d3o8m";

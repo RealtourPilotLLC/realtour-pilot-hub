@@ -373,25 +373,3 @@ export async function saveNotifyPrefs(teamMemberId: string, prefs: NotifyPrefs, 
   await putSetting(notifyPrefsKey(teamMemberId), clean, updatedBy ?? null);
 }
 
-// ---------------------------------------------------------------------------
-// EVERYTHING ON SLACK (Oct 22 2026). Jordan: "please make sure I get all
-// notifications via slack." A per-person switch (AppSetting
-// `notify-all-slack:<teamMemberId>` = {"on":true}): every bell row addressed to them
-// is also a Slack DM, and for an owner every OWNER broadcast too (notify.ts).
-// Stored as {"on":true}: getSetting merges objects, so a bare boolean reads as {}.
-// Their quiet time still holds the DM, exactly like any other.
-// ---------------------------------------------------------------------------
-export const allSlackKey = (teamMemberId: string) => `notify-all-slack:${teamMemberId}`;
-
-export async function wantsAllSlack(teamMemberId: string): Promise<boolean> {
-  const v = await getSetting<{ on?: boolean }>(allSlackKey(teamMemberId), {}).catch(() => ({} as { on?: boolean }));
-  return v.on === true;
-}
-
-/** The owners (roster ids) who asked for every notification on Slack. */
-export async function allSlackOwnerIds(): Promise<string[]> {
-  const ids = await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]);
-  const out: string[] = [];
-  for (const id of ids) if (await wantsAllSlack(id)) out.push(id);
-  return out;
-}
