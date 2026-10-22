@@ -4663,8 +4663,12 @@ async function syncOneProjectTasks(
   } catch { /* evidence-close is best-effort */ }
   // One draft per project — the confirmation text is (re)rendered at creation,
   // on reopen, and on a due-date drift, always from the same current fields.
+  // Oct 22 2026: the card's draft is the same template the Send button and the
+  // 48h sweep send (Settings → Text messages), with the town, so the words a
+  // person sees are the words that go.
+  const confirmationWords = await (await import("@/lib/textTemplateStore")).loadTextTemplates().catch(() => undefined);
   const draftConfirmation = () =>
-    confirmationMessage({ title: p.title, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables });
+    confirmationMessage({ title: p.title, city: p.city, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables }, confirmationWords);
   const { turnaroundRules } = await import("@/lib/settings");
   const specs = specsForProject({
     turnarounds: await turnaroundRules(),

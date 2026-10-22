@@ -292,7 +292,7 @@ export default async function HomePage(props: { searchParams?: Promise<{ test?: 
   const nowMin = etMinutes(now);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
   // A per-user override can close a screen to this reader: its tile and actions show without the link.
-  const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), communications: !me || canAccess(me, "communications"), pipeline: !me || canAccess(me, "pipeline"), tasks: !me || canAccess(me, "tasks") };
+  const doors = { review: !me || canAccess(me, "review"), ops: !me || canAccess(me, "ops"), photos: !me || canAccess(me, "photos"), communications: !me || canAccess(me, "communications"), pipeline: !me || canAccess(me, "pipeline"), tasks: !me || canAccess(me, "tasks") };
   // Kyle and any other office login (Oct 22 2026): their own dashboard order.
   const officeHome = !isOwner && !creativeHome;
   // Today's shoots: the day's hard commitments in full (access, door code,

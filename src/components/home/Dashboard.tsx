@@ -26,13 +26,16 @@ import type { DeliverableStage, JobRow } from "@/lib/jobsBoard";
 /** The screens this reader may open (a per-user override can take one away:
  *  canAccess). A tile or action whose screen is closed to them is shown
  *  without the link, never as a door that bounces. Default: all open. */
-export type Doors = { review: boolean; ops: boolean; communications: boolean; pipeline: boolean; tasks?: boolean };
-const ALL_DOORS: Doors = { review: true, ops: true, communications: true, pipeline: true, tasks: true };
+export type Doors = { review: boolean; ops: boolean; communications: boolean; pipeline: boolean; tasks?: boolean; photos?: boolean };
+const ALL_DOORS: Doors = { review: true, ops: true, communications: true, pipeline: true, tasks: true, photos: true };
 export function opens(href: string, doors: Doors = ALL_DOORS): boolean {
   if (href.startsWith("/review")) return doors.review;
   // Shoots (/jobs) is the `pipeline` page (its middleware key and the page's
   // own check), not `ops` (Oct 20 2026, audit A21).
   if (href.startsWith("/jobs")) return doors.pipeline;
+  // Oct 22 2026: the Photos desk has its own page key (`photos`), so a
+  // creative manager with the view-only desk but no `ops` still gets the link.
+  if (href.startsWith("/ops/photo-delivery")) return doors.photos ?? doors.ops;
   if (href.startsWith("/ops")) return doors.ops;
   if (href.startsWith("/communications")) return doors.communications;
   // Oct 21 2026: James's "items over a week old" pointed at /tasks, which his

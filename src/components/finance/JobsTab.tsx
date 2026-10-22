@@ -126,6 +126,7 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
           Margin = revenue − the <span className="font-medium text-muted">photographer</span> (exact base + mileage) − <span className="font-medium text-muted">video editing</span> ($299 premium/Luma · $120 monthly social · $40 standard) − <span className="font-medium text-muted">photo editing</span> ($0.50 × finished photo = bracket sets ÷ 5 + drone singles, counted nightly from each job&apos;s Dropbox raw folder — hover the Editing cell for the math). Card fees live on the Overview.
         </p>
+        {data.fixedPayNote && <p className="px-1 text-[11px] text-muted-2">{data.fixedPayNote}</p>}
       </div>
     </div>
   );
